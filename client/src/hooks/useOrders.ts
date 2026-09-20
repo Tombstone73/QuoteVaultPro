@@ -120,6 +120,12 @@ export type Order = {
   promisedDate: string | null;
   subtotal: string;
   tax: string;
+  taxRate?: string | null;
+  taxAmount?: string | null;
+  taxableSubtotal?: string | null;
+  taxOverrideMode?: "auto" | "exempt" | "rate" | string | null;
+  taxRateOverride?: string | number | null;
+  taxOverrideReason?: string | null;
   total: string;
   discount: string;
   shippingCents: number;
@@ -151,6 +157,9 @@ export type OrderLineItem = {
   sqft: string | null;
   unitPrice: string;
   totalPrice: string;
+  taxAmount?: string | null;
+  isTaxableSnapshot?: boolean | null;
+  taxabilityOverride?: boolean | null;
   baseCalculatedUnitPriceCents?: number;
   baseCalculatedTotalCents?: number;
   effectiveUnitPriceCents?: number;
@@ -1084,6 +1093,55 @@ export function useDeleteOrderLineItem(orderId: string) {
         variant: "destructive",
       });
     },
+  });
+}
+
+export function useUpdateOrderLineItemTaxability(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ id, taxabilityOverride }: { id: string; taxabilityOverride: boolean | null }) => {
+      const response = await apiFetch(`/api/order-line-items/${id}/taxability`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taxabilityOverride }),
+        credentials: "include",
+      });
+      if (!response.ok) throw await parseOrderLineItemApiError(response, "Failed to update line taxability");
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOrderOperationalQueries(queryClient, orderId);
+      toast({ title: "Tax updated", description: "The Order and its live Invoice were recalculated." });
+    },
+    onError: (error: Error) => toast({ title: "Tax update failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useUpdateOrderTaxTreatment(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: { mode: "auto" | "exempt" | "rate"; rate?: number | null; reason?: string | null }) => {
+      const response = await apiFetch(`/api/orders/${orderId}/tax-treatment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to update Order tax treatment");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOrderOperationalQueries(queryClient, orderId);
+      toast({ title: "Tax settings updated", description: "The Order and its live Invoice were recalculated." });
+    },
+    onError: (error: Error) => toast({ title: "Tax settings failed", description: error.message, variant: "destructive" }),
   });
 }
 

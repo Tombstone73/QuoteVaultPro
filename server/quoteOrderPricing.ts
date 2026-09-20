@@ -53,6 +53,11 @@ export interface QuoteOrderTotals {
   total: number;
 }
 
+export type OrderTaxPolicy =
+  | { mode: "auto" }
+  | { mode: "exempt" }
+  | { mode: "rate"; rate: number };
+
 /**
  * Calculate tax for a single line item (synchronous helper)
  */
@@ -89,7 +94,8 @@ export async function calculateQuoteOrderTotals(
   orgSettings: OrganizationTaxSettings,
   customer?: Pick<Customer, "isTaxExempt" | "taxRateOverride" | "pricingTier"> | null,
   shipFrom?: TaxAddress | null,
-  shipTo?: TaxAddress | null
+  shipTo?: TaxAddress | null,
+  taxPolicy?: OrderTaxPolicy,
 ): Promise<QuoteOrderTotals & { lineItemsWithTax: LineItemWithTax[] }> {
   // For now, we'll resolve a single tax rate for the entire quote/order
   // Future enhancement: per-line-item tax resolution for mixed categories
@@ -119,7 +125,16 @@ export async function calculateQuoteOrderTotals(
     shipTo,
   };
 
-  const taxRate = await resolveTaxRate(taxContext);
+  // Transaction policy is intentionally optional so Quotes preserve their
+  // existing Product/Customer/Organization resolution behavior.
+  const automaticTaxRate = await resolveTaxRate(taxContext);
+  const taxRate = orgSettings.taxEnabled === false
+    ? 0
+    : taxPolicy?.mode === "exempt"
+      ? 0
+      : taxPolicy?.mode === "rate"
+        ? Math.max(0, Math.min(1, taxPolicy.rate))
+        : automaticTaxRate;
 
   // Step 2: Calculate tax for each line item
   const lineItemsWithTax = lineItems.map((item) => 

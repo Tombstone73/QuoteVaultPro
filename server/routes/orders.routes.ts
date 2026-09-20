@@ -8263,6 +8263,111 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.patch("/api/order-line-items/:id/taxability", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ message: "User not authenticated" });
+            const { taxabilityOverride } = z.object({ taxabilityOverride: z.boolean().nullable() }).strict().parse(req.body ?? {});
+            const lineItemId = String(req.params.id);
+            const result = await db.transaction(async (tx) => {
+                const [line] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
+                if (!line) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                const [order] = await tx.select().from(orders).where(and(eq(orders.id, line.orderId), eq(orders.organizationId, organizationId))).limit(1);
+                if (!order) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                if (isCanceledOrder(order)) throw Object.assign(new Error("Cancelled order line items cannot receive commercial tax overrides."), { statusCode: 409, code: "ORDER_CANCELLED_EDIT_RESTRICTED" });
+                const previousOverride = (line as any).taxabilityOverride ?? null;
+                await tx.update(orderLineItems).set({ taxabilityOverride, updatedAt: new Date() } as any).where(eq(orderLineItems.id, lineItemId));
+                await recalculateEditableOrderFinancialsInTransaction(tx, { organizationId, orderId: String(line.orderId), actorUserId: userId });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(line.orderId), executor: tx });
+                const [updatedLine] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
+                await new OrdersRepository(tx).createOrderAuditLog({
+                    orderId: String(line.orderId),
+                    orderLineItemId: lineItemId,
+                    userId,
+                    userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
+                    actionType: "line_item.taxability_overridden",
+                    fromStatus: null,
+                    toStatus: null,
+                    note: taxabilityOverride === null ? "Line taxability reset to Product default." : `Line taxability explicitly set to ${taxabilityOverride ? "taxable" : "non-taxable"}.`,
+                    metadata: {
+                        oldOverride: previousOverride,
+                        newOverride: taxabilityOverride,
+                        effectiveTaxable: Boolean((updatedLine as any)?.isTaxableSnapshot),
+                    },
+                });
+                return updatedLine;
+            });
+            return res.json(result);
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
+            console.error("[OrderLineItemTaxability] Failed", error);
+            return res.status(500).json({ message: "Failed to update line taxability" });
+        }
+    });
+
+    app.patch("/api/orders/:id/tax-treatment", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ message: "User not authenticated" });
+            const payload = z.object({
+                mode: z.enum(["auto", "exempt", "rate"]),
+                rate: z.coerce.number().min(0).max(1).optional().nullable(),
+                reason: z.string().trim().max(2000).optional().nullable(),
+            }).strict().superRefine((value, context) => {
+                if (value.mode === "rate" && value.rate == null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["rate"], message: "A tax rate is required." });
+                if (value.mode !== "auto" && (!value.reason || value.reason.length < 3)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "A reason is required for an Order tax override." });
+            }).parse(req.body ?? {});
+            const result = await db.transaction(async (tx) => {
+                const [order] = await tx.select().from(orders).where(and(eq(orders.id, req.params.id), eq(orders.organizationId, organizationId))).limit(1);
+                if (!order) throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+                if (isCanceledOrder(order)) throw Object.assign(new Error("Cancelled orders cannot receive commercial tax overrides."), { statusCode: 409, code: "ORDER_CANCELLED_EDIT_RESTRICTED" });
+                const oldTaxCents = Math.round(Number((order as any).taxAmount ?? order.tax ?? 0) * 100);
+                const oldMode = String((order as any).taxOverrideMode ?? "auto");
+                const oldRate = (order as any).taxRate;
+                const now = new Date();
+                await tx.update(orders).set({
+                    taxOverrideMode: payload.mode,
+                    taxRateOverride: payload.mode === "rate" ? String(payload.rate) : null,
+                    taxOverrideReason: payload.mode === "auto" ? null : payload.reason ?? null,
+                    taxOverrideAt: payload.mode === "auto" ? null : now,
+                    taxOverrideByUserId: payload.mode === "auto" ? null : userId,
+                    updatedAt: now,
+                } as any).where(eq(orders.id, order.id));
+                const updated = await recalculateEditableOrderFinancialsInTransaction(tx, { organizationId, orderId: order.id, actorUserId: userId });
+                await recomputeOrderBillingStatus({ organizationId, orderId: order.id, executor: tx });
+                await new OrdersRepository(tx).createOrderAuditLog({
+                    orderId: order.id,
+                    userId,
+                    userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
+                    actionType: "order.tax_treatment_changed",
+                    fromStatus: null,
+                    toStatus: null,
+                    note: payload.mode === "auto" ? "Order tax treatment reset to automatic." : payload.reason ?? null,
+                    metadata: {
+                        oldMode,
+                        newMode: payload.mode,
+                        oldEffectiveRate: oldRate,
+                        newEffectiveRate: (updated as any)?.taxRate ?? null,
+                        oldTaxCents,
+                        newTaxCents: Math.round(Number((updated as any)?.taxAmount ?? (updated as any)?.tax ?? 0) * 100),
+                    },
+                });
+                return updated;
+            });
+            return res.json(result);
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
+            console.error("[OrderTaxTreatment] Failed", error);
+            return res.status(500).json({ message: "Failed to update Order tax treatment" });
+        }
+    });
+
     // A completed line with production/fulfillment evidence normally requires a
     // replacement so the historical physical obligation cannot be rewritten.
     // This explicit operation is the narrow exception for correcting a TitanOS

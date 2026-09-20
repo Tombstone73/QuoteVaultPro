@@ -58,7 +58,17 @@ class CanonicalOrderOperations {
         ...input.changes,
         ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}),
       });
-      if (orderChangesRequireOrderBackedInvoiceSynchronization(input.changes)) {
+      // In automatic tax mode, the resolved customer is part of the tax authority.
+      // Recalculate the complete financial snapshot rather than only synchronizing
+      // a possibly stale Order total to its Invoice.
+      if (input.changes.customerId !== undefined) {
+        const { recalculateEditableOrderFinancialsInTransaction } = await import("./orderTaxCalculationService");
+        await recalculateEditableOrderFinancialsInTransaction(tx, {
+          organizationId: input.organizationId,
+          orderId: order.id,
+          actorUserId: input.actorUserId,
+        });
+      } else if (orderChangesRequireOrderBackedInvoiceSynchronization(input.changes)) {
         await synchronizeOrderBackedInvoiceFromOrderInTransaction(tx, {
           organizationId: input.organizationId,
           orderId: order.id,

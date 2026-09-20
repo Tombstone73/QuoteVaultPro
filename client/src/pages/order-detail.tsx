@@ -35,7 +35,7 @@ import { CustomerSelect, type CustomerWithContacts } from "@/components/Customer
 import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow, useOrderCancellationEligibility } from "@/hooks/useOrders";
+import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderTaxTreatment, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow, useOrderCancellationEligibility } from "@/hooks/useOrders";
 import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -507,6 +507,29 @@ export default function OrderDetail() {
     };
   }, [order, draftLineItemTotalsCents]);
 
+  const orderTaxMode = (order as any)?.taxOverrideMode === "exempt" || (order as any)?.taxOverrideMode === "rate"
+    ? (order as any).taxOverrideMode as "exempt" | "rate"
+    : "auto";
+  const orderTaxRate = Number((order as any)?.taxRate ?? 0) || 0;
+  const orderTaxOverrideRate = Number((order as any)?.taxRateOverride ?? 0) || 0;
+  const taxTreatmentLabel = orderTaxMode === "exempt"
+    ? "Order exempt"
+    : orderTaxMode === "rate"
+      ? `Override ${(orderTaxOverrideRate * 100).toFixed(3)}%`
+      : `Auto ${(orderTaxRate * 100).toFixed(3)}%`;
+  const openTaxSettings = () => {
+    setTaxTreatmentDraft(orderTaxMode);
+    setTaxRatePercentDraft(orderTaxMode === "rate" ? String(orderTaxOverrideRate * 100) : String(orderTaxRate * 100));
+    setTaxOverrideReasonDraft(String((order as any)?.taxOverrideReason ?? ""));
+    setTaxSettingsOpen(true);
+  };
+  const projectedTaxRate = taxTreatmentDraft === "exempt"
+    ? 0
+    : taxTreatmentDraft === "rate"
+      ? (Number(taxRatePercentDraft) || 0) / 100
+      : orderTaxRate;
+  const projectedTax = (Number((order as any)?.taxableSubtotal ?? 0) || 0) * projectedTaxRate;
+
   useEffect(() => {
     if (!focusProduction || productionFocus.prioritizedIds.length === 0) return;
 
@@ -545,6 +568,7 @@ export default function OrderDetail() {
   });
   const cancellationEligibilityQuery = useOrderCancellationEligibility(orderId);
   const updateOrder = useUpdateOrder(orderId!);
+  const updateOrderTaxTreatment = useUpdateOrderTaxTreatment(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const workflowQuery = useOrderWorkflow();
   const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
@@ -568,6 +592,10 @@ export default function OrderDetail() {
 
   const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
   const [isAddingOrderInternalNote, setIsAddingOrderInternalNote] = useState(false);
+  const [taxSettingsOpen, setTaxSettingsOpen] = useState(false);
+  const [taxTreatmentDraft, setTaxTreatmentDraft] = useState<"auto" | "exempt" | "rate">("auto");
+  const [taxRatePercentDraft, setTaxRatePercentDraft] = useState("");
+  const [taxOverrideReasonDraft, setTaxOverrideReasonDraft] = useState("");
 
   const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
     queryKey: ["orders", "internalNotes", orderId],
@@ -2992,9 +3020,16 @@ export default function OrderDetail() {
                           <span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span>
                         </div>
                       )}
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Tax</span>
-                      <span>{formatCurrency(displayedOrderTotals.tax)}</span>
+                    <div className="flex justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground">Tax · {taxTreatmentLabel}</span>
+                      <span className="flex items-center gap-2">
+                        {formatCurrency(displayedOrderTotals.tax)}
+                        {isAdminOrOwner && canEditOrder ? (
+                          <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={openTaxSettings}>
+                            Edit
+                          </Button>
+                        ) : null}
+                      </span>
                     </div>
                     <Separator />
                     <div className="flex justify-between font-bold text-lg">
@@ -4365,7 +4400,66 @@ export default function OrderDetail() {
         </DialogContent>
       </Dialog>
 
-
+      <Dialog open={taxSettingsOpen} onOpenChange={(open) => !updateOrderTaxTreatment.isPending && setTaxSettingsOpen(open)}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Tax Settings</DialogTitle>
+            <DialogDescription>Set the tax treatment for this Order without changing Customer or Product defaults.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <label className="flex cursor-pointer gap-3 rounded-md border p-3">
+              <input type="radio" name="tax-treatment" checked={taxTreatmentDraft === "auto"} onChange={() => setTaxTreatmentDraft("auto")} />
+              <span><span className="block font-medium">Automatic</span><span className="text-sm text-muted-foreground">Uses Customer and organization tax settings.</span></span>
+            </label>
+            <label className="flex cursor-pointer gap-3 rounded-md border p-3">
+              <input type="radio" name="tax-treatment" checked={taxTreatmentDraft === "exempt"} onChange={() => setTaxTreatmentDraft("exempt")} />
+              <span><span className="block font-medium">Tax Exempt for This Order</span><span className="text-sm text-muted-foreground">Applies a 0% rate to this transaction only.</span></span>
+            </label>
+            <label className="flex cursor-pointer gap-3 rounded-md border p-3">
+              <input type="radio" name="tax-treatment" checked={taxTreatmentDraft === "rate"} onChange={() => setTaxTreatmentDraft("rate")} />
+              <span className="flex-1"><span className="block font-medium">Override Tax Rate</span><span className="text-sm text-muted-foreground">Applies only to taxable lines on this Order.</span></span>
+            </label>
+            {taxTreatmentDraft === "rate" ? (
+              <div className="space-y-2 pl-7">
+                <Label htmlFor="order-tax-rate">Rate (%)</Label>
+                <Input id="order-tax-rate" type="number" min="0" max="100" step="0.001" value={taxRatePercentDraft} onChange={(event) => setTaxRatePercentDraft(event.target.value)} />
+              </div>
+            ) : null}
+            <div className="space-y-2">
+              <Label htmlFor="order-tax-reason">Reason {taxTreatmentDraft === "auto" ? "(optional)" : "(required)"}</Label>
+              <Textarea id="order-tax-reason" value={taxOverrideReasonDraft} onChange={(event) => setTaxOverrideReasonDraft(event.target.value)} maxLength={2000} placeholder="Why is this Order tax treatment being overridden?" />
+            </div>
+            <div className="rounded-md bg-muted p-3 text-sm">
+              <div className="flex justify-between"><span>Taxable subtotal</span><span>{formatCurrency(Number((order as any)?.taxableSubtotal ?? 0) || 0)}</span></div>
+              <div className="mt-1 flex justify-between"><span>Projected tax</span><span>{formatCurrency(projectedTax)}</span></div>
+              <p className="mt-2 text-xs text-muted-foreground">The server recalculates the authoritative total and any live Order-backed Invoice when you apply this setting.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setTaxSettingsOpen(false)} disabled={updateOrderTaxTreatment.isPending}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={updateOrderTaxTreatment.isPending || (taxTreatmentDraft !== "auto" && taxOverrideReasonDraft.trim().length < 3) || (taxTreatmentDraft === "rate" && (!(Number(taxRatePercentDraft) >= 0) || Number(taxRatePercentDraft) > 100))}
+              onClick={() => {
+                void (async () => {
+                  try {
+                    await updateOrderTaxTreatment.mutateAsync({
+                      mode: taxTreatmentDraft,
+                      rate: taxTreatmentDraft === "rate" ? Number(taxRatePercentDraft) / 100 : null,
+                      reason: taxTreatmentDraft === "auto" ? null : taxOverrideReasonDraft.trim(),
+                    });
+                    setTaxSettingsOpen(false);
+                  } catch {
+                    // The mutation owns the user-safe error toast.
+                  }
+                })();
+              }}
+            >
+              {updateOrderTaxTreatment.isPending ? "Applying..." : "Apply Tax Settings"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Shipment Form Dialog */}
       <ShipmentForm

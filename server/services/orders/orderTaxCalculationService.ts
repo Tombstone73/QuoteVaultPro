@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 
 import { customers, orderLineItems, orders, organizations, products } from "@shared/schema";
-import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "../../quoteOrderPricing";
+import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput, type OrderTaxPolicy } from "../../quoteOrderPricing";
 import { db } from "../../db";
 import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../../invoicesService";
 import { getBillableBundleRoots } from "../lineItemBundles";
@@ -13,12 +13,35 @@ type TaxableOrderLine = {
   parentLineItemId?: string | null;
   lineItemRole?: string | null;
   taxCategoryId?: string | null;
+  taxabilityOverride?: boolean | null;
 };
+
+export function resolveEffectiveLineTaxability(
+  taxabilityOverride: boolean | null | undefined,
+  productIsTaxable: boolean | null | undefined,
+) {
+  return typeof taxabilityOverride === "boolean" ? taxabilityOverride : productIsTaxable ?? true;
+}
+
+export function resolveOrderTaxPolicy(
+  taxOverrideMode: "auto" | "exempt" | "rate" | string | null | undefined,
+  taxRateOverride: string | number | null | undefined,
+): OrderTaxPolicy {
+  const rawMode = String(taxOverrideMode ?? "auto").toLowerCase();
+  if (rawMode === "exempt") return { mode: "exempt" };
+  if (rawMode === "rate") {
+    const parsedRate = Number(taxRateOverride ?? 0);
+    return { mode: "rate", rate: Number.isFinite(parsedRate) ? Math.max(0, Math.min(1, parsedRate)) : 0 };
+  }
+  return { mode: "auto" };
+}
 
 async function calculateTaxForLines(executor: any, input: {
   organizationId: string;
   customerId?: string | null;
   lines: TaxableOrderLine[];
+  taxOverrideMode?: "auto" | "exempt" | "rate" | string | null;
+  taxRateOverride?: string | number | null;
 }) {
   const [organization] = await executor.select().from(organizations)
     .where(eq(organizations.id, input.organizationId)).limit(1);
@@ -43,7 +66,10 @@ async function calculateTaxForLines(executor: any, input: {
   const taxLines: LineItemInput[] = billableLines.map((line) => ({
     productId: String(line.productId),
     linePrice: Number(line.totalPrice) || 0,
-    isTaxable: productMap.get(String(line.productId))?.isTaxable ?? true,
+    isTaxable: resolveEffectiveLineTaxability(
+      line.taxabilityOverride,
+      productMap.get(String(line.productId))?.isTaxable,
+    ),
     taxCategoryId: line.taxCategoryId ?? null,
   }));
   const shipTo = customer ? {
@@ -52,7 +78,8 @@ async function calculateTaxForLines(executor: any, input: {
     city: customer.city,
     postalCode: customer.postalCode,
   } : null;
-  const totals = await calculateQuoteOrderTotals(taxLines, getOrganizationTaxSettings(organization), customer, null, shipTo);
+  const taxPolicy = resolveOrderTaxPolicy(input.taxOverrideMode, input.taxRateOverride);
+  const totals = await calculateQuoteOrderTotals(taxLines, getOrganizationTaxSettings(organization), customer, null, shipTo, taxPolicy);
   return { billableLines, totals };
 }
 
@@ -61,6 +88,8 @@ export async function calculateAuthoritativeOrderTax(input: {
   organizationId: string;
   customerId?: string | null;
   lines: TaxableOrderLine[];
+  taxOverrideMode?: "auto" | "exempt" | "rate" | string | null;
+  taxRateOverride?: string | number | null;
   executor?: any;
 }) {
   return calculateTaxForLines(input.executor ?? db, input);
@@ -85,6 +114,8 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
       organizationId: input.organizationId,
       customerId: order.customerId,
       lines,
+      taxOverrideMode: (order as any).taxOverrideMode,
+      taxRateOverride: (order as any).taxRateOverride,
     });
     await Promise.all(billableLines.map((line, index) => executor.update(orderLineItems).set({
       taxAmount: totals.lineItemsWithTax[index]!.taxAmount.toFixed(2),

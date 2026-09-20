@@ -67,6 +67,7 @@ import {
   useTransitionLineItemWorkflow,
   useUpdateOrderLineItem,
   useUpdateOrderLineItemCommercialPricing,
+  useUpdateOrderLineItemTaxability,
 } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
@@ -854,6 +855,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const updateLineItem = useUpdateOrderLineItem(orderId);
   const updateLineItemSilent = useUpdateOrderLineItem(orderId, { toast: false });
   const updateLineItemCommercialPricing = useUpdateOrderLineItemCommercialPricing(orderId);
+  const updateLineItemTaxability = useUpdateOrderLineItemTaxability(orderId);
   const createLineItem = useCreateOrderLineItem(orderId);
   const deleteLineItem = useDeleteOrderLineItem(orderId);
 
@@ -4218,6 +4220,59 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 readOnly={readOnly}
                                 commercialPricingEditable={commercialPricingOnly}
                               />
+
+                              {!readOnly && !serviceFee && isExpanded && expandedItem?.id === item.id ? (
+                                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-sm">
+                                  <span className="font-medium">Tax</span>
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox
+                                      id={`line-taxable-${item.id}`}
+                                      checked={Boolean((item as any).taxabilityOverride ?? (item as any).isTaxableSnapshot ?? true)}
+                                      disabled={updateLineItemTaxability.isPending}
+                                      onCheckedChange={(checked) => {
+                                        void (async () => {
+                                          try {
+                                            await updateLineItemTaxability.mutateAsync({
+                                              id: String(item.id),
+                                              taxabilityOverride: checked === true,
+                                            });
+                                            await onAfterLineItemsChange?.();
+                                          } catch {
+                                            // The mutation owns the user-safe error toast.
+                                          }
+                                        })();
+                                      }}
+                                    />
+                                    <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
+                                  </div>
+                                  {(item as any).taxabilityOverride == null ? (
+                                    <span className="text-xs text-muted-foreground">Product default</span>
+                                  ) : (
+                                    <>
+                                      <span className="text-xs text-muted-foreground">Order override</span>
+                                      <Button
+                                        type="button"
+                                        variant="link"
+                                        size="sm"
+                                        className="h-auto p-0 text-xs"
+                                        disabled={updateLineItemTaxability.isPending}
+                                        onClick={() => {
+                                          void (async () => {
+                                            try {
+                                              await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
+                                              await onAfterLineItemsChange?.();
+                                            } catch {
+                                              // The mutation owns the user-safe error toast.
+                                            }
+                                          })();
+                                        }}
+                                      >
+                                        Use product default
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              ) : null}
 
                               {!readOnly && !serviceFee ? (
                                 <div className="mt-2 flex flex-wrap justify-end gap-2">

@@ -63,4 +63,23 @@ describe("sales tax configuration and calculation", () => {
     expect(result).toMatchObject({ subtotal: 125, taxableSubtotal: 100, taxRate: 0.07, taxAmount: 7, total: 132 });
     expect(result.lineItemsWithTax.map((line) => line.taxAmount)).toEqual([7, 0]);
   });
+
+  test("an Order exempt policy overrides automatic customer and organization tax resolution", async () => {
+    const result = await calculateQuoteOrderTotals([taxableLine], organization, {
+      isTaxExempt: false,
+      taxRateOverride: "0.0500",
+    } as any, null, null, { mode: "exempt" });
+
+    expect(result).toMatchObject({ taxableSubtotal: 100, taxRate: 0, taxAmount: 0, total: 100 });
+  });
+
+  test("an Order rate policy taxes only effective taxable lines", async () => {
+    const result = await calculateQuoteOrderTotals([
+      taxableLine,
+      { productId: "non-taxable-on-order", linePrice: 50, isTaxable: false },
+    ], organization, null, null, null, { mode: "rate", rate: 0.07 });
+
+    expect(result).toMatchObject({ subtotal: 150, taxableSubtotal: 100, taxRate: 0.07, taxAmount: 7, total: 157 });
+    expect(result.lineItemsWithTax.map((line) => line.taxAmount)).toEqual([7, 0]);
+  });
 });

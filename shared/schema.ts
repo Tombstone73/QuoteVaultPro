@@ -3796,6 +3796,12 @@ export const orders = pgTable("orders", {
   taxRate: decimal("tax_rate", { precision: 5, scale: 4 }),
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   taxableSubtotal: decimal("taxable_subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
+  // Transaction-specific tax policy. Product/customer tax values remain defaults.
+  taxOverrideMode: varchar("tax_override_mode", { length: 16 }).notNull().default("auto").$type<"auto" | "exempt" | "rate">(),
+  taxRateOverride: decimal("tax_rate_override", { precision: 5, scale: 4 }),
+  taxOverrideReason: text("tax_override_reason"),
+  taxOverrideAt: timestamp("tax_override_at", { withTimezone: true }),
+  taxOverrideByUserId: varchar("tax_override_by_user_id").references(() => users.id, { onDelete: "set null" }),
   total: decimal("total", { precision: 10, scale: 2 }).notNull().default("0"),
   discount: decimal("discount", { precision: 10, scale: 2 }).notNull().default("0"),
   notesInternal: text("notes_internal"),
@@ -3906,6 +3912,9 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   taxRate: z.coerce.number().min(0).max(1).optional().nullable(),
   taxAmount: z.coerce.number().min(0).default(0),
   taxableSubtotal: z.coerce.number().min(0).default(0),
+  taxOverrideMode: z.enum(["auto", "exempt", "rate"]).default("auto"),
+  taxRateOverride: z.coerce.number().min(0).max(1).optional().nullable(),
+  taxOverrideReason: z.string().max(2000).optional().nullable(),
   total: z.coerce.number().min(0),
   discount: z.coerce.number().min(0).default(0),
   shippingMethod: z.enum(['pickup', 'ship', 'deliver']).optional().nullable(),
@@ -4018,6 +4027,8 @@ export const orderLineItems = pgTable("order_line_items", {
   // Tax system fields
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
+  // Null inherits the Product default; true/false is an explicit Order decision.
+  taxabilityOverride: boolean("taxability_override"),
   // Line item enhancements (migration 0039)
   overridePriceCents: integer("override_price_cents"),
   overrideAt: timestamp("override_at", { withTimezone: true }),
