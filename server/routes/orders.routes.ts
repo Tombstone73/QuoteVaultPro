@@ -710,6 +710,44 @@ async function getLineItemHistoricalDependencyTypes(tx: any, input: { organizati
         .filter((type, index) => probes[index].length > 0);
 }
 
+function completedLineItemReplacementRequiredError(input: {
+    lineItemId: string;
+    historicalDependencyTypes: string[];
+    activeJob?: { id: string; stationKey: string; stepKey: string; status: string } | null;
+}) {
+    return Object.assign(
+        new Error("This completed line has production or fulfillment history. Choose Record Correction only when TitanOS is wrong, or create additional/replacement work when the physical requirement changed."),
+        {
+            statusCode: 409,
+            code: "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED",
+            details: {
+                lineItemId: input.lineItemId,
+                historicalDependencyTypes: input.historicalDependencyTypes,
+                correctionAllowed: true,
+                activeJob: input.activeJob ?? null,
+            },
+        },
+    );
+}
+
+function activeWorkflowRemoveBlockedError(input: {
+    lineItemId: string;
+    activeJob: { id: string; stationKey: string; stepKey: string; status: string };
+}) {
+    return Object.assign(
+        new Error("This line item is in active production. Confirm corrective removal to cancel its unnecessary workflow and remove it from commercial totals."),
+        {
+            statusCode: 409,
+            code: "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED",
+            details: {
+                lineItemId: input.lineItemId,
+                activeJob: input.activeJob,
+                correctiveRemovalAllowed: true,
+            },
+        },
+    );
+}
+
 const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
 
 const workflowStatusInputSchema = z
@@ -8225,6 +8263,180 @@ export async function registerOrderRoutes(
         }
     });
 
+    // A completed line with production/fulfillment evidence normally requires a
+    // replacement so the historical physical obligation cannot be rewritten.
+    // This explicit operation is the narrow exception for correcting a TitanOS
+    // record that was wrong while the physical work itself was right.
+    app.post("/api/order-line-items/:id/record-correction", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ message: "User not authenticated" });
+
+            const correction = z.object({
+                reason: z.string().trim().min(3).max(2000),
+                matchesActualCompletedWork: z.literal(true),
+                expectedUpdatedAt: z.string().datetime().optional(),
+                data: z.record(z.any()),
+            }).strict().parse(req.body ?? {});
+            const lineItemId = String(req.params.id);
+            const parsed = updateOrderLineItemSchema.parse({ ...correction.data, id: lineItemId });
+            const {
+                id: _ignoredId,
+                status: _ignoredStatus,
+                workflowState: _ignoredWorkflowState,
+                requiresDesign: _ignoredRequiresDesign,
+                requiresPrepress: _ignoredRequiresPrepress,
+                requiresProofApproval: _ignoredRequiresProofApproval,
+                needsDesignOverride: _ignoredNeedsDesignOverride,
+                pbv2ExplicitSelections,
+                pbv2Env: _ignoredPbv2Env,
+                ...updateData
+            } = parsed as any;
+
+            const result = await db.transaction(async (tx) => {
+                const [line] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
+                if (!line) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                const [order] = await tx.select().from(orders).where(and(
+                    eq(orders.id, line.orderId),
+                    eq(orders.organizationId, organizationId),
+                )).limit(1);
+                if (!order) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                if (isCanceledOrder({ state: order?.state, status: order?.status, canceledAt: order?.canceledAt })) {
+                    throw Object.assign(new Error("Cannot correct line items on a cancelled order."), { statusCode: 409, code: "ORDER_CANCELLED" });
+                }
+                const lineStatus = String(line.status || "").trim().toLowerCase();
+                const workflowState = String(line.workflowState || "new").trim().toLowerCase();
+                if (!(["complete", "completed"].includes(lineStatus) || ["complete", "completed"].includes(workflowState))) {
+                    throw Object.assign(new Error("Record correction is available only for completed line items with historical evidence."), { statusCode: 409, code: "RECORD_CORRECTION_NOT_REQUIRED" });
+                }
+                if (correction.expectedUpdatedAt && new Date(line.updatedAt).toISOString() !== new Date(correction.expectedUpdatedAt).toISOString()) {
+                    throw Object.assign(new Error("This line changed after it was opened. Refresh it before recording a correction."), { statusCode: 409, code: "LINE_ITEM_STALE" });
+                }
+
+                const historicalDependencyTypes = await getLineItemHistoricalDependencyTypes(tx, { organizationId, lineItemId });
+                if (historicalDependencyTypes.length === 0) {
+                    throw Object.assign(new Error("This line has no historical operational evidence; use the normal Save action."), { statusCode: 409, code: "RECORD_CORRECTION_NOT_REQUIRED" });
+                }
+                const pricingFieldsChanged = haveLineItemPricingDriversChanged({
+                    existingLineItem: line,
+                    incomingUpdate: updateData,
+                    pbv2ExplicitSelections,
+                });
+                if (!pricingFieldsChanged) {
+                    throw Object.assign(new Error("A record correction must change a commercial or physical pricing driver."), { statusCode: 400, code: "RECORD_CORRECTION_NO_CHANGE" });
+                }
+
+                const { priceLineItem } = await import("../services/pricing/PricingService");
+                const productChanged = updateData.productId !== undefined && String(updateData.productId) !== String(line.productId);
+                const pricingProductId = String(updateData.productId ?? line.productId);
+                const product = await storage.getProductById(organizationId, pricingProductId);
+                if (!product) throw Object.assign(new Error("Product not found"), { statusCode: 404 });
+                const nonDimensionalProduct = product.measurementMode === "quantity_only" || product.pricingProfileKey === "fee";
+                const dimensions = nonDimensionalProduct
+                    ? { widthIn: 1, heightIn: 1 }
+                    : dimensionsForProductPricing(product, updateData.width ?? line.width, updateData.height ?? line.height);
+                if (!Number.isFinite(dimensions.widthIn) || dimensions.widthIn <= 0 || !Number.isFinite(dimensions.heightIn) || dimensions.heightIn <= 0) {
+                    throw Object.assign(new Error("width and height must be positive for this product"), { statusCode: 400 });
+                }
+                if (nonDimensionalProduct) {
+                    updateData.width = 0;
+                    updateData.height = 0;
+                }
+                const effectiveSelections = pbv2ExplicitSelections
+                    || updateData.optionSelectionsJson?.selected
+                    || (productChanged ? {} : (line.optionSelectionsJson?.selected || {}));
+                const pricingResult = await priceLineItem({
+                    organizationId,
+                    productId: pricingProductId,
+                    quantity: updateData.quantity !== undefined ? Number(updateData.quantity) : Number(line.quantity),
+                    widthIn: dimensions.widthIn,
+                    heightIn: dimensions.heightIn,
+                    pbv2ExplicitSelections: effectiveSelections,
+                    pbv2TreeVersionIdOverride: undefined,
+                });
+                updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
+                updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson as any;
+                if (pricingResult.pbv2TreeVersionId) {
+                    updateData.optionSelectionsJson = {
+                        schemaVersion: 2,
+                        selected: pricingResult.pbv2SnapshotJson.selections || {},
+                        resolved: { visibleNodeIds: pricingResult.pbv2SnapshotJson.visibleNodeIds || [] },
+                    };
+                }
+                updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
+                updateData.pricedAt = new Date();
+                const effectivePricing = resolvePersistedLineItemPricing({
+                    baseCalculatedTotalCents: pricingResult.lineTotalCents,
+                    quantity: Number(updateData.quantity ?? line.quantity),
+                    specsJson: updateData.specsJson ?? line.specsJson,
+                    legacyOverridePriceCents: line.overridePriceCents,
+                });
+                updateData.specsJson = mergePricingIntoSpecsJson({
+                    specsJson: updateData.specsJson ?? line.specsJson,
+                    pricing: effectivePricing,
+                });
+                updateData.overridePriceCents = effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null;
+                updateData.overrideAt = effectivePricing.hasPriceOverride ? line.overrideAt ?? new Date() : null;
+                updateData.overrideByUserId = effectivePricing.hasPriceOverride ? line.overrideByUserId ?? userId : null;
+                updateData.unitPrice = (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2);
+                updateData.totalPrice = (effectivePricing.effectiveTotalCents / 100).toFixed(2);
+
+                const [correctedLine] = await tx.update(orderLineItems).set({ ...updateData, updatedAt: new Date() }).where(and(
+                    eq(orderLineItems.id, lineItemId),
+                    eq(orderLineItems.orderId, line.orderId),
+                )).returning();
+                if (!correctedLine) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                await recalculateEditableOrderFinancialsInTransaction(tx, {
+                    organizationId,
+                    orderId: String(line.orderId),
+                    actorUserId: userId,
+                });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(line.orderId), executor: tx });
+                await new OrdersRepository(tx).createOrderAuditLog({
+                    orderId: String(line.orderId),
+                    orderLineItemId: lineItemId,
+                    userId,
+                    userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
+                    actionType: "line_item.record_corrected_after_completion",
+                    fromStatus: workflowState,
+                    toStatus: String((correctedLine as any).workflowState || workflowState),
+                    note: correction.reason,
+                    metadata: {
+                        eventType: "line_item.record_corrected_after_completion",
+                        correctionIntent: "matches_actual_completed_work",
+                        productionReopened: false,
+                        historicalDependencyTypes,
+                        oldValues: {
+                            productId: line.productId,
+                            width: line.width,
+                            height: line.height,
+                            quantity: line.quantity,
+                            optionSelections: line.optionSelectionsJson?.selected ?? null,
+                            effectivePriceCents: Math.round(Number(line.totalPrice || 0) * 100),
+                        },
+                        newValues: {
+                            productId: correctedLine.productId,
+                            width: correctedLine.width,
+                            height: correctedLine.height,
+                            quantity: correctedLine.quantity,
+                            optionSelections: (correctedLine as any).optionSelectionsJson?.selected ?? null,
+                            effectivePriceCents: Math.round(Number(correctedLine.totalPrice || 0) * 100),
+                        },
+                    },
+                });
+                return correctedLine;
+            });
+            return res.json(enrichLineItemWithEffectivePricing(result as any));
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code, details: (error as any).details });
+            console.error("[OrderLineItemRecordCorrection] Failed", error);
+            return res.status(500).json({ message: "Failed to record completed line item correction" });
+        }
+    });
+
     app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -8308,10 +8520,11 @@ export async function registerOrderRoutes(
                     hasActiveJob: Boolean(activeJob),
                     hasHistoricalDependencies: historicalDependencyTypes.length > 0,
                 })) {
-                    throw Object.assign(
-                        new Error("This completed line has production or fulfillment history. Remove it and add a replacement line for a physical correction."),
-                        { statusCode: 409, code: "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" },
-                    );
+                    throw completedLineItemReplacementRequiredError({
+                        lineItemId,
+                        historicalDependencyTypes,
+                        activeJob,
+                    });
                 }
 
                 const routing = await resolveEffectiveLineItemRouting({
@@ -8375,10 +8588,11 @@ export async function registerOrderRoutes(
                 Object.prototype.hasOwnProperty.call(req.body ?? {}, "priceOverrideValuePercent");
 
             if (isCompletedLineItem && pricingFieldsChanged && historicalDependencyTypes.length > 0) {
-                throw Object.assign(
-                    new Error("This completed line has production or fulfillment history. Remove it and add a replacement line for a physical correction."),
-                    { statusCode: 409, code: "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" },
-                );
+                throw completedLineItemReplacementRequiredError({
+                    lineItemId,
+                    historicalDependencyTypes,
+                    activeJob,
+                });
             }
 
             if (!pricingFieldsChanged) {
@@ -8807,7 +9021,7 @@ export async function registerOrderRoutes(
                     debug: (error as any).debug,
                 });
             }
-            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code, details: (error as any).details });
             res.status(500).json({ message: "Failed to update order line item" });
         }
     });
@@ -9556,6 +9770,127 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.post("/api/order-line-items/:id/corrective-remove", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ message: "User not authenticated" });
+            const { reason } = z.object({ reason: z.string().trim().min(3).max(2000) }).strict().parse(req.body ?? {});
+            const lineItemId = String(req.params.id);
+
+            const result = await db.transaction(async (tx) => {
+                const [ownedLineItem] = await tx
+                    .select({
+                        id: orderLineItems.id,
+                        orderId: orderLineItems.orderId,
+                        status: orderLineItems.status,
+                        workflowState: orderLineItems.workflowState,
+                        description: orderLineItems.description,
+                    })
+                    .from(orderLineItems)
+                    .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                    .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                    .limit(1);
+                if (!ownedLineItem) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+
+                const activeJob = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
+                if (!activeJob) {
+                    throw Object.assign(new Error("This line no longer has active production ownership. Use the normal Remove Item action."), {
+                        statusCode: 409,
+                        code: "CORRECTIVE_REMOVAL_NOT_REQUIRED",
+                    });
+                }
+                const [blockingCombinedRun] = await tx
+                    .select({ id: productionRuns.id, runNumber: productionRuns.runNumber, status: productionRuns.status })
+                    .from(productionRunMembers)
+                    .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+                    .where(and(
+                        eq(productionRunMembers.organizationId, organizationId),
+                        eq(productionRunMembers.productionJobId, activeJob.id),
+                        inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+                    ))
+                    .limit(1);
+                if (blockingCombinedRun) {
+                    throw Object.assign(
+                        new Error(`This line is currently part of Combined Run #${blockingCombinedRun.runNumber}. Remove it from or resolve that run before corrective removal.`),
+                        {
+                            statusCode: 409,
+                            code: "CORRECTIVE_REMOVAL_COMBINED_RUN_BLOCKED",
+                            details: { lineItemId, blockingCombinedRun },
+                        },
+                    );
+                }
+
+                const now = new Date();
+                await tx.update(productionJobs).set({
+                    status: "canceled",
+                    previousStatus: activeJob.status,
+                    completedAt: now,
+                    completedByUserId: userId,
+                    updatedAt: now,
+                }).where(and(eq(productionJobs.id, activeJob.id), eq(productionJobs.organizationId, organizationId)));
+                await appendEvent({
+                    tx,
+                    organizationId,
+                    productionJobId: activeJob.id,
+                    type: "status_changed",
+                    orderId: String(ownedLineItem.orderId),
+                    orderLineItemId: lineItemId,
+                    actorUserId: userId,
+                    payload: {
+                        action: "corrective_line_removal",
+                        reason,
+                        fromStatus: activeJob.status,
+                        toStatus: "canceled",
+                        stationKey: activeJob.stationKey,
+                        stepKey: activeJob.stepKey,
+                    },
+                });
+
+                const historicalDependencyTypes = await getLineItemHistoricalDependencyTypes(tx, { organizationId, lineItemId });
+                // The active job itself is durable historical evidence, so this
+                // always cancels the commercial line rather than deleting records.
+                await tx.update(orderLineItems).set({
+                    status: "canceled",
+                    workflowState: "canceled",
+                    updatedAt: now,
+                }).where(eq(orderLineItems.id, lineItemId));
+                await recalculateEditableOrderFinancialsInTransaction(tx, {
+                    organizationId,
+                    orderId: String(ownedLineItem.orderId),
+                    actorUserId: userId,
+                });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(ownedLineItem.orderId), executor: tx });
+                await new OrdersRepository(tx).createOrderAuditLog({
+                    orderId: String(ownedLineItem.orderId),
+                    orderLineItemId: lineItemId,
+                    userId,
+                    userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
+                    actionType: "line_item.correctively_removed_with_active_workflow",
+                    fromStatus: String(ownedLineItem.workflowState || ownedLineItem.status || "new"),
+                    toStatus: "canceled",
+                    note: reason,
+                    metadata: {
+                        eventType: "line_item.correctively_removed_with_active_workflow",
+                        lineItemId,
+                        activeJob: { id: activeJob.id, stationKey: activeJob.stationKey, stepKey: activeJob.stepKey, status: activeJob.status },
+                        historicalDependencyTypes,
+                        removalMode: "historical_cancellation",
+                        productionCompletionFaked: false,
+                    },
+                });
+                return { activeJobId: activeJob.id, historicalDependencyTypes };
+            });
+            return res.json({ message: "Production work canceled and line removed from commercial totals", removalMode: "historical_cancellation", ...result });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code, details: (error as any).details });
+            console.error("[OrderLineItemCorrectiveRemoval] Failed", error);
+            return res.status(500).json({ message: "Failed to cancel production work and remove line item" });
+        }
+    });
+
     app.delete("/api/order-line-items/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -9579,10 +9914,7 @@ export async function registerOrderRoutes(
 
                 const activeJob = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
                 if (activeJob) {
-                    throw Object.assign(
-                        new Error("This line item is in active production. Resolve its workflow before removing it."),
-                        { statusCode: 409, code: "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED" },
-                    );
+                    throw activeWorkflowRemoveBlockedError({ lineItemId, activeJob });
                 }
 
                 const historicalDependencyTypes = await getLineItemHistoricalDependencyTypes(tx, { organizationId, lineItemId });
@@ -9641,7 +9973,7 @@ export async function registerOrderRoutes(
                 removalMode: ownership.removalMode,
             });
         } catch (error) {
-            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code, details: (error as any).details });
             res.status(500).json({ message: "Failed to delete order line item" });
         }
     });

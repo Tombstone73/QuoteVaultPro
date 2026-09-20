@@ -79,6 +79,18 @@ function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: s
   });
 }
 
+export class OrderLineItemApiError extends Error {
+  constructor(message: string, public readonly code?: string | null, public readonly details?: unknown) {
+    super(message);
+    this.name = "OrderLineItemApiError";
+  }
+}
+
+async function parseOrderLineItemApiError(response: Response, fallback: string) {
+  const body = await response.json().catch(() => null);
+  return new OrderLineItemApiError(body?.message || fallback, body?.code ?? null, body?.details ?? null);
+}
+
 // ============================================================
 // TYPE DEFINITIONS
 // ============================================================
@@ -923,8 +935,7 @@ export function useUpdateOrderLineItem(
         credentials: "include",
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to update line item");
+        throw await parseOrderLineItemApiError(response, "Failed to update line item");
       }
       return response.json();
     },
@@ -1055,8 +1066,7 @@ export function useDeleteOrderLineItem(orderId: string) {
         credentials: "include",
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to delete line item");
+        throw await parseOrderLineItemApiError(response, "Failed to delete line item");
       }
       return response.json();
     },
@@ -1074,6 +1084,57 @@ export function useDeleteOrderLineItem(orderId: string) {
         variant: "destructive",
       });
     },
+  });
+}
+
+export function useRecordCompletedOrderLineItemCorrection(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (input: { id: string; reason: string; data: any; expectedUpdatedAt?: string }) => {
+      const response = await apiFetch(`/api/order-line-items/${input.id}/record-correction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          reason: input.reason,
+          data: input.data,
+          expectedUpdatedAt: input.expectedUpdatedAt,
+          matchesActualCompletedWork: true,
+        }),
+      });
+      if (!response.ok) throw await parseOrderLineItemApiError(response, "Failed to record completed line correction");
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOrderOperationalQueries(queryClient, orderId);
+      toast({ title: "Record corrected", description: "The Order and its live Invoice were recalculated without reopening production." });
+    },
+    onError: (error: Error) => toast({ title: "Record correction failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useCorrectiveRemoveOrderLineItem(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (input: { id: string; reason: string }) => {
+      const response = await apiFetch(`/api/order-line-items/${input.id}/corrective-remove`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ reason: input.reason }),
+      });
+      if (!response.ok) throw await parseOrderLineItemApiError(response, "Failed to cancel work and remove line item");
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOrderOperationalQueries(queryClient, orderId);
+      toast({ title: "Work canceled and line removed", description: "The active production job was canceled and the line was removed from commercial totals." });
+    },
+    onError: (error: Error) => toast({ title: "Corrective removal failed", description: error.message, variant: "destructive" }),
   });
 }
 

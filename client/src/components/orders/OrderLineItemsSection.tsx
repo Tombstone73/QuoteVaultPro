@@ -57,7 +57,17 @@ import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOp
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { orderDetailQueryKey, useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem, useUpdateOrderLineItemCommercialPricing } from "@/hooks/useOrders";
+import {
+  OrderLineItemApiError,
+  orderDetailQueryKey,
+  useCorrectiveRemoveOrderLineItem,
+  useCreateOrderLineItem,
+  useDeleteOrderLineItem,
+  useRecordCompletedOrderLineItemCorrection,
+  useTransitionLineItemWorkflow,
+  useUpdateOrderLineItem,
+  useUpdateOrderLineItemCommercialPricing,
+} from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
@@ -614,6 +624,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
   const [parentLinkTarget, setParentLinkTarget] = useState<OrderLineItem | null>(null);
   const [selectedParentLineItemId, setSelectedParentLineItemId] = useState<string | null>(null);
+  const [recordCorrectionTarget, setRecordCorrectionTarget] = useState<{ id: string; data: any; expectedUpdatedAt?: string } | null>(null);
+  const [recordCorrectionReason, setRecordCorrectionReason] = useState("");
+  const [recordCorrectionConfirmed, setRecordCorrectionConfirmed] = useState(false);
+  const [correctiveRemoveTarget, setCorrectiveRemoveTarget] = useState<{ id: string; activeJob?: { stationKey?: string; stepKey?: string; status?: string } } | null>(null);
+  const [correctiveRemoveReason, setCorrectiveRemoveReason] = useState("");
 
   useEffect(() => {
     if (!user?.id || !displayPreferenceScope) {
@@ -641,6 +656,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [selectedForProduction, setSelectedForProduction] = useState<Set<string>>(new Set());
   const scheduleProduction = useScheduleOrderLineItemsForProduction(orderId);;
   const transitionWorkflow = useTransitionLineItemWorkflow(orderId);
+  const recordCompletedLineItemCorrection = useRecordCompletedOrderLineItemCorrection(orderId);
+  const correctiveRemoveLineItem = useCorrectiveRemoveOrderLineItem(orderId);
   const [productionOwnerOverrides, setProductionOwnerOverrides] = useState<Record<string, {
     activeOwnerJobId?: string | null;
     activeOwnerStationKey?: string | null;
@@ -2373,6 +2390,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     }
     const itemId = expandedItem.id;
     const lineItemMutation = opts?.silent ? updateLineItemSilent : updateLineItem;
+    let correctionPayload: any = null;
 
     setSavingItemId(itemId);
     setSavedItemId(null);
@@ -2464,9 +2482,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             pbv2TreeVersionId: null,
           };
 
-      const savedLineItem = await lineItemMutation.mutateAsync({
-        id: itemId,
-        data: {
+      correctionPayload = {
           productId: currentDraftProductId,
           productVariantId: currentDraftProductVariantId,
           width: dimsRequired ? widthNum : null,
@@ -2490,8 +2506,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           selectedOptions: selectedOptionsArray,
           specsJson: nextSpecsJson,
           ...(v2Patch as any),
-        },
-      });
+      };
+      const savedLineItem = await lineItemMutation.mutateAsync({ id: itemId, data: correctionPayload });
 
       // Server reprices authoritatively — adopt its result as the new baseline
       // so the displayed preview matches the persisted price after save.
@@ -2579,6 +2595,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-item-previews"] });
       return { saved: true };
     } catch (error: any) {
+      if (error instanceof OrderLineItemApiError && error.code === "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" && correctionPayload) {
+        setRecordCorrectionTarget({
+          id: itemId,
+          data: correctionPayload,
+          expectedUpdatedAt: typeof (expandedItem as any).updatedAt === "string" ? (expandedItem as any).updatedAt : undefined,
+        });
+        setRecordCorrectionReason("");
+        setRecordCorrectionConfirmed(false);
+        return { saved: false, error: error.message };
+      }
       // The mutation's onError already toasts (unless silent). Surface the
       // message to the caller so Save Order can stop and keep dirty state.
       return { saved: false, error: error?.message || "Failed to save line item." };
@@ -2664,6 +2690,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       }
     } catch (err: any) {
       if (deleted) return;
+      if (err instanceof OrderLineItemApiError && err.code === "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED") {
+        const activeJob = (err.details as any)?.activeJob;
+        setCorrectiveRemoveTarget({ id: itemId, activeJob });
+        setCorrectiveRemoveReason("");
+        return;
+      }
       toast({
         title: "Error",
         description: err?.message || "Failed to remove item",
@@ -4413,6 +4445,110 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           if (!open) setArtworkViewerTarget(null);
         }}
       />
+      <Dialog open={recordCorrectionTarget !== null} onOpenChange={(open) => {
+        if (!open && !recordCompletedLineItemCorrection.isPending) setRecordCorrectionTarget(null);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Post-production change</DialogTitle>
+            <DialogDescription>
+              This line already has production or fulfillment history. Choose Record Correction only when the work was produced correctly and the TitanOS record is wrong. It will not create new production work.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex items-start gap-2 text-sm">
+            <Checkbox
+              checked={recordCorrectionConfirmed}
+              onCheckedChange={(checked) => setRecordCorrectionConfirmed(checked === true)}
+              aria-label="Correction matches actual completed work"
+            />
+            <span>This change describes what was actually produced and does not require additional production.</span>
+          </label>
+          <Textarea
+            value={recordCorrectionReason}
+            onChange={(event) => setRecordCorrectionReason(event.target.value)}
+            placeholder="Reason required (for example: Original Order was entered 18 × 24; actual Coroplast produced was 24 × 18.)"
+            aria-label="Record correction reason"
+          />
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setRecordCorrectionTarget(null)} disabled={recordCompletedLineItemCorrection.isPending}>Cancel</Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setRecordCorrectionTarget(null);
+                toast({ title: "Additional work required", description: "Keep the completed line as historical evidence and add a replacement line for the new physical requirement." });
+              }}
+              disabled={recordCompletedLineItemCorrection.isPending}
+            >
+              Create Additional/Replacement Work
+            </Button>
+            <Button
+              disabled={!recordCorrectionTarget || !recordCorrectionConfirmed || recordCorrectionReason.trim().length < 3 || recordCompletedLineItemCorrection.isPending}
+              onClick={async () => {
+                if (!recordCorrectionTarget) return;
+                try {
+                  await recordCompletedLineItemCorrection.mutateAsync({
+                    id: recordCorrectionTarget.id,
+                    data: recordCorrectionTarget.data,
+                    reason: recordCorrectionReason.trim(),
+                    expectedUpdatedAt: recordCorrectionTarget.expectedUpdatedAt,
+                  });
+                  setRecordCorrectionTarget(null);
+                  setExpandedId(null);
+                  await onAfterLineItemsChange?.();
+                } catch {
+                  // The mutation owns the safe error toast and keeps the dialog open for retry.
+                }
+              }}
+            >
+              {recordCompletedLineItemCorrection.isPending ? "Correcting..." : "Correct the Record"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={correctiveRemoveTarget !== null} onOpenChange={(open) => {
+        if (!open && !correctiveRemoveLineItem.isPending) setCorrectiveRemoveTarget(null);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove line with active workflow?</DialogTitle>
+            <DialogDescription>
+              This line currently has active production ownership{correctiveRemoveTarget?.activeJob?.stationKey ? `: ${correctiveRemoveTarget.activeJob.stationKey} / ${correctiveRemoveTarget.activeJob.status || "active"}.` : "."} Removing it will cancel that unnecessary work and remove the line from commercial totals.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={correctiveRemoveReason}
+            onChange={(event) => setCorrectiveRemoveReason(event.target.value)}
+            placeholder="Reason required (for example: Added by mistake while correcting original Order)"
+            aria-label="Corrective removal reason"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCorrectiveRemoveTarget(null)} disabled={correctiveRemoveLineItem.isPending}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={!correctiveRemoveTarget || correctiveRemoveReason.trim().length < 3 || correctiveRemoveLineItem.isPending}
+              onClick={async () => {
+                if (!correctiveRemoveTarget) return;
+                try {
+                  const lineItemId = correctiveRemoveTarget.id;
+                  await correctiveRemoveLineItem.mutateAsync({ id: lineItemId, reason: correctiveRemoveReason.trim() });
+                  setCorrectiveRemoveTarget(null);
+                  setSelectedForProduction((current) => {
+                    const next = new Set(current);
+                    next.delete(lineItemId);
+                    return next;
+                  });
+                  if (expandedId === lineItemId) setExpandedId(null);
+                  await onAfterLineItemsChange?.();
+                } catch {
+                  // The mutation owns the safe error toast and keeps the dialog open for retry.
+                }
+              }}
+            >
+              {correctiveRemoveLineItem.isPending ? "Canceling Work..." : "Cancel Work & Remove Line"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={productionBypassTarget !== null} onOpenChange={(open) => { if (!open && !productionBypass.isPending) setProductionBypassTarget(null); }}>
         <DialogContent>
           <DialogHeader>
