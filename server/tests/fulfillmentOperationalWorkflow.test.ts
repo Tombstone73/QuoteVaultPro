@@ -175,6 +175,33 @@ describe("fulfillment operational workflow helpers", () => {
     });
   });
 
+  test("a terminal Ship fulfillment accepts only its semantically identical legacy alias", async () => {
+    const chain = (rows: any[], combined = false) => ({
+      from: () => combined
+        ? ({ innerJoin: () => ({ where: () => ({ limit: async () => rows }) }) })
+        : ({ where: () => ({ limit: async () => rows }) }),
+    });
+    const aliasDb = {
+      select: jest.fn()
+        .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "shipping", fulfillmentStatus: "delivered" }])),
+    };
+    const aliasService = new FulfillmentService({ dbInstance: aliasDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+
+    await expect(aliasService.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "ship")).resolves.toBeUndefined();
+
+    const terminalDb = {
+      select: jest.fn()
+        .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "shipping", fulfillmentStatus: "delivered" }]))
+        .mockImplementationOnce(() => chain([]))
+        .mockImplementationOnce(() => chain([], true)),
+    };
+    const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+    await expect(terminalService.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "pickup")).rejects.toMatchObject({
+      status: 409,
+      code: "FULFILLMENT_METHOD_TERMINAL",
+    });
+  });
+
   test("mark ready writes fulfillment event with nullable actor when request actor is not a persisted user", async () => {
     const insertedEvents: any[] = [];
     const updatedOrders: any[] = [];

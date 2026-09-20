@@ -9,6 +9,7 @@ import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
 import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
+import { effectiveOrderFulfillmentMethod } from '../orders/orderHeaderUpdatePolicy';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -603,8 +604,8 @@ export class FulfillmentService {
       fulfillmentStatus: orders.fulfillmentStatus,
     }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
     if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
-    const currentMethod = order.shippingMethod === 'pickup' ? 'pickup' : 'ship';
-    const targetMethod = nextShippingMethod === 'pickup' ? 'pickup' : 'ship';
+    const currentMethod = effectiveOrderFulfillmentMethod(order.shippingMethod);
+    const targetMethod = effectiveOrderFulfillmentMethod(nextShippingMethod);
     if (currentMethod === targetMethod) return;
 
     const [pickupTicket] = await this.dbInstance.select({ status: pickupTickets.status })

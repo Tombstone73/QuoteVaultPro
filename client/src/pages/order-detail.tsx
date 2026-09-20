@@ -1457,6 +1457,18 @@ export default function OrderDetail() {
       });
 
       if (!result.ok) {
+        // A line-item mutation can have committed before a later header PATCH
+        // is rejected.  Drop transient total previews and reload the Order so
+        // the Lines and Totals panels always describe the same authoritative
+        // server snapshot.  Keep the rejected header draft for a safe retry.
+        setDraftLineItemTotalsCents({});
+        try {
+          await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+          await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
+        } catch (refreshError) {
+          console.error("[OrderSave] Failed to restore authoritative Order after a rejected save", refreshError);
+        }
+
         // Failure at either step leaves that layer's dirty state intact.
         toast({
           title: result.failedStep === "lineItem" ? "Line item not saved" : "Order not saved",

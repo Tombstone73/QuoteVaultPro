@@ -1,5 +1,10 @@
 import { updateOrderSchema } from "@shared/schema";
-import { normalizeOrderPatchShipping, orderChangesRequireOrderBackedInvoiceSynchronization } from "../services/orders/orderHeaderUpdatePolicy";
+import {
+  fulfillmentMethodSemanticallyChanged,
+  normalizeOrderPatchFulfillmentMethod,
+  normalizeOrderPatchShipping,
+  orderChangesRequireOrderBackedInvoiceSynchronization,
+} from "../services/orders/orderHeaderUpdatePolicy";
 
 describe("V1 Order header PATCH contract", () => {
   const orderId = "8ed91da0-5d50-4c82-b6f0-5c65a9d50a13";
@@ -31,5 +36,21 @@ describe("V1 Order header PATCH contract", () => {
     expect(normalizeOrderPatchShipping({ poNumber: "PO-20139", dueDate: "2026-08-21T12:00:00.000Z" }, "pickup")).toEqual({});
     expect(normalizeOrderPatchShipping({ shippingMethod: "pickup" }, "ship")).toEqual({ shippingCents: 0 });
     expect(normalizeOrderPatchShipping({ shippingCents: 500 }, "pickup")).toEqual({ shippingCents: 0 });
+  });
+
+  test("treats legacy fulfillment aliases as an unchanged method, not a terminal fulfillment transition", () => {
+    expect(fulfillmentMethodSemanticallyChanged("shipping", "ship")).toBe(false);
+    expect(fulfillmentMethodSemanticallyChanged(null, "ship")).toBe(false);
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingMethod: "ship" }, "shipping")).toEqual({ unchanged: true });
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingCents: 2_500 }, "shipping")).toEqual({ unchanged: true });
+  });
+
+  test("keeps actual Ship, Pickup, and Delivery transitions distinct", () => {
+    expect(fulfillmentMethodSemanticallyChanged("ship", "pickup")).toBe(true);
+    expect(fulfillmentMethodSemanticallyChanged("pickup", "delivery")).toBe(true);
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingMethod: "delivery" }, "ship")).toEqual({
+      shippingMethod: "deliver",
+      unchanged: false,
+    });
   });
 });

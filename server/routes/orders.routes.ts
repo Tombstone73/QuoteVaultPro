@@ -190,7 +190,7 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
-import { normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
+import { normalizeOrderPatchFulfillmentMethod, normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
 import { classifyTerminalOrderPatch } from "@shared/terminalOrderEditPolicy";
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
@@ -2848,7 +2848,21 @@ export async function registerOrderRoutes(
                 return res.status(404).json({ message: "Order not found" });
             }
 
-            if (req.body.shippingMethod !== undefined && req.body.shippingMethod !== existingOrder.shippingMethod) {
+            // An Order header save is not a fulfillment mutation.  Normalize
+            // legacy aliases (Shipping -> ship) and omit an equivalent method
+            // before enforcing the terminal reversal guard.  Real Ship /
+            // Pickup / Delivery transitions still go through that guard.
+            const fulfillmentMethodPatch = normalizeOrderPatchFulfillmentMethod(req.body, existingOrder.shippingMethod);
+            if (fulfillmentMethodPatch.error) {
+                return res.status(400).json({ message: fulfillmentMethodPatch.error });
+            }
+            if (fulfillmentMethodPatch.unchanged) {
+                delete req.body.shippingMethod;
+            } else if (fulfillmentMethodPatch.shippingMethod !== undefined) {
+                req.body.shippingMethod = fulfillmentMethodPatch.shippingMethod;
+            }
+
+            if (!fulfillmentMethodPatch.unchanged) {
                 updateStage = "validate_fulfillment_method";
                 await canonicalFulfillmentOperations.assertFulfillmentMethodChangeAllowed(organizationId, req.params.id, req.body.shippingMethod);
             }

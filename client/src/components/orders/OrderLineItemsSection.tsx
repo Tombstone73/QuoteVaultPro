@@ -2641,6 +2641,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-item-previews"] });
       return { saved: true };
     } catch (error: any) {
+      // Keep the aggregate Totals panel server-authoritative after any
+      // rejected line mutation.  The editor keeps its draft for correction or
+      // retry, but an unsaved local preview must not look persisted.
+      onDraftLineItemPricingChange?.(itemId, null);
+      try {
+        await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+        await queryClient.refetchQueries({ queryKey: orderDetailQueryKey(orderId), type: "active" });
+      } catch (refreshError) {
+        console.error("[OrderLineItemsSection] Failed to restore authoritative Order after a rejected line save", refreshError);
+      }
       if (error instanceof OrderLineItemApiError && error.code === "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" && correctionPayload) {
         setRecordCorrectionTarget({
           id: itemId,
@@ -2736,6 +2746,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       }
     } catch (err: any) {
       if (deleted) return;
+      try {
+        await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+        await queryClient.refetchQueries({ queryKey: orderDetailQueryKey(orderId), type: "active" });
+      } catch (refreshError) {
+        console.error("[OrderLineItemsSection] Failed to restore authoritative Order after rejected removal", refreshError);
+      }
       if (err instanceof OrderLineItemApiError && err.code === "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED") {
         const activeJob = (err.details as any)?.activeJob;
         setCorrectiveRemoveTarget({ id: itemId, activeJob });
