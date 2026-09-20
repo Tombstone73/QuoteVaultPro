@@ -57,6 +57,8 @@ test("keeps the ordinary production parent gate and Combined Run guard intact", 
   const route = readFileSync(path.join(process.cwd(), "server/routes/orders.routes.ts"), "utf8");
   const gate = readFileSync(path.join(process.cwd(), "server/services/orderProductionGate.ts"), "utf8");
   expect(route).toContain("CLOSE_JOB_OVERRIDE_PARENT_RECOVERY_BLOCKED");
+  expect(route).toContain("getHistoricalFulfillmentReconciliationPreview");
+  expect(route).toContain("historicalOverridePreview?.remainingProductionQuantity > 0");
   expect(route).toContain("PRODUCTION_RUN_OUTCOME_REQUIRED");
   expect(gate).toContain('order.status !== "in_production"');
   expect(gate).toContain("PARENT_ORDER_NOT_IN_PRODUCTION");

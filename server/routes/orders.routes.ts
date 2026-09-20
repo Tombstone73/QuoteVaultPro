@@ -3476,6 +3476,15 @@ export async function registerOrderRoutes(
                 });
             }
 
+            // The Close Job Override preview is the canonical source for
+            // historical production quantity.  Old Orders can have line-item
+            // workflow labels that look complete while production events still
+            // show remaining work; do not use those labels as the recovery
+            // authority.
+            const historicalOverridePreview = closeJobOverride
+                ? await canonicalFulfillmentOperations.getHistoricalFulfillmentReconciliationPreview(organizationId, orderId)
+                : null;
+
             const result = await db.transaction(async (tx) => {
                 const [order] = await tx
                     .select()
@@ -3534,11 +3543,12 @@ export async function registerOrderRoutes(
                     .for("update");
 
                 const productionLines = lines.filter(requiresCanonicalProductionCompletion);
-                const productionIncomplete = productionLines.some((line) => ![
+                const productionIncompleteByLineState = productionLines.some((line) => ![
                     "completed", "canceled",
                 ].includes(String(line.workflowState || "").toLowerCase()) && ![
                     "complete", "completed", "canceled", "cancelled",
                 ].includes(String(line.status || "").toLowerCase()));
+                const productionIncomplete = historicalOverridePreview?.remainingProductionQuantity > 0 || productionIncompleteByLineState;
                 const activeProductionOwners = productionIncomplete
                     ? await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
                         eq(productionJobs.organizationId, organizationId),
@@ -3547,7 +3557,8 @@ export async function registerOrderRoutes(
                         sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
                     )).for("update")
                     : [];
-                const requiresProductionBootstrap = productionIncomplete && activeProductionOwners.length === 0;
+                const requiresProductionBootstrap = historicalOverridePreview?.requiresProductionBootstrap
+                    ?? (productionIncomplete && activeProductionOwners.length === 0);
                 const parentRecovery = await reconcileParentOrderForHistoricalProductionOverride(tx, {
                     organizationId,
                     order,
@@ -3561,6 +3572,7 @@ export async function registerOrderRoutes(
                     sourceInvoiceId: request.data.sourceInvoiceId ?? null,
                     reconciliationReason: request.data.reconciliationReason ?? null,
                     reconciliationNote: request.data.reconciliationNote ?? null,
+                    remainingProductionQuantity: historicalOverridePreview?.remainingProductionQuantity ?? null,
                 });
                 if (closeJobOverride && confirmBypass && productionIncomplete
                     && order.status !== "in_production" && order.status !== "new" && !parentRecovery.recovered) {
