@@ -1436,6 +1436,7 @@ function PricingEngineRadioSection({
                   <Label className="text-xs text-slate-400">Flat Fee Amount ($)</Label>
                   <Input
                     type="number"
+                    inputMode="decimal"
                     min={0}
                     step="0.01"
                     value={flatFeeInputValue}

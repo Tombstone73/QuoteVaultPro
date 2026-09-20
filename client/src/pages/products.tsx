@@ -941,6 +941,7 @@ export default function ProductsPage() {
                       <Label className="text-xs">Flat Fee Amount ($)</Label>
                       <Input
                         type="number"
+                        inputMode="decimal"
                         min={0}
                         step="0.01"
                         value={addFlatFeeInputValue}
@@ -1733,6 +1734,7 @@ export default function ProductsPage() {
                       <Label className="text-xs">Flat Fee Amount ($)</Label>
                       <Input
                         type="number"
+                        inputMode="decimal"
                         min={0}
                         step="0.01"
                         value={editFlatFeeInputValue}

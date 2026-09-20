@@ -114,6 +114,7 @@ import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { resolveProductionSides } from "@shared/productionHydration";
 import { removeArtworkFileReferencesFromSpecs } from "@shared/artworkSideAssignment";
 import { buildLineItemOptionSummaryChips } from "@shared/lineItemOptionSelections";
+import { parseCurrencyDollarsToCents } from "@shared/currencyInput";
 import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
@@ -3437,14 +3438,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     : async () => {
                                         const lineItemId = String(item.id);
                                         const rawValue = priceEditTextById[lineItemId] ?? editorPriceValue.toFixed(2);
-                                        const parsed = Number.parseFloat(rawValue);
-                                        if (!Number.isFinite(parsed) || parsed < 0) {
+                                        const nextCents = parseCurrencyDollarsToCents(rawValue);
+                                        if (nextCents === null) {
                                           setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: editorPriceValue.toFixed(2) }));
                                           setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
                                           return;
                                         }
 
-                                        const nextCents = Math.round(parsed * 100);
                                         const calculatedCents = baseCalculatedTotalCents;
                                         const mode = selectedOverrideMode;
                                         markPricingDirtyByUser(lineItemId, "price_override_value");
@@ -3594,8 +3594,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           setPriceOverrideModeById((prev) => ({ ...prev, [lineItemId]: nextMode }));
 
                                           const rawValue = priceEditTextById[lineItemId] ?? editorPriceValue.toFixed(2);
-                                          const parsed = Number.parseFloat(rawValue);
-                                          const valueCents = Math.round((Number.isFinite(parsed) && parsed >= 0 ? parsed : editorPriceValue) * 100);
+                                          const valueCents = parseCurrencyDollarsToCents(rawValue) ?? Math.round(editorPriceValue * 100);
                                           const nextPricing = applyLineItemEditPriceOverride({
                                             baseCalculatedTotalCents: calculatedCents,
                                             quantity: qtyForOverride,

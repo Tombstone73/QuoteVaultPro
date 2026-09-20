@@ -874,6 +874,7 @@ export function LineItemCard({
                   {editingPrice ? (
                     <Input
                       type="text"
+                      inputMode="decimal"
                       value={priceEditText}
                       onChange={(e) => onPriceChange?.(e.target.value)}
                       onBlur={onPriceBlur}
