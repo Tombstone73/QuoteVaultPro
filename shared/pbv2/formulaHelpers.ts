@@ -206,9 +206,11 @@ function billSheetLayout(input: {
 /**
  * Calculates actual sheet yield for rectangular pieces on rectangular sheets.
  *
- * The current algorithm compares a single normal orientation with a single
- * rotated orientation and chooses the higher yield. Mixed-row nesting can be
- * added later as a separate method without returning sqft-equivalent counts.
+ * The algorithm evaluates every enabled orientation by its billable material
+ * consumption, not only pieces per sheet. This matters for a partial final
+ * sheet: two layouts can yield the same full-sheet count while consuming a
+ * different billable drop. Mixed rows retain their existing full-sheet yield
+ * and use the least billable valid orientation for a final partial sheet.
  */
 export function calculateSheetYield(
   w: number,
@@ -232,33 +234,94 @@ export function calculateSheetYield(
   const rotated = orientationYield(h, w, sheetWidth, sheetLength);
   const mixed = mixedRowYield(w, h, sheetWidth, sheetLength);
   const allowRotationResolved = parseFormulaBoolean(allowRotation) ?? false;
-  let chosen = normal;
-  let pieceW = w;
-  let pieceH = h;
-  let orientationUsed: SheetYieldOrientation = "normal";
-  let mixedLayoutDescription: string | null = null;
+  const quantity = Math.ceil(q);
+  const sheetSqft = (sheetWidth * sheetLength) / 144;
 
+  type LayoutCandidate = {
+    piecesPerSheet: number;
+    pieceW: number;
+    pieceH: number;
+    orientationUsed: SheetYieldOrientation;
+    mixedLayoutDescription: string | null;
+    fullSheets: number;
+    partialSheetPieceCount: number;
+    fullLayoutBilling: SheetLayoutBilling;
+    partialSheetBilling: SheetLayoutBilling;
+    billedSheetSqft: number;
+  };
+
+  const uniformCandidate = (pieceW: number, pieceH: number, orientationUsed: "normal" | "rotated"): LayoutCandidate | null => {
+    const yieldForOrientation = orientationYield(pieceW, pieceH, sheetWidth, sheetLength);
+    if (yieldForOrientation.piecesPerSheet <= 0) return null;
+    const fullSheets = Math.floor(quantity / yieldForOrientation.piecesPerSheet);
+    const partialSheetPieceCount = quantity % yieldForOrientation.piecesPerSheet;
+    const fullLayoutBilling = billSheetLayout({
+      pieceW, pieceH, pieceCount: yieldForOrientation.piecesPerSheet, sheetWidth, sheetLength,
+      usableDropMin, billableLengthIncrement, minimumBillableSqft,
+    });
+    const partialSheetBilling = billSheetLayout({
+      pieceW, pieceH, pieceCount: partialSheetPieceCount, sheetWidth, sheetLength,
+      usableDropMin, billableLengthIncrement, minimumBillableSqft,
+    });
+    return {
+      piecesPerSheet: yieldForOrientation.piecesPerSheet,
+      pieceW,
+      pieceH,
+      orientationUsed,
+      mixedLayoutDescription: null,
+      fullSheets,
+      partialSheetPieceCount,
+      fullLayoutBilling,
+      partialSheetBilling,
+      billedSheetSqft: Math.ceil(fullSheets * fullLayoutBilling.billableSqft + partialSheetBilling.billableSqft),
+    };
+  };
+
+  const candidates: LayoutCandidate[] = [];
+  const normalCandidate = uniformCandidate(w, h, "normal");
+  if (normalCandidate) candidates.push(normalCandidate);
   if (allowRotationResolved) {
-    if (rotated.piecesPerSheet > chosen.piecesPerSheet) {
-      chosen = rotated;
-      pieceW = h;
-      pieceH = w;
-      orientationUsed = "rotated";
-    }
-    if (mixed.piecesPerSheet > chosen.piecesPerSheet) {
-      chosen = {
-        piecesAcross: normal.piecesAcross,
-        rowsPerSheet: normal.rowsPerSheet,
-        piecesPerSheet: mixed.piecesPerSheet,
-      };
-      pieceW = w;
-      pieceH = h;
-      orientationUsed = "mixed";
-      mixedLayoutDescription = mixed.description;
-    }
+    const rotatedCandidate = uniformCandidate(h, w, "rotated");
+    if (rotatedCandidate) candidates.push(rotatedCandidate);
   }
 
-  if (chosen.piecesPerSheet <= 0) {
+  // Mixed rows remain supported. A full mixed sheet consumes the configured
+  // sheet; for its final partial sheet, select the least billable valid
+  // uniform orientation. This retains the existing mixed full-sheet yield
+  // while keeping the result invariant when the user swaps width and height.
+  if (allowRotationResolved && mixed.piecesPerSheet > 0) {
+    const fullSheets = Math.floor(quantity / mixed.piecesPerSheet);
+    const partialSheetPieceCount = quantity % mixed.piecesPerSheet;
+    const partialChoices = [
+      billSheetLayout({ pieceW: w, pieceH: h, pieceCount: partialSheetPieceCount, sheetWidth, sheetLength, usableDropMin, billableLengthIncrement, minimumBillableSqft }),
+      billSheetLayout({ pieceW: h, pieceH: w, pieceCount: partialSheetPieceCount, sheetWidth, sheetLength, usableDropMin, billableLengthIncrement, minimumBillableSqft }),
+    ].filter((candidate) => Number.isFinite(candidate.billableSqft));
+    const partialSheetBilling = partialChoices.sort((left, right) => left.billableSqft - right.billableSqft)[0] ?? emptySheetLayoutBilling();
+    const fullLayoutBilling = {
+      ...emptySheetLayoutBilling(),
+      billableSqft: sheetSqft,
+      policy: "measured_partial_sheet" as const,
+      pieceCount: mixed.piecesPerSheet,
+      occupiedWidth: sheetWidth,
+      consumedLength: sheetLength,
+      billableWidth: sheetWidth,
+      billableLength: sheetLength,
+    };
+    candidates.push({
+      piecesPerSheet: mixed.piecesPerSheet,
+      pieceW: w,
+      pieceH: h,
+      orientationUsed: "mixed",
+      mixedLayoutDescription: mixed.description,
+      fullSheets,
+      partialSheetPieceCount,
+      fullLayoutBilling,
+      partialSheetBilling,
+      billedSheetSqft: Math.ceil(fullSheets * fullLayoutBilling.billableSqft + partialSheetBilling.billableSqft),
+    });
+  }
+
+  if (candidates.length === 0) {
     throw new Error(
       allowRotationResolved
         ? `sheet_consumption_sqft: piece ${w}x${h} exceeds sheet ${sheetWidth}x${sheetLength} in both orientations`
@@ -266,46 +329,19 @@ export function calculateSheetYield(
     );
   }
 
-  const quantity = Math.ceil(q);
-  const fullSheets = Math.floor(quantity / chosen.piecesPerSheet);
-  const partialSheetPieceCount = quantity % chosen.piecesPerSheet;
+  // Selection is by actual billable material, not merely yield. Equal-yield
+  // orientations can have materially different final-row/drop billing.
+  const chosenCandidate = candidates.sort((left, right) => {
+    const billedDifference = left.billedSheetSqft - right.billedSheetSqft;
+    if (billedDifference !== 0) return billedDifference;
+    return right.piecesPerSheet - left.piecesPerSheet;
+  })[0]!;
+  const { piecesPerSheet, pieceW, pieceH, orientationUsed, mixedLayoutDescription, fullSheets, partialSheetPieceCount, fullLayoutBilling, partialSheetBilling } = chosenCandidate;
   const totalSheetCount = fullSheets + (partialSheetPieceCount > 0 ? 1 : 0);
-  const sheetSqft = (sheetWidth * sheetLength) / 144;
   const partialSheetFinishedSqft = (partialSheetPieceCount * w * h) / 144;
-  const fullLayoutBilling = orientationUsed === "mixed"
-    ? {
-        ...emptySheetLayoutBilling(),
-        billableSqft: sheetSqft,
-        policy: "measured_partial_sheet" as const,
-        pieceCount: chosen.piecesPerSheet,
-        occupiedWidth: sheetWidth,
-        consumedLength: sheetLength,
-        billableWidth: sheetWidth,
-        billableLength: sheetLength,
-      }
-    : billSheetLayout({
-        pieceW,
-        pieceH,
-        pieceCount: chosen.piecesPerSheet,
-        sheetWidth,
-        sheetLength,
-        usableDropMin,
-        billableLengthIncrement,
-        minimumBillableSqft,
-      });
-  const partialSheet = billSheetLayout({
-    pieceW,
-    pieceH,
-    pieceCount: partialSheetPieceCount,
-    sheetWidth,
-    sheetLength,
-    usableDropMin,
-    billableLengthIncrement,
-    minimumBillableSqft,
-  });
-  const partialSheetBillableSqft = partialSheet.billableSqft;
-  const billedSheetSqft = Math.ceil(fullSheets * fullLayoutBilling.billableSqft + partialSheetBillableSqft);
-  const lastSheetBilling = partialSheetPieceCount > 0 ? partialSheet : fullLayoutBilling;
+  const partialSheetBillableSqft = partialSheetBilling.billableSqft;
+  const billedSheetSqft = chosenCandidate.billedSheetSqft;
+  const lastSheetBilling = partialSheetPieceCount > 0 ? partialSheetBilling : fullLayoutBilling;
   const consumedSqft = (quantity * w * h) / 144;
 
   return {
@@ -315,14 +351,14 @@ export function calculateSheetYield(
     normalPiecesPerSheet: normal.piecesPerSheet,
     rotatedPiecesPerSheet: rotated.piecesPerSheet,
     mixedPiecesPerSheet: mixed.piecesPerSheet,
-    piecesPerSheet: chosen.piecesPerSheet,
+    piecesPerSheet,
     orientationUsed,
     mixedLayoutDescription,
     fullSheets,
     partialSheetPieceCount,
     partialSheetFinishedSqft,
     partialSheetBillableSqft,
-    partialSheetPolicy: partialSheet.policy,
+    partialSheetPolicy: partialSheetBilling.policy,
     totalSheetCount,
     sheetSqft,
     consumedSqft,

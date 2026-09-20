@@ -79,4 +79,20 @@ describe("sheet_consumption_sqft 4x8 drop billing", () => {
 
     expect(helper(72, 48, 1, 48, 96, 24, 12, 3)).toBe(24);
   });
+
+  test("compares final-row billable consumption so rotation makes swapped dimensions price-invariant", () => {
+    const args = [22, SHEET_WIDTH, SHEET_LENGTH, USABLE_DROP_MIN, BILLABLE_LENGTH_INCREMENT, MINIMUM_BILLABLE_SQFT] as const;
+    const portrait = sheetConsumptionSqft(12, 48, ...args, true);
+    const landscape = sheetConsumptionSqft(48, 12, ...args, true);
+
+    expect(portrait).toBe(88);
+    expect(landscape).toBe(88);
+    expect(portrait * 2.1875).toBe(192.5);
+    expect(landscape * 2.1875).toBe(192.5);
+  });
+
+  test("retains orientation-specific consumption when rotation is disabled", () => {
+    expect(sheetConsumptionSqft(12, 48, 22, SHEET_WIDTH, SHEET_LENGTH, USABLE_DROP_MIN, BILLABLE_LENGTH_INCREMENT, MINIMUM_BILLABLE_SQFT, false)).toBe(96);
+    expect(sheetConsumptionSqft(48, 12, 22, SHEET_WIDTH, SHEET_LENGTH, USABLE_DROP_MIN, BILLABLE_LENGTH_INCREMENT, MINIMUM_BILLABLE_SQFT, false)).toBe(88);
+  });
 });
