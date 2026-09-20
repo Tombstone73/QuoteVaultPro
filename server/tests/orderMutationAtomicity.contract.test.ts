@@ -31,6 +31,7 @@ describe("Order mutation atomicity", () => {
     expect(routes).toContain("recalculateEditableOrderFinancialsInTransaction(tx");
     expect(routes).toContain("recomputeOrderBillingStatus({ organizationId, orderId: String(ownedLineItem.orderId), executor: tx })");
     expect(taxService).toContain("export async function recalculateEditableOrderFinancialsInTransaction");
+    expect(taxService).toContain("calculateEditableOrderFinancialSnapshot(executor, input)");
     expect(taxService).toContain("synchronizeOrderBackedInvoiceFromOrderInTransaction(executor, input)");
     expect(billingService).toContain("executor?: any;");
   });
@@ -40,6 +41,6 @@ describe("Order mutation atomicity", () => {
 
     expect(taxService).toContain("const lines = await executor.select().from(orderLineItems)");
     expect(taxService).toContain("const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;");
-    expect(taxService).toContain("const total = totals.subtotal - discount + totals.taxAmount + shipping;");
+    expect(taxService).toContain("total: totals.subtotal - discount + totals.taxAmount + shipping,");
   });
 });

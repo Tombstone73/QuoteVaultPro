@@ -95,6 +95,38 @@ export async function calculateAuthoritativeOrderTax(input: {
   return calculateTaxForLines(input.executor ?? db, input);
 }
 
+/** Read-only canonical financial projection for an existing Order. Repair and
+ * diagnostic tooling must use this rather than recreate Order arithmetic. */
+export async function calculateEditableOrderFinancialSnapshot(executor: any, input: {
+  organizationId: string;
+  orderId: string;
+}) {
+  const [order] = await executor.select().from(orders).where(and(
+    eq(orders.id, input.orderId),
+    eq(orders.organizationId, input.organizationId),
+  )).limit(1);
+  if (!order) return null;
+  const lines = await executor.select().from(orderLineItems).where(eq(orderLineItems.orderId, input.orderId));
+  const { billableLines, totals } = await calculateTaxForLines(executor, {
+    organizationId: input.organizationId,
+    customerId: order.customerId,
+    lines,
+    taxOverrideMode: (order as any).taxOverrideMode,
+    taxRateOverride: (order as any).taxRateOverride,
+  });
+  const discount = Number(order.discount) || 0;
+  const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;
+  return {
+    order,
+    lines,
+    billableLines,
+    totals,
+    discount,
+    shipping,
+    total: totals.subtotal - discount + totals.taxAmount + shipping,
+  };
+}
+
 /**
  * Recomputes commercial order totals from persisted lines and synchronizes its
  * one native editable draft invoice in the same database transaction.
@@ -104,27 +136,14 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
   orderId: string;
   actorUserId?: string | null;
 }) {
-    const [order] = await executor.select().from(orders).where(and(
-      eq(orders.id, input.orderId),
-      eq(orders.organizationId, input.organizationId),
-    )).limit(1);
-    if (!order) return null;
-    const lines = await executor.select().from(orderLineItems).where(eq(orderLineItems.orderId, input.orderId));
-    const { billableLines, totals } = await calculateTaxForLines(executor, {
-      organizationId: input.organizationId,
-      customerId: order.customerId,
-      lines,
-      taxOverrideMode: (order as any).taxOverrideMode,
-      taxRateOverride: (order as any).taxRateOverride,
-    });
+    const snapshot = await calculateEditableOrderFinancialSnapshot(executor, input);
+    if (!snapshot) return null;
+    const { order, billableLines, totals, total } = snapshot;
     await Promise.all(billableLines.map((line, index) => executor.update(orderLineItems).set({
       taxAmount: totals.lineItemsWithTax[index]!.taxAmount.toFixed(2),
       isTaxableSnapshot: totals.lineItemsWithTax[index]!.isTaxableSnapshot,
       updatedAt: new Date(),
     } as any).where(eq(orderLineItems.id, line.id!))));
-    const discount = Number(order.discount) || 0;
-    const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;
-    const total = totals.subtotal - discount + totals.taxAmount + shipping;
     const [updated] = await executor.update(orders).set({
       subtotal: totals.subtotal.toFixed(2),
       tax: totals.taxAmount.toFixed(2),
