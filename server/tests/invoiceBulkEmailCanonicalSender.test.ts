@@ -143,4 +143,32 @@ describe("bulk invoice email canonical sender boundary", () => {
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "needs_review" }));
     expect(updateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: "sent" }));
   });
+
+  test("bounds a hung pre-provider operation and safely returns it to the retry queue", async () => {
+    const priorTimeout = process.env.BULK_INVOICE_EMAIL_SEND_TIMEOUT_SECONDS;
+    process.env.BULK_INVOICE_EMAIL_SEND_TIMEOUT_SECONDS = "15";
+    jest.useFakeTimers();
+    try {
+      registerCanonicalInvoiceEmailSender(jest.fn(() => new Promise(() => undefined)));
+      const processing = processClaimedBulkInvoiceEmailJob({
+        id: "job-timeout",
+        organizationId: "org-1",
+        invoiceId: "invoice-1",
+        recipientEmail: "customer@example.test",
+        attemptCount: 1,
+        maxAttempts: 3,
+        createdAt: new Date("2026-09-04T16:00:00.000Z"),
+        campaignId: "campaign-timeout",
+      });
+
+      await jest.advanceTimersByTimeAsync(15_000);
+      await expect(processing).resolves.toBe("failed");
+      expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "retrying" }));
+      expect(updateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: "sent" }));
+    } finally {
+      jest.useRealTimers();
+      if (priorTimeout === undefined) delete process.env.BULK_INVOICE_EMAIL_SEND_TIMEOUT_SECONDS;
+      else process.env.BULK_INVOICE_EMAIL_SEND_TIMEOUT_SECONDS = priorTimeout;
+    }
+  });
 });

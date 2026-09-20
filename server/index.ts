@@ -377,7 +377,7 @@ process.on('uncaughtException', (error) => {
       const bulkInvoiceEmailEnabled = isWorkerEnabled('BULK_INVOICE_EMAILS', true);
       const bulkInvoiceEmailInterval = getWorkerIntervalOverride(
         'BULK_INVOICE_EMAILS',
-        15_000,
+        60_000,
         60_000,
       );
       logWorkerStatus(

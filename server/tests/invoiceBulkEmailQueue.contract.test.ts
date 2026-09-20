@@ -27,7 +27,8 @@ describe("bulk invoice email delivery queue contract", () => {
   test("keeps PDF, provider delivery, logs, and audit writes on the one canonical sender", () => {
     expect(route).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
     expect(queue).toContain("canonicalInvoiceEmailSender");
-    expect(queue).toContain("await canonicalInvoiceEmailSender");
+    expect(queue).toContain("canonicalInvoiceEmailSender({");
+    expect(queue).toContain("withInvoiceEmailSendDeadline");
     expect(route).toContain("generateInvoicePdfBytes");
     expect(route).toContain("createInvoicePdfEmailAttachment");
     expect(route).toContain("buildInvoiceEmailSentAudit");
@@ -70,11 +71,23 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("maxAttempts");
   });
 
-  test("bounds delivery attempts and converts expired processing claims to non-resend review failures", () => {
+  test("uses a short bounded send deadline and recovers expired claims according to the durable provider boundary", () => {
     expect(queue).toContain("attempt_count < max_attempts");
-    expect(queue).toContain("SET status = 'needs_review', claim_expires_at = null");
+    expect(queue).toContain("DEFAULT_CLAIM_SECONDS = 60");
+    expect(queue).toContain("DEFAULT_SEND_TIMEOUT_SECONDS = 45");
+    expect(queue).toContain("withInvoiceEmailSendDeadline");
+    expect(queue).toContain("queueStage', 'provider_submitting'");
+    expect(queue).toContain("WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing' THEN 'retrying'");
+    expect(queue).toContain("ELSE 'needs_review'");
+    expect(queue).toContain("ORDER BY available_at ASC, created_at ASC");
     expect(queue).toContain("The message was not resent to avoid a duplicate email.");
     expect(queue).not.toContain("OR (status = 'processing' AND claim_expires_at <= now())");
+  });
+
+  test("processes exactly one oldest eligible job per worker tick at the one-minute cadence", () => {
+    expect(queue).toContain("tickLimit: 1");
+    expect(queue).toContain("spacingSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SPACING_SECONDS, DEFAULT_SPACING_SECONDS, 60, 3600)");
+    expect(server).toContain("60_000");
   });
 
   test("permits a new explicit attempt after a retry-safe terminal failure but blocks active and ambiguous work", () => {

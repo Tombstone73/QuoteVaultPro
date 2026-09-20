@@ -38,7 +38,7 @@ function valuesReturning(result: unknown) {
 describe("interactive invoice email queue", () => {
   beforeEach(() => {
     insertedValues.splice(0);
-    execute.mockReset();
+    execute.mockReset().mockResolvedValue({ rows: [{ latestScheduledAt: null }] });
     select.mockReset();
     update.mockReset();
     insert.mockReset();

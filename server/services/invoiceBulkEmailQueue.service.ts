@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   invoiceEmailCampaigns,
@@ -10,6 +10,7 @@ import {
 } from "../../shared/schema";
 import {
   getInvoiceEmailDeliveryFailureKind,
+  markInvoiceEmailDeliveryFailure,
   type InvoiceEmailDeliveryFailureKind,
 } from "./invoiceEmailDeliveryFailure";
 import {
@@ -100,7 +101,11 @@ export async function listInvoiceEmailDeliveryJobs(input: {
     }).from(invoiceEmailDeliveryJobs)
       .innerJoin(invoices, and(eq(invoices.id, invoiceEmailDeliveryJobs.invoiceId), eq(invoices.organizationId, input.organizationId)))
       .leftJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.organizationId, input.organizationId)))
-      .where(where).orderBy(desc(invoiceEmailDeliveryJobs.createdAt), desc(invoiceEmailDeliveryJobs.id)).limit(pageSize).offset((page - 1) * pageSize),
+      .where(where).orderBy(
+        ...(input.view === "active"
+          ? [asc(invoiceEmailDeliveryJobs.availableAt), asc(invoiceEmailDeliveryJobs.createdAt)]
+          : [desc(invoiceEmailDeliveryJobs.createdAt), desc(invoiceEmailDeliveryJobs.id)]),
+      ).limit(pageSize).offset((page - 1) * pageSize),
     db.select({ totalCount: sql<number>`count(*)::int` }).from(invoiceEmailDeliveryJobs).where(where),
   ]);
   const [active, failed, needsReview] = await Promise.all([
@@ -117,9 +122,11 @@ let workerRunning = false;
 
 const DEFAULT_MAX_BATCH_SIZE = 200;
 const HARD_MAX_BATCH_SIZE = 500;
-const DEFAULT_TICK_LIMIT = 10;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_SPACING_SECONDS = 60;
+const DEFAULT_RETRY_BASE_SECONDS = 60;
+const DEFAULT_CLAIM_SECONDS = 60;
+const DEFAULT_SEND_TIMEOUT_SECONDS = 45;
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(value);
@@ -129,11 +136,14 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
 export function getBulkInvoiceEmailQueueConfig() {
   return {
     maxBatchSize: boundedInteger(process.env.BULK_INVOICE_EMAIL_MAX_BATCH_SIZE, DEFAULT_MAX_BATCH_SIZE, 1, HARD_MAX_BATCH_SIZE),
-    tickLimit: boundedInteger(process.env.BULK_INVOICE_EMAIL_TICK_LIMIT, DEFAULT_TICK_LIMIT, 1, 50),
+    // One job per worker tick is deliberate: this is a FIFO mail queue, not
+    // a bulk burst sender.
+    tickLimit: 1,
     maxAttempts: boundedInteger(process.env.BULK_INVOICE_EMAIL_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS, 1, 5),
-    spacingSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SPACING_SECONDS, DEFAULT_SPACING_SECONDS, 10, 3600),
-    retryBaseSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_RETRY_BASE_SECONDS, 300, 30, 3600),
-    claimSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_CLAIM_SECONDS, 300, 60, 1800),
+    spacingSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SPACING_SECONDS, DEFAULT_SPACING_SECONDS, 60, 3600),
+    retryBaseSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_RETRY_BASE_SECONDS, DEFAULT_RETRY_BASE_SECONDS, 60, 900),
+    claimSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_CLAIM_SECONDS, DEFAULT_CLAIM_SECONDS, 45, 120),
+    sendTimeoutSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SEND_TIMEOUT_SECONDS, DEFAULT_SEND_TIMEOUT_SECONDS, 15, 90),
   };
 }
 
@@ -217,6 +227,8 @@ type InvoiceEmailDeliveryMetadata = {
   subject?: string | null;
   message?: string | null;
   retryOfNeedsReviewJobId?: string;
+  queueStage?: "preparing" | "provider_submitting";
+  providerSubmissionStartedAt?: string;
   deliveryReview?: Partial<InvoiceEmailDeliveryReviewMetadata>;
 };
 
@@ -451,28 +463,22 @@ async function enqueueInvoiceEmailCampaign(input: {
       return { campaign: existing, queued: 0, alreadyQueued: input.candidates.length, blocked: [], replayed: true };
     }
 
-    // Bulk delivery is rate-spaced. An individual operator action is still
-    // durable, but should not be delayed behind a large batch; it is claimed
-    // by the same worker and its provider outcome is recorded identically.
-    let nextAvailableAt = new Date();
-    if (input.deliveryMode === "bulk") {
-      // Serialize slot allocation per organization. The durable jobs themselves
-      // are the scheduler; this lock only prevents two concurrent enqueue
-      // requests from allocating the same next slot.
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
-      const scheduledResult: any = await tx.execute(sql`
-        SELECT max(available_at) AS "latestScheduledAt"
-        FROM invoice_email_delivery_jobs
-        WHERE organization_id = ${input.organizationId}
-          AND status IN ('queued', 'retrying', 'processing')
-      `);
-      const latestScheduledAt = (scheduledResult.rows || scheduledResult)[0]?.latestScheduledAt ?? null;
-      nextAvailableAt = getNextBulkInvoiceEmailSlot({
-        now: nextAvailableAt,
-        latestScheduledAt,
-        spacingSeconds: config.spacingSeconds,
-      });
-    }
+    // Every invoice email uses the same per-organization FIFO schedule. This
+    // prevents simultaneous interactive clicks or multiple app replicas from
+    // turning a one-per-minute queue into a delivery burst.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
+    const scheduledResult: any = await tx.execute(sql`
+      SELECT max(available_at) AS "latestScheduledAt"
+      FROM invoice_email_delivery_jobs
+      WHERE organization_id = ${input.organizationId}
+        AND status IN ('queued', 'retrying', 'processing')
+    `);
+    const latestScheduledAt = (scheduledResult.rows || scheduledResult)[0]?.latestScheduledAt ?? null;
+    let nextAvailableAt = getNextBulkInvoiceEmailSlot({
+      now: new Date(),
+      latestScheduledAt,
+      spacingSeconds: config.spacingSeconds,
+    });
 
     let queued = 0;
     let alreadyQueued = 0;
@@ -500,9 +506,7 @@ async function enqueueInvoiceEmailCampaign(input: {
       } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
       if (job) {
         queued += 1;
-        if (input.deliveryMode === "bulk") {
-          nextAvailableAt = new Date(nextAvailableAt.getTime() + config.spacingSeconds * 1000);
-        }
+        nextAvailableAt = new Date(nextAvailableAt.getTime() + config.spacingSeconds * 1000);
       }
       else {
         alreadyQueued += 1;
@@ -576,20 +580,88 @@ function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail
   });
 }
 
+/**
+ * Called immediately before the provider boundary. A stale claim before this
+ * marker is safe to retry; after it, provider acceptance is uncertain and the
+ * job must stop for review rather than risk a duplicate email.
+ */
+export async function markInvoiceEmailDeliveryProviderSubmissionStarted(input: {
+  organizationId: string;
+  deliveryJobId: string | null | undefined;
+}): Promise<void> {
+  if (!input.deliveryJobId) return;
+  await db.execute(sql`
+    UPDATE invoice_email_delivery_jobs
+    SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
+          'queueStage', 'provider_submitting',
+          'providerSubmissionStartedAt', now()::text
+        ),
+        updated_at = now()
+    WHERE id = ${input.deliveryJobId}
+      AND organization_id = ${input.organizationId}
+      AND status = 'processing'
+  `);
+}
+
+function withInvoiceEmailSendDeadline<T>(operation: Promise<T>, timeoutSeconds: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const deadlineFailure = markInvoiceEmailDeliveryFailure(
+        new Error(`Invoice email processing exceeded its ${timeoutSeconds}-second safety deadline. Delivery outcome requires review before retrying.`),
+        "needs_review",
+      ) as Error & { invoiceEmailQueueDeadline?: boolean };
+      // This marker is intentionally separate from the failure kind. Whether
+      // the timeout is safe to retry depends on the durable provider-boundary
+      // marker, not on the timeout's human-readable message.
+      deadlineFailure.invoiceEmailQueueDeadline = true;
+      reject(deadlineFailure);
+    }, timeoutSeconds * 1000);
+    timeout.unref?.();
+    operation.then(
+      (value) => { clearTimeout(timeout); resolve(value); },
+      (error) => { clearTimeout(timeout); reject(error); },
+    );
+  });
+}
+
+async function hasInvoiceEmailReachedProviderBoundary(job: ClaimedBulkInvoiceEmailJob): Promise<boolean> {
+  const result: any = await db.execute(sql`
+    SELECT metadata
+    FROM invoice_email_delivery_jobs
+    WHERE id = ${job.id}
+      AND organization_id = ${job.organizationId}
+    LIMIT 1
+  `);
+  const row = (Array.isArray(result) ? result : result?.rows || [])[0] as { metadata?: unknown } | undefined;
+  return asMetadata(row?.metadata).queueStage === "provider_submitting";
+}
+
 async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob | null> {
   const config = getBulkInvoiceEmailQueueConfig();
   const claimed = await db.transaction(async (tx) => {
-    // A lost worker can leave a provider submission ambiguous. Never reclaim
-    // that work: Gmail may have accepted it after the process lost its
-    // response. Surface it for review instead of turning each poll into an
-    // unbounded resend attempt.
+    // Only jobs claimed by this marker-aware worker can prove they died before
+    // provider submission. Legacy processing jobs lack that evidence, so they
+    // must be reviewed rather than risking a duplicate email.
     const expiredResult: any = await tx.execute(sql`
       UPDATE invoice_email_delivery_jobs
-      SET status = 'needs_review', claim_expires_at = null,
-          failure_reason = coalesce(failure_reason, 'Delivery outcome is uncertain because the worker claim expired before it recorded an outcome. The message was not resent to avoid a duplicate email.'),
+      SET status = CASE
+            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing' THEN 'retrying'
+            ELSE 'needs_review'
+          END,
+          available_at = CASE
+            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing'
+              THEN now() + (${config.retryBaseSeconds} * interval '1 second')
+            ELSE available_at
+          END,
+          claim_expires_at = null,
+          failure_reason = coalesce(failure_reason, CASE
+            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing'
+              THEN 'Worker claim expired before provider submission. The job was returned to the queue for a bounded retry.'
+            ELSE 'Delivery outcome is uncertain because the worker claim expired after provider submission began or the legacy job has no provider-boundary evidence. The message was not resent to avoid a duplicate email.'
+          END),
           updated_at = now()
       WHERE status = 'processing' AND claim_expires_at <= now()
-      RETURNING campaign_id AS "campaignId"
+      RETURNING campaign_id AS "campaignId", status
     `);
     const expiredRows = (Array.isArray(expiredResult) ? expiredResult : expiredResult?.rows || []) as Array<{ campaignId?: string }>;
     const expiredCampaignIds = Array.from(new Set(expiredRows.map((row) => String(row.campaignId || "")).filter(Boolean)));
@@ -602,7 +674,7 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       WHERE status IN ('queued', 'retrying')
         AND available_at <= now()
         AND attempt_count < max_attempts
-      ORDER BY created_at ASC
+      ORDER BY available_at ASC, created_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     `);
@@ -614,7 +686,9 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       UPDATE invoice_email_delivery_jobs
       SET status = 'processing', attempt_count = attempt_count + 1, claimed_at = now(),
           claim_expires_at = now() + (${config.claimSeconds} * interval '1 second'),
-          claimed_by_worker_id = ${workerId}, updated_at = now()
+          claimed_by_worker_id = ${workerId},
+          metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object('queueStage', 'preparing'),
+          updated_at = now()
       WHERE id = ${row.id} AND status IN ('queued', 'retrying') AND attempt_count < max_attempts
     `);
     if (Number(claimResult.rowCount ?? 1) === 0) return { job: null, expiredCampaignIds };
@@ -627,8 +701,8 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       expiredCampaignIds,
     };
   });
-  // Stale claims remain visible as needs_review and their parent campaigns
-  // must also become complete-with-errors rather than appearing queued forever.
+  // Stale provider-boundary claims remain visible for review. Claims which
+  // expired before that boundary return to the regular bounded retry flow.
   await Promise.all(claimed.expiredCampaignIds.map((campaignId) => updateCampaignCompletion(campaignId)));
   return claimed.job;
 }
@@ -684,17 +758,20 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
 
   try {
     logDeliveryStage(job, "canonical_sender_started", { alreadySent: Boolean(alreadySent) });
-    const outcome = alreadySent || await canonicalInvoiceEmailSender({
-      organizationId: job.organizationId,
-      invoiceId: job.invoiceId,
-      userId: job.metadata?.createdByUserId || null,
-      userName: job.metadata?.createdByUserName || null,
-      toEmail: job.recipientEmail,
-      deliveryJobId: job.id,
-      allowUnapproved: job.metadata?.allowUnapproved === true,
-      subject: job.metadata?.subject || undefined,
-      message: job.metadata?.message || undefined,
-    });
+    const outcome = alreadySent || await withInvoiceEmailSendDeadline(
+      canonicalInvoiceEmailSender({
+        organizationId: job.organizationId,
+        invoiceId: job.invoiceId,
+        userId: job.metadata?.createdByUserId || null,
+        userName: job.metadata?.createdByUserName || null,
+        toEmail: job.recipientEmail,
+        deliveryJobId: job.id,
+        allowUnapproved: job.metadata?.allowUnapproved === true,
+        subject: job.metadata?.subject || undefined,
+        message: job.metadata?.message || undefined,
+      }),
+      getBulkInvoiceEmailQueueConfig().sendTimeoutSeconds,
+    );
     await db.update(invoiceEmailDeliveryJobs).set({
       status: "sent",
       sentAt: new Date(),
@@ -708,7 +785,15 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     return "sent";
   } catch (error) {
     const message = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
-    const failureKind = getInvoiceEmailDeliveryFailureKind(error);
+    const deadlineExpired = (error as { invoiceEmailQueueDeadline?: boolean } | null)?.invoiceEmailQueueDeadline === true;
+    const failureKind = deadlineExpired
+      ? await hasInvoiceEmailReachedProviderBoundary(job).then(
+        (providerStarted) => providerStarted ? "needs_review" : "retryable",
+        // If we cannot read the durable boundary, be conservative: a duplicate
+        // invoice email is worse than asking staff to review one job.
+        () => "needs_review" as const,
+      )
+      : getInvoiceEmailDeliveryFailureKind(error);
     // Old providers that have not been annotated yet remain conservative for
     // transport uncertainty. Explicit sender annotations always win.
     const needsReview = failureKind ? failureKind === "needs_review" : isAmbiguousProviderFailure(error);

@@ -91,7 +91,7 @@ const customerSendStatusMeta: Record<InvoiceEmailStatus, { label: string; varian
 };
 
 const deliveryStatusMeta = {
-  queued: { label: "Queued", variant: "info" },
+  queued: { label: "Waiting", variant: "info" },
   processing: { label: "Sending", variant: "warning" },
   retrying: { label: "Retrying", variant: "warning" },
   failed: { label: "Delivery Failed", variant: "error" },
@@ -1208,14 +1208,14 @@ export default function InvoicesListPage() {
       </Dialog>
       <Dialog open={emailQueueOpen} onOpenChange={setEmailQueueOpen}>
         <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
-          <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Authoritative delivery jobs. Last Sent updates only after provider acceptance.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Waiting emails are sent oldest first, about one per minute. Sent updates only after provider acceptance.</DialogDescription></DialogHeader>
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={emailQueueView} onValueChange={(value: any) => { setEmailQueueView(value); setEmailQueuePage(1); }}><SelectTrigger className="w-[150px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="failed">Failed</SelectItem><SelectItem value="sent">Sent / Recent</SelectItem><SelectItem value="all">All</SelectItem></SelectContent></Select>
-            <span className="text-xs text-muted-foreground">{emailQueue.data ? `${emailQueue.data.counts.active} active · ${emailQueue.data.counts.failed} failed · ${emailQueue.data.counts.needsReview} needs review` : ''}</span>
+            <Select value={emailQueueView} onValueChange={(value: any) => { setEmailQueueView(value); setEmailQueuePage(1); }}><SelectTrigger className="w-[170px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Waiting / Sending</SelectItem><SelectItem value="failed">Problems</SelectItem><SelectItem value="sent">Sent History</SelectItem><SelectItem value="all">All History</SelectItem></SelectContent></Select>
+            <span className="text-xs text-muted-foreground">{emailQueue.data ? `${emailQueue.data.counts.active} waiting or sending · ${emailQueue.data.counts.failed} failed · ${emailQueue.data.counts.needsReview} need review` : ''}</span>
           </div>
           <div className="min-h-0 flex-1 overflow-auto rounded border">
-            <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left"><th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Status</th><th className="p-2">Timing</th><th className="p-2">Attempts</th><th className="p-2">Detail</th><th className="p-2" /></tr></thead><tbody>
-              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => {
+            <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left"><th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Queued</th><th className="p-2">Status</th><th className="p-2">Details</th><th className="p-2" /></tr></thead><tbody>
+              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={6}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => {
                 const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000;
                 const needsReview = job.status === 'needs_review';
                 const retryable = job.status === 'failed';
@@ -1223,10 +1223,10 @@ export default function InvoicesListPage() {
                 return <tr className="border-b align-top" key={job.id}>
                   <td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td>
                   <td className="p-2 break-all">{job.recipientEmail}</td>
-                  <td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Stale' : ''}</StatusPill></td>
-                  <td className="p-2 text-xs">{job.status === 'queued' ? `Scheduled ${format(new Date(job.availableAt), 'PP p')}` : `Queued ${format(new Date(job.queuedAt), 'PP p')}`}<br />{job.claimedAt ? `Claimed ${format(new Date(job.claimedAt), 'p')}` : job.status === 'queued' ? 'Waiting for its sender slot' : `Updated ${format(new Date(job.updatedAt), 'p')}`}</td>
-                  <td className="p-2">{job.attemptCount} / {job.maxAttempts}</td>
+                  <td className="p-2 text-xs">{format(new Date(job.queuedAt), 'PP p')}</td>
+                  <td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Recovering' : ''}</StatusPill></td>
                   <td className="max-w-[220px] p-2 text-xs text-muted-foreground">
+                    {job.status === 'queued' ? `Scheduled for ${format(new Date(job.availableAt), 'p')}.` : job.status === 'processing' && job.claimedAt ? `Sending since ${format(new Date(job.claimedAt), 'p')}.` : job.status === 'retrying' ? `Retry scheduled for ${format(new Date(job.availableAt), 'p')}.` : `Attempt ${job.attemptCount} of ${job.maxAttempts}.`}<br />
                     {needsReview ? 'Delivery outcome uncertain. Retry blocked until reviewed. ' : retryable ? 'Safe to send again: ' : ''}
                     {job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}
                     {reviewed?.resolution === 'verified_not_sent' && reviewed.reviewedAt ? <><br />Reviewed {format(new Date(reviewed.reviewedAt), 'PP p')}{reviewed.reviewedByUserName ? ` by ${reviewed.reviewedByUserName}` : ''}. Operator verified email was not sent; retry allowed.</> : null}
@@ -1236,7 +1236,7 @@ export default function InvoicesListPage() {
                     <Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button>
                   </div></td>
                 </tr>;
-              }) : <tr><td className="p-4 text-muted-foreground" colSpan={7}>No matching email delivery jobs.</td></tr>}
+              }) : <tr><td className="p-4 text-muted-foreground" colSpan={6}>No matching email delivery jobs.</td></tr>}
             </tbody></table>
           </div>
           {emailQueue.data ? <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Page {emailQueue.data.pagination.page} of {emailQueue.data.pagination.totalPages}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={emailQueuePage <= 1} onClick={() => setEmailQueuePage((page) => page - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={emailQueuePage >= emailQueue.data.pagination.totalPages} onClick={() => setEmailQueuePage((page) => page + 1)}>Next</Button></div></div> : null}

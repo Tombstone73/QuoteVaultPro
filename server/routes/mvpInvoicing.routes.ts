@@ -64,6 +64,7 @@ import {
   getBulkInvoiceEmailQueueConfig,
   getInvoiceEmailDeliveryFailureKind,
   markInvoiceEmailDeliveryFailure,
+  markInvoiceEmailDeliveryProviderSubmissionStarted,
   registerCanonicalInvoiceEmailSender,
   resolveInvoiceEmailDeliveryNeedsReview,
   type BulkInvoiceEmailCandidate,
@@ -619,6 +620,10 @@ export async function registerMvpInvoicingRoutes(
     let messageId: string | null = null;
     let providerAccepted = false;
     try {
+      await markInvoiceEmailDeliveryProviderSubmissionStarted({
+        organizationId: input.organizationId,
+        deliveryJobId: input.deliveryJobId,
+      });
       logQueueDeliveryStage("gmail_send_invoked");
       messageId = await emailService.sendEmail(input.organizationId, {
         to: recipientEmail,

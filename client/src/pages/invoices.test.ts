@@ -259,7 +259,7 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("keeps queued, sending, retrying, and failed delivery states distinct from Last Sent", () => {
-    expect(invoicesPageSource).toContain('queued: { label: "Queued"');
+    expect(invoicesPageSource).toContain('queued: { label: "Waiting"');
     expect(invoicesPageSource).toContain('processing: { label: "Sending"');
     expect(invoicesPageSource).toContain('retrying: { label: "Retrying"');
     expect(invoicesPageSource).toContain('failed: { label: "Delivery Failed"');
@@ -273,8 +273,8 @@ describe("Invoices List payment entry point", () => {
   it("provides a bounded, polling email queue with an explicit needs-review resolution flow", () => {
     expect(invoicesPageSource).toContain("Invoice Email Queue");
     expect(invoicesPageSource).toContain("invoice-email-queue-open");
-    expect(invoicesPageSource).toContain("Active");
-    expect(invoicesPageSource).toContain("Delivery Failed");
+    expect(invoicesPageSource).toContain("Waiting / Sending");
+    expect(invoicesPageSource).toContain("Problems");
     expect(invoicesPageSource).toContain("Delivery outcome uncertain. Retry blocked until reviewed.");
     expect(invoicesPageSource).toContain("Safe to send again:");
     expect(invoicesPageSource).toContain(">Review</Button>");
@@ -282,7 +282,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("I verified this email was not sent");
     expect(invoicesPageSource).toContain("Keep Blocked");
     expect(invoicesPageSource).toContain("Previous delivery needs review");
-    expect(invoicesPageSource).toContain("Stale");
+    expect(invoicesPageSource).toContain("Recovering");
     expect(invoicesPageSource).toContain("navigate(`/invoices/${job.invoiceId}`)");
     expect(invoicesPageSource).not.toContain("Retry email");
     expect(invoiceHooksSource).toContain("useInvoiceEmailQueue");
