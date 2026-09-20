@@ -1221,7 +1221,7 @@ export default function InvoicesListPage() {
                 const retryable = job.status === 'failed';
                 const reviewed = job.metadata?.deliveryReview;
                 return <tr className="border-b align-top" key={job.id}>
-                  <td className="p-2">{job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td>
+                  <td className="p-2">{job.deliveryType === 'customer_statement' ? `Statement${job.customerName ? ` · ${job.customerName}` : ''}` : job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td>
                   <td className="p-2 break-all">{job.recipientEmail}</td>
                   <td className="p-2 text-xs">{format(new Date(job.queuedAt), 'PP p')}</td>
                   <td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Recovering' : ''}</StatusPill></td>
@@ -1232,8 +1232,8 @@ export default function InvoicesListPage() {
                     {reviewed?.resolution === 'verified_not_sent' && reviewed.reviewedAt ? <><br />Reviewed {format(new Date(reviewed.reviewedAt), 'PP p')}{reviewed.reviewedByUserName ? ` by ${reviewed.reviewedByUserName}` : ''}. Operator verified email was not sent; retry allowed.</> : null}
                   </td>
                   <td className="p-2"><div className="flex gap-1">
-                    {needsReview ? <Button variant="outline" size="sm" onClick={() => setReviewJob({ id: job.id, invoiceId: job.invoiceId, label: String(job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'), source: 'queue' })}>Review</Button> : null}
-                    <Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button>
+                    {needsReview && job.deliveryType !== 'customer_statement' ? <Button variant="outline" size="sm" onClick={() => setReviewJob({ id: job.id, invoiceId: job.invoiceId, label: String(job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'), source: 'queue' })}>Review</Button> : null}
+                    {job.invoiceId ? <Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button> : null}
                   </div></td>
                 </tr>;
               }) : <tr><td className="p-4 text-muted-foreground" colSpan={6}>No matching email delivery jobs.</td></tr>}

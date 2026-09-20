@@ -5157,12 +5157,41 @@ export const insertInvoiceEmailCampaignSchema = createInsertSchema(invoiceEmailC
 export type InsertInvoiceEmailCampaign = z.infer<typeof insertInvoiceEmailCampaignSchema>;
 export type InvoiceEmailCampaign = typeof invoiceEmailCampaigns.$inferSelect;
 
+// A frozen statement is delivery evidence, not a second receivables ledger.
+// Its payload is the canonical current-statement projection at generation time.
+export const customerStatementSnapshots = pgTable("customer_statement_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "restrict" }),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+  statementDate: varchar("statement_date", { length: 10 }).notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("customer_statement_snapshots_customer_idx").on(table.organizationId, table.customerId, table.createdAt),
+  uniqueIndex("customer_statement_snapshots_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey),
+]);
+
+export const customerStatementEmailLogs = pgTable("customer_statement_email_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  statementSnapshotId: varchar("statement_snapshot_id").notNull().references(() => customerStatementSnapshots.id, { onDelete: "restrict" }),
+  recipientEmail: text("recipient_email").notNull(),
+  status: varchar("status", { length: 32 }).notNull().default("sent"),
+  messageId: text("message_id"),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("customer_statement_email_logs_snapshot_idx").on(table.organizationId, table.statementSnapshotId, table.sentAt)]);
+
 export const invoiceEmailDeliveryJobs = pgTable("invoice_email_delivery_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   campaignId: varchar("campaign_id").notNull().references(() => invoiceEmailCampaigns.id, { onDelete: 'cascade' }),
-  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: 'cascade' }),
   invoiceVersion: integer("invoice_version").notNull(),
+  deliveryType: varchar("delivery_type", { length: 40 }).notNull().default("invoice"),
+  customerStatementSnapshotId: varchar("customer_statement_snapshot_id").references(() => customerStatementSnapshots.id, { onDelete: "restrict" }),
   recipientEmail: text("recipient_email").notNull(),
   recipientKey: text("recipient_key").notNull(),
   idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
@@ -5195,7 +5224,7 @@ export const insertInvoiceEmailDeliveryJobSchema = createInsertSchema(invoiceEma
   sentAt: true,
 }).extend({
   status: z.enum(['queued', 'processing', 'retrying', 'sent', 'failed', 'canceled']).default('queued'),
-  invoiceId: z.string().min(1),
+  invoiceId: z.string().min(1).optional().nullable(),
   invoiceVersion: z.number().int().positive(),
   attemptCount: z.number().int().nonnegative().default(0),
   maxAttempts: z.number().int().positive().default(5),

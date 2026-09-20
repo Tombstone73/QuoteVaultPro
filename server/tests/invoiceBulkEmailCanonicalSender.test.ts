@@ -12,10 +12,11 @@ const execute = jest.fn(async () => ({ rows: [{ active: 0, failed: 0 }] }));
 jest.unstable_mockModule("../db", () => ({ db: { select, update, execute } }));
 
 let registerCanonicalInvoiceEmailSender: typeof import("../services/invoiceBulkEmailQueue.service").registerCanonicalInvoiceEmailSender;
+let registerCanonicalCustomerStatementEmailSender: typeof import("../services/invoiceBulkEmailQueue.service").registerCanonicalCustomerStatementEmailSender;
 let processClaimedBulkInvoiceEmailJob: typeof import("../services/invoiceBulkEmailQueue.service").processClaimedBulkInvoiceEmailJob;
 
 beforeAll(async () => {
-  ({ registerCanonicalInvoiceEmailSender, processClaimedBulkInvoiceEmailJob } = await import("../services/invoiceBulkEmailQueue.service"));
+  ({ registerCanonicalInvoiceEmailSender, registerCanonicalCustomerStatementEmailSender, processClaimedBulkInvoiceEmailJob } = await import("../services/invoiceBulkEmailQueue.service"));
 });
 
 describe("bulk invoice email canonical sender boundary", () => {
@@ -56,6 +57,33 @@ describe("bulk invoice email canonical sender boundary", () => {
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "sent", providerMessageId: "gmail-message-1" }));
   });
 
+  test("delivers a frozen customer statement through the same durable worker", async () => {
+    const statementSender = jest.fn(async () => ({ messageId: "statement-message-1" }));
+    registerCanonicalCustomerStatementEmailSender(statementSender);
+
+    await expect(processClaimedBulkInvoiceEmailJob({
+      id: "statement-job-1",
+      organizationId: "org-1",
+      invoiceId: null,
+      deliveryType: "customer_statement",
+      customerStatementSnapshotId: "statement-snapshot-1",
+      recipientEmail: "billing@example.test",
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: new Date("2026-09-04T16:00:00.000Z"),
+      campaignId: "campaign-statement-1",
+      metadata: { createdByUserId: "user-1" },
+    })).resolves.toBe("sent");
+
+    expect(statementSender).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org-1",
+      statementSnapshotId: "statement-snapshot-1",
+      toEmail: "billing@example.test",
+      deliveryJobId: "statement-job-1",
+    }));
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "sent", providerMessageId: "statement-message-1" }));
+  });
+
   test("preserves the operator-authored message and actor on a durable retry", async () => {
     const canonicalSender = jest.fn(async () => ({ messageId: "gmail-message-2" }));
     registerCanonicalInvoiceEmailSender(canonicalSender);
@@ -85,7 +113,9 @@ describe("bulk invoice email canonical sender boundary", () => {
   });
 
   test("uses durable success evidence instead of resending after a worker recovery", async () => {
-    selectLimit.mockResolvedValueOnce([{ id: "email-log-1", messageId: "gmail-existing" }]);
+    // The worker may perform additional durable lookup reads as its delivery
+    // types grow; every lookup in this recovery test represents prior success.
+    selectLimit.mockResolvedValue([{ id: "email-log-1", messageId: "gmail-existing" }]);
     const canonicalSender = jest.fn(async () => ({ messageId: "must-not-send" }));
     registerCanonicalInvoiceEmailSender(canonicalSender);
 

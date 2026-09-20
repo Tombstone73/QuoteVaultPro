@@ -265,6 +265,7 @@ import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.ro
 import { registerPrinterProfileRoutes } from './routes/printerProfiles.routes';
 import { registerDailyProductionReportRoutes } from './routes/dailyProductionReport.routes';
 import { registerAccountsReceivableReportRoutes } from './routes/accountsReceivableReport.routes';
+import { registerCustomerStatementRoutes } from './routes/customerStatements.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -535,6 +536,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Customers + Enterprise Import Jobs routes extracted to ./routes/customers.routes.ts and ./routes/importJobs.routes.ts (do NOT re-add here)
   registerCustomerRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
+  registerCustomerStatementRoutes(app, { isAuthenticated, tenantContext });
   registerImportJobRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   // Health, Dashboard, Media, and System Status routes extracted to ./routes/system.routes.ts (do NOT re-add here)

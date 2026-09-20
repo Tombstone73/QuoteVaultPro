@@ -14,7 +14,7 @@
  *   - View Contacts      (→ /contacts?customerId=...)
  *   - ── separator ──
  *   - Transactions       (switches to transactions tab via callback)
- *   - Generate Statement (disabled placeholder)
+ *   - Statement
  *   - ── separator ──
  *   - Local Storage      (via callback)
  *
@@ -123,15 +123,9 @@ export function CustomerActionsMenu({
           <Receipt className="w-3.5 h-3.5 text-titan-text-secondary" />
           Transactions
         </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled
-          className="text-titan-text-muted/50 cursor-not-allowed gap-2"
-        >
+        <DropdownMenuItem onClick={() => onSwitchTab?.("statement")} className="text-titan-text-primary hover:bg-titan-bg-card-elevated cursor-pointer gap-2">
           <BarChart3 className="w-3.5 h-3.5" />
-          <span>Generate Statement</span>
-          <span className="ml-auto text-[10px] bg-titan-bg-card-elevated px-1.5 py-0.5 rounded text-titan-text-muted">
-            soon
-          </span>
+          <span>Statement</span>
         </DropdownMenuItem>
 
         {onLocalStorage && (

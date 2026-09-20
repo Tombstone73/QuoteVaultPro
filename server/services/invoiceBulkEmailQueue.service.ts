@@ -5,6 +5,8 @@ import {
   invoiceEmailCampaigns,
   invoiceEmailDeliveryJobs,
   invoiceEmailLogs,
+  customerStatementEmailLogs,
+  customerStatementSnapshots,
   invoices,
   customers,
 } from "../../shared/schema";
@@ -45,6 +47,15 @@ type CanonicalInvoiceEmailSender = (input: {
   message?: string | null;
 }) => Promise<{ messageId?: string | null }>;
 
+type CanonicalCustomerStatementEmailSender = (input: {
+  organizationId: string;
+  statementSnapshotId: string;
+  userId?: string | null;
+  userName?: string | null;
+  toEmail: string;
+  deliveryJobId: string;
+}) => Promise<{ messageId?: string | null }>;
+
 export type BulkInvoiceEmailCandidate = {
   invoiceId: string;
   invoiceVersion: number;
@@ -81,10 +92,12 @@ export async function listInvoiceEmailDeliveryJobs(input: {
   const [rows, totals] = await Promise.all([
     db.select({
       id: invoiceEmailDeliveryJobs.id,
+      deliveryType: invoiceEmailDeliveryJobs.deliveryType,
       invoiceId: invoiceEmailDeliveryJobs.invoiceId,
       invoiceNumber: invoices.displayNumber,
       legacyInvoiceNumber: invoices.invoiceNumber,
       customerName: customers.companyName,
+      statementSnapshotId: invoiceEmailDeliveryJobs.customerStatementSnapshotId,
       recipientEmail: invoiceEmailDeliveryJobs.recipientEmail,
       status: invoiceEmailDeliveryJobs.status,
       attemptCount: invoiceEmailDeliveryJobs.attemptCount,
@@ -99,8 +112,9 @@ export async function listInvoiceEmailDeliveryJobs(input: {
       providerMessageId: invoiceEmailDeliveryJobs.providerMessageId,
       metadata: invoiceEmailDeliveryJobs.metadata,
     }).from(invoiceEmailDeliveryJobs)
-      .innerJoin(invoices, and(eq(invoices.id, invoiceEmailDeliveryJobs.invoiceId), eq(invoices.organizationId, input.organizationId)))
-      .leftJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.organizationId, input.organizationId)))
+      .leftJoin(invoices, and(eq(invoices.id, invoiceEmailDeliveryJobs.invoiceId), eq(invoices.organizationId, input.organizationId)))
+      .leftJoin(customerStatementSnapshots, and(eq(customerStatementSnapshots.id, invoiceEmailDeliveryJobs.customerStatementSnapshotId), eq(customerStatementSnapshots.organizationId, input.organizationId)))
+      .leftJoin(customers, and(eq(customers.organizationId, input.organizationId), sql`${customers.id} = coalesce(${invoices.customerId}, ${customerStatementSnapshots.customerId})`))
       .where(where).orderBy(
         ...(input.view === "active"
           ? [asc(invoiceEmailDeliveryJobs.availableAt), asc(invoiceEmailDeliveryJobs.createdAt)]
@@ -118,6 +132,7 @@ export async function listInvoiceEmailDeliveryJobs(input: {
 }
 
 let canonicalInvoiceEmailSender: CanonicalInvoiceEmailSender | null = null;
+let canonicalCustomerStatementEmailSender: CanonicalCustomerStatementEmailSender | null = null;
 let workerRunning = false;
 
 const DEFAULT_MAX_BATCH_SIZE = 200;
@@ -167,6 +182,11 @@ export function buildBulkInvoiceEmailRequestKey(input: { organizationId: string;
 
 export function registerCanonicalInvoiceEmailSender(sender: CanonicalInvoiceEmailSender): void {
   canonicalInvoiceEmailSender = sender;
+}
+
+/** Statement delivery shares the durable claim/retry/lease worker. */
+export function registerCanonicalCustomerStatementEmailSender(sender: CanonicalCustomerStatementEmailSender): void {
+  canonicalCustomerStatementEmailSender = sender;
 }
 
 /**
@@ -557,10 +577,44 @@ async function enqueueInvoiceEmailCampaign(input: {
   };
 }
 
+/**
+ * Statement delivery intentionally reuses the invoice delivery job table and
+ * worker. The target is a frozen statement snapshot, not a mutable invoice.
+ */
+export async function enqueueCustomerStatementEmailDelivery(input: {
+  organizationId: string;
+  statementSnapshotId: string;
+  createdByUserId?: string | null;
+  createdByUserName?: string | null;
+  recipientEmails: string[];
+  idempotencyKey: string;
+}) {
+  const recipients = Array.from(new Set(input.recipientEmails.map(normalizeRecipient).filter(Boolean)));
+  if (!recipients.length) throw Object.assign(new Error("No statement email recipient is available. Print or download the statement instead."), { statusCode: 400, code: "STATEMENT_RECIPIENT_REQUIRED" });
+  const config = getBulkInvoiceEmailQueueConfig();
+  return db.transaction(async (tx) => {
+    const campaignKey = `statement:${input.idempotencyKey.slice(0, 220)}`;
+    const [campaign] = await tx.insert(invoiceEmailCampaigns).values({ organizationId: input.organizationId, createdByUserId: input.createdByUserId || null, idempotencyKey: campaignKey, requestedInvoiceIds: [], selectedInvoiceCount: 0, skippedInvoiceCount: 0, recipientGroupCount: recipients.length, resultSummary: {}, metadata: { deliveryMode: "customer_statement", statementSnapshotId: input.statementSnapshotId, createdByUserName: input.createdByUserName || null } } as any).onConflictDoNothing().returning();
+    if (!campaign) return { queued: 0, alreadyQueued: recipients.length, replayed: true };
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
+    const scheduled: any = await tx.execute(sql`SELECT max(available_at) AS "latestScheduledAt" FROM invoice_email_delivery_jobs WHERE organization_id = ${input.organizationId} AND status IN ('queued', 'retrying', 'processing')`);
+    let availableAt = getNextBulkInvoiceEmailSlot({ now: new Date(), latestScheduledAt: (scheduled.rows || scheduled)[0]?.latestScheduledAt ?? null, spacingSeconds: config.spacingSeconds });
+    let queued = 0;
+    for (const recipientEmail of recipients) {
+      const [job] = await tx.insert(invoiceEmailDeliveryJobs).values({ organizationId: input.organizationId, campaignId: campaign.id, invoiceId: null, invoiceVersion: 1, deliveryType: "customer_statement", customerStatementSnapshotId: input.statementSnapshotId, recipientEmail, recipientKey: recipientEmail, idempotencyKey: `statement:${input.statementSnapshotId}:${recipientEmail}`, maxAttempts: config.maxAttempts, availableAt, metadata: { deliveryMode: "customer_statement", createdByUserId: input.createdByUserId || null, createdByUserName: input.createdByUserName || null } } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
+      if (job) { queued += 1; availableAt = new Date(availableAt.getTime() + config.spacingSeconds * 1000); }
+    }
+    await tx.update(invoiceEmailCampaigns).set({ queuedInvoiceCount: queued, skippedInvoiceCount: recipients.length - queued, status: queued ? "queued" : "completed", completedAt: queued ? null : new Date(), resultSummary: { queued, deliveryMode: "customer_statement", statementSnapshotId: input.statementSnapshotId }, updatedAt: new Date() } as any).where(eq(invoiceEmailCampaigns.id, campaign.id));
+    return { queued, alreadyQueued: recipients.length - queued, replayed: false };
+  });
+}
+
 export type ClaimedBulkInvoiceEmailJob = {
   id: string;
   organizationId: string;
-  invoiceId: string;
+  invoiceId: string | null;
+  deliveryType?: "invoice" | "customer_statement";
+  customerStatementSnapshotId?: string | null;
   recipientEmail: string;
   attemptCount: number;
   maxAttempts: number;
@@ -669,7 +723,8 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       SELECT id, organization_id AS "organizationId", invoice_id AS "invoiceId",
              recipient_email AS "recipientEmail", attempt_count AS "attemptCount",
              max_attempts AS "maxAttempts", created_at AS "createdAt", campaign_id AS "campaignId",
-             metadata AS "metadata"
+             metadata AS "metadata", delivery_type AS "deliveryType",
+             customer_statement_snapshot_id AS "customerStatementSnapshotId"
       FROM invoice_email_delivery_jobs
       WHERE status IN ('queued', 'retrying')
         AND available_at <= now()
@@ -731,13 +786,15 @@ async function updateCampaignCompletion(campaignId: string): Promise<void> {
 /** The bulk worker's only delivery operation: invoke the registered canonical sender. */
 export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceEmailJob): Promise<"sent" | "failed"> {
   logDeliveryStage(job, "job_claimed");
-  if (!canonicalInvoiceEmailSender) {
+  const isStatement = job.deliveryType === "customer_statement";
+  const senderAvailable = isStatement ? Boolean(canonicalCustomerStatementEmailSender) : Boolean(canonicalInvoiceEmailSender);
+  if (!senderAvailable) {
     const terminal = job.attemptCount >= job.maxAttempts;
     await db.update(invoiceEmailDeliveryJobs).set({
       status: terminal ? "failed" : "retrying",
       availableAt: terminal ? new Date() : new Date(Date.now() + 60_000),
       claimExpiresAt: null,
-      failureReason: "Canonical invoice email sender is not registered",
+      failureReason: isStatement ? "Canonical customer statement email sender is not registered" : "Canonical invoice email sender is not registered",
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
     logDeliveryStage(job, "sender_unavailable", { terminal });
@@ -745,33 +802,35 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     return "failed";
   }
 
-  const [alreadySent] = await db.select({ id: invoiceEmailLogs.id, messageId: invoiceEmailLogs.messageId })
-    .from(invoiceEmailLogs)
-    .where(and(
-      eq(invoiceEmailLogs.organizationId, job.organizationId),
-      eq(invoiceEmailLogs.invoiceId, job.invoiceId),
-      eq(invoiceEmailLogs.status, "sent"),
-      eq(invoiceEmailLogs.type, "invoice_send"),
-      gte(invoiceEmailLogs.sentAt, job.createdAt),
-      sql`lower(${invoiceEmailLogs.recipientEmail}) = ${normalizeRecipient(job.recipientEmail)}`,
-    )).limit(1);
+  let alreadySent: { id: string; messageId: string | null } | undefined;
+  if (isStatement) {
+    [alreadySent] = await db.select({ id: customerStatementEmailLogs.id, messageId: customerStatementEmailLogs.messageId })
+      .from(customerStatementEmailLogs).where(and(
+        eq(customerStatementEmailLogs.organizationId, job.organizationId),
+        eq(customerStatementEmailLogs.statementSnapshotId, job.customerStatementSnapshotId || ""),
+        eq(customerStatementEmailLogs.status, "sent"), gte(customerStatementEmailLogs.sentAt, job.createdAt),
+        sql`lower(${customerStatementEmailLogs.recipientEmail}) = ${normalizeRecipient(job.recipientEmail)}`,
+      )).limit(1);
+  } else {
+    [alreadySent] = await db.select({ id: invoiceEmailLogs.id, messageId: invoiceEmailLogs.messageId })
+      .from(invoiceEmailLogs).where(and(
+        eq(invoiceEmailLogs.organizationId, job.organizationId), eq(invoiceEmailLogs.invoiceId, job.invoiceId || ""),
+        eq(invoiceEmailLogs.status, "sent"), eq(invoiceEmailLogs.type, "invoice_send"), gte(invoiceEmailLogs.sentAt, job.createdAt),
+        sql`lower(${invoiceEmailLogs.recipientEmail}) = ${normalizeRecipient(job.recipientEmail)}`,
+      )).limit(1);
+  }
 
   try {
     logDeliveryStage(job, "canonical_sender_started", { alreadySent: Boolean(alreadySent) });
-    const outcome = alreadySent || await withInvoiceEmailSendDeadline(
-      canonicalInvoiceEmailSender({
-        organizationId: job.organizationId,
-        invoiceId: job.invoiceId,
-        userId: job.metadata?.createdByUserId || null,
-        userName: job.metadata?.createdByUserName || null,
-        toEmail: job.recipientEmail,
-        deliveryJobId: job.id,
-        allowUnapproved: job.metadata?.allowUnapproved === true,
-        subject: job.metadata?.subject || undefined,
-        message: job.metadata?.message || undefined,
-      }),
-      getBulkInvoiceEmailQueueConfig().sendTimeoutSeconds,
-    );
+    // Do not construct the sender promise before checking durable success
+    // evidence: constructing it would submit a duplicate email even though
+    // `alreadySent` later short-circuits the await.
+    let outcome: { messageId?: string | null } | undefined = alreadySent;
+    if (!outcome && isStatement) {
+      outcome = await withInvoiceEmailSendDeadline(canonicalCustomerStatementEmailSender!({ organizationId: job.organizationId, statementSnapshotId: job.customerStatementSnapshotId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id }), getBulkInvoiceEmailQueueConfig().sendTimeoutSeconds);
+    } else if (!outcome) {
+      outcome = await withInvoiceEmailSendDeadline(canonicalInvoiceEmailSender!({ organizationId: job.organizationId, invoiceId: job.invoiceId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id, allowUnapproved: job.metadata?.allowUnapproved === true, subject: job.metadata?.subject || undefined, message: job.metadata?.message || undefined }), getBulkInvoiceEmailQueueConfig().sendTimeoutSeconds);
+    }
     await db.update(invoiceEmailDeliveryJobs).set({
       status: "sent",
       sentAt: new Date(),

@@ -27,7 +27,7 @@ describe("bulk invoice email delivery queue contract", () => {
   test("keeps PDF, provider delivery, logs, and audit writes on the one canonical sender", () => {
     expect(route).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
     expect(queue).toContain("canonicalInvoiceEmailSender");
-    expect(queue).toContain("canonicalInvoiceEmailSender({");
+    expect(queue).toContain("canonicalInvoiceEmailSender!({");
     expect(queue).toContain("withInvoiceEmailSendDeadline");
     expect(route).toContain("generateInvoicePdfBytes");
     expect(route).toContain("createInvoicePdfEmailAttachment");

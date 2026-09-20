@@ -7,7 +7,7 @@ import ContactForm from "@/components/contact-form";
 import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
 import { CustomerActionsMenu } from "./CustomerActionsMenu";
 import TransactionsTab from "./TransactionsTab";
-import StatementTabComponent from "./StatementTab";
+import CurrentCustomerStatement from "./CurrentCustomerStatement";
 import {
   Building2,
   Mail,
@@ -3204,7 +3204,7 @@ export default function EnhancedCustomerView({
               )
             )}
             {activeTab === "transactions" && <TransactionsTab customerId={customer.id} customer={customer} />}
-            {activeTab === "statement" && <StatementTabComponent customerId={customer.id} customer={customer} />}
+            {activeTab === "statement" && <CurrentCustomerStatement customerId={customer.id} />}
           </div>
         </div>
       </div>
