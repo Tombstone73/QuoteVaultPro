@@ -22,6 +22,7 @@ export class CanonicalFulfillmentOperations {
   deleteShipmentPackage(...args: Parameters<typeof fulfillmentServiceV2.deleteShipmentPackage>) { return fulfillmentServiceV2.deleteShipmentPackage(...args); }
   markShipmentShipped(...args: Parameters<typeof fulfillmentServiceV2.markShipmentShipped>) { return fulfillmentServiceV2.markShipmentShipped(...args); }
   voidShipment(...args: Parameters<typeof fulfillmentServiceV2.voidShipment>) { return fulfillmentServiceV2.voidShipment(...args); }
+  reverseTerminalFulfillment(...args: Parameters<typeof fulfillmentServiceV2.reverseTerminalFulfillment>) { return fulfillmentServiceV2.reverseTerminalFulfillment(...args); }
   createOrGetPickupTicket(...args: Parameters<typeof fulfillmentServiceV2.createOrGetPickupTicket>) { return fulfillmentServiceV2.createOrGetPickupTicket(...args); }
   markPickupReady(...args: Parameters<typeof fulfillmentServiceV2.markPickupReady>) { return fulfillmentServiceV2.markPickupReady(...args); }
   markPickupPickedUp(...args: Parameters<typeof fulfillmentServiceV2.markPickupPickedUp>) { return fulfillmentServiceV2.markPickupPickedUp(...args); }

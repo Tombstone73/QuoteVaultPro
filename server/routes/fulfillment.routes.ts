@@ -42,12 +42,20 @@ import {
   patchShipmentSchema as patchFulfillmentShipmentSchema,
   pickupReadySchema,
   pickupHandoffSchema,
+  terminalFulfillmentReversalSchema,
 } from "../services/fulfillment/schemas";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
+
+function requireTerminalFulfillmentReversalAuthority(req: any): void {
+  const role = String(req.actorOrgRole ?? req.orgRole ?? req.user?.orgRole ?? req.user?.role ?? '').trim().toLowerCase();
+  if (!['owner', 'admin'].includes(role)) {
+    throw new FulfillmentHttpError(403, 'Organization Owner or Admin authority is required to reverse terminal fulfillment.', 'FULFILLMENT_TERMINAL_REVERSAL_FORBIDDEN');
+  }
+}
 
 function fulfillmentFailureResponse(error: any, fallbackMessage: string, fallbackCode: string) {
   const message = error?.message ? `${fallbackMessage}: ${error.message}` : fallbackMessage;
@@ -386,6 +394,25 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  app.post('/api/fulfillment/shipments/:shipmentId/reverse', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      requireTerminalFulfillmentReversalAuthority(req);
+      const parsed = terminalFulfillmentReversalSchema.parse(req.body || {});
+      const clientRequestId = String(req.get('Idempotency-Key') || '').trim() || parsed.clientRequestId;
+      const data = await canonicalFulfillmentOperations.reverseTerminalFulfillment(getRequestOrganizationId(req), {
+        sourceType: 'SHIPMENT', sourceId: req.params.shipmentId, items: parsed.items, reason: parsed.reason,
+        clientRequestId: clientRequestId || null, actorUserId: getUserId(req.user) || null,
+        actorOrgRole: req.actorOrgRole ?? req.orgRole ?? null,
+      });
+      return res.json({ success: true, data, message: data.replayed ? 'Shipment reversal already recorded' : 'Shipment reversal recorded' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'A reason and valid reversal quantities are required.', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] reverse shipment error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to reverse shipment', code: 'FULFILLMENT_TERMINAL_REVERSAL_FAILED' });
+    }
+  });
+
   app.post('/api/fulfillment/pickup/:orderId', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -467,6 +494,25 @@ export function registerFulfillmentRoutes(
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       console.error('[fulfillment] record pickup handoff error:', error);
       return res.status(500).json({ success: false, message: 'Failed to record pickup handoff' });
+    }
+  });
+
+  app.post('/api/fulfillment/pickup/handoffs/:handoffId/reverse', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      requireTerminalFulfillmentReversalAuthority(req);
+      const parsed = terminalFulfillmentReversalSchema.parse(req.body || {});
+      const clientRequestId = String(req.get('Idempotency-Key') || '').trim() || parsed.clientRequestId;
+      const data = await canonicalFulfillmentOperations.reverseTerminalFulfillment(getRequestOrganizationId(req), {
+        sourceType: 'PICKUP_HANDOFF', sourceId: req.params.handoffId, items: parsed.items, reason: parsed.reason,
+        clientRequestId: clientRequestId || null, actorUserId: getUserId(req.user) || null,
+        actorOrgRole: req.actorOrgRole ?? req.orgRole ?? null,
+      });
+      return res.json({ success: true, data, message: data.replayed ? 'Pickup reversal already recorded' : 'Pickup reversal recorded' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'A reason and valid reversal quantities are required.', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] reverse pickup error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to reverse pickup', code: 'FULFILLMENT_TERMINAL_REVERSAL_FAILED' });
     }
   });
 

@@ -87,6 +87,15 @@ export const pickupHandoffSchema = z.object({
   clientRequestId: z.string().trim().min(1).max(128).optional(),
 });
 
+export const terminalFulfillmentReversalSchema = z.object({
+  items: z.array(z.object({
+    orderLineItemId: z.string().min(1),
+    quantity: z.coerce.number().int().positive(),
+  })).min(1),
+  reason: z.string().trim().min(1, 'Reason is required').max(2000),
+  clientRequestId: z.string().trim().min(1).max(128).optional(),
+});
+
 export const fulfillmentReadyQuantityAdjustmentSchema = z.object({
   items: z.array(z.object({
     orderLineItemId: z.string().min(1),
@@ -126,6 +135,7 @@ export type CreateShipmentInput = z.infer<typeof createShipmentSchema>;
 export type PatchShipmentInput = z.infer<typeof patchShipmentSchema>;
 export type PickupReadyInput = z.infer<typeof pickupReadySchema>;
 export type PickupHandoffInput = z.infer<typeof pickupHandoffSchema>;
+export type TerminalFulfillmentReversalInput = z.infer<typeof terminalFulfillmentReversalSchema>;
 export type FulfillmentReadyQuantityAdjustmentInput = z.infer<typeof fulfillmentReadyQuantityAdjustmentSchema>;
 export type FulfillmentNoteInput = z.infer<typeof fulfillmentNoteSchema>;
 export type FulfillmentChecklistItemInput = z.infer<typeof fulfillmentChecklistItemSchema>;

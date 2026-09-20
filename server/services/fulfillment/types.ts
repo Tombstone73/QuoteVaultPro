@@ -50,6 +50,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
   permissions?: {
     canRevertStatus: boolean;
     revertPermission: string;
+    canReverseTerminalFulfillment?: boolean;
   };
   billingAutomation?: {
     status: string;

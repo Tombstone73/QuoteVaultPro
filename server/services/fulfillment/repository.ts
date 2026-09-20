@@ -32,6 +32,7 @@ import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResol
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 import { resolveActiveProductionOwners } from '../productionOwnership';
 import { resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
+import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from '@shared/fulfillmentTerminalReversal';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -72,6 +73,17 @@ function toShipAddressKey(order: {
 
 function cleanText(value: unknown): string {
   return String(value ?? '').trim();
+}
+
+async function readTerminalReversalQuantities(runner: any, orgId: string, lineItemIds: string[]) {
+  if (!lineItemIds.length) return { shipment: new Map<string, number>(), pickup: new Map<string, number>() };
+  const events = await runner.select({ eventType: fulfillmentEvents.eventType, payloadJson: fulfillmentEvents.payloadJson })
+    .from(fulfillmentEvents)
+    .where(and(
+      eq(fulfillmentEvents.organizationId, orgId),
+      inArray(fulfillmentEvents.eventType, ['SHIPMENT_REVERSED', 'PICKUP_HANDOFF_REVERSED']),
+    ));
+  return terminalReversalQuantitiesByLine(events, lineItemIds);
 }
 
 function uniqueNonEmpty(values: unknown[]): string[] {
@@ -245,8 +257,13 @@ export class ShipmentRepo {
         eq(shipments.status, 'SHIPPED'),
       ));
 
+    const lineRows = await runner.select({ id: orderLineItems.id })
+      .from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+    const reversals = await readTerminalReversalQuantities(runner, orgId, lineRows.map((row: any) => row.id));
+
     const orderedQty = Number(orderedRow?.orderedQty || 0);
-    const shippedQty = Number(shippedRow?.shippedQty || 0);
+    const reversedShipmentQty = Array.from(reversals.shipment.values()).reduce((total, quantity) => total + quantity, 0);
+    const shippedQty = Math.max(0, Number(shippedRow?.shippedQty || 0) - reversedShipmentQty);
 
     const nextStatus = shippedQty <= 0
       ? 'pending'
@@ -565,6 +582,9 @@ export class ShipmentRepo {
           .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineItemIds))).groupBy(pickupHandoffItems.orderLineItemId)
         : [];
       const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const reversals = await readTerminalReversalQuantities(tx, orgId, lineItemIds);
+      const reversedShipmentByLine = reversals.shipment;
+      const reversedPickupByLine = reversals.pickup;
 
       for (const [lineItemId, draftQty] of Array.from(draftByLineItem.entries())) {
         const line = lineRows.find((row) => row.id === lineItemId);
@@ -573,7 +593,8 @@ export class ShipmentRepo {
           return { ok: false as const, code: 'LINE_ITEM_NOT_FOUND', message: `Line item ${lineItemId} was not found` };
         }
         const projection = resolveFulfillmentLineQuantity({ ...line, orderedQuantity: Number(orderedQty),
-          shippedQuantity: alreadyShippedByLineItem.get(lineItemId) ?? 0, pickedUpQuantity: pickedUpByLine.get(lineItemId) ?? 0 });
+          shippedQuantity: Math.max(0, Number(alreadyShippedByLineItem.get(lineItemId) ?? 0) - (reversedShipmentByLine.get(lineItemId) ?? 0)),
+          pickedUpQuantity: Math.max(0, Number(pickedUpByLine.get(lineItemId) ?? 0) - (reversedPickupByLine.get(lineItemId) ?? 0)) });
         if (!projection.requiresFulfillment || draftQty > projection.remainingQuantity) {
           return {
             ok: false as const,
@@ -652,6 +673,105 @@ export class ShipmentRepo {
       });
 
       return { ok: true as const, shipment: updated };
+    });
+  }
+
+  /**
+   * Appends terminal-fulfillment correction evidence. The source
+   * shipment/handoff is deliberately never edited or removed; the canonical
+   * projection reads these immutable reversal events to derive net quantity.
+   */
+  async reverseTerminalFulfillment(orgId: string, input: {
+    sourceType: 'SHIPMENT' | 'PICKUP_HANDOFF';
+    sourceId: string;
+    items: Array<{ orderLineItemId: string; quantity: number }>;
+    reason: string;
+    actorUserId?: string | null;
+    clientRequestId?: string | null;
+  }) {
+    return this.dbInstance.transaction(async (tx) => {
+      const requestId = cleanText(input.clientRequestId);
+
+      const requested = new Map<string, number>();
+      for (const item of input.items) {
+        requested.set(item.orderLineItemId, (requested.get(item.orderLineItemId) ?? 0) + Math.trunc(Number(item.quantity)));
+      }
+      if (!requested.size || Array.from(requested.values()).some((quantity) => !Number.isInteger(quantity) || quantity <= 0) || !cleanText(input.reason)) {
+        return { ok: false as const, code: 'INVALID_REVERSAL', message: 'A non-empty reason and positive line quantities are required.' };
+      }
+
+      let sourceItems: Array<{ orderId: string; orderLineItemId: string; quantity: number }> = [];
+      let eventEntityType: 'SHIPMENT' | 'PICKUP_TICKET' = 'SHIPMENT';
+      let eventEntityId = input.sourceId;
+      let pickupTicketId: string | null = null;
+
+      if (input.sourceType === 'SHIPMENT') {
+        await tx.execute(sql`SELECT ${shipments.id} FROM ${shipments} WHERE ${shipments.id} = ${input.sourceId} AND ${shipments.organizationId} = ${orgId} FOR UPDATE`);
+        const [shipment] = await tx.select({ id: shipments.id, status: shipments.status })
+          .from(shipments).where(and(eq(shipments.id, input.sourceId), eq(shipments.organizationId, orgId))).limit(1);
+        if (!shipment) return { ok: false as const, code: 'NOT_FOUND', message: 'Shipment not found.' };
+        if (shipment.status !== 'SHIPPED') return { ok: false as const, code: 'INVALID_STATE', message: 'Only SHIPPED shipments can be reversed.' };
+        sourceItems = await tx.select({ orderId: shipmentItems.orderId, orderLineItemId: shipmentItems.orderLineItemId, quantity: shipmentItems.quantity })
+          .from(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, input.sourceId)));
+      } else {
+        await tx.execute(sql`SELECT ${pickupHandoffs.id} FROM ${pickupHandoffs} WHERE ${pickupHandoffs.id} = ${input.sourceId} AND ${pickupHandoffs.organizationId} = ${orgId} FOR UPDATE`);
+        const [handoff] = await tx.select({ id: pickupHandoffs.id, pickupTicketId: pickupHandoffs.pickupTicketId })
+          .from(pickupHandoffs).where(and(eq(pickupHandoffs.id, input.sourceId), eq(pickupHandoffs.organizationId, orgId))).limit(1);
+        if (!handoff) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup handoff not found.' };
+        pickupTicketId = handoff.pickupTicketId;
+        eventEntityType = 'PICKUP_TICKET';
+        eventEntityId = handoff.pickupTicketId;
+        sourceItems = await tx.select({ orderId: pickupHandoffItems.orderId, orderLineItemId: pickupHandoffItems.orderLineItemId, quantity: pickupHandoffItems.quantity })
+          .from(pickupHandoffItems).where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffItems.pickupHandoffId, input.sourceId)));
+      }
+      if (!sourceItems.length) return { ok: false as const, code: 'EMPTY_SOURCE', message: 'Terminal fulfillment has no line-item quantities to reverse.' };
+
+      const sourceByLine = new Map<string, { orderId: string; quantity: number }>();
+      for (const item of sourceItems) {
+        const current = sourceByLine.get(item.orderLineItemId);
+        sourceByLine.set(item.orderLineItemId, { orderId: item.orderId, quantity: (current?.quantity ?? 0) + Number(item.quantity || 0) });
+      }
+      if (Array.from(requested.keys()).some((lineItemId) => !sourceByLine.has(lineItemId))) {
+        return { ok: false as const, code: 'LINE_ITEM_NOT_IN_SOURCE', message: 'Every reversal line must belong to the selected terminal fulfillment record.' };
+      }
+      const orderIds = Array.from(new Set(Array.from(requested.keys()).map((lineItemId) => sourceByLine.get(lineItemId)!.orderId)));
+      if (orderIds.length !== 1) return { ok: false as const, code: 'MULTI_ORDER_REVERSAL_REQUIRED', message: 'Reverse one order allocation at a time for a combined shipment.' };
+      const orderId = orderIds[0];
+      const lineIds = Array.from(requested.keys());
+      await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineIds)} FOR UPDATE`);
+      const reversalEventType = input.sourceType === 'SHIPMENT' ? 'SHIPMENT_REVERSED' : 'PICKUP_HANDOFF_REVERSED';
+      const priorEvents = await tx.select({ payloadJson: fulfillmentEvents.payloadJson, eventType: fulfillmentEvents.eventType })
+        .from(fulfillmentEvents).where(and(
+          eq(fulfillmentEvents.organizationId, orgId),
+          eq(fulfillmentEvents.entityType, eventEntityType),
+          eq(fulfillmentEvents.entityId, eventEntityId),
+          eq(fulfillmentEvents.eventType, reversalEventType),
+        ));
+      const matchingEvents = priorEvents.filter((event) => String((event.payloadJson as any)?.sourceId || '') === input.sourceId);
+      if (requestId && matchingEvents.some((event) => String((event.payloadJson as any)?.clientRequestId || '') === requestId)) {
+        return { ok: true as const, replayed: true, orderId, pickupTicketId };
+      }
+      const reversalMaps = terminalReversalQuantitiesByLine(matchingEvents, lineIds);
+      const reversedByLine = input.sourceType === 'SHIPMENT' ? reversalMaps.shipment : reversalMaps.pickup;
+      for (const [lineItemId, quantity] of requested) {
+        const source = sourceByLine.get(lineItemId)!;
+        if (!canAppendTerminalFulfillmentReversal({ originalQuantity: source.quantity, alreadyReversedQuantity: reversedByLine.get(lineItemId) ?? 0, requestedQuantity: quantity })) {
+          return { ok: false as const, code: 'QTY_EXCEEDS_TERMINAL_FULFILLMENT', message: 'Reversal quantity exceeds the unreversed terminal fulfillment quantity.' };
+        }
+      }
+
+      const safeActorUserId = await resolveExistingActorUserId(tx, input.actorUserId);
+      const reversalItems = Array.from(requested, ([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
+
+      await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId,
+        actorUserId: safeActorUserId,
+        entityType: eventEntityType,
+        entityId: eventEntityId,
+        eventType: reversalEventType,
+        payloadJson: { sourceType: input.sourceType, sourceId: input.sourceId, orderId, reason: cleanText(input.reason), clientRequestId: requestId || null, items: reversalItems },
+      });
+      return { ok: true as const, replayed: false, orderId, pickupTicketId };
     });
   }
 
@@ -974,8 +1094,11 @@ export class PickupRepo {
           .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
           .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, ids))).groupBy(pickupHandoffItems.orderLineItemId),
       ]);
-      const shipped = new Map(shippedRows.map((row) => [row.id, Number(row.quantity || 0)]));
-      const picked = new Map(pickedRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const reversalQuantities = await readTerminalReversalQuantities(tx, orgId, ids);
+      const reversedShipment = reversalQuantities.shipment;
+      const reversedPickup = reversalQuantities.pickup;
+      const shipped = new Map(shippedRows.map((row) => [row.id, Math.max(0, Number(row.quantity || 0) - (reversedShipment.get(row.id) ?? 0))]));
+      const picked = new Map(pickedRows.map((row) => [row.id, Math.max(0, Number(row.quantity || 0) - (reversedPickup.get(row.id) ?? 0))]));
       const projections = lines.map((line) => resolveFulfillmentLineQuantity({
         ...line, orderedQuantity: Number(line.quantity || 0),
         shippedQuantity: shipped.get(line.id) ?? 0, pickedUpQuantity: picked.get(line.id) ?? 0,
@@ -1235,9 +1358,12 @@ export class FulfillmentDashboardRepo {
         inArray(fulfillmentReadyQuantities.orderLineItemId, ids),
       )),
     ]);
+    const reversalQuantities = await readTerminalReversalQuantities(this.dbInstance, orgId, ids);
     const producedByLine = new Map(producedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
-    const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
-    const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+    const reversedShipmentByLine = reversalQuantities.shipment;
+    const reversedPickupByLine = reversalQuantities.pickup;
+    const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversedShipmentByLine.get(row.lineItemId) ?? 0)]));
+    const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversedPickupByLine.get(row.lineItemId) ?? 0)]));
     const readyByLine = new Map(readyRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
 
     return lines.map((line) => {
@@ -1304,8 +1430,11 @@ export class FulfillmentDashboardRepo {
           .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineIds))).groupBy(pickupHandoffItems.orderLineItemId),
       ]);
       const readyByLine = new Map(readyRows.map((row) => [row.orderLineItemId, Number(row.readyWaitingQuantity || 0)]));
-      const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
-      const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+      const reversalQuantities = await readTerminalReversalQuantities(tx, orgId, lineIds);
+      const reversedShipmentByLine = reversalQuantities.shipment;
+      const reversedPickupByLine = reversalQuantities.pickup;
+      const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedShipmentByLine.get(row.lineItemId) ?? 0))]));
+      const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedPickupByLine.get(row.lineItemId) ?? 0))]));
       const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number }> = [];
       for (const [lineItemId, quantityDelta] of requested) {
         const line = lineById.get(lineItemId)!;

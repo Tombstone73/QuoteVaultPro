@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
   getOrderDetails,
   getFulfillmentOrderDetail,
@@ -27,6 +28,7 @@ import {
   useShipmentDetailQuery,
   useUpdateShipmentMutation,
   useVoidShipmentMutation,
+  useReverseTerminalFulfillmentMutation,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -126,6 +128,10 @@ export function FulfillmentShipmentEditor({
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
   const [splitMode, setSplitMode] = useState(false);
+  const [shipmentReversalOpen, setShipmentReversalOpen] = useState(false);
+  const [shipmentReversalReason, setShipmentReversalReason] = useState("");
+  const [shipmentReversalConfirmed, setShipmentReversalConfirmed] = useState(false);
+  const [shipmentReversalQuantities, setShipmentReversalQuantities] = useState<Record<string, number>>({});
   const hydratedShipmentId = useRef<string | null>(null);
 
   const debugEnabled = useMemo(() => new URLSearchParams(location.search).get("debug") === "1", [location.search]);
@@ -134,6 +140,7 @@ export function FulfillmentShipmentEditor({
   const updateShipment = useUpdateShipmentMutation(shipmentId || "");
   const markShipped = useMarkShippedMutation(shipmentId || "");
   const voidShipment = useVoidShipmentMutation(shipmentId || "");
+  const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation();
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
@@ -384,6 +391,25 @@ export function FulfillmentShipmentEditor({
     }
   };
 
+  const handleShipmentReversal = async () => {
+    if (!shipmentId || !shipment || !shipmentReversalConfirmed || !shipmentReversalReason.trim()) return;
+    const items = shipment.items.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: Math.floor(Number(shipmentReversalQuantities[item.orderLineItemId] ?? 0)) })).filter((item) => item.quantity > 0);
+    if (!items.length) return;
+    try {
+      setLastError(null);
+      const response = await reverseTerminalFulfillment.mutateAsync({ sourceType: "SHIPMENT", sourceId: shipmentId, items, reason: shipmentReversalReason.trim(), clientRequestId: crypto.randomUUID() });
+      setLastResponse(response);
+      toast({ title: "Shipment reversal recorded", description: "Shipment history is retained and its fulfillment quantity has been reopened." });
+      setShipmentReversalOpen(false);
+      await shipmentQuery.refetch();
+      await onMutationComplete?.();
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      setLastError({ code: parsed.code, message: parsed.message });
+      toast({ title: "Shipment reversal failed", description: parsed.message, variant: "destructive" });
+    }
+  };
+
   if (shipmentQuery.isLoading) {
     return (
       <div className="flex min-h-[420px] items-center justify-center">
@@ -404,6 +430,7 @@ export function FulfillmentShipmentEditor({
   }
 
   const isDraft = shipment.status === "DRAFT";
+  const isSingleOrderShipment = shipment.orders.length === 1;
   const advancedPacking = shipment.packingMode === "advanced_separate_packing" || splitMode;
   const packedCount = shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
@@ -812,11 +839,25 @@ export function FulfillmentShipmentEditor({
                   Void Shipment
                 </span>
               </button>
+              {shipment.status === "SHIPPED" && isSingleOrderShipment && fulfillmentByOrderId[shipment.orders[0].orderId]?.permissions?.canReverseTerminalFulfillment ? <button
+                type="button"
+                className="mt-2 w-full rounded border border-red-500/30 py-2 text-[10px] font-bold uppercase tracking-wider text-red-500 transition-colors hover:bg-red-500/10"
+                onClick={() => { setShipmentReversalReason(""); setShipmentReversalConfirmed(false); setShipmentReversalQuantities(Object.fromEntries(shipment.items.map((item) => [item.orderLineItemId, Number(item.quantity || 0)]))); setShipmentReversalOpen(true); }}
+              >
+                Reverse Shipment
+              </button> : null}
             </div>
           </aside>
         </div>
 
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? shipmentQuery.data ?? null} lastError={lastError} />
+        <AlertDialog open={shipmentReversalOpen} onOpenChange={setShipmentReversalOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader><AlertDialogTitle>Reverse Shipment</AlertDialogTitle><AlertDialogDescription>This records a TitanOS fulfillment correction only. Shipment, carrier, tracking, and invoice/payment history remain intact; the allocated quantity will reopen for fulfillment.</AlertDialogDescription></AlertDialogHeader>
+            <div className="space-y-3"><p className="text-sm">Set the quantity to reopen for each original shipment allocation.</p>{shipment.items.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.orderLineItemId} <span className="text-muted-foreground">(originally {item.quantity})</span></span><input type="number" min={0} max={item.quantity} className="h-9 w-24 rounded border border-input bg-background px-2" value={shipmentReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setShipmentReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: Math.max(0, Math.min(Number(item.quantity || 0), Math.floor(Number(event.target.value) || 0))) }))} /></label>)}<textarea aria-label="Shipment reversal reason" className="min-h-24 w-full rounded border border-input bg-background p-3 text-sm" value={shipmentReversalReason} onChange={(event) => setShipmentReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={shipmentReversalConfirmed} onChange={(event) => setShipmentReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without cancelling the carrier transaction or deleting shipment history.</span></label></div>
+            <AlertDialogFooter><AlertDialogCancel disabled={reverseTerminalFulfillment.isPending}>Cancel</AlertDialogCancel><AlertDialogAction disabled={!shipmentReversalReason.trim() || !shipmentReversalConfirmed || reverseTerminalFulfillment.isPending} onClick={(event) => { event.preventDefault(); void handleShipmentReversal(); }}>{reverseTerminalFulfillment.isPending ? "Reversing…" : "Reverse Shipment"}</AlertDialogAction></AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </div>
   );

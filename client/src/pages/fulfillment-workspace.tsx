@@ -16,8 +16,10 @@ import {
   useFulfillmentOrderDetailQuery,
   useMarkOrderReadyForPickupMutation,
   useRecordPickupHandoffMutation,
+  useReverseTerminalFulfillmentMutation,
 } from "@/hooks/useFulfillment";
 import { PickupTravelerPrintDialog } from "@/components/fulfillment/PickupTravelerPrintDialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 /** The order is the operator workspace. Shipment and pickup rows are execution evidence. */
 export default function FulfillmentWorkspacePage() {
@@ -30,11 +32,16 @@ export default function FulfillmentWorkspacePage() {
   const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId);
   const addNote = useAddFulfillmentNoteMutation(orderId);
   const recordPickupHandoff = useRecordPickupHandoffMutation(orderId);
+  const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation(orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
   const [note, setNote] = useState("");
   const [pickupRequestId, setPickupRequestId] = useState<string | null>(null);
   const [pickupTravelerOpen, setPickupTravelerOpen] = useState(false);
+  const [pickupReversal, setPickupReversal] = useState<{ handoffId: string; items: Array<{ orderLineItemId: string; quantity: number; label: string }> } | null>(null);
+  const [pickupReversalReason, setPickupReversalReason] = useState("");
+  const [pickupReversalQuantities, setPickupReversalQuantities] = useState<Record<string, number>>({});
+  const [pickupReversalConfirmed, setPickupReversalConfirmed] = useState(false);
   const detail = detailQuery.data;
   const queryError = detailQuery.isError ? toFulfillmentError(detailQuery.error) : null;
   const loadState = getFulfillmentWorkspaceLoadState({ orderId, isLoading: detailQuery.isLoading, isError: detailQuery.isError, errorStatus: queryError?.status, hasDetail: !!detail });
@@ -106,6 +113,31 @@ export default function FulfillmentWorkspacePage() {
     } catch (error) { showError("Could not add fulfillment note", error); }
   };
 
+  const openPickupReversal = (handoff: NonNullable<typeof detail>["pickupHandoffs"][number]) => {
+    const items = handoff.items.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: item.quantity, label: item.productName || item.description || "line item" }));
+    setPickupReversal({ handoffId: handoff.id, items });
+    setPickupReversalQuantities(Object.fromEntries(items.map((item) => [item.orderLineItemId, item.quantity])));
+    setPickupReversalReason("");
+    setPickupReversalConfirmed(false);
+  };
+
+  const submitPickupReversal = async () => {
+    if (!pickupReversal || !pickupReversalConfirmed || !pickupReversalReason.trim()) return;
+    const items = pickupReversal.items.flatMap((item) => {
+      const quantity = Math.floor(Number(pickupReversalQuantities[item.orderLineItemId] || 0));
+      return quantity > 0 ? [{ orderLineItemId: item.orderLineItemId, quantity }] : [];
+    });
+    if (!items.length) return showError("No pickup quantity selected", new Error("Enter at least one quantity to reverse."));
+    try {
+      await reverseTerminalFulfillment.mutateAsync({ sourceType: "PICKUP_HANDOFF", sourceId: pickupReversal.handoffId, items, reason: pickupReversalReason.trim(), clientRequestId: crypto.randomUUID() });
+      toast({ title: "Pickup reversal recorded", description: "The original pickup history remains; the selected quantity is available for fulfillment again." });
+      setPickupReversal(null);
+    } catch (error) {
+      showError("Pickup reversal failed", error);
+      await detailQuery.refetch();
+    }
+  };
+
   return <main className="mx-auto w-full max-w-5xl space-y-4 p-4 md:p-6 lg:p-8">
     <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
       <div className="flex gap-3"><button aria-label="Back to fulfillment" className="rounded p-2 hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.list)}><ArrowLeft className="h-5 w-5" /></button><div>
@@ -141,6 +173,14 @@ export default function FulfillmentWorkspacePage() {
 
     <section className="rounded-xl border bg-card p-4" data-testid="fulfillment-order-notes"><h2 className="font-bold">Order Notes</h2><p className="mt-1 text-sm text-muted-foreground">Internal fulfillment notes. They do not change fulfillment quantities or status.</p><div className="mt-3 flex gap-2"><Textarea aria-label="Order note" value={note} maxLength={2000} className="min-h-20 flex-1" placeholder="Add a note for the fulfillment team" onChange={(event) => setNote(event.target.value)} /><button type="button" disabled={!note.trim() || addNote.isPending} className="h-fit rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitNote()}>{addNote.isPending ? "Adding…" : "Add note"}</button></div>{fulfillmentNotes.length > 0 ? <div className="mt-3 divide-y">{fulfillmentNotes.map((event) => <div key={event.id} className="py-3 text-sm"><p>{String(event.payloadJson?.note || "")}</p><p className="mt-1 text-xs text-muted-foreground">{event.actorName || "Staff"} · {new Date(event.createdAt).toLocaleString()}</p></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">No fulfillment notes yet.</p>}</section>
 
-    {isPickup && <section className="rounded-xl border bg-card px-4 py-3" data-testid="pickup-history"><h2 className="font-bold"><Store className="mr-2 inline h-4 w-4" />Pickup History</h2>{detail.pickupHandoffs.length ? <div className="mt-2 divide-y">{detail.pickupHandoffs.map((handoff) => <div key={handoff.id} className="py-3 text-sm"><p className="font-medium">{new Date(handoff.handedOffAt).toLocaleString()}</p>{handoff.items.map((item) => <p key={`${handoff.id}-${item.orderLineItemId}`}>{item.quantity} {item.productName || item.description || "line item"}</p>)}{handoff.handedOffByName && <p className="text-muted-foreground">{handoff.handedOffByName}</p>}{handoff.notes && <p className="text-muted-foreground">{handoff.notes}</p>}</div>)}</div> : <p className="mt-2 text-sm text-muted-foreground">No pickup handoffs recorded.</p>}</section>}
+    {detail.pickupHandoffs.length > 0 && <section className="rounded-xl border bg-card px-4 py-3" data-testid="pickup-history"><h2 className="font-bold"><Store className="mr-2 inline h-4 w-4" />Pickup History</h2><div className="mt-2 divide-y">{detail.pickupHandoffs.map((handoff) => <div key={handoff.id} className="py-3 text-sm"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-medium">{new Date(handoff.handedOffAt).toLocaleString()}</p>{detail.permissions?.canReverseTerminalFulfillment ? <button type="button" className="rounded border border-destructive/40 px-2 py-1 text-xs font-semibold text-destructive hover:bg-destructive/10" onClick={() => openPickupReversal(handoff)}>Reverse Pickup</button> : null}</div>{handoff.items.map((item) => <p key={`${handoff.id}-${item.orderLineItemId}`}>{item.quantity} {item.productName || item.description || "line item"}</p>)}{handoff.handedOffByName && <p className="text-muted-foreground">{handoff.handedOffByName}</p>}{handoff.notes && <p className="text-muted-foreground">{handoff.notes}</p>}</div>)}</div></section>}
+
+    <AlertDialog open={!!pickupReversal} onOpenChange={(open) => !open && setPickupReversal(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader><AlertDialogTitle>Reverse Pickup</AlertDialogTitle><AlertDialogDescription>Original pickup history will be retained. The selected quantity will reopen for fulfillment. Invoice and payment records are not changed.</AlertDialogDescription></AlertDialogHeader>
+        <div className="space-y-3">{pickupReversal?.items.map((item) => <label key={item.orderLineItemId} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.label} <span className="text-muted-foreground">(originally {item.quantity})</span></span><Input type="number" min={0} max={item.quantity} className="w-24" value={pickupReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setPickupReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: bounded(event.target.value, item.quantity) }))} /></label>)}<Textarea aria-label="Pickup reversal reason" value={pickupReversalReason} onChange={(event) => setPickupReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={pickupReversalConfirmed} onChange={(event) => setPickupReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without deleting the original pickup evidence.</span></label></div>
+        <AlertDialogFooter><AlertDialogCancel disabled={reverseTerminalFulfillment.isPending}>Cancel</AlertDialogCancel><AlertDialogAction disabled={!pickupReversalReason.trim() || !pickupReversalConfirmed || reverseTerminalFulfillment.isPending} onClick={(event) => { event.preventDefault(); void submitPickupReversal(); }}>{reverseTerminalFulfillment.isPending ? "Reversing…" : "Reverse Pickup"}</AlertDialogAction></AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </main>;
 }

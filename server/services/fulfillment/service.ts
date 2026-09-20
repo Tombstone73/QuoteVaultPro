@@ -323,6 +323,7 @@ export class FulfillmentService {
       permissions: {
         canRevertStatus: canRevertFulfillmentStatus(actorOrgRole),
         revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION,
+        canReverseTerminalFulfillment: ['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase()),
       },
     };
   }
@@ -608,12 +609,12 @@ export class FulfillmentService {
     const targetMethod = effectiveOrderFulfillmentMethod(nextShippingMethod);
     if (currentMethod === targetMethod) return;
 
-    const [pickupTicket] = await this.dbInstance.select({ status: pickupTickets.status })
-      .from(pickupTickets).where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId))).limit(1);
-    const shipped = await this.dbInstance.select({ id: shipments.id }).from(shipmentOrders)
-      .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
-      .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'))).limit(1);
-    if (pickupTicket?.status === 'PICKED_UP' || shipped.length > 0 || ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
+    // Raw shipment and handoff rows are immutable audit evidence. Their
+    // *net* terminal quantity, not their mere existence, determines whether
+    // the fulfillment-method transition remains unsafe after a correction.
+    const lines = await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] });
+    const hasNetTerminalFulfillment = lines.some((line) => line.projection.requiresFulfillment && line.projection.fulfilledQuantity > 0);
+    if (hasNetTerminalFulfillment || ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
       throw new FulfillmentHttpError(409, 'Completed fulfillment cannot be changed from this Order edit. Use the supported fulfillment correction workflow.', 'FULFILLMENT_METHOD_TERMINAL');
     }
   }
@@ -787,6 +788,95 @@ export class FulfillmentService {
     }
 
     return result.shipment;
+  }
+
+  /** Administrative correction for an accidental terminal shipment/pickup.
+   * It appends reversal evidence and recomputes the Order's fulfillment
+   * projection; it never changes Production, invoices, or payments. */
+  async reverseTerminalFulfillment(orgId: string, input: {
+    sourceType: 'SHIPMENT' | 'PICKUP_HANDOFF';
+    sourceId: string;
+    items: Array<{ orderLineItemId: string; quantity: number }>;
+    reason: string;
+    clientRequestId?: string | null;
+    actorUserId?: string | null;
+    actorOrgRole?: string | null;
+  }) {
+    const role = String(input.actorOrgRole || '').trim().toLowerCase();
+    if (!['owner', 'admin'].includes(role)) {
+      throw new FulfillmentHttpError(403, 'Organization Owner or Admin authority is required to reverse terminal fulfillment.', 'FULFILLMENT_TERMINAL_REVERSAL_FORBIDDEN');
+    }
+    const result = await this.shipmentRepo.reverseTerminalFulfillment(orgId, input);
+    if (!result.ok) {
+      const status = result.code === 'NOT_FOUND' ? 404 : result.code === 'INVALID_STATE' ? 409 : 400;
+      throw new FulfillmentHttpError(status, result.message, result.code);
+    }
+    // Reconciliation is deliberately retried after an idempotency replay in
+    // case a prior process recorded immutable reversal evidence but failed
+    // before refreshing the derived Order projection. Replays do not append a
+    // second Order audit event.
+    await this.reconcileOrderAfterTerminalReversal(
+      orgId,
+      result.orderId,
+      input.actorUserId ?? null,
+      input.reason,
+      input.sourceType,
+      result.pickupTicketId ?? null,
+      !result.replayed,
+    );
+    return result;
+  }
+
+  private async reconcileOrderAfterTerminalReversal(
+    orgId: string,
+    orderId: string,
+    actorUserId: string | null,
+    reason: string,
+    sourceType: 'SHIPMENT' | 'PICKUP_HANDOFF',
+    pickupTicketId: string | null,
+    recordAudit: boolean,
+  ) {
+    const [order] = await this.dbInstance.select({
+      id: orders.id,
+      state: orders.state,
+      status: orders.status,
+      productionCompletedAt: orders.productionCompletedAt,
+    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
+    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+    const lines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] }))
+      .filter((line) => line.projection.requiresFulfillment);
+    const remainingQuantity = lines.reduce((total, line) => total + line.projection.remainingQuantity, 0);
+    const fulfilledQuantity = lines.reduce((total, line) => total + line.projection.fulfilledQuantity, 0);
+    const productionComplete = lines.every((line) => line.projection.productionCompleteQuantity >= line.projection.orderedQuantity);
+    const terminal = lines.length > 0 && remainingQuantity === 0;
+    const reopeningClosedOrder = !terminal && productionComplete && String(order.state || '').toLowerCase() === 'closed';
+    const now = new Date();
+    await this.dbInstance.transaction(async (tx) => {
+      await tx.update(orders).set({
+        fulfillmentStatus: terminal ? 'delivered' : fulfilledQuantity > 0 ? 'packed' : 'pending',
+        routingTarget: terminal ? null : 'fulfillment',
+        ...(reopeningClosedOrder ? { state: 'production_complete', status: 'ready_for_shipment' } : {}),
+        updatedAt: now.toISOString(),
+      }).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
+      if (sourceType === 'PICKUP_HANDOFF' && pickupTicketId) {
+        await tx.update(pickupTickets).set({
+          status: terminal ? 'PICKED_UP' : 'READY_FOR_PICKUP',
+          pickedUpAt: terminal ? new Date() : null,
+          updatedAt: new Date(),
+        }).where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.id, pickupTicketId)));
+      }
+      if (recordAudit) {
+        const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+        await tx.insert(fulfillmentEvents).values({
+          organizationId: orgId,
+          actorUserId: safeActorUserId,
+          entityType: 'ORDER',
+          entityId: orderId,
+          eventType: 'FULFILLMENT_TERMINAL_REOPENED',
+          payloadJson: { reason: String(reason || '').trim(), remainingQuantity, fulfilledQuantity, productionComplete, reopenedFromClosed: reopeningClosedOrder },
+        });
+      }
+    });
   }
 
   async createOrGetPickupTicket(orgId: string, orderId: string, actorUserId?: string | null) {

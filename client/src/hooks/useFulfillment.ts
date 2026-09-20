@@ -48,6 +48,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
   permissions?: {
     canRevertStatus: boolean;
     revertPermission: string;
+    canReverseTerminalFulfillment?: boolean;
   };
   billingAutomation?: {
     status: string;
@@ -525,6 +526,29 @@ export function useVoidShipmentMutation(shipmentId: string) {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
       invalidateFulfillment(queryClient);
     },
+  });
+}
+
+export function useReverseTerminalFulfillmentMutation(orderId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      sourceType: "SHIPMENT" | "PICKUP_HANDOFF";
+      sourceId: string;
+      items: Array<{ orderLineItemId: string; quantity: number }>;
+      reason: string;
+      clientRequestId: string;
+    }) => apiCall<any>(
+      payload.sourceType === "SHIPMENT"
+        ? `/api/fulfillment/shipments/${payload.sourceId}/reverse`
+        : `/api/fulfillment/pickup/handoffs/${payload.sourceId}/reverse`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": payload.clientRequestId },
+        body: JSON.stringify({ items: payload.items, reason: payload.reason, clientRequestId: payload.clientRequestId }),
+      },
+    ),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }
 
