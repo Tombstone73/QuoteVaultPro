@@ -1070,7 +1070,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [priceOverrideModeById, setPriceOverrideModeById] = useState<Record<string, LineItemPriceOverrideMode>>({});
   const [pendingPriceOverrideById, setPendingPriceOverrideById] = useState<Record<string, PendingLineItemPriceOverride>>({});
   const pendingPriceOverrideRef = useRef<Record<string, PendingLineItemPriceOverride>>({});
+  // Physical drivers and selling-price overrides are distinct. A commercial
+  // override must never authorize hydrated Product/PBV2 values for broad save.
   const pricingDirtyByUserRef = useRef<Record<string, boolean>>({});
+  const commercialPriceOverrideDirtyRef = useRef<Record<string, boolean>>({});
   const latestPricingFingerprintRef = useRef("");
   const lastUserPricingFingerprintRef = useRef<Record<string, string>>({});
 
@@ -1080,10 +1083,18 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const markPricingDirtyByUser = useCallback((lineItemId: string | null | undefined, reason: string) => {
     if (!lineItemId) return;
-    pricingDirtyByUserRef.current = {
-      ...pricingDirtyByUserRef.current,
-      [lineItemId]: true,
-    };
+    const isCommercialPriceOverride = reason.startsWith("price_override");
+    if (isCommercialPriceOverride) {
+      commercialPriceOverrideDirtyRef.current = {
+        ...commercialPriceOverrideDirtyRef.current,
+        [lineItemId]: true,
+      };
+    } else {
+      pricingDirtyByUserRef.current = {
+        ...pricingDirtyByUserRef.current,
+        [lineItemId]: true,
+      };
+    }
     lastUserPricingFingerprintRef.current[lineItemId] = latestPricingFingerprintRef.current;
     if (import.meta.env.DEV) {
       console.warn("[OrderLineItemsSection] Pricing draft marked dirty by user", {
@@ -1098,6 +1109,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     if (!lineItemId) return;
     pricingDirtyByUserRef.current = {
       ...pricingDirtyByUserRef.current,
+      [lineItemId]: false,
+    };
+    commercialPriceOverrideDirtyRef.current = {
+      ...commercialPriceOverrideDirtyRef.current,
       [lineItemId]: false,
     };
     delete lastUserPricingFingerprintRef.current[lineItemId];
@@ -2394,6 +2409,34 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     const itemId = expandedItem.id;
     const lineItemMutation = opts?.silent ? updateLineItemSilent : updateLineItem;
     let correctionPayload: any = null;
+
+    const pendingCommercialPricing = pendingPriceOverrideById[itemId];
+    const physicalPricingDriversDirty = pricingDirtyByUserRef.current[itemId] === true;
+    const commercialPriceOverrideDirty = commercialPriceOverrideDirtyRef.current[itemId] === true;
+    const savedForCommercialSave = savedSnapshotRef.current[itemId];
+    const safeMetadataChanged = Boolean(savedForCommercialSave && (
+      (notes || "") !== (savedForCommercialSave.notes || "")
+      || (notesDraftById[itemId] ?? "") !== (savedForCommercialSave.productionNotes || "")
+      || requiresDesignInput !== savedForCommercialSave.requiresDesign
+      || requiresPrepressInput !== savedForCommercialSave.requiresPrepress
+      || requiresProofApprovalInput !== savedForCommercialSave.requiresProofApproval
+      || useSameArtworkBothSides !== savedForCommercialSave.useSameArtworkBothSides
+      || Boolean(artworkRemovalByLineItemId[itemId]?.fileIds.length)
+    ));
+
+    // A completed line's selling-price change is commercial only. Keep the
+    // broad editor out of this path so stale/hydrated physical fields never
+    // reach the completed-line physical-correction guard.
+    if (pendingCommercialPricing && commercialPriceOverrideDirty && !physicalPricingDriversDirty && !safeMetadataChanged) {
+      try {
+        await saveCommercialPricing(expandedItem, pendingCommercialPricing);
+        setSavedItemId(itemId);
+        setTimeout(() => setSavedItemId(null), 2000);
+        return { saved: true };
+      } catch (error: any) {
+        return { saved: false, error: error?.message || "Failed to save commercial pricing." };
+      }
+    }
 
     setSavingItemId(itemId);
     setSavedItemId(null);
@@ -4502,30 +4545,32 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       <Dialog open={recordCorrectionTarget !== null} onOpenChange={(open) => {
         if (!open && !recordCompletedLineItemCorrection.isPending) setRecordCorrectionTarget(null);
       }}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Post-production change</DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="min-w-0 break-words">
               This line already has production or fulfillment history. Choose Record Correction only when the work was produced correctly and the TitanOS record is wrong. It will not create new production work.
             </DialogDescription>
           </DialogHeader>
-          <label className="flex items-start gap-2 text-sm">
+          <label className="flex min-w-0 items-start gap-2 text-sm">
             <Checkbox
               checked={recordCorrectionConfirmed}
               onCheckedChange={(checked) => setRecordCorrectionConfirmed(checked === true)}
               aria-label="Correction matches actual completed work"
             />
-            <span>This change describes what was actually produced and does not require additional production.</span>
+            <span className="min-w-0 break-words">This change describes what was actually produced and does not require additional production.</span>
           </label>
           <Textarea
             value={recordCorrectionReason}
             onChange={(event) => setRecordCorrectionReason(event.target.value)}
+            className="min-w-0"
             placeholder="Reason required (for example: Original Order was entered 18 × 24; actual Coroplast produced was 24 × 18.)"
             aria-label="Record correction reason"
           />
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setRecordCorrectionTarget(null)} disabled={recordCompletedLineItemCorrection.isPending}>Cancel</Button>
+          <DialogFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+            <Button className="w-full sm:w-auto" variant="outline" onClick={() => setRecordCorrectionTarget(null)} disabled={recordCompletedLineItemCorrection.isPending}>Cancel</Button>
             <Button
+              className="w-full whitespace-normal sm:w-auto"
               variant="secondary"
               onClick={() => {
                 setRecordCorrectionTarget(null);
@@ -4533,9 +4578,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               }}
               disabled={recordCompletedLineItemCorrection.isPending}
             >
-              Create Additional/Replacement Work
+              Create Replacement Work
             </Button>
             <Button
+              className="w-full whitespace-normal sm:w-auto"
               disabled={!recordCorrectionTarget || !recordCorrectionConfirmed || recordCorrectionReason.trim().length < 3 || recordCompletedLineItemCorrection.isPending}
               onClick={async () => {
                 if (!recordCorrectionTarget) return;
@@ -4562,22 +4608,24 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       <Dialog open={correctiveRemoveTarget !== null} onOpenChange={(open) => {
         if (!open && !correctiveRemoveLineItem.isPending) setCorrectiveRemoveTarget(null);
       }}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Remove line with active workflow?</DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="min-w-0 break-words">
               This line currently has active production ownership{correctiveRemoveTarget?.activeJob?.stationKey ? `: ${correctiveRemoveTarget.activeJob.stationKey} / ${correctiveRemoveTarget.activeJob.status || "active"}.` : "."} Removing it will cancel that unnecessary work and remove the line from commercial totals.
             </DialogDescription>
           </DialogHeader>
           <Textarea
             value={correctiveRemoveReason}
             onChange={(event) => setCorrectiveRemoveReason(event.target.value)}
+            className="min-w-0"
             placeholder="Reason required (for example: Added by mistake while correcting original Order)"
             aria-label="Corrective removal reason"
           />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCorrectiveRemoveTarget(null)} disabled={correctiveRemoveLineItem.isPending}>Cancel</Button>
+          <DialogFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+            <Button className="w-full sm:w-auto" variant="outline" onClick={() => setCorrectiveRemoveTarget(null)} disabled={correctiveRemoveLineItem.isPending}>Cancel</Button>
             <Button
+              className="w-full whitespace-normal sm:w-auto"
               variant="destructive"
               disabled={!correctiveRemoveTarget || correctiveRemoveReason.trim().length < 3 || correctiveRemoveLineItem.isPending}
               onClick={async () => {

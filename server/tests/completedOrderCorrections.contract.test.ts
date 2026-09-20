@@ -37,4 +37,18 @@ describe("completed Order correction contract", () => {
     expect(invoices).toContain('status: "paid_invoice_adjustment_required" as const');
     expect(invoices).toContain('order_paid_invoice_adjustment_required');
   });
+
+  it("routes completed price-only changes through commercial pricing without hydrating physical drivers", async () => {
+    const [section, routes] = await Promise.all([
+      source("client/src/components/orders/OrderLineItemsSection.tsx"),
+      source("server/routes/orders.routes.ts"),
+    ]);
+
+    expect(section).toContain('const commercialPriceOverrideDirtyRef');
+    expect(section).toContain('const isCommercialPriceOverride = reason.startsWith("price_override")');
+    expect(section).toContain('await saveCommercialPricing(expandedItem, pendingCommercialPricing)');
+    expect(section).toContain('!physicalPricingDriversDirty && !safeMetadataChanged');
+    expect(routes).toContain('app.patch("/api/order-line-items/:id/commercial-pricing"');
+    expect(routes).toContain('haveLineItemPricingDriversChanged');
+  });
 });
