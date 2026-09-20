@@ -33,6 +33,7 @@ import {
   Receipt,
   BarChart3,
   WalletCards,
+  CreditCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
