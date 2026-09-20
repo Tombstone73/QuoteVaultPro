@@ -126,6 +126,9 @@ export class FulfillmentService {
     ).length;
     const productionStarted = nonFulfillmentProductionJobs.length > 0;
     const requiresProductionBootstrap = remainingProductionQuantity > 0 && activeProductionJobCount === 0;
+    const requiresParentProductionRecovery = remainingProductionQuantity > 0
+      && String(order.state || '').toLowerCase() === 'open'
+      && ['ready_for_shipment', 'completed', 'complete'].includes(String(order.status || '').toLowerCase());
 
     return {
       orderState: order.state,
@@ -138,6 +141,7 @@ export class FulfillmentService {
       productionStarted,
       activeProductionJobCount,
       requiresProductionBootstrap,
+      requiresParentProductionRecovery,
       // The line projection is the canonical quantity source used by the
       // reconciliation itself. Do not make the dialog choose a different
       // answer from a possibly stale aggregate Order state.

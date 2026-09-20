@@ -16,6 +16,8 @@ test('Close Job Override requires a live bootstrap acknowledgement only when pro
   expect(source).toContain('requiresProductionBootstrap: boolean');
   expect(source).toContain('confirmProductionBootstrap: true');
   expect(source).toContain('closeJobOverride: true');
+  expect(source).toContain('requiresParentProductionRecovery');
+  expect(source).toContain('reconciliationReason: reason');
   expect(source).toContain('I understand production will be started and completed by this override.');
   expect(source).toContain('previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged');
 });

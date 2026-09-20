@@ -196,6 +196,7 @@ import { CustomerCreditPolicyError } from "../services/customerCreditPolicyServi
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { recalculateEditableOrderFinancials, recalculateEditableOrderFinancialsInTransaction } from "../services/orders/orderTaxCalculationService";
+import { reconcileParentOrderForHistoricalProductionOverride } from "../services/orderHistoricalProductionOverrideService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -295,6 +296,8 @@ const completeProductionRequestSchema = z.object({
     confirmProductionBootstrap: z.literal(true).optional(),
     closeJobOverride: z.literal(true).optional(),
     sourceInvoiceId: z.string().uuid().optional(),
+    reconciliationReason: z.enum(['historical_backlog_cleanup', 'completed_outside_printershero', 'other']).optional(),
+    reconciliationNote: z.string().trim().max(500).optional(),
 }).strict();
 
 const historicalFulfillmentReconciliationSchema = z.object({
@@ -3488,6 +3491,13 @@ export async function registerOrderRoutes(
                     return { order, completedJobIds: [] as string[], alreadyCompleted: true };
                 }
                 if (order.state !== "open") {
+                    if (closeJobOverride && ["closed", "canceled"].includes(String(order.state || "").toLowerCase())) {
+                        throw Object.assign(new Error(`Close Job Override cannot recover an order in ${order.state} state.`), {
+                            statusCode: 409,
+                            code: "CLOSE_JOB_OVERRIDE_TERMINAL_ORDER",
+                            details: { orderId, orderNumber: order.orderNumber, orderState: order.state, orderStatus: order.status },
+                        });
+                    }
                     throw Object.assign(new Error(`Cannot complete production from ${order.state} state.`), {
                         statusCode: 400,
                         code: "INVALID_STATE",
@@ -3524,6 +3534,42 @@ export async function registerOrderRoutes(
                     .for("update");
 
                 const productionLines = lines.filter(requiresCanonicalProductionCompletion);
+                const productionIncomplete = productionLines.some((line) => ![
+                    "completed", "canceled",
+                ].includes(String(line.workflowState || "").toLowerCase()) && ![
+                    "complete", "completed", "canceled", "cancelled",
+                ].includes(String(line.status || "").toLowerCase()));
+                const activeProductionOwners = productionIncomplete
+                    ? await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+                        eq(productionJobs.organizationId, organizationId),
+                        eq(productionJobs.orderId, orderId),
+                        sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'`,
+                        sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+                    )).for("update")
+                    : [];
+                const requiresProductionBootstrap = productionIncomplete && activeProductionOwners.length === 0;
+                const parentRecovery = await reconcileParentOrderForHistoricalProductionOverride(tx, {
+                    organizationId,
+                    order,
+                    productionIncomplete,
+                    requiresProductionBootstrap,
+                    closeJobOverride,
+                    confirmBypass,
+                    confirmProductionBootstrap,
+                    actorUserId: userId,
+                    actorUserName: userName || null,
+                    sourceInvoiceId: request.data.sourceInvoiceId ?? null,
+                    reconciliationReason: request.data.reconciliationReason ?? null,
+                    reconciliationNote: request.data.reconciliationNote ?? null,
+                });
+                if (closeJobOverride && confirmBypass && productionIncomplete
+                    && order.status !== "in_production" && order.status !== "new" && !parentRecovery.recovered) {
+                    throw Object.assign(new Error(`Close Job Override cannot safely recover parent order status ${order.status}.`), {
+                        statusCode: 409,
+                        code: "CLOSE_JOB_OVERRIDE_PARENT_RECOVERY_BLOCKED",
+                        details: { orderId, orderNumber: order.orderNumber, orderState: order.state, orderStatus: order.status, activeProductionJobCount: activeProductionOwners.length },
+                    });
+                }
                 const completedJobIds: string[] = [];
                 const maxTransitionsPerLine = 16;
 

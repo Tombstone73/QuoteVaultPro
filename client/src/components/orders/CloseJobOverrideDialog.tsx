@@ -33,6 +33,7 @@ type HistoricalFulfillmentPreview = {
   productionStarted: boolean;
   activeProductionJobCount: number;
   requiresProductionBootstrap: boolean;
+  requiresParentProductionRecovery: boolean;
 };
 
 function overrideErrorDescription(error: unknown): string {
@@ -133,6 +134,8 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
           ...(previewQuery.data?.requiresProductionBootstrap ? { confirmProductionBootstrap: true } : {}),
           closeJobOverride: true,
           sourceInvoiceId: target.invoiceId || undefined,
+          reconciliationReason: reason,
+          reconciliationNote: note.trim() || undefined,
         });
       }
       await apiRequest("POST", `/api/orders/${target.orderId}/reconcile-historical-fulfillment`, {
@@ -176,6 +179,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
             <p>Remaining fulfillment: <strong>{previewQuery.data.remainingFulfillmentQuantity}</strong></p>
             <p>Production started: <strong>{previewQuery.data.productionStarted ? "Yes" : "No"}</strong></p>
             <p>Active production jobs: <strong>{previewQuery.data.activeProductionJobCount}</strong></p>
+            {previewQuery.data.requiresParentProductionRecovery ? <p className="mt-2 text-amber-700 dark:text-amber-300">Historical Order state will be repaired: this Order is marked Ready for Shipment while production remains incomplete. The override will temporarily restore In Production before completing canonical Production.</p> : null}
             <p className="mt-2 text-muted-foreground">No shipment, tracking, pickup handoff, delivery evidence, invoice, payment, email, QuickBooks update, or billing automation will be created.</p>
           </div> : null}
           {previewQuery.data?.requiresProductionBootstrap ? <div className="space-y-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3">
