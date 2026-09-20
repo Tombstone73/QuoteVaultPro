@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { customers, invoiceLineItems, invoices, orderLineItems, orders, payments } from "@shared/schema";
 
 const source = (file: string) => readFileSync(path.resolve(process.cwd(), file), "utf8");
 
@@ -25,5 +26,27 @@ describe("Order commercial financial repair command", () => {
     expect(repair).not.toContain("460.00");
     expect(taxService).toContain("export async function calculateEditableOrderFinancialSnapshot");
     expect(taxService).toContain("total: totals.subtotal - discount + totals.taxAmount + shipping,");
+  });
+
+  it("uses only current Drizzle column objects in its diagnostic projections", () => {
+    const repair = source("scripts/repair-order-commercial-financials.ts");
+    const columns = [
+      orders.id, orders.organizationId, orders.orderNumber, orders.customerId, orders.subtotal, orders.discount,
+      orders.tax, orders.shippingCents, orders.total, orders.fulfillmentStatus, orders.shippingMethod,
+      customers.companyName,
+      orderLineItems.id, orderLineItems.productId, orderLineItems.description, orderLineItems.quantity,
+      orderLineItems.totalPrice, orderLineItems.workflowState, orderLineItems.status, orderLineItems.parentLineItemId,
+      orderLineItems.lineItemRole,
+      invoices.id, invoices.invoiceNumber, invoices.status, invoices.total, invoices.totalCents, invoices.balanceDue,
+      invoices.amountPaid, invoices.issuedAt, invoices.lastSentAt, invoices.accountingApprovedAt,
+      invoiceLineItems.invoiceId, invoiceLineItems.orderLineItemId, invoiceLineItems.lineTotalCents,
+      payments.invoiceId, payments.id, payments.status, payments.amountCents, payments.provider,
+    ];
+
+    expect(columns.every(Boolean)).toBe(true);
+    expect(repair).toContain("customerName: customers.companyName");
+    expect(repair).not.toContain("customers.name");
+    expect(repair).toContain("redactDiagnostic");
+    expect(repair).toContain("stack:");
   });
 });

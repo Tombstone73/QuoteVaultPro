@@ -62,7 +62,7 @@ async function main() {
     organizationId: orders.organizationId,
     orderNumber: orders.orderNumber,
     customerId: orders.customerId,
-    customerName: customers.name,
+    customerName: customers.companyName,
     subtotal: orders.subtotal,
     discount: orders.discount,
     tax: orders.tax,
@@ -141,7 +141,19 @@ async function main() {
   await report("after", db);
 }
 
-main().catch((error) => {
-  console.error("[order-commercial-repair] failed", error instanceof Error ? error.message : error);
+function redactDiagnostic(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "postgres://[redacted]")
+    .replace(/(password|token|secret)=([^\s&]+)/gi, "$1=[redacted]");
+}
+
+main().catch((error: any) => {
+  console.error("[order-commercial-repair] failed", JSON.stringify({
+    name: error instanceof Error ? error.name : typeof error,
+    message: redactDiagnostic(error instanceof Error ? error.message : String(error)),
+    code: typeof error?.code === "string" || typeof error?.code === "number" ? error.code : null,
+    stack: redactDiagnostic(error instanceof Error ? error.stack : null),
+  }, null, 2));
   process.exit(1);
 });
