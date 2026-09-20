@@ -8,6 +8,7 @@ export type InvoiceListStickyFilters = {
   includePaidHistorical?: boolean;
   includeCanceled?: boolean;
   customerId?: string;
+  customerIds?: string;
   customerName?: string;
   excludeCustomerName?: string;
   issueDatePreset?: "custom";
@@ -44,7 +45,7 @@ const PAGE_SIZES = new Set<InvoiceListPageSize>([25, 50, 100]);
 const COLUMN_FILTER_KEYS: Array<keyof InvoiceListColumnFilterQuery> = [
   "accountingApproval", "customer", "contact", "jobName", "purchaseOrderNumber", "columnOrderNumber", "invoiceNumber",
   "issueDateFrom", "issueDateTo", "dueDateFrom", "dueDateTo", "sendStatus", "lastSent", "totalMin", "totalMax",
-  "paidMin", "paidMax", "balanceMin", "balanceMax", "jobStatus", "excludeCustomerId",
+  "paidMin", "paidMax", "balanceMin", "balanceMax", "jobStatus", "excludeCustomerId", "excludeCustomerIds",
 ];
 
 function getStorage(storage?: StorageLike | null): StorageLike | null {
@@ -77,6 +78,7 @@ function normalizeFilters(value: unknown): InvoiceListStickyFilters {
     includePaidHistorical: typeof raw.includePaidHistorical === "boolean" ? raw.includePaidHistorical : undefined,
     includeCanceled: typeof raw.includeCanceled === "boolean" ? raw.includeCanceled : undefined,
     customerId: nonBlankString(raw.customerId),
+    customerIds: nonBlankString(raw.customerIds),
     customerName: nonBlankString(raw.customerName),
     excludeCustomerName: nonBlankString(raw.excludeCustomerName),
     issueDatePreset: raw.issueDatePreset === "custom" ? "custom" : undefined,

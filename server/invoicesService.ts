@@ -1,6 +1,6 @@
 import { db } from './db';
 import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems } from '../shared/schema';
-import { asc, count, desc, eq, and, ilike, inArray, or, sql, ne } from 'drizzle-orm';
+import { asc, count, desc, eq, and, ilike, inArray, notInArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
@@ -275,8 +275,9 @@ export type InvoiceListColumnFilters = {
   paidMaxCents?: number;
   balanceMinCents?: number;
   balanceMaxCents?: number;
-  jobStatus?: 'open' | 'complete' | ('open' | 'complete')[];
+  jobStatus?: string | string[];
   excludeCustomerId?: string;
+  excludeCustomerIds?: string[];
 };
 
 export interface ListInvoicesForOrganizationOptions {
@@ -291,6 +292,7 @@ export interface ListInvoicesForOrganizationOptions {
    * with the trusted organization predicate below. */
   statuses?: readonly string[];
   customerId?: string;
+  customerIds?: string[];
   orderId?: string;
   search?: string;
   /** Allowlisted, server-composed column predicates for the Invoice workspace. */
@@ -530,7 +532,9 @@ export async function listInvoicesPageForOrganization(
   }
   // Customer list semantics follow the live invoice projection: a native
   // Order-backed invoice belongs to its Order's current customer.
-  if (opts.customerId) whereClauses.push(eq(canonicalInvoiceCustomerId, opts.customerId));
+  const customerIds = [...new Set([...(opts.customerIds ?? []), ...(opts.customerId ? [opts.customerId] : [])].filter(Boolean))];
+  if (customerIds.length === 1) whereClauses.push(eq(canonicalInvoiceCustomerId, customerIds[0]!));
+  if (customerIds.length > 1) whereClauses.push(inArray(canonicalInvoiceCustomerId, customerIds));
   if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
   const postedOrIssuedAt = sql<Date>`coalesce(${invoices.issuedAt}, ${invoices.issueDate})`;
   if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
@@ -538,16 +542,27 @@ export async function listInvoicesPageForOrganization(
 
   const columnFilters = opts.columnFilters ?? {};
   const categoricalValues = <T,>(value: T | readonly T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? [...new Set(value)] : [value];
-  if (columnFilters.excludeCustomerId) whereClauses.push(ne(canonicalInvoiceCustomerId, columnFilters.excludeCustomerId));
+  const excludedCustomerIds = [...new Set([...(columnFilters.excludeCustomerIds ?? []), ...(columnFilters.excludeCustomerId ? [columnFilters.excludeCustomerId] : [])].filter(Boolean))];
+  if (excludedCustomerIds.length === 1) whereClauses.push(ne(canonicalInvoiceCustomerId, excludedCustomerIds[0]!));
+  if (excludedCustomerIds.length > 1) whereClauses.push(notInArray(canonicalInvoiceCustomerId, excludedCustomerIds));
   // This is the same order lifecycle boundary shown by Job Status: an open
   // job is linked to an order that is neither terminally closed/canceled nor
   // completed through fulfillment. Invoices without an order stay visible in
   // All Jobs, but never enter an operational backlog view.
   const terminalJob = sql`lower(coalesce(${orders.state}, '')) in ('closed', 'canceled')
     or lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered')`;
-  const jobStatusPredicates = categoricalValues(columnFilters.jobStatus).map((status) => status === 'open'
-    ? sql`${invoices.orderId} is not null and not (${terminalJob})`
-    : sql`${invoices.orderId} is not null and (${terminalJob})`);
+  const exactJobStatusPredicate = (status: string) => {
+    if (status === 'open') return sql`${invoices.orderId} is not null and not (${terminalJob})`;
+    if (status === 'complete') return sql`${invoices.orderId} is not null and (${terminalJob})`;
+    if (status === 'fulfillment_complete') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered')`;
+    if (status === 'job_complete') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.statusPillValue}, ${orders.status}, '')) = 'complete'`;
+    if (status === 'production_complete') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.state}, '')) = 'production_complete'`;
+    if (status === 'closed') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.state}, '')) = 'closed'`;
+    if (status === 'cancelled') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.state}, '')) = 'canceled'`;
+    if (status === 'no_linked_order') return sql`${invoices.orderId} is null`;
+    return sql`${invoices.orderId} is not null and lower(coalesce(${orders.statusPillValue}, ${orders.status}, ${orders.state}, 'open')) = ${status}`;
+  };
+  const jobStatusPredicates = categoricalValues(columnFilters.jobStatus).map(exactJobStatusPredicate);
   if (jobStatusPredicates.length === 1) whereClauses.push(jobStatusPredicates[0]);
   if (jobStatusPredicates.length > 1) whereClauses.push(or(...jobStatusPredicates));
   const currentAccountingApproval = sql`${invoices.accountingApprovedAt} is not null and ${invoices.accountingApprovalRevokedAt} is null and ${invoices.accountingApprovedVersion} = ${invoices.invoiceVersion}`;

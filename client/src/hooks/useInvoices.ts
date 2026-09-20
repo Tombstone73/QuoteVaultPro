@@ -105,8 +105,9 @@ export type InvoiceListColumnFilterQuery = {
   paidMax?: string;
   balanceMin?: string;
   balanceMax?: string;
-  jobStatus?: 'open' | 'complete';
+  jobStatus?: string;
   excludeCustomerId?: string;
+  excludeCustomerIds?: string;
 };
 
 export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
@@ -141,6 +142,7 @@ export type StripeInvoiceRefundRequest = {
 export function useInvoices(filters?: {
   status?: string;
   customerId?: string;
+  customerIds?: string;
   orderId?: string;
   search?: string;
   sortBy?: string;
@@ -152,6 +154,7 @@ export function useInvoices(filters?: {
       const params = new URLSearchParams();
       if (filters?.status) params.append('status', filters.status);
       if (filters?.customerId) params.append('customerId', filters.customerId);
+      if (filters?.customerIds) params.append('customerIds', filters.customerIds);
       if (filters?.orderId) params.append('orderId', filters.orderId);
       if (filters?.search) params.append('search', filters.search);
       if (filters?.sortBy) params.append('sortBy', filters.sortBy);
@@ -206,7 +209,7 @@ export function useInvoicesPage(filters: {
         'accountingApproval',
         'issueDateFrom', 'issueDateTo', 'dueDateFrom', 'dueDateTo', 'sendStatus', 'lastSent',
         'totalMin', 'totalMax', 'paidMin', 'paidMax', 'balanceMin', 'balanceMax',
-        'jobStatus', 'excludeCustomerId',
+        'jobStatus', 'excludeCustomerId', 'excludeCustomerIds',
       ];
       for (const key of columnKeys) {
         const value = filters[key];

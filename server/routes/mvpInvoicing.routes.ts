@@ -212,6 +212,13 @@ function invoiceListQueryValues(value: unknown, allowed: readonly string[], labe
   return values.length ? values : undefined;
 }
 
+function invoiceListQueryIds(value: unknown): string[] | undefined {
+  const rawValues = Array.isArray(value) ? value : [value];
+  const values = [...new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
+    .map((item) => item.trim()).filter(Boolean))];
+  return values.length ? values : undefined;
+}
+
 function invoiceListQueryDate(value: unknown, boundary: 'start' | 'endExclusive'): Date | undefined {
   const raw = invoiceListQueryText(value);
   if (!raw) return undefined;
@@ -248,7 +255,7 @@ function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListCo
     throw Object.assign(new Error('Invalid Last Sent filter'), { statusCode: 400 });
   }
   const sendStatus = invoiceListQueryValues(query.sendStatus, ['never_sent', 'sent', 'updated_after_sent'], 'Send Status');
-  const jobStatus = invoiceListQueryValues(query.jobStatus, ['open', 'complete'], 'Job Status');
+  const jobStatus = invoiceListQueryValues(query.jobStatus, ['open', 'complete', 'job_complete', 'new', 'in_production', 'on_hold', 'ready_for_shipment', 'production_complete', 'fulfillment_complete', 'closed', 'cancelled', 'no_linked_order'], 'Job Status');
   return {
     accountingApproval: accountingApproval as InvoiceListColumnFilters['accountingApproval'],
     customer: invoiceListQueryText(query.customer),
@@ -271,6 +278,7 @@ function invoiceListColumnFilters(query: Record<string, unknown>): InvoiceListCo
     balanceMaxCents: invoiceListQueryCents(query.balanceMax),
     jobStatus: jobStatus as InvoiceListColumnFilters['jobStatus'],
     excludeCustomerId: invoiceListQueryText(query.excludeCustomerId),
+    excludeCustomerIds: invoiceListQueryIds(query.excludeCustomerIds),
   };
 }
 
@@ -2169,6 +2177,7 @@ export async function registerMvpInvoicingRoutes(
 
       const statusValues = invoiceListQueryValues(req.query.status, ['draft', 'finalized', 'sent', 'unpaid', 'partially_paid', 'credit', 'paid', 'paid_historical', 'overdue', 'billed', 'void'], 'status');
       const customerId = req.query.customerId as string | undefined;
+      const customerIds = invoiceListQueryIds(req.query.customerIds);
       const orderId = req.query.orderId as string | undefined;
       const search = req.query.search as string | undefined;
       const sortBy = req.query.sortBy as string | undefined;
@@ -2190,6 +2199,7 @@ export async function registerMvpInvoicingRoutes(
         status: statusValues?.length === 1 ? statusValues[0] : undefined,
         statuses: statusValues && statusValues.length > 1 ? statusValues : undefined,
         customerId,
+        customerIds,
         orderId,
         search,
         sortBy,

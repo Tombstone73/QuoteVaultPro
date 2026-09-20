@@ -5,11 +5,11 @@ export const INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS: Array<keyof InvoiceListColum
   "customer", "contact", "jobName", "purchaseOrderNumber", "columnOrderNumber", "invoiceNumber",
   "accountingApproval", "issueDateFrom", "issueDateTo", "dueDateFrom", "dueDateTo", "sendStatus",
   "lastSent", "totalMin", "totalMax", "paidMin", "paidMax", "balanceMin", "balanceMax",
-  "jobStatus", "excludeCustomerId",
+  "jobStatus", "excludeCustomerId", "excludeCustomerIds",
 ];
 
 const INVOICE_LIST_EXPLICIT_FILTER_PARAM_KEYS = [
-  "status", "includePaidHistorical", "includeCanceled", "customerId", "customerName", "excludeCustomerName", "issueDatePreset",
+  "status", "includePaidHistorical", "includeCanceled", "customerId", "customerIds", "customerName", "excludeCustomerName", "issueDatePreset",
   ...INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS,
 ];
 
@@ -19,7 +19,7 @@ const SORT_KEYS: InvoiceSortKey[] = [
 ];
 
 const DISCRETE_MULTI_VALUE_PARAM_KEYS = new Set<string>([
-  "status", "accountingApproval", "sendStatus", "jobStatus",
+  "status", "accountingApproval", "sendStatus", "jobStatus", "customerIds", "excludeCustomerIds",
 ]);
 
 export type InvoiceListUrlState = {
@@ -28,6 +28,7 @@ export type InvoiceListUrlState = {
   includePaidHistorical: boolean;
   includeCanceled: boolean;
   customerId: string | undefined;
+  customerIds: string | undefined;
   customerName: string | undefined;
   excludeCustomerName: string | undefined;
   issueDatePreset: "custom" | undefined;
@@ -83,6 +84,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     includePaidHistorical: read(params, "includePaidHistorical") === "1",
     includeCanceled: read(params, "includeCanceled") === "1",
     customerId: read(params, "customerId"),
+    customerIds: normalizeInvoiceListDiscreteFilter(read(params, "customerIds")),
     customerName: read(params, "customerName"),
     excludeCustomerName: read(params, "excludeCustomerName"),
     issueDatePreset: read(params, "issueDatePreset") === "custom" ? "custom" : undefined,

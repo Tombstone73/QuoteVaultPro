@@ -22,7 +22,7 @@ import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceD
 import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
 import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
-import { CustomerSelect } from "@/components/CustomerSelect";
+import { CustomerMultiSelect } from "@/components/CustomerMultiSelect";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
 import {
   Page,
@@ -121,6 +121,7 @@ const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
   balanceMax: "Balance max",
   jobStatus: "Jobs",
   excludeCustomerId: "Excluding",
+  excludeCustomerIds: "Excluding",
 };
 
 const INVOICE_STATUS_OPTIONS = [
@@ -131,7 +132,7 @@ const INVOICE_STATUS_OPTIONS = [
 ] as const;
 const ACCOUNTING_APPROVAL_OPTIONS = [["approved", "Approved"], ["not_approved", "Not Approved"], ["needs_reapproval", "Needs Reapproval"]] as const;
 const SEND_STATUS_OPTIONS = [["never_sent", "Never Sent"], ["sent", "Sent"], ["updated_after_sent", "Updated After Sent"]] as const;
-const JOB_STATUS_OPTIONS = [["open", "Open Jobs"], ["complete", "Complete Jobs"]] as const;
+const JOB_STATUS_OPTIONS = [["new", "New"], ["in_production", "In Production"], ["on_hold", "On Hold"], ["ready_for_shipment", "Ready for Shipment"], ["production_complete", "Production Complete"], ["job_complete", "Complete"], ["fulfillment_complete", "Fulfillment Complete"], ["closed", "Closed"], ["cancelled", "Cancelled"]] as const;
 
 function discreteValues(value?: string): string[] {
   return value ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
@@ -200,12 +201,13 @@ function formatColumnFilterValue(key: keyof InvoiceListColumnFilterQuery, value:
   return value;
 }
 
-function toStickyFilters(state: Pick<InvoiceListUrlState, "status" | "includePaidHistorical" | "includeCanceled" | "customerId" | "customerName" | "excludeCustomerName" | "issueDatePreset" | "columnFilters">): InvoiceListStickyFilters {
+function toStickyFilters(state: Pick<InvoiceListUrlState, "status" | "includePaidHistorical" | "includeCanceled" | "customerId" | "customerIds" | "customerName" | "excludeCustomerName" | "issueDatePreset" | "columnFilters">): InvoiceListStickyFilters {
   return {
     ...(state.status !== "all" ? { status: state.status } : {}),
     ...(state.includePaidHistorical ? { includePaidHistorical: true } : {}),
     ...(state.includeCanceled ? { includeCanceled: true } : {}),
     ...(state.customerId ? { customerId: state.customerId } : {}),
+    ...(state.customerIds ? { customerIds: state.customerIds } : {}),
     ...(state.customerName ? { customerName: state.customerName } : {}),
     ...(state.excludeCustomerName ? { excludeCustomerName: state.excludeCustomerName } : {}),
     ...(state.issueDatePreset ? { issueDatePreset: state.issueDatePreset } : {}),
@@ -219,6 +221,7 @@ function stickyFiltersToUrlChanges(filters: InvoiceListStickyFilters): Record<st
     includePaidHistorical: filters.includePaidHistorical ? "1" : undefined,
     includeCanceled: filters.includeCanceled ? "1" : undefined,
     customerId: filters.customerId,
+    customerIds: filters.customerIds,
     customerName: filters.customerName,
     excludeCustomerName: filters.excludeCustomerName,
     issueDatePreset: filters.issueDatePreset,
@@ -253,6 +256,7 @@ export default function InvoicesListPage() {
       includePaidHistorical: shouldRestoreStickyFilters ? filters.includePaidHistorical === true : listState.includePaidHistorical,
       includeCanceled: shouldRestoreStickyFilters ? filters.includeCanceled === true : listState.includeCanceled,
       customerId: shouldRestoreStickyFilters ? filters.customerId : listState.customerId,
+      customerIds: shouldRestoreStickyFilters ? filters.customerIds : listState.customerIds,
       customerName: shouldRestoreStickyFilters ? filters.customerName : listState.customerName,
       excludeCustomerName: shouldRestoreStickyFilters ? filters.excludeCustomerName : listState.excludeCustomerName,
       issueDatePreset: shouldRestoreStickyFilters ? filters.issueDatePreset : listState.issueDatePreset,
@@ -263,7 +267,7 @@ export default function InvoicesListPage() {
       pageSize: searchParams.has("pageSize") ? listState.pageSize : preferences.pageSize,
     };
   }, [listState, preferences, searchParams, shouldRestoreStickyFilters]);
-  const { search, status: statusFilter, includePaidHistorical, includeCanceled, customerId, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters, sortKey, sortDir } = effectiveListState;
+  const { search, status: statusFilter, includePaidHistorical, includeCanceled, customerId, customerIds, customerName, excludeCustomerName, issueDatePreset: storedIssueDatePreset, hasExplicitSort, page, pageSize, columnFilters, sortKey, sortDir } = effectiveListState;
   const invoiceTableConfig = useTableColumnConfig(
     `global_invoices:org_${user?.lastActiveOrgId ?? "unknown"}:user_${user?.id ?? "anonymous"}`,
     GLOBAL_INVOICE_COLUMNS,
@@ -339,6 +343,7 @@ export default function InvoicesListPage() {
     status: statusFilter !== "all" ? statusFilter : undefined,
     includePaidHistorical,
     includeCanceled,
+    customerIds,
     search: normalizeInvoiceListSearchQuery(search),
     sortBy: sortKey,
     sortDir,
@@ -391,13 +396,13 @@ export default function InvoicesListPage() {
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleApprovableSelected = accountingApprovableInvoices.length > 0 && accountingApprovableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
   const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>)
-    .filter(([key, value]) => Boolean(value) && key !== "excludeCustomerId");
+    .filter(([key, value]) => Boolean(value) && key !== "excludeCustomerId" && key !== "excludeCustomerIds");
   const activeFilters = [
     search ? { key: "search", label: "Search", value: search } : null,
     statusFilter !== "all" ? { key: "status", label: "Status", value: labelDiscreteValues(statusFilter, INVOICE_STATUS_OPTIONS) } : null,
     includeCanceled ? { key: "includeCanceled", label: "Canceled", value: "Shown" } : null,
-    customerId ? { key: "customerId", label: "Customer", value: customerName || "Selected customer" } : null,
-    columnFilters.excludeCustomerId ? { key: "excludeCustomerId", label: "Excluding", value: excludeCustomerName || "Selected customer" } : null,
+    (customerIds || customerId) ? { key: "customerIds", label: "Include Customers", value: `${discreteValues(customerIds || customerId).length} selected` } : null,
+    (columnFilters.excludeCustomerIds || columnFilters.excludeCustomerId) ? { key: "excludeCustomerIds", label: "Exclude Customers", value: `${discreteValues(columnFilters.excludeCustomerIds || columnFilters.excludeCustomerId).length} selected` } : null,
     ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: formatColumnFilterValue(key, String(value)) })),
   ].filter(Boolean) as Array<{ key: string; label: string; value: string }>;
 
@@ -415,6 +420,9 @@ export default function InvoicesListPage() {
   const applyApprovedUnsentQuickFilter = () => {
     updateListState({ accountingApproval: "approved", sendStatus: "never_sent" }, true);
   };
+  const applyReadyToFinalizeQuickFilter = () => {
+    updateListState({ jobStatus: "job_complete,fulfillment_complete" }, true);
+  };
 
   const clearAllFilters = () => {
     updateListState({
@@ -423,6 +431,7 @@ export default function InvoicesListPage() {
       includePaidHistorical: undefined,
       includeCanceled: undefined,
       customerId: undefined,
+      customerIds: undefined,
       customerName: undefined,
       excludeCustomerName: undefined,
       issueDatePreset: undefined,
@@ -434,22 +443,27 @@ export default function InvoicesListPage() {
     if (key === "search") return updateListState({ search: undefined }, true);
     if (key === "status") return updateListState({ status: undefined }, true);
     if (key === "includeCanceled") return updateListState({ includeCanceled: undefined }, true);
-    if (key === "customerId") return updateListState({ customerId: undefined, customerName: undefined }, true);
-    if (key === "excludeCustomerId") return updateListState({ excludeCustomerId: undefined, excludeCustomerName: undefined }, true);
+    if (key === "customerIds") return updateListState({ customerId: undefined, customerIds: undefined, customerName: undefined }, true);
+    if (key === "excludeCustomerIds") return updateListState({ excludeCustomerId: undefined, excludeCustomerIds: undefined, excludeCustomerName: undefined }, true);
     setColumnFilter(key as keyof InvoiceListColumnFilterQuery, "");
   };
 
-  const setCustomerFilter = (nextCustomerId: string | null, customer?: { companyName?: string | null; email?: string | null }) => {
+  const includedCustomerIds = discreteValues(customerIds || customerId);
+  const excludedCustomerIds = discreteValues(columnFilters.excludeCustomerIds || columnFilters.excludeCustomerId);
+  const setIncludedCustomerIds = (ids: string[]) => {
     updateListState({
-      customerId: nextCustomerId || undefined,
-      customerName: nextCustomerId ? customer?.companyName || customer?.email || "Selected customer" : undefined,
+      customerId: undefined, customerName: undefined,
+      customerIds: ids.join(",") || undefined,
+      excludeCustomerId: undefined,
+      excludeCustomerIds: excludedCustomerIds.filter((id) => !ids.includes(id)).join(",") || undefined,
     }, true);
   };
-
-  const setExcludedCustomerFilter = (nextCustomerId: string | null, customer?: { companyName?: string | null; email?: string | null }) => {
+  const setExcludedCustomerIds = (ids: string[]) => {
     updateListState({
-      excludeCustomerId: nextCustomerId || undefined,
-      excludeCustomerName: nextCustomerId ? customer?.companyName || customer?.email || "Selected customer" : undefined,
+      excludeCustomerId: undefined, excludeCustomerName: undefined,
+      excludeCustomerIds: ids.join(",") || undefined,
+      customerId: undefined,
+      customerIds: includedCustomerIds.filter((id) => !ids.includes(id)).join(",") || undefined,
     }, true);
   };
 
@@ -829,6 +843,9 @@ export default function InvoicesListPage() {
             <Button type="button" variant="outline" className="gap-2" onClick={applyApprovedUnsentQuickFilter} data-testid="invoice-quick-filter-approved-unsent">
               <Check className="h-4 w-4" />Approved + Unsent
             </Button>
+            <Button type="button" variant="outline" className="gap-2" onClick={applyReadyToFinalizeQuickFilter} title="Jobs marked Complete or Fulfillment Complete that are likely ready for pricing review, approval, sending, and job closure." data-testid="invoice-quick-filter-ready-to-finalize">
+              <Check className="h-4 w-4" />Ready to Finalize
+            </Button>
             <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include QuickBooks invoices in the canonical Paid Historical state">
               <Checkbox checked={includePaidHistorical} onCheckedChange={(checked) => setIncludePaidHistorical(checked === true)} aria-label="Show Paid Historical" />
               <span>Show Paid Historical</span>
@@ -877,8 +894,8 @@ export default function InvoicesListPage() {
                   <InvoiceCategoricalFilter label="Job Status" value={columnFilters.jobStatus} options={JOB_STATUS_OPTIONS} onChange={(value) => setCategoricalColumnFilter("jobStatus", value)} className="justify-between" />
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <CustomerSelect value={customerId || null} onChange={setCustomerFilter} autoFocus={false} label="Customer / Company" placeholder="All customers" />
-                  <CustomerSelect value={columnFilters.excludeCustomerId || null} onChange={setExcludedCustomerFilter} autoFocus={false} label="Exclude customer" placeholder="Do not exclude a customer" />
+                  <CustomerMultiSelect label="Include Customers" value={includedCustomerIds} onChange={setIncludedCustomerIds} />
+                  <CustomerMultiSelect label="Exclude Customers" value={excludedCustomerIds} onChange={setExcludedCustomerIds} />
                   <label className="grid gap-1 text-sm"><span>Customer / Company contains</span><Input value={columnFilters.customer || ""} onChange={(event) => setColumnFilter("customer", event.target.value)} placeholder="e.g. Acme" /></label>
                   <label className="grid gap-1 text-sm"><span>Contact</span><Input value={columnFilters.contact || ""} onChange={(event) => setColumnFilter("contact", event.target.value)} placeholder="Name or email" /></label>
                   <label className="grid gap-1 text-sm"><span>Job / Order Name</span><Input value={columnFilters.jobName || ""} onChange={(event) => setColumnFilter("jobName", event.target.value)} /></label>
