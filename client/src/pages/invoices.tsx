@@ -18,6 +18,7 @@ import { ROUTES } from "@/config/routes";
 import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
+import { applyVisibleRowSelection } from "@/lib/visibleRowRangeSelection";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
 import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
@@ -326,6 +327,8 @@ export default function InvoicesListPage() {
   const setIncludePaidHistorical = (nextValue: boolean) => updateListState({ includePaidHistorical: nextValue ? "1" : undefined }, true);
   const setIncludeCanceled = (nextValue: boolean) => updateListState({ includeCanceled: nextValue ? "1" : undefined }, true);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
+  const invoiceSelectionAnchorRef = useRef<string | null>(null);
+  const invoiceCheckboxClickRef = useRef<{ invoiceId: string; shiftKey: boolean } | null>(null);
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
   const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'all'>('active');
@@ -387,12 +390,33 @@ export default function InvoicesListPage() {
   const totalCount = pagination?.totalCount ?? 0;
   const totalPages = pagination?.totalPages ?? 1;
   const currentPage = pagination?.page ?? page;
-  const accountingApprovableInvoices = filteredInvoices.filter((invoice) => {
+  const isInvoiceSelectable = (invoice: InvoiceListItem) => {
     const status = String(invoice.status || "").toLowerCase();
     return !["void", "canceled", "cancelled"].includes(status)
       && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"
       && !(invoice as any).isHistorical;
-  });
+  };
+  const accountingApprovableInvoices = filteredInvoices.filter(isInvoiceSelectable);
+  const invoiceSelectionScope = useMemo(() => JSON.stringify({
+    page,
+    pageSize,
+    search,
+    statusFilter,
+    includePaidHistorical,
+    includeCanceled,
+    customerId,
+    customerIds,
+    sortKey,
+    sortDir,
+    columnFilters,
+  }), [columnFilters, customerId, customerIds, includeCanceled, includePaidHistorical, page, pageSize, search, sortDir, sortKey, statusFilter]);
+  useEffect(() => {
+    // Ranges are strictly a current-view interaction. Persisted selections may
+    // remain available for bulk actions, but a stale anchor cannot reach into
+    // a different page, sort, search, or filtered result set.
+    invoiceSelectionAnchorRef.current = null;
+    invoiceCheckboxClickRef.current = null;
+  }, [invoiceSelectionScope]);
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleApprovableSelected = accountingApprovableInvoices.length > 0 && accountingApprovableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
   const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>)
@@ -576,16 +600,26 @@ export default function InvoicesListPage() {
     return text || EMPTY_VALUE;
   };
 
-  const toggleSelected = (invoiceId: string, checked: boolean) => {
+  const toggleSelected = (invoiceId: string, checked: boolean, useShiftRange = false) => {
     setSelectedInvoiceIds((current) => {
-      const next = new Set(current);
-      if (checked) next.add(invoiceId);
-      else next.delete(invoiceId);
-      return next;
+      const nextSelection = applyVisibleRowSelection({
+        currentSelection: current,
+        rows: filteredInvoices,
+        getId: (invoice) => invoice.id,
+        anchorId: invoiceSelectionAnchorRef.current,
+        targetId: invoiceId,
+        checked,
+        shiftKey: useShiftRange,
+        isSelectable: isInvoiceSelectable,
+      });
+      return nextSelection.selectedIds;
     });
+    invoiceSelectionAnchorRef.current = invoiceId;
   };
 
   const toggleAllVisible = (checked: boolean) => {
+    invoiceSelectionAnchorRef.current = null;
+    invoiceCheckboxClickRef.current = null;
     setSelectedInvoiceIds((current) => {
       const next = new Set(current);
       accountingApprovableInvoices.forEach((invoice) => {
@@ -739,7 +773,7 @@ export default function InvoicesListPage() {
 
   const renderInvoiceCell = (invoice: InvoiceListItem, column: ColumnConfig) => {
     switch (column.id) {
-      case "select": return <TitanTableCell key={column.id} onClick={(event) => event.stopPropagation()}><Checkbox checked={selectedInvoiceIds.has(invoice.id)} disabled={["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()) || String((invoice as any).importSource || "").toLowerCase() === "quickbooks" || Boolean((invoice as any).isHistorical)} onCheckedChange={(checked) => toggleSelected(invoice.id, checked === true)} aria-label={`Select invoice ${invoice.invoiceNumber}`} /></TitanTableCell>;
+      case "select": return <TitanTableCell key={column.id} onClick={(event) => event.stopPropagation()}><Checkbox checked={selectedInvoiceIds.has(invoice.id)} disabled={!isInvoiceSelectable(invoice)} onClickCapture={(event) => { invoiceCheckboxClickRef.current = { invoiceId: invoice.id, shiftKey: event.shiftKey }; }} onCheckedChange={(checked) => { const click = invoiceCheckboxClickRef.current; invoiceCheckboxClickRef.current = null; toggleSelected(invoice.id, checked === true, click?.invoiceId === invoice.id && click.shiftKey); }} aria-label={`Select invoice ${invoice.invoiceNumber}`} /></TitanTableCell>;
       case "customer": return <TitanTableCell key={column.id} className="max-w-[220px]"><div className="truncate font-medium" title={textOrEmpty(invoice.customerName || invoice.companyName)}>{textOrEmpty(invoice.customerName || invoice.companyName)}</div></TitanTableCell>;
       case "contact": return <TitanTableCell key={column.id} className="max-w-[190px]"><div className="truncate" title={textOrEmpty(invoice.contactName)}>{textOrEmpty(invoice.contactName)}</div>{invoice.contactEmail && <div className="truncate text-xs text-muted-foreground" title={invoice.contactEmail}>{invoice.contactEmail}</div>}</TitanTableCell>;
       case "jobName": return <TitanTableCell key={column.id} className="max-w-[240px]"><div className="truncate" title={textOrEmpty(invoice.jobName || invoice.orderName)}>{textOrEmpty(invoice.jobName || invoice.orderName)}</div></TitanTableCell>;

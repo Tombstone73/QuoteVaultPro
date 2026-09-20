@@ -55,7 +55,7 @@ describe("Invoices List payment entry point", () => {
   it("keeps compact backlog filters server-driven, URL-persistent, and individually clearable", () => {
     expect(invoicesPageSource).toContain("Column filters");
     expect(invoicesPageSource).toContain("Customer / Company");
-    expect(invoicesPageSource).toContain("CustomerSelect");
+    expect(invoicesPageSource).toContain("CustomerMultiSelect");
     expect(invoicesPageSource).toContain("Send Status");
     expect(invoicesPageSource).toContain("Never Sent");
     expect(invoicesPageSource).toContain("Updated After Sent");
@@ -68,9 +68,9 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("setColumnFilter");
     expect(invoicesPageSource).toContain("...columnFilters");
     expect(invoiceHooksSource).toContain("sendStatus");
-    expect(invoicesPageSource).toContain("Exclude customer");
-    expect(invoicesPageSource).toContain("Open Jobs");
-    expect(invoicesPageSource).toContain("Complete Jobs");
+    expect(invoicesPageSource).toContain("Exclude Customers");
+    expect(invoicesPageSource).toContain("Production Complete");
+    expect(invoicesPageSource).toContain("Fulfillment Complete");
     expect(invoiceHooksSource).toContain("excludeCustomerId");
     expect(invoiceHooksSource).toContain("jobStatus");
     expect(invoicesPageSource).toContain("Show Paid Historical");
@@ -186,6 +186,14 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("Select all visible accounting-approvable invoices");
     expect(invoicesPageSource).toContain("setPage((current) => Math.min(totalPages, current + 1))");
     expect(invoicesPageSource).not.toContain("setSelectedInvoiceIds(new Set())\n              setPage");
+  });
+
+  it("uses a current-visible-row range helper without changing bulk selection authority", () => {
+    expect(invoicesPageSource).toContain("applyVisibleRowSelection");
+    expect(invoicesPageSource).toContain("invoiceSelectionAnchorRef");
+    expect(invoicesPageSource).toContain("invoiceSelectionScope");
+    expect(invoicesPageSource).toContain("onClickCapture");
+    expect(invoicesPageSource).toContain("toggleAllVisible");
   });
 
   it("shows the Take Payment action for an eligible invoice", () => {
