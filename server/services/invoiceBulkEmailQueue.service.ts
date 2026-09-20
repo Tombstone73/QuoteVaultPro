@@ -40,6 +40,8 @@ type CanonicalInvoiceEmailSender = (input: {
   toEmail?: string | null;
   deliveryJobId?: string | null;
   allowUnapproved?: boolean;
+  subject?: string | null;
+  message?: string | null;
 }) => Promise<{ messageId?: string | null }>;
 
 export type BulkInvoiceEmailCandidate = {
@@ -47,6 +49,9 @@ export type BulkInvoiceEmailCandidate = {
   invoiceVersion: number;
   recipientEmail: string;
   allowUnapproved?: boolean;
+  /** Operator-authored content is persisted with the delivery request so a retry does not silently change it. */
+  subject?: string | null;
+  message?: string | null;
 };
 
 export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
@@ -204,6 +209,17 @@ type InvoiceEmailDeliveryReviewMetadata = {
   replacementJobId: string | null;
 };
 
+type InvoiceEmailDeliveryMetadata = {
+  deliveryMode?: "individual_invoice_messages" | "individual_invoice_message" | "interactive_invoice_message";
+  createdByUserId?: string | null;
+  createdByUserName?: string | null;
+  allowUnapproved?: boolean;
+  subject?: string | null;
+  message?: string | null;
+  retryOfNeedsReviewJobId?: string;
+  deliveryReview?: Partial<InvoiceEmailDeliveryReviewMetadata>;
+};
+
 function asMetadata(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   if (typeof value === "string") {
@@ -321,10 +337,15 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
       attemptCount: 0,
       maxAttempts: Number(original.maxAttempts) || getBulkInvoiceEmailQueueConfig().maxAttempts,
       metadata: {
-        deliveryMode: "individual_invoice_messages",
+        deliveryMode: originalMetadata.deliveryMode === "interactive_invoice_message"
+          ? "interactive_invoice_message"
+          : "individual_invoice_messages",
         createdByUserId: input.reviewedByUserId || null,
+        createdByUserName: input.reviewedByUserName || null,
         retryOfNeedsReviewJobId: original.id,
         allowUnapproved: originalMetadata.allowUnapproved === true,
+        subject: typeof originalMetadata.subject === "string" ? originalMetadata.subject : null,
+        message: typeof originalMetadata.message === "string" ? originalMetadata.message : null,
       },
     } as any).returning({
       id: invoiceEmailDeliveryJobs.id,
@@ -354,10 +375,52 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
 export async function enqueueBulkInvoiceEmailCampaign(input: {
   organizationId: string;
   createdByUserId?: string | null;
+  createdByUserName?: string | null;
   invoiceIds: string[];
   candidates: BulkInvoiceEmailCandidate[];
   skipped: BulkInvoiceEmailSkip[];
   idempotencyKey: string;
+}) {
+  return enqueueInvoiceEmailCampaign({ ...input, deliveryMode: "bulk" });
+}
+
+/**
+ * Queues a one-invoice operator action through the same durable delivery path
+ * as bulk sending. This deliberately returns a queue result, not a fake
+ * "sent" result: provider acceptance remains the only sent authority.
+ */
+export async function enqueueInteractiveInvoiceEmailCampaign(input: {
+  organizationId: string;
+  createdByUserId?: string | null;
+  createdByUserName?: string | null;
+  invoiceId: string;
+  candidates: BulkInvoiceEmailCandidate[];
+  idempotencyKey: string;
+}) {
+  return enqueueInvoiceEmailCampaign({
+    organizationId: input.organizationId,
+    createdByUserId: input.createdByUserId,
+    createdByUserName: input.createdByUserName,
+    invoiceIds: [input.invoiceId],
+    candidates: input.candidates,
+    skipped: [],
+    // The database key is bounded. The route scopes the request key to an
+    // invoice; retain enough entropy while preventing a malformed header from
+    // violating the persistence constraint.
+    idempotencyKey: `interactive:${input.idempotencyKey.slice(0, 220)}`,
+    deliveryMode: "interactive",
+  });
+}
+
+async function enqueueInvoiceEmailCampaign(input: {
+  organizationId: string;
+  createdByUserId?: string | null;
+  createdByUserName?: string | null;
+  invoiceIds: string[];
+  candidates: BulkInvoiceEmailCandidate[];
+  skipped: BulkInvoiceEmailSkip[];
+  idempotencyKey: string;
+  deliveryMode: "bulk" | "interactive";
 }) {
   const config = getBulkInvoiceEmailQueueConfig();
   if (input.invoiceIds.length > config.maxBatchSize) {
@@ -374,7 +437,10 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
       skippedInvoiceCount: input.skipped.length,
       recipientGroupCount: new Set(input.candidates.map((candidate) => normalizeRecipient(candidate.recipientEmail))).size,
       resultSummary: { skipped: input.skipped },
-      metadata: { deliveryMode: "individual_invoice_messages" },
+      metadata: {
+        deliveryMode: input.deliveryMode === "interactive" ? "interactive_invoice_message" : "individual_invoice_messages",
+        createdByUserName: input.createdByUserName || null,
+      },
     } as any).onConflictDoNothing().returning();
 
     if (!created) {
@@ -385,22 +451,28 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
       return { campaign: existing, queued: 0, alreadyQueued: input.candidates.length, blocked: [], replayed: true };
     }
 
-    // Serialize slot allocation per organization. The durable jobs themselves
-    // are the scheduler; this lock only prevents two concurrent enqueue
-    // requests from allocating the same next slot.
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
-    const scheduledResult: any = await tx.execute(sql`
-      SELECT max(available_at) AS "latestScheduledAt"
-      FROM invoice_email_delivery_jobs
-      WHERE organization_id = ${input.organizationId}
-        AND status IN ('queued', 'retrying', 'processing')
-    `);
-    const latestScheduledAt = (scheduledResult.rows || scheduledResult)[0]?.latestScheduledAt ?? null;
-    let nextAvailableAt = getNextBulkInvoiceEmailSlot({
-      now: new Date(),
-      latestScheduledAt,
-      spacingSeconds: config.spacingSeconds,
-    });
+    // Bulk delivery is rate-spaced. An individual operator action is still
+    // durable, but should not be delayed behind a large batch; it is claimed
+    // by the same worker and its provider outcome is recorded identically.
+    let nextAvailableAt = new Date();
+    if (input.deliveryMode === "bulk") {
+      // Serialize slot allocation per organization. The durable jobs themselves
+      // are the scheduler; this lock only prevents two concurrent enqueue
+      // requests from allocating the same next slot.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
+      const scheduledResult: any = await tx.execute(sql`
+        SELECT max(available_at) AS "latestScheduledAt"
+        FROM invoice_email_delivery_jobs
+        WHERE organization_id = ${input.organizationId}
+          AND status IN ('queued', 'retrying', 'processing')
+      `);
+      const latestScheduledAt = (scheduledResult.rows || scheduledResult)[0]?.latestScheduledAt ?? null;
+      nextAvailableAt = getNextBulkInvoiceEmailSlot({
+        now: nextAvailableAt,
+        latestScheduledAt,
+        spacingSeconds: config.spacingSeconds,
+      });
+    }
 
     let queued = 0;
     let alreadyQueued = 0;
@@ -418,14 +490,19 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
         maxAttempts: config.maxAttempts,
         availableAt: nextAvailableAt,
         metadata: {
-          deliveryMode: "individual_invoice_message",
+          deliveryMode: input.deliveryMode === "interactive" ? "interactive_invoice_message" : "individual_invoice_message",
           createdByUserId: input.createdByUserId || null,
+          createdByUserName: input.createdByUserName || null,
           allowUnapproved: Boolean(candidate.allowUnapproved),
+          subject: candidate.subject?.trim() || null,
+          message: candidate.message?.trim() || null,
         },
       } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
       if (job) {
         queued += 1;
-        nextAvailableAt = new Date(nextAvailableAt.getTime() + config.spacingSeconds * 1000);
+        if (input.deliveryMode === "bulk") {
+          nextAvailableAt = new Date(nextAvailableAt.getTime() + config.spacingSeconds * 1000);
+        }
       }
       else {
         alreadyQueued += 1;
@@ -457,7 +534,7 @@ export async function enqueueBulkInvoiceEmailCampaign(input: {
         alreadyQueued,
         blocked,
         skipped: input.skipped,
-        deliveryMode: "individual_invoice_messages",
+        deliveryMode: input.deliveryMode === "interactive" ? "interactive_invoice_message" : "individual_invoice_messages",
       },
       updatedAt: new Date(),
     } as any).where(eq(invoiceEmailCampaigns.id, created.id)).returning();
@@ -485,7 +562,7 @@ export type ClaimedBulkInvoiceEmailJob = {
   maxAttempts: number;
   createdAt: Date;
   campaignId: string;
-  metadata?: { createdByUserId?: string | null; allowUnapproved?: boolean };
+  metadata?: InvoiceEmailDeliveryMetadata;
 };
 
 function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail: Record<string, unknown> = {}): void {
@@ -501,18 +578,21 @@ function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail
 
 async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob | null> {
   const config = getBulkInvoiceEmailQueueConfig();
-  return db.transaction(async (tx) => {
+  const claimed = await db.transaction(async (tx) => {
     // A lost worker can leave a provider submission ambiguous. Never reclaim
     // that work: Gmail may have accepted it after the process lost its
     // response. Surface it for review instead of turning each poll into an
     // unbounded resend attempt.
-    await tx.execute(sql`
+    const expiredResult: any = await tx.execute(sql`
       UPDATE invoice_email_delivery_jobs
       SET status = 'needs_review', claim_expires_at = null,
           failure_reason = coalesce(failure_reason, 'Delivery outcome is uncertain because the worker claim expired before it recorded an outcome. The message was not resent to avoid a duplicate email.'),
           updated_at = now()
       WHERE status = 'processing' AND claim_expires_at <= now()
+      RETURNING campaign_id AS "campaignId"
     `);
+    const expiredRows = (Array.isArray(expiredResult) ? expiredResult : expiredResult?.rows || []) as Array<{ campaignId?: string }>;
+    const expiredCampaignIds = Array.from(new Set(expiredRows.map((row) => String(row.campaignId || "")).filter(Boolean)));
     const result: any = await tx.execute(sql`
       SELECT id, organization_id AS "organizationId", invoice_id AS "invoiceId",
              recipient_email AS "recipientEmail", attempt_count AS "attemptCount",
@@ -527,7 +607,7 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       LIMIT 1
     `);
     const row = (result.rows || result)[0] as ClaimedBulkInvoiceEmailJob | undefined;
-    if (!row) return null;
+    if (!row) return { job: null, expiredCampaignIds };
 
     const workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
     const claimResult: any = await tx.execute(sql`
@@ -537,9 +617,20 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
           claimed_by_worker_id = ${workerId}, updated_at = now()
       WHERE id = ${row.id} AND status IN ('queued', 'retrying') AND attempt_count < max_attempts
     `);
-    if (Number(claimResult.rowCount ?? 1) === 0) return null;
-    return { ...row, attemptCount: Number(row.attemptCount || 0) + 1 };
+    if (Number(claimResult.rowCount ?? 1) === 0) return { job: null, expiredCampaignIds };
+    return {
+      job: {
+        ...row,
+        attemptCount: Number(row.attemptCount || 0) + 1,
+        metadata: asMetadata(row.metadata) as InvoiceEmailDeliveryMetadata,
+      },
+      expiredCampaignIds,
+    };
   });
+  // Stale claims remain visible as needs_review and their parent campaigns
+  // must also become complete-with-errors rather than appearing queued forever.
+  await Promise.all(claimed.expiredCampaignIds.map((campaignId) => updateCampaignCompletion(campaignId)));
+  return claimed.job;
 }
 
 function isAmbiguousProviderFailure(error: unknown): boolean {
@@ -597,9 +688,12 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       organizationId: job.organizationId,
       invoiceId: job.invoiceId,
       userId: job.metadata?.createdByUserId || null,
+      userName: job.metadata?.createdByUserName || null,
       toEmail: job.recipientEmail,
       deliveryJobId: job.id,
       allowUnapproved: job.metadata?.allowUnapproved === true,
+      subject: job.metadata?.subject || undefined,
+      message: job.metadata?.message || undefined,
     });
     await db.update(invoiceEmailDeliveryJobs).set({
       status: "sent",

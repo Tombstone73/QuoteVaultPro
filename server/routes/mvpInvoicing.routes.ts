@@ -57,6 +57,7 @@ import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptI
 import {
   buildBulkInvoiceEmailRequestKey,
   enqueueBulkInvoiceEmailCampaign,
+  enqueueInteractiveInvoiceEmailCampaign,
   getInvoiceEmailDeliveryStates,
   resolveCurrentInvoiceEmailDeliveryState,
   listInvoiceEmailDeliveryJobs,
@@ -732,6 +733,90 @@ export async function registerMvpInvoicingRoutes(
   // duplicates recipient resolution, PDF generation, Gmail delivery, logging,
   // or invoice/audit mutations.
   registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations);
+
+  /**
+   * Validates one interactive Send/Resend request before it enters the durable
+   * queue. Rendering, provider submission, audit, and invoice lifecycle work
+   * remain in sendInvoiceEmailForOperations when the worker owns the claim.
+   */
+  async function queueInteractiveInvoiceEmailForOperations(input: {
+    organizationId: string;
+    invoiceId: string;
+    userId?: string | null;
+    userName?: string | null;
+    toEmail?: unknown;
+    recipientEmails?: unknown;
+    allowUnapproved?: boolean;
+    subject?: unknown;
+    message?: unknown;
+    idempotencyKey?: string | null;
+  }) {
+    const emailConfig = await storage.getDefaultEmailSettings(input.organizationId);
+    if (!emailConfig) {
+      throw Object.assign(
+        new Error("Email is not configured. Please configure email settings in the admin panel before sending invoices."),
+        { statusCode: 400 },
+      );
+    }
+
+    let requestedRecipients: string[] | null = null;
+    if (Array.isArray(input.recipientEmails)) {
+      try {
+        requestedRecipients = normalizeExplicitInvoiceRecipientEmails(input.recipientEmails);
+      } catch (error: any) {
+        throw Object.assign(new Error(error?.message || "Enter only valid recipient email addresses"), { statusCode: 400 });
+      }
+    }
+    const requestedRecipient = requestedRecipients?.[0] ?? (input.toEmail == null ? null : String(input.toEmail).trim());
+    if (requestedRecipient && !isValidInvoiceRecipientEmail(requestedRecipient)) {
+      throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
+    }
+    if (input.toEmail != null && !requestedRecipient) {
+      throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
+    }
+
+    const resolution = await resolveInvoiceEmailRecipientsForOperations({
+      organizationId: input.organizationId,
+      invoiceId: input.invoiceId,
+    });
+    const invoice = resolution.invoice as any;
+    const recipients = requestedRecipients
+      ?? (requestedRecipient ? [requestedRecipient] : resolution.recipients.map((recipient) => recipient.email));
+    if (recipients.length === 0) {
+      throw Object.assign(new Error("No recipient email is available. Enter another email address before sending."), { statusCode: 400 });
+    }
+    if (String(invoice.status || "").toLowerCase() === "void") {
+      throw Object.assign(new Error("Void invoices cannot be sent"), { statusCode: 400 });
+    }
+    if (!isInvoiceApprovedForAccounting(invoice) && !input.allowUnapproved) {
+      throw Object.assign(new Error("Approve this invoice before sending, or explicitly choose Send Anyway."), {
+        statusCode: 409,
+        code: "INVOICE_APPROVAL_REQUIRED",
+      });
+    }
+
+    const suppliedKey = String(input.idempotencyKey || "").trim();
+    // UI requests retain this key across an uncertain HTTP response. External
+    // callers without one still get a unique, explicit send attempt.
+    const requestKey = suppliedKey || randomUUID();
+    return enqueueInteractiveInvoiceEmailCampaign({
+      organizationId: input.organizationId,
+      createdByUserId: input.userId || null,
+      createdByUserName: input.userName || null,
+      invoiceId: input.invoiceId,
+      // A client idempotency key is request-scoped, not organization-global:
+      // the same caller key must not replay another invoice's delivery.
+      idempotencyKey: `${input.invoiceId}:${requestKey.slice(0, 180)}`,
+      candidates: recipients.map((recipientEmail) => ({
+        invoiceId: input.invoiceId,
+        invoiceVersion: Math.max(1, Number(invoice.invoiceVersion || 1)),
+        recipientEmail,
+        allowUnapproved: input.allowUnapproved === true,
+        subject: typeof input.subject === "string" ? input.subject : null,
+        message: typeof input.message === "string" ? input.message : null,
+      })),
+    });
+  }
 
   // The browser configuration is scoped to an authorized invoice, rather than
   // trusting an account/org supplied by a client. It must be fetched before a
@@ -3308,8 +3393,9 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
-  // One operator-requested invoice email is intentionally synchronous. It
-  // reuses the canonical sender; only multi-invoice selections use the queue.
+  // One operator-requested Send/Resend is queued immediately. It uses the
+  // same durable worker, provider boundary, and audit path as batch delivery;
+  // the 202 response means queued, never that the provider accepted it.
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/send", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -3322,18 +3408,34 @@ export async function registerMvpInvoicingRoutes(
       const userName = String(req.user?.firstName && req.user?.lastName
         ? `${req.user.firstName} ${req.user.lastName}`
         : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
-      const result = await sendInvoiceEmailForOperations({
+      const result = await queueInteractiveInvoiceEmailForOperations({
         organizationId,
         invoiceId: id,
         userId: userId || null,
         userName,
-        toEmail: toEmail == null ? null : String(toEmail),
+        toEmail,
         recipientEmails,
         allowUnapproved: allowUnapproved === true,
         subject,
         message,
+        idempotencyKey: req.get("Idempotency-Key"),
       });
-      return res.json({ success: true, data: result, message: "Invoice sent" });
+      const needsReview = result.blocked.some((job) => job.status === "needs_review");
+      if (result.queued === 0 && needsReview) {
+        return res.status(409).json({
+          success: false,
+          code: "INVOICE_EMAIL_DELIVERY_REVIEW_REQUIRED",
+          error: "A previous delivery outcome is uncertain. Open Invoice List → Email Queue to review it before sending again to avoid a duplicate email.",
+          data: result,
+        });
+      }
+      return res.status(202).json({
+        success: true,
+        data: result,
+        message: result.queued > 0
+          ? "Invoice email queued for delivery"
+          : "This invoice email is already queued for delivery",
+      });
     } catch (error: any) {
       console.error("[Invoice Send] FAILED:", {
         error: error.message,
@@ -3361,6 +3463,9 @@ export async function registerMvpInvoicingRoutes(
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
 
       const userId = getUserId(req.user);
+      const userName = String(req.user?.firstName && req.user?.lastName
+        ? `${req.user.firstName} ${req.user.lastName}`
+        : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
       const invoiceIds: string[] = Array.isArray(req.body?.invoiceIds)
         ? Array.from(new Set(req.body.invoiceIds.map((id: unknown) => String(id || "").trim()).filter(Boolean)))
         : [];
@@ -3443,6 +3548,7 @@ export async function registerMvpInvoicingRoutes(
       const queued = await enqueueBulkInvoiceEmailCampaign({
         organizationId,
         createdByUserId: userId || null,
+        createdByUserName: userName,
         invoiceIds,
         candidates,
         skipped,

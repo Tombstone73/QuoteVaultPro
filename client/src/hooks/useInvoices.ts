@@ -674,17 +674,18 @@ export function useBulkMarkInvoicesSent() {
 export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, toEmail, recipientEmails, allowUnapproved = false, subject, message }: {
+    mutationFn: async ({ id, toEmail, recipientEmails, allowUnapproved = false, subject, message, idempotencyKey }: {
       id: string;
       toEmail?: string;
       recipientEmails?: string[];
       allowUnapproved?: boolean;
       subject?: string;
       message?: string;
+      idempotencyKey?: string;
     }) => {
       const res = await apiFetch(`/api/invoices/${id}/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey || crypto.randomUUID() },
         body: JSON.stringify({ toEmail, recipientEmails, allowUnapproved, subject, message }),
         credentials: 'include',
       });
@@ -699,6 +700,7 @@ export function useSendInvoice() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', 'email-queue'] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
     },
   });

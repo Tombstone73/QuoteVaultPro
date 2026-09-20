@@ -33,7 +33,6 @@ import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shar
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useInvoice, useQueueInvoiceQbSync, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { orderDetailQueryKey, useOrder } from "@/hooks/useOrders";
-import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
 import { useCreateEpsHostedSession, usePaymentSettings, useRecordEpsHostedResult } from "@/hooks/usePaymentSettings";
 import { Page } from "@/components/titan/Page";
@@ -256,7 +255,6 @@ export default function InvoiceDetailPage() {
   const [epsAmountOverride, setEpsAmountOverride] = useState(false);
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
-  const [completeFeeOnlyOrderAfterSend, setCompleteFeeOnlyOrderAfterSend] = useState(false);
   const [expandedQBLines, setExpandedQBLines] = useState<Set<number>>(new Set());
   const takePaymentAutoLaunchRef = useRef(false);
 
@@ -284,13 +282,9 @@ export default function InvoiceDetailPage() {
 
   // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
   const orderId = invoice?.orderId ?? undefined;
-  const completeOrder = useCompleteOrder(orderId || '');
   const { data: orderRaw } = useOrder(orderId || undefined);
   const order: any = orderRaw as any;
   const invoiceJobContext = resolveInvoiceDetailJobContext(invoice, order);
-  const isServiceFeeOnlyOrder = Array.isArray(order?.lineItems) && order.lineItems.length > 0 && order.lineItems.every(
-    (lineItem: any) => lineItem.product?.workflowIntent === 'service_fee',
-  );
   const linkedOrderContactId: string | null = order?.contact?.id || order?.contactId || null;
   const orderDesignBillingVisibilityQuery = useQuery<OrderDesignBillingVisibilityItem[]>({
     queryKey: ['orders', 'design-billing-visibility', orderId],
@@ -1953,7 +1947,7 @@ export default function InvoiceDetailPage() {
                       </Button>
                     ) : null}
 
-                    {canSendInvoiceEmail && invoiceId ? <InvoiceEmailSendDialog invoiceId={invoiceId} open={emailDialogOpen} onOpenChange={handleEmailDialogOpenChange} onSent={() => { refetch(); if (isServiceFeeOnlyOrder && orderId) setCompleteFeeOnlyOrderAfterSend(true); }} trigger={<Button variant="outline"><Mail className="mr-2 h-4 w-4" />Send Email</Button>} /> : null}
+                    {canSendInvoiceEmail && invoiceId ? <InvoiceEmailSendDialog invoiceId={invoiceId} open={emailDialogOpen} onOpenChange={handleEmailDialogOpenChange} onQueued={() => { refetch(); }} trigger={<Button variant="outline"><Mail className="mr-2 h-4 w-4" />Send Email</Button>} /> : null}
 
                     {showPaymentActions ? (
                       <Button onClick={() => openTakePayment('credit_card')}>
@@ -3355,28 +3349,6 @@ export default function InvoiceDetailPage() {
           <div className="text-center py-12">Invoice not found</div>
         )}
       </div>
-      <AlertDialog open={completeFeeOnlyOrderAfterSend} onOpenChange={setCompleteFeeOnlyOrderAfterSend}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Complete this billing-only order?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This order has no production work. Mark it operationally complete now? The invoice and payment workflow remain active.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Complete Later</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={completeOrder.isPending}
-              onClick={() => orderId && completeOrder.mutate(
-                {},
-                { onSuccess: () => setCompleteFeeOnlyOrderAfterSend(false) },
-              )}
-            >
-              {completeOrder.isPending ? "Completing..." : "Complete Order"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Page>
   );
 }

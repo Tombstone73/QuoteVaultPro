@@ -132,13 +132,14 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await changeComposeField("invoice-email-message", "Thank you for your payment.\nThis copy is for your records.");
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
 
-    expect(sendMutation).toHaveBeenCalledWith({
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({
       id: "invoice-1",
       recipientEmails: ["jess@brainstormprint.com"],
       allowUnapproved: false,
       subject: "Paid Invoice #20469 for your records",
       message: "Thank you for your payment.\nThis copy is for your records.",
-    });
+      idempotencyKey: expect.any(String),
+    }));
   });
 
   test("shows the configured recipient's name and email", async () => {
@@ -256,6 +257,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     expect(container.textContent).toContain("Send Unapproved Invoice?");
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send Anyway") as HTMLButtonElement).click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenLastCalledWith(expect.objectContaining({ allowUnapproved: true, message: "Custom approval-safe note" }));
+    expect(sendMutation.mock.calls[1][0].idempotencyKey).toBe(sendMutation.mock.calls[0][0].idempotencyKey);
   });
 
   test("shows a retryable compose error instead of a blank email", async () => {

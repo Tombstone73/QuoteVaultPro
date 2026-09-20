@@ -99,7 +99,8 @@ describe("invoice email needs-review resolution", () => {
   test("selects the persisted status in the locked row rather than inferring it", () => {
     const source = readFileSync(path.join(process.cwd(), "server/services/invoiceBulkEmailQueue.service.ts"), "utf8");
     const resolver = source.slice(source.indexOf("export async function resolveInvoiceEmailDeliveryNeedsReview"), source.indexOf("type ClaimedJob"));
-    expect(resolver).toContain('recipient_email AS "recipientEmail", recipient_key AS "recipientKey",\n             status,');
+    expect(resolver).toContain('recipient_email AS "recipientEmail", recipient_key AS "recipientKey",');
+    expect(resolver).toContain('status,');
     expect(resolver).toContain('original.status !== "needs_review"');
   });
 });

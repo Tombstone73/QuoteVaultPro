@@ -1221,7 +1221,7 @@ export default function InvoicesListPage() {
           <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={resolveEmailDeliveryReview.isPending} onClick={() => setReviewJob(null)}>Keep Blocked</Button><Button variant="outline" disabled={resolveEmailDeliveryReview.isPending} onClick={() => void confirmVerifiedNotSent()}>{resolveEmailDeliveryReview.isPending ? 'Resolving…' : 'I verified this email was not sent'}</Button><Button disabled={resolveEmailDeliveryReview.isPending} onClick={() => void confirmVerifiedNotSent(true)}>{resolveEmailDeliveryReview.isPending ? 'Queueing…' : 'Retry through Queue'}</Button></div>
         </DialogContent>
       </Dialog>
-      {quickSendInvoice ? <InvoiceEmailSendDialog invoiceId={quickSendInvoice.id} open={Boolean(quickSendInvoice)} onOpenChange={(open) => { if (!open) setQuickSendInvoice(null); }} onSent={() => setQuickSendInvoice(null)} /> : null}
+      {quickSendInvoice ? <InvoiceEmailSendDialog invoiceId={quickSendInvoice.id} open={Boolean(quickSendInvoice)} onOpenChange={(open) => { if (!open) setQuickSendInvoice(null); }} onQueued={() => setQuickSendInvoice(null)} /> : null}
       <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(open) => !open && setOverrideTarget(null)} />
     </Page>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -14,16 +14,26 @@ type InvoiceEmailSendDialogProps = {
   invoiceId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSent?: () => void;
+  onQueued?: () => void;
   trigger?: ReactNode;
 };
 
+function createInvoiceEmailRequestId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  // Older embedded browsers can lack randomUUID. The server additionally
+  // scopes this to the invoice, and this value only has to remain stable for
+  // this open dialog/request retry.
+  return `invoice-email-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 /**
  * The one canonical interactive invoice-email UI. Both the Invoice list and
- * Invoice detail route through this recipient selection and the synchronous
- * single-invoice sender; bulk selection remains a separate queue operation.
+ * Invoice detail route through this recipient selection and the durable
+ * single-invoice queue; bulk selection remains rate-spaced separately.
  */
-export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, trigger }: InvoiceEmailSendDialogProps) {
+export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onQueued, trigger }: InvoiceEmailSendDialogProps) {
   const { toast } = useToast();
   const sendInvoice = useSendInvoice();
   const invoiceEmailRecipients = useInvoiceEmailRecipients(invoiceId, open);
@@ -37,6 +47,9 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
   const [draftInitializedForOpen, setDraftInitializedForOpen] = useState(false);
+  // Retain one key until this dialog closes so a browser/network retry replays
+  // the same queue request instead of creating an accidental resend.
+  const deliveryRequestIdRef = useRef<string | null>(null);
 
   const recipientOptions = invoiceEmailRecipients.data?.recipients ?? [];
   const selectedRecipient = recipientOptions.find(
@@ -88,6 +101,7 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
     setSubject("");
     setMessage("");
     setDraftInitializedForOpen(false);
+    deliveryRequestIdRef.current = null;
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
@@ -106,10 +120,12 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
     }
     if (!draftInitializedForOpen || !subject.trim() || !message.trim()) return;
     try {
-      await sendInvoice.mutateAsync({ id: invoiceId, recipientEmails: finalRecipientEmails, allowUnapproved, subject, message });
-      toast({ title: "Invoice sent", description: "The invoice email was accepted for delivery." });
+      const idempotencyKey = deliveryRequestIdRef.current || createInvoiceEmailRequestId();
+      deliveryRequestIdRef.current = idempotencyKey;
+      await sendInvoice.mutateAsync({ id: invoiceId, recipientEmails: finalRecipientEmails, allowUnapproved, subject, message, idempotencyKey });
+      toast({ title: "Invoice queued", description: "The email is queued. Sent status updates only after the provider accepts it." });
       handleOpenChange(false);
-      onSent?.();
+      onQueued?.();
     } catch (error: any) {
       if (error?.code === "INVOICE_APPROVAL_REQUIRED" && !allowUnapproved) {
         setUnapprovedOverrideRequired(true);
@@ -194,10 +210,10 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onSent, 
         <DialogFooter>
           {unapprovedOverrideRequired ? <>
             <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={sendInvoice.isPending}>Cancel</Button>
-            <Button variant="destructive" onClick={() => void handleSend(true)} disabled={sendInvoice.isPending || !draftInitializedForOpen}>{sendInvoice.isPending ? "Sending..." : "Send Anyway"}</Button>
+            <Button variant="destructive" onClick={() => void handleSend(true)} disabled={sendInvoice.isPending || !draftInitializedForOpen}>{sendInvoice.isPending ? "Queueing..." : "Send Anyway"}</Button>
           </> : <>
             <DialogClose asChild><Button variant="outline" onClick={() => resetCompose()} disabled={sendInvoice.isPending}>Cancel</Button></DialogClose>
-            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || invoiceEmailDraft.isFetching || invoiceEmailDraft.isError || !draftInitializedForOpen || finalRecipientEmails.length === 0 || manualRecipientInvalid}>{sendInvoice.isPending ? "Sending..." : "Send"}</Button>
+            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || invoiceEmailDraft.isFetching || invoiceEmailDraft.isError || !draftInitializedForOpen || finalRecipientEmails.length === 0 || manualRecipientInvalid}>{sendInvoice.isPending ? "Queueing..." : "Send"}</Button>
           </>}
         </DialogFooter>
       </DialogContent>

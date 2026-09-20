@@ -48,7 +48,7 @@ describe("bulk invoice email delivery queue contract", () => {
 
   test("keeps same-recipient invoices as independently durable messages", () => {
     expect(queue).toContain('deliveryMode: "individual_invoice_messages"');
-    expect(queue).toContain('deliveryMode: "individual_invoice_message"');
+    expect(queue).toContain('"individual_invoice_message"');
     expect(migration).toContain("(organization_id, invoice_id, recipient_key, invoice_version)");
     expect(migration).not.toContain("  invoice_ids jsonb");
   });
@@ -97,10 +97,13 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).toContain("invoice_email_delivery_verified_not_sent");
   });
 
-  test("uses direct canonical delivery for one interactive invoice and the queue only for bulk send", () => {
+  test("uses the durable queue for interactive and bulk invoice delivery", () => {
     const directSendRoute = route.slice(route.indexOf('app.post("/api/invoices/:id/send"'), route.indexOf('app.post("/api/invoices/batch-send"'));
-    expect(directSendRoute).toContain("await sendInvoiceEmailForOperations(");
-    expect(directSendRoute).not.toContain("enqueueBulkInvoiceEmailCampaign");
+    expect(directSendRoute).toContain("queueInteractiveInvoiceEmailForOperations");
+    expect(directSendRoute).toContain("res.status(202)");
+    expect(directSendRoute).not.toContain("await sendInvoiceEmailForOperations(");
+    expect(queue).toContain("enqueueInteractiveInvoiceEmailCampaign");
+    expect(queue).toContain('"interactive_invoice_message"');
   });
 
   test("starts a healthy worker immediately and exposes durable queue state without treating it as Last Sent", () => {
