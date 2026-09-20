@@ -33,6 +33,7 @@ type HistoricalFulfillmentPreview = {
   productionStarted: boolean;
   activeProductionJobCount: number;
   requiresProductionBootstrap: boolean;
+  productionBootstrapLineCount?: number;
   requiresParentProductionRecovery: boolean;
 };
 
@@ -183,7 +184,9 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
             <p className="mt-2 text-muted-foreground">No shipment, tracking, pickup handoff, delivery evidence, invoice, payment, email, QuickBooks update, or billing automation will be created.</p>
           </div> : null}
           {previewQuery.data?.requiresProductionBootstrap ? <div className="space-y-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3">
-            <p className="font-medium">{previewQuery.data.productionStarted ? "Production has no active owner for this Order." : "Production has not been started for this Order."}</p>
+            <p className="font-medium">{previewQuery.data.productionBootstrapLineCount && previewQuery.data.productionBootstrapLineCount > 1
+              ? `${previewQuery.data.productionBootstrapLineCount} production lines need an administrative owner.`
+              : previewQuery.data.productionStarted ? "A remaining production line has no active owner." : "Production has not been started for this Order."}</p>
             <p className="text-muted-foreground">Continuing will administratively create and resolve the required production ownership, mark the remaining production complete, and then reconcile fulfillment.</p>
             <label className="flex items-start gap-2" htmlFor="close-job-override-production-bootstrap">
               <Checkbox id="close-job-override-production-bootstrap" checked={productionBootstrapAcknowledged} onCheckedChange={(value) => setProductionBootstrapAcknowledged(value === true)} />

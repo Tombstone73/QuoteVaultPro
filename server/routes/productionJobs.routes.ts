@@ -83,6 +83,10 @@ import { ReturnToPrepressError, getReturnToPrepressBlockedReason } from "../serv
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
 import { canonicalProductionOperations } from "../services/canonicalProductionOperations";
+import {
+  hasOutstandingCanonicalProductionObligations,
+  projectCanonicalProductionObligations,
+} from "../services/orderProductionCompletionPolicy";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -176,6 +180,27 @@ export async function markOrderReadyForFulfillmentIfProductionComplete(
 
   if (remainingActiveProduction[0]) {
     return { changed: false, reason: "active_production_jobs_remaining" as const };
+  }
+
+  const productionLines = await tx
+    .select({
+      id: orderLineItems.id,
+      lineItemRole: orderLineItems.lineItemRole,
+      productionBypassed: orderLineItems.productionBypassed,
+      requiresProductionJob: products.requiresProductionJob,
+      workflowIntent: products.workflowIntent,
+      workflowState: orderLineItems.workflowState,
+      lifecycleStatus: orderLineItems.status,
+    })
+    .from(orderLineItems)
+    .innerJoin(products, eq(products.id, orderLineItems.productId))
+    .where(and(
+      eq(orderLineItems.orderId, args.orderId),
+      eq(products.organizationId, args.organizationId),
+    ));
+  const productionObligations = projectCanonicalProductionObligations({ lines: productionLines });
+  if (hasOutstandingCanonicalProductionObligations(productionObligations)) {
+    return { changed: false, reason: "production_line_obligations_remaining" as const };
   }
 
   const [order] = await tx

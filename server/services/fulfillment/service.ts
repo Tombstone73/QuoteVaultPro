@@ -1,7 +1,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
-import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, productionJobs, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
+import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, productionJobs, products, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
 import { FulfillmentDashboardRepo, PickupRepo, ShipmentRepo, resolveExistingActorUserId } from './repository';
 import { FulfillmentHttpError } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
@@ -10,6 +10,7 @@ import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } 
 import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
+import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -117,16 +118,37 @@ export class FulfillmentService {
       (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.fulfilledQuantity),
       0,
     );
-    const productionJobRows = await this.dbInstance
-      .select({ stationKey: productionJobs.stationKey, status: productionJobs.status })
-      .from(productionJobs)
-      .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId)));
+    const [productionLines, productionJobRows] = await Promise.all([
+      this.dbInstance.select({
+        id: orderLineItems.id,
+        lineItemRole: orderLineItems.lineItemRole,
+        productionBypassed: orderLineItems.productionBypassed,
+        requiresProductionJob: products.requiresProductionJob,
+        workflowIntent: products.workflowIntent,
+        workflowState: orderLineItems.workflowState,
+        lifecycleStatus: orderLineItems.status,
+      }).from(orderLineItems).innerJoin(products, eq(products.id, orderLineItems.productId)).where(and(
+        eq(orderLineItems.orderId, orderId),
+        eq(products.organizationId, orgId),
+      )),
+      this.dbInstance.select({ lineItemId: productionJobs.lineItemId, stationKey: productionJobs.stationKey, status: productionJobs.status })
+        .from(productionJobs)
+        .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId))),
+    ]);
     const nonFulfillmentProductionJobs = productionJobRows.filter((job) => String(job.stationKey || '').toLowerCase() !== 'fulfillment');
-    const activeProductionJobCount = nonFulfillmentProductionJobs.filter((job) =>
+    const activeProductionJobs = nonFulfillmentProductionJobs.filter((job) =>
       !['done', 'void', 'canceled', 'cancelled'].includes(String(job.status || '').toLowerCase()),
-    ).length;
+    );
+    const activeProductionJobCount = activeProductionJobs.length;
+    const activeOwnerCountByLineItemId = new Map<string, number>();
+    for (const job of activeProductionJobs) {
+      if (!job.lineItemId) continue;
+      activeOwnerCountByLineItemId.set(job.lineItemId, (activeOwnerCountByLineItemId.get(job.lineItemId) ?? 0) + 1);
+    }
+    const productionObligations = projectCanonicalProductionObligations({ lines: productionLines, activeOwnerCountByLineItemId });
+    const productionBootstrapLineCount = productionObligations.filter((obligation) => obligation.state === 'needs_bootstrap').length;
     const productionStarted = nonFulfillmentProductionJobs.length > 0;
-    const requiresProductionBootstrap = remainingProductionQuantity > 0 && activeProductionJobCount === 0;
+    const requiresProductionBootstrap = productionBootstrapLineCount > 0;
     const requiresParentProductionRecovery = remainingProductionQuantity > 0
       && String(order.state || '').toLowerCase() === 'open'
       && ['ready_for_shipment', 'completed', 'complete'].includes(String(order.status || '').toLowerCase());
@@ -142,6 +164,7 @@ export class FulfillmentService {
       productionStarted,
       activeProductionJobCount,
       requiresProductionBootstrap,
+      productionBootstrapLineCount,
       requiresParentProductionRecovery,
       // The line projection is the canonical quantity source used by the
       // reconciliation itself. Do not make the dialog choose a different

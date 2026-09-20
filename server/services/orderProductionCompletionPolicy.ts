@@ -5,10 +5,26 @@
  */
 
 export type OrderProductionCompletionCandidate = {
+  id?: string | null;
   lineItemRole?: string | null;
   productionBypassed?: boolean | null;
   requiresProductionJob?: boolean | null;
   workflowIntent?: string | null;
+  workflowState?: string | null;
+  lifecycleStatus?: string | null;
+};
+
+export type CanonicalProductionObligationState =
+  | "not_production_required"
+  | "complete"
+  | "active_owner"
+  | "needs_bootstrap"
+  | "ownership_conflict";
+
+export type CanonicalProductionObligation = {
+  lineItemId: string | null;
+  state: CanonicalProductionObligationState;
+  activeOwnerCount: number;
 };
 
 export type OrderProductionPrerequisiteStage = "Design" | "Proof" | "Prepress";
@@ -79,6 +95,42 @@ export function requiresCanonicalProductionCompletion(candidate: OrderProduction
     && candidate.requiresProductionJob === true
     && workflowIntent !== "service_fee"
     && workflowIntent !== "fulfillment_only";
+}
+
+function isTerminalProductionLineState(candidate: OrderProductionCompletionCandidate): boolean {
+  const workflowState = normalized(candidate.workflowState);
+  const lifecycleStatus = normalized(candidate.lifecycleStatus);
+  return ["completed", "canceled", "cancelled", "void"].includes(workflowState)
+    || ["complete", "completed", "canceled", "cancelled", "void"].includes(lifecycleStatus);
+}
+
+/**
+ * Shared, line-scoped production-completion projection. An order cannot move
+ * to Fulfillment merely because it currently has no active jobs: a physical
+ * line that needs Production but has no owner is still an obligation.
+ */
+export function projectCanonicalProductionObligations(input: {
+  lines: OrderProductionCompletionCandidate[];
+  activeOwnerCountByLineItemId?: ReadonlyMap<string, number>;
+}): CanonicalProductionObligation[] {
+  const activeOwnerCountByLineItemId = input.activeOwnerCountByLineItemId ?? new Map<string, number>();
+  return input.lines.map((line) => {
+    const lineItemId = line.id ?? null;
+    if (!requiresCanonicalProductionCompletion(line)) {
+      return { lineItemId, state: "not_production_required", activeOwnerCount: 0 };
+    }
+    if (isTerminalProductionLineState(line)) {
+      return { lineItemId, state: "complete", activeOwnerCount: 0 };
+    }
+    const activeOwnerCount = lineItemId ? Math.max(0, Number(activeOwnerCountByLineItemId.get(lineItemId) ?? 0)) : 0;
+    if (activeOwnerCount > 1) return { lineItemId, state: "ownership_conflict", activeOwnerCount };
+    if (activeOwnerCount === 1) return { lineItemId, state: "active_owner", activeOwnerCount };
+    return { lineItemId, state: "needs_bootstrap", activeOwnerCount: 0 };
+  });
+}
+
+export function hasOutstandingCanonicalProductionObligations(obligations: CanonicalProductionObligation[]): boolean {
+  return obligations.some((obligation) => ["active_owner", "needs_bootstrap", "ownership_conflict"].includes(obligation.state));
 }
 
 /**
