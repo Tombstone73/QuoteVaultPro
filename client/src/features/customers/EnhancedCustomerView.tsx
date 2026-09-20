@@ -226,6 +226,11 @@ function formatStatusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Customer Orders historically stores status filters in the return URL. Keep
+// the namespace explicit because this choice filters canonical Order.state,
+// not the legacy operational Order.status field.
+const CUSTOMER_ORDER_PRODUCTION_COMPLETE_FILTER = "state:production_complete";
+
 // ============================================================
 // SUB-COMPONENTS
 // ============================================================
@@ -2089,8 +2094,10 @@ function OrdersTable({
         }) ||
         order.poNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         order.label?.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesStatus =
-        statusFilter === "all" || order.status === statusFilter;
+      const matchesStatus = statusFilter === "all"
+        || (statusFilter === CUSTOMER_ORDER_PRODUCTION_COMPLETE_FILTER
+          ? order.state === "production_complete"
+          : order.status === statusFilter);
       return matchesSearch && matchesStatus;
     });
     
@@ -2148,7 +2155,11 @@ function OrdersTable({
   const orderNavigationSource = useMemo(() => {
     const params = new URLSearchParams({ customerId, page: "1", pageSize: "50" });
     if (searchQuery) params.set("search", searchQuery);
-    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (statusFilter === CUSTOMER_ORDER_PRODUCTION_COMPLETE_FILTER) {
+      params.set("state", "production_complete");
+    } else if (statusFilter !== "all") {
+      params.set("status", statusFilter);
+    }
     if (invoiceFilter && invoiceFilter !== "all") params.set("invoice", invoiceFilter);
     const primarySort = sorting.length === 1 ? sorting[0] : null;
     const canonicalSortBy = primarySort?.id === "orderNumber" || primarySort?.id === "amount" || primarySort?.id === "status"
@@ -3138,7 +3149,7 @@ export default function EnhancedCustomerView({
                   </SelectTrigger>
                   <SelectContent className="bg-slate-900 border-slate-700">
                     <SelectItem value="all" className="text-white">All Status</SelectItem>
-                    {activeTab === "orders" && <><SelectItem value="new" className="text-white">New</SelectItem><SelectItem value="in_production" className="text-white">In Production</SelectItem><SelectItem value="completed" className="text-white">Completed</SelectItem><SelectItem value="shipped" className="text-white">Shipped</SelectItem></>}
+                    {activeTab === "orders" && <><SelectItem value="new" className="text-white">New</SelectItem><SelectItem value="in_production" className="text-white">In Production</SelectItem><SelectItem value={CUSTOMER_ORDER_PRODUCTION_COMPLETE_FILTER} className="text-white">Production Complete</SelectItem><SelectItem value="completed" className="text-white">Completed</SelectItem><SelectItem value="shipped" className="text-white">Shipped</SelectItem></>}
                     {activeTab === "quotes" && <><SelectItem value="draft" className="text-white">Draft</SelectItem><SelectItem value="pending_approval" className="text-white">Pending</SelectItem><SelectItem value="approved" className="text-white">Approved</SelectItem><SelectItem value="rejected" className="text-white">Rejected</SelectItem></>}
                     {activeTab === "invoices" && <><SelectItem value="draft" className="text-white">Draft</SelectItem><SelectItem value="sent" className="text-white">Sent</SelectItem><SelectItem value="paid" className="text-white">Paid</SelectItem><SelectItem value="overdue" className="text-white">Overdue</SelectItem></>}
                   </SelectContent>
