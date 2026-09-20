@@ -507,6 +507,12 @@ export default function OrderDetail() {
     };
   }, [order, draftLineItemTotalsCents]);
 
+  const [taxSettingsOpen, setTaxSettingsOpen] = useState(false);
+  const [taxTreatmentDraft, setTaxTreatmentDraft] = useState<"auto" | "exempt" | "rate">("auto");
+  const [taxRatePercentDraft, setTaxRatePercentDraft] = useState("");
+  const [taxOverrideReasonDraft, setTaxOverrideReasonDraft] = useState("");
+  const updateOrderTaxTreatment = useUpdateOrderTaxTreatment(orderId!);
+
   const orderTaxMode = (order as any)?.taxOverrideMode === "exempt" || (order as any)?.taxOverrideMode === "rate"
     ? (order as any).taxOverrideMode as "exempt" | "rate"
     : "auto";
@@ -568,7 +574,6 @@ export default function OrderDetail() {
   });
   const cancellationEligibilityQuery = useOrderCancellationEligibility(orderId);
   const updateOrder = useUpdateOrder(orderId!);
-  const updateOrderTaxTreatment = useUpdateOrderTaxTreatment(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const workflowQuery = useOrderWorkflow();
   const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
@@ -592,10 +597,6 @@ export default function OrderDetail() {
 
   const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
   const [isAddingOrderInternalNote, setIsAddingOrderInternalNote] = useState(false);
-  const [taxSettingsOpen, setTaxSettingsOpen] = useState(false);
-  const [taxTreatmentDraft, setTaxTreatmentDraft] = useState<"auto" | "exempt" | "rate">("auto");
-  const [taxRatePercentDraft, setTaxRatePercentDraft] = useState("");
-  const [taxOverrideReasonDraft, setTaxOverrideReasonDraft] = useState("");
 
   const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
     queryKey: ["orders", "internalNotes", orderId],

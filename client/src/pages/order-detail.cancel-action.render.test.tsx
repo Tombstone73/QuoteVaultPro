@@ -66,6 +66,7 @@ jest.mock("@/hooks/useOrders", () => ({
   useCancelOrder: () => ({ mutateAsync: mockCancelOrder, isPending: false }),
   useDeleteOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useUpdateOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
+  useUpdateOrderTaxTreatment: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useBulkUpdateOrderLineItemStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useTransitionOrderStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useOrderWorkflow: () => ({ data: { statuses: [], transitions: [] }, isLoading: false }),
@@ -282,6 +283,27 @@ afterEach(() => {
 });
 
 describe("OrderDetail cancellation action rendering", () => {
+  test.each([
+    ["auto", "Auto 2.800%", {}],
+    ["exempt", "Order exempt", { taxOverrideMode: "exempt" }],
+    ["rate", "Override 7.000%", { taxOverrideMode: "rate", taxRateOverride: "0.07" }],
+  ])("renders tax controls without a TDZ for %s treatment", (_mode, taxLabel, taxOverrides) => {
+    mockOrder = baseOrder({ taxRate: "0.028", taxableSubtotal: "100.00", ...taxOverrides });
+
+    const { container, root } = renderOrderDetail();
+
+    expect(container.textContent).toContain(taxLabel);
+    const editTaxButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.trim() === "Edit");
+    expect(editTaxButton).toBeTruthy();
+
+    act(() => {
+      (editTaxButton as HTMLButtonElement).click();
+    });
+
+    expect(document.body.textContent).toContain("Tax Settings");
+    act(() => root.unmount());
+  });
+
   test("uses the active organization Admin role for saved-line editing", () => {
     mockOrder = baseOrder();
     mockUser = { role: "employee", isAdmin: false };
