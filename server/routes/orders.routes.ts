@@ -2958,18 +2958,6 @@ export async function registerOrderRoutes(
                 ...(req.body.contactId !== undefined ? { contactId: req.body.contactId } : {}),
             };
 
-            // If shipping cents or method changed, keep totals consistent by including shipping in total
-            const shippingMethodChangedForTotals = req.body.shippingMethod !== undefined && req.body.shippingMethod !== existingOrder.shippingMethod;
-            const shippingCentsChangedForTotals = req.body.shippingCents !== undefined && req.body.shippingCents !== (existingOrder as any).shippingCents;
-            if (shippingMethodChangedForTotals || shippingCentsChangedForTotals) {
-                const subtotal = Number(updateDataWithCustomer.subtotal ?? existingOrder.subtotal ?? 0);
-                const discount = Number(updateDataWithCustomer.discount ?? existingOrder.discount ?? 0);
-                const tax = Number((updateDataWithCustomer as any).taxAmount ?? (updateDataWithCustomer as any).tax ?? (existingOrder as any).taxAmount ?? existingOrder.tax ?? 0);
-                const cents = Number((updateDataWithCustomer as any).shippingCents ?? (existingOrder as any).shippingCents ?? 0);
-                const shipping = Number.isFinite(cents) ? Math.max(0, Math.floor(cents)) / 100 : 0;
-                (updateDataWithCustomer as any).total = (subtotal - discount + tax + shipping).toFixed(2);
-            }
-
             // Get old values for audit
             updateStage = "load_audit_baseline";
             const oldOrder = await storage.getOrderById(organizationId, req.params.id);

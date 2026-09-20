@@ -1,4 +1,6 @@
 import { updateOrderSchema } from "@shared/schema";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   effectiveOrderFulfillmentMethod,
   fulfillmentMethodSemanticallyChanged,
@@ -64,5 +66,24 @@ describe("V1 Order header PATCH contract", () => {
       shippingMethod: "deliver",
       unchanged: false,
     });
+  });
+
+  test("does not treat a commercial shipping-price correction as a fulfillment-method transition", () => {
+    const persistedCloseOverrideOrder = { shippingMethod: "ship", fulfillmentStatus: "delivered", shipmentCount: 0 };
+
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingCents: 2_000 }, persistedCloseOverrideOrder.shippingMethod))
+      .toEqual({ unchanged: true });
+    expect(normalizeOrderPatchFulfillmentMethod({ shippingMethod: "ship", shippingCents: 2_000 }, persistedCloseOverrideOrder.shippingMethod))
+      .toEqual({ unchanged: true });
+  });
+
+  test("invokes the terminal fulfillment guard from the Order PATCH route only for a semantic method change", () => {
+    const routes = readFileSync(path.resolve(process.cwd(), "server/routes/orders.routes.ts"), "utf8");
+    const fulfillmentService = readFileSync(path.resolve(process.cwd(), "server/services/fulfillment/service.ts"), "utf8");
+
+    expect(routes).toContain("const fulfillmentMethodPatch = normalizeOrderPatchFulfillmentMethod(req.body, existingOrder.shippingMethod);");
+    expect(routes).toContain("if (!fulfillmentMethodPatch.unchanged) {");
+    expect(routes).toContain("assertFulfillmentMethodChangeAllowed(organizationId, req.params.id, req.body.shippingMethod)");
+    expect(fulfillmentService).toContain("Completed fulfillment cannot be changed from this Order edit. Use the supported fulfillment correction workflow.");
   });
 });

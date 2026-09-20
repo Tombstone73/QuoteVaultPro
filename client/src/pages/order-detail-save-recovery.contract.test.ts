@@ -10,6 +10,7 @@ describe("Order Detail rejected-save recovery", () => {
     expect(page).toContain('setDraftLineItemTotalsCents({});');
     expect(page).toContain('await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });');
     expect(page).toContain('await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });');
+    expect(page).not.toContain('body: JSON.stringify({ subtotal: subtotal.toFixed(2), total: total.toFixed(2) })');
   });
 
   test("restores server state after a rejected line save or removal without discarding its editable draft", () => {

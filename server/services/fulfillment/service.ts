@@ -614,7 +614,7 @@ export class FulfillmentService {
       .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
       .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'))).limit(1);
     if (pickupTicket?.status === 'PICKED_UP' || shipped.length > 0 || ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
-      throw new FulfillmentHttpError(409, 'Completed shipment or pickup fulfillment cannot be changed without the existing reversal workflow.', 'FULFILLMENT_METHOD_TERMINAL');
+      throw new FulfillmentHttpError(409, 'Completed fulfillment cannot be changed from this Order edit. Use the supported fulfillment correction workflow.', 'FULFILLMENT_METHOD_TERMINAL');
     }
   }
 

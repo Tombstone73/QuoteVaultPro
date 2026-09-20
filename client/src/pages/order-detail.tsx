@@ -1649,51 +1649,17 @@ export default function OrderDetail() {
   };
 
   /**
-   * Reconcile order aggregate totals after a line item is saved/added/deleted.
-   *
-   * The line item itself is already persisted by its own save. This derives the
-   * order subtotal/total and persists them DIRECTLY (silent PATCH) rather than
-   * staging them into `pendingOrderPatch`. Staging derived totals into the order
-   * draft made the order perpetually "dirty" after every line item save and
-   * forced a confusing second Save Order step. Keeping `pendingOrderPatch`
-   * reserved for genuine order-level edits lets the navigation guard and Save
-   * Order button reflect real dirty state.
+   * Line mutations recalculate Order financials and the editable Invoice in
+   * their own server transaction. The browser must only discard its preview
+   * and reload that authoritative result; writing a second client-derived
+   * subtotal/total can resurrect a removed line or use a stale tax snapshot.
    */
   const recalculateOrderTotals = async () => {
     if (!orderId) return;
     try {
-      const response = await fetch(`/api/orders/${orderId}`, { credentials: "include" });
-      if (response.ok) {
-        const freshOrder = await response.json();
-        const lineItems = Array.isArray(freshOrder?.lineItems) ? freshOrder.lineItems : [];
-        const subtotal = lineItems.reduce(
-          (sum: number, item: any) => sum + (parseFloat(item?.totalPrice) || 0),
-          0,
-        );
-        const discount = parseFloat(freshOrder?.discount) || 0;
-        const tax = parseFloat(freshOrder?.tax) || 0;
-        const shipping = (Number(freshOrder?.shippingCents) || 0) / 100;
-        const total = subtotal - discount + tax + shipping;
-
-        const persistedSubtotal = parseFloat(freshOrder?.subtotal);
-        const persistedTotal = parseFloat(freshOrder?.total);
-        const alreadyCurrent =
-          Number.isFinite(persistedSubtotal) &&
-          Number.isFinite(persistedTotal) &&
-          Math.abs(persistedSubtotal - subtotal) < 0.005 &&
-          Math.abs(persistedTotal - total) < 0.005;
-
-        if (!alreadyCurrent) {
-          await fetch(`/api/orders/${orderId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ subtotal: subtotal.toFixed(2), total: total.toFixed(2) }),
-            credentials: "include",
-          });
-        }
-      }
+      setDraftLineItemTotalsCents({});
     } catch (error) {
-      console.error("[recalculateOrderTotals] Failed to reconcile order totals:", error);
+      console.error("[recalculateOrderTotals] Failed to clear draft totals:", error);
     } finally {
       // Always refresh from authoritative server state.
       await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });

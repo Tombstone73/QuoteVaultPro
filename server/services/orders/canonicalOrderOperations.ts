@@ -5,7 +5,6 @@ import { db } from "../../db";
 import { storage } from "../../storage";
 import { OrdersRepository } from "../../storage/orders.repo";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
-import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../../invoicesService";
 import { orderChangesRequireOrderBackedInvoiceSynchronization } from "./orderHeaderUpdatePolicy";
 import { assertCustomerCreditForOrder, orderPayloadTotalCents } from "../customerCreditPolicyService";
 import { parseMoneyToCents } from "@shared/customerCreditExposure";
@@ -54,26 +53,21 @@ class CanonicalOrderOperations {
       overrideReason: input.creditOverrideReason,
     });
     return db.transaction(async (tx) => {
-      const order = await new OrdersRepository(tx).updateOrder(input.organizationId, input.orderId, {
+      let order = await new OrdersRepository(tx).updateOrder(input.organizationId, input.orderId, {
         ...input.changes,
         ...(identity ? { customerId: identity.customerId, contactId: identity.contactId } : {}),
       });
-      // In automatic tax mode, the resolved customer is part of the tax authority.
-      // Recalculate the complete financial snapshot rather than only synchronizing
-      // a possibly stale Order total to its Invoice.
-      if (input.changes.customerId !== undefined) {
+      // Customer identity and every commercial header amount must derive a
+      // complete financial snapshot from persisted billable lines. In
+      // particular, a shipping-price correction must not reuse a stale Order
+      // subtotal after historical line removal.
+      if (input.changes.customerId !== undefined || orderChangesRequireOrderBackedInvoiceSynchronization(input.changes)) {
         const { recalculateEditableOrderFinancialsInTransaction } = await import("./orderTaxCalculationService");
-        await recalculateEditableOrderFinancialsInTransaction(tx, {
+        order = await recalculateEditableOrderFinancialsInTransaction(tx, {
           organizationId: input.organizationId,
           orderId: order.id,
           actorUserId: input.actorUserId,
-        });
-      } else if (orderChangesRequireOrderBackedInvoiceSynchronization(input.changes)) {
-        await synchronizeOrderBackedInvoiceFromOrderInTransaction(tx, {
-          organizationId: input.organizationId,
-          orderId: order.id,
-          actorUserId: input.actorUserId,
-        });
+        }) ?? order;
       }
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
       return order;
