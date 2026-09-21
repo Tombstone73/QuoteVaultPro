@@ -5,15 +5,17 @@ import type { StaffPrincipal } from "../../src/authorization/principals";
 
 const principal: StaffPrincipal = { kind: "staff", organizationId: "org-a", userId: "staff-a", authority: { membershipId: "membership-a", capabilities: ["pricing.publish"] } };
 const context = (id: string): OperationContext => ({ principal, organizationId: "org-a", operationId: id, businessRequest: { id, payloadFingerprint: id } });
+const publicationState = () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}});
 
 class MemoryRunner implements ProductPublicationTransactionRunner {
   readonly requests = new Map<string, any>();
   readonly audits: string[] = [];
   readonly normalizations: string[] = [];
+  state = publicationState();
   async transaction<T>(action: (transaction: ProductPublicationTransaction) => Promise<T>): Promise<T> {
     const requests = this.requests;
     return action({
-      readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle: "draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}),
+      readDraftPublicationState: async () => this.state,
       normalizeLegacyDraftScaffold: async (input) => { this.normalizations.push(input.draftVersionId); },
       reserve: async (input) => {
         const current = requests.get(input.businessRequestId);
@@ -45,6 +47,7 @@ describe("V2 Product publication adapter", () => {
     expect(first).toMatchObject({ ok: true, value: { productVersionId: "draft-a", alreadyPublished: false } });
     expect(replay).toEqual(first);
     expect(calls).toHaveLength(1);
+    expect(calls).toEqual([expect.objectContaining({ activateProduct: true })]);
     expect(runner.audits).toEqual(["draft-a"]);
     expect(runner.normalizations).toEqual(["draft-a"]);
   });
@@ -59,30 +62,67 @@ describe("V2 Product publication adapter", () => {
   });
 
   test("checks the V2 Draft revision before translating it to the canonical publisher revision", async () => {
-    const runner = new MemoryRunner();
-    const service = new ProductPublicationApplicationService(runner, publisher([]));
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    const service = new ProductPublicationApplicationService(runner, publisher(calls));
     const stale = await service.publish(context("stale"), { ...command("stale"), expectedDraftUpdatedAt: "2026-08-18T00:01:00.000Z" });
     expect(stale).toMatchObject({ ok: false, error: { code: "STALE_STATE" } });
+    expect(calls).toHaveLength(0);
+  });
+  test("accepts equivalent fractional-second Product revision tokens", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    runner.state = { ...runner.state, productUpdatedAt: "2026-08-18T00:00:00.220Z" };
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("equivalent-product"), { ...command("equivalent-product"), expectedProductUpdatedAt: "2026-08-18T00:00:00.22Z" });
+    expect(result).toMatchObject({ ok: true, value: { productVersionId: "draft-a" } });
+    expect(calls).toHaveLength(1);
+  });
+  test("accepts equivalent fractional-second Draft revision tokens", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    runner.state = { ...runner.state, draftUpdatedAt: "2026-08-18T00:00:00.220Z" };
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("equivalent-draft"), { ...command("equivalent-draft"), expectedDraftUpdatedAt: "2026-08-18T00:00:00.22Z" });
+    expect(result).toMatchObject({ ok: true, value: { productVersionId: "draft-a" } });
+    expect(calls).toHaveLength(1);
+  });
+  test("publishes when both Product and Draft revisions use equivalent timestamp forms", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    runner.state = { ...runner.state, productUpdatedAt: "2026-08-18T00:00:00.220Z", draftUpdatedAt: "2026-08-18T00:00:00.220Z" };
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("equivalent-revisions"), {
+      ...command("equivalent-revisions"),
+      expectedProductUpdatedAt: "2026-08-18T00:00:00.22Z",
+      expectedDraftUpdatedAt: "2026-08-18T00:00:00.22Z",
+    });
+    expect(result).toMatchObject({ ok: true, value: { productVersionId: "draft-a" } });
+    expect(calls).toHaveLength(1);
+  });
+  test("rejects a genuinely stale Product revision without publishing", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    runner.state = { ...runner.state, productUpdatedAt: "2026-08-18T00:00:00.221Z" };
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("stale-product"), { ...command("stale-product"), expectedProductUpdatedAt: "2026-08-18T00:00:00.220Z" });
+    expect(result).toMatchObject({ ok: false, error: { code: "STALE_STATE" } });
+    expect(calls).toHaveLength(0);
+  });
+  test("fails invalid revision tokens with validation rather than bypassing concurrency", async () => {
+    const calls: unknown[] = [], runner = new MemoryRunner();
+    const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("invalid-revision"), { ...command("invalid-revision"), expectedDraftUpdatedAt: "not-a-timestamp" });
+    expect(result).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(calls).toHaveLength(0);
+    expect(runner.normalizations).toHaveLength(0);
   });
   test("blocks physical standard-production Draft publication when neither an exact route nor compatibility fallback is valid", async () => {
     const runner = new MemoryRunner();
-    const original = runner.transaction.bind(runner);
-    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"unconfigured" as const} }) }));
+    runner.state = { ...runner.state, routing:{kind:"unconfigured" as const} };
     const result = await new ProductPublicationApplicationService(runner, publisher([])).publish(context("routing-required"),command("routing-required"));
     expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
   });
   test("blocks production-required Draft publication when the selected route has no production step", async () => {
     const calls: unknown[] = [], runner = new MemoryRunner();
-    const original = runner.transaction.bind(runner);
-    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:true, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Incomplete",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"proofing" as const},{position:1,kind:"fulfillment" as const}]}}) }));
+    runner.state = { ...runner.state, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Incomplete",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"proofing" as const},{position:1,kind:"fulfillment" as const}]} };
     const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("production-step-required"),command("production-step-required"));
     expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
     expect(calls).toHaveLength(0);
   });
   test("blocks production-required Draft publication with no frozen production-unit rules", async () => {
     const calls: unknown[] = [], runner = new MemoryRunner();
-    const original = runner.transaction.bind(runner);
-    runner.transaction = async (action) => original(async (tx) => action({ ...tx, readDraftPublicationState: async () => ({ productUpdatedAt: "2026-08-18T00:00:00.000Z", draftUpdatedAt: "2026-08-18T00:00:00.000Z", lifecycle:"draft" as const, workflowIntent:"standard_production" as const, requiresProductionJob:true, hasProductionUnitRules:false, routing:{kind:"route_required" as const,routeTemplateId:"route-a",routeTemplateName:"Standard",sourceTemplateRevision:"1",sourceTemplateFingerprint:"sha256:route",steps:[{position:0,kind:"production" as const}]}}) }));
+    runner.state = { ...runner.state, hasProductionUnitRules:false };
     const result = await new ProductPublicationApplicationService(runner, publisher(calls)).publish(context("production-units-required"),command("production-units-required"));
     expect(result).toMatchObject({ok:false,error:{code:"VALIDATION_ERROR"}});
     expect(calls).toHaveLength(0);

@@ -4,6 +4,7 @@ import { requireOperationPrincipalScope } from "../../application/operation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
+import { canonicalRevisionTimestamp } from "../shared/revisionTimestamp.js";
 import type { ProductRoutingPolicy } from "./productRouting.js";
 
 export type PublishProductDraftInput = Readonly<{
@@ -130,6 +131,8 @@ export class ProductPublicationApplicationService {
         throw new V2ApplicationError("FORBIDDEN", "An authenticated Staff actor is required to publish this Product Draft.");
       if (!input.productId.trim() || !input.draftVersionId.trim() || !input.expectedProductUpdatedAt || !input.expectedDraftUpdatedAt)
         throw new V2ApplicationError("VALIDATION_ERROR", "A Product Draft and its current revisions are required.");
+      const expectedProductUpdatedAt = canonicalRevisionTimestamp(input.expectedProductUpdatedAt, "expected Product");
+      const expectedDraftUpdatedAt = canonicalRevisionTimestamp(input.expectedDraftUpdatedAt, "expected Draft");
 
       const reservation = await this.runner.transaction(async (tx) => {
         const reserved = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: hash(input), ...actor(context) });
@@ -150,7 +153,10 @@ export class ProductPublicationApplicationService {
       }));
       if (!state) throw new V2ApplicationError("NOT_FOUND", "The tenant-scoped Product Draft is unavailable.");
       if (state.lifecycle !== "draft") throw new V2ApplicationError("CONFLICT", "Only the current Product Draft can be published.");
-      if (state.productUpdatedAt !== input.expectedProductUpdatedAt || state.draftUpdatedAt !== input.expectedDraftUpdatedAt)
+      if (
+        canonicalRevisionTimestamp(state.productUpdatedAt, "current Product") !== expectedProductUpdatedAt
+        || canonicalRevisionTimestamp(state.draftUpdatedAt, "current Product Draft") !== expectedDraftUpdatedAt
+      )
         throw new V2ApplicationError("STALE_STATE", "The Product Draft changed before publication. Refresh and try again.");
       if (state.workflowIntent === "standard_production" && state.requiresProductionJob) {
         if (!state.hasProductionUnitRules)
