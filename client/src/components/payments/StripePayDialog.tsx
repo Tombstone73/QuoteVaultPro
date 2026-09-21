@@ -293,6 +293,8 @@ export default function StripePayDialog(props: {
   invoiceId: string;
   apiBasePath: string;
   disabled?: boolean;
+  /** Staff preview deliberately stops before any provider mutation. */
+  previewMode?: boolean;
   onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
 }) {
   const apiBasePath = props.apiBasePath;
@@ -312,7 +314,7 @@ export default function StripePayDialog(props: {
   const { toast } = useToast();
 
   // State machine for dialog lifecycle
-  const [state, setState] = useState<'idle' | 'loading_runtime_config' | 'creating_intent' | 'ready' | 'error'>('idle');
+  const [state, setState] = useState<'idle' | 'loading_runtime_config' | 'creating_intent' | 'ready' | 'preview' | 'error'>('idle');
   const [intentError, setIntentError] = useState<string | null>(null);
 
   // Freeze clientSecret and Elements options for the lifetime of an open dialog.
@@ -354,6 +356,11 @@ export default function StripePayDialog(props: {
 
     // Dialog opened
     if (!props.invoiceId) return;
+    if (props.previewMode) {
+      setState('preview');
+      setIntentError(null);
+      return;
+    }
     if (intentRequestedRef.current) return;
     // Start a new payment session.
     intentRequestedRef.current = true;
@@ -440,7 +447,7 @@ export default function StripePayDialog(props: {
 
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.invoiceId, apiBasePath]);
+  }, [props.open, props.invoiceId, apiBasePath, props.previewMode]);
 
   const close = () => props.onOpenChange(false);
 
@@ -452,7 +459,7 @@ export default function StripePayDialog(props: {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Pay Invoice</DialogTitle>
+          <DialogTitle>{props.previewMode ? 'Payment preview' : 'Pay Invoice'}</DialogTitle>
         </DialogHeader>
 
         {(state === 'loading_runtime_config' || state === 'creating_intent') && (
@@ -461,6 +468,17 @@ export default function StripePayDialog(props: {
 
         {state === 'error' && intentError && (
           <div className="text-sm text-destructive">{intentError}</div>
+        )}
+
+        {state === 'preview' && (
+          <div className="space-y-4">
+            <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Staff preview: payment submission disabled. No payment processor request, payment record, or invoice update will be created.</p>
+            <div className="space-y-3 rounded-md border p-4" aria-label="Payment method preview">
+              <p className="text-sm font-medium">Payment method</p>
+              <div className="h-10 rounded border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">Card number</div>
+              <div className="grid grid-cols-2 gap-3"><div className="h-10 rounded border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">MM / YY</div><div className="h-10 rounded border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">CVC</div></div>
+            </div>
+          </div>
         )}
 
         {/* Once we have a clientSecret, keep <Elements> mounted until the dialog closes. */}
@@ -483,6 +501,7 @@ export default function StripePayDialog(props: {
             <Button variant="outline" onClick={close}>
               Close
             </Button>
+            {state === 'preview' ? <Button disabled>Staff preview: payment submission disabled</Button> : null}
           </DialogFooter>
         )}
       </DialogContent>

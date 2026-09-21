@@ -17,6 +17,7 @@ import {
   usePortalInvoice,
   usePortalInvoiceFiles,
   usePortalInvoicePayments,
+  usePortalSession,
   type PortalInvoicePaymentDto,
 } from "@/hooks/usePortal";
 
@@ -77,6 +78,7 @@ export default function PortalInvoiceDetailPage() {
   const invoiceQuery = usePortalInvoice(invoiceId);
   const paymentsQuery = usePortalInvoicePayments(invoiceId);
   const filesQuery = usePortalInvoiceFiles(invoiceId);
+  const sessionQuery = usePortalSession();
   const invoice = invoiceQuery.data;
   const payments = paymentsQuery.data ?? [];
   const files = filesQuery.data ?? [];
@@ -155,6 +157,7 @@ export default function PortalInvoiceDetailPage() {
         onOpenChange={setPayOpen}
         invoiceId={invoice.id}
         apiBasePath="/api/portal/invoices"
+        previewMode={Boolean(sessionQuery.data?.staffPreview?.active)}
         onSettled={async ({ serverConfirmed }) => {
           await refreshInvoiceState();
           if (!serverConfirmed) {
