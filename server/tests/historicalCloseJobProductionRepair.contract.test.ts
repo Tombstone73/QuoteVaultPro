@@ -9,6 +9,12 @@ test("historical Close Job repair is UUID-only, preview-first, and evidence-gate
   const script = read("scripts/historical-close-job-production-repair.ts");
 
   expect(service).toContain('eq(orders.id, orderId)');
+  expect(service).toContain('found: false');
+  expect(service).toContain('found: true');
+  expect(service).not.toContain('.leftJoin(customers');
+  expect(service).toContain('previewHistoricalCloseJobProductionRepair(database');
+  expect(service).toContain('applyHistoricalCloseJobProductionRepair(database');
+  expect(service).toContain('database.transaction');
   expect(service).toContain('clean(order.state) !== "production_complete"');
   expect(service).toContain("isProvenLegacyCloseJobOverrideEvidence");
   expect(service).toContain("ACTIVE_PRODUCTION_OWNER_CONFLICT");
@@ -16,6 +22,11 @@ test("historical Close Job repair is UUID-only, preview-first, and evidence-gate
   expect(service).toContain('REPAIR_AUDIT_ACTION = "ORDER_HISTORICAL_CLOSE_JOB_PRODUCTION_REPAIRED"');
   expect(script).toContain('process.argv.includes("--apply")');
   expect(script).toContain("Public order numbers are not accepted");
+  expect(script).toContain('drizzle-orm/node-postgres');
+  expect(script).toContain('new Pool({ connectionString: databaseUrl })');
+  expect(script).toContain('previewHistoricalCloseJobProductionRepair(repairDb');
+  expect(script).toContain('applyHistoricalCloseJobProductionRepair(repairDb');
+  expect(script).not.toContain('from "../server/db"');
 });
 
 test("the repair reuses canonical Close Job bootstrap but preserves the terminal parent", () => {

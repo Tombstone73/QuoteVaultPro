@@ -13,7 +13,6 @@ import {
 } from "@shared/schema";
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from "@shared/productionRunLifecycle";
 
-import { db } from "../db";
 import { bypassOrderProductionPrerequisites } from "../routes/orders.routes";
 import { completeProductionJobWorkflow } from "../routes/productionJobs.routes";
 import { listOrderProductionPrerequisitesToBypass } from "./orderProductionCompletionPolicy";
@@ -23,11 +22,13 @@ import { isProvenLegacyCloseJobOverrideEvidence } from "./fulfillment/legacyClos
 const TERMINAL_JOB_STATUSES = ["done", "void", "canceled", "cancelled"] as const;
 const REPAIR_AUDIT_ACTION = "ORDER_HISTORICAL_CLOSE_JOB_PRODUCTION_REPAIRED";
 
-type Runner = typeof db | any;
+/** The CLI injects native node-postgres Drizzle; apply reuses that handle's transaction. */
+type Runner = any;
 
 export type HistoricalProductionRepairPreview = {
   organizationId: string;
   orderId: string;
+  found: boolean;
   orderNumber: string | null;
   customerName: string | null;
   orderState: string | null;
@@ -56,20 +57,24 @@ async function inspect(runner: Runner, organizationId: string, orderId: string, 
       status: orders.status,
       fulfillmentStatus: orders.fulfillmentStatus,
       customerId: orders.customerId,
-      customerName: customers.companyName,
     })
     .from(orders)
-    .leftJoin(customers, eq(customers.id, orders.customerId))
     .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
     .limit(1);
   const [order] = lock ? await orderQuery.for("update") : await orderQuery;
   if (!order) {
     return {
-      organizationId, orderId, orderNumber: null, customerName: null, orderState: null, orderStatus: null, fulfillmentStatus: null,
+      organizationId, orderId, found: false, orderNumber: null, customerName: null, orderState: null, orderStatus: null, fulfillmentStatus: null,
       safe: false, alreadyRepaired: false, blockers: ["ORDER_NOT_FOUND"], originalEvidence: null,
       productionCompleteQuantity: 0, requiredProductionQuantity: 0, proposedAdministrativeProductionQuantity: 0, targetLines: [],
     };
   }
+
+  // Base existence is determined only by the organization UUID and Order UUID.
+  // Customer data is display-only and must never suppress a valid base order.
+  const [customer] = order.customerId
+    ? await runner.select({ customerName: customers.companyName }).from(customers).where(eq(customers.id, order.customerId)).limit(1)
+    : [null];
 
   const [events, audits, lineRows] = await Promise.all([
     runner.select({ id: fulfillmentEvents.id, actorUserId: fulfillmentEvents.actorUserId, eventType: fulfillmentEvents.eventType, payloadJson: fulfillmentEvents.payloadJson })
@@ -114,7 +119,7 @@ async function inspect(runner: Runner, organizationId: string, orderId: string, 
   if (targetLines.length === 0 && !alreadyRepaired) blockers.push("NO_REPAIRABLE_MISSING_PRODUCTION_LINES");
 
   return {
-    organizationId, orderId, orderNumber: order.orderNumber ?? null, customerName: order.customerName ?? null, orderState: order.state ?? null, orderStatus: order.status ?? null,
+    organizationId, orderId, found: true, orderNumber: order.orderNumber ?? null, customerName: customer?.customerName ?? null, orderState: order.state ?? null, orderStatus: order.status ?? null,
     fulfillmentStatus: order.fulfillmentStatus ?? null, safe: blockers.length === 0, alreadyRepaired, blockers, productionCompleteQuantity,
     requiredProductionQuantity, proposedAdministrativeProductionQuantity, targetLines,
     originalEvidence: evidenceEvent && pairedAudit ? { eventId: evidenceEvent.id, auditId: pairedAudit.id, actorUserId: evidenceEvent.actorUserId ?? null } : null,
@@ -122,16 +127,16 @@ async function inspect(runner: Runner, organizationId: string, orderId: string, 
 }
 
 /** Read-only, UUID-first inspection. Public order numbers are display data only. */
-export async function previewHistoricalCloseJobProductionRepair(input: { organizationId: string; orderId: string }) {
-  return inspect(db, input.organizationId, input.orderId);
+export async function previewHistoricalCloseJobProductionRepair(database: Runner, input: { organizationId: string; orderId: string }) {
+  return inspect(database, input.organizationId, input.orderId);
 }
 
 /**
  * Repairs only unowned, incomplete production lines after proving the original
  * Close Job Override. It deliberately leaves the terminal parent unchanged.
  */
-export async function applyHistoricalCloseJobProductionRepair(input: { organizationId: string; orderId: string }) {
-  return db.transaction(async (tx) => {
+export async function applyHistoricalCloseJobProductionRepair(database: Runner, input: { organizationId: string; orderId: string }) {
+  return database.transaction(async (tx: Runner) => {
     const preview = await inspect(tx, input.organizationId, input.orderId, true);
     if (preview.alreadyRepaired) return { status: "already_repaired" as const, preview };
     if (!preview.safe || !preview.originalEvidence) {
