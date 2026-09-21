@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
+import { customerStatementPdfFilename, generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
 
 describe("customer statement PDF", () => {
   test("renders the same canonical open-balance projection used by statement delivery", async () => {
@@ -14,5 +14,12 @@ describe("customer statement PDF", () => {
     });
     expect(Buffer.from(pdf).subarray(0, 5).toString("ascii")).toBe("%PDF-");
     expect(pdf.length).toBeGreaterThan(500);
+    expect(customerStatementPdfFilename({
+      statementDate: "2026-09-20",
+      organization: { companyName: "PrintersHero", email: null, phone: null, address: null },
+      customer: { id: "customer-1", companyName: "DG Graphics", email: null, phone: null, billingAddress: null },
+      summary: { outstandingCents: 0, unappliedCreditCents: 0, amountDueCents: 0, agingCents: { current: 0, oneToThirty: 0, thirtyOneToSixty: 0, sixtyOneToNinety: 0, ninetyPlus: 0, noDueDate: 0 } },
+      openItems: [], recentPayments: [], unappliedCredits: [],
+    })).toBe("DG-Graphics-Statement-2026-09-20.pdf");
   });
 });

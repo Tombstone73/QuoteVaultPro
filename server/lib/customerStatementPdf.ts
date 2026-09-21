@@ -3,6 +3,13 @@ import type { CustomerStatement } from "../services/customerStatement.service";
 
 const money = (cents: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 
+export function customerStatementPdfFilename(statement: CustomerStatement): string {
+  const customerName = statement.customer.companyName
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-|-$/g, "") || "Customer";
+  return `${customerName}-Statement-${statement.statementDate}.pdf`;
+}
+
 /** PDF is rendered solely from the statement projection/snapshot, never a second balance calculation. */
 export async function generateCustomerStatementPdfBytes(statement: CustomerStatement): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();

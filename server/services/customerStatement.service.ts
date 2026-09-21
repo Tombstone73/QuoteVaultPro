@@ -1,8 +1,9 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db";
-import { companySettings, customerContacts, customers, payments } from "../../shared/schema";
+import { companySettings, customerContactLinks, customerContacts, customers, payments } from "../../shared/schema";
 import { getAccountsReceivableReport } from "./accountsReceivableReport";
 import { getCustomerAccountCreditSummary } from "./billing/customerAccountCreditOperations";
+import { buildCustomerStatementRecipients, type CustomerStatementRecipient } from "./customerStatementRecipients";
 
 export type CustomerStatement = {
   statementDate: string;
@@ -73,18 +74,32 @@ export async function getCustomerStatement(input: { organizationId: string; cust
   };
 }
 
-export async function getCustomerStatementRecipients(input: { organizationId: string; customerId: string }): Promise<Array<{ email: string; label: string }>> {
+export async function getCustomerStatementRecipients(input: { organizationId: string; customerId: string }): Promise<CustomerStatementRecipient[]> {
   const [customer, contacts] = await Promise.all([
     db.select({ email: customers.email, companyName: customers.companyName }).from(customers).where(and(eq(customers.organizationId, input.organizationId), eq(customers.id, input.customerId))).limit(1),
-    db.select({ email: customerContacts.email, firstName: customerContacts.firstName, lastName: customerContacts.lastName, isBilling: customerContacts.isBilling, isPrimary: customerContacts.isPrimary })
-      .from(customerContacts).where(and(eq(customerContacts.organizationId, input.organizationId), eq(customerContacts.customerId, input.customerId), eq(customerContacts.status, "active"))).orderBy(desc(customerContacts.isBilling), desc(customerContacts.isPrimary)),
+    db.select({
+      email: customerContacts.email,
+      firstName: customerContacts.firstName,
+      lastName: customerContacts.lastName,
+      isBilling: customerContactLinks.isBilling,
+      isPrimary: customerContactLinks.isPrimary,
+    })
+      .from(customerContactLinks)
+      .innerJoin(customerContacts, and(
+        eq(customerContactLinks.contactId, customerContacts.id),
+        eq(customerContacts.organizationId, input.organizationId),
+      ))
+      .where(and(
+        eq(customerContactLinks.organizationId, input.organizationId),
+        eq(customerContactLinks.customerId, input.customerId),
+        eq(customerContactLinks.status, "active"),
+        eq(customerContacts.status, "active"),
+      ))
+      .orderBy(desc(customerContactLinks.isBilling), desc(customerContactLinks.isPrimary), customerContacts.firstName, customerContacts.lastName),
   ]);
-  const dedupe = new Map<string, { email: string; label: string }>();
-  for (const contact of contacts) {
-    const email = String(contact.email || "").trim().toLowerCase();
-    if (email && !dedupe.has(email)) dedupe.set(email, { email, label: [contact.firstName, contact.lastName].filter(Boolean).join(" ") || email });
-  }
-  const fallback = String(customer[0]?.email || "").trim().toLowerCase();
-  if (fallback && !dedupe.has(fallback)) dedupe.set(fallback, { email: fallback, label: customer[0]?.companyName || fallback });
-  return [...dedupe.values()];
+  return buildCustomerStatementRecipients({
+    customerEmail: customer[0]?.email || null,
+    customerName: customer[0]?.companyName || null,
+    contacts,
+  });
 }

@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
-import { generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
+import { customerStatementPdfFilename, generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
 import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
 import { emailService } from "../emailService";
 import { customerStatementEmailLogs, customerStatementSnapshots } from "../../shared/schema";
@@ -27,8 +27,7 @@ async function sendFrozenCustomerStatement(input: { organizationId: string; stat
   if (!snapshot) throw Object.assign(new Error("The frozen customer statement is no longer available."), { code: "STATEMENT_SNAPSHOT_NOT_FOUND", statusCode: 404 });
   const statement = snapshot.payload as unknown as CustomerStatement;
   const pdfBytes = await generateCustomerStatementPdfBytes(statement);
-  const safeName = statement.customer.companyName.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "customer";
-  const attachment = await createInvoicePdfEmailAttachment({ filename: `statement-${safeName}-${statement.statementDate}.pdf`, pdfBytes });
+  const attachment = await createInvoicePdfEmailAttachment({ filename: customerStatementPdfFilename(statement), pdfBytes });
   await markInvoiceEmailDeliveryProviderSubmissionStarted({ organizationId: input.organizationId, deliveryJobId: input.deliveryJobId });
   const messageId = await emailService.sendEmail(input.organizationId, {
     to: input.toEmail,
@@ -68,9 +67,8 @@ export function registerCustomerStatementRoutes(app: Express, middleware: { isAu
     try {
       const statement = await load(req);
       const pdf = await generateCustomerStatementPdfBytes(statement);
-      const safeName = statement.customer.companyName.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "customer";
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename="statement-${safeName}-${statement.statementDate}.pdf"`);
+      res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename="${customerStatementPdfFilename(statement)}"`);
       return res.send(Buffer.from(pdf));
     } catch (error: any) { return res.status(error?.statusCode || 500).json({ success: false, error: error?.message || "Unable to render customer statement" }); }
   });

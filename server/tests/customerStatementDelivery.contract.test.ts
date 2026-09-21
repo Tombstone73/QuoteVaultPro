@@ -27,4 +27,25 @@ describe("customer statement delivery contract", () => {
     expect(client).toContain("customer-current-statement");
     expect(client).toContain("Queue Statement Email");
   });
+
+  test("serves a real PDF inline or as an attachment and routes statement requests through the canonical API client", () => {
+    const route = source("server/routes/customerStatements.routes.ts");
+    const client = source("client/src/features/customers/CurrentCustomerStatement.tsx");
+    expect(route).toContain('app.get("/api/customers/:id/current-statement/pdf"');
+    expect(route).toContain('res.setHeader("Content-Type", "application/pdf")');
+    expect(route).toContain('req.query.download === "1" ? "attachment" : "inline"');
+    expect(route).toContain("customerStatementPdfFilename(statement)");
+    expect(client).toContain("apiFetch(statementPath");
+    expect(client).toContain("openAuthenticatedFile(`${statementPath}/pdf`)");
+    expect(client).toContain("downloadAuthenticatedFile(`${statementPath}/pdf?download=1`");
+    expect(client).not.toContain('window.open(`/api/customers/${customerId}/current-statement/pdf`');
+  });
+
+  test("resolves statement recipients from the same active billing relationship policy as invoices", () => {
+    const service = source("server/services/customerStatement.service.ts");
+    expect(service).toContain("customerContactLinks");
+    expect(service).toContain("buildCustomerStatementRecipients");
+    expect(service).toContain("customerContactLinks.isBilling");
+    expect(service).not.toContain("customerContacts.isBilling");
+  });
 });
