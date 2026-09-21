@@ -24,6 +24,18 @@ test("the active fulfillment projection excludes zero-remaining and terminal ord
   expect(eligibility).toContain("fulfillmentStatus}, '')) not in ('shipped', 'delivered')");
 });
 
+test("the audit CLI reports explicit native-pg scope and target inspection results", () => {
+  const audit = source("scripts/audit-fulfillment-lifecycle-integrity.ts");
+  const repository = source("server/services/fulfillment/repository.ts");
+  expect(audit).toContain('drizzle-orm/node-postgres');
+  expect(audit).toContain('organizationName: scope.name');
+  expect(audit).toContain('baseOrders: audit.baseOrderCount');
+  expect(audit).toContain('manualReviewCandidates: audit.manualReviewCandidates.length');
+  expect(repository).toContain("reason: 'ORDER_NOT_FOUND_IN_SCOPE'");
+  expect(repository).toContain('found: true as const');
+  expect(repository).toContain('const activeProjectionRows = eligibilityRows.filter');
+});
+
 test("Close Job Override remains available only as an explicit staff exception for legacy contradictions", () => {
   const dialog = source("client/src/components/orders/CloseJobOverrideDialog.tsx");
   const service = source("server/services/fulfillment/service.ts");

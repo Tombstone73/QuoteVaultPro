@@ -1533,6 +1533,14 @@ export class FulfillmentDashboardRepo {
   }
 
   async getFulfillmentLifecycleDiagnostic(orgId: string, orderNumber: string) {
+    const requestedOrderNumber = cleanText(orderNumber);
+    if (!requestedOrderNumber) {
+      return {
+        found: false as const,
+        requestedOrderNumber,
+        reason: 'ORDER_NUMBER_REQUIRED',
+      };
+    }
     const [order] = await this.dbInstance.select({
       id: orders.id,
       orderNumber: orders.orderNumber,
@@ -1543,8 +1551,18 @@ export class FulfillmentDashboardRepo {
       shippingMethod: orders.shippingMethod,
       routingTarget: orders.routingTarget,
       canceledAt: orders.canceledAt,
-    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.orderNumber, orderNumber))).limit(1);
-    if (!order) return null;
+    // This is deliberately the identity read. It must stay independent of
+    // queue eligibility and every optional fulfillment child so an operator
+    // can inspect a healthy, terminal, or incomplete legacy order by its
+    // public order number.
+    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.orderNumber, requestedOrderNumber))).limit(1);
+    if (!order) {
+      return {
+        found: false as const,
+        requestedOrderNumber,
+        reason: 'ORDER_NOT_FOUND_IN_SCOPE',
+      };
+    }
     const lines = await this.listLineEligibility(orgId, { orderIds: [order.id] });
     const [administrativeRows, events, audits, checklist] = await Promise.all([
       this.dbInstance.select().from(fulfillmentAdministrativeReconciliations).where(and(eq(fulfillmentAdministrativeReconciliations.organizationId, orgId), eq(fulfillmentAdministrativeReconciliations.orderId, order.id))),
@@ -1554,6 +1572,9 @@ export class FulfillmentDashboardRepo {
     ]);
     const quantities = summarizeFulfillmentOrderQuantities(lines.map((line) => line.projection));
     return {
+      found: true as const,
+      requestedOrderNumber,
+      reason: 'ORDER_FOUND_IN_SCOPE',
       order,
       lines,
       quantities,
@@ -2099,12 +2120,27 @@ export class FulfillmentDashboardRepo {
         quantities,
         evidence: provenLegacyEvidenceByOrder.get(order.id),
       }));
+    const legacyCandidateIds = new Set(legacyCloseJobOverrideCandidates.map((candidate) => candidate.order.id));
+    const manualReviewCandidates = terminalWithRemaining
+      .filter(({ order }) => !legacyCandidateIds.has(order.id))
+      .map(({ order, quantities }) => ({
+        order,
+        quantities,
+        reason: 'Terminal order has positive canonical remaining fulfillment without proven paired legacy Close Job Override evidence.',
+      }));
+    const activeOrderIds = new Set(activeOrders.map(({ order }) => order.id));
+    const activeProjectionRows = eligibilityRows.filter((line) =>
+      activeOrderIds.has(line.orderId)
+      && line.projection.requiresFulfillment
+      && line.projection.remainingQuantity > 0,
+    );
     const duplicateActiveOrderIds = activeOrders
       .map(({ order }) => order.id)
       .filter((orderId, index, ids) => ids.indexOf(orderId) !== index);
     return {
+      baseOrderCount: orderRows.length,
       distinctActiveFulfillmentOrders: activeOrders.length,
-      underlyingActiveRows: activeOrders.length,
+      underlyingActiveRows: activeProjectionRows.length,
       terminalWithRemaining,
       terminalReturnedByActiveFulfillment: activeOrders.filter(({ order }) =>
         ['closed', 'canceled', 'cancelled'].includes(cleanText(order.state).toLowerCase())
@@ -2112,6 +2148,7 @@ export class FulfillmentDashboardRepo {
       ),
       administrativeClosureWithRemaining: administrativeButOpen,
       legacyCloseJobOverrideCandidates,
+      manualReviewCandidates,
       duplicateActiveOrderIds,
       activeOrders,
     };
