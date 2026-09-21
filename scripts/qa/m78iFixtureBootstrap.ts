@@ -51,7 +51,7 @@ const runOperator = async (args: readonly string[]): Promise<OperatorResult> => 
     const line = stdout.split(/\r?\n/u).map((value) => value.trim()).reverse().find((value) => value.startsWith("{"));
     let parsed: OperatorResult | undefined;
     try { parsed = line ? JSON.parse(line) as OperatorResult : undefined; } catch { /* report below */ }
-    if (code !== 0 || !parsed?.success) return reject(new Error(parsed?.message ?? stderr.trim() || "Guarded DEV-QA operator failed."));
+    if (code !== 0 || !parsed?.success) return reject(new Error(parsed?.message ?? (stderr.trim() || "Guarded DEV-QA operator failed.")));
     resolve(parsed);
   });
 });
