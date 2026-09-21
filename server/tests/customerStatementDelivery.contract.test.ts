@@ -48,4 +48,16 @@ describe("customer statement delivery contract", () => {
     expect(service).toContain("customerContactLinks.isBilling");
     expect(service).not.toContain("customerContacts.isBilling");
   });
+
+  test("persists the operator-confirmed compose fields and sends them from the queue", () => {
+    const route = source("server/routes/customerStatements.routes.ts");
+    const queue = source("server/services/invoiceBulkEmailQueue.service.ts");
+    expect(route).toContain("normalizeExplicitInvoiceRecipientEmails");
+    expect(route).toContain("selectedContactIds");
+    expect(route).toContain("subject: input.subject");
+    expect(queue).toContain("manuallyEnteredRecipients");
+    expect(queue).toContain("subject: input.subject");
+    expect(queue).toContain("message: input.message");
+    expect(queue).toContain("subject: job.metadata?.subject");
+  });
 });

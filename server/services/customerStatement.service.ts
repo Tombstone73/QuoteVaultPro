@@ -78,6 +78,7 @@ export async function getCustomerStatementRecipients(input: { organizationId: st
   const [customer, contacts] = await Promise.all([
     db.select({ email: customers.email, companyName: customers.companyName }).from(customers).where(and(eq(customers.organizationId, input.organizationId), eq(customers.id, input.customerId))).limit(1),
     db.select({
+      id: customerContacts.id,
       email: customerContacts.email,
       firstName: customerContacts.firstName,
       lastName: customerContacts.lastName,

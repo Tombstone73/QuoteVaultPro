@@ -5,10 +5,10 @@ import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogT
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { useInvoiceEmailDraft, useInvoiceEmailRecipients, useSendInvoice } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail } from "@shared/invoiceEmailRecipients";
+import { DocumentEmailComposeFields } from "@/components/email/DocumentEmailComposer";
 
 type InvoiceEmailSendDialogProps = {
   invoiceId: string;
@@ -196,13 +196,8 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onQueued
             <Button className="mt-2" size="sm" variant="outline" onClick={() => void invoiceEmailDraft.refetch()}>Retry</Button>
           </div> : null}
           {draftInitializedForOpen && !invoiceEmailDraft.isError ? <>
+            <DocumentEmailComposeFields prefix="invoice" subject={subject} onSubjectChange={setSubject} message={message} onMessageChange={setMessage} />
             <div className="space-y-1.5">
-              <Label htmlFor="invoice-email-subject">Subject</Label>
-              <Input id="invoice-email-subject" value={subject} onChange={(event) => setSubject(event.target.value)} maxLength={250} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="invoice-email-message">Message</Label>
-              <Textarea id="invoice-email-message" value={message} onChange={(event) => setMessage(event.target.value)} maxLength={10000} rows={8} className="resize-y" />
               <p className="text-xs text-muted-foreground">Secure invoice links, payment actions, and the company footer are added automatically.</p>
             </div>
           </> : null}

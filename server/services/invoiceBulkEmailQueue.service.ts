@@ -54,6 +54,8 @@ type CanonicalCustomerStatementEmailSender = (input: {
   userName?: string | null;
   toEmail: string;
   deliveryJobId: string;
+  subject?: string | null;
+  message?: string | null;
 }) => Promise<{ messageId?: string | null }>;
 
 export type BulkInvoiceEmailCandidate = {
@@ -589,6 +591,10 @@ export async function enqueueCustomerStatementEmailDelivery(input: {
   createdByUserId?: string | null;
   createdByUserName?: string | null;
   recipientEmails: string[];
+  selectedContactIds?: string[];
+  manualRecipientEmails?: string[];
+  subject: string;
+  message: string;
   idempotencyKey: string;
 }) {
   const recipients = Array.from(new Set(input.recipientEmails.map(normalizeRecipient).filter(Boolean)));
@@ -596,14 +602,15 @@ export async function enqueueCustomerStatementEmailDelivery(input: {
   const config = getBulkInvoiceEmailQueueConfig();
   return db.transaction(async (tx) => {
     const campaignKey = `statement:${input.idempotencyKey.slice(0, 220)}`;
-    const [campaign] = await tx.insert(invoiceEmailCampaigns).values({ organizationId: input.organizationId, createdByUserId: input.createdByUserId || null, idempotencyKey: campaignKey, requestedInvoiceIds: [], selectedInvoiceCount: 0, skippedInvoiceCount: 0, recipientGroupCount: recipients.length, resultSummary: {}, metadata: { deliveryMode: "customer_statement", statementSnapshotId: input.statementSnapshotId, createdByUserName: input.createdByUserName || null } } as any).onConflictDoNothing().returning();
+    const statementMetadata = { deliveryMode: "customer_statement", statementSnapshotId: input.statementSnapshotId, createdByUserId: input.createdByUserId || null, createdByUserName: input.createdByUserName || null, selectedContactIds: input.selectedContactIds || [], manuallyEnteredRecipients: input.manualRecipientEmails || [], subject: input.subject, message: input.message };
+    const [campaign] = await tx.insert(invoiceEmailCampaigns).values({ organizationId: input.organizationId, createdByUserId: input.createdByUserId || null, idempotencyKey: campaignKey, requestedInvoiceIds: [], selectedInvoiceCount: 0, skippedInvoiceCount: 0, recipientGroupCount: recipients.length, resultSummary: {}, metadata: statementMetadata } as any).onConflictDoNothing().returning();
     if (!campaign) return { queued: 0, alreadyQueued: recipients.length, replayed: true };
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`bulk-invoice-email-schedule:${input.organizationId}`}))`);
     const scheduled: any = await tx.execute(sql`SELECT max(available_at) AS "latestScheduledAt" FROM invoice_email_delivery_jobs WHERE organization_id = ${input.organizationId} AND status IN ('queued', 'retrying', 'processing')`);
     let availableAt = getNextBulkInvoiceEmailSlot({ now: new Date(), latestScheduledAt: (scheduled.rows || scheduled)[0]?.latestScheduledAt ?? null, spacingSeconds: config.spacingSeconds });
     let queued = 0;
     for (const recipientEmail of recipients) {
-      const [job] = await tx.insert(invoiceEmailDeliveryJobs).values({ organizationId: input.organizationId, campaignId: campaign.id, invoiceId: null, invoiceVersion: 1, deliveryType: "customer_statement", customerStatementSnapshotId: input.statementSnapshotId, recipientEmail, recipientKey: recipientEmail, idempotencyKey: `statement:${input.statementSnapshotId}:${recipientEmail}`, maxAttempts: config.maxAttempts, availableAt, metadata: { deliveryMode: "customer_statement", createdByUserId: input.createdByUserId || null, createdByUserName: input.createdByUserName || null } } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
+      const [job] = await tx.insert(invoiceEmailDeliveryJobs).values({ organizationId: input.organizationId, campaignId: campaign.id, invoiceId: null, invoiceVersion: 1, deliveryType: "customer_statement", customerStatementSnapshotId: input.statementSnapshotId, recipientEmail, recipientKey: recipientEmail, idempotencyKey: `statement:${input.statementSnapshotId}:${recipientEmail}`, maxAttempts: config.maxAttempts, availableAt, metadata: statementMetadata } as any).onConflictDoNothing().returning({ id: invoiceEmailDeliveryJobs.id });
       if (job) { queued += 1; availableAt = new Date(availableAt.getTime() + config.spacingSeconds * 1000); }
     }
     await tx.update(invoiceEmailCampaigns).set({ queuedInvoiceCount: queued, skippedInvoiceCount: recipients.length - queued, status: queued ? "queued" : "completed", completedAt: queued ? null : new Date(), resultSummary: { queued, deliveryMode: "customer_statement", statementSnapshotId: input.statementSnapshotId }, updatedAt: new Date() } as any).where(eq(invoiceEmailCampaigns.id, campaign.id));
@@ -889,7 +896,7 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     // `alreadySent` later short-circuits the await.
     let outcome: { messageId?: string | null } | undefined = alreadySent;
     if (!outcome && isStatement) {
-      outcome = await canonicalCustomerStatementEmailSender!({ organizationId: job.organizationId, statementSnapshotId: job.customerStatementSnapshotId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id });
+      outcome = await canonicalCustomerStatementEmailSender!({ organizationId: job.organizationId, statementSnapshotId: job.customerStatementSnapshotId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id, subject: job.metadata?.subject || null, message: job.metadata?.message || null });
     } else if (!outcome) {
       outcome = await canonicalInvoiceEmailSender!({ organizationId: job.organizationId, invoiceId: job.invoiceId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id, allowUnapproved: job.metadata?.allowUnapproved === true, subject: job.metadata?.subject || undefined, message: job.metadata?.message || undefined });
     }

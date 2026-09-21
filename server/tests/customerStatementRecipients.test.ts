@@ -12,11 +12,11 @@ describe("customer statement recipients", () => {
       ],
     });
 
-    expect(recipients).toEqual([{
-      email: "billing@customer.test",
-      label: "Billing Contact",
-      source: "billing_contact",
-    }]);
+    expect(recipients.map(({ email, isDefault }) => ({ email, isDefault }))).toEqual([
+      { email: "billing@customer.test", isDefault: true },
+      { email: "operations@customer.test", isDefault: false },
+      { email: "accounts@customer.test", isDefault: false },
+    ]);
   });
 
   test("falls back to the invoice recipient order and excludes invalid addresses", () => {

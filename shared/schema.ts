@@ -5166,6 +5166,8 @@ export const customerStatementSnapshots = pgTable("customer_statement_snapshots"
   idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
   statementDate: varchar("statement_date", { length: 10 }).notNull(),
   payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  /** Immutable bytes generated at enqueue time; never re-render a later attachment. */
+  pdfBytes: bytea("pdf_bytes"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
