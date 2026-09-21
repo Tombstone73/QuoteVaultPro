@@ -21,6 +21,7 @@ import {
   DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES,
   DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES,
   DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES,
+  DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES,
   DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
   DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES,
 } from "../lib/devQaFullAccessProvisioning";
@@ -73,9 +74,10 @@ describe("guarded DEV QA operator", () => {
   });
 
   test("allows only the reviewed QA profiles", () => {
-    expect(DEV_QA_APPROVED_PROFILES).toEqual(["m78i", "m78i_fixture_pricing", "m78i_fixture_artwork", "m78i_fixture_route"]);
+    expect(DEV_QA_APPROVED_PROFILES).toEqual(["m78i", "m78i_fixture_pricing", "m78i_fixture_artwork", "m78i_fixture_route", "m78i_fixture_setup"]);
     expect(approvedDevQaProfile("m78i")).toBe("m78i");
     expect(approvedDevQaProfile("m78i_fixture_route")).toBe("m78i_fixture_route");
+    expect(approvedDevQaProfile("m78i_fixture_setup")).toBe("m78i_fixture_setup");
     expect(() => approvedDevQaProfile("full")).toThrow();
     expect(() => approvedDevQaProfile("arbitrary-admin")).toThrow();
   });
@@ -97,6 +99,11 @@ describe("guarded DEV QA operator", () => {
     expect(DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES).not.toEqual(expect.arrayContaining(["artwork.adopt", "pricing.configure", "pricing.publish", "permissions.manageSets", "permissions.assignStaff"]));
   });
 
+  test("fixture setup adds exactly the four reviewed setup capabilities", () => {
+    expect(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["pricing.configure", "pricing.publish", "route.manageTemplates", "artwork.adopt"]);
+    expect(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES).not.toEqual(expect.arrayContaining(["payment.record", "refund.issue", "invoice.send", "communications.configure", "permissions.manageSets", "permissions.assignStaff"]));
+  });
+
   test("profile recognition requires one exact reviewed set and capability list", () => {
     const normal = devQaProfileDefinition("m78i");
     expect(profileForPermissionState(normal.permissionSetName, normal.capabilities)).toBe("m78i");
@@ -104,6 +111,8 @@ describe("guarded DEV QA operator", () => {
     expect(profileForPermissionState("Unexpected set", normal.capabilities)).toBeNull();
     const route = devQaProfileDefinition("m78i_fixture_route");
     expect(profileForPermissionState(route.permissionSetName, route.capabilities)).toBe("m78i_fixture_route");
+    const setup = devQaProfileDefinition("m78i_fixture_setup");
+    expect(profileForPermissionState(setup.permissionSetName, setup.capabilities)).toBe("m78i_fixture_setup");
   });
 
   test("restore target is the exact normal m78i capability set", () => {
@@ -111,6 +120,7 @@ describe("guarded DEV QA operator", () => {
     expect(isTemporaryFixtureProfile("m78i")).toBe(false);
     expect(isTemporaryFixtureProfile("m78i_fixture_artwork")).toBe(true);
     expect(isTemporaryFixtureProfile("m78i_fixture_route")).toBe(true);
+    expect(isTemporaryFixtureProfile("m78i_fixture_setup")).toBe(true);
     expect(devQaProfileDefinition("m78i").capabilities).not.toContain("route.manageTemplates");
   });
 

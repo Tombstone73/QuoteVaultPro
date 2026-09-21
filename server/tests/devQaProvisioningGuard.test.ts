@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { capabilityIds } from "../../v2/src/authorization/capabilities";
-import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES, DEV_QA_M78I_FIXTURE_ARTWORK_SET_NAME, DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES, DEV_QA_M78I_FIXTURE_PRICING_SET_NAME, DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES, DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_EMAIL, DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iFixtureArtworkProvisioningPlan, devQaM78iFixturePricingProvisioningPlan, devQaM78iFixtureRouteProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
+import { DEV_QA_FULL_ACCESS_CAPABILITIES, DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES, DEV_QA_M78I_FIXTURE_ARTWORK_SET_NAME, DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES, DEV_QA_M78I_FIXTURE_PRICING_SET_NAME, DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES, DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME, DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES, DEV_QA_M78I_FIXTURE_SETUP_SET_NAME, DEV_QA_M78I_OPERATIONAL_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES, DEV_QA_M78I_PERMISSION_FLOOR_EMAIL, DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME, DEV_QA_M78I_PERMISSION_SET_NAME, devQaFullAccessProvisioningPlan, devQaM78iFixtureArtworkProvisioningPlan, devQaM78iFixturePricingProvisioningPlan, devQaM78iFixtureRouteProvisioningPlan, devQaM78iFixtureSetupProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
 
 const devEnv = {
@@ -90,6 +90,15 @@ describe("DEV QA full-access provisioning", () => {
     expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["route.manageTemplates"]));
     expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 1);
     expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.adopt", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
+  });
+
+  test("limits complete fixture setup authority to the four reviewed prerequisites", () => {
+    const plan = devQaM78iFixtureSetupProvisioningPlan(getDevQaProvisioningConfig(devEnv));
+    expect(plan.permissionSet.name).toBe(DEV_QA_M78I_FIXTURE_SETUP_SET_NAME);
+    expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES);
+    expect(plan.permissionSet.capabilities.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["pricing.configure", "pricing.publish", "route.manageTemplates", "artwork.adopt"]);
+    expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 4);
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["payment.record", "refund.issue", "invoice.send", "communications.configure", "permissions.manageSets", "permissions.assignStaff"]));
   });
 
   test("keeps platform and structural ownership outside the V2 QA permission set", () => {

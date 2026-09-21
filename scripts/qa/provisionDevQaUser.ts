@@ -2,7 +2,7 @@ import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { devQaFullAccessProvisioningPlan, devQaM78iFixtureArtworkProvisioningPlan, devQaM78iFixturePricingProvisioningPlan, devQaM78iFixtureRouteProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
+import { devQaFullAccessProvisioningPlan, devQaM78iFixtureArtworkProvisioningPlan, devQaM78iFixturePricingProvisioningPlan, devQaM78iFixtureRouteProvisioningPlan, devQaM78iFixtureSetupProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
 import { getDevQaProvisioningConfig } from "../../server/lib/devQaProvisioningGuard";
 import { auditLogs, authIdentities, organizations, userOrganizations, users } from "../../shared/schema";
 
@@ -11,11 +11,11 @@ let databaseModule: typeof import("../../server/db") | undefined;
 async function provision() {
   const config = getDevQaProvisioningConfig();
   const permissionProfile = (process.env.PRINTERSHERO_DEV_QA_PERMISSION_PROFILE ?? "full").trim().toLowerCase();
-  if (permissionProfile !== "full" && permissionProfile !== "m78i" && permissionProfile !== "m78i_fixture_pricing" && permissionProfile !== "m78i_fixture_artwork" && permissionProfile !== "m78i_fixture_route") {
-    throw new Error("PRINTERSHERO_DEV_QA_PERMISSION_PROFILE must be 'full', 'm78i', 'm78i_fixture_pricing', 'm78i_fixture_artwork', or 'm78i_fixture_route'.");
+  if (permissionProfile !== "full" && permissionProfile !== "m78i" && permissionProfile !== "m78i_fixture_pricing" && permissionProfile !== "m78i_fixture_artwork" && permissionProfile !== "m78i_fixture_route" && permissionProfile !== "m78i_fixture_setup") {
+    throw new Error("PRINTERSHERO_DEV_QA_PERMISSION_PROFILE must be 'full', 'm78i', 'm78i_fixture_pricing', 'm78i_fixture_artwork', 'm78i_fixture_route', or 'm78i_fixture_setup'.");
   }
-  const plan = permissionProfile === "m78i" ? devQaM78iOperationalProvisioningPlan(config) : permissionProfile === "m78i_fixture_pricing" ? devQaM78iFixturePricingProvisioningPlan(config) : permissionProfile === "m78i_fixture_artwork" ? devQaM78iFixtureArtworkProvisioningPlan(config) : permissionProfile === "m78i_fixture_route" ? devQaM78iFixtureRouteProvisioningPlan(config) : devQaFullAccessProvisioningPlan(config);
-  const permissionFloorPlan = permissionProfile === "m78i" || permissionProfile === "m78i_fixture_pricing" || permissionProfile === "m78i_fixture_artwork" || permissionProfile === "m78i_fixture_route" ? devQaM78iPermissionFloorProvisioningPlan(config) : undefined;
+  const plan = permissionProfile === "m78i" ? devQaM78iOperationalProvisioningPlan(config) : permissionProfile === "m78i_fixture_pricing" ? devQaM78iFixturePricingProvisioningPlan(config) : permissionProfile === "m78i_fixture_artwork" ? devQaM78iFixtureArtworkProvisioningPlan(config) : permissionProfile === "m78i_fixture_route" ? devQaM78iFixtureRouteProvisioningPlan(config) : permissionProfile === "m78i_fixture_setup" ? devQaM78iFixtureSetupProvisioningPlan(config) : devQaFullAccessProvisioningPlan(config);
+  const permissionFloorPlan = permissionProfile === "m78i" || permissionProfile === "m78i_fixture_pricing" || permissionProfile === "m78i_fixture_artwork" || permissionProfile === "m78i_fixture_route" || permissionProfile === "m78i_fixture_setup" ? devQaM78iPermissionFloorProvisioningPlan(config) : undefined;
   const passwordHash = await bcrypt.hash(config.password, 12);
   const permissionFloorPasswordHash = permissionFloorPlan ? await bcrypt.hash(randomBytes(48).toString("base64url"), 12) : undefined;
   databaseModule = await import("../../server/db");
@@ -26,7 +26,7 @@ async function provision() {
     if (!organization || organization.slug.toLowerCase() !== config.organizationSlug || organization.isArchived || organization.deleteState !== "active") {
       throw new Error("Configured DEV QA organization is missing, inactive, or does not match the expected slug.");
     }
-    if ((permissionProfile === "m78i" || permissionProfile === "m78i_fixture_pricing" || permissionProfile === "m78i_fixture_artwork" || permissionProfile === "m78i_fixture_route") && organization.name !== "PrintersHero M7 QA") {
+    if ((permissionProfile === "m78i" || permissionProfile === "m78i_fixture_pricing" || permissionProfile === "m78i_fixture_artwork" || permissionProfile === "m78i_fixture_route" || permissionProfile === "m78i_fixture_setup") && organization.name !== "PrintersHero M7 QA") {
       throw new Error("The M7.8I DEV QA profiles are restricted to the verified PrintersHero M7 QA organization.");
     }
     if (permissionFloorPlan?.account.email === plan.account.email) throw new Error("The M7.8I permission-floor identity must remain distinct from the QA browser identity.");

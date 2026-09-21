@@ -42,6 +42,16 @@ export const DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES = Object.freeze([
 ] as const satisfies readonly Capability[]);
 export const DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME = "DEV QA M7.8I Fixture Route Setup";
 export const DEV_QA_M78I_FIXTURE_ROUTE_SET_DESCRIPTION = "Temporary DEV-only route-template authority to create the marked M7.8I synthetic fixture route.";
+/** One-shot complete fixture setup only; immediately converge back to m78i before live validation. */
+export const DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES = Object.freeze([
+  ...DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
+  "pricing.configure",
+  "pricing.publish",
+  "route.manageTemplates",
+  "artwork.adopt",
+] as const satisfies readonly Capability[]);
+export const DEV_QA_M78I_FIXTURE_SETUP_SET_NAME = "DEV QA M7.8I Fixture Setup";
+export const DEV_QA_M78I_FIXTURE_SETUP_SET_DESCRIPTION = "Temporary DEV-only authority to establish the complete marked M7.8I synthetic fixture graph.";
 
 /**
  * The physical administrator-floor constraint requires one active Staff
@@ -88,6 +98,10 @@ export function devQaM78iFixtureArtworkProvisioningPlan(config: DevQaProvisionin
 
 export function devQaM78iFixtureRouteProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
   return devQaProvisioningPlan(config, DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME, DEV_QA_M78I_FIXTURE_ROUTE_SET_DESCRIPTION, DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES);
+}
+
+export function devQaM78iFixtureSetupProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
+  return devQaProvisioningPlan(config, DEV_QA_M78I_FIXTURE_SETUP_SET_NAME, DEV_QA_M78I_FIXTURE_SETUP_SET_DESCRIPTION, DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES);
 }
 
 export function devQaM78iPermissionFloorProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
