@@ -28,7 +28,8 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
     expect(queue).toContain("canonicalInvoiceEmailSender");
     expect(queue).toContain("canonicalInvoiceEmailSender!({");
-    expect(queue).toContain("withInvoiceEmailSendDeadline");
+    expect(queue).not.toContain("withInvoiceEmailSendDeadline");
+    expect(route).toContain("withInvoiceEmailPreparationTimeout");
     expect(route).toContain("generateInvoicePdfBytes");
     expect(route).toContain("createInvoicePdfEmailAttachment");
     expect(route).toContain("buildInvoiceEmailSentAudit");
@@ -71,16 +72,17 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("maxAttempts");
   });
 
-  test("uses a short bounded send deadline and recovers expired claims according to the durable provider boundary", () => {
+  test("bounds preparation at its source and only treats a provider-boundary outcome as ambiguous", () => {
     expect(queue).toContain("attempt_count < max_attempts");
     expect(queue).toContain("DEFAULT_CLAIM_SECONDS = 60");
-    expect(queue).toContain("DEFAULT_SEND_TIMEOUT_SECONDS = 45");
-    expect(queue).toContain("withInvoiceEmailSendDeadline");
+    expect(route).toContain("Invoice artwork preparation");
+    expect(route).toContain("Invoice PDF generation");
+    expect(queue).toContain("beginClaimHeartbeat");
     expect(queue).toContain("queueStage', 'provider_submitting'");
-    expect(queue).toContain("WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing' THEN 'retrying'");
-    expect(queue).toContain("ELSE 'needs_review'");
+    expect(queue).toContain("metadata->>'queueStage' = 'provider_submitting' THEN 'needs_review'");
+    expect(queue).toContain("providerStarted &&");
     expect(queue).toContain("ORDER BY available_at ASC, created_at ASC");
-    expect(queue).toContain("The message was not resent to avoid a duplicate email.");
+    expect(queue).toContain("Email preparation did not finish before its worker stopped");
     expect(queue).not.toContain("OR (status = 'processing' AND claim_expires_at <= now())");
   });
 

@@ -141,7 +141,6 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_SPACING_SECONDS = 60;
 const DEFAULT_RETRY_BASE_SECONDS = 60;
 const DEFAULT_CLAIM_SECONDS = 60;
-const DEFAULT_SEND_TIMEOUT_SECONDS = 45;
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(value);
@@ -158,7 +157,6 @@ export function getBulkInvoiceEmailQueueConfig() {
     spacingSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SPACING_SECONDS, DEFAULT_SPACING_SECONDS, 60, 3600),
     retryBaseSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_RETRY_BASE_SECONDS, DEFAULT_RETRY_BASE_SECONDS, 60, 900),
     claimSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_CLAIM_SECONDS, DEFAULT_CLAIM_SECONDS, 45, 120),
-    sendTimeoutSeconds: boundedInteger(process.env.BULK_INVOICE_EMAIL_SEND_TIMEOUT_SECONDS, DEFAULT_SEND_TIMEOUT_SECONDS, 15, 90),
   };
 }
 
@@ -620,6 +618,7 @@ export type ClaimedBulkInvoiceEmailJob = {
   maxAttempts: number;
   createdAt: Date;
   campaignId: string;
+  claimedByWorkerId?: string;
   metadata?: InvoiceEmailDeliveryMetadata;
 };
 
@@ -657,27 +656,6 @@ export async function markInvoiceEmailDeliveryProviderSubmissionStarted(input: {
   `);
 }
 
-function withInvoiceEmailSendDeadline<T>(operation: Promise<T>, timeoutSeconds: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      const deadlineFailure = markInvoiceEmailDeliveryFailure(
-        new Error(`Invoice email processing exceeded its ${timeoutSeconds}-second safety deadline. Delivery outcome requires review before retrying.`),
-        "needs_review",
-      ) as Error & { invoiceEmailQueueDeadline?: boolean };
-      // This marker is intentionally separate from the failure kind. Whether
-      // the timeout is safe to retry depends on the durable provider-boundary
-      // marker, not on the timeout's human-readable message.
-      deadlineFailure.invoiceEmailQueueDeadline = true;
-      reject(deadlineFailure);
-    }, timeoutSeconds * 1000);
-    timeout.unref?.();
-    operation.then(
-      (value) => { clearTimeout(timeout); resolve(value); },
-      (error) => { clearTimeout(timeout); reject(error); },
-    );
-  });
-}
-
 async function hasInvoiceEmailReachedProviderBoundary(job: ClaimedBulkInvoiceEmailJob): Promise<boolean> {
   const result: any = await db.execute(sql`
     SELECT metadata
@@ -693,25 +671,24 @@ async function hasInvoiceEmailReachedProviderBoundary(job: ClaimedBulkInvoiceEma
 async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob | null> {
   const config = getBulkInvoiceEmailQueueConfig();
   const claimed = await db.transaction(async (tx) => {
-    // Only jobs claimed by this marker-aware worker can prove they died before
-    // provider submission. Legacy processing jobs lack that evidence, so they
-    // must be reviewed rather than risking a duplicate email.
+    // A stale claim is reviewable only when its durable boundary marker proves
+    // the provider request began. Every other stale job is known to be
+    // pre-provider (or lacks any evidence of submission) and can retry.
     const expiredResult: any = await tx.execute(sql`
       UPDATE invoice_email_delivery_jobs
       SET status = CASE
-            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing' THEN 'retrying'
-            ELSE 'needs_review'
+            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'provider_submitting' THEN 'needs_review'
+            ELSE 'retrying'
           END,
           available_at = CASE
-            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing'
-              THEN now() + (${config.retryBaseSeconds} * interval '1 second')
-            ELSE available_at
+            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'provider_submitting' THEN available_at
+            ELSE now() + (${config.retryBaseSeconds} * interval '1 second')
           END,
           claim_expires_at = null,
           failure_reason = coalesce(failure_reason, CASE
-            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'preparing'
-              THEN 'Worker claim expired before provider submission. The job was returned to the queue for a bounded retry.'
-            ELSE 'Delivery outcome is uncertain because the worker claim expired after provider submission began or the legacy job has no provider-boundary evidence. The message was not resent to avoid a duplicate email.'
+            WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'provider_submitting'
+              THEN 'Delivery outcome is uncertain because the worker stopped after provider submission began. The message was not resent to avoid a duplicate email.'
+            ELSE 'Email preparation did not finish before its worker stopped. The email was not submitted to the provider and will retry.'
           END),
           updated_at = now()
       WHERE status = 'processing' AND claim_expires_at <= now()
@@ -751,6 +728,7 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       job: {
         ...row,
         attemptCount: Number(row.attemptCount || 0) + 1,
+        claimedByWorkerId: workerId,
         metadata: asMetadata(row.metadata) as InvoiceEmailDeliveryMetadata,
       },
       expiredCampaignIds,
@@ -760,6 +738,25 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
   // expired before that boundary return to the regular bounded retry flow.
   await Promise.all(claimed.expiredCampaignIds.map((campaignId) => updateCampaignCompletion(campaignId)));
   return claimed.job;
+}
+
+/** Keep the atomic claim alive only while this process is actively awaiting
+ * its one serial send. A crashed process stops renewing and is recovered on a
+ * later minute tick; staff never need to reason about leases. */
+function beginClaimHeartbeat(job: ClaimedBulkInvoiceEmailJob): () => void {
+  if (!job.claimedByWorkerId) return () => undefined;
+  const interval = setInterval(() => {
+    void db.execute(sql`
+      UPDATE invoice_email_delivery_jobs
+      SET claim_expires_at = now() + (${getBulkInvoiceEmailQueueConfig().claimSeconds} * interval '1 second'), updated_at = now()
+      WHERE id = ${job.id}
+        AND organization_id = ${job.organizationId}
+        AND status = 'processing'
+        AND claimed_by_worker_id = ${job.claimedByWorkerId}
+    `).catch((error) => console.warn("[InvoiceEmailQueue] claim heartbeat failed", { jobId: job.id, message: error instanceof Error ? error.message : String(error) }));
+  }, 15_000);
+  interval.unref?.();
+  return () => clearInterval(interval);
 }
 
 function isAmbiguousProviderFailure(error: unknown): boolean {
@@ -786,6 +783,8 @@ async function updateCampaignCompletion(campaignId: string): Promise<void> {
 /** The bulk worker's only delivery operation: invoke the registered canonical sender. */
 export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceEmailJob): Promise<"sent" | "failed"> {
   logDeliveryStage(job, "job_claimed");
+  const stopHeartbeat = beginClaimHeartbeat(job);
+  try {
   const isStatement = job.deliveryType === "customer_statement";
   const senderAvailable = isStatement ? Boolean(canonicalCustomerStatementEmailSender) : Boolean(canonicalInvoiceEmailSender);
   if (!senderAvailable) {
@@ -820,16 +819,15 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       )).limit(1);
   }
 
-  try {
     logDeliveryStage(job, "canonical_sender_started", { alreadySent: Boolean(alreadySent) });
     // Do not construct the sender promise before checking durable success
     // evidence: constructing it would submit a duplicate email even though
     // `alreadySent` later short-circuits the await.
     let outcome: { messageId?: string | null } | undefined = alreadySent;
     if (!outcome && isStatement) {
-      outcome = await withInvoiceEmailSendDeadline(canonicalCustomerStatementEmailSender!({ organizationId: job.organizationId, statementSnapshotId: job.customerStatementSnapshotId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id }), getBulkInvoiceEmailQueueConfig().sendTimeoutSeconds);
+      outcome = await canonicalCustomerStatementEmailSender!({ organizationId: job.organizationId, statementSnapshotId: job.customerStatementSnapshotId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id });
     } else if (!outcome) {
-      outcome = await withInvoiceEmailSendDeadline(canonicalInvoiceEmailSender!({ organizationId: job.organizationId, invoiceId: job.invoiceId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id, allowUnapproved: job.metadata?.allowUnapproved === true, subject: job.metadata?.subject || undefined, message: job.metadata?.message || undefined }), getBulkInvoiceEmailQueueConfig().sendTimeoutSeconds);
+      outcome = await canonicalInvoiceEmailSender!({ organizationId: job.organizationId, invoiceId: job.invoiceId || "", userId: job.metadata?.createdByUserId || null, userName: job.metadata?.createdByUserName || null, toEmail: job.recipientEmail, deliveryJobId: job.id, allowUnapproved: job.metadata?.allowUnapproved === true, subject: job.metadata?.subject || undefined, message: job.metadata?.message || undefined });
     }
     await db.update(invoiceEmailDeliveryJobs).set({
       status: "sent",
@@ -844,18 +842,12 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     return "sent";
   } catch (error) {
     const message = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
-    const deadlineExpired = (error as { invoiceEmailQueueDeadline?: boolean } | null)?.invoiceEmailQueueDeadline === true;
-    const failureKind = deadlineExpired
-      ? await hasInvoiceEmailReachedProviderBoundary(job).then(
-        (providerStarted) => providerStarted ? "needs_review" : "retryable",
-        // If we cannot read the durable boundary, be conservative: a duplicate
-        // invoice email is worse than asking staff to review one job.
-        () => "needs_review" as const,
-      )
-      : getInvoiceEmailDeliveryFailureKind(error);
-    // Old providers that have not been annotated yet remain conservative for
-    // transport uncertainty. Explicit sender annotations always win.
-    const needsReview = failureKind ? failureKind === "needs_review" : isAmbiguousProviderFailure(error);
+    // Needs Review is reserved for a genuinely ambiguous *provider* outcome.
+    // Everything before the durable provider boundary is known not to have
+    // sent and therefore remains safely retryable.
+    const providerStarted = await hasInvoiceEmailReachedProviderBoundary(job).catch(() => false);
+    const failureKind = getInvoiceEmailDeliveryFailureKind(error);
+    const needsReview = providerStarted && (failureKind === "needs_review" || (!failureKind && isAmbiguousProviderFailure(error)));
     const terminal = needsReview || job.attemptCount >= job.maxAttempts;
     await db.update(invoiceEmailDeliveryJobs).set({
       status: needsReview ? "needs_review" : terminal ? "failed" : "retrying",
@@ -872,6 +864,8 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     });
     if (terminal) await updateCampaignCompletion(job.campaignId);
     return "failed";
+  } finally {
+    stopHeartbeat();
   }
 }
 

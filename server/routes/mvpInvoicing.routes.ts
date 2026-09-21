@@ -97,6 +97,17 @@ function getInvoiceEmailPublicWebOrigin(): string | null {
 
 const IMPORTED_QB_PAYMENT_RECONCILIATION_MESSAGE = 'Payments for imported QuickBooks invoices should be reconciled from QuickBooks until payment sync is enabled.';
 
+/** Only wraps preparation steps that cannot submit email themselves. A timeout
+ * here is a known pre-provider failure and is always safe for the queue to
+ * retry. Provider submission has its own transport timeout in emailService. */
+function withInvoiceEmailPreparationTimeout<T>(stage: string, operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(Object.assign(new Error(`${stage} timed out before the email provider was contacted.`), { invoiceEmailPreparationFailure: true })), timeoutMs);
+    timer.unref?.();
+    operation.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  });
+}
+
 function isImportedQuickBooksInvoice(invoice: Record<string, any> | null | undefined): boolean {
   return String(invoice?.importSource || '').trim().toLowerCase() === 'quickbooks';
 }
@@ -439,6 +450,7 @@ export async function registerMvpInvoicingRoutes(
       );
     }
 
+    logQueueDeliveryStage("email_settings_loaded");
     let requestedRecipients: string[] | null = null;
     if (Array.isArray(input.recipientEmails)) {
       try {
@@ -455,10 +467,12 @@ export async function registerMvpInvoicingRoutes(
       throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
     }
 
+    logQueueDeliveryStage("recipient_resolution_started");
     const recipientResolution = await resolveInvoiceEmailRecipientsForOperations({
       organizationId: input.organizationId,
       invoiceId: input.invoiceId,
     });
+    logQueueDeliveryStage("recipient_resolution_completed");
     let inv: any = recipientResolution.invoice;
     const cust: any = recipientResolution.customer;
     const recipientsToSend = requestedRecipients
@@ -511,6 +525,7 @@ export async function registerMvpInvoicingRoutes(
       subject: input.subject,
       message: input.message,
     });
+    logQueueDeliveryStage("invoice_data_loading_started");
     const lineItems = await db
       .select()
       .from(invoiceLineItems)
@@ -532,26 +547,33 @@ export async function registerMvpInvoicingRoutes(
       .orderBy(desc(payments.createdAt));
 
     const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
+    logQueueDeliveryStage("invoice_data_loading_completed", { lineItemCount: lineItems.length });
 
     logQueueDeliveryStage("invoice_rendering_started");
-    const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
+    logQueueDeliveryStage("invoice_artwork_preparation_started");
+    const pdfLineItems = await withInvoiceEmailPreparationTimeout("Invoice artwork preparation", hydrateInvoicePdfLineItemsWithArtwork({
       organizationId: input.organizationId,
       lineItems: lineItems as any,
-    });
-    const pdfBytes = await generateInvoicePdfBytes({
+    }), 10_000);
+    logQueueDeliveryStage("invoice_artwork_preparation_completed");
+    logQueueDeliveryStage("invoice_pdf_generation_started");
+    const pdfBytes = await withInvoiceEmailPreparationTimeout("Invoice PDF generation", generateInvoicePdfBytes({
       invoice: invoiceForCustomerDelivery as any,
       customer: (cust as any) || null,
       companySettings: (orgCompany as any) || null,
       paymentSummary,
       lineItems: pdfLineItems as any,
       job,
-    });
+    }), 15_000);
+    logQueueDeliveryStage("invoice_pdf_generation_completed", { pdfBytes: pdfBytes.length });
 
     const invoiceNumber = composeContext.invoiceNumber;
     const filename = `invoice-${invoiceNumber}.pdf`;
     let pdfAttachment;
     try {
-      pdfAttachment = await createInvoicePdfEmailAttachment({ filename, pdfBytes });
+      logQueueDeliveryStage("invoice_attachment_preparation_started");
+      pdfAttachment = await withInvoiceEmailPreparationTimeout("Invoice PDF attachment preparation", createInvoicePdfEmailAttachment({ filename, pdfBytes }), 5_000);
+      logQueueDeliveryStage("invoice_attachment_preparation_completed");
     } catch (error) {
       console.error("[Invoice Send] PDF attachment validation failed", {
         invoiceId: input.invoiceId,
