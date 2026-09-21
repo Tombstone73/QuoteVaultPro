@@ -4,17 +4,19 @@ import { spawn } from "node:child_process";
 import { Pool } from "pg";
 import { assertM78iFixtureBootstrapEnvironment } from "../../server/lib/m78iFixtureBootstrapGuard";
 import { DEV_QA_OPERATOR_BROWSER_EMAIL } from "../../server/lib/devQaProvisioningGuard";
-import { M78I_FIXTURE, M78I_FIXTURE_PRODUCT_GENERAL, M78I_FIXTURE_PRODUCT_PRICING, assertFixtureReadiness, fixtureProductGeneralMatches, fixtureProductPricingMatches, fixtureProductRoutingMatches, manifestIsSecretFree, m78iFixtureBusinessRequestId, type FixtureManifest, type FixtureReadiness, type M78iFixtureMutation } from "../../v2/src/qa/m78iFixtureBootstrap";
+import { M78I_FIXTURE, M78I_FIXTURE_PRODUCT_GENERAL, M78I_FIXTURE_PRODUCT_PRICING, M78I_FIXTURE_ROUTE_STEPS, assertFixtureReadiness, fixtureProductGeneralMatches, fixtureProductPricingMatches, fixtureProductRoutingMatches, manifestIsSecretFree, m78iFixtureBusinessRequestId, planFixtureRoute, resolveFixtureRoute, type FixtureManifest, type FixtureReadiness, type FixtureRouteCandidate, type FixtureRouteResolution, type M78iFixtureMutation } from "../../v2/src/qa/m78iFixtureBootstrap";
 import type { Capability } from "../../v2/src/authorization/capabilities";
 import type { OperationContext } from "../../v2/src/application/operation";
 import { ProductVersionLifecycleApplicationService } from "../../v2/src/modules/products/productVersionLifecycle";
 import { ProductRoutingApplicationService } from "../../v2/src/modules/products/productRouting";
 import { ProductPublicationApplicationService } from "../../v2/src/modules/products/productPublication";
+import { RouteTemplateAuthoringApplicationService } from "../../v2/src/modules/routing/routeTemplateAuthoring";
 import { OrderApplicationService } from "../../v2/src/modules/sales/orderApplication";
 import { ArtworkApplicationService } from "../../v2/src/modules/artwork/artworkApplication";
 import { PostgresProductVersionTransactionRunner, PostgresProductDraftGeneralReader, PostgresProductDraftPricingReader } from "../../v2/infrastructure/products/postgresProductVersionLifecycle";
 import { PostgresProductDraftRoutingReader, PostgresProductRoutingTransactionRunner } from "../../v2/infrastructure/products/postgresProductRouting";
 import { PostgresProductPublicationTransactionRunner } from "../../v2/infrastructure/products/postgresProductPublication";
+import { PostgresRouteTemplateAuthoringTransactionRunner } from "../../v2/infrastructure/routing/postgresRouteTemplateAuthoring";
 import { canonicalProductPublishOperations } from "../../server/services/products/canonicalProductPublishOperations";
 import { PostgresOrderTransactionRunner } from "../../v2/infrastructure/sales/postgresOrderTransaction";
 import { PostgresOrderAutomaticLifecycle } from "../../v2/infrastructure/sales/postgresOrderAutomaticLifecycle";
@@ -31,6 +33,9 @@ type CustomerRow = Readonly<{ id: string }>;
 type OrderRow = Readonly<{ id: string; display_number: string; customer_id: string; product_id: string; line_id: string; commercial_state: string; archived_at: Date | null }>;
 type InvoiceRow = Readonly<{ id: string; invoice_display_number: string | null }>;
 type ArtworkRow = Readonly<{ file_id: string; assignment_id: string }>;
+type FixtureRouteHeaderRow = Readonly<{ id: string; name: string; active: boolean; revision: string }>;
+type FixtureRouteStepRow = Readonly<{ route_template_id: string; position: number; step_kind: string }>;
+type FixtureRouteState = Readonly<{ resolution: FixtureRouteResolution; inventory: readonly FixtureRouteCandidate[] }>;
 
 const command = process.argv[2];
 const request = (mutation: M78iFixtureMutation) => m78iFixtureBusinessRequestId(mutation);
@@ -83,6 +88,24 @@ const withTemporaryProfile = async <T>(profile: "m78i_fixture_pricing" | "m78i_f
   }
 };
 
+/** Read-only route inventory. Selection is delegated to the pure exact-marker
+ * resolver below; it never chooses by tenant-wide count or row ordering. */
+const fixtureRouteState = async (pool: Pool): Promise<FixtureRouteState> => {
+  const headers = await pool.query<FixtureRouteHeaderRow>(
+    "SELECT id,name,active,revision::text revision FROM v2_route_templates WHERE organization_id=$1 ORDER BY lower(name),id",
+    [M78I_FIXTURE.organizationId],
+  );
+  const steps = await pool.query<FixtureRouteStepRow>(
+    "SELECT route_template_id,position,step_kind FROM v2_route_template_steps WHERE organization_id=$1 ORDER BY route_template_id,position,id",
+    [M78I_FIXTURE.organizationId],
+  );
+  const inventory = headers.rows.map((route): FixtureRouteCandidate => ({
+    ...route,
+    steps: steps.rows.filter((step) => step.route_template_id === route.id).map((step) => ({ position: step.position, kind: step.step_kind })),
+  }));
+  return { resolution: resolveFixtureRoute(inventory), inventory };
+};
+
 const fixtureRows = async (pool: Pool) => {
   const org = M78I_FIXTURE.organizationId;
   const [products, customers, orders] = await Promise.all([
@@ -100,12 +123,13 @@ const fixtureRows = async (pool: Pool) => {
 };
 
 const currentState = async (pool: Pool) => {
-  const rows = await fixtureRows(pool);
+  const [rows, routeState] = await Promise.all([fixtureRows(pool), fixtureRouteState(pool)]);
   const product = rows.products.length === 0 ? undefined : rows.products.length === 1 ? rows.products[0] : undefined;
   const customer = rows.customers.length === 0 ? undefined : rows.customers.length === 1 ? rows.customers[0] : undefined;
   const open = rows.orders.filter((row) => row.commercial_state === "open" && !row.archived_at);
   const order = open.length === 1 ? open[0] : undefined;
   const readiness: FixtureReadiness = {
+    route: routeState.resolution.readiness,
     product: rows.products.length > 1 ? "ambiguous" : !product ? "missing" : product.is_active && product.requires_production_job && product.valid_route ? "valid" : "invalid",
     customer: rows.customers.length > 1 ? "ambiguous" : customer ? "valid" : "missing",
     order: open.length > 1 ? "ambiguous" : order ? "valid" : rows.orders.length ? "historical" : "missing",
@@ -123,7 +147,7 @@ const currentState = async (pool: Pool) => {
     invoice = invoices.rows[0]; artwork = artworkRows.rows[0];
     readiness.artwork = artwork ? "valid" : "missing";
   }
-  return { ...rows, product, customer, order, invoice, artwork, readiness };
+  return { ...rows, product, customer, order, invoice, artwork, route: routeState.resolution, routeInventory: routeState.inventory, readiness };
 };
 
 const browserUserId = async (pool: Pool): Promise<string> => {
@@ -132,13 +156,22 @@ const browserUserId = async (pool: Pool): Promise<string> => {
   return result.rows[0]!.id;
 };
 
-const standardRoute = async (pool: Pool): Promise<string> => {
-  const result = await pool.query<{ id: string }>(`SELECT t.id FROM v2_route_templates t
-    WHERE t.organization_id=$1 AND t.name='Standard Production' AND t.active=true
-      AND (SELECT jsonb_agg(jsonb_build_object('position',s.position,'kind',s.step_kind) ORDER BY s.position) FROM v2_route_template_steps s WHERE s.organization_id=t.organization_id AND s.route_template_id=t.id)
-        = '[{"position":0,"kind":"proofing"},{"position":1,"kind":"prepress"},{"position":2,"kind":"production"},{"position":3,"kind":"fulfillment"}]'::jsonb`, [M78I_FIXTURE.organizationId]);
-  if (result.rows.length !== 1) fail("Exactly one active Standard Production route is required for the DEV-QA fixture.");
-  return result.rows[0]!.id;
+const ensureFixtureRoute = async (pool: Pool, userId: string, caps: readonly Capability[], current: FixtureRouteResolution): Promise<string> => {
+  const plan = planFixtureRoute(current, caps.includes("route.manageTemplates"));
+  if (plan === "reuse") return current.route!.id;
+  if (plan === "fail") {
+    if (current.readiness === "missing")
+      fail(`M7.8I fixture route is missing; route.manageTemplates is required to create ${M78I_FIXTURE.route}.`);
+    fail(`M7.8I fixture route is ${current.readiness}; refusing to select or revise it.`);
+  }
+  const authoring = new RouteTemplateAuthoringApplicationService(new PostgresRouteTemplateAuthoringTransactionRunner(pool));
+  await fixtureStage("route.create", async () => ok(await authoring.create(context(userId, caps, request("route.create")), {
+    businessRequestId: request("route.create"), name: M78I_FIXTURE.route, steps: M78I_FIXTURE_ROUTE_STEPS,
+  })));
+  const after = await fixtureRouteState(pool);
+  if (after.resolution.readiness !== "ready" || !after.resolution.route)
+    fail(`Fixture Route creation did not converge to one ready ${M78I_FIXTURE.route}.`);
+  return after.resolution.route.id;
 };
 
 const productUpdatedAt = async (pool: Pool, productId: string): Promise<string> => {
@@ -147,13 +180,11 @@ const productUpdatedAt = async (pool: Pool, productId: string): Promise<string> 
   return result.rows[0]!.updated_at.toISOString();
 };
 
-const ensureProduct = async (pool: Pool, userId: string): Promise<ProductRow> => {
+const ensureProduct = async (pool: Pool, userId: string, caps: readonly Capability[]): Promise<ProductRow> => {
   let state = await currentState(pool); assertFixtureReadiness(state.readiness);
   if (state.readiness.product === "valid") return state.product!;
   if (state.product?.is_active) fail("The marked active fixture Product is invalid. Refusing to revise an existing fixture without an explicit safe-revision decision.");
-  // Validate the route before creating a Product so a missing environment
-  // prerequisite cannot leave another partial fixture behind.
-  const routeTemplateId = await fixtureStage("product.route.precondition", () => standardRoute(pool));
+  const routeTemplateId = await fixtureStage("route.resolve", () => ensureFixtureRoute(pool, userId, caps, state.route));
   return withTemporaryProfile("m78i_fixture_pricing", async (caps) => {
     const lifecycle = new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(pool));
     const generalReader = new PostgresProductDraftGeneralReader(pool);
@@ -238,6 +269,7 @@ const ensureArtwork = async (pool: Pool, userId: string, order: OrderRow): Promi
 
 const manifest = (state: Awaited<ReturnType<typeof currentState>>): FixtureManifest => ({
   organizationId: M78I_FIXTURE.organizationId,
+  ...(state.route.route ? { route: { id: state.route.route.id, name: state.route.route.name, revision: state.route.route.revision, steps: state.route.route.steps.map((step) => step.kind) } } : {}),
   ...(state.product?.active_version_id ? { product: { id: state.product.id, activeVersionId: state.product.active_version_id, productionUnit: "front", requiresProductionJob: state.product.requires_production_job } } : {}),
   ...(state.customer ? { customer: { id: state.customer.id } } : {}),
   ...(state.order ? { order: { id: state.order.id, orderNumber: state.order.display_number, lineId: state.order.line_id } } : {}),
@@ -257,7 +289,7 @@ async function main(): Promise<void> {
     if (command === "bootstrap") {
       if (activeProfile !== "m78i") fail("Fixture bootstrap requires the QA browser to start at normal m78i.");
       const normal = await runOperator(["verify"]), userId = await browserUserId(pool), normalCaps = capabilities(normal);
-      const product = await ensureProduct(pool, userId);
+      const product = await ensureProduct(pool, userId, normalCaps);
       const customer = await ensureCustomer(pool, userId, normalCaps);
       const order = await ensureOrder(pool, userId, normalCaps, product, customer);
       await ensureArtwork(pool, userId, order);
@@ -268,7 +300,15 @@ async function main(): Promise<void> {
     }
     const value = manifest(state);
     if (!manifestIsSecretFree(value)) fail("Fixture manifest secret-content guard failed.");
-    console.log(JSON.stringify({ success: true, command, readiness: state.readiness, qaBrowserProfile: activeProfile, temporaryCapabilitiesActive: activeProfile !== "m78i", proofingEligible: state.readiness.product === "valid" && state.readiness.order === "valid" && state.readiness.artwork === "valid", manifest: value }));
+    console.log(JSON.stringify({
+      success: true, command, readiness: state.readiness, qaBrowserProfile: activeProfile,
+      temporaryCapabilitiesActive: activeProfile !== "m78i",
+      proofingEligible: state.readiness.route === "ready" && state.readiness.product === "valid" && state.readiness.order === "valid" && state.readiness.artwork === "valid",
+      routeInventory: state.routeInventory.map((route) => ({ id: route.id, name: route.name, revision: route.revision, active: route.active, steps: route.steps.map((step) => step.kind) })),
+      fixtureRoute: state.route.route ? { id: state.route.route.id, name: state.route.route.name, revision: state.route.route.revision, steps: state.route.route.steps.map((step) => step.kind) } : null,
+      productRouteLinked: Boolean(state.product?.route_id && state.product.route_id === state.route.route?.id),
+      manifest: value,
+    }));
   } finally { await pool.end(); }
 }
 

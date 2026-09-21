@@ -2,6 +2,7 @@ export const M78I_FIXTURE = Object.freeze({
   organizationId: "b6f969b2-dda3-4133-9d75-c417dabb8f3a",
   organizationName: "PrintersHero M7 QA",
   product: "M78I-FIXTURE-PRODUCT",
+  route: "M78I-FIXTURE-ROUTE",
   customer: "M78I-FIXTURE-CUSTOMER",
   order: "M78I-FIXTURE-ORDER",
   artwork: "M78I-FIXTURE-ARTWORK.pdf",
@@ -19,6 +20,7 @@ export const M78I_FIXTURE_MUTATIONS = [
   "product.pricing.update",
   "product.routing.update",
   "product.publish",
+  "route.create",
   "customer.create",
   "order.create",
   "artwork.adopt",
@@ -51,6 +53,41 @@ export const M78I_FIXTURE_PRODUCT_PRICING = Object.freeze({
   tierBasis: null,
   tiers: [] as const,
 });
+
+export const M78I_FIXTURE_ROUTE_STEPS = Object.freeze([
+  { position: 0, kind: "proofing" as const },
+  { position: 1, kind: "prepress" as const },
+  { position: 2, kind: "production" as const },
+  { position: 3, kind: "fulfillment" as const },
+]);
+
+export type FixtureRouteCandidate = Readonly<{
+  id: string;
+  name: string;
+  active: boolean;
+  revision: string;
+  steps: readonly Readonly<{ position: number; kind: string; productionDestination?: string }>[];
+}>;
+
+export type FixtureRouteReadiness = "ready" | "missing" | "invalid" | "ambiguous";
+export type FixtureRouteResolution = Readonly<{ readiness: FixtureRouteReadiness; route?: FixtureRouteCandidate }>;
+
+const routeStepsMatch = (steps: FixtureRouteCandidate["steps"]): boolean =>
+  steps.length === M78I_FIXTURE_ROUTE_STEPS.length &&
+  steps.every((step, index) => step.position === M78I_FIXTURE_ROUTE_STEPS[index]!.position && step.kind === M78I_FIXTURE_ROUTE_STEPS[index]!.kind);
+
+/** Only an exact synthetic marker is eligible; unrelated tenant routes never
+ * influence the fixture decision. */
+export const resolveFixtureRoute = (routes: readonly FixtureRouteCandidate[]): FixtureRouteResolution => {
+  const marked = routes.filter((route) => route.name === M78I_FIXTURE.route);
+  if (marked.length === 0) return { readiness: "missing" };
+  if (marked.length !== 1) return { readiness: "ambiguous" };
+  const route = marked[0]!;
+  return route.active && routeStepsMatch(route.steps) ? { readiness: "ready", route } : { readiness: "invalid", route };
+};
+
+export const planFixtureRoute = (resolution: FixtureRouteResolution, canManageTemplates: boolean): "reuse" | "create" | "fail" =>
+  resolution.readiness === "ready" ? "reuse" : resolution.readiness === "missing" && canManageTemplates ? "create" : "fail";
 
 export const fixtureProductGeneralMatches = (value: Readonly<{
   displayName: string;
@@ -95,6 +132,7 @@ export const fixtureProductRoutingMatches = (value: Readonly<{ kind: string; rou
 
 export type FixtureManifest = Readonly<{
   organizationId: string;
+  route?: Readonly<{ id: string; name: string; revision: string; steps: readonly string[] }>;
   product?: Readonly<{ id: string; activeVersionId: string; productionUnit: string; requiresProductionJob: boolean }>;
   customer?: Readonly<{ id: string }>;
   order?: Readonly<{ id: string; orderNumber: string; lineId: string }>;
@@ -104,6 +142,7 @@ export type FixtureManifest = Readonly<{
 }>;
 
 export type FixtureReadiness = Readonly<{
+  route: FixtureRouteReadiness;
   product: "missing" | "valid" | "invalid" | "ambiguous";
   customer: "missing" | "valid" | "ambiguous";
   order: "missing" | "valid" | "historical" | "ambiguous";
@@ -111,6 +150,7 @@ export type FixtureReadiness = Readonly<{
 }>;
 
 export type FixturePlan = Readonly<{
+  route: "reuse" | "create" | "fail";
   product: "reuse" | "create" | "repair";
   customer: "reuse" | "create";
   order: "reuse" | "create_current";
@@ -127,6 +167,7 @@ export const assertFixtureReadiness = (readiness: FixtureReadiness): void => {
 export const planFixtureReconciliation = (readiness: FixtureReadiness): FixturePlan => {
   assertFixtureReadiness(readiness);
   return {
+    route: readiness.route === "ready" ? "reuse" : readiness.route === "missing" ? "create" : "fail",
     product: readiness.product === "valid" ? "reuse" : readiness.product === "invalid" ? "repair" : "create",
     customer: readiness.customer === "valid" ? "reuse" : "create",
     order: readiness.order === "valid" ? "reuse" : "create_current",
