@@ -37,7 +37,7 @@ const invoice = (overrides: Partial<InvoiceListItem> = {}): InvoiceListItem => (
 } as InvoiceListItem);
 
 describe("Invoices List payment entry point", () => {
-  it("uses server paging metadata and tenant-wide summary facts instead of the visible rows", () => {
+  it("uses server paging metadata and server-filtered summary facts instead of the visible rows", () => {
     expect(invoicesPageSource).toContain("page,");
     expect(invoicesPageSource).toContain("pageSize,");
     expect(invoicesPageSource).toContain("summary.totalOutstandingCents");
@@ -86,6 +86,13 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("includePaidHistorical");
     expect(invoicesPageSource).toContain("includeCanceled");
     expect(invoiceHooksSource).toContain("includeCanceled");
+    expect(invoicesPageSource).toContain("Ready to Finalize");
+    expect(invoicesPageSource).toContain("applyReadyToFinalizeQuickFilter");
+    const readyToFinalize = invoicesPageSource.slice(invoicesPageSource.indexOf("const applyReadyToFinalizeQuickFilter"), invoicesPageSource.indexOf("const clearAllFilters"));
+    expect(readyToFinalize).toContain('jobStatus: "job_complete,fulfillment_complete"');
+    expect(readyToFinalize).not.toContain("accountingApproval");
+    expect(readyToFinalize).not.toContain("sendStatus");
+    expect(readyToFinalize).not.toContain("payment");
   });
 
   it("uses the selected-invoice workflow to manually mark invoices sent without invoking email delivery", () => {

@@ -50,6 +50,15 @@ export function normalizeInvoiceListDiscreteFilter(value: string | undefined): s
   return values.length ? values.join(",") : undefined;
 }
 
+/** Customer IDs are set-like selection state. Sorting makes shared URLs and
+ * sticky preferences stable regardless of the order in which pages were read. */
+export function normalizeInvoiceListCustomerIds(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const values = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  return values.length ? values.join(",") : undefined;
+}
+
 /** Keep the controlled input's in-progress whitespace; normalize only for API reads. */
 export const normalizeInvoiceListSearchQuery = (search: string): string | undefined => search.trim() || undefined;
 
@@ -67,8 +76,10 @@ function positiveInteger(value: string | undefined, fallback: number) {
  */
 export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUrlState {
   const columnFilters = INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.reduce<InvoiceListColumnFilterQuery>((result, key) => {
-    const value = DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
-      ? normalizeInvoiceListDiscreteFilter(read(params, key))
+    const value = key === "excludeCustomerIds"
+      ? normalizeInvoiceListCustomerIds(read(params, key))
+      : DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
+        ? normalizeInvoiceListDiscreteFilter(read(params, key))
       : read(params, key);
     if (value) result[key] = value as never;
     return result;
@@ -84,7 +95,7 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     includePaidHistorical: read(params, "includePaidHistorical") === "1",
     includeCanceled: read(params, "includeCanceled") === "1",
     customerId: read(params, "customerId"),
-    customerIds: normalizeInvoiceListDiscreteFilter(read(params, "customerIds")),
+    customerIds: normalizeInvoiceListCustomerIds(read(params, "customerIds")),
     customerName: read(params, "customerName"),
     excludeCustomerName: read(params, "excludeCustomerName"),
     issueDatePreset: read(params, "issueDatePreset") === "custom" ? "custom" : undefined,
@@ -112,8 +123,10 @@ export function updateInvoiceListUrlState(
 ) {
   const next = new URLSearchParams(current);
   for (const [key, value] of Object.entries(changes)) {
-    const normalized = DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
-      ? normalizeInvoiceListDiscreteFilter(value)
+    const normalized = key === "customerIds" || key === "excludeCustomerIds"
+      ? normalizeInvoiceListCustomerIds(value)
+      : DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
+        ? normalizeInvoiceListDiscreteFilter(value)
       : value?.trim() ? value : undefined;
     if (normalized) next.set(key, normalized);
     else next.delete(key);

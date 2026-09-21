@@ -21,7 +21,7 @@ import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListS
 import { getInvoiceEmailActionState } from "@/lib/invoiceEmailActionState";
 import { applyVisibleRowSelection } from "@/lib/visibleRowRangeSelection";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
-import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListCustomerIds, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
 import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
 import { CustomerMultiSelect } from "@/components/CustomerMultiSelect";
@@ -420,14 +420,18 @@ export default function InvoicesListPage() {
   }, [invoiceSelectionScope]);
   const selectedCount = selectedInvoiceIds.size;
   const allVisibleApprovableSelected = accountingApprovableInvoices.length > 0 && accountingApprovableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
+  // Accept legacy single-value parameters together with the canonical CSV
+  // form while restoring a deterministic set for the selectors and chips.
+  const includedCustomerIds = discreteValues([customerIds, customerId].filter(Boolean).join(","));
+  const excludedCustomerIds = discreteValues([columnFilters.excludeCustomerIds, columnFilters.excludeCustomerId].filter(Boolean).join(","));
   const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>)
     .filter(([key, value]) => Boolean(value) && key !== "excludeCustomerId" && key !== "excludeCustomerIds");
   const activeFilters = [
     search ? { key: "search", label: "Search", value: search } : null,
     statusFilter !== "all" ? { key: "status", label: "Status", value: labelDiscreteValues(statusFilter, INVOICE_STATUS_OPTIONS) } : null,
     includeCanceled ? { key: "includeCanceled", label: "Canceled", value: "Shown" } : null,
-    (customerIds || customerId) ? { key: "customerIds", label: "Include Customers", value: `${discreteValues(customerIds || customerId).length} selected` } : null,
-    (columnFilters.excludeCustomerIds || columnFilters.excludeCustomerId) ? { key: "excludeCustomerIds", label: "Exclude Customers", value: `${discreteValues(columnFilters.excludeCustomerIds || columnFilters.excludeCustomerId).length} selected` } : null,
+    includedCustomerIds.length ? { key: "customerIds", label: "Include Customers", value: `${includedCustomerIds.length} selected` } : null,
+    excludedCustomerIds.length ? { key: "excludeCustomerIds", label: "Exclude Customers", value: `${excludedCustomerIds.length} selected` } : null,
     ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: formatColumnFilterValue(key, String(value)) })),
   ].filter(Boolean) as Array<{ key: string; label: string; value: string }>;
 
@@ -473,22 +477,22 @@ export default function InvoicesListPage() {
     setColumnFilter(key as keyof InvoiceListColumnFilterQuery, "");
   };
 
-  const includedCustomerIds = discreteValues(customerIds || customerId);
-  const excludedCustomerIds = discreteValues(columnFilters.excludeCustomerIds || columnFilters.excludeCustomerId);
   const setIncludedCustomerIds = (ids: string[]) => {
+    const nextIncluded = discreteValues(normalizeInvoiceListCustomerIds(ids.join(",")));
     updateListState({
       customerId: undefined, customerName: undefined,
-      customerIds: ids.join(",") || undefined,
+      customerIds: normalizeInvoiceListCustomerIds(nextIncluded.join(",")),
       excludeCustomerId: undefined,
-      excludeCustomerIds: excludedCustomerIds.filter((id) => !ids.includes(id)).join(",") || undefined,
+      excludeCustomerIds: normalizeInvoiceListCustomerIds(excludedCustomerIds.filter((id) => !nextIncluded.includes(id)).join(",")),
     }, true);
   };
   const setExcludedCustomerIds = (ids: string[]) => {
+    const nextExcluded = discreteValues(normalizeInvoiceListCustomerIds(ids.join(",")));
     updateListState({
       excludeCustomerId: undefined, excludeCustomerName: undefined,
-      excludeCustomerIds: ids.join(",") || undefined,
+      excludeCustomerIds: normalizeInvoiceListCustomerIds(nextExcluded.join(",")),
       customerId: undefined,
-      customerIds: includedCustomerIds.filter((id) => !ids.includes(id)).join(",") || undefined,
+      customerIds: normalizeInvoiceListCustomerIds(includedCustomerIds.filter((id) => !nextExcluded.includes(id)).join(",")),
     }, true);
   };
 

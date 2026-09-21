@@ -3,10 +3,14 @@ import { act } from "react";
 import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
-import { useQuery } from "@tanstack/react-query";
+import { useCustomerById, useCustomerSearchPage } from "@/hooks/useCustomerSearch";
 import { CustomerSelect } from "./CustomerSelect";
 
-jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn() }));
+jest.mock("@/hooks/useCustomerSearch", () => ({
+  useDebouncedValue: (value: string) => value,
+  useCustomerSearchPage: jest.fn(),
+  useCustomerById: jest.fn(),
+}));
 jest.mock("@/components/ui/button", () => ({ Button: ({ children, ...props }: any) => <button {...props}>{children}</button> }));
 jest.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: any) => <div>{children}</div>,
@@ -26,7 +30,8 @@ jest.mock("@/components/ui/command", () => ({
   )),
 }));
 
-const useQueryMock = jest.mocked(useQuery);
+const useCustomerSearchPageMock = jest.mocked(useCustomerSearchPage);
+const useCustomerByIdMock = jest.mocked(useCustomerById);
 let container: HTMLDivElement;
 let root: Root;
 
@@ -35,27 +40,21 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  useQueryMock.mockReset();
-  useQueryMock.mockImplementation((options: any) => {
-    const key = Array.isArray(options?.queryKey) ? options.queryKey : [];
-    if (key[0] === "/api/customers" && typeof key[1] === "object") {
-      return {
-        data: [
-          { id: "substring", companyName: "Metrographic Printing" },
-          {
-            id: "prefix",
-            companyName: "Graphic Solutions",
-            contacts: [
-              { id: "contact-rick", firstName: "Rick", lastName: "Clark", isPrimary: false },
-              { id: "contact-primary", firstName: "Pat", lastName: "Primary", isPrimary: true },
-            ],
-          },
+  useCustomerSearchPageMock.mockReturnValue({
+    data: { customers: [
+      { id: "substring", companyName: "Metrographic Printing" },
+      {
+        id: "prefix",
+        companyName: "Graphic Solutions",
+        contacts: [
+          { id: "contact-rick", firstName: "Rick", lastName: "Clark", isPrimary: false },
+          { id: "contact-primary", firstName: "Pat", lastName: "Primary", isPrimary: true },
         ],
-        isLoading: false,
-      } as any;
-    }
-    return { data: null, isLoading: false } as any;
-  });
+      },
+    ], pagination: {} },
+    isLoading: false,
+  } as any);
+  useCustomerByIdMock.mockReturnValue({ data: null } as any);
 });
 
 afterEach(() => {

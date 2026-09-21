@@ -173,6 +173,7 @@ export function useInvoicesPage(filters: {
   includePaidHistorical?: boolean;
   includeCanceled?: boolean;
   customerId?: string;
+  customerIds?: string;
   orderId?: string;
   search?: string;
   sortBy?: string;
@@ -198,6 +199,7 @@ export function useInvoicesPage(filters: {
       if (filters?.includePaidHistorical) params.append('includePaidHistorical', '1');
       if (filters?.includeCanceled) params.append('includeCanceled', '1');
       if (filters?.customerId) params.append('customerId', filters.customerId);
+      if (filters?.customerIds) params.append('customerIds', filters.customerIds);
       if (filters?.orderId) params.append('orderId', filters.orderId);
       if (filters?.search) params.append('search', filters.search);
       if (filters?.sortBy) params.append('sortBy', filters.sortBy);

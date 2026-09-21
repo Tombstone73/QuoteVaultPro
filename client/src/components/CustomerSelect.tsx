@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Building2, User, X, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiFetch } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { getBestMatchingCustomerContact, sortCustomersForSearch } from "@/lib/customerSearchRanking";
 import type { Customer, CustomerContact } from "@shared/schema";
+import { useCustomerById, useCustomerSearchPage, useDebouncedValue } from "@/hooks/useCustomerSearch";
 
 export type CustomerWithContacts = Customer & {
   contacts?: CustomerContact[];
@@ -38,57 +37,16 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
 }, ref) => {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const debouncedSearch = useDebouncedValue(searchQuery, 250);
   const commandInputRef = useRef<HTMLInputElement>(null);
   const commandListRef = useRef<HTMLDivElement>(null);
 
-  // Debounce search input
-  useEffect(() => {
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-
-    debounceTimerRef.current = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-    }, 200);
-
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, [searchQuery]);
-
   // Fetch customers with search - show all when no search query
-  const { data: customers = [], isLoading } = useQuery<CustomerWithContacts[]>({
-    queryKey: ["/api/customers", { search: debouncedSearch }],
-    queryFn: async () => {
-      const params = new URLSearchParams({ page: "1", pageSize: "50" });
-      if (debouncedSearch) {
-        params.set("search", debouncedSearch);
-      }
-      const url = `/api/customers${params.toString() ? `?${params.toString()}` : ""}`;
-      const response = await apiFetch(url);
-      if (!response.ok) throw new Error("Failed to fetch customers");
-      const payload = await response.json();
-      const rows = payload?.data?.customers;
-      return Array.isArray(rows) ? rows : [];
-    },
-    staleTime: 30000,
-  });
+  const { data: customerPage, isLoading } = useCustomerSearchPage({ search: debouncedSearch, page: 1, pageSize: 50 });
+  const customers = (customerPage?.customers || []) as CustomerWithContacts[];
 
   // Fetch contacts for selected customer if not already loaded
-  const { data: customerDetail } = useQuery<CustomerWithContacts>({
-    queryKey: ["/api/customers", value],
-    queryFn: async () => {
-      if (!value) throw new Error("No customer ID");
-      const response = await apiFetch(`/api/customers/${value}`);
-      if (!response.ok) throw new Error("Failed to fetch customer");
-      return response.json();
-    },
-    enabled: !!value && !initialCustomer?.contacts,
-  });
+  const { data: customerDetail } = useCustomerById<CustomerWithContacts>(value, !initialCustomer?.contacts);
 
   // Get the selected customer
   const selectedCustomer = initialCustomer || customerDetail || customers.find(c => c.id === value);

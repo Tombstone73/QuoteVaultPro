@@ -303,6 +303,8 @@ export interface ListInvoicesForOrganizationOptions {
   issuedAtEndExclusive?: Date;
   sortBy?: string;
   sortDir?: string;
+  /** Dashboard facts must use the same server-side working set as rows/counts. */
+  includeSummary?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -328,6 +330,7 @@ export type InvoiceListPage = {
   pageSize: number;
   totalCount: number;
   totalPages: number;
+  summary?: InvoiceDashboardSummary;
 };
 
 export type { InvoiceDashboardSummary } from './lib/invoiceDashboardSummary';
@@ -416,6 +419,20 @@ function canonicalInvoiceUnpaidDisplayExpression(organizationId: string) {
   )`;
 }
 
+/** Keep Invoice-list display, sorting, and exact filtering on one precedence
+ * model. A terminal fulfillment/state must never be reclassified by a stale
+ * raw status-pill value. */
+function canonicalDisplayedJobStatusExpression() {
+  return sql`case
+    when ${invoices.orderId} is null then 'no linked order'
+    when lower(coalesce(${orders.state}, '')) = 'canceled' then 'cancelled'
+    when lower(coalesce(${orders.state}, '')) = 'closed' then 'closed'
+    when lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered') then 'fulfillment complete'
+    when lower(coalesce(${orders.state}, '')) = 'production_complete' then 'production complete'
+    else lower(coalesce(${orders.statusPillValue}, ${orders.status}, ${orders.state}, 'open'))
+  end`;
+}
+
 function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: string) {
   switch (sortBy) {
     case 'invoiceNumber':
@@ -458,14 +475,7 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
     case 'jobStatus':
       // Keep the database ordering aligned with getOrderJobStatus(), while
       // retaining a stable string sort for ordinary order-state values.
-      return sql`case
-        when ${invoices.orderId} is null then 'no linked order'
-        when lower(coalesce(${orders.state}, '')) = 'canceled' then 'cancelled'
-        when lower(coalesce(${orders.state}, '')) = 'closed' then 'closed'
-        when lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered') then 'fulfillment complete'
-        when lower(coalesce(${orders.state}, '')) = 'production_complete' then 'production complete'
-        else lower(coalesce(${orders.statusPillValue}, ${orders.status}, ${orders.state}, 'open'))
-      end`;
+      return canonicalDisplayedJobStatusExpression();
     case 'status':
       return sql`lower(coalesce(${invoices.status}, ''))`;
     case 'total':
@@ -530,9 +540,14 @@ export async function listInvoicesPageForOrganization(
   if (opts.includeCanceled === false) {
     whereClauses.push(sql`not (${canceledInvoiceState})`);
   }
+  const columnFilters = opts.columnFilters ?? {};
   // Customer list semantics follow the live invoice projection: a native
-  // Order-backed invoice belongs to its Order's current customer.
-  const customerIds = [...new Set([...(opts.customerIds ?? []), ...(opts.customerId ? [opts.customerId] : [])].filter(Boolean))];
+  // Order-backed invoice belongs to its Order's current customer. Exclusion
+  // wins for manually composed or legacy URLs that contain an ID in both
+  // lists, matching the selector's conflict-resolution behavior.
+  const excludedCustomerIds = [...new Set([...(columnFilters.excludeCustomerIds ?? []), ...(columnFilters.excludeCustomerId ? [columnFilters.excludeCustomerId] : [])].filter(Boolean))];
+  const customerIds = [...new Set([...(opts.customerIds ?? []), ...(opts.customerId ? [opts.customerId] : [])].filter(Boolean))]
+    .filter((id) => !excludedCustomerIds.includes(id));
   if (customerIds.length === 1) whereClauses.push(eq(canonicalInvoiceCustomerId, customerIds[0]!));
   if (customerIds.length > 1) whereClauses.push(inArray(canonicalInvoiceCustomerId, customerIds));
   if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
@@ -540,9 +555,7 @@ export async function listInvoicesPageForOrganization(
   if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
-  const columnFilters = opts.columnFilters ?? {};
   const categoricalValues = <T,>(value: T | readonly T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? [...new Set(value)] : [value];
-  const excludedCustomerIds = [...new Set([...(columnFilters.excludeCustomerIds ?? []), ...(columnFilters.excludeCustomerId ? [columnFilters.excludeCustomerId] : [])].filter(Boolean))];
   if (excludedCustomerIds.length === 1) whereClauses.push(ne(canonicalInvoiceCustomerId, excludedCustomerIds[0]!));
   if (excludedCustomerIds.length > 1) whereClauses.push(notInArray(canonicalInvoiceCustomerId, excludedCustomerIds));
   // This is the same order lifecycle boundary shown by Job Status: an open
@@ -554,13 +567,13 @@ export async function listInvoicesPageForOrganization(
   const exactJobStatusPredicate = (status: string) => {
     if (status === 'open') return sql`${invoices.orderId} is not null and not (${terminalJob})`;
     if (status === 'complete') return sql`${invoices.orderId} is not null and (${terminalJob})`;
-    if (status === 'fulfillment_complete') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.fulfillmentStatus}, '')) in ('shipped', 'delivered')`;
-    if (status === 'job_complete') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.statusPillValue}, ${orders.status}, '')) = 'complete'`;
-    if (status === 'production_complete') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.state}, '')) = 'production_complete'`;
-    if (status === 'closed') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.state}, '')) = 'closed'`;
-    if (status === 'cancelled') return sql`${invoices.orderId} is not null and lower(coalesce(${orders.state}, '')) = 'canceled'`;
     if (status === 'no_linked_order') return sql`${invoices.orderId} is null`;
-    return sql`${invoices.orderId} is not null and lower(coalesce(${orders.statusPillValue}, ${orders.status}, ${orders.state}, 'open')) = ${status}`;
+    const displayedStatus = ({
+      job_complete: 'complete',
+      fulfillment_complete: 'fulfillment complete',
+      production_complete: 'production complete',
+    } as Record<string, string>)[status] ?? status;
+    return sql`${invoices.orderId} is not null and ${canonicalDisplayedJobStatusExpression()} = ${displayedStatus}`;
   };
   const jobStatusPredicates = categoricalValues(columnFilters.jobStatus).map(exactJobStatusPredicate);
   if (jobStatusPredicates.length === 1) whereClauses.push(jobStatusPredicates[0]);
@@ -716,7 +729,47 @@ export async function listInvoicesPageForOrganization(
     ))
     .where(and(...whereClauses));
 
-  const [rows, countRows] = await Promise.all([rowsQuery, countQuery]);
+  const summaryPromise: Promise<InvoiceDashboardSummary | undefined> = opts.includeSummary ? (async () => {
+    const now = new Date();
+    const [organization] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, opts.organizationId))
+      .limit(1);
+    const settings = organization?.settings as Record<string, unknown> | null | undefined;
+    const preferences = settings?.preferences as Record<string, unknown> | undefined;
+    const month = invoiceDashboardMonthWindow(now, validTimezone(settings?.timezone ?? preferences?.timezone));
+    const canonicalRemainingCents = canonicalInvoiceRemainingCentsExpression(opts.organizationId);
+    const isReceivable = sql`lower(coalesce(${invoices.status}, '')) not in ('draft', 'void', 'voided')`;
+    const [invoiceAggregateRows, paymentAggregateRows] = await Promise.all([
+      db.select({
+        totalInvoices: count(),
+        totalOutstandingCents: sql<string>`coalesce(sum(case when ${isReceivable} then ${canonicalRemainingCents} else 0 end), 0)`,
+        overdueCount: sql<string>`count(*) filter (where ${isReceivable} and ${invoices.dueDate} is not null and ${invoices.dueDate} < ${now} and ${canonicalRemainingCents} > 0)`,
+      })
+        .from(invoices)
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, opts.organizationId)))
+        .leftJoin(customers, and(eq(customers.id, canonicalInvoiceCustomerId), eq(customers.organizationId, opts.organizationId)))
+        .leftJoin(customerContacts, and(eq(customerContacts.id, orders.contactId), eq(customerContacts.customerId, customers.id)))
+        .where(and(...whereClauses)),
+      db.select({ paidThisMonthCents: sql<string>`coalesce(sum(${payments.amountCents}), 0)` })
+        .from(payments)
+        .innerJoin(invoices, and(eq(invoices.id, payments.invoiceId), eq(invoices.organizationId, opts.organizationId)))
+        .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, opts.organizationId)))
+        .leftJoin(customers, and(eq(customers.id, canonicalInvoiceCustomerId), eq(customers.organizationId, opts.organizationId)))
+        .leftJoin(customerContacts, and(eq(customerContacts.id, orders.contactId), eq(customerContacts.customerId, customers.id)))
+        .where(and(
+          ...whereClauses,
+          eq(payments.organizationId, opts.organizationId),
+          sql`lower(${payments.status}) in ('succeeded', 'captured')`,
+          sql`coalesce(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) >= ${month.start}`,
+          sql`coalesce(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) < ${month.endExclusive}`,
+        )),
+    ]);
+    return normalizeInvoiceDashboardSummaryAggregates(invoiceAggregateRows, paymentAggregateRows);
+  })() : Promise.resolve(undefined);
+
+  const [rows, countRows, summary] = await Promise.all([rowsQuery, countQuery, summaryPromise]);
   const totalCount = Math.max(0, Number(countRows[0]?.totalCount ?? 0));
 
   return {
@@ -739,6 +792,7 @@ export async function listInvoicesPageForOrganization(
     pageSize: limit,
     totalCount,
     totalPages: Math.max(1, Math.ceil(totalCount / limit)),
+    summary,
   };
 }
 

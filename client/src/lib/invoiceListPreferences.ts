@@ -1,5 +1,6 @@
 import type { InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { getDefaultInvoiceSortDir, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
+import { normalizeInvoiceListCustomerIds } from "@/lib/invoiceListUrlState";
 
 export type InvoiceListPageSize = 25 | 50 | 100;
 
@@ -62,7 +63,8 @@ function normalizeColumnFilters(value: unknown): InvoiceListColumnFilterQuery | 
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const filters = COLUMN_FILTER_KEYS.reduce<InvoiceListColumnFilterQuery>((result, key) => {
-    const normalized = nonBlankString(raw[key]);
+    const rawValue = nonBlankString(raw[key]);
+    const normalized = key === "excludeCustomerIds" ? normalizeInvoiceListCustomerIds(rawValue) : rawValue;
     if (normalized) result[key] = normalized as never;
     return result;
   }, {});
@@ -78,7 +80,7 @@ function normalizeFilters(value: unknown): InvoiceListStickyFilters {
     includePaidHistorical: typeof raw.includePaidHistorical === "boolean" ? raw.includePaidHistorical : undefined,
     includeCanceled: typeof raw.includeCanceled === "boolean" ? raw.includeCanceled : undefined,
     customerId: nonBlankString(raw.customerId),
-    customerIds: nonBlankString(raw.customerIds),
+    customerIds: normalizeInvoiceListCustomerIds(nonBlankString(raw.customerIds)),
     customerName: nonBlankString(raw.customerName),
     excludeCustomerName: nonBlankString(raw.excludeCustomerName),
     issueDatePreset: raw.issueDatePreset === "custom" ? "custom" : undefined,

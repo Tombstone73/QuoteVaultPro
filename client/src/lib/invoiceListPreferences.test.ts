@@ -141,4 +141,16 @@ describe("Invoice list preferences", () => {
       columnFilters: { accountingApproval: "approved", sendStatus: "never_sent" },
     });
   });
+
+  it("restores canonical multi-customer include and exclude selections from sticky filters", () => {
+    const storage = createStorage();
+    persistInvoiceListPreferences("user-1", "org-1", {
+      ...DEFAULT_INVOICE_LIST_PREFERENCES,
+      stickySortingAndFilters: true,
+      filters: { customerIds: "customer-z,customer-a,customer-z", columnFilters: { excludeCustomerIds: "customer-d,customer-b" } },
+    }, storage);
+    expect(readPersistedInvoiceListPreferences("user-1", "org-1", storage).filters).toEqual({
+      customerIds: "customer-a,customer-z", columnFilters: { excludeCustomerIds: "customer-b,customer-d" },
+    });
+  });
 });

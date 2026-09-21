@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
-import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceDashboardSummary, getInvoiceSendStatus, getInvoiceSendStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceSendStatus, getInvoiceSendStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -228,7 +228,7 @@ function invoiceListQueryValues(value: unknown, allowed: readonly string[], labe
 function invoiceListQueryIds(value: unknown): string[] | undefined {
   const rawValues = Array.isArray(value) ? value : [value];
   const values = [...new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
-    .map((item) => item.trim()).filter(Boolean))];
+    .map((item) => item.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   return values.length ? values : undefined;
 }
 
@@ -2349,7 +2349,7 @@ export async function registerMvpInvoicingRoutes(
         ? requestedOffset
         : (Math.max(Number.isFinite(requestedPage) ? requestedPage : 1, 1) - 1) * limit;
 
-      const [invoicePage, summary] = await Promise.all([listInvoicesPageForOrganization({
+      const invoicePage = await listInvoicesPageForOrganization({
         organizationId,
         status: statusValues?.length === 1 ? statusValues[0] : undefined,
         statuses: statusValues && statusValues.length > 1 ? statusValues : undefined,
@@ -2364,7 +2364,9 @@ export async function registerMvpInvoicingRoutes(
         columnFilters,
         limit,
         offset,
-      }), includeSummary ? getInvoiceDashboardSummary(organizationId) : Promise.resolve(null)]);
+        includeSummary,
+      });
+      const summary = includeSummary ? invoicePage.summary ?? null : null;
       const rows = invoicePage.items;
 
       const invoiceIds = rows.map((row) => row.id);

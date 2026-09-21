@@ -1,4 +1,4 @@
-import { hasExplicitInvoiceListFilters, normalizeInvoiceListDiscreteFilter, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
+import { hasExplicitInvoiceListFilters, normalizeInvoiceListCustomerIds, normalizeInvoiceListDiscreteFilter, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState } from "@/lib/invoiceListUrlState";
 
 describe("Invoice list URL state", () => {
   it.each([
@@ -99,6 +99,19 @@ describe("Invoice list URL state", () => {
     }, true);
     expect(next.toString()).toBe("accountingApproval=approved&sendStatus=never_sent%2Cupdated_after_sent&status=unpaid%2Cpartially_paid");
     expect(normalizeInvoiceListDiscreteFilter("never_sent,,updated_after_sent,never_sent")).toBe("never_sent,updated_after_sent");
+  });
+
+  it("keeps legacy single-customer and job-status URLs while canonicalizing multi-customer CSV selections", () => {
+    expect(parseInvoiceListUrlState(new URLSearchParams("customerId=legacy-customer&excludeCustomerId=legacy-exclude&jobStatus=open"))).toMatchObject({
+      customerId: "legacy-customer", columnFilters: { excludeCustomerId: "legacy-exclude", jobStatus: "open" },
+    });
+    expect(parseInvoiceListUrlState(new URLSearchParams("jobStatus=complete"))).toMatchObject({ columnFilters: { jobStatus: "complete" } });
+    const next = updateInvoiceListUrlState(new URLSearchParams("page=2"), {
+      customerIds: "customer-z,customer-a,customer-z",
+      excludeCustomerIds: "customer-d,customer-b,customer-d",
+    }, true);
+    expect(next.toString()).toBe("customerIds=customer-a%2Ccustomer-z&excludeCustomerIds=customer-b%2Ccustomer-d");
+    expect(normalizeInvoiceListCustomerIds("customer-z,,customer-a,customer-z")).toBe("customer-a,customer-z");
   });
 
   it("recognizes explicit filter and drilldown parameters without treating search, paging, or sort as sticky-filter overrides", () => {
