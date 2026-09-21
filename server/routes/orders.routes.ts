@@ -348,7 +348,7 @@ function assertInternalStaffUser(req: any, res: any): boolean {
  * Prerequisite jobs are voided (never marked normally complete) and both the
  * event stream and audit log retain the exact stages that were bypassed.
  */
-async function bypassOrderProductionPrerequisites(tx: any, args: {
+export async function bypassOrderProductionPrerequisites(tx: any, args: {
     organizationId: string;
     orderId: string;
     line: any;
@@ -359,6 +359,8 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
     closeJobOverride?: boolean;
     sourceInvoiceId?: string | null;
     productionBootstrap?: boolean;
+    /** Present only for the narrowly-scoped historical terminal-parent repair. */
+    historicalRepairEvidence?: { eventId: string; auditId: string } | null;
 }) {
     const now = new Date();
     const source = args.closeJobOverride
@@ -480,6 +482,7 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
             source,
             bypassedStages: args.bypassedStages,
             routingReason: "order_complete_production_override",
+            historicalRepairEvidence: args.historicalRepairEvidence ?? null,
         },
     });
 
@@ -497,6 +500,7 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
             bypassedStages: args.bypassedStages,
             actorUserId: args.actorUserId,
             bypassedAt: now.toISOString(),
+            historicalRepairEvidence: args.historicalRepairEvidence ?? null,
         },
     });
 
@@ -523,6 +527,7 @@ async function bypassOrderProductionPrerequisites(tx: any, args: {
             prerequisiteJobId: activeJob?.id ?? null,
             productionBootstrap: args.productionBootstrap === true,
             sourceInvoiceId: args.sourceInvoiceId ?? null,
+            historicalRepairEvidence: args.historicalRepairEvidence ?? null,
         },
     } as any);
 

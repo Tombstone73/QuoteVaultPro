@@ -319,6 +319,13 @@ export async function completeProductionJobWorkflow(
       source: "order_complete_production_override" | "close_job_override_production_bootstrap";
       bypassedPrerequisites: string[];
     } | null;
+    /**
+     * Used only by the UUID-targeted historical Close Job repair. That service
+     * proves the terminal parent and legacy evidence before it calls this
+     * canonical job workflow; ordinary callers must continue to pass through
+     * the active-parent gate below.
+     */
+    historicalTerminalRepair?: { orderId: string };
     auditUserName?: string | null;
     ipAddress?: string | null;
     userAgent?: string | null;
@@ -340,6 +347,9 @@ export async function completeProductionJobWorkflow(
     .limit(1);
   const job = jobRows[0];
   if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+  if (args.historicalTerminalRepair && job.orderId !== args.historicalTerminalRepair.orderId) {
+    throw Object.assign(new Error("Historical terminal repair may only complete a job owned by its UUID-targeted parent."), { statusCode: 409 });
+  }
   if (job.status === "done") return job;
   if (isTerminalProductionStatus(job.status)) {
     throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
@@ -371,11 +381,13 @@ export async function completeProductionJobWorkflow(
     ), { statusCode: 409 });
   }
 
-  await assertParentOrderInProductionForJob(tx, {
-    organizationId: args.organizationId,
-    job,
-    action: "complete production job",
-  });
+  if (!args.historicalTerminalRepair) {
+    await assertParentOrderInProductionForJob(tx, {
+      organizationId: args.organizationId,
+      job,
+      action: "complete production job",
+    });
+  }
 
   if (job.status === "queued" && !effectiveSkipProduction) {
     throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
@@ -537,12 +549,14 @@ export async function completeProductionJobWorkflow(
               },
             });
 
-            await markOrderReadyForFulfillmentIfProductionComplete(tx, {
-              organizationId: args.organizationId,
-              orderId: job.orderId,
-              actorUserId: args.userId,
-              productionJobId: args.jobId,
-            });
+            if (!args.historicalTerminalRepair) {
+              await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+                organizationId: args.organizationId,
+                orderId: job.orderId,
+                actorUserId: args.userId,
+                productionJobId: args.jobId,
+              });
+            }
           }
         } catch (routeErr: any) {
           throw Object.assign(
