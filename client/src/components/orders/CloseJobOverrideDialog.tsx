@@ -80,7 +80,11 @@ export function canCloseJobOverride(input: {
 }, isAdminOrOwner: boolean) {
   if (!isAdminOrOwner || !input.orderId) return false;
   if (terminalOrderStates.has(String(input.orderState || "").toLowerCase())) return false;
-  return !terminalFulfillmentStates.has(String(input.orderFulfillmentStatus || "").toLowerCase());
+  // A legacy parent can claim terminal fulfillment while its canonical line
+  // obligations remain open. Keep the exception available so an administrator
+  // can explicitly reconcile that inconsistency; the live preview disables it
+  // when no operational quantity remains.
+  return true;
 }
 
 export function CloseJobOverrideDialog({ target, onOpenChange }: {

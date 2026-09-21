@@ -6043,6 +6043,31 @@ export type InsertFulfillmentChecklistItem = z.infer<typeof insertFulfillmentChe
 export type FulfillmentChecklistItem = typeof fulfillmentChecklistItems.$inferSelect;
 
 /**
+ * Administrative reconciliation is deliberately separate from physical
+ * shipment and pickup evidence.  A Close Job Override consumes an operational
+ * obligation, but must never make a historical shipment or handoff appear to
+ * have happened.
+ */
+export const fulfillmentAdministrativeReconciliations = pgTable("fulfillment_administrative_reconciliations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  reconciledQuantity: integer("reconciled_quantity").notNull(),
+  source: varchar("source", { length: 80 }).notNull().default("close_job_override"),
+  reason: varchar("reason", { length: 80 }).notNull(),
+  note: text("note"),
+  sourceInvoiceId: varchar("source_invoice_id"),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("fulfillment_admin_reconciliation_org_order_idx").on(table.organizationId, table.orderId, table.createdAt),
+  index("fulfillment_admin_reconciliation_org_line_idx").on(table.organizationId, table.lineItemId),
+]);
+
+export type FulfillmentAdministrativeReconciliation = typeof fulfillmentAdministrativeReconciliations.$inferSelect;
+
+/**
  * Fulfillment-owned physical availability. This is deliberately mutable state:
  * immutable shipment and pickup handoff records remain the source of truth for
  * what left the building.

@@ -14,8 +14,9 @@ test('historical fulfillment reconciliation uses canonical quantities without te
   );
 
   expect(reconciliation).toContain('productionCompleteQuantity < line.projection.orderedQuantity');
-  expect(reconciliation).toContain('fulfilledQuantity: line.projection.productionCompleteQuantity');
-  expect(reconciliation).toContain('administrativeReconciliation: true');
+  expect(reconciliation).toContain('reconcileAdministrativeFulfillment');
+  expect(reconciliation).toContain('administrativelyReconciledQuantity');
+  expect(reconciliation).toContain("shipmentOrPickupEvidenceCreated: false");
   expect(reconciliation).toContain("fulfillmentStatus: 'delivered'");
   expect(reconciliation).toContain("eventType: 'FULFILLMENT_HISTORICAL_RECONCILED'");
   expect(reconciliation).toContain("source: 'administrative_historical_reconciliation'");

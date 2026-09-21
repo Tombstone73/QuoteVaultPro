@@ -115,7 +115,7 @@ export class FulfillmentService {
       0,
     );
     const remainingFulfillmentQuantity = physicalLines.reduce(
-      (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.fulfilledQuantity),
+      (total, line) => total + line.projection.remainingQuantity,
       0,
     );
     const [productionLines, productionJobRows] = await Promise.all([
@@ -170,7 +170,7 @@ export class FulfillmentService {
       // reconciliation itself. Do not make the dialog choose a different
       // answer from a possibly stale aggregate Order state.
       productionComplete: remainingProductionQuantity === 0,
-      alreadyOperationallyComplete: ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase()),
+      alreadyOperationallyComplete: remainingFulfillmentQuantity === 0,
     };
   }
 
@@ -203,13 +203,11 @@ export class FulfillmentService {
 
     if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
     if (isCanceledOrder(order)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
-    if (['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
-      return { alreadyCompleted: true, remainingFulfillmentQuantity: 0 };
-    }
 
-    // Preflight every physical line before writing any checklist state. The
-    // dashboard projection is the same production/fulfillment quantity source
-    // used by normal fulfillment operations.
+    // The projection is authoritative even when a legacy parent status says
+    // delivered. That lets an explicit Close Job Override repair the exact
+    // historical contradiction it was created for, without treating a parent
+    // badge as physical fulfillment evidence.
     const eligibleLines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [input.orderId] }))
       .filter((line) => line.projection.requiresFulfillment);
     const incompleteProduction = eligibleLines.find((line) =>
@@ -219,31 +217,15 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(409, 'Every physical line must be production-complete before historical fulfillment can be reconciled.', 'PRODUCTION_NOT_COMPLETE');
     }
 
-    const remainingFulfillmentQuantity = eligibleLines.reduce(
-      (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.fulfilledQuantity),
-      0,
-    );
+    const remainingFulfillmentQuantity = eligibleLines.reduce((total, line) => total + line.projection.remainingQuantity, 0);
+    if (remainingFulfillmentQuantity === 0) return { alreadyCompleted: true, remainingFulfillmentQuantity: 0 };
     const reconciliationNote = [
       'Administrative historical fulfillment reconciliation.',
       input.note?.trim() || null,
     ].filter(Boolean).join(' ');
 
-    for (const line of eligibleLines) {
-      const result = await this.dashboardRepo.updateChecklistItem(orgId, input.orderId, line.id, {
-        checked: true,
-        fulfilledQuantity: line.projection.productionCompleteQuantity,
-        administrativeReconciliation: true,
-      }, input.actorUserId);
-      if (!result.ok) throw new FulfillmentHttpError(409, result.message, result.code);
-    }
-
-    if (eligibleLines.length > 0) {
-      const checklist = await this.dashboardRepo.assertOrderChecklistComplete(orgId, input.orderId);
-      if (!checklist.ok) throw new FulfillmentHttpError(409, checklist.message, checklist.code);
-    }
-
     const now = new Date();
-    const safeActorUserId = await resolveExistingActorUserId(this.dbInstance, input.actorUserId);
+    let reconciliation: { allocations: Array<{ lineItemId: string; quantity: number }>; remainingQuantity: number; physicallyFulfilledQuantity: number; administrativelyReconciledQuantity: number } | null = null;
     await this.dbInstance.transaction(async (tx) => {
       const [lockedOrder] = await tx
         .select({ state: orders.state, status: orders.status, canceledAt: orders.canceledAt, fulfillmentStatus: orders.fulfillmentStatus, routingTarget: orders.routingTarget })
@@ -253,6 +235,19 @@ export class FulfillmentService {
         .limit(1);
       if (!lockedOrder) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
       if (isCanceledOrder(lockedOrder)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
+      const result = await this.dashboardRepo.reconcileAdministrativeFulfillment(orgId, {
+        orderId: input.orderId,
+        actorUserId: input.actorUserId,
+        reason: input.reason,
+        note: input.note,
+        sourceInvoiceId: input.sourceInvoiceId,
+      }, tx as any);
+      if (!result.ok) throw new FulfillmentHttpError(409, result.message, result.code);
+      if (result.remainingQuantity !== 0) {
+        throw new FulfillmentHttpError(409, 'Administrative fulfillment did not reconcile every remaining operational obligation.', 'FULFILLMENT_RECONCILIATION_INCOMPLETE');
+      }
+      reconciliation = result;
+      const safeActorUserId = await resolveExistingActorUserId(tx, input.actorUserId);
       await tx.update(orders).set({
         fulfillmentStatus: 'delivered',
         routingTarget: null,
@@ -270,6 +265,9 @@ export class FulfillmentService {
           note: input.note?.trim() || null,
           sourceInvoiceId: input.sourceInvoiceId ?? null,
           remainingFulfillmentQuantity,
+          administrativelyReconciledQuantity: result.administrativelyReconciledQuantity,
+          physicallyFulfilledQuantity: result.physicallyFulfilledQuantity,
+          allocations: result.allocations,
           reconciliationTimestamp: now.toISOString(),
           shipmentOrPickupEvidenceCreated: false,
           billingAutomationSuppressed: true,
@@ -299,6 +297,9 @@ export class FulfillmentService {
           reason: input.reason,
           note: input.note?.trim() || null,
           remainingFulfillmentQuantity,
+          administrativelyReconciledQuantity: result.administrativelyReconciledQuantity,
+          physicallyFulfilledQuantity: result.physicallyFulfilledQuantity,
+          allocations: result.allocations,
           source: 'administrative_historical_reconciliation',
           sourceInvoiceId: input.sourceInvoiceId ?? null,
           shipmentOrPickupEvidenceCreated: false,
@@ -310,7 +311,7 @@ export class FulfillmentService {
     await this.reconcileOrderAutoCloseAfterFulfillment(orgId, input.orderId, input.actorUserId, 'historical_fulfillment_reconciliation', {
       sourceInvoiceId: input.sourceInvoiceId ?? null,
     });
-    return { alreadyCompleted: false, remainingFulfillmentQuantity, reconciliationNote };
+    return { alreadyCompleted: false, remainingFulfillmentQuantity, reconciliationNote, ...reconciliation };
   }
 
   private isOrderProductionComplete(order: {

@@ -105,6 +105,42 @@ describe("canonical fulfillment quantity projection", () => {
     expect(line).toMatchObject({ readyWaitingQuantity: 40, notReadyQuantity: 0, remainingQuantity: 40, status: "ready" });
   });
 
+  test("Close Job Override reconciles a pickup obligation without fabricating pickup evidence", () => {
+    const line = resolveFulfillmentLineQuantity({
+      workflowIntent: "fulfillment_only", orderedQuantity: 3,
+      pickedUpQuantity: 0, administrativelyReconciledQuantity: 3,
+    });
+    expect(line).toMatchObject({
+      pickedUpQuantity: 0,
+      fulfilledQuantity: 0,
+      administrativelyReconciledQuantity: 3,
+      operationallyFulfilledQuantity: 3,
+      remainingQuantity: 0,
+    });
+  });
+
+  test("preserves partial shipment history when the rest is administratively reconciled", () => {
+    const line = resolveFulfillmentLineQuantity({
+      workflowIntent: "fulfillment_only", orderedQuantity: 10,
+      shippedQuantity: 4, administrativelyReconciledQuantity: 6,
+    });
+    expect(line).toMatchObject({
+      shippedQuantity: 4,
+      fulfilledQuantity: 4,
+      administrativelyReconciledQuantity: 6,
+      operationallyFulfilledQuantity: 10,
+      remainingQuantity: 0,
+    });
+  });
+
+  test("caps administrative evidence at the operational remainder and never makes remaining negative", () => {
+    const line = resolveFulfillmentLineQuantity({
+      workflowIntent: "fulfillment_only", orderedQuantity: 10,
+      shippedQuantity: 4, administrativelyReconciledQuantity: 99,
+    });
+    expect(line).toMatchObject({ administrativelyReconciledQuantity: 6, remainingQuantity: 0 });
+  });
+
   test("summarizes mixed readiness independently from queue visibility", () => {
     const summary = summarizeFulfillmentOrderQuantities([
       resolveFulfillmentLineQuantity({ workflowIntent: "fulfillment_only", orderedQuantity: 1, readyWaitingQuantity: 1 }),

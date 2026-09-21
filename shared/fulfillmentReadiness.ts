@@ -25,6 +25,10 @@ export type FulfillmentLineQuantityProjection = {
   productionCompleteQuantity: number;
   /** All terminal physical handoffs, across shipment and pickup. */
   fulfilledQuantity: number;
+  /** Explicit administrative closure, never physical shipment/pickup evidence. */
+  administrativelyReconciledQuantity: number;
+  /** Physical plus administrative quantities that no longer require operations. */
+  operationallyFulfilledQuantity: number;
   /** Retained for API compatibility; shipped is only one fulfillment channel. */
   shippedQuantity: number;
   pickedUpQuantity: number;
@@ -45,6 +49,8 @@ export type FulfillmentOrderQuantitySummary = {
   orderedQuantity: number;
   productionCompleteQuantity: number;
   fulfilledQuantity: number;
+  administrativelyReconciledQuantity: number;
+  operationallyFulfilledQuantity: number;
   eligibleQuantity: number;
   blockedQuantity: number;
   shippedQuantity: number;
@@ -112,13 +118,19 @@ export function resolveFulfillmentLineQuantity(input: {
   productionCompleteQuantity?: number | null;
   shippedQuantity?: number | null;
   pickedUpQuantity?: number | null;
+  administrativelyReconciledQuantity?: number | null;
   readyWaitingQuantity?: number | null;
 }): FulfillmentLineQuantityProjection {
   const orderedQuantity = quantity(input.orderedQuantity);
   const shippedQuantity = Math.min(orderedQuantity, quantity(input.shippedQuantity));
   const pickedUpQuantity = Math.min(Math.max(0, orderedQuantity - shippedQuantity), quantity(input.pickedUpQuantity));
   const fulfilledQuantity = Math.min(orderedQuantity, shippedQuantity + pickedUpQuantity);
-  const remainingQuantity = Math.max(0, orderedQuantity - fulfilledQuantity);
+  const administrativelyReconciledQuantity = Math.min(
+    Math.max(0, orderedQuantity - fulfilledQuantity),
+    quantity(input.administrativelyReconciledQuantity),
+  );
+  const operationallyFulfilledQuantity = fulfilledQuantity + administrativelyReconciledQuantity;
+  const remainingQuantity = Math.max(0, orderedQuantity - operationallyFulfilledQuantity);
   const workflowIntent = normalize(input.workflowIntent);
   const role = normalize(input.lineItemRole);
   const cancelled = [normalize(input.workflowState), normalize(input.lifecycleStatus)].some((value) => value === "canceled" || value === "cancelled");
@@ -139,6 +151,8 @@ export function resolveFulfillmentLineQuantity(input: {
       orderedQuantity,
       productionCompleteQuantity: 0,
       fulfilledQuantity,
+      administrativelyReconciledQuantity,
+      operationallyFulfilledQuantity,
       shippedQuantity,
       pickedUpQuantity,
       readyWaitingQuantity: 0,
@@ -191,6 +205,8 @@ export function resolveFulfillmentLineQuantity(input: {
     orderedQuantity,
     productionCompleteQuantity,
     fulfilledQuantity,
+    administrativelyReconciledQuantity,
+    operationallyFulfilledQuantity,
     shippedQuantity,
     pickedUpQuantity,
     readyWaitingQuantity,
@@ -210,6 +226,8 @@ export function summarizeFulfillmentOrderQuantities(
   const orderedQuantity = sum("orderedQuantity");
   const productionCompleteQuantity = sum("productionCompleteQuantity");
   const fulfilledQuantity = sum("fulfilledQuantity");
+  const administrativelyReconciledQuantity = sum("administrativelyReconciledQuantity");
+  const operationallyFulfilledQuantity = sum("operationallyFulfilledQuantity");
   const eligibleQuantity = sum("eligibleQuantity");
   const blockedQuantity = sum("blockedQuantity");
   const shippedQuantity = sum("shippedQuantity");
@@ -231,6 +249,8 @@ export function summarizeFulfillmentOrderQuantities(
     orderedQuantity,
     productionCompleteQuantity,
     fulfilledQuantity,
+    administrativelyReconciledQuantity,
+    operationallyFulfilledQuantity,
     eligibleQuantity,
     blockedQuantity,
     shippedQuantity,

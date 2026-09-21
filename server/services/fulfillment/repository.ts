@@ -2,6 +2,7 @@ import { and, desc, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from '
 import { db } from '../../db';
 import {
   customers,
+  fulfillmentAdministrativeReconciliations,
   fulfillmentChecklistItems,
   fulfillmentEvents,
   fulfillmentReadyQuantities,
@@ -1086,22 +1087,27 @@ export class PickupRepo {
         return { ok: false as const, code: 'INVALID_HANDOFF_ITEMS', message: 'Pickup handoff items must be positive quantities from this order.' };
       }
       const ids = lines.map((line) => line.id);
-      const [shippedRows, pickedRows] = await Promise.all([
+      const [shippedRows, pickedRows, administrativeRows] = await Promise.all([
         tx.select({ id: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
           .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
           .where(and(eq(shipmentItems.organizationId, orgId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'), inArray(shipmentItems.orderLineItemId, ids))).groupBy(shipmentItems.orderLineItemId),
         tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
           .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
           .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, ids))).groupBy(pickupHandoffItems.orderLineItemId),
+        tx.select({ id: fulfillmentAdministrativeReconciliations.lineItemId, quantity: sql<number>`COALESCE(SUM(${fulfillmentAdministrativeReconciliations.reconciledQuantity}), 0)::int` })
+          .from(fulfillmentAdministrativeReconciliations)
+          .where(and(eq(fulfillmentAdministrativeReconciliations.organizationId, orgId), inArray(fulfillmentAdministrativeReconciliations.lineItemId, ids))).groupBy(fulfillmentAdministrativeReconciliations.lineItemId),
       ]);
       const reversalQuantities = await readTerminalReversalQuantities(tx, orgId, ids);
       const reversedShipment = reversalQuantities.shipment;
       const reversedPickup = reversalQuantities.pickup;
       const shipped = new Map(shippedRows.map((row) => [row.id, Math.max(0, Number(row.quantity || 0) - (reversedShipment.get(row.id) ?? 0))]));
       const picked = new Map(pickedRows.map((row) => [row.id, Math.max(0, Number(row.quantity || 0) - (reversedPickup.get(row.id) ?? 0))]));
+      const administrativelyReconciled = new Map(administrativeRows.map((row) => [row.id, Number(row.quantity || 0)]));
       const projections = lines.map((line) => resolveFulfillmentLineQuantity({
         ...line, orderedQuantity: Number(line.quantity || 0),
         shippedQuantity: shipped.get(line.id) ?? 0, pickedUpQuantity: picked.get(line.id) ?? 0,
+        administrativelyReconciledQuantity: administrativelyReconciled.get(line.id) ?? 0,
       }));
       for (const [lineItemId, handoffQuantity] of Array.from(requested.entries())) {
         const projection = projections[lines.findIndex((line) => line.id === lineItemId)];
@@ -1284,7 +1290,7 @@ export class FulfillmentDashboardRepo {
     });
   }
 
-  async listLineEligibility(orgId: string, input: { orderIds?: string[]; lineItemIds?: string[] }): Promise<FulfillmentLineEligibilityRecord[]> {
+  async listLineEligibility(orgId: string, input: { orderIds?: string[]; lineItemIds?: string[] }, executor: DbExecutor = this.dbInstance): Promise<FulfillmentLineEligibilityRecord[]> {
     const orderIds = Array.from(new Set(input.orderIds ?? [])).filter(Boolean);
     const lineItemIds = Array.from(new Set(input.lineItemIds ?? [])).filter(Boolean);
     if (orderIds.length === 0 && lineItemIds.length === 0) return [];
@@ -1292,7 +1298,7 @@ export class FulfillmentDashboardRepo {
     const scope = orderIds.length > 0
       ? inArray(orderLineItems.orderId, orderIds)
       : inArray(orderLineItems.id, lineItemIds);
-    const lines = await this.dbInstance.select({
+    const lines = await executor.select({
       id: orderLineItems.id,
       orderId: orderLineItems.orderId,
       quantity: orderLineItems.quantity,
@@ -1309,13 +1315,13 @@ export class FulfillmentDashboardRepo {
     if (lines.length === 0) return [];
 
     const ids = lines.map((line) => line.id);
-    const [owners, producedRows, shippedRows, pickedUpRows, readyRows] = await Promise.all([
-      resolveActiveProductionOwners(this.dbInstance, {
+    const [owners, producedRows, shippedRows, pickedUpRows, readyRows, administrativeRows] = await Promise.all([
+      resolveActiveProductionOwners(executor, {
         organizationId: orgId,
         lineItemIds: ids,
         debugLabel: 'FulfillmentDashboardRepo.listLineEligibility',
       }),
-      this.dbInstance.select({
+      executor.select({
         lineItemId: productionRunMembers.orderLineItemId,
         quantity: sql<number>`COALESCE(SUM(${productionRunMembers.successfulQuantity}), 0)::int`,
       }).from(productionRunMembers)
@@ -1327,7 +1333,7 @@ export class FulfillmentDashboardRepo {
           notInArray(productionRuns.status, ['cancelled', 'canceled'] as any),
         ))
         .groupBy(productionRunMembers.orderLineItemId),
-      this.dbInstance.select({
+      executor.select({
         lineItemId: shipmentItems.orderLineItemId,
         quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
       }).from(shipmentItems)
@@ -1339,7 +1345,7 @@ export class FulfillmentDashboardRepo {
           inArray(shipmentItems.orderLineItemId, ids),
         ))
         .groupBy(shipmentItems.orderLineItemId),
-      this.dbInstance.select({
+      executor.select({
         lineItemId: pickupHandoffItems.orderLineItemId,
         quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int`,
       }).from(pickupHandoffItems)
@@ -1350,21 +1356,29 @@ export class FulfillmentDashboardRepo {
           inArray(pickupHandoffItems.orderLineItemId, ids),
         ))
         .groupBy(pickupHandoffItems.orderLineItemId),
-      this.dbInstance.select({
+      executor.select({
         lineItemId: fulfillmentReadyQuantities.orderLineItemId,
         quantity: fulfillmentReadyQuantities.readyWaitingQuantity,
       }).from(fulfillmentReadyQuantities).where(and(
         eq(fulfillmentReadyQuantities.organizationId, orgId),
         inArray(fulfillmentReadyQuantities.orderLineItemId, ids),
       )),
+      executor.select({
+        lineItemId: fulfillmentAdministrativeReconciliations.lineItemId,
+        quantity: sql<number>`COALESCE(SUM(${fulfillmentAdministrativeReconciliations.reconciledQuantity}), 0)::int`,
+      }).from(fulfillmentAdministrativeReconciliations).where(and(
+        eq(fulfillmentAdministrativeReconciliations.organizationId, orgId),
+        inArray(fulfillmentAdministrativeReconciliations.lineItemId, ids),
+      )).groupBy(fulfillmentAdministrativeReconciliations.lineItemId),
     ]);
-    const reversalQuantities = await readTerminalReversalQuantities(this.dbInstance, orgId, ids);
+    const reversalQuantities = await readTerminalReversalQuantities(executor, orgId, ids);
     const producedByLine = new Map(producedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
     const reversedShipmentByLine = reversalQuantities.shipment;
     const reversedPickupByLine = reversalQuantities.pickup;
     const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversedShipmentByLine.get(row.lineItemId) ?? 0)]));
     const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversedPickupByLine.get(row.lineItemId) ?? 0)]));
     const readyByLine = new Map(readyRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+    const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
 
     return lines.map((line) => {
       const owner = owners.get(line.id);
@@ -1385,10 +1399,64 @@ export class FulfillmentDashboardRepo {
           productionCompleteQuantity: producedByLine.get(line.id) ?? 0,
           shippedQuantity: shippedByLine.get(line.id) ?? 0,
           pickedUpQuantity: pickedUpByLine.get(line.id) ?? 0,
+          administrativelyReconciledQuantity: administrativelyReconciledByLine.get(line.id) ?? 0,
           readyWaitingQuantity: readyByLine.get(line.id) ?? 0,
         }),
       };
     });
+  }
+
+  /**
+   * Atomically records the administrative part of a Close Job Override. The
+   * row is a durable operational fact, not a substitute for a shipment or
+   * pickup handoff. Passing the transaction from the service keeps the parent
+   * status, evidence, event, and audit in one commit.
+   */
+  async reconcileAdministrativeFulfillment(orgId: string, input: {
+    orderId: string;
+    actorUserId?: string | null;
+    reason: string;
+    note?: string | null;
+    sourceInvoiceId?: string | null;
+  }, executor: DbExecutor) {
+    await executor.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${input.orderId} FOR UPDATE`);
+    const before = (await this.listLineEligibility(orgId, { orderIds: [input.orderId] }, executor))
+      .filter((line) => line.projection.requiresFulfillment);
+    const incompleteProduction = before.find((line) =>
+      line.projection.productionCompleteQuantity < line.projection.orderedQuantity,
+    );
+    if (incompleteProduction) {
+      return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Every physical line must be production-complete before administrative fulfillment can be reconciled.' };
+    }
+
+    const allocations = before
+      .map((line) => ({ lineItemId: line.id, quantity: line.projection.remainingQuantity }))
+      .filter((allocation) => allocation.quantity > 0);
+    const safeActorUserId = await resolveExistingActorUserId(executor, input.actorUserId);
+    if (allocations.length > 0) {
+      await executor.insert(fulfillmentAdministrativeReconciliations).values(allocations.map((allocation) => ({
+        organizationId: orgId,
+        orderId: input.orderId,
+        lineItemId: allocation.lineItemId,
+        reconciledQuantity: allocation.quantity,
+        source: 'close_job_override',
+        reason: input.reason,
+        note: input.note?.trim() || null,
+        sourceInvoiceId: input.sourceInvoiceId ?? null,
+        actorUserId: safeActorUserId,
+      })));
+    }
+
+    const after = (await this.listLineEligibility(orgId, { orderIds: [input.orderId] }, executor))
+      .filter((line) => line.projection.requiresFulfillment);
+    const remainingQuantity = after.reduce((total, line) => total + line.projection.remainingQuantity, 0);
+    return {
+      ok: true as const,
+      allocations,
+      remainingQuantity,
+      physicallyFulfilledQuantity: after.reduce((total, line) => total + line.projection.fulfilledQuantity, 0),
+      administrativelyReconciledQuantity: after.reduce((total, line) => total + line.projection.administrativelyReconciledQuantity, 0),
+    };
   }
 
   /** Adjust Fulfillment's mutable ready pool. Handoffs and shipments are
@@ -1420,7 +1488,7 @@ export class FulfillmentDashboardRepo {
       }
 
       const lineIds = lines.map((line) => line.id);
-      const [readyRows, shippedRows, pickedRows] = await Promise.all([
+      const [readyRows, shippedRows, pickedRows, administrativeRows] = await Promise.all([
         tx.select().from(fulfillmentReadyQuantities).where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderId, orderId))),
         tx.select({ lineItemId: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
           .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
@@ -1428,6 +1496,9 @@ export class FulfillmentDashboardRepo {
         tx.select({ lineItemId: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
           .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
           .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineIds))).groupBy(pickupHandoffItems.orderLineItemId),
+        tx.select({ lineItemId: fulfillmentAdministrativeReconciliations.lineItemId, quantity: sql<number>`COALESCE(SUM(${fulfillmentAdministrativeReconciliations.reconciledQuantity}), 0)::int` })
+          .from(fulfillmentAdministrativeReconciliations)
+          .where(and(eq(fulfillmentAdministrativeReconciliations.organizationId, orgId), inArray(fulfillmentAdministrativeReconciliations.lineItemId, lineIds))).groupBy(fulfillmentAdministrativeReconciliations.lineItemId),
       ]);
       const readyByLine = new Map(readyRows.map((row) => [row.orderLineItemId, Number(row.readyWaitingQuantity || 0)]));
       const reversalQuantities = await readTerminalReversalQuantities(tx, orgId, lineIds);
@@ -1435,11 +1506,12 @@ export class FulfillmentDashboardRepo {
       const reversedPickupByLine = reversalQuantities.pickup;
       const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedShipmentByLine.get(row.lineItemId) ?? 0))]));
       const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedPickupByLine.get(row.lineItemId) ?? 0))]));
+      const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
       const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number }> = [];
       for (const [lineItemId, quantityDelta] of requested) {
         const line = lineById.get(lineItemId)!;
         const current = readyByLine.get(lineItemId) ?? 0;
-        const fulfilled = (shippedByLine.get(lineItemId) ?? 0) + (pickedByLine.get(lineItemId) ?? 0);
+        const fulfilled = (shippedByLine.get(lineItemId) ?? 0) + (pickedByLine.get(lineItemId) ?? 0) + (administrativelyReconciledByLine.get(lineItemId) ?? 0);
         const next = current + quantityDelta;
         const remaining = Math.max(0, Number(line.quantity || 0) - fulfilled);
         if (next < 0) return { ok: false as const, code: 'QTY_BELOW_FULFILLED', message: 'Cannot un-ready quantity that has already been picked up or shipped.' };
@@ -1684,11 +1756,16 @@ export class FulfillmentDashboardRepo {
     const rows: QueueRowDto[] = [];
 
     for (const order of orderRows) {
+      if (!isFulfillmentQueueEligibleOrder(order)) continue;
       const quantitySummary = quantitySummaryByOrder.get(order.id) ?? summarizeFulfillmentOrderQuantities([]);
       if (quantitySummary.physicalLineCount === 0) continue;
       const orderedQty = quantitySummary.orderedQuantity;
       const shippedQty = quantitySummary.shippedQuantity;
       const remaining = quantitySummary.remainingQuantity;
+      // This is the active operational queue. Fully physical and explicitly
+      // administratively reconciled obligations belong in their audit records,
+      // not in Fulfillment as open jobs.
+      if (remaining <= 0) continue;
 
       const isPickup = order.shippingMethod === 'pickup';
       if (filters.type === 'ship' && isPickup) continue;
@@ -1830,6 +1907,58 @@ export class FulfillmentDashboardRepo {
       page: 1, pageSize: 10_000, sortBy: 'createdAt', sortDirection: 'asc',
     });
     return result.rows.filter((row) => row.remainingQuantity > 0 && row.readyWaitingQuantity > 0).length;
+  }
+
+  /** Read-only integrity audit. It intentionally shares the quantity
+   * projection used by the active queue so it can detect legacy parent/child
+   * contradictions without changing historical data. */
+  async auditFulfillmentLifecycleIntegrity(orgId: string) {
+    const orderRows = await this.dbInstance.select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      state: orders.state,
+      status: orders.status,
+      canceledAt: orders.canceledAt,
+      fulfillmentStatus: orders.fulfillmentStatus,
+    }).from(orders).where(eq(orders.organizationId, orgId));
+    const orderIds = orderRows.map((order) => order.id);
+    const eligibilityRows = orderIds.length > 0 ? await this.listLineEligibility(orgId, { orderIds }) : [];
+    const projectionsByOrder = new Map<string, FulfillmentLineQuantityProjection[]>();
+    for (const line of eligibilityRows) {
+      const lines = projectionsByOrder.get(line.orderId) ?? [];
+      lines.push(line.projection);
+      projectionsByOrder.set(line.orderId, lines);
+    }
+    const summaries = orderRows.map((order) => ({
+      order,
+      quantities: summarizeFulfillmentOrderQuantities(projectionsByOrder.get(order.id) ?? []),
+    }));
+    const activeOrders = summaries.filter(({ order, quantities }) =>
+      isFulfillmentQueueEligibleOrder(order) && quantities.physicalLineCount > 0 && quantities.remainingQuantity > 0,
+    );
+    const terminalWithRemaining = summaries.filter(({ order, quantities }) => {
+      const terminalParent = ['closed', 'canceled', 'cancelled'].includes(cleanText(order.state).toLowerCase())
+        || ['shipped', 'delivered'].includes(cleanText(order.fulfillmentStatus).toLowerCase());
+      return terminalParent && quantities.remainingQuantity > 0;
+    });
+    const administrativeButOpen = summaries.filter(({ quantities }) =>
+      quantities.administrativelyReconciledQuantity > 0 && quantities.remainingQuantity > 0,
+    );
+    const duplicateActiveOrderIds = activeOrders
+      .map(({ order }) => order.id)
+      .filter((orderId, index, ids) => ids.indexOf(orderId) !== index);
+    return {
+      distinctActiveFulfillmentOrders: activeOrders.length,
+      underlyingActiveRows: activeOrders.length,
+      terminalWithRemaining,
+      terminalReturnedByActiveFulfillment: activeOrders.filter(({ order }) =>
+        ['closed', 'canceled', 'cancelled'].includes(cleanText(order.state).toLowerCase())
+        || ['shipped', 'delivered'].includes(cleanText(order.fulfillmentStatus).toLowerCase()),
+      ),
+      administrativeClosureWithRemaining: administrativeButOpen,
+      duplicateActiveOrderIds,
+      activeOrders,
+    };
   }
 
   async ensureChecklistItemsForOrder(orgId: string, orderId: string) {

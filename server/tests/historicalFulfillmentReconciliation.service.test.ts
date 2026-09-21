@@ -89,10 +89,16 @@ test("historical reconciliation completes fulfilled-only backlog without billing
         orderedQuantity: 2,
         productionCompleteQuantity: 2,
         fulfilledQuantity: 0,
+        remainingQuantity: 2,
       },
     }]),
-    updateChecklistItem: jest.fn(async () => ({ ok: true })),
-    assertOrderChecklistComplete: jest.fn(async () => ({ ok: true })),
+    reconcileAdministrativeFulfillment: jest.fn(async () => ({
+      ok: true,
+      allocations: [{ lineItemId: "line-1", quantity: 2 }],
+      remainingQuantity: 0,
+      physicallyFulfilledQuantity: 0,
+      administrativelyReconciledQuantity: 2,
+    })),
   };
   const billingAutomationService = {
     ensureOrderBackedInvoiceForOrderTrigger: jest.fn(async () => {
@@ -115,11 +121,9 @@ test("historical reconciliation completes fulfilled-only backlog without billing
     reason: "historical_backlog_cleanup",
   })).resolves.toMatchObject({ alreadyCompleted: false, remainingFulfillmentQuantity: 2 });
 
-  expect(dashboardRepo.updateChecklistItem).toHaveBeenCalledWith("org-1", "order-1", "line-1", {
-    checked: true,
-    fulfilledQuantity: 2,
-    administrativeReconciliation: true,
-  }, "session-user-1");
+  expect(dashboardRepo.reconcileAdministrativeFulfillment).toHaveBeenCalledWith("org-1", expect.objectContaining({
+    orderId: "order-1", reason: "historical_backlog_cleanup",
+  }), expect.anything());
   expect(orderUpdates).toEqual([expect.objectContaining({ fulfillmentStatus: "delivered", routingTarget: null })]);
   expect(events).toEqual([expect.objectContaining({
     eventType: "FULFILLMENT_HISTORICAL_RECONCILED",
@@ -157,6 +161,7 @@ test("historical reconciliation preview identifies a physical order that needs p
           orderedQuantity: 5,
           productionCompleteQuantity: 0,
           fulfilledQuantity: 0,
+          remainingQuantity: 5,
         },
       }]),
     } as any,
@@ -191,8 +196,8 @@ test("historical reconciliation preview requires bootstrap for an unowned line e
     dbInstance: fakeDb as any,
     dashboardRepo: {
       listLineEligibility: jest.fn(async () => [
-        { id: "line-active", orderId: "order-1", projection: { requiresFulfillment: true, orderedQuantity: 1, productionCompleteQuantity: 0, fulfilledQuantity: 0 } },
-        { id: "line-missing", orderId: "order-1", projection: { requiresFulfillment: true, orderedQuantity: 1, productionCompleteQuantity: 0, fulfilledQuantity: 0 } },
+        { id: "line-active", orderId: "order-1", projection: { requiresFulfillment: true, orderedQuantity: 1, productionCompleteQuantity: 0, fulfilledQuantity: 0, remainingQuantity: 1 } },
+        { id: "line-missing", orderId: "order-1", projection: { requiresFulfillment: true, orderedQuantity: 1, productionCompleteQuantity: 0, fulfilledQuantity: 0, remainingQuantity: 1 } },
       ]),
     } as any,
     shipmentRepo: {} as any,
