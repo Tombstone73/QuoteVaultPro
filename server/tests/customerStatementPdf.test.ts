@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { customerStatementPdfFilename, generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
+import { customerStatementPdfColumns, customerStatementPdfFilename, generateCustomerStatementPdfBytes, wrapCustomerStatementPdfText } from "../lib/customerStatementPdf";
 
 describe("customer statement PDF", () => {
   test("renders the same canonical open-balance projection used by statement delivery", async () => {
@@ -21,5 +21,22 @@ describe("customer statement PDF", () => {
       summary: { outstandingCents: 0, unappliedCreditCents: 0, amountDueCents: 0, agingCents: { current: 0, oneToThirty: 0, thirtyOneToSixty: 0, sixtyOneToNinety: 0, ninetyPlus: 0, noDueDate: 0 } },
       openItems: [], recentPayments: [], unappliedCredits: [],
     })).toBe("DG-Graphics-Statement-2026-09-20.pdf");
+  });
+});
+
+describe("customer statement PDF row layout", () => {
+  const measure = (value: string) => value.length * 4;
+
+  test("keeps short PO / Job details on one line and wraps long details within the defined column", () => {
+    expect(wrapCustomerStatementPdfText("PO-1 · Job ORD-20065", customerStatementPdfColumns.poJob.width, measure)).toEqual(["PO-1 · Job ORD-20065"]);
+    const lines = wrapCustomerStatementPdfText("Carmel Cheer Banners/Yard Signs + Cross Country Yard · Job ORD-20065", 120, measure);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.every((line) => measure(line) <= 120)).toBe(true);
+  });
+
+  test("uses non-overlapping fixed financial columns so wrapped text cannot cross into money", () => {
+    expect(customerStatementPdfColumns.poJob.x + customerStatementPdfColumns.poJob.width).toBeLessThanOrEqual(customerStatementPdfColumns.original.x);
+    expect(customerStatementPdfColumns.original.x + customerStatementPdfColumns.original.width).toBeLessThanOrEqual(customerStatementPdfColumns.paid.x);
+    expect(customerStatementPdfColumns.paid.x + customerStatementPdfColumns.paid.width).toBeLessThanOrEqual(customerStatementPdfColumns.balance.x);
   });
 });
