@@ -24,4 +24,15 @@ describe("CurrentCustomerStatement document actions", () => {
     expect(source).toContain("Queue Statement Email");
     expect(source).toContain("The exact statement shown now will be frozen and queued for delivery");
   });
+
+  test("keeps the canonical document actions visibly grouped and responsive", () => {
+    expect(source).toContain('data-testid="customer-statement-actions"');
+    expect(source).toContain("flex w-full flex-wrap justify-start gap-2");
+    expect(source).toContain("Print customer statement");
+    expect(source).toContain("Download customer statement PDF");
+    expect(source).toContain("Email customer statement");
+    expect(source).toContain("onClick={print}");
+    expect(source).toContain("onClick={download}");
+    expect(source).toContain("setEmailOpen(true)");
+  });
 });
