@@ -620,11 +620,31 @@ export type ClaimedBulkInvoiceEmailJob = {
   recipientEmail: string;
   attemptCount: number;
   maxAttempts: number;
-  createdAt: Date;
+  /**
+   * Jobs are claimed through a raw SQL query.  Depending on the PostgreSQL
+   * driver/runtime, that query can return a timestamp as either a Date or an
+   * ISO string even though Drizzle selects normally hydrate Date objects.
+   */
+  createdAt: Date | string;
   campaignId: string;
   claimedByWorkerId?: string;
   metadata?: InvoiceEmailDeliveryMetadata;
 };
+
+/**
+ * Convert a raw queue timestamp before using it in a Drizzle timestamp
+ * predicate. Passing a raw string to a timestamp column makes Drizzle call
+ * `value.toISOString()`, which prevents the worker from reaching the sender.
+ */
+export function normalizeInvoiceEmailQueueTimestamp(value: Date | string, field = "queue timestamp"): Date {
+  const normalized = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(normalized.getTime())) {
+    throw Object.assign(new Error(`Invalid ${field} on invoice email delivery job`), {
+      code: "INVALID_INVOICE_EMAIL_QUEUE_TIMESTAMP",
+    });
+  }
+  return normalized;
+}
 
 function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail: Record<string, unknown> = {}): void {
   console.log("[InvoiceEmailQueue]", {
@@ -823,6 +843,9 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
   logDeliveryStage(job, "job_claimed");
   const stopHeartbeat = beginClaimHeartbeat(job);
   try {
+  // The claim query is intentionally raw SQL for SKIP LOCKED. Normalize its
+  // timestamp result at this boundary before handing it to Drizzle below.
+  const queuedAt = normalizeInvoiceEmailQueueTimestamp(job.createdAt, "createdAt");
   const isStatement = job.deliveryType === "customer_statement";
   const senderAvailable = isStatement ? Boolean(canonicalCustomerStatementEmailSender) : Boolean(canonicalInvoiceEmailSender);
   if (!senderAvailable) {
@@ -845,14 +868,14 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       .from(customerStatementEmailLogs).where(and(
         eq(customerStatementEmailLogs.organizationId, job.organizationId),
         eq(customerStatementEmailLogs.statementSnapshotId, job.customerStatementSnapshotId || ""),
-        eq(customerStatementEmailLogs.status, "sent"), gte(customerStatementEmailLogs.sentAt, job.createdAt),
+        eq(customerStatementEmailLogs.status, "sent"), gte(customerStatementEmailLogs.sentAt, queuedAt),
         sql`lower(${customerStatementEmailLogs.recipientEmail}) = ${normalizeRecipient(job.recipientEmail)}`,
       )).limit(1);
   } else {
     [alreadySent] = await db.select({ id: invoiceEmailLogs.id, messageId: invoiceEmailLogs.messageId })
       .from(invoiceEmailLogs).where(and(
         eq(invoiceEmailLogs.organizationId, job.organizationId), eq(invoiceEmailLogs.invoiceId, job.invoiceId || ""),
-        eq(invoiceEmailLogs.status, "sent"), eq(invoiceEmailLogs.type, "invoice_send"), gte(invoiceEmailLogs.sentAt, job.createdAt),
+        eq(invoiceEmailLogs.status, "sent"), eq(invoiceEmailLogs.type, "invoice_send"), gte(invoiceEmailLogs.sentAt, queuedAt),
         sql`lower(${invoiceEmailLogs.recipientEmail}) = ${normalizeRecipient(job.recipientEmail)}`,
       )).limit(1);
   }

@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
+import { invoiceEmailLogs } from "../../shared/schema";
 
 const selectLimit = jest.fn();
 const selectWhere = jest.fn(() => ({ limit: selectLimit }));
@@ -15,9 +16,10 @@ let registerCanonicalInvoiceEmailSender: typeof import("../services/invoiceBulkE
 let registerCanonicalCustomerStatementEmailSender: typeof import("../services/invoiceBulkEmailQueue.service").registerCanonicalCustomerStatementEmailSender;
 let processClaimedBulkInvoiceEmailJob: typeof import("../services/invoiceBulkEmailQueue.service").processClaimedBulkInvoiceEmailJob;
 let recordInvoiceEmailDeliveryStage: typeof import("../services/invoiceBulkEmailQueue.service").recordInvoiceEmailDeliveryStage;
+let normalizeInvoiceEmailQueueTimestamp: typeof import("../services/invoiceBulkEmailQueue.service").normalizeInvoiceEmailQueueTimestamp;
 
 beforeAll(async () => {
-  ({ registerCanonicalInvoiceEmailSender, registerCanonicalCustomerStatementEmailSender, processClaimedBulkInvoiceEmailJob, recordInvoiceEmailDeliveryStage } = await import("../services/invoiceBulkEmailQueue.service"));
+  ({ registerCanonicalInvoiceEmailSender, registerCanonicalCustomerStatementEmailSender, processClaimedBulkInvoiceEmailJob, recordInvoiceEmailDeliveryStage, normalizeInvoiceEmailQueueTimestamp } = await import("../services/invoiceBulkEmailQueue.service"));
 });
 
 describe("bulk invoice email canonical sender boundary", () => {
@@ -56,6 +58,31 @@ describe("bulk invoice email canonical sender boundary", () => {
       deliveryJobId: "job-1",
     }));
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "sent", providerMessageId: "gmail-message-1" }));
+  });
+
+  test("normalizes a raw claimed timestamp before Drizzle checks durable send evidence", async () => {
+    // PostgreSQL raw SQL may return this as an ISO string. Drizzle's timestamp
+    // mapper requires a Date and otherwise throws `value.toISOString is not a
+    // function` before the canonical sender can run.
+    const queuedAt = normalizeInvoiceEmailQueueTimestamp("2026-09-20T21:01:00.000Z", "createdAt");
+    expect(queuedAt).toBeInstanceOf(Date);
+    expect((invoiceEmailLogs.sentAt as any).mapToDriverValue(queuedAt)).toBe("2026-09-20T21:01:00.000Z");
+
+    const canonicalSender = jest.fn(async () => ({ messageId: "gmail-message-from-raw-timestamp" }));
+    registerCanonicalInvoiceEmailSender(canonicalSender);
+
+    await expect(processClaimedBulkInvoiceEmailJob({
+      id: "job-raw-created-at",
+      organizationId: "org-1",
+      invoiceId: "invoice-1",
+      recipientEmail: "customer@example.test",
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: "2026-09-20T21:01:00.000Z",
+      campaignId: "campaign-raw-created-at",
+    })).resolves.toBe("sent");
+
+    expect(canonicalSender).toHaveBeenCalledTimes(1);
   });
 
   test("delivers a frozen customer statement through the same durable worker", async () => {
