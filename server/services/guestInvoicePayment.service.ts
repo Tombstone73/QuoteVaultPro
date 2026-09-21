@@ -29,14 +29,35 @@ export async function issueGuestInvoicePaymentToken(input: { organizationId: str
 }
 
 async function resolveGuestScope(rawToken: string): Promise<GuestScope | null> {
-  const [row] = await db.select({ token: invoiceGuestPaymentTokens, invoice: invoices, customer: customers })
+  // The token itself is the authority for this narrow guest surface: it is
+  // stored against a specific organization and invoice.  Do not require a
+  // currently joinable customer record here.  Older invoices can retain a
+  // valid canonical customer id after a merge/import cleanup has removed or
+  // replaced the original customer row; an INNER JOIN made those valid links
+  // indistinguishable from an expired token.
+  const [row] = await db.select({
+    token: invoiceGuestPaymentTokens,
+    invoice: invoices,
+    customer: customers,
+    canonicalCustomerId: canonicalInvoiceCustomerId,
+  })
     .from(invoiceGuestPaymentTokens)
     .innerJoin(invoices, and(eq(invoiceGuestPaymentTokens.invoiceId, invoices.id), eq(invoiceGuestPaymentTokens.organizationId, invoices.organizationId)))
     .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, invoices.organizationId)))
-    .innerJoin(customers, and(eq(canonicalInvoiceCustomerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
+    .leftJoin(customers, and(eq(canonicalInvoiceCustomerId, customers.id), eq(invoices.organizationId, customers.organizationId)))
     .where(and(eq(invoiceGuestPaymentTokens.tokenHash, sha256Hex(rawToken)), isNull(invoiceGuestPaymentTokens.revokedAt), gt(invoiceGuestPaymentTokens.expiresAt, new Date())))
     .limit(1);
-  return row ? { organizationId: row.token.organizationId, customerId: row.customer.id, customer: row.customer, userId: null, contactId: null, invoiceId: row.invoice.id } : null;
+  if (!row || !row.canonicalCustomerId) return null;
+  // getPortalScope only needs a stable, scoped identity for guest payment
+  // authorization.  Preserve a harmless display fallback when the historic
+  // customer row is no longer present.
+  const customer = row.customer ?? {
+    id: row.canonicalCustomerId,
+    organizationId: row.token.organizationId,
+    companyName: null,
+    email: null,
+  };
+  return { organizationId: row.token.organizationId, customerId: row.canonicalCustomerId, customer, userId: null, contactId: null, invoiceId: row.invoice.id };
 }
 
 async function guestRequest(rawToken: string): Promise<Request | null> {

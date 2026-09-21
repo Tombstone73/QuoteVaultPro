@@ -10,19 +10,21 @@ const money = (value: number, currency: string) => new Intl.NumberFormat("en-US"
 export default function GuestInvoicePaymentPage() {
   const { token = "" } = useParams<{ token: string }>();
   const [invoice, setInvoice] = useState<GuestInvoice | null>(null);
+  const [loadMessage, setLoadMessage] = useState("Unable to load this payment page.");
   const [loading, setLoading] = useState(true);
   const [payOpen, setPayOpen] = useState(false);
   const load = async () => {
     setLoading(true);
     try {
       const response = await fetch(`/api/guest/invoices/${encodeURIComponent(token)}`);
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       setInvoice(response.ok ? payload.data : null);
-    } catch { setInvoice(null); } finally { setLoading(false); }
+      if (!response.ok) setLoadMessage(String(payload?.message || "This invoice payment link is invalid or expired."));
+    } catch { setInvoice(null); setLoadMessage("Unable to load this payment page. Please try the link again or contact us for help."); } finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [token]);
   if (loading) return <div className="min-h-screen p-8 text-center">Loading invoice…</div>;
-  if (!invoice) return <div className="min-h-screen p-8 text-center">This invoice payment link is invalid or expired.</div>;
+  if (!invoice) return <main className="mx-auto flex min-h-screen max-w-xl items-center p-5"><Card className="w-full"><CardHeader><CardTitle>Invoice payment unavailable</CardTitle></CardHeader><CardContent className="space-y-2 text-sm text-muted-foreground"><p>{loadMessage}</p><p>Please contact the business that sent this invoice if you need a new payment link.</p></CardContent></Card></main>;
   const payable = Number(invoice.amountDue || 0) > 0;
   return <main className="mx-auto min-h-screen max-w-xl p-5"><Card><CardHeader><CardTitle>{invoice.businessName}</CardTitle></CardHeader><CardContent className="space-y-4"><div><p className="text-sm text-muted-foreground">Invoice</p><p className="text-xl font-semibold">{invoice.invoiceNumber}</p></div><div className="flex justify-between"><span>Balance due</span><strong>{money(invoice.amountDue, invoice.currency)}</strong></div><div className="flex justify-between text-sm text-muted-foreground"><span>Total</span><span>{money(invoice.total, invoice.currency)}</span></div>{payable ? <Button className="w-full" onClick={() => setPayOpen(true)}>Pay Invoice</Button> : <p className="rounded-md bg-muted p-3 text-sm">Paid — no balance is due.</p>}</CardContent></Card><StripePayDialog open={payOpen} onOpenChange={setPayOpen} invoiceId={token} apiBasePath="/api/guest/invoices" onSettled={async ({ serverConfirmed }) => { await load(); return { reconciled: serverConfirmed }; }} /></main>;
 }
