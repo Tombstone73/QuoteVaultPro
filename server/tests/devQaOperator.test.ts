@@ -23,6 +23,7 @@ import {
   DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
   DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES,
 } from "../lib/devQaFullAccessProvisioning";
+import { assertM78iFixtureBootstrapEnvironment } from "../lib/m78iFixtureBootstrapGuard";
 
 const devEnv = {
   NODE_ENV: "production",
@@ -35,6 +36,19 @@ const devEnv = {
 };
 
 describe("guarded DEV QA operator", () => {
+  test("fixture bootstrap is locked to the deployed DEV QA tenant and Railway DEV", () => {
+    const fixtureEnv = {
+      ...devEnv,
+      PRINTERSHERO_DEV_QA_FIXTURE_BOOTSTRAP_ENABLED: "true",
+      RAILWAY_PROJECT_NAME: "PrintersHero-DEV",
+      RAILWAY_ENVIRONMENT_NAME: "Development",
+    };
+    expect(() => assertM78iFixtureBootstrapEnvironment(fixtureEnv)).not.toThrow();
+    expect(() => assertM78iFixtureBootstrapEnvironment({ ...fixtureEnv, RAILWAY_PROJECT_NAME: "PrintersHero" })).toThrow();
+    expect(() => assertM78iFixtureBootstrapEnvironment({ ...fixtureEnv, APP_ENV: "production" })).toThrow();
+    expect(() => assertM78iFixtureBootstrapEnvironment({ ...fixtureEnv, PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID: "wrong-tenant" })).toThrow();
+  });
+
   test("status/verify guard accepts the approved deployed DEV identity without a password", () => {
     expect(getDevQaOperatorConfig(devEnv)).toEqual({ organizationId: DEV_QA_OPERATOR_ORGANIZATION_ID, organizationName: DEV_QA_OPERATOR_ORGANIZATION_NAME, browserEmail: DEV_QA_OPERATOR_BROWSER_EMAIL });
     expect(getDevQaOperatorConfig(devEnv)).not.toHaveProperty("password");

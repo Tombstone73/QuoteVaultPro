@@ -146,6 +146,8 @@
     "dev:portal-seed": "tsx scripts/dev/seedPortalValidation.ts",
     "qa:provision-dev-user": "tsx scripts/qa/provisionDevQaUser.ts",
     "qa:dev-operator": "tsx scripts/qa/devQaOperator.ts",
+    "qa:m78i-fixture": "tsx scripts/qa/m78iFixtureBootstrap.ts",
+    "qa:m78i-fixture:pure": "tsx v2/tests/qa/m78iFixtureBootstrap.pure.ts",
     "v2:qa:provision-quote-artwork": "tsx scripts/qa/provisionDevQaQuoteArtwork.ts",
     "v2:qa:provision-quote-artwork:guard": "tsx v2/tests/infrastructure/devQaQuoteArtworkProvisioningGuard.pure.ts",
     "v2:artwork-storage:pure": "tsx v2/tests/infrastructure/artworkBinaryStorage.pure.ts",
