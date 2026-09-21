@@ -669,12 +669,12 @@ export async function recordInvoiceEmailDeliveryStage(input: {
 }): Promise<void> {
   if (!input.deliveryJobId) return;
   const stage = String(input.stage || "unknown").slice(0, 120);
+  // jsonb_build_object is polymorphic. PostgreSQL cannot infer an untyped
+  // prepared parameter in this position, so the SQL below explicitly casts
+  // the stage to text before the provider boundary is recorded.
   await db.execute(sql`
     UPDATE invoice_email_delivery_jobs
     SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
-          // jsonb_build_object is polymorphic. PostgreSQL cannot infer an
-          // untyped prepared parameter here, which previously aborted the
-          // worker immediately before the Gmail provider boundary.
           'lastStage', ${stage}::text,
           'lastStageAt', now()::text
         ),
