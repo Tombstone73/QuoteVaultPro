@@ -14,9 +14,10 @@ jest.unstable_mockModule("../db", () => ({ db: { select, update, execute } }));
 let registerCanonicalInvoiceEmailSender: typeof import("../services/invoiceBulkEmailQueue.service").registerCanonicalInvoiceEmailSender;
 let registerCanonicalCustomerStatementEmailSender: typeof import("../services/invoiceBulkEmailQueue.service").registerCanonicalCustomerStatementEmailSender;
 let processClaimedBulkInvoiceEmailJob: typeof import("../services/invoiceBulkEmailQueue.service").processClaimedBulkInvoiceEmailJob;
+let recordInvoiceEmailDeliveryStage: typeof import("../services/invoiceBulkEmailQueue.service").recordInvoiceEmailDeliveryStage;
 
 beforeAll(async () => {
-  ({ registerCanonicalInvoiceEmailSender, registerCanonicalCustomerStatementEmailSender, processClaimedBulkInvoiceEmailJob } = await import("../services/invoiceBulkEmailQueue.service"));
+  ({ registerCanonicalInvoiceEmailSender, registerCanonicalCustomerStatementEmailSender, processClaimedBulkInvoiceEmailJob, recordInvoiceEmailDeliveryStage } = await import("../services/invoiceBulkEmailQueue.service"));
 });
 
 describe("bulk invoice email canonical sender boundary", () => {
@@ -182,5 +183,26 @@ describe("bulk invoice email canonical sender boundary", () => {
     })).resolves.toBe("failed");
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "retrying" }));
     expect(updateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: "needs_review" }));
+  });
+
+  test("retains the last canonical sender stage with a retryable pre-provider failure", async () => {
+    execute.mockResolvedValueOnce({ rows: [{ metadata: { queueStage: "preparing", lastStage: "invoice_pdf_generation_started" } }] });
+    registerCanonicalInvoiceEmailSender(jest.fn(async () => {
+      throw new Error("Invoice PDF generation timed out before the email provider was contacted.");
+    }));
+
+    await expect(processClaimedBulkInvoiceEmailJob({
+      id: "job-stage", organizationId: "org-1", invoiceId: "invoice-1", recipientEmail: "customer@example.test", attemptCount: 1, maxAttempts: 3, createdAt: new Date("2026-09-04T16:00:00.000Z"), campaignId: "campaign-stage",
+    })).resolves.toBe("failed");
+
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      status: "retrying",
+      failureReason: expect.stringContaining("invoice_pdf_generation_started"),
+    }));
+  });
+
+  test("records concrete canonical sender stages on the durable processing job", async () => {
+    await recordInvoiceEmailDeliveryStage({ organizationId: "org-1", deliveryJobId: "job-stage-write", stage: "invoice_attachment_preparation_completed" });
+    expect(execute).toHaveBeenCalled();
   });
 });

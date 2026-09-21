@@ -25,6 +25,7 @@ describe("bulk invoice email delivery queue contract", () => {
   });
 
   test("keeps PDF, provider delivery, logs, and audit writes on the one canonical sender", () => {
+    const emailService = source("server/emailService.ts");
     expect(route).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
     expect(queue).toContain("canonicalInvoiceEmailSender");
     expect(queue).toContain("canonicalInvoiceEmailSender!({");
@@ -35,6 +36,10 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).toContain("buildInvoiceEmailSentAudit");
     expect(route).toContain('logQueueDeliveryStage("gmail_accepted"');
     expect(route).toContain('logQueueDeliveryStage("delivery_persistence_completed"');
+    expect(route).toContain("recordInvoiceEmailDeliveryStage");
+    expect(queue).toContain("lastStage");
+    expect(emailService.indexOf("markInvoiceEmailDeliveryProviderSubmissionStarted")).toBeLessThan(emailService.indexOf("gmail.users.messages.send"));
+    expect(route).not.toContain("markInvoiceEmailDeliveryProviderSubmissionStarted");
   });
 
   test("persists one active job per invoice-recipient-version and claims it safely", () => {
@@ -82,7 +87,8 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(queue).toContain("metadata->>'queueStage' = 'provider_submitting' THEN 'needs_review'");
     expect(queue).toContain("providerStarted &&");
     expect(queue).toContain("ORDER BY available_at ASC, created_at ASC");
-    expect(queue).toContain("Email preparation did not finish before its worker stopped");
+    expect(queue).toContain("Email preparation stopped before provider submission at ");
+    expect(queue).toContain("lastStage");
     expect(queue).not.toContain("OR (status = 'processing' AND claim_expires_at <= now())");
   });
 

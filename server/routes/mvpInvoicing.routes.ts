@@ -64,7 +64,7 @@ import {
   getBulkInvoiceEmailQueueConfig,
   getInvoiceEmailDeliveryFailureKind,
   markInvoiceEmailDeliveryFailure,
-  markInvoiceEmailDeliveryProviderSubmissionStarted,
+  recordInvoiceEmailDeliveryStage,
   registerCanonicalInvoiceEmailSender,
   resolveInvoiceEmailDeliveryNeedsReview,
   type BulkInvoiceEmailCandidate,
@@ -438,10 +438,26 @@ export async function registerMvpInvoicingRoutes(
     subject?: unknown;
     message?: unknown;
   }) {
-    const logQueueDeliveryStage = (stage: string, detail: Record<string, unknown> = {}) => {
+    const logQueueDeliveryStage = async (stage: string, detail: Record<string, unknown> = {}) => {
       if (!input.deliveryJobId) return;
       console.log("[InvoiceEmailQueue]", { stage, jobId: input.deliveryJobId, invoiceId: input.invoiceId, organizationId: input.organizationId, ...detail });
+      try {
+        await recordInvoiceEmailDeliveryStage({
+          organizationId: input.organizationId,
+          deliveryJobId: input.deliveryJobId,
+          stage,
+        });
+      } catch (error) {
+        // Stage persistence is observability, never a reason to abandon a
+        // customer email. The queue's own result persistence remains primary.
+        console.warn("[InvoiceEmailQueue] stage persistence failed", {
+          stage,
+          jobId: input.deliveryJobId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     };
+    await logQueueDeliveryStage("email_settings_loading_started");
     const emailConfig = await storage.getDefaultEmailSettings(input.organizationId);
     if (!emailConfig) {
       throw Object.assign(
@@ -450,7 +466,7 @@ export async function registerMvpInvoicingRoutes(
       );
     }
 
-    logQueueDeliveryStage("email_settings_loaded");
+    await logQueueDeliveryStage("email_settings_loaded");
     let requestedRecipients: string[] | null = null;
     if (Array.isArray(input.recipientEmails)) {
       try {
@@ -467,12 +483,12 @@ export async function registerMvpInvoicingRoutes(
       throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
     }
 
-    logQueueDeliveryStage("recipient_resolution_started");
+    await logQueueDeliveryStage("recipient_resolution_started");
     const recipientResolution = await resolveInvoiceEmailRecipientsForOperations({
       organizationId: input.organizationId,
       invoiceId: input.invoiceId,
     });
-    logQueueDeliveryStage("recipient_resolution_completed");
+    await logQueueDeliveryStage("recipient_resolution_completed");
     let inv: any = recipientResolution.invoice;
     const cust: any = recipientResolution.customer;
     const recipientsToSend = requestedRecipients
@@ -525,7 +541,7 @@ export async function registerMvpInvoicingRoutes(
       subject: input.subject,
       message: input.message,
     });
-    logQueueDeliveryStage("invoice_data_loading_started");
+    await logQueueDeliveryStage("invoice_data_loading_started");
     const lineItems = await db
       .select()
       .from(invoiceLineItems)
@@ -547,16 +563,16 @@ export async function registerMvpInvoicingRoutes(
       .orderBy(desc(payments.createdAt));
 
     const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
-    logQueueDeliveryStage("invoice_data_loading_completed", { lineItemCount: lineItems.length });
+    await logQueueDeliveryStage("invoice_data_loading_completed", { lineItemCount: lineItems.length });
 
-    logQueueDeliveryStage("invoice_rendering_started");
-    logQueueDeliveryStage("invoice_artwork_preparation_started");
+    await logQueueDeliveryStage("invoice_rendering_started");
+    await logQueueDeliveryStage("invoice_artwork_preparation_started");
     const pdfLineItems = await withInvoiceEmailPreparationTimeout("Invoice artwork preparation", hydrateInvoicePdfLineItemsWithArtwork({
       organizationId: input.organizationId,
       lineItems: lineItems as any,
     }), 10_000);
-    logQueueDeliveryStage("invoice_artwork_preparation_completed");
-    logQueueDeliveryStage("invoice_pdf_generation_started");
+    await logQueueDeliveryStage("invoice_artwork_preparation_completed");
+    await logQueueDeliveryStage("invoice_pdf_generation_started");
     const pdfBytes = await withInvoiceEmailPreparationTimeout("Invoice PDF generation", generateInvoicePdfBytes({
       invoice: invoiceForCustomerDelivery as any,
       customer: (cust as any) || null,
@@ -565,15 +581,15 @@ export async function registerMvpInvoicingRoutes(
       lineItems: pdfLineItems as any,
       job,
     }), 15_000);
-    logQueueDeliveryStage("invoice_pdf_generation_completed", { pdfBytes: pdfBytes.length });
+    await logQueueDeliveryStage("invoice_pdf_generation_completed", { pdfBytes: pdfBytes.length });
 
     const invoiceNumber = composeContext.invoiceNumber;
     const filename = `invoice-${invoiceNumber}.pdf`;
     let pdfAttachment;
     try {
-      logQueueDeliveryStage("invoice_attachment_preparation_started");
+      await logQueueDeliveryStage("invoice_attachment_preparation_started");
       pdfAttachment = await withInvoiceEmailPreparationTimeout("Invoice PDF attachment preparation", createInvoicePdfEmailAttachment({ filename, pdfBytes }), 5_000);
-      logQueueDeliveryStage("invoice_attachment_preparation_completed");
+      await logQueueDeliveryStage("invoice_attachment_preparation_completed");
     } catch (error) {
       console.error("[Invoice Send] PDF attachment validation failed", {
         invoiceId: input.invoiceId,
@@ -594,21 +610,49 @@ export async function registerMvpInvoicingRoutes(
         code: "INVOICE_PORTAL_ORIGIN_UNAVAILABLE",
       });
     }
-    const portalDestination = await resolveInvoiceEmailPortalDestination({
-      organizationId: input.organizationId,
-      customerId: inv.customerId,
-      recipientEmail,
-      actorUserId: input.userId,
-      returnTo: `/portal/invoices/${encodeURIComponent(inv.id)}`,
-    });
-    logQueueDeliveryStage("invoice_rendering_completed", { pdfBytes: pdfBytes.length });
+    let portalDestination: Awaited<ReturnType<typeof resolveInvoiceEmailPortalDestination>> = null;
+    await logQueueDeliveryStage("invoice_portal_destination_started");
+    try {
+      // A customer portal CTA is useful, but it is not a prerequisite for
+      // delivering the invoice PDF.  Fall back to the canonical direct
+      // invoice link if access preparation is unavailable.
+      portalDestination = await withInvoiceEmailPreparationTimeout("Invoice portal link preparation", resolveInvoiceEmailPortalDestination({
+        organizationId: input.organizationId,
+        customerId: inv.customerId,
+        recipientEmail,
+        actorUserId: input.userId,
+        returnTo: `/portal/invoices/${encodeURIComponent(inv.id)}`,
+      }), 5_000);
+      await logQueueDeliveryStage("invoice_portal_destination_completed");
+    } catch (error) {
+      console.warn("[InvoiceEmailQueue] Invoice portal link omitted", {
+        jobId: input.deliveryJobId,
+        invoiceId: input.invoiceId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await logQueueDeliveryStage("invoice_portal_destination_omitted");
+    }
+    await logQueueDeliveryStage("invoice_rendering_completed", { pdfBytes: pdfBytes.length });
     const directInvoiceUrl = buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id });
     const portalUrl = portalDestination?.kind === "setup"
       ? portalDestination.url
       : directInvoiceUrl;
-    const guestPaymentUrl = canInvoiceBePaidOnline
-      ? `${publicWebOrigin}/pay/invoice/${encodeURIComponent(await issueGuestInvoicePaymentToken({ organizationId: input.organizationId, invoiceId: inv.id, createdByUserId: input.userId }))}`
-      : null;
+    let guestPaymentUrl: string | null = null;
+    if (canInvoiceBePaidOnline) {
+      await logQueueDeliveryStage("invoice_payment_link_started");
+      try {
+        const token = await withInvoiceEmailPreparationTimeout("Invoice payment link preparation", issueGuestInvoicePaymentToken({ organizationId: input.organizationId, invoiceId: inv.id, createdByUserId: input.userId }), 5_000);
+        guestPaymentUrl = `${publicWebOrigin}/pay/invoice/${encodeURIComponent(token)}`;
+        await logQueueDeliveryStage("invoice_payment_link_completed");
+      } catch (error) {
+        console.warn("[InvoiceEmailQueue] Invoice payment link omitted", {
+          jobId: input.deliveryJobId,
+          invoiceId: input.invoiceId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        await logQueueDeliveryStage("invoice_payment_link_omitted");
+      }
+    }
 
     const customerName = cust.companyName || cust.email || "Valued Customer";
     const totalFormatted = (Number(inv.totalCents || 0) / 100).toFixed(2);
@@ -642,11 +686,10 @@ export async function registerMvpInvoicingRoutes(
     let messageId: string | null = null;
     let providerAccepted = false;
     try {
-      await markInvoiceEmailDeliveryProviderSubmissionStarted({
-        organizationId: input.organizationId,
-        deliveryJobId: input.deliveryJobId,
-      });
-      logQueueDeliveryStage("gmail_send_invoked");
+      // emailService records the durable provider boundary immediately before
+      // Gmail's messages.send call.  Loading settings, templates, and OAuth
+      // credentials is still pre-provider and must remain safely retryable.
+      await logQueueDeliveryStage("email_provider_adapter_started");
       messageId = await emailService.sendEmail(input.organizationId, {
         to: recipientEmail,
         subject: compose.subject,
@@ -658,7 +701,7 @@ export async function registerMvpInvoicingRoutes(
         deliveryJobId: input.deliveryJobId,
       });
       providerAccepted = true;
-      logQueueDeliveryStage("gmail_accepted", { providerMessageIdPresent: Boolean(messageId) });
+      await logQueueDeliveryStage("gmail_accepted", { providerMessageIdPresent: Boolean(messageId) });
 
       await createInvoiceEmailLog({
         organizationId: input.organizationId,
@@ -669,7 +712,7 @@ export async function registerMvpInvoicingRoutes(
         messageId,
         sentAt: now,
       });
-      logQueueDeliveryStage("delivery_persistence_completed", { logStatus: "sent" });
+      await logQueueDeliveryStage("delivery_persistence_completed", { logStatus: "sent" });
     } catch (sendError) {
       if (!providerAccepted) {
         try {
@@ -702,7 +745,7 @@ export async function registerMvpInvoicingRoutes(
         successfulSentAt: now,
         suppressAutomaticAccountingApproval: sentWithUnapprovedOverride,
       });
-      logQueueDeliveryStage("post_send_lifecycle_completed", {
+      await logQueueDeliveryStage("post_send_lifecycle_completed", {
         firstSuccessfulCustomerDelivery: lifecycle.isFirstSuccessfulCustomerDelivery,
         dueDateUpdated: lifecycle.dueDateUpdated,
         accountingApproved: lifecycle.accountingApproved,

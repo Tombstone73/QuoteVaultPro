@@ -3,6 +3,10 @@ import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 import { buildRawMessage, normalizeEmailAttachments, type EmailAttachment } from "./lib/emailMime";
 import { markInvoiceEmailDeliveryFailure } from "./services/invoiceEmailDeliveryFailure";
+import {
+  markInvoiceEmailDeliveryProviderSubmissionStarted,
+  recordInvoiceEmailDeliveryStage,
+} from "./services/invoiceBulkEmailQueue.service";
 export { buildRawMessage, normalizeEmailAttachments } from "./lib/emailMime";
 
 /**
@@ -224,7 +228,7 @@ class EmailService {
   /**
    * Send email via Gmail API (avoids SMTP timeouts on Railway)
    */
-  private async sendViaGmailAPI(config: EmailConfig, options: {
+  private async sendViaGmailAPI(organizationId: string, config: EmailConfig, options: {
     to: string;
     subject: string;
     html: string;
@@ -251,7 +255,20 @@ class EmailService {
       attachments: options.attachments,
     });
 
-    console.log('[EmailService] [STAGE: gmail-send-invoked] Sending email via Gmail API...', { deliveryJobId: options.deliveryJobId || undefined });
+    // This is the actual external provider boundary. Configuration loading,
+    // template loading, and OAuth token retrieval all happen earlier and are
+    // known pre-provider failures. Do not mark a queue job ambiguous until
+    // immediately before Gmail receives the request.
+    await recordInvoiceEmailDeliveryStage({
+      organizationId,
+      deliveryJobId: options.deliveryJobId,
+      stage: "provider_submission_started",
+    });
+    await markInvoiceEmailDeliveryProviderSubmissionStarted({
+      organizationId,
+      deliveryJobId: options.deliveryJobId,
+    });
+    console.log('[EmailService] [STAGE: gmail-provider-submission-started] Sending email via Gmail API...', { deliveryJobId: options.deliveryJobId || undefined });
     try {
       const result = await withTimeout(
         'Gmail API send operation',
@@ -541,7 +558,7 @@ class EmailService {
     },
   ): Promise<string> {
     try {
-      return await this.sendViaGmailAPI(config, options);
+      return await this.sendViaGmailAPI(organizationId, config, options);
     } catch (err: any) {
       if ((err as any).isGmailAuthError) {
         console.error(

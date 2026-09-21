@@ -36,6 +36,8 @@ export type CompanyDocumentBranding = {
 
 export const cleanDocumentText = (value: unknown): string => String(value ?? "").trim();
 
+const OPTIONAL_LOGO_FETCH_TIMEOUT_MS = 5_000;
+
 export const joinNonEmptyDocumentValues = (values: Array<string | null | undefined>, sep = "\n") =>
   values
     .map((v) => (v == null ? "" : String(v).trim()))
@@ -85,17 +87,32 @@ export function buildDocumentAddressBlock(params: {
   return joinNonEmptyDocumentValues([params.legacy]);
 }
 
-async function readBufferFromStorageHandle(handle: { kind: "signed_url" | "local_path"; value: string }): Promise<Buffer> {
+export async function readBufferFromStorageHandle(handle: { kind: "signed_url" | "local_path"; value: string }): Promise<Buffer> {
   if (handle.kind === "local_path") {
     const { readFile } = await import("fs/promises");
     return readFile(handle.value);
   }
 
-  const response = await fetch(handle.value);
-  if (!response.ok) {
-    throw new Error(`Logo storage read failed with ${response.status}`);
+  // Invoice branding is presentation only. A signed object-storage URL can
+  // hang independently of the invoice data/PDF work, so abort it locally
+  // rather than allowing it to hold a queued customer email before Gmail is
+  // even contacted.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPTIONAL_LOGO_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(handle.value, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Logo storage read failed with ${response.status}`);
+    }
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Logo storage read timed out after ${OPTIONAL_LOGO_FETCH_TIMEOUT_MS}ms`, { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return Buffer.from(await response.arrayBuffer());
 }
 
 export async function resolveCompanyLogoDataUrl(companySettings: CompanyDocumentBrandingInput): Promise<string | null> {
@@ -136,7 +153,12 @@ export async function resolveCompanyLogoDataUrl(companySettings: CompanyDocument
           }
         }
       }
-    } catch {
+    } catch (error) {
+      console.warn("[DocumentCompanyBranding] Invoice logo omitted", {
+        organizationId,
+        assetId,
+        message: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }

@@ -247,6 +247,10 @@ type InvoiceEmailDeliveryMetadata = {
   retryOfNeedsReviewJobId?: string;
   queueStage?: "preparing" | "provider_submitting";
   providerSubmissionStartedAt?: string;
+  /** Last concrete canonical-sender stage. This is diagnostic evidence only;
+   * queueStage remains the durable provider-boundary authority. */
+  lastStage?: string;
+  lastStageAt?: string;
   deliveryReview?: Partial<InvoiceEmailDeliveryReviewMetadata>;
 };
 
@@ -634,6 +638,31 @@ function logDeliveryStage(job: ClaimedBulkInvoiceEmailJob, stage: string, detail
 }
 
 /**
+ * Persist the canonical sender's most recent stage without changing queue
+ * state. Console logs are useful in Railway, but a failed job must retain
+ * enough evidence for staff and support even when runtime logs are gone.
+ */
+export async function recordInvoiceEmailDeliveryStage(input: {
+  organizationId: string;
+  deliveryJobId: string | null | undefined;
+  stage: string;
+}): Promise<void> {
+  if (!input.deliveryJobId) return;
+  const stage = String(input.stage || "unknown").slice(0, 120);
+  await db.execute(sql`
+    UPDATE invoice_email_delivery_jobs
+    SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
+          'lastStage', ${stage},
+          'lastStageAt', now()::text
+        ),
+        updated_at = now()
+    WHERE id = ${input.deliveryJobId}
+      AND organization_id = ${input.organizationId}
+      AND status = 'processing'
+  `);
+}
+
+/**
  * Called immediately before the provider boundary. A stale claim before this
  * marker is safe to retry; after it, provider acceptance is uncertain and the
  * job must stop for review rather than risk a duplicate email.
@@ -657,6 +686,11 @@ export async function markInvoiceEmailDeliveryProviderSubmissionStarted(input: {
 }
 
 async function hasInvoiceEmailReachedProviderBoundary(job: ClaimedBulkInvoiceEmailJob): Promise<boolean> {
+  const metadata = await getInvoiceEmailDeliveryMetadata(job);
+  return metadata.queueStage === "provider_submitting";
+}
+
+async function getInvoiceEmailDeliveryMetadata(job: ClaimedBulkInvoiceEmailJob): Promise<InvoiceEmailDeliveryMetadata> {
   const result: any = await db.execute(sql`
     SELECT metadata
     FROM invoice_email_delivery_jobs
@@ -665,7 +699,7 @@ async function hasInvoiceEmailReachedProviderBoundary(job: ClaimedBulkInvoiceEma
     LIMIT 1
   `);
   const row = (Array.isArray(result) ? result : result?.rows || [])[0] as { metadata?: unknown } | undefined;
-  return asMetadata(row?.metadata).queueStage === "provider_submitting";
+  return asMetadata(row?.metadata) as InvoiceEmailDeliveryMetadata;
 }
 
 async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob | null> {
@@ -688,7 +722,11 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
           failure_reason = coalesce(failure_reason, CASE
             WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'provider_submitting'
               THEN 'Delivery outcome is uncertain because the worker stopped after provider submission began. The message was not resent to avoid a duplicate email.'
-            ELSE 'Email preparation did not finish before its worker stopped. The email was not submitted to the provider and will retry.'
+            ELSE concat(
+              'Email preparation stopped before provider submission at ',
+              coalesce(nullif(metadata->>'lastStage', ''), 'an unknown pre-provider stage'),
+              '. The message was not submitted to the provider and will retry.'
+            )
           END),
           updated_at = now()
       WHERE status = 'processing' AND claim_expires_at <= now()
@@ -841,11 +879,14 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     await updateCampaignCompletion(job.campaignId);
     return "sent";
   } catch (error) {
-    const message = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
+    const rawMessage = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
     // Needs Review is reserved for a genuinely ambiguous *provider* outcome.
     // Everything before the durable provider boundary is known not to have
     // sent and therefore remains safely retryable.
-    const providerStarted = await hasInvoiceEmailReachedProviderBoundary(job).catch(() => false);
+    const deliveryMetadata = await getInvoiceEmailDeliveryMetadata(job).catch(() => null);
+    const providerStarted = deliveryMetadata?.queueStage === "provider_submitting";
+    const lastStage = String(deliveryMetadata?.lastStage || "").trim();
+    const message = lastStage ? `${lastStage}: ${rawMessage}`.slice(0, 1000) : rawMessage;
     const failureKind = getInvoiceEmailDeliveryFailureKind(error);
     const needsReview = providerStarted && (failureKind === "needs_review" || (!failureKind && isAmbiguousProviderFailure(error)));
     const terminal = needsReview || job.attemptCount >= job.maxAttempts;
