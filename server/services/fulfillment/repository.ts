@@ -1,6 +1,7 @@
 import { and, desc, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
+  auditLogs,
   customers,
   fulfillmentAdministrativeReconciliations,
   fulfillmentChecklistItems,
@@ -34,6 +35,7 @@ import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 import { resolveActiveProductionOwners } from '../productionOwnership';
 import { resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
 import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from '@shared/fulfillmentTerminalReversal';
+import { isProvenLegacyCloseJobOverrideEvidence } from './legacyCloseJobOverrideEvidence';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -1459,6 +1461,110 @@ export class FulfillmentDashboardRepo {
     };
   }
 
+  /** Explicit, idempotent repair for the narrow legacy workflow proven by both
+   * the historical Fulfillment event and its paired Close Job Override audit.
+   * This never runs from the queue or migration path; the operator-only script
+   * must request apply mode. */
+  async backfillProvenLegacyCloseJobOverride(orgId: string, orderId: string) {
+    return this.dbInstance.transaction(async (tx) => {
+      const [order] = await tx.select({
+        id: orders.id,
+        state: orders.state,
+        status: orders.status,
+        fulfillmentStatus: orders.fulfillmentStatus,
+      }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).for('update').limit(1);
+      if (!order) return { status: 'skipped' as const, reason: 'ORDER_NOT_FOUND' };
+      if (!['shipped', 'delivered'].includes(cleanText(order.fulfillmentStatus).toLowerCase())) {
+        return { status: 'skipped' as const, reason: 'PARENT_NOT_TERMINAL' };
+      }
+      const [events, audit] = await Promise.all([
+        tx.select({ id: fulfillmentEvents.id, actorUserId: fulfillmentEvents.actorUserId, eventType: fulfillmentEvents.eventType, payloadJson: fulfillmentEvents.payloadJson })
+          .from(fulfillmentEvents).where(and(
+            eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, orderId),
+            eq(fulfillmentEvents.eventType, 'FULFILLMENT_HISTORICAL_RECONCILED' as any),
+          )),
+        tx.select({ id: auditLogs.id, actionType: auditLogs.actionType, entityType: auditLogs.entityType })
+          .from(auditLogs).where(and(
+            eq(auditLogs.organizationId, orgId), eq(auditLogs.entityId, orderId),
+            eq(auditLogs.actionType, 'ORDER_HISTORICAL_FULFILLMENT_RECONCILED'), eq(auditLogs.entityType, 'order'),
+          )).limit(1),
+      ]);
+      const event = events.find((candidate) => isProvenLegacyCloseJobOverrideEvidence({ event: candidate, audit: audit[0] ?? null }));
+      if (!event) {
+        return { status: 'skipped' as const, reason: 'UNPROVEN_LEGACY_OVERRIDE' };
+      }
+      const result = await this.reconcileAdministrativeFulfillment(orgId, {
+        orderId,
+        actorUserId: event.actorUserId ?? null,
+        reason: 'legacy_close_job_override_reconciliation',
+        note: 'Backfilled from proven pre-0212 Close Job Override evidence.',
+      }, tx as any);
+      if (!result.ok) return { status: 'skipped' as const, reason: result.code, message: result.message };
+      if (result.allocations.length === 0) return { status: 'skipped' as const, reason: 'NO_REMAINING_OBLIGATION' };
+      if (result.remainingQuantity !== 0) return { status: 'skipped' as const, reason: 'REMAINING_OBLIGATION' };
+      const safeActorUserId = await resolveExistingActorUserId(tx, event.actorUserId ?? null);
+      await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId,
+        actorUserId: safeActorUserId,
+        entityType: 'ORDER',
+        entityId: orderId,
+        eventType: 'FULFILLMENT_HISTORICAL_RECONCILED',
+        payloadJson: {
+          source: 'legacy_close_job_override_backfill',
+          originalEventId: event.id,
+          originalAuditId: audit[0]!.id,
+          allocations: result.allocations,
+          shipmentOrPickupEvidenceCreated: false,
+          billingAutomationSuppressed: true,
+        },
+      } as any);
+      await tx.insert(auditLogs).values({
+        organizationId: orgId,
+        userId: safeActorUserId,
+        actionType: 'ORDER_LEGACY_CLOSE_JOB_OVERRIDE_RECONCILED',
+        entityType: 'order',
+        entityId: orderId,
+        entityName: null,
+        description: 'Backfilled administrative fulfillment from proven legacy Close Job Override evidence.',
+        newValues: { originalEventId: event.id, originalAuditId: audit[0]!.id, allocations: result.allocations },
+      } as any);
+      return { status: 'applied' as const, ...result };
+    });
+  }
+
+  async getFulfillmentLifecycleDiagnostic(orgId: string, orderNumber: string) {
+    const [order] = await this.dbInstance.select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      displayNumber: orders.displayNumber,
+      state: orders.state,
+      status: orders.status,
+      fulfillmentStatus: orders.fulfillmentStatus,
+      shippingMethod: orders.shippingMethod,
+      routingTarget: orders.routingTarget,
+      canceledAt: orders.canceledAt,
+    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.orderNumber, orderNumber))).limit(1);
+    if (!order) return null;
+    const lines = await this.listLineEligibility(orgId, { orderIds: [order.id] });
+    const [administrativeRows, events, audits, checklist] = await Promise.all([
+      this.dbInstance.select().from(fulfillmentAdministrativeReconciliations).where(and(eq(fulfillmentAdministrativeReconciliations.organizationId, orgId), eq(fulfillmentAdministrativeReconciliations.orderId, order.id))),
+      this.dbInstance.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, order.id))),
+      this.dbInstance.select().from(auditLogs).where(and(eq(auditLogs.organizationId, orgId), eq(auditLogs.entityType, 'order'), eq(auditLogs.entityId, order.id))),
+      this.getChecklistItemsForOrder(orgId, order.id),
+    ]);
+    const quantities = summarizeFulfillmentOrderQuantities(lines.map((line) => line.projection));
+    return {
+      order,
+      lines,
+      quantities,
+      administrativeRows,
+      fulfillmentEvents: events,
+      closeJobOverrideAudits: audits.filter((audit) => audit.actionType === 'ORDER_HISTORICAL_FULFILLMENT_RECONCILED'),
+      checklist,
+      activeFulfillment: isFulfillmentQueueEligibleOrder(order) && quantities.physicalLineCount > 0 && quantities.remainingQuantity > 0,
+    };
+  }
+
   /** Adjust Fulfillment's mutable ready pool. Handoffs and shipments are
    * deliberately not touched here: they are immutable evidence of fulfillment. */
   async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId?: string | null) {
@@ -1929,6 +2035,42 @@ export class FulfillmentDashboardRepo {
       lines.push(line.projection);
       projectionsByOrder.set(line.orderId, lines);
     }
+    const orderIdsWithLines = orderRows.map((order) => order.id);
+    const [historicalEvents, historicalAudits] = orderIdsWithLines.length > 0 ? await Promise.all([
+      this.dbInstance.select({
+        id: fulfillmentEvents.id,
+        orderId: fulfillmentEvents.entityId,
+        actorUserId: fulfillmentEvents.actorUserId,
+        eventType: fulfillmentEvents.eventType,
+        payloadJson: fulfillmentEvents.payloadJson,
+        createdAt: fulfillmentEvents.createdAt,
+      }).from(fulfillmentEvents).where(and(
+        eq(fulfillmentEvents.organizationId, orgId),
+        eq(fulfillmentEvents.entityType, 'ORDER'),
+        eq(fulfillmentEvents.eventType, 'FULFILLMENT_HISTORICAL_RECONCILED' as any),
+        inArray(fulfillmentEvents.entityId, orderIdsWithLines),
+      )),
+      this.dbInstance.select({
+        id: auditLogs.id,
+        orderId: auditLogs.entityId,
+        userId: auditLogs.userId,
+        actionType: auditLogs.actionType,
+        entityType: auditLogs.entityType,
+        createdAt: auditLogs.createdAt,
+      }).from(auditLogs).where(and(
+        eq(auditLogs.organizationId, orgId),
+        eq(auditLogs.actionType, 'ORDER_HISTORICAL_FULFILLMENT_RECONCILED'),
+        eq(auditLogs.entityType, 'order'),
+        inArray(auditLogs.entityId, orderIdsWithLines),
+      )),
+    ]) : [[], []] as const;
+    const auditByOrder = new Map(historicalAudits.map((audit) => [audit.orderId, audit]));
+    const provenLegacyEvidenceByOrder = new Map(
+      historicalEvents
+        .map((event) => ({ event, audit: auditByOrder.get(event.orderId) ?? null }))
+        .filter(({ event, audit }) => isProvenLegacyCloseJobOverrideEvidence({ event, audit }))
+        .map(({ event, audit }) => [event.orderId, { event, audit: audit! }]),
+    );
     const summaries = orderRows.map((order) => ({
       order,
       quantities: summarizeFulfillmentOrderQuantities(projectionsByOrder.get(order.id) ?? []),
@@ -1944,6 +2086,19 @@ export class FulfillmentDashboardRepo {
     const administrativeButOpen = summaries.filter(({ quantities }) =>
       quantities.administrativelyReconciledQuantity > 0 && quantities.remainingQuantity > 0,
     );
+    const legacyCloseJobOverrideCandidates = summaries
+      .filter(({ order, quantities }) => {
+        const evidence = provenLegacyEvidenceByOrder.get(order.id);
+        return !!evidence
+          && ['shipped', 'delivered'].includes(cleanText(order.fulfillmentStatus).toLowerCase())
+          && quantities.remainingQuantity > 0
+          && quantities.administrativelyReconciledQuantity === 0;
+      })
+      .map(({ order, quantities }) => ({
+        order,
+        quantities,
+        evidence: provenLegacyEvidenceByOrder.get(order.id),
+      }));
     const duplicateActiveOrderIds = activeOrders
       .map(({ order }) => order.id)
       .filter((orderId, index, ids) => ids.indexOf(orderId) !== index);
@@ -1956,6 +2111,7 @@ export class FulfillmentDashboardRepo {
         || ['shipped', 'delivered'].includes(cleanText(order.fulfillmentStatus).toLowerCase()),
       ),
       administrativeClosureWithRemaining: administrativeButOpen,
+      legacyCloseJobOverrideCandidates,
       duplicateActiveOrderIds,
       activeOrders,
     };

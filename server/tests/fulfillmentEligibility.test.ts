@@ -39,6 +39,12 @@ describe("fulfillment queue eligibility", () => {
     expect(isFulfillmentQueueEligibleOrder({ state: "closed", status: "completed", shippingMethod: "ship", canceledAt: null })).toBe(false);
   });
 
+  test("blocks a terminal fulfillment parent even when legacy state is still production_complete", () => {
+    expect(isFulfillmentQueueEligibleOrder({
+      state: "production_complete", status: "ready_for_shipment", fulfillmentStatus: "delivered", canceledAt: null,
+    })).toBe(false);
+  });
+
   test("blocks cancelled orders", () => {
     expect(isFulfillmentQueueEligibleOrder({
       state: "production_complete",

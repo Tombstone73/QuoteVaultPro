@@ -11,14 +11,17 @@ test("administrative fulfillment is durable and never reuses physical evidence",
   expect(schema).toContain("fulfillmentAdministrativeReconciliations");
   expect(migration).toContain("reconciled_quantity integer NOT NULL CHECK (reconciled_quantity > 0)");
   expect(repository).toContain("reconcileAdministrativeFulfillment");
+  expect(repository).toContain("backfillProvenLegacyCloseJobOverride");
   expect(repository).toContain("administrativelyReconciledQuantity");
 });
 
 test("the active fulfillment projection excludes zero-remaining and terminal orders once", () => {
   const repository = source("server/services/fulfillment/repository.ts");
+  const eligibility = source("server/services/fulfillment/eligibility.ts");
   expect(repository).toContain("if (!isFulfillmentQueueEligibleOrder(order)) continue;");
   expect(repository).toContain("if (remaining <= 0) continue;");
   expect(repository).toContain("distinctActiveFulfillmentOrders: activeOrders.length");
+  expect(eligibility).toContain("fulfillmentStatus}, '')) not in ('shipped', 'delivered')");
 });
 
 test("Close Job Override remains available only as an explicit staff exception for legacy contradictions", () => {

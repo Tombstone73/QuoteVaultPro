@@ -8,6 +8,7 @@ export type FulfillmentEligibilityOrder = {
   routingTarget?: string | null;
   status?: string | null;
   canceledAt?: string | Date | null;
+  fulfillmentStatus?: string | null;
 };
 
 export function isProductionCompleteForFulfillment(order: Pick<FulfillmentEligibilityOrder, "state">): boolean {
@@ -16,6 +17,11 @@ export function isProductionCompleteForFulfillment(order: Pick<FulfillmentEligib
 
 export function isFulfillmentQueueEligibleOrder(order: FulfillmentEligibilityOrder): boolean {
   if (isCanceledOrder(order)) return false;
+  // Invoice Job Status maps these same persisted parent values to
+  // “Fulfillment Complete”. A terminal parent cannot remain in the active
+  // operations queue; legacy contradictions are reported by the integrity
+  // audit and repaired only through the explicit backfill workflow.
+  if (["shipped", "delivered"].includes(String(order.fulfillmentStatus || "").toLowerCase())) return false;
   return ["open", "production_complete"].includes(String(order.state || "").toLowerCase());
 }
 
@@ -25,5 +31,6 @@ export function fulfillmentQueueEligibleOrderCondition(organizationId: string) {
     sql`lower(coalesce(${orders.state}, '')) in ('open', 'production_complete')`,
     isNull(orders.canceledAt),
     sql`lower(coalesce(${orders.status}, '')) not in ('canceled', 'cancelled')`,
+    sql`lower(coalesce(${orders.fulfillmentStatus}, '')) not in ('shipped', 'delivered')`,
   );
 }
