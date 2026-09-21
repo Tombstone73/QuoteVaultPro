@@ -220,14 +220,15 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("handleQuickSend(invoice)");
     expect(invoicesPageSource).toContain("InvoiceEmailSendDialog");
     expect(invoicesPageSource).toContain("setQuickSendInvoice");
-    expect(invoicesPageSource).toContain('>{invoice.lastSentAt ? "Resend" : "Send"}</Button>');
+    expect(invoicesPageSource).toContain("getInvoiceEmailActionState");
+    expect(invoicesPageSource).toContain("renderInvoiceEmailButton(invoice)");
     expect(invoicesPageSource).toContain("Take Payment</TooltipContent>");
     expect(invoicesPageSource).toContain("View Invoice</TooltipContent>");
     expect(invoicesPageSource).toContain("CloseJobOverrideDialog");
     expect(invoicesPageSource).toContain("canCloseJobOverride(invoice, Boolean(isAdminOrOwner))");
     expect(invoicesPageSource).toContain(">$</Button>");
-    expect(invoicesPageSource).toContain("aria-label={`Send invoice ${invoice.invoiceNumber}`}");
-    expect(invoicesPageSource).toContain('isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"');
+    expect(invoicesPageSource).toContain("Invoice ${invoice.invoiceNumber} email is ${action.label.toLowerCase()}");
+    expect(invoicesPageSource).toContain('!isAdminOrOwner || String((invoice as any).importSource || "").toLowerCase() === "quickbooks"');
     expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
   });
 
@@ -247,7 +248,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain('<TitanTableHead className="min-w-[145px]">Job Status</TitanTableHead>');
     expect(invoicesPageSource).toContain('getOrderJobStatus(invoice)');
     expect(invoicesPageSource).toContain('Close Job Override');
-    expect(invoicesPageSource).toContain('>{invoice.lastSentAt ? "Resend" : "Send"}</Button>');
+    expect(invoicesPageSource).toContain("renderInvoiceEmailButton(invoice)");
     expect(invoicesPageSource).not.toContain('DropdownMenu');
   });
 

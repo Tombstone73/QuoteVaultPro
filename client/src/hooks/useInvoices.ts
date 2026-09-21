@@ -698,6 +698,33 @@ export function useSendInvoice() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      // A 202 confirms durable queueing, not provider acceptance. Reflect that
+      // fact in every active Invoice List cache immediately, so the row action
+      // cannot still invite a second Send click while the invalidated query is
+      // fetching the authoritative delivery job state.
+      const queuedAt = new Date().toISOString();
+      queryClient.setQueriesData<InvoiceListResponse | InvoiceListItem[]>(
+        { predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === 'invoices' && typeof key[1] === 'object' && key[1] !== null;
+        }},
+        (current) => {
+          if (!current) return current;
+          const markQueued = (invoice: InvoiceListItem): InvoiceListItem => invoice.id === variables.id
+            ? {
+              ...invoice,
+              emailDeliveryStatus: 'queued',
+              emailDeliveryFailureReason: null,
+              emailDeliveryUpdatedAt: queuedAt,
+            }
+            : invoice;
+          if (Array.isArray(current)) return current.map(markQueued);
+          if ('items' in current && Array.isArray(current.items)) {
+            return { ...current, items: current.items.map(markQueued) };
+          }
+          return current;
+        },
+      );
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['invoices', 'email-queue'] });

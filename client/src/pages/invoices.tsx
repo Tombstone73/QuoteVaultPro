@@ -18,6 +18,7 @@ import { ROUTES } from "@/config/routes";
 import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getNextInvoiceSortState, type InvoiceSortKey } from "@/lib/invoiceListSort";
+import { getInvoiceEmailActionState } from "@/lib/invoiceEmailActionState";
 import { applyVisibleRowSelection } from "@/lib/visibleRowRangeSelection";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
@@ -690,6 +691,23 @@ export default function InvoicesListPage() {
     setQuickSendInvoice({ id: invoice.id, label: String(invoice.invoiceNumber || invoice.id) });
   };
 
+  const renderInvoiceEmailButton = (invoice: InvoiceListItem) => {
+    if (!isAdminOrOwner || String((invoice as any).importSource || "").toLowerCase() === "quickbooks") return null;
+    const action = getInvoiceEmailActionState(invoice);
+    const isActiveDelivery = action.disabled;
+    return <Button
+      variant="outline"
+      size="sm"
+      className="h-8 px-2"
+      aria-label={isActiveDelivery
+        ? `Invoice ${invoice.invoiceNumber} email is ${action.label.toLowerCase()}`
+        : `Send invoice ${invoice.invoiceNumber}`}
+      title={isActiveDelivery ? "This invoice email is already in the delivery queue." : undefined}
+      disabled={batchSendInvoices.isPending || isActiveDelivery}
+      onClick={() => void handleQuickSend(invoice)}
+    ><Mail className="mr-1 h-4 w-4" aria-hidden="true" />{action.label}</Button>;
+  };
+
   const confirmVerifiedNotSent = async (retryThroughQueue = false) => {
     if (!reviewJob) return;
     try {
@@ -789,7 +807,7 @@ export default function InvoicesListPage() {
       case "total": return <TitanTableCell key={column.id} className="text-right">{formatCurrency(invoice.displayTotal ?? invoice.total)}</TitanTableCell>;
       case "paid": return <TitanTableCell key={column.id} className="text-right">{formatCurrency(invoice.displayPaid ?? invoice.amountPaid)}</TitanTableCell>;
       case "balance": return <TitanTableCell key={column.id} className="text-right font-semibold">{formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}</TitanTableCell>;
-      case "actions": return <TitanTableCell key={column.id} className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(event) => event.stopPropagation()}><TooltipProvider delayDuration={250}><div className="flex min-w-max flex-wrap items-center justify-start gap-1">{isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Button variant="outline" size="sm" className="h-8 px-2" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice)}><Mail className="mr-1 h-4 w-4" aria-hidden="true" />{invoice.lastSentAt ? "Resend" : "Send"}</Button> : null}{canCloseJobOverride(invoice, Boolean(isAdminOrOwner)) ? <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => setOverrideTarget({ orderId: invoice.orderId!, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) })}><ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}{canTakePaymentFromInvoiceList(invoice) ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip> : null}<Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip></div></TooltipProvider></TitanTableCell>;
+      case "actions": return <TitanTableCell key={column.id} className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(event) => event.stopPropagation()}><TooltipProvider delayDuration={250}><div className="flex min-w-max flex-wrap items-center justify-start gap-1">{renderInvoiceEmailButton(invoice)}{canCloseJobOverride(invoice, Boolean(isAdminOrOwner)) ? <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => setOverrideTarget({ orderId: invoice.orderId!, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) })}><ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}{canTakePaymentFromInvoiceList(invoice) ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip> : null}<Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip></div></TooltipProvider></TitanTableCell>;
       default: return null;
     }
   };
@@ -1156,7 +1174,7 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
                     <TooltipProvider delayDuration={250}>
                     <div className="flex min-w-max flex-wrap items-center justify-start gap-1">
-                      {isAdminOrOwner && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks" ? <Button variant="outline" size="sm" className="h-8 px-2" aria-label={`Send invoice ${invoice.invoiceNumber}`} disabled={batchSendInvoices.isPending} onClick={() => void handleQuickSend(invoice)}><Mail className="mr-1 h-4 w-4" aria-hidden="true" />{invoice.lastSentAt ? "Resend" : "Send"}</Button> : null}
+                      {renderInvoiceEmailButton(invoice)}
                       {canCloseJobOverride(invoice, Boolean(isAdminOrOwner)) ? <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => setOverrideTarget({ orderId: invoice.orderId!, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) })}><ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}
                       {canTakePaymentFromInvoiceList(invoice) ? (
                         <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
