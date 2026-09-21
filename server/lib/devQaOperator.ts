@@ -6,6 +6,9 @@ import {
   DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES,
   DEV_QA_M78I_FIXTURE_PRICING_SET_DESCRIPTION,
   DEV_QA_M78I_FIXTURE_PRICING_SET_NAME,
+  DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES,
+  DEV_QA_M78I_FIXTURE_ROUTE_SET_DESCRIPTION,
+  DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME,
   DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
   DEV_QA_M78I_PERMISSION_FLOOR_CAPABILITIES,
   DEV_QA_M78I_PERMISSION_FLOOR_EMAIL,
@@ -20,7 +23,7 @@ import {
 } from "./devQaProvisioningGuard";
 
 export const DEV_QA_GUARDIAN_EMAIL = DEV_QA_M78I_PERMISSION_FLOOR_EMAIL;
-export const DEV_QA_APPROVED_PROFILES = ["m78i", "m78i_fixture_pricing", "m78i_fixture_artwork"] as const;
+export const DEV_QA_APPROVED_PROFILES = ["m78i", "m78i_fixture_pricing", "m78i_fixture_artwork", "m78i_fixture_route"] as const;
 export type DevQaApprovedProfile = (typeof DEV_QA_APPROVED_PROFILES)[number];
 
 export type DevQaProfileDefinition = Readonly<{
@@ -34,11 +37,12 @@ const profileDefinitions: Record<DevQaApprovedProfile, DevQaProfileDefinition> =
   m78i: Object.freeze({ name: "m78i", permissionSetName: DEV_QA_M78I_PERMISSION_SET_NAME, permissionSetDescription: DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, capabilities: DEV_QA_M78I_OPERATIONAL_CAPABILITIES }),
   m78i_fixture_pricing: Object.freeze({ name: "m78i_fixture_pricing", permissionSetName: DEV_QA_M78I_FIXTURE_PRICING_SET_NAME, permissionSetDescription: DEV_QA_M78I_FIXTURE_PRICING_SET_DESCRIPTION, capabilities: DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES }),
   m78i_fixture_artwork: Object.freeze({ name: "m78i_fixture_artwork", permissionSetName: DEV_QA_M78I_FIXTURE_ARTWORK_SET_NAME, permissionSetDescription: DEV_QA_M78I_FIXTURE_ARTWORK_SET_DESCRIPTION, capabilities: DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES }),
+  m78i_fixture_route: Object.freeze({ name: "m78i_fixture_route", permissionSetName: DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME, permissionSetDescription: DEV_QA_M78I_FIXTURE_ROUTE_SET_DESCRIPTION, capabilities: DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES }),
 };
 
 export function approvedDevQaProfile(value: string): DevQaApprovedProfile {
   if (!(DEV_QA_APPROVED_PROFILES as readonly string[]).includes(value)) {
-    throw new Error("DEV QA operator accepts only m78i, m78i_fixture_pricing, or m78i_fixture_artwork.");
+    throw new Error("DEV QA operator accepts only m78i, m78i_fixture_pricing, m78i_fixture_artwork, or m78i_fixture_route.");
   }
   return value as DevQaApprovedProfile;
 }
@@ -80,7 +84,7 @@ export function isExactGuardianCapabilitySet(capabilities: readonly string[]): b
 }
 
 export function isTemporaryFixtureProfile(profile: DevQaApprovedProfile | null): boolean {
-  return profile === "m78i_fixture_pricing" || profile === "m78i_fixture_artwork";
+  return profile === "m78i_fixture_pricing" || profile === "m78i_fixture_artwork" || profile === "m78i_fixture_route";
 }
 
 export const DEV_QA_GUARDIAN_PERMISSION_SET_NAME = DEV_QA_M78I_PERMISSION_FLOOR_SET_NAME;

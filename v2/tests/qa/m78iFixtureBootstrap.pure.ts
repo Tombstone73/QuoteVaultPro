@@ -27,7 +27,10 @@ assert.equal(planFixtureRoute(resolveFixtureRoute([]), true), "create", "a missi
 assert.equal(planFixtureRoute(resolveFixtureRoute([]), false), "fail", "a missing route does not silently expand authority");
 assert.deepEqual(resolveFixtureRoute([fixtureRoute]), { readiness: "ready", route: fixtureRoute }, "one active exact fixture route is reused");
 assert.deepEqual(planFixtureReconciliation({ route: "ready", product: "invalid", customer: "missing", order: "missing", artwork: "missing" }), { route: "reuse", product: "repair", customer: "create", order: "create_current", artwork: "adopt" }, "a partial Product resumes only after the dedicated route is ready");
-assert.deepEqual(resolveFixtureRoute([{ ...fixtureRoute, name: "Standard Production" }]), { readiness: "missing" }, "unrelated tenant routes cannot satisfy the fixture marker");
+assert.deepEqual(resolveFixtureRoute([
+  { ...fixtureRoute, id: "flatbed-route", name: "M77E-C Flatbed Route", steps: [{ position: 0, kind: "prepress" }, { position: 1, kind: "production" }, { position: 2, kind: "fulfillment" }] },
+  { ...fixtureRoute, id: "roll-route", name: "M77E-C Roll Route", steps: [{ position: 0, kind: "prepress" }, { position: 1, kind: "production" }, { position: 2, kind: "fulfillment" }] },
+]), { readiness: "missing" }, "existing M77E-C routes are ignored and cannot satisfy or mutate the dedicated fixture route");
 assert.deepEqual(resolveFixtureRoute([fixtureRoute, { ...fixtureRoute, id: "route-2" }]), { readiness: "ambiguous" }, "multiple marked fixture routes fail closed");
 assert.deepEqual(resolveFixtureRoute([{ ...fixtureRoute, active: false }]), { readiness: "invalid", route: { ...fixtureRoute, active: false } }, "an inactive marked route is never selected");
 assert.deepEqual(resolveFixtureRoute([{ ...fixtureRoute, steps: [{ position: 0, kind: "proofing" }, { position: 1, kind: "production" }] }]), { readiness: "invalid", route: { ...fixtureRoute, steps: [{ position: 0, kind: "proofing" }, { position: 1, kind: "production" }] } }, "the fixture route requires the exact M7.8I stage sequence");
