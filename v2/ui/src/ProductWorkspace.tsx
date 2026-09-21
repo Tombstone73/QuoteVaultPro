@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   newBusinessRequestId,
   productApi,
@@ -277,35 +277,42 @@ const ProductDraftEntry = ({
   publishError?: { code?: string; message?: string } | null;
   back: () => void;
 }>) => {
-  const automaticDraftRequest = useRef("");
   const product = state.data;
   const routing = useQuery({queryKey:["v2",sessionScope,organizationId,"product-routing-compatibility",product?.productId],queryFn:()=>productApi.routingCompatibility(organizationId,product!.productId),enabled:Boolean(product?.productId && canEdit)});
   const [productTypeId,setProductTypeId]=useState("");
   useEffect(()=>{ if(routing.data)setProductTypeId(routing.data.productTypeId??"");},[routing.data]);
   const saveCompatibility=useMutation({mutationFn:()=>productApi.assignRoutingCompatibility(organizationId,product!.productId,{businessRequestId:newBusinessRequestId(),productTypeId:productTypeId||null,expectedProductUpdatedAt:product!.productUpdatedAt}),onSuccess:()=>{void routing.refetch();void state.refetch();}});
   const saveDefaultRoute=useMutation({mutationFn:(input:Readonly<{productTypeId:string;routeTemplateId:string;expectedProductTypeUpdatedAt:string}>)=>productApi.setProductTypeDefaultRoute(organizationId,input.productTypeId,{businessRequestId:newBusinessRequestId(),routeTemplateId:input.routeTemplateId,expectedProductTypeUpdatedAt:input.expectedProductTypeUpdatedAt}),onSuccess:()=>void routing.refetch()});
-  useEffect(() => {
-    if (!product || !canEdit || product.versions.draft || !product.versions.active || automaticDraftRequest.current === product.productId) return;
-    automaticDraftRequest.current = product.productId;
-    createDraft(product);
-  }, [canEdit, createDraft, product]);
   if (state.isLoading)
     return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
   if (state.isError || !product)
     return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">Product not found.</p></section>;
-  if (!canEdit)
-    return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">You do not have permission to edit this Product.</p></section>;
   if (!product.versions.draft)
-    return <section className="v2-products"><button className="v2-products-back" onClick={back}>← Products</button><p className="v2-proof-empty">{draftCreationError ?? (creatingDraft ? "Preparing an editable Draft…" : "This Product has no editable Draft.")}</p></section>;
+    return <ActiveProductEntry product={product} canEdit={canEdit} creatingDraft={creatingDraft} error={draftCreationError} createDraft={createDraft} back={back} />;
   return <>
     {/* A current Draft is the canonical editable version, whether or not an
         immutable Active version also exists. Draft recovery is reserved for
         an explicit server-reported recovery condition; the presence of both
         lifecycle pointers is normal and must always open the Builder. */}
-    <CompatibilityRoutingPanel routing={routing.data} loading={routing.isLoading} productTypeId={productTypeId} setProductTypeId={setProductTypeId} saveCompatibility={()=>saveCompatibility.mutate()} saveDefaultRoute={(input)=>saveDefaultRoute.mutate(input)} saving={saveCompatibility.isPending||saveDefaultRoute.isPending} error={(saveCompatibility.error??saveDefaultRoute.error) as Error|null}/>
+    {canEdit && product.versions.active ? <CompatibilityRoutingPanel routing={routing.data} loading={routing.isLoading} productTypeId={productTypeId} setProductTypeId={setProductTypeId} saveCompatibility={()=>saveCompatibility.mutate()} saveDefaultRoute={(input)=>saveDefaultRoute.mutate(input)} saving={saveCompatibility.isPending||saveDefaultRoute.isPending} error={(saveCompatibility.error??saveDefaultRoute.error) as Error|null}/> : null}
     <ProductBuilderReference organizationId={organizationId} sessionScope={sessionScope} product={product} canEdit={canEdit} publish={publish} publishing={publishing} publishError={publishError} />
   </>;
 };
+
+const ActiveProductEntry = ({ product, canEdit, creatingDraft, error, createDraft, back }: Readonly<{
+  product: ProductWorkspaceDetail;
+  canEdit: boolean;
+  creatingDraft: boolean;
+  error?: string;
+  createDraft: (product: ProductWorkspaceDetail) => void;
+  back: () => void;
+}>) => <section className="v2-products" aria-label="Active Product">
+  <button className="v2-products-back" onClick={back}>← Products</button>
+  <header className="v2-products-heading"><div><h1>{product.displayName}</h1><p>ACTIVE VERSION · no unpublished Draft</p></div>{canEdit ? <button type="button" className="button" disabled={creatingDraft} onClick={() => createDraft(product)}>{creatingDraft ? "Creating Draft…" : "Create editable Draft"}</button> : null}</header>
+  <dl className="v2-products-summary"><div><dt>Category</dt><dd>{product.category ?? dash}</dd></div><div><dt>Measurement</dt><dd>{basis(product)}</dd></div><div><dt>Workflow</dt><dd>{product.workflowIntent}</dd></div><div><dt>Production job</dt><dd>{product.requiresProductionJob ? "Required" : "Not required"}</dd></div></dl>
+  {product.activeDefinition ? <><h2>Published configuration</h2><p className="v2-proof-empty">{product.activeDefinition.options.length} option{product.activeDefinition.options.length === 1 ? "" : "s"} · {product.activeDefinition.pricing.mode} pricing · {product.activeDefinition.productionUnits.length} production unit{product.activeDefinition.productionUnits.length === 1 ? "" : "s"}</p>{product.activeDefinition.routing ? <p className="v2-proof-empty">Route: {product.activeDefinition.routing.templateName ?? "configured"}{product.activeDefinition.routing.revision ? ` · revision ${product.activeDefinition.routing.revision}` : ""}{product.activeDefinition.routing.steps.length ? ` · ${product.activeDefinition.routing.steps.join(" → ")}` : ""}</p> : null}</> : <p className="v2-proof-empty">Published configuration is unavailable.</p>}
+  {error ? <p role="alert" className="v2-proof-empty">{error}</p> : null}
+</section>;
 
 const CompatibilityRoutingPanel = ({routing,loading,productTypeId,setProductTypeId,saveCompatibility,saveDefaultRoute,saving,error}:Readonly<{routing?:ProductRoutingCompatibility;loading:boolean;productTypeId:string;setProductTypeId:(value:string)=>void;saveCompatibility:()=>void;saveDefaultRoute:(input:Readonly<{productTypeId:string;routeTemplateId:string;expectedProductTypeUpdatedAt:string}>)=>void;saving:boolean;error:Error|null}>) => {
   if(loading||!routing) return null;

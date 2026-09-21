@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   newBusinessRequestId,
   formulaApi,
@@ -9,11 +9,14 @@ import {
   type CreatedProductWithInitialDraft,
   type ProductDraftFormulaPricing,
   type ProductDraftGeneral,
+  type ProductDraftGeneralRead,
   type ProductDraftOption,
+  type ProductDraftOptionsRead,
   type ProductDraftOptionPricing,
   type ProductDraftPricing,
   type ProductDraftPricingMatrix,
   type ProductDraftRouting,
+  type ProductRecipe,
   type ProductRecipeComponent,
   type ProductWorkspaceDetail,
 } from "./api";
@@ -91,6 +94,20 @@ export type ProductBuilderDraftState = Readonly<{
   routing: ProductDraftRouting["routing"];
 }>;
 type DraftState = ProductBuilderDraftState;
+export type ProductBuilderDraftReads = Readonly<{
+  general: ProductDraftGeneralRead;
+  options: ProductDraftOptionsRead;
+  pricing: ProductDraftPricing;
+  formula: ProductDraftFormulaPricing | null;
+  matrix: ProductDraftPricingMatrix | null;
+  impacts: ProductDraftOptionPricing | null;
+  recipe: ProductRecipe;
+  routing: ProductDraftRouting;
+}>;
+
+// Server rendering has no visible hydration frame. In the browser, adoption
+// must run before paint so an existing Product is never presented as blank.
+const useDraftHydrationEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
  * The options transaction owns replacement of `new:` option identities.  All
@@ -190,6 +207,34 @@ const blankState = (name = ""): DraftState => ({
 });
 const clone = <T,>(value: T): T => structuredClone(value);
 
+/** Maps the canonical Draft section reads into the one local staged Draft.
+ * This is intentionally the only existing-Product initialization path. */
+export const hydrateProductBuilderDraft = (reads: ProductBuilderDraftReads): DraftState => ({
+  general: clone(reads.general.general),
+  options: clone(reads.options.options),
+  optionRules: clone(reads.options.optionRules ?? []),
+  pricing: {
+    ...clone(reads.pricing.base),
+    flatFeeCents: reads.pricing.flatFeeCents,
+    tierBasis: reads.pricing.tierBasis,
+    tiers: clone(reads.pricing.tiers),
+    tierSets: clone(reads.pricing.tierSets),
+  },
+  formula: reads.formula ? {
+    source: "formula_revision",
+    ...(reads.formula.formulaId ? { formulaId: reads.formula.formulaId } : {}),
+    ...(reads.formula.formulaRevisionId ? { formulaRevisionId: reads.formula.formulaRevisionId } : {}),
+    expression: reads.formula.expression,
+    inputValues: clone(reads.formula.inputValues ?? {}),
+    allowRotation: reads.formula.allowRotation,
+    ...(reads.formula.rotationControl ? { rotationControl: clone(reads.formula.rotationControl) } : {}),
+  } : { source: "formula_revision", expression: "", inputValues: {}, allowRotation: false },
+  matrix: reads.matrix ? clone(reads.matrix) : null,
+  impacts: reads.impacts ? clone(reads.impacts.options) : [],
+  recipe: clone(reads.recipe.components),
+  routing: clone(reads.routing.routing),
+});
+
 /**
  * Keep a single immutable snapshot for every locally staged Product Draft
  * edit.  The builder can receive several field edits before React has
@@ -266,6 +311,13 @@ export const ProductBuilderReference = ({
     generalRead.data && optionsRead.data && pricingRead.data && recipeRead.data && routingRead.data
     && formulaRead.isFetched && matrixRead.isFetched && impactsRead.isFetched,
   );
+  const sourceLoadError = Boolean(
+    productId && (generalRead.isError || optionsRead.isError || pricingRead.isError || recipeRead.isError || routingRead.isError),
+  );
+  const draftHydrationPending = Boolean(
+    typeof window !== "undefined" && productId && sourceReady && initialised.current !== productId
+    && !(adoptedIdentity && !product?.productId),
+  );
   /** The shared resolver may update the configuration UI immediately, but it
    * never calculates pricing. This preparation only prevents a misleading
    * server request until the current configuration is complete. */
@@ -288,7 +340,7 @@ export const ProductBuilderReference = ({
   const currentPreviewFingerprint = livePreviewPreparation.kind === "ready" ? livePreviewPreparation.request.fingerprint : null;
   /** 300ms keeps typing fluid while still making every settled configuration
    * request a canonical server preview. */
-  useEffect(() => {
+  useDraftHydrationEffect(() => {
     if (!currentPreviewFingerprint) { setDebouncedPreviewFingerprint(null); return; }
     const timer = window.setTimeout(() => setDebouncedPreviewFingerprint(currentPreviewFingerprint), 300);
     return () => window.clearTimeout(timer);
@@ -341,21 +393,11 @@ export const ProductBuilderReference = ({
     // keeps the local staged state until its independent section saves settle.
     if (adoptedIdentity && !product?.productId) { initialised.current = productId; return; }
     if (!sourceReady || initialised.current === productId) return;
-    const next: DraftState = {
-      general: clone(generalRead.data!.general), options: clone(optionsRead.data!.options), optionRules: clone(optionsRead.data!.optionRules ?? []),
-      pricing: { ...clone(pricingRead.data!.base), flatFeeCents: pricingRead.data!.flatFeeCents, tierBasis: pricingRead.data!.tierBasis, tiers: clone(pricingRead.data!.tiers), tierSets: clone(pricingRead.data!.tierSets) },
-      formula: formulaRead.data ? {
-        source: "formula_revision",
-        ...(formulaRead.data.formulaId ? { formulaId: formulaRead.data.formulaId } : {}),
-        ...(formulaRead.data.formulaRevisionId ? { formulaRevisionId: formulaRead.data.formulaRevisionId } : {}),
-        expression: formulaRead.data.expression,
-        inputValues: clone(formulaRead.data.inputValues ?? {}),
-        allowRotation: formulaRead.data.allowRotation,
-        ...(formulaRead.data.rotationControl ? { rotationControl: clone(formulaRead.data.rotationControl) } : {}),
-      } : { source: "formula_revision", expression: "", inputValues: {}, allowRotation: false },
-      matrix: matrixRead.data ? clone(matrixRead.data) : null,
-      impacts: impactsRead.data ? clone(impactsRead.data.options) : [], recipe: clone(recipeRead.data!.components), routing: clone(routingRead.data!.routing),
-    };
+    const next = hydrateProductBuilderDraft({
+      general: generalRead.data!, options: optionsRead.data!, pricing: pricingRead.data!,
+      formula: formulaRead.data ?? null, matrix: matrixRead.data ?? null,
+      impacts: impactsRead.data ?? null, recipe: recipeRead.data!, routing: routingRead.data!,
+    });
     draftRef.current = next;
     setDraft(next);
     initialised.current = productId;
@@ -659,7 +701,8 @@ export const ProductBuilderReference = ({
   const retryPreview = useCallback(() => {
     if (livePreviewPreparation.kind === "ready") void livePricingPreview.refetch();
   }, [livePricingPreview, livePreviewPreparation.kind]);
-  if (productId && !sourceReady) return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
+  if (sourceLoadError) return <section className="v2-products"><p role="alert" className="v2-proof-empty">The Product Draft could not be loaded. Refresh to try again.</p></section>;
+  if (productId && (!sourceReady || draftHydrationPending)) return <section className="v2-products"><p className="v2-proof-empty">Loading Product Builder…</p></section>;
   return <LovableProductBuilderRoot
     title={draft.general.displayName || "Untitled product"}
     lifecycle={<><Chip tone={product?.versions.active ? "ok" : "neutral"}>{product?.versions.active ? "Active · Draft" : newProduct ? "Unsaved" : "Draft"}</Chip>{newProduct && <span className="text-[0.6875rem] text-muted-foreground">New Product Draft</span>}{dirty.size > 0 && <Chip tone="warn">Unsaved</Chip>}</>}
