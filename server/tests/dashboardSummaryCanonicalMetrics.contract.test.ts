@@ -15,7 +15,9 @@ describe("dashboard canonical metric contract", () => {
   test("uses organization-local windows for shipment and canonical A/R remaining balance", () => {
     const dashboard = source("server/services/dashboardSummaryService.ts");
     expect(dashboard).toContain('paymentDateWindow("today", organizationTimezone, now)');
-    expect(dashboard).toContain("summary.totalOutstandingCents");
+    expect(dashboard).toContain("arSummary.totalOutstandingCents");
+    expect(dashboard).toContain("arSummary.invoiceCount");
+    expect(dashboard).not.toContain("invoices.balanceDue");
     expect(dashboard).not.toContain("todayStartIso");
   });
 });

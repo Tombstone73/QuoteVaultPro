@@ -375,21 +375,11 @@ export async function getDashboardSummary(organizationId: string, now = new Date
         ),
     );
 
-    summary.fulfillmentFinance.invoicesUnpaid = await countFrom(
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.organizationId, organizationId),
-            eq(invoices.isHistorical, false),
-            sql`${invoices.balanceDue}::numeric > 0`,
-            not(inArray(invoices.status, ["void"])),
-          ),
-        ),
-    );
-
-    summary.fulfillmentFinance.unpaidAmountCents = (await accountsReceivableReport).summary.totalOutstandingCents;
+    // A/R owns approved/open eligibility, partial payments, credits, voids,
+    // and the current remaining balance. Do not use stale invoice.balanceDue.
+    const arSummary = (await accountsReceivableReport).summary;
+    summary.fulfillmentFinance.invoicesUnpaid = arSummary.invoiceCount;
+    summary.fulfillmentFinance.unpaidAmountCents = arSummary.totalOutstandingCents;
 
     // The dashboard and Payments page deliberately share the same succeeded-payment
     // predicate and organization-local date windows.
