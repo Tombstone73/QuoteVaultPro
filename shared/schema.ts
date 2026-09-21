@@ -3,6 +3,7 @@ import { relations } from 'drizzle-orm';
 import {
   type AnyPgColumn,
   boolean,
+  customType,
   date,
   decimal,
   index,
@@ -20,6 +21,11 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { normalizeOptionalWebsite } from "./vendorWebsite";
+
+// Drizzle 0.39 does not provide a native bytea column helper. Keep the
+// database type explicit without introducing a runtime reference to a helper
+// that does not exist in the deployed package.
+const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
 import { PRICING_PROFILE_KEYS, type FlatGoodsConfig } from "./pricingProfiles";
 import {
   inventoryMovementTypeValues,
