@@ -1822,6 +1822,16 @@ export class FulfillmentDashboardRepo {
     return result.total;
   }
 
+  /** Distinct Orders with physical work confirmed ready and still remaining.
+   * The general queue also retains shipped history, which is not ready work. */
+  async countReadyForFulfillment(orgId: string) {
+    const result = await this.listFulfillmentQueue(orgId, {
+      type: 'all', status: 'all', showArchived: false, overdueOnly: false,
+      page: 1, pageSize: 10_000, sortBy: 'createdAt', sortDirection: 'asc',
+    });
+    return result.rows.filter((row) => row.remainingQuantity > 0 && row.readyWaitingQuantity > 0).length;
+  }
+
   async ensureChecklistItemsForOrder(orgId: string, orderId: string) {
     const lineRows = await this.dbInstance
       .select({

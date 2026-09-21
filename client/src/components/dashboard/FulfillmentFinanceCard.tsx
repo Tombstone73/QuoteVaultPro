@@ -11,7 +11,7 @@ type FulfillmentFinanceCardProps = {
   shippedToday?: number | null;
   invoicesUnpaid?: number | null;
   overdueLabel?: string | null;
-  overdueAmountCents?: number | null;
+  unpaidAmountCents?: number | null;
   collectedTodayCents?: number | null;
   collectedMonthCents?: number | null;
   invoicesSent?: { today: { count: number; totalCents: number }; thisWeek: { count: number; totalCents: number }; thisMonth: { count: number; totalCents: number } };
@@ -34,7 +34,7 @@ export default function FulfillmentFinanceCard({
   shippedToday,
   invoicesUnpaid,
   overdueLabel,
-  overdueAmountCents,
+  unpaidAmountCents,
   collectedTodayCents,
   collectedMonthCents,
   invoicesSent,
@@ -117,7 +117,7 @@ export default function FulfillmentFinanceCard({
             </div>
             <div className="text-right">
               <div className="font-semibold">{valueOrDash(invoicesUnpaid)}</div>
-              <div className="text-xs text-muted-foreground">{formatCurrency(overdueAmountCents)}</div>
+              <div className="text-xs text-muted-foreground">{formatCurrency(unpaidAmountCents)}</div>
             </div>
           </button>
         </div>

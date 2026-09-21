@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, isNotNull, isNull, lt, not, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
-import { invoices, materials, orders, productionJobs, quotes, vendors } from "@shared/schema";
+import { invoiceEmailLogs, invoices, materials, orders, productionJobs, quotes, vendors } from "@shared/schema";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { getAccountsReceivableReport } from "./accountsReceivableReport";
 import {
@@ -8,7 +8,7 @@ import {
   businessDateForOrderDueFilter,
   getOrganizationTimezone,
 } from "./orderDueDateService";
-import { listPayments } from "./paymentListService";
+import { listPayments, paymentDateWindow } from "./paymentListService";
 
 export type DashboardSummary = {
   criticalAlerts: {
@@ -37,7 +37,7 @@ export type DashboardSummary = {
     readyToShip: number | null;
     shippedToday: number | null;
     invoicesUnpaid: number | null;
-    overdueAmountCents: number | null;
+    unpaidAmountCents: number | null;
     collectedTodayCents: number | null;
     collectedMonthCents: number | null;
     invoicesSent: {
@@ -84,7 +84,7 @@ const DEFAULT_SUMMARY: DashboardSummary = {
     readyToShip: null,
     shippedToday: null,
     invoicesUnpaid: null,
-    overdueAmountCents: null,
+    unpaidAmountCents: null,
     collectedTodayCents: null,
     collectedMonthCents: null,
     invoicesSent: { today: { count: 0, totalCents: 0 }, thisWeek: { count: 0, totalCents: 0 }, thisMonth: { count: 0, totalCents: 0 } },
@@ -125,7 +125,6 @@ export async function getInvoicesSentDashboardMetrics(input: { organizationId: s
     sql`date_trunc(${unit}, ${localNow}) AT TIME ZONE ${input.timezone}`;
   const validSentInvoice = and(
     eq(invoices.organizationId, input.organizationId),
-    isNotNull(invoices.lastSentAt),
     not(inArray(invoices.status, ["void", "voided", "canceled", "cancelled"])),
   );
   const aggregate = (windowStart: SQL) =>
@@ -135,7 +134,15 @@ export async function getInvoicesSentDashboardMetrics(input: { organizationId: s
         totalCents: sql<number>`coalesce(sum(${invoices.totalCents}), 0)::bigint`,
       })
       .from(invoices)
-      .where(and(validSentInvoice, gte(invoices.lastSentAt, windowStart), lt(invoices.lastSentAt, input.now)));
+      .where(and(validSentInvoice, sql`exists (
+        select 1 from ${invoiceEmailLogs}
+        where ${invoiceEmailLogs.organizationId} = ${input.organizationId}
+          and ${invoiceEmailLogs.invoiceId} = ${invoices.id}
+          and ${invoiceEmailLogs.type} = 'invoice_send'
+          and ${invoiceEmailLogs.status} = 'sent'
+          and ${invoiceEmailLogs.sentAt} >= ${windowStart}
+          and ${invoiceEmailLogs.sentAt} < ${input.now}
+      )`));
 
   const [today, thisWeek, thisMonth] = await Promise.all([
     aggregate(start("day")),
@@ -186,11 +193,8 @@ export async function getLowInventoryDashboardItems(
 }
 
 export async function getDashboardSummary(organizationId: string, now = new Date()): Promise<DashboardSummary> {
-  const todayStart = startOfDay(now);
-  const tomorrowStart = addDays(todayStart, 1);
-  const todayStartIso = todayStart.toISOString();
-  const tomorrowStartIso = tomorrowStart.toISOString();
   const organizationTimezone = await getOrganizationTimezone(organizationId);
+  const shipmentToday = paymentDateWindow("today", organizationTimezone, now);
   const dueToday = businessDateForOrderDueFilter("today", now, organizationTimezone);
   const dueTomorrow = businessDateForOrderDueFilter("tomorrow", now, organizationTimezone);
   // One authoritative A/R projection supplies both dashboard overdue metrics.
@@ -356,7 +360,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
 
   // Fulfillment & Finance
   try {
-    summary.fulfillmentFinance.readyToShip = await new FulfillmentDashboardRepo(db).countFulfillmentQueue(organizationId);
+    summary.fulfillmentFinance.readyToShip = await new FulfillmentDashboardRepo(db).countReadyForFulfillment(organizationId);
 
     summary.fulfillmentFinance.shippedToday = await countFrom(
       db
@@ -365,8 +369,8 @@ export async function getDashboardSummary(organizationId: string, now = new Date
         .where(
           and(
             eq(orders.organizationId, organizationId),
-            gte(orders.shippedAt, todayStartIso),
-            lt(orders.shippedAt, tomorrowStartIso),
+            gte(orders.shippedAt, shipmentToday.start!),
+            lt(orders.shippedAt, shipmentToday.endExclusive!),
           ),
         ),
     );
@@ -385,7 +389,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
         ),
     );
 
-    summary.fulfillmentFinance.overdueAmountCents = (await accountsReceivableReport).summary.overdueOutstandingCents;
+    summary.fulfillmentFinance.unpaidAmountCents = (await accountsReceivableReport).summary.totalOutstandingCents;
 
     // The dashboard and Payments page deliberately share the same succeeded-payment
     // predicate and organization-local date windows.

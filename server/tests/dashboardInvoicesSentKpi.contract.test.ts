@@ -4,10 +4,13 @@ import path from "node:path";
 const source = (file: string) => readFileSync(path.resolve(process.cwd(), file), "utf8");
 
 describe("Dashboard invoices-sent KPI contract", () => {
-  test("uses durable canonical send checkpoints, tenant scope, and organization-local aggregate windows", () => {
+  test("uses successful delivery evidence, unique invoice rows, and organization-local aggregate windows", () => {
     const service = source("server/services/dashboardSummaryService.ts");
     expect(service).toContain("getInvoicesSentDashboardMetrics");
-    expect(service).toContain("invoices.lastSentAt");
+    expect(service).toContain("invoiceEmailLogs.sentAt");
+    expect(service).toContain("invoiceEmailLogs.status} = 'sent'");
+    expect(service).toContain("invoiceEmailLogs.type} = 'invoice_send'");
+    expect(service).toContain("select 1 from ${invoiceEmailLogs}");
     expect(service).toContain("eq(invoices.organizationId, input.organizationId)");
     expect(service).toContain("date_trunc(${unit}, ${localNow}) AT TIME ZONE ${input.timezone}");
     expect(service).toContain("sum(${invoices.totalCents})");

@@ -27,7 +27,7 @@ export type DashboardSummary = {
     readyToShip: number | null;
     shippedToday: number | null;
     invoicesUnpaid: number | null;
-    overdueAmountCents: number | null;
+    unpaidAmountCents: number | null;
     collectedTodayCents: number | null;
     collectedMonthCents: number | null;
     invoicesSent: { today: { count: number; totalCents: number }; thisWeek: { count: number; totalCents: number }; thisMonth: { count: number; totalCents: number } };
