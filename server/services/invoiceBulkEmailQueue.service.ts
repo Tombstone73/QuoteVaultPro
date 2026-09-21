@@ -672,7 +672,10 @@ export async function recordInvoiceEmailDeliveryStage(input: {
   await db.execute(sql`
     UPDATE invoice_email_delivery_jobs
     SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
-          'lastStage', ${stage},
+          // jsonb_build_object is polymorphic. PostgreSQL cannot infer an
+          // untyped prepared parameter here, which previously aborted the
+          // worker immediately before the Gmail provider boundary.
+          'lastStage', ${stage}::text,
           'lastStageAt', now()::text
         ),
         updated_at = now()

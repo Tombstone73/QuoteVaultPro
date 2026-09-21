@@ -38,6 +38,10 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(route).toContain('logQueueDeliveryStage("delivery_persistence_completed"');
     expect(route).toContain("recordInvoiceEmailDeliveryStage");
     expect(queue).toContain("lastStage");
+    // PostgreSQL cannot infer a prepared parameter's type for jsonb_build_object
+    // without this explicit text cast. The provider-boundary stage must never
+    // abort a queued send before Gmail is called.
+    expect(queue).toContain("'lastStage', ${stage}::text");
     expect(emailService.indexOf("markInvoiceEmailDeliveryProviderSubmissionStarted")).toBeLessThan(emailService.indexOf("gmail.users.messages.send"));
     expect(route).not.toContain("markInvoiceEmailDeliveryProviderSubmissionStarted");
   });
