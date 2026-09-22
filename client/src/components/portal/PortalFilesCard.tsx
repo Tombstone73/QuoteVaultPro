@@ -3,6 +3,7 @@ import { Download, FileText, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { usePortalDownload } from "@/hooks/usePortalDownload";
 import { portalFileDownloadUrl, type PortalFileDto } from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
@@ -34,6 +35,7 @@ export default function PortalFilesCard({
   entity: "invoices" | "orders" | "quotes";
   entityId: string;
 }) {
+  const { download, downloading } = usePortalDownload();
   return (
     <Card>
       <CardHeader>
@@ -80,11 +82,9 @@ export default function PortalFilesCard({
                     ) : null}
                   </div>
                   {file.downloadAvailable ? (
-                    <Button asChild variant="outline" className="w-full md:w-auto">
-                      <a href={portalFileDownloadUrl(entity, entityId, file.id)} aria-label={`Download ${file.displayName}`}>
-                        <Download className="mr-2 h-4 w-4" />
-                        Download
-                      </a>
+                    <Button type="button" variant="outline" className="w-full md:w-auto" disabled={downloading} onClick={() => void download(portalFileDownloadUrl(entity, entityId, file.id), file.displayName)} aria-label={`Download ${file.displayName}`}>
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
                     </Button>
                   ) : (
                     <Button variant="outline" className="w-full md:w-auto" disabled>

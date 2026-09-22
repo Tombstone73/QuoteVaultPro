@@ -5,6 +5,7 @@ import { AlertCircle, ArrowRight, Download, FileCheck, FileText, Loader2, Packag
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { usePortalDownload } from "@/hooks/usePortalDownload";
 import {
   portalFileDownloadUrl,
   usePortalDashboard,
@@ -187,6 +188,7 @@ function ProofItem({ proof }: { proof: PortalProofDto }) {
 }
 
 function FileItem({ file }: { file: PortalDashboardFileDto }) {
+  const { download, downloading } = usePortalDownload();
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border bg-background p-4">
       <div className="min-w-0">
@@ -196,13 +198,8 @@ function FileItem({ file }: { file: PortalDashboardFileDto }) {
         </p>
       </div>
       {file.downloadAvailable ? (
-        <Button asChild variant="outline" size="icon" title={`Download ${file.displayName}`}>
-          <a
-            href={portalFileDownloadUrl(`${file.entityType}s` as "invoices" | "orders" | "quotes", file.entityId, file.id)}
-            aria-label={`Download ${file.displayName}`}
-          >
-            <Download className="h-4 w-4" />
-          </a>
+        <Button type="button" variant="outline" size="icon" title={`Download ${file.displayName}`} aria-label={`Download ${file.displayName}`} disabled={downloading} onClick={() => void download(portalFileDownloadUrl(`${file.entityType}s` as "invoices" | "orders" | "quotes", file.entityId, file.id), file.displayName)}>
+          <Download className="h-4 w-4" />
         </Button>
       ) : null}
     </div>

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { usePortalDownload } from "@/hooks/usePortalDownload";
 import {
   portalDashboardKeys,
   portalOrderKeys,
@@ -36,6 +37,7 @@ export default function PortalProofDetailPage() {
   const { id } = useParams<{ id: string }>();
   const proofId = id || "";
   const queryClient = useQueryClient();
+  const { download, downloading } = usePortalDownload();
   const proofQuery = usePortalProof(proofId);
   const action = usePortalProofAction(proofId);
   const [note, setNote] = useState("");
@@ -123,11 +125,9 @@ export default function PortalProofDetailPage() {
                   {proof.previewAvailable ? "Proof file is ready to view." : "Proof file is available for download."}
                 </p>
                 <p className="mt-1 text-sm text-muted-foreground">Open the proof file to review the artwork before responding.</p>
-                <Button asChild className="mt-4" variant="outline">
-                  <a href={portalProofFileUrl(proof.id)} target="_blank" rel="noreferrer">
-                    <Download className="mr-2 h-4 w-4" />
-                    Open Proof File
-                  </a>
+                <Button type="button" className="mt-4" variant="outline" disabled={downloading} onClick={() => void download(portalProofFileUrl(proof.id), `proof-v${proof.versionNumber}.pdf`)}>
+                  {downloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                  Download Proof File
                 </Button>
               </div>
             ) : (

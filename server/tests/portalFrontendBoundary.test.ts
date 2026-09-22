@@ -53,6 +53,24 @@ describe("portal frontend API boundary", () => {
     expect(stripeDialog).toContain("/payments/stripe/confirm");
   });
 
+  test("portal downloads use the authenticated API fetch helper instead of API navigations", () => {
+    const downloadHook = read("client/src/hooks/usePortalDownload.ts");
+    const portalDownloadSurfaces = [
+      "client/src/pages/portal/dashboard.tsx",
+      "client/src/pages/portal/documents.tsx",
+      "client/src/pages/portal/invoice-detail.tsx",
+      "client/src/pages/portal/invoices.tsx",
+      "client/src/pages/portal/proof-detail.tsx",
+      "client/src/components/portal/PortalFilesCard.tsx",
+    ].map(read).join("\n");
+
+    expect(downloadHook).toContain('import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload"');
+    expect(downloadHook).toContain("title: \"Download unavailable\"");
+    expect(portalDownloadSurfaces).toContain("usePortalDownload");
+    expect(portalDownloadSurfaces).not.toContain("window.location");
+    expect(portalDownloadSurfaces).not.toContain("target=\"_blank\"");
+  });
+
   test("portal payment settlement refreshes invoice list, detail, and payments", () => {
     const invoiceDetail = read("client/src/pages/portal/invoice-detail.tsx");
 

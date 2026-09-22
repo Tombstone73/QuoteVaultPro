@@ -4,6 +4,7 @@ import { Download, FileText, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { usePortalDownload } from "@/hooks/usePortalDownload";
 import { portalFileDownloadUrl, usePortalDashboard } from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
@@ -21,6 +22,7 @@ function detailPath(entityType: "invoice" | "order" | "quote", entityId: string)
 
 export default function PortalDocumentsPage() {
   const { data, isLoading, error } = usePortalDashboard();
+  const { download, downloading } = usePortalDownload();
   const files = data?.recentFiles ?? [];
 
   if (isLoading) {
@@ -77,11 +79,9 @@ export default function PortalDocumentsPage() {
                   <Link to={detailPath(file.entityType, file.entityId)}>Open</Link>
                 </Button>
                 {file.downloadAvailable ? (
-                  <Button asChild size="sm">
-                    <a href={portalFileDownloadUrl(`${file.entityType}s` as "invoices" | "orders" | "quotes", file.entityId, file.id)}>
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </a>
+                  <Button type="button" size="sm" disabled={downloading} onClick={() => void download(portalFileDownloadUrl(`${file.entityType}s` as "invoices" | "orders" | "quotes", file.entityId, file.id), file.displayName)}>
+                    <Download className="mr-2 h-4 w-4" />
+                    Download
                   </Button>
                 ) : null}
               </div>

@@ -5,6 +5,9 @@ import type { PortalInvoiceDto } from "@/hooks/usePortal";
 
 Object.assign(globalThis, { TextDecoder, TextEncoder, IS_REACT_ACT_ENVIRONMENT: true });
 jest.mock("@/components/payments/StripePayDialog", () => () => null);
+jest.mock("@/hooks/usePortalDownload", () => ({
+  usePortalDownload: () => ({ download: jest.fn(), downloading: false }),
+}));
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");
 const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
@@ -122,7 +125,8 @@ describe("V1 Portal invoice list presentation", () => {
     expect(cells[6]?.className).toContain("text-right");
     expect(cells[7]?.className).toContain("text-right");
     expect(cells[9]?.querySelector('a[href="/portal/invoices/invoice-1"]')?.textContent).toContain("View invoice");
-    expect(cells[9]?.querySelector('a[href="/api/portal/invoices/invoice-1/pdf?download=1"]')).not.toBeNull();
+    expect(cells[9]?.querySelector('button[aria-label="Download PDF for invoice INV-20155"]')).not.toBeNull();
+    expect(cells[9]?.querySelector('a[href="/api/portal/invoices/invoice-1/pdf?download=1"]')).toBeNull();
   });
 
   test("truncates long desktop Job and PO values without dropping their full titles", () => {
@@ -160,10 +164,10 @@ describe("V1 Portal invoice list presentation", () => {
     expect(card?.querySelectorAll("dl > div")).toHaveLength(4);
     const invoiceLinks = [...(card?.querySelectorAll('a[href="/portal/invoices/invoice-1"]') ?? [])];
     expect(invoiceLinks.some((link) => link.textContent?.includes("View invoice"))).toBe(true);
-    expect(card?.querySelector('a[href="/api/portal/invoices/invoice-1/pdf?download=1"]')?.textContent).toContain("Download");
-    const actionLinks = [...(card?.querySelectorAll("a.min-h-11") ?? [])];
-    expect(actionLinks).toHaveLength(2);
-    expect(actionLinks.every((link) => link.className.includes("flex-1"))).toBe(true);
+    expect(card?.querySelector('button[aria-label="Download PDF for invoice INV-20155"]')?.textContent).toContain("Download");
+    const actions = [...(card?.querySelectorAll("a.min-h-11, button.min-h-11") ?? [])];
+    expect(actions).toHaveLength(2);
+    expect(actions.every((action) => action.className.includes("flex-1"))).toBe(true);
     expect(card?.querySelector(".break-words")).not.toBeNull();
     expect(card?.querySelector("table")).toBeNull();
   });

@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import StripePayDialog from "@/components/payments/StripePayDialog";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
+import { usePortalDownload } from "@/hooks/usePortalDownload";
 import { portalInvoiceKeys, portalInvoicePdfUrl, usePortalInvoices, usePortalSession, type PortalInvoiceDto } from "@/hooks/usePortal";
 
 export type PortalInvoiceInfoColumnId = "po" | "job" | "issued" | "due" | "amountDue" | "total" | "status";
@@ -107,10 +108,11 @@ export function nextPortalInvoiceSort(current: PortalInvoiceSortPreference, key:
 
 function InvoiceActions({ invoice, mobile = false }: { invoice: PortalInvoiceDto; mobile?: boolean }) {
   const mobileClass = mobile ? "min-h-11 flex-1" : undefined;
+  const { download, downloading } = usePortalDownload();
   return <div className={`flex gap-2 ${mobile ? "w-full" : "justify-end"}`}>
     <Button asChild variant="outline" size="sm" className={mobileClass}><Link to={`/portal/invoices/${invoice.id}`}>View invoice</Link></Button>
-    {invoice.pdfAvailable ? <Button asChild variant="ghost" size={mobile ? "sm" : "icon"} className={mobileClass} title="Download invoice PDF">
-      <a href={portalInvoicePdfUrl(invoice.id, true)} target="_blank" rel="noreferrer" aria-label={`Download PDF for invoice ${invoiceLabel(invoice)}`}><Download className="h-4 w-4" />{mobile ? <span>Download</span> : null}</a>
+    {invoice.pdfAvailable ? <Button type="button" variant="ghost" size={mobile ? "sm" : "icon"} className={mobileClass} title="Download invoice PDF" aria-label={`Download PDF for invoice ${invoiceLabel(invoice)}`} disabled={downloading} onClick={() => void download(portalInvoicePdfUrl(invoice.id, true), `invoice-${invoiceLabel(invoice)}.pdf`)}>
+      <Download className="h-4 w-4" />{mobile ? <span>Download</span> : null}
     </Button> : null}
   </div>;
 }

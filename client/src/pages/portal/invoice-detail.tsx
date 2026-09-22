@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
-import { useToast } from "@/hooks/use-toast";
+import { usePortalDownload } from "@/hooks/usePortalDownload";
 import {
   portalInvoiceKeys,
   portalInvoicePdfUrl,
@@ -71,9 +71,8 @@ export default function PortalInvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const invoiceId = id || "";
   const queryClient = useQueryClient();
-  const { toast } = useToast();
+  const { download, downloading } = usePortalDownload();
   const [payOpen, setPayOpen] = useState(false);
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const invoiceQuery = usePortalInvoice(invoiceId);
   const paymentsQuery = usePortalInvoicePayments(invoiceId);
@@ -98,32 +97,7 @@ export default function PortalInvoiceDetailPage() {
 
   const handleDownloadPdf = async () => {
     if (!invoiceId) return;
-    setDownloadingPdf(true);
-    try {
-      const response = await fetch(portalInvoicePdfUrl(invoiceId, true), { credentials: "include" });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload?.message || "Could not download invoice PDF");
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `invoice-${invoice?.invoiceNumber || invoiceId}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (error: any) {
-      toast({
-        title: "PDF unavailable",
-        description: error?.message || "Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setDownloadingPdf(false);
-    }
+    await download(portalInvoicePdfUrl(invoiceId, true), `invoice-${invoice?.invoiceNumber || invoiceId}.pdf`);
   };
 
   if (invoiceQuery.isLoading) {
@@ -183,8 +157,8 @@ export default function PortalInvoiceDetailPage() {
         </div>
 
         <div className="flex gap-2">
-          <Button variant="outline" onClick={handleDownloadPdf} disabled={!invoice.pdfAvailable || downloadingPdf}>
-            {downloadingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+          <Button variant="outline" onClick={handleDownloadPdf} disabled={!invoice.pdfAvailable || downloading}>
+            {downloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
             PDF
           </Button>
           <Button variant="outline" onClick={() => void refreshInvoiceState()}>
