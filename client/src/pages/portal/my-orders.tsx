@@ -29,7 +29,9 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
   return "outline";
 }
 
-function OrderRow({ order }: { order: PortalOrderListDto }) {
+export function OrderRow({ order }: { order: PortalOrderListDto }) {
+  const jobLabel = order.jobLabel?.trim() || "—";
+  const customerPoNumber = order.customerPoNumber?.trim() || "—";
   return (
     <div className="grid gap-4 border-b px-4 py-4 last:border-b-0 md:grid-cols-[1fr_auto_auto] md:items-center">
       <div className="min-w-0">
@@ -45,10 +47,13 @@ function OrderRow({ order }: { order: PortalOrderListDto }) {
             </Badge>
           ) : null}
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Created {formatDate(order.createdAt)}
-          {order.customerPoNumber ? ` / PO ${order.customerPoNumber}` : ""}
-        </p>
+        <div className="mt-2 min-w-0 space-y-0.5 text-sm">
+          <p className="line-clamp-2 break-words font-medium text-foreground md:truncate" title={order.jobLabel?.trim() || undefined}>
+            <span className="text-muted-foreground">Job:</span> {jobLabel}
+          </p>
+          <p className="truncate text-muted-foreground" title={order.customerPoNumber?.trim() || undefined}>PO: {customerPoNumber}</p>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">Created {formatDate(order.createdAt)}</p>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
           <span>{order.itemCount} item{order.itemCount === 1 ? "" : "s"}</span>
           <span>{order.proofStatusSummary.statusLabel}</span>

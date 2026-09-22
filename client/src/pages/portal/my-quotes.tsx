@@ -28,7 +28,9 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
   return "outline";
 }
 
-function QuoteRow({ quote }: { quote: PortalQuoteListDto }) {
+export function QuoteRow({ quote }: { quote: PortalQuoteListDto }) {
+  const jobLabel = quote.jobLabel?.trim() || "—";
+  const customerPoNumber = quote.customerPoNumber?.trim() || "—";
   return (
     <div className="grid gap-4 border-b px-4 py-4 last:border-b-0 md:grid-cols-[1fr_auto_auto] md:items-center">
       <div className="min-w-0">
@@ -37,6 +39,12 @@ function QuoteRow({ quote }: { quote: PortalQuoteListDto }) {
             Quote {quote.displayNumber ?? quote.quoteNumber ?? quote.id.slice(0, 8)}
           </Link>
           <Badge variant={statusVariant(quote.displayStatus)}>{quote.displayStatus}</Badge>
+        </div>
+        <div className="mt-2 min-w-0 space-y-0.5 text-sm">
+          <p className="line-clamp-2 break-words font-medium text-foreground md:truncate" title={quote.jobLabel?.trim() || undefined}>
+            <span className="text-muted-foreground">Job:</span> {jobLabel}
+          </p>
+          <p className="truncate text-muted-foreground" title={quote.customerPoNumber?.trim() || undefined}>PO: {customerPoNumber}</p>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
           Created {formatDate(quote.createdAt)} / {expirationLabel(quote)}

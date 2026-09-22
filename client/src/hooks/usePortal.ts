@@ -112,6 +112,7 @@ export type PortalOrderListDto = {
   orderNumber: string;
   displayNumber: string;
   numberCore: number | null;
+  jobLabel: string | null;
   customerPoNumber: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -156,6 +157,8 @@ export type PortalQuoteListDto = {
   quoteNumber: number | null;
   displayNumber: string | null;
   numberCore: number | null;
+  jobLabel: string | null;
+  customerPoNumber: string | null;
   createdAt: string | null;
   validUntil: string | null;
   displayStatus: string;

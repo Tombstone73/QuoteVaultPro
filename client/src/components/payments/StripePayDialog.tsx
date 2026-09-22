@@ -488,11 +488,11 @@ export default function StripePayDialog(props: {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-h-[calc(100dvh-4rem)]">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{props.previewMode ? 'Payment preview' : isMultiInvoice ? 'Pay Selected Invoices' : 'Pay Invoice'}</DialogTitle>
         </DialogHeader>
-        {isMultiInvoice ? <div className="space-y-2 rounded-md border p-3 text-sm"><p className="font-medium">{props.invoiceIds?.length} invoices selected</p>{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex justify-between"><span>Invoice {invoice.invoiceNumber}</span><span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}<div className="flex justify-between border-t pt-2 font-semibold"><span>Total Due</span><span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
+        {isMultiInvoice ? <div className="flex min-h-0 shrink flex-col rounded-md border text-sm"><p className="shrink-0 px-3 pb-2 pt-3 font-medium">{props.invoiceIds?.length} invoices selected</p><div className="min-h-0 max-h-[min(15rem,32dvh)] space-y-2 overflow-y-auto overscroll-contain px-3 pb-3" data-testid="stripe-invoice-scroll-region">{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex min-w-0 justify-between gap-4"><span className="min-w-0 truncate">Invoice {invoice.invoiceNumber}</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}</div><div className="flex shrink-0 justify-between gap-4 border-t px-3 py-3 font-semibold"><span>Total Due</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
 
         {(state === 'loading_runtime_config' || state === 'creating_intent') && (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>

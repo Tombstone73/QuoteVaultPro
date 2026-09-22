@@ -88,4 +88,14 @@ describe("portal frontend API boundary", () => {
     expect(stripeDialog).not.toContain("clientSecret.slice");
     expect(stripeDialog).not.toContain("stripeAccountId: props.stripeAccountId");
   });
+
+  test("grouped checkout bounds only the invoice list while keeping its total visible", () => {
+    const stripeDialog = read("client/src/components/payments/StripePayDialog.tsx");
+
+    expect(stripeDialog).toContain("max-h-[calc(100dvh-2rem)]");
+    expect(stripeDialog).toContain('data-testid="stripe-invoice-scroll-region"');
+    expect(stripeDialog).toContain("overflow-y-auto overscroll-contain");
+    expect(stripeDialog.indexOf('data-testid="stripe-invoice-scroll-region"')).toBeLessThan(stripeDialog.indexOf("Total Due"));
+    expect(stripeDialog).toContain("Staff preview: payment submission disabled. No payment processor request, payment record, or invoice update will be created.");
+  });
 });

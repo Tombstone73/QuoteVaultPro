@@ -2,6 +2,7 @@ import React from "react";
 import { TextDecoder, TextEncoder } from "node:util";
 
 import type { PortalInvoiceDto } from "@/hooks/usePortal";
+import { mergeTableColumnConfig } from "@/hooks/useTableColumnConfig";
 
 Object.assign(globalThis, { TextDecoder, TextEncoder, IS_REACT_ACT_ENVIRONMENT: true });
 jest.mock("@/components/payments/StripePayDialog", () => () => null);
@@ -81,7 +82,8 @@ describe("V1 Portal invoice list presentation", () => {
       "",
       "Invoice",
       "PO #",
-      "Job / Order",
+      "Job Info",
+      "Order #",
       "Issued",
       "Due",
       "Amount Due",
@@ -95,14 +97,15 @@ describe("V1 Portal invoice list presentation", () => {
     expect(document.querySelector("table")?.className).toContain("min-w-[72rem]");
     expect([...document.querySelectorAll("col")].map((column) => column.className)).toEqual([
       "w-[4%]",
+      "w-[8%]",
+      "w-[9%]",
+      "w-[15%]",
+      "w-[9%]",
+      "w-[9%]",
       "w-[9%]",
       "w-[10%]",
-      "w-[16%]",
-      "w-[10%]",
-      "w-[10%]",
-      "w-[11%]",
-      "w-[10%]",
-      "w-[10%]",
+      "w-[9%]",
+      "w-[8%]",
       "w-[10%]",
     ]);
   });
@@ -111,22 +114,22 @@ describe("V1 Portal invoice list presentation", () => {
     render(React.createElement(PortalInvoiceDesktopTable, { invoices: [invoice()] }));
 
     const cells = [...document.querySelectorAll("tbody td")];
-    expect(cells).toHaveLength(10);
+    expect(cells).toHaveLength(11);
     expect(cells[0]?.querySelector('input[aria-label="Select invoice INV-20155"]')).not.toBeNull();
     expect(cells[1]?.textContent).toBe("INV-20155");
     expect(cells[2]?.textContent).toBe("152235");
     expect(cells[3]?.textContent).toContain("Titan Revolution Marketing Signs");
-    expect(cells[3]?.textContent).toContain("ORD-20047");
-    expect(cells[4]?.textContent).toContain("Sep 7, 2026");
-    expect(cells[5]?.textContent).toContain("Sep 22, 2026");
-    expect(cells[6]?.textContent).toBe("$69.00");
+    expect(cells[4]?.textContent).toBe("ORD-20047");
+    expect(cells[5]?.textContent).toContain("Sep 7, 2026");
+    expect(cells[6]?.textContent).toContain("Sep 22, 2026");
     expect(cells[7]?.textContent).toBe("$69.00");
-    expect(cells[8]?.textContent).toBe("Unpaid");
-    expect(cells[6]?.className).toContain("text-right");
+    expect(cells[8]?.textContent).toBe("$69.00");
+    expect(cells[9]?.textContent).toBe("Unpaid");
     expect(cells[7]?.className).toContain("text-right");
-    expect(cells[9]?.querySelector('a[href="/portal/invoices/invoice-1"]')?.textContent).toContain("View invoice");
-    expect(cells[9]?.querySelector('button[aria-label="Download PDF for invoice INV-20155"]')).not.toBeNull();
-    expect(cells[9]?.querySelector('a[href="/api/portal/invoices/invoice-1/pdf?download=1"]')).toBeNull();
+    expect(cells[8]?.className).toContain("text-right");
+    expect(cells[10]?.querySelector('a[href="/portal/invoices/invoice-1"]')?.textContent).toContain("View invoice");
+    expect(cells[10]?.querySelector('button[aria-label="Download PDF for invoice INV-20155"]')).not.toBeNull();
+    expect(cells[10]?.querySelector('a[href="/api/portal/invoices/invoice-1/pdf?download=1"]')).toBeNull();
   });
 
   test("truncates long desktop Job and PO values without dropping their full titles", () => {
@@ -147,8 +150,9 @@ describe("V1 Portal invoice list presentation", () => {
     expect(cells[1]?.textContent).toBe("20352");
     expect(cells[2]?.textContent).toBe("—");
     expect(cells[3]?.textContent).toBe("—");
-    expect(cells[6]?.textContent).toBe("$0.00");
-    expect(cells[8]?.textContent).toBe("Paid");
+    expect(cells[4]?.textContent).toBe("—");
+    expect(cells[7]?.textContent).toBe("$0.00");
+    expect(cells[9]?.textContent).toBe("Paid");
     expect(cells[0]?.querySelector("input")?.disabled).toBe(true);
   });
 
@@ -160,7 +164,7 @@ describe("V1 Portal invoice list presentation", () => {
     expect(card?.textContent).toContain("Invoice INV-20155");
     expect(card?.textContent).toContain("Titan Revolution Marketing Signs");
     expect(card?.textContent).toContain("PO # 152235");
-    expect(card?.textContent).toContain("Order ORD-20047");
+    expect(card?.textContent).toContain("Order # ORD-20047");
     expect(card?.querySelectorAll("dl > div")).toHaveLength(4);
     const invoiceLinks = [...(card?.querySelectorAll('a[href="/portal/invoices/invoice-1"]') ?? [])];
     expect(invoiceLinks.some((link) => link.textContent?.includes("View invoice"))).toBe(true);
@@ -178,10 +182,10 @@ describe("V1 Portal invoice list presentation", () => {
       preference: { key: "po", direction: "asc" },
     }));
 
-    expect(document.querySelectorAll("thead button")).toHaveLength(8);
+    expect(document.querySelectorAll("thead button")).toHaveLength(9);
     expect(document.querySelector('th[aria-sort="ascending"]')?.textContent).toContain("PO #");
     expect(document.querySelector('th[aria-sort="ascending"] .lucide-arrow-up')).not.toBeNull();
-    expect([...document.querySelectorAll('th[aria-sort="none"]')]).toHaveLength(7);
+    expect([...document.querySelectorAll('th[aria-sort="none"]')]).toHaveLength(8);
     expect([...document.querySelectorAll("thead th")].at(-1)?.textContent).toBe("Actions");
     expect([...document.querySelectorAll("thead th")].at(-1)?.querySelector("button")).toBeNull();
   });
@@ -192,7 +196,7 @@ describe("V1 Portal invoice list presentation", () => {
     const labels = [...document.querySelectorAll("thead th")].map((header) => header.textContent);
     expect(labels[0]).toBe("");
     expect(labels[1]).toBe("Invoice");
-    expect(labels.slice(2, -1)).toEqual(["Status", "Total", "Amount Due", "Due", "Issued", "Job / Order", "PO #"]);
+    expect(labels.slice(2, -1)).toEqual(["Status", "Total", "Amount Due", "Due", "Issued", "Order #", "Job Info", "PO #"]);
     expect(labels.at(-1)).toBe("Actions");
   });
 });
@@ -216,6 +220,7 @@ describe("V1 Portal invoice sorting and preferences", () => {
     expect(sortPortalInvoices(rows, { key: "invoice", direction: "asc" }).map((row) => row.id)).toEqual(["a", "m", "z"]);
     expect(sortPortalInvoices(rows, { key: "po", direction: "asc" }).map((row) => row.id)).toEqual(["a", "z", "m"]);
     expect(sortPortalInvoices(rows, { key: "job", direction: "asc" }).map((row) => row.id)).toEqual(["m", "a", "z"]);
+    expect(sortPortalInvoices(rows, { key: "order", direction: "asc" }).map((row) => row.id)).toEqual(["z", "a", "m"]);
     for (const key of ["issued", "due", "amountDue", "total"] as const) {
       expect(sortPortalInvoices(rows, { key, direction: "asc" }).map((row) => row.id)).toEqual(["a", "m", "z"]);
     }
@@ -237,6 +242,34 @@ describe("V1 Portal invoice sorting and preferences", () => {
     expect(readPortalInvoiceSortPreference("user-1", "customer-1")).toEqual(DEFAULT_PORTAL_INVOICE_SORT);
     localStorage.setItem(portalInvoiceSortStorageKey("user-1", "customer-1"), "{malformed");
     expect(readPortalInvoiceSortPreference("user-1", "customer-1")).toEqual(DEFAULT_PORTAL_INVOICE_SORT);
+  });
+
+  test("preserves the stable Job preference key and adds the new Order column to saved layouts", () => {
+    const previousLayout = DEFAULT_PORTAL_INVOICE_COLUMNS
+      .filter((column) => column.id !== "order")
+      .map((column, order) => ({ ...column, label: column.id === "job" ? "Job / Order" : column.label, visible: column.id !== "job", required: true, order }));
+    const merged = mergeTableColumnConfig(DEFAULT_PORTAL_INVOICE_COLUMNS, previousLayout);
+
+    expect(merged.filter((column) => column.id === "job")).toEqual([
+      expect.objectContaining({ id: "job", label: "Job Info", visible: false }),
+    ]);
+    expect(merged.at(-1)).toEqual(expect.objectContaining({ id: "order", label: "Order #", visible: true }));
+  });
+
+  test("renders only informational columns selected by the customer", () => {
+    const columns = DEFAULT_PORTAL_INVOICE_COLUMNS.map((column) => ({
+      ...column,
+      visible: column.id === "job" || column.id === "order",
+    }));
+    render(React.createElement(PortalInvoiceDesktopTable, { invoices: [invoice()], columns }));
+
+    expect([...document.querySelectorAll("thead th")].map((header) => header.textContent)).toEqual([
+      "",
+      "Invoice",
+      "Job Info",
+      "Order #",
+      "Actions",
+    ]);
   });
 });
 

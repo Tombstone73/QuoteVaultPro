@@ -353,6 +353,7 @@ export type OrderPortalListDto = {
   orderNumber: string;
   displayNumber: string;
   numberCore: number | null;
+  jobLabel: string | null;
   customerPoNumber: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -402,6 +403,8 @@ export type QuotePortalListDto = {
   quoteNumber: number | null;
   displayNumber: string | null;
   numberCore: number | null;
+  jobLabel: string | null;
+  customerPoNumber: string | null;
   createdAt: string | null;
   validUntil: string | null;
   displayStatus: string;
@@ -579,6 +582,7 @@ type OrderPortalRow = Pick<
   | "orderNumber"
   | "displayNumber"
   | "numberCore"
+  | "label"
   | "poNumber"
   | "createdAt"
   | "updatedAt"
@@ -630,6 +634,7 @@ type QuotePortalRow = Pick<
   | "quoteNumber"
   | "displayNumber"
   | "numberCore"
+  | "label"
   | "createdAt"
   | "validUntil"
   | "status"
@@ -3768,6 +3773,7 @@ function mapOrderDetail(
       legacyNumber: order.orderNumber,
     }),
     numberCore: order.numberCore,
+    jobLabel: order.label?.trim() || null,
     customerPoNumber: order.poNumber ?? null,
     createdAt: toIso(order.createdAt),
     updatedAt: toIso(order.updatedAt),
@@ -3850,6 +3856,7 @@ export async function listPortalOrders(req: Request): Promise<OrderPortalListDto
       orderNumber: orders.orderNumber,
       displayNumber: orders.displayNumber,
       numberCore: orders.numberCore,
+      label: orders.label,
       poNumber: orders.poNumber,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
@@ -3898,6 +3905,7 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
       orderNumber: orders.orderNumber,
       displayNumber: orders.displayNumber,
       numberCore: orders.numberCore,
+      label: orders.label,
       poNumber: orders.poNumber,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
@@ -3950,6 +3958,7 @@ function mapQuoteDetail(
   quote: QuotePortalRow,
   lineItems: QuoteLineItemPortalRow[],
   workflowState: QuoteWorkflowPortalRow | null = null,
+  customerPoNumber: string | null = null,
 ): QuotePortalDetailDto {
   const displayStatus = mapPortalQuoteStatus({
     status: quote.status,
@@ -3984,6 +3993,8 @@ function mapQuoteDetail(
       legacyNumber: quote.quoteNumber,
     }),
     numberCore: quote.numberCore,
+    jobLabel: quote.label?.trim() || null,
+    customerPoNumber,
     createdAt: toIso(quote.createdAt),
     validUntil: toIso(quote.validUntil),
     displayStatus,
@@ -4034,6 +4045,24 @@ async function loadQuoteLineItems(quoteIds: string[]) {
     byQuoteId.set(row.quoteId, list);
   }
   return byQuoteId;
+}
+
+async function loadConvertedQuotePurchaseOrders(scope: Pick<PortalScope, "organizationId" | "customerId">, quoteRows: QuotePortalRow[]) {
+  const convertedOrderIds = Array.from(new Set(
+    quoteRows.map((quote) => quote.convertedToOrderId).filter((id): id is string => Boolean(id)),
+  ));
+  if (convertedOrderIds.length === 0) return new Map<string, string | null>();
+
+  const rows = await db
+    .select({ id: orders.id, poNumber: orders.poNumber })
+    .from(orders)
+    .where(and(
+      eq(orders.organizationId, scope.organizationId),
+      eq(orders.customerId, scope.customerId),
+      inArray(orders.id, convertedOrderIds),
+    ));
+
+  return new Map(rows.map((order) => [order.id, order.poNumber?.trim() || null]));
 }
 
 async function loadQuoteWorkflowStates(quoteIds: string[]) {
@@ -4169,6 +4198,7 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
+      label: quotes.label,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -4210,8 +4240,14 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       })),
   });
 
+  const convertedOrderPoById = await loadConvertedQuotePurchaseOrders(scope, visibleRows.map(({ quote }) => quote));
   const dtoRows = visibleRows.map(({ quote, workflowState }) =>
-    mapQuoteList(mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowStatesByQuoteId.get(quote.id) ?? null)),
+    mapQuoteList(mapQuoteDetail(
+      quote,
+      lineItemsByQuoteId.get(quote.id) ?? [],
+      workflowState,
+      quote.convertedToOrderId ? convertedOrderPoById.get(quote.convertedToOrderId) ?? null : null,
+    )),
   );
   await logPortalQuoteHydrationTrace({
     req,
@@ -4244,6 +4280,7 @@ export async function getPortalCustomerQuoteDebug(organizationId: string, custom
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
+      label: quotes.label,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -4311,6 +4348,7 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
+      label: quotes.label,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -4340,7 +4378,13 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
   }
 
   const lineItemsByQuoteId = await loadQuoteLineItems([quote.id]);
-  return mapQuoteDetail(quote, lineItemsByQuoteId.get(quote.id) ?? [], workflowState);
+  const convertedOrderPoById = await loadConvertedQuotePurchaseOrders(scope, [quote]);
+  return mapQuoteDetail(
+    quote,
+    lineItemsByQuoteId.get(quote.id) ?? [],
+    workflowState,
+    quote.convertedToOrderId ? convertedOrderPoById.get(quote.convertedToOrderId) ?? null : null,
+  );
 }
 
 function sanitizePortalActionNote(value: unknown): string | null {
@@ -4443,6 +4487,7 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
       quoteNumber: quotes.quoteNumber,
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
+      label: quotes.label,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
