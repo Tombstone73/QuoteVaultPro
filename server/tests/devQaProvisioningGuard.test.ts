@@ -51,8 +51,8 @@ describe("DEV QA full-access provisioning", () => {
     const plan = devQaM78iOperationalProvisioningPlan(getDevQaProvisioningConfig(devEnv));
     expect(plan.permissionSet).toMatchObject({ name: DEV_QA_M78I_PERMISSION_SET_NAME, principalKind: "staff" });
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
-    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price", "production.output.reject", "production.run.create", "production.run.execute"]));
-    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "communications.configure"]));
+    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["proof.view", "proof.prepare", "proof.issue", "fulfillment.pickup", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price", "production.output.reject", "production.run.create", "production.run.execute"]));
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.adopt", "artwork.view", "artwork.assign", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal", "pricing.configure", "pricing.publish", "route.manageTemplates", "payment.record", "refund.issue", "invoice.send", "communications.configure", "platform.admin" as never]));
   });
 
   test("keeps the M7.8I database administrator floor on a separate non-interactive DEV identity", () => {

@@ -14,9 +14,10 @@ export const DEV_QA_M78I_OPERATIONAL_CAPABILITIES = Object.freeze([
   "organization.configure",
   "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue", "payment.view",
   "route.view", "route.advance",
+  "proof.view", "proof.prepare", "proof.issue",
   "prepress.view", "prepress.work", "prepress.complete",
   "production.view", "production.work", "production.complete", "production.hold", "production.rework", "production.note", "production.output.reject", "production.run.create", "production.run.execute",
-  "fulfillment.view", "fulfillment.ship", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price",
+  "fulfillment.view", "fulfillment.pickup", "fulfillment.ship", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price",
 ] as const satisfies readonly Capability[]);
 export const DEV_QA_M78I_PERMISSION_SET_NAME = "DEV QA M7.8I Operations";
 export const DEV_QA_M78I_PERMISSION_SET_DESCRIPTION = "Dedicated DEV-only least-privilege authority for synthetic M7.8I live validation.";

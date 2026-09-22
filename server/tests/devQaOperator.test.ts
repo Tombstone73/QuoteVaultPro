@@ -82,8 +82,14 @@ describe("guarded DEV QA operator", () => {
     expect(() => approvedDevQaProfile("arbitrary-admin")).toThrow();
   });
 
-  test("normal m78i excludes fixture and permission-administration authority", () => {
-    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).not.toEqual(expect.arrayContaining(["artwork.adopt", "pricing.configure", "pricing.publish", "route.manageTemplates", "permissions.manageSets", "permissions.assignStaff"]));
+  test("normal m78i contains only the reviewed operational Proofing and Pickup additions", () => {
+    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).toEqual(expect.arrayContaining(["proof.view", "proof.prepare", "proof.issue", "fulfillment.pickup"]));
+    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).not.toEqual(expect.arrayContaining([
+      "artwork.adopt", "pricing.configure", "pricing.publish", "route.manageTemplates",
+      "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal",
+      "invoice.send", "communications.configure", "payment.record", "refund.issue",
+      "artwork.view", "artwork.assign", "platform.admin" as never,
+    ]));
   });
 
   test("pricing fixture adds only the two approved pricing capabilities", () => {
