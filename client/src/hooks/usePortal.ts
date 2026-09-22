@@ -17,6 +17,7 @@ export type PortalSessionDto = {
   staffPreview: {
     active: boolean;
     actorUserId: string;
+    canExecutePayments: boolean;
     startedAt: string;
     expiresAt: string;
     returnTo: string;

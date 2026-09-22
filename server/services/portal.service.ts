@@ -61,6 +61,7 @@ import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 import { finalizeStripeCustomerPaymentBatch } from "./stripeCustomerPaymentBatchFinalization.service";
 import { getCustomerStatement, type CustomerStatement } from "./customerStatement.service";
 import { customerStatementPdfFilename, generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
+import { canExecuteStaffPortalPreviewPayment, PORTAL_PREVIEW_PAYMENT_EXECUTE } from "./staffPortalPreviewService";
 
 export type PortalSessionDto = {
   userId: string;
@@ -71,6 +72,7 @@ export type PortalSessionDto = {
   staffPreview: {
     active: boolean;
     actorUserId: string;
+    canExecutePayments: boolean;
     startedAt: string;
     expiresAt: string;
     returnTo: string;
@@ -1232,6 +1234,18 @@ export function getPortalScope(req: Request): PortalScope {
   return { userId, organizationId, customerId, contactId, customer };
 }
 
+function staffPreviewPaymentEvidence(req: Request) {
+  const preview = req.staffPortalPreview;
+  if (!preview) return null;
+  return {
+    capability: PORTAL_PREVIEW_PAYMENT_EXECUTE,
+    actorUserId: preview.actorUserId,
+    customerId: preview.customerId,
+    organizationId: preview.organizationId,
+    previewStartedAt: preview.startedAt,
+  };
+}
+
 async function findPortalContactName(scope: PortalScope, email: string | null): Promise<string | null> {
   if (!email) return null;
 
@@ -1254,6 +1268,7 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
   const portalEmail = String((req as any).user?.email || scope.customer.email || "").trim() || null;
   const userName = `${(req as any).user?.firstName || ""} ${(req as any).user?.lastName || ""}`.trim();
   const contactName = await findPortalContactName(scope, portalEmail);
+  const canExecutePreviewPayments = staffPreview ? await canExecuteStaffPortalPreviewPayment(req) : false;
 
   return {
     userId: scope.userId,
@@ -1265,6 +1280,7 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
       ? {
           active: true,
           actorUserId: staffPreview.actorUserId,
+          canExecutePayments: canExecutePreviewPayments,
           startedAt: staffPreview.startedAt,
           expiresAt: staffPreview.expiresAt,
           returnTo: staffPreview.returnTo,
@@ -1272,7 +1288,7 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
       : null,
     permissions: {
       canViewInvoices: true,
-      canPayInvoices: true,
+      canPayInvoices: !staffPreview || canExecutePreviewPayments,
       canViewOrders: true,
       canViewQuotes: true,
     },
@@ -1903,6 +1919,7 @@ const groupedPortalStripeInitiationSchema = z.object({
  */
 export async function createPortalGroupedStripePaymentIntent(req: Request): Promise<PortalGroupedStripePaymentIntentResult> {
   const scope = getPortalScope(req);
+  const previewPayment = staffPreviewPaymentEvidence(req);
   const parsed = groupedPortalStripeInitiationSchema.safeParse(req.body ?? {});
   if (!parsed.success) throw new PortalAccessError(400, "invoiceIds and idempotencyKey are required");
 
@@ -1941,6 +1958,7 @@ export async function createPortalGroupedStripePaymentIntent(req: Request): Prom
   const idempotencyKey = `portal-stripe-batch:${scope.userId}:${parsed.data.idempotencyKey}`;
   const providerEvidence = {
     portal: true,
+    ...(previewPayment ? { staffPreviewPayment: previewPayment } : {}),
     invoiceIds,
     allocations,
     invoiceCount: allocations.length,
@@ -2034,6 +2052,7 @@ export async function createPortalGroupedStripePaymentIntent(req: Request): Prom
 
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {
   const scope = getPortalScope(req);
+  const previewPayment = staffPreviewPaymentEvidence(req);
   // Guest links deliberately use this exact payment/reconciliation path.  The
   // source marker is audit-only; it does not create a separate ledger or
   // change the hosted-payment semantics.
@@ -2085,6 +2104,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     .select({
       id: payments.id,
       stripePaymentIntentId: payments.stripePaymentIntentId,
+      metadata: payments.metadata,
     })
     .from(payments)
     .where(
@@ -2100,6 +2120,12 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     .limit(1);
 
   if (existingPending?.stripePaymentIntentId) {
+    // Do not adopt a pending intent from a different portal actor/context.
+    const existingPreviewActor = (existingPending.metadata as any)?.staffPreviewPayment?.actorUserId;
+    if (Boolean(existingPreviewActor) !== Boolean(previewPayment) ||
+      (previewPayment && existingPreviewActor !== previewPayment.actorUserId)) {
+      throw new PortalAccessError(409, "A different portal payment attempt is already pending for this invoice");
+    }
     try {
       const stripe = getStripeClient();
       const pi = await stripe.paymentIntents.retrieve(String(existingPending.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
@@ -2142,9 +2168,14 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     currency,
     stripeAccountId,
     createdByUserId: scope.userId,
-    metadata: { customerId: scope.customerId, guestPayment: isGuestPayment },
+    metadata: { customerId: scope.customerId, guestPayment: isGuestPayment, ...(previewPayment ? { staffPreviewPayment: previewPayment } : {}) },
   });
   const attempt = reservation.attempt;
+  const reservedPreviewActor = ((attempt as any).metadata as any)?.staffPreviewPayment?.actorUserId;
+  if (Boolean(reservedPreviewActor) !== Boolean(previewPayment) ||
+    (previewPayment && reservedPreviewActor !== previewPayment.actorUserId)) {
+    throw new PortalAccessError(409, "A different portal payment attempt is already pending for this invoice");
+  }
   if (Number(attempt.amountCents) !== amountDueCents || String(attempt.stripeAccountId) !== stripeAccountId) {
     throw new PortalAccessError(409, "A previous portal payment is still awaiting completion");
   }
@@ -2229,6 +2260,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
       metadata: {
         portal: !isGuestPayment,
         guestPayment: isGuestPayment,
+        ...(previewPayment ? { staffPreviewPayment: previewPayment } : {}),
         invoiceId: invoice.id,
         customerId: scope.customerId,
         stripeAccountId,
@@ -2286,8 +2318,8 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
       entityType: "invoice",
       entityId: invoice.id,
       entityName: String(invoice.invoiceNumber),
-      description: `${isGuestPayment ? "Guest invoice" : "Portal"} Stripe PaymentIntent created`,
-      newValues: { paymentId, stripePaymentAttemptId: attempt.id, amountCents: amountDueCents, guestPayment: isGuestPayment } as any,
+      description: `${previewPayment ? "Staff preview" : isGuestPayment ? "Guest invoice" : "Portal"} Stripe PaymentIntent created`,
+      newValues: { paymentId, stripePaymentAttemptId: attempt.id, amountCents: amountDueCents, guestPayment: isGuestPayment, ...(previewPayment ? { staffPreviewPayment: previewPayment } : {}) } as any,
       createdAt: now,
     } as any);
   } catch {}

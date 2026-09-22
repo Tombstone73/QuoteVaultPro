@@ -132,6 +132,7 @@ export default function PortalInvoiceDetailPage() {
         invoiceId={invoice.id}
         apiBasePath="/api/portal/invoices"
         previewMode={Boolean(sessionQuery.data?.staffPreview?.active)}
+        previewPaymentAuthorized={Boolean(sessionQuery.data?.staffPreview?.canExecutePayments)}
         onSettled={async ({ serverConfirmed }) => {
           await refreshInvoiceState();
           if (!serverConfirmed) {
@@ -166,7 +167,7 @@ export default function PortalInvoiceDetailPage() {
             Refresh
           </Button>
           {payable ? (
-            <Button onClick={() => setPayOpen(true)}>Pay {formatCurrency(invoice.amountDue, invoice.currency)}</Button>
+            <Button disabled={!sessionQuery.data} onClick={() => setPayOpen(true)}>Pay {formatCurrency(invoice.amountDue, invoice.currency)}</Button>
           ) : null}
         </div>
       </div>

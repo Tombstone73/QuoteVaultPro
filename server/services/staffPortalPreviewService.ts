@@ -1,11 +1,13 @@
 import type { Request } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "../db";
-import { auditLogs, customers } from "@shared/schema";
+import { auditLogs, customers, organizations, userOrganizations, users } from "@shared/schema";
 import { isPortalCustomerIdentity } from "./customerPortalAccessService";
 
 export const STAFF_PORTAL_PREVIEW_TTL_MS = 30 * 60 * 1000;
+/** V1 grants this narrowly scoped capability through the explicit platform-developer profile flag. */
+export const PORTAL_PREVIEW_PAYMENT_EXECUTE = "portal.preview.payment.execute";
 
 export type StaffPortalPreviewSessionState = "ACTIVE";
 
@@ -55,6 +57,48 @@ export function isCustomerInPreviewOrganization(
 export function isStaffPortalPreviewReadMethod(method: string): boolean {
   const normalized = method.toUpperCase();
   return normalized === "GET" || normalized === "HEAD";
+}
+
+export function isStaffPortalPreviewPaymentActor(input: {
+  preview: StaffPortalPreviewSession | null | undefined;
+  user: unknown;
+  organizationId: string | undefined;
+  customerId: string | undefined;
+  isPlatformDeveloper: boolean;
+  hasActiveOrganizationMembership: boolean;
+}): boolean {
+  const user = input.user as { id?: string } | null | undefined;
+  const preview = input.preview;
+  return Boolean(
+    preview && !isStaffPortalPreviewExpired(preview) && canStartStaffPortalPreview(user) &&
+    user?.id === preview.actorUserId && input.organizationId === preview.organizationId &&
+    input.customerId === preview.customerId && input.isPlatformDeveloper &&
+    input.hasActiveOrganizationMembership,
+  );
+}
+
+/** Fresh DB authority: a tenant admin label or session-cached developer flag is insufficient. */
+export async function canExecuteStaffPortalPreviewPayment(req: Request): Promise<boolean> {
+  const preview = req.staffPortalPreview;
+  const user = req.user as { id?: string } | undefined;
+  if (!preview || !user?.id || !req.organizationId || !req.portalCustomerId) return false;
+  const [authority] = await db.select({
+    isPlatformDeveloper: users.isPlatformDeveloper,
+    membershipActive: sql<boolean>`user_organizations.is_active`,
+    deleteState: organizations.deleteState,
+    isArchived: organizations.isArchived,
+  }).from(users)
+    .innerJoin(userOrganizations, and(
+      eq(userOrganizations.userId, users.id),
+      eq(userOrganizations.organizationId, preview.organizationId),
+    ))
+    .innerJoin(organizations, eq(organizations.id, userOrganizations.organizationId))
+    .where(eq(users.id, user.id)).limit(1);
+  return isStaffPortalPreviewPaymentActor({
+    preview, user, organizationId: req.organizationId, customerId: req.portalCustomerId,
+    isPlatformDeveloper: authority?.isPlatformDeveloper === true,
+    hasActiveOrganizationMembership: authority?.membershipActive === true && authority?.deleteState === "active" && authority?.isArchived === false,
+  });
 }
 
 export function sanitizeStaffPortalPreviewReturnTo(value: unknown, customerId: string): string {

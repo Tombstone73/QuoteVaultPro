@@ -18,6 +18,8 @@ let isCustomerInPreviewOrganization: any;
 let isStaffPortalPreviewExpired: any;
 let isStaffPortalPreviewReadMethod: any;
 let sanitizeStaffPortalPreviewReturnTo: any;
+let isStaffPortalPreviewPaymentActor: any;
+let createAuthorizeStaffPreviewPayment: any;
 
 beforeAll(async () => {
   const service = await import("../services/staffPortalPreviewService");
@@ -27,6 +29,8 @@ beforeAll(async () => {
   isStaffPortalPreviewExpired = service.isStaffPortalPreviewExpired;
   isStaffPortalPreviewReadMethod = service.isStaffPortalPreviewReadMethod;
   sanitizeStaffPortalPreviewReturnTo = service.sanitizeStaffPortalPreviewReturnTo;
+  isStaffPortalPreviewPaymentActor = service.isStaffPortalPreviewPaymentActor;
+  createAuthorizeStaffPreviewPayment = (await import("../middleware/authorizeStaffPreviewPayment")).createAuthorizeStaffPreviewPayment;
 });
 
 describe("staff portal preview policy", () => {
@@ -95,5 +99,39 @@ describe("staff portal preview policy", () => {
     expect(isStaffPortalPreviewReadMethod("POST")).toBe(false);
     expect(isStaffPortalPreviewReadMethod("PATCH")).toBe(false);
     expect(isStaffPortalPreviewReadMethod("DELETE")).toBe(false);
+  });
+
+  test("grants payment execution only to an explicit platform developer in the exact active preview scope", () => {
+    const preview = buildStaffPortalPreviewSession({
+      actorUserId: "developer_1", organizationId: "org_1", customerId: "cust_1", customerName: "Acme",
+      now: new Date("2026-06-01T12:00:00.000Z"),
+    });
+    // Keep the fixture active relative to the predicate's current clock.
+    preview.expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const valid = { preview, user: { id: "developer_1", accountType: "INTERNAL_USER", role: "employee" }, organizationId: "org_1", customerId: "cust_1", isPlatformDeveloper: true, hasActiveOrganizationMembership: true };
+    expect(isStaffPortalPreviewPaymentActor(valid)).toBe(true);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, isPlatformDeveloper: false, user: { id: "developer_1", role: "admin" } })).toBe(false);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, user: { id: "developer_1", role: "owner" }, isPlatformDeveloper: false })).toBe(false);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, user: { id: "portal_1", accountType: "PORTAL_CUSTOMER" } })).toBe(false);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, organizationId: "org_2" })).toBe(false);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, customerId: "cust_2" })).toBe(false);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, hasActiveOrganizationMembership: false })).toBe(false);
+    expect(isStaffPortalPreviewPaymentActor({ ...valid, preview: { ...preview, expiresAt: "2020-01-01T00:00:00Z" } })).toBe(false);
+  });
+
+  test("direct preview payment API mutation fails closed without capability", async () => {
+    const response: any = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+    const next = jest.fn();
+    const previewRequest = { staffPortalPreview: { actorUserId: "staff_1" } } as any;
+    await createAuthorizeStaffPreviewPayment(async () => false)(previewRequest, response, next);
+    expect(response.status).toHaveBeenCalledWith(403);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ code: "STAFF_PORTAL_PREVIEW_PAYMENT_FORBIDDEN" }));
+    expect(next).not.toHaveBeenCalled();
+
+    await createAuthorizeStaffPreviewPayment(async () => true)(previewRequest, response, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    next.mockClear();
+    await createAuthorizeStaffPreviewPayment(async () => false)({} as any, response, next);
+    expect(next).toHaveBeenCalledTimes(1); // ordinary customer portal path
   });
 });

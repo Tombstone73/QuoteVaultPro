@@ -46,6 +46,7 @@ import {
 import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { isStaffPortalPreviewReadMethod } from "../services/staffPortalPreviewService";
+import { authorizeStaffPreviewPayment } from "../middleware/authorizeStaffPreviewPayment";
 
 type PortalHandler<T> = (req: Request) => Promise<T>;
 
@@ -344,6 +345,7 @@ export function registerPortalRoutes(
 ): void {
   const { isAuthenticated, portalContext, tenantContext } = middleware;
   const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations];
+  const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment];
 
   function requireNonProductionStaff(req: Request, res: Response, next: () => void) {
     if (process.env.NODE_ENV === "production") {
@@ -389,10 +391,10 @@ export function registerPortalRoutes(
   app.get("/api/portal/invoices/:id/files/:fileId", ...portalMiddlewares, portalFileDownload(getPortalInvoiceFileDownload));
   app.get("/api/portal/invoices/:id/payments", ...portalMiddlewares, portalGetById("id", listPortalInvoicePayments));
   app.get("/api/portal/invoices/:id/payments/stripe/runtime-config", ...portalMiddlewares, portalGetById("id", getPortalStripeRuntimeConfig));
-  app.post("/api/portal/invoices/:id/payments/stripe/create-intent", ...portalMiddlewares, portalPostById("id", createPortalStripePaymentIntent));
-  app.post("/api/portal/payments/stripe/create-intent", ...portalMiddlewares, portalPost(createPortalGroupedStripePaymentIntent));
-  app.post("/api/portal/payments/stripe/confirm", ...portalMiddlewares, portalPost(confirmPortalGroupedStripePayment));
-  app.post("/api/portal/invoices/:id/payments/stripe/confirm", ...portalMiddlewares, portalPostById("id", confirmPortalStripePayment));
+  app.post("/api/portal/invoices/:id/payments/stripe/create-intent", ...portalPaymentMiddlewares, portalPostById("id", createPortalStripePaymentIntent));
+  app.post("/api/portal/payments/stripe/create-intent", ...portalPaymentMiddlewares, portalPost(createPortalGroupedStripePaymentIntent));
+  app.post("/api/portal/payments/stripe/confirm", ...portalPaymentMiddlewares, portalPost(confirmPortalGroupedStripePayment));
+  app.post("/api/portal/invoices/:id/payments/stripe/confirm", ...portalPaymentMiddlewares, portalPostById("id", confirmPortalStripePayment));
   app.get("/api/portal/invoices/:id", ...portalMiddlewares, portalGetById("id", getPortalInvoice));
 
   app.get("/api/portal/orders", ...portalMiddlewares, portalGet(listPortalOrders));

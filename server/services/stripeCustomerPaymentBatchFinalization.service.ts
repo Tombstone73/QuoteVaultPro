@@ -154,7 +154,9 @@ export async function finalizeStripeCustomerPaymentBatch(input: ProviderSuccessI
   try {
     return await recordCustomerPayment({
       organizationId: input.organizationId,
-      actorUserId: input.actorUserId || prepared.batch.createdByUserId || null,
+      // Browser and webhook must attribute the payment to the original actor,
+      // not whichever observer won the confirmation race.
+      actorUserId: prepared.batch.createdByUserId || input.actorUserId || null,
       invoiceIds: prepared.allocations.map((allocation) => allocation.invoiceId),
       amountCents: input.amountCents,
       allocationMode: "custom",

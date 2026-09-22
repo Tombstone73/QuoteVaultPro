@@ -13,10 +13,11 @@ function exportedBody(file: string, name: string) {
 }
 
 describe("grouped portal Stripe initiation contract", () => {
-  test("keeps the endpoint behind the authenticated portal and staff-preview read-only boundaries", () => {
+  test("keeps the endpoint behind authenticated portal and explicit preview payment authority", () => {
     const routes = source("server/routes/portal.routes.ts");
-    expect(routes).toContain('app.post("/api/portal/payments/stripe/create-intent", ...portalMiddlewares, portalPost(createPortalGroupedStripePaymentIntent))');
+    expect(routes).toContain('app.post("/api/portal/payments/stripe/create-intent", ...portalPaymentMiddlewares, portalPost(createPortalGroupedStripePaymentIntent))');
     expect(routes).toContain("const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations]");
+    expect(routes).toContain("const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment]");
   });
 
   test("reloads every selected invoice and derives the authoritative allocation set", () => {

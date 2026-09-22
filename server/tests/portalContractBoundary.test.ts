@@ -55,9 +55,10 @@ describe("customer portal contract boundary", () => {
 
     expect(customerRouteLines.length).toBeGreaterThan(20);
     for (const line of customerRouteLines) {
-      expect(line).toContain("...portalMiddlewares");
+      expect(line.includes("...portalMiddlewares") || line.includes("...portalPaymentMiddlewares")).toBe(true);
     }
     expect(routes).toContain("const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations]");
+    expect(routes).toContain("const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment]");
   });
 
   test("the canonical contract documents the supported portal surface and explicit exclusions", () => {
@@ -89,7 +90,6 @@ describe("customer portal contract boundary", () => {
       "getPortalSession",
       "getPortalDashboard",
       "getPortalCustomerStatement",
-      "getPortalCustomerStatementPdf",
       "getPortalProfile",
       "updatePortalProfile",
       "listPortalInvoices",
@@ -109,6 +109,7 @@ describe("customer portal contract boundary", () => {
     for (const handler of scopedHandlers) {
       expect(sourceForExport(service, handler)).toContain("getPortalScope(req)");
     }
+    expect(sourceForExport(service, "getPortalCustomerStatementPdf")).toContain("getPortalCustomerStatement(req)");
   });
 
   test("statement reads and its PDF derive the customer exclusively from portal scope", () => {

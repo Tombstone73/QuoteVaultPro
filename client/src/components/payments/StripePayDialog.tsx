@@ -30,6 +30,7 @@ function StripePayInner(props: {
   invoiceIds?: string[];
   invoiceSummaries?: Array<{ invoiceNumber: string; amountDue: number; currency?: string }>;
   groupedInitiation?: boolean;
+  developerPreviewPayment?: boolean;
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
@@ -263,6 +264,11 @@ function StripePayInner(props: {
           </div>
         ) : null}
       </div>
+      {props.developerPreviewPayment ? (
+        <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-950">
+          Developer preview: payment submission enabled. This will create a real payment.
+        </p>
+      ) : null}
       <DialogFooter>
         <Button variant="outline" onClick={props.onClose} disabled={submitting}>
           Close
@@ -305,8 +311,9 @@ export default function StripePayDialog(props: {
   /** Uses the pending customer-payment-batch endpoint; allocation waits for reconciliation. */
   groupedInitiation?: boolean;
   disabled?: boolean;
-  /** Staff preview deliberately stops before any provider mutation. */
+  /** Staff preview stays read-only unless the server grants its explicit payment capability. */
   previewMode?: boolean;
+  previewPaymentAuthorized?: boolean;
   onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
 }) {
   const apiBasePath = props.apiBasePath;
@@ -371,7 +378,7 @@ export default function StripePayDialog(props: {
 
     // Dialog opened
     if (!props.invoiceId) return;
-    if (props.previewMode) {
+    if (props.previewMode && !props.previewPaymentAuthorized) {
       setState('preview');
       setIntentError(null);
       return;
@@ -478,7 +485,7 @@ export default function StripePayDialog(props: {
 
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.invoiceId, apiBasePath, props.previewMode, props.groupedInitiation, props.invoiceIds, props.invoiceSummaries]);
+  }, [props.open, props.invoiceId, apiBasePath, props.previewMode, props.previewPaymentAuthorized, props.groupedInitiation, props.invoiceIds, props.invoiceSummaries]);
 
   const close = () => props.onOpenChange(false);
 
@@ -521,6 +528,7 @@ export default function StripePayDialog(props: {
           invoiceIds={props.invoiceIds}
           invoiceSummaries={props.invoiceSummaries}
           groupedInitiation={props.groupedInitiation}
+          developerPreviewPayment={Boolean(props.previewMode && props.previewPaymentAuthorized)}
               clientSecret={frozenClientSecret!}
               apiBasePath={apiBasePath}
               onClose={close}
