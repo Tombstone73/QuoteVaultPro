@@ -10,6 +10,12 @@ test('Close Job Override uses the canonical preview before deciding whether prod
   expect(source).toContain('/reconcile-historical-fulfillment');
 });
 
+test('Close Job Override actions render only from the backend canonical eligibility projection', () => {
+  expect(source).toContain('useCloseJobOverrideEligibility');
+  expect(source).toContain('isCloseJobOverrideEligible(previewQuery.data)');
+  expect(source).toContain('canCloseJobOverride: boolean');
+});
+
 test('Close Job Override requires a live bootstrap acknowledgement when any remaining line has no owner', () => {
   expect(source).toContain('productionStarted: boolean');
   expect(source).toContain('activeProductionJobCount: number');

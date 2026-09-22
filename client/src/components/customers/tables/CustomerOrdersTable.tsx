@@ -6,9 +6,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { Eye, ShieldCheck, Ticket } from "lucide-react";
+import { Eye, Ticket } from "lucide-react";
 import { formatOrderDate } from "@/lib/orderDate";
-import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
+import { CloseJobOverrideAction, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "orderNumber", label: "Order #", visible: true, order: 0 },
@@ -125,7 +125,7 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
                             <Button size="sm" variant="outline"><Eye className="mr-1.5 h-4 w-4" aria-hidden="true" />View Order</Button>
                           </Link>
                           <Button size="sm" variant="outline" onClick={() => window.open(`/orders/${o.id}/traveler`, "_blank")}><Ticket className="mr-1.5 h-4 w-4" aria-hidden="true" />Traveler</Button>
-                          {canCloseJobOverride({ orderId: o.id, orderState: o.state, orderFulfillmentStatus: o.fulfillmentStatus }, isAdminOrOwner) ? <Button size="sm" variant="outline" onClick={() => setOverrideTarget({ orderId: o.id, orderNumber: o.orderNumber, jobName: o.label, purchaseOrderNumber: o.poNumber, customerName: o.customerName || null, jobStatus: getOrderJobStatus({ orderId: o.id, orderState: o.state, orderStatus: o.status, orderStatusPillValue: o.statusPillValue, orderFulfillmentStatus: o.fulfillmentStatus }) })}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}
+                          <CloseJobOverrideAction target={{ orderId: o.id, orderNumber: o.orderNumber, jobName: o.label, purchaseOrderNumber: o.poNumber, customerName: o.customerName || null, jobStatus: getOrderJobStatus({ orderId: o.id, orderState: o.state, orderStatus: o.status, orderStatusPillValue: o.statusPillValue, orderFulfillmentStatus: o.fulfillmentStatus }) }} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} />
                         </div>
                       </td>
                     );

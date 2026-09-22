@@ -39,7 +39,7 @@ test("the audit CLI reports explicit native-pg scope and target inspection resul
 test("Close Job Override remains available only as an explicit staff exception for legacy contradictions", () => {
   const dialog = source("client/src/components/orders/CloseJobOverrideDialog.tsx");
   const service = source("server/services/fulfillment/service.ts");
-  expect(dialog).toContain("if (terminalOrderStates.has");
-  expect(dialog).toContain("legacy parent can claim terminal fulfillment");
-  expect(service).toContain("alreadyOperationallyComplete: remainingFulfillmentQuantity === 0");
+  expect(dialog).toContain("isCloseJobOverrideEligible(previewQuery.data)");
+  expect(dialog).toContain("useCloseJobOverrideEligibility");
+  expect(service).toContain("canCloseJobOverrideFromCanonicalObligations");
 });

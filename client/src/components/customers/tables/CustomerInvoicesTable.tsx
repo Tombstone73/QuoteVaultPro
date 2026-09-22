@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, ExternalLink, Eye, ListFilter, RotateCcw, Settings2, ShieldCheck, X } from "lucide-react";
+import { Check, ExternalLink, Eye, ListFilter, RotateCcw, Settings2, X } from "lucide-react";
 import { useApproveInvoicesForAccounting, useInvoices, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
-import { canCloseJobOverride, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
+import { CloseJobOverrideAction, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 import { OrderNumberLink } from "@/components/orders/OrderNumberLink";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
@@ -120,7 +120,7 @@ export function CustomerInvoicesTable({ customerId }: { customerId: string }) {
                   {invoice.orderId ? <a href={`/orders/${invoice.orderId}`}><Button size="sm" variant="outline"><ExternalLink className="mr-1.5 h-4 w-4" aria-hidden="true" />View Order</Button></a> : null}
                   {isAdminOrOwner && canApproveInvoice(invoice) ? <Button size="sm" variant="outline" disabled={approveInvoices.isPending} onClick={() => void approve(invoice)}><Check className="mr-1.5 h-4 w-4" aria-hidden="true" />Approve</Button> : null}
                   {isAdminOrOwner && String(invoice.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={invoice.id} invoiceNumber={invoice.invoiceNumber} alreadySent={Boolean(invoice.lastSentAt)} /> : null}
-                  {canCloseJobOverride(invoice, isAdminOrOwner) ? <Button size="sm" variant="outline" onClick={() => setOverrideTarget(toOverrideTarget(invoice))}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />Close Job Override</Button> : null}
+                  <CloseJobOverrideAction target={toOverrideTarget(invoice)} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} />
                 </div></td>;
                 default: return null;
               }

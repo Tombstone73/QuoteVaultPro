@@ -31,15 +31,15 @@ test('Customer Detail actions are visible icon-plus-label controls, not a hidden
   expect(table).toContain('View Order');
   expect(table).toContain('Approve');
   expect(table).toContain('InvoiceSendQuickAction');
-  expect(table).toContain('Close Job Override');
+  expect(table).toContain('CloseJobOverrideAction');
   expect(table).toContain('<Eye');
   expect(table).toContain('<ExternalLink');
-  expect(table).toContain('<ShieldCheck');
+  expect(table).toContain('<CloseJobOverrideAction');
   expect(table).not.toContain('DropdownMenu');
   expect(table).not.toContain('Tooltip');
 });
 
 test('Close Job Override confirms live quantities and uses only canonical operations', () => {
   expect(table).toContain('CloseJobOverrideDialog');
-  expect(table).toContain('canCloseJobOverride(invoice, isAdminOrOwner)');
+  expect(table).toContain('CloseJobOverrideAction');
 });

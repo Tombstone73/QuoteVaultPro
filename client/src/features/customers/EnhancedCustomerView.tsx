@@ -48,7 +48,6 @@ import {
   Save,
   Filter,
   Check,
-  ShieldCheck,
   Ticket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -107,7 +106,7 @@ import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
 import { apiRequest } from "@/lib/queryClient";
 import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
-import { canCloseJobOverride, CloseJobOverrideDialog, getOrderJobStatus, type CloseJobOverrideTarget } from "@/components/orders/CloseJobOverrideDialog";
+import { CloseJobOverrideAction, CloseJobOverrideDialog, getOrderJobStatus, type CloseJobOverrideTarget } from "@/components/orders/CloseJobOverrideDialog";
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
 import {
   buildLinkExistingContactPayload,
@@ -2440,18 +2439,14 @@ function OrdersTable({
                         <Button variant="outline" size="sm" onClick={() => window.open(ROUTES.orders.traveler(order.id), "_blank", "noopener,noreferrer")} aria-label={`Open traveler for order ${order.orderNumber}`}>
                           <Ticket className="mr-1.5 h-4 w-4" />Traveler
                         </Button>
-                        {canCloseJobOverride({ orderId: order.id, orderState: order.state, orderFulfillmentStatus: order.fulfillmentStatus }, isAdminOrOwner) ? (
-                          <Button variant="outline" size="sm" onClick={() => setOverrideTarget({
+                        <CloseJobOverrideAction target={{
                             orderId: order.id,
                             orderNumber: order.orderNumber,
                             jobName: order.label,
                             purchaseOrderNumber: order.poNumber,
                             customerName: customerName || null,
                             jobStatus: getOrderJobStatus({ orderId: order.id, orderState: order.state, orderStatus: order.status, orderStatusPillValue: order.statusPillValue, orderFulfillmentStatus: order.fulfillmentStatus }),
-                          })}>
-                            <ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override
-                          </Button>
-                        ) : null}
+                          }} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} />
                       </div>
                     </td>
                   );
@@ -2861,7 +2856,7 @@ function InvoicesTable({
                   case "total": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">{formatCurrency(inv.displayTotal || inv.total)}</td>;
                   case "balance": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-warning">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? inv.total)}</td>;
                   case "invoiceStatus": return <td key={column.id} className="whitespace-nowrap px-3 py-3"><span className={cn("inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border", getStatusStyle(inv.status))}>{inv.displayStatus || formatStatusLabel(inv.status)}</span></td>;
-                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(invoiceDetailPath(inv))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}{canCloseJobOverride(inv, isAdminOrOwner) ? <Button variant="outline" size="sm" onClick={() => setOverrideTarget({ orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) })}><ShieldCheck className="mr-1.5 h-4 w-4" />Close Job Override</Button> : null}</div></td>;
+                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(invoiceDetailPath(inv))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}<CloseJobOverrideAction target={inv.orderId ? { orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) } : null} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} /></div></td>;
                   default: return null;
                 }
               })}

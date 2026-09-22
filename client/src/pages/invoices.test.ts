@@ -232,7 +232,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("Take Payment</TooltipContent>");
     expect(invoicesPageSource).toContain("View Invoice</TooltipContent>");
     expect(invoicesPageSource).toContain("CloseJobOverrideDialog");
-    expect(invoicesPageSource).toContain("canCloseJobOverride(invoice, Boolean(isAdminOrOwner))");
+    expect(invoicesPageSource).toContain("CloseJobOverrideAction");
     expect(invoicesPageSource).toContain(">$</Button>");
     expect(invoicesPageSource).toContain("Invoice ${invoice.invoiceNumber} email is ${action.label.toLowerCase()}");
     expect(invoicesPageSource).toContain('!isAdminOrOwner || String((invoice as any).importSource || "").toLowerCase() === "quickbooks"');
@@ -254,7 +254,7 @@ describe("Invoices List payment entry point", () => {
   it("keeps Job Status and all primary backlog-cleanup actions directly visible per row", () => {
     expect(invoicesPageSource).toContain('<TitanTableHead className="min-w-[145px]">Job Status</TitanTableHead>');
     expect(invoicesPageSource).toContain('getOrderJobStatus(invoice)');
-    expect(invoicesPageSource).toContain('Close Job Override');
+    expect(invoicesPageSource).toContain('CloseJobOverrideAction');
     expect(invoicesPageSource).toContain("renderInvoiceEmailButton(invoice)");
     expect(invoicesPageSource).not.toContain('DropdownMenu');
   });

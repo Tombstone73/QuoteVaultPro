@@ -35,6 +35,7 @@ type HistoricalFulfillmentPreview = {
   requiresProductionBootstrap: boolean;
   productionBootstrapLineCount?: number;
   requiresParentProductionRecovery: boolean;
+  canCloseJobOverride: boolean;
 };
 
 function overrideErrorDescription(error: unknown): string {
@@ -54,7 +55,6 @@ function overrideErrorDescription(error: unknown): string {
   return raw.replace(/^\d{3}:\s*/, "") || "Unable to reconcile this job safely.";
 }
 
-const terminalOrderStates = new Set(["closed", "canceled"]);
 const terminalFulfillmentStates = new Set(["shipped", "delivered"]);
 
 export function getOrderJobStatus(input: {
@@ -73,18 +73,44 @@ export function getOrderJobStatus(input: {
   return String(value).replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-export function canCloseJobOverride(input: {
-  orderId?: string | null;
-  orderState?: string | null;
-  orderFulfillmentStatus?: string | null;
-}, isAdminOrOwner: boolean) {
-  if (!isAdminOrOwner || !input.orderId) return false;
-  if (terminalOrderStates.has(String(input.orderState || "").toLowerCase())) return false;
-  // A legacy parent can claim terminal fulfillment while its canonical line
-  // obligations remain open. Keep the exception available so an administrator
-  // can explicitly reconcile that inconsistency; the live preview disables it
-  // when no operational quantity remains.
-  return true;
+export function isCloseJobOverrideEligible(preview: Pick<HistoricalFulfillmentPreview, "canCloseJobOverride"> | null | undefined) {
+  return preview?.canCloseJobOverride === true;
+}
+
+export function useCloseJobOverrideEligibility(orderId: string | null | undefined, isAdminOrOwner: boolean) {
+  return useQuery<HistoricalFulfillmentPreview>({
+    queryKey: ["orders", orderId, "historical-fulfillment-reconciliation"],
+    enabled: Boolean(orderId && isAdminOrOwner),
+    queryFn: async () => {
+      const response = await apiRequest("GET", `/api/orders/${orderId}/historical-fulfillment-reconciliation`);
+      const payload = await response.json();
+      return payload.data as HistoricalFulfillmentPreview;
+    },
+  });
+}
+
+/**
+ * The list action deliberately waits for the same live, backend-derived
+ * preview consumed by the dialog. This prevents a terminal-looking parent
+ * from hiding real line obligations, and prevents completed jobs from
+ * retaining a dead action after the relevant queries are invalidated.
+ */
+export function CloseJobOverrideAction({
+  target,
+  isAdminOrOwner,
+  onOpen,
+  className,
+}: {
+  target: CloseJobOverrideTarget | null;
+  isAdminOrOwner: boolean;
+  onOpen: (target: CloseJobOverrideTarget) => void;
+  className?: string;
+}) {
+  const previewQuery = useCloseJobOverrideEligibility(target?.orderId, isAdminOrOwner);
+  if (!target || !isAdminOrOwner || !isCloseJobOverrideEligible(previewQuery.data)) return null;
+  return <Button variant="outline" size="sm" className={className} onClick={() => onOpen(target)}>
+    <ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override
+  </Button>;
 }
 
 export function CloseJobOverrideDialog({ target, onOpenChange }: {
@@ -98,15 +124,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
   const [productionBootstrapAcknowledged, setProductionBootstrapAcknowledged] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const orderId = target?.orderId;
-  const previewQuery = useQuery<HistoricalFulfillmentPreview>({
-    queryKey: ["orders", orderId, "historical-fulfillment-reconciliation"],
-    enabled: Boolean(orderId),
-    queryFn: async () => {
-      const response = await apiRequest("GET", `/api/orders/${orderId}/historical-fulfillment-reconciliation`);
-      const payload = await response.json();
-      return payload.data as HistoricalFulfillmentPreview;
-    },
-  });
+  const previewQuery = useCloseJobOverrideEligibility(orderId, Boolean(orderId));
 
   const resetAndClose = () => {
     setReason("historical_backlog_cleanup");
@@ -211,7 +229,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
         </div> : null}
         <DialogFooter>
           <Button variant="outline" disabled={isSubmitting} onClick={close}><X className="mr-1.5 h-4 w-4" aria-hidden="true" />Cancel</Button>
-          <Button disabled={isSubmitting || previewQuery.isLoading || previewQuery.isError || previewQuery.data?.canceled || previewQuery.data?.alreadyOperationallyComplete || (previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged)} onClick={() => void submit()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : "Close Job Override"}</Button>
+          <Button disabled={isSubmitting || previewQuery.isLoading || previewQuery.isError || !isCloseJobOverrideEligible(previewQuery.data) || (previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged)} onClick={() => void submit()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : "Close Job Override"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

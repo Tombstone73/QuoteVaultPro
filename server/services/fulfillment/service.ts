@@ -11,6 +11,7 @@ import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
+import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -153,6 +154,9 @@ export class FulfillmentService {
       && String(order.state || '').toLowerCase() === 'open'
       && ['ready_for_shipment', 'completed', 'complete'].includes(String(order.status || '').toLowerCase());
 
+    const productionComplete = remainingProductionQuantity === 0;
+    const alreadyOperationallyComplete = remainingFulfillmentQuantity === 0;
+
     return {
       orderState: order.state,
       orderStatus: order.status,
@@ -169,8 +173,16 @@ export class FulfillmentService {
       // The line projection is the canonical quantity source used by the
       // reconciliation itself. Do not make the dialog choose a different
       // answer from a possibly stale aggregate Order state.
-      productionComplete: remainingProductionQuantity === 0,
-      alreadyOperationallyComplete: remainingFulfillmentQuantity === 0,
+      productionComplete,
+      alreadyOperationallyComplete,
+      // This is the sole eligibility projection for Close Job Override. It
+      // deliberately uses the same canonical line quantities as the mutation,
+      // rather than parent status badges that may contradict those quantities.
+      canCloseJobOverride: canCloseJobOverrideFromCanonicalObligations({
+        canceled: isCanceledOrder(order),
+        remainingProductionQuantity,
+        remainingFulfillmentQuantity,
+      }),
     };
   }
 

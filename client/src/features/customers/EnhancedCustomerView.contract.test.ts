@@ -20,7 +20,7 @@ test('the actual Customer Detail invoice table renders the operational invoice f
   expect(invoiceTable).toContain('InvoiceSendQuickAction');
   expect(invoiceTable).toContain('CloseJobOverrideDialog');
   expect(invoiceTable).toContain('getOrderJobStatus(inv)');
-  expect(invoiceTable).toContain('Close Job Override');
+  expect(invoiceTable).toContain('CloseJobOverrideAction');
   expect(invoiceTable).not.toContain('DropdownMenu');
 });
 
@@ -83,7 +83,7 @@ test('the actual Customer Detail reset control imports the supported Lucide Rota
 
 test('the actual Customer Detail orders table uses the same visible Close Job Override action', () => {
   expect(ordersTable).toContain('CloseJobOverrideDialog');
-  expect(ordersTable).toContain('canCloseJobOverride');
+  expect(ordersTable).toContain('CloseJobOverrideAction');
   expect(ordersTable).toContain('View Order');
   expect(ordersTable).toContain('Traveler');
   expect(ordersTable).not.toContain('DropdownMenu');

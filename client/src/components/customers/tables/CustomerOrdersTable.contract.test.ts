@@ -8,8 +8,8 @@ const overrideDialog = fs.readFileSync(path.join(process.cwd(), 'client/src/comp
 test('Customer Detail Orders keeps status visible and exposes Close Job Override directly', () => {
   expect(table).toContain('case "status"');
   expect(table).toContain('View Order');
-  expect(table).toContain('Close Job Override');
-  expect(table).toContain('canCloseJobOverride');
+  expect(table).toContain('CloseJobOverrideAction');
+  expect(table).toContain('CloseJobOverrideAction');
   expect(table).toContain('CloseJobOverrideDialog');
   expect(table).not.toContain('DropdownMenu');
 });
@@ -21,5 +21,5 @@ test('all surfaces share one authoritative Close Job Override client operation',
   expect(overrideDialog).toContain('Remaining production');
   expect(overrideDialog).toContain('Remaining fulfillment');
   expect(overrideDialog).toContain('invoice and payment status will not be changed');
-  expect(overrideDialog).toContain('canCloseJobOverride');
+  expect(overrideDialog).toContain('canCloseJobOverride: boolean');
 });
