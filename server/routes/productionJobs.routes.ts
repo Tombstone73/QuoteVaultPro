@@ -47,7 +47,6 @@ import {
 import {
   isDesignOwnershipJob,
   isPrepressOwnershipJob,
-  resolveActiveProductionOwners,
 } from "../services/productionOwnership";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
@@ -87,8 +86,7 @@ import {
   hasOutstandingCanonicalProductionObligations,
   projectCanonicalProductionObligations,
 } from "../services/orderProductionCompletionPolicy";
-import { FulfillmentDashboardRepo } from "../services/fulfillment/repository";
-import { filterActiveProductionOverviewFulfillmentJobs } from "../services/fulfillment/productionOverviewFulfillment";
+import { filterActiveProductionOverviewRows } from "../services/productionOverviewPopulation";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -922,6 +920,7 @@ export function registerProductionJobsRoutes(
       const sortByRaw = req.query.sortBy as string | undefined;
       const sortDirectionRaw = req.query.sortDirection as string | undefined;
       const orderIdRaw = req.query.orderId as string | undefined;
+      const productionOnly = req.query.productionOnly === "true";
       const normalizedStatusFilter = normalizeProductionJobStatusFilter(statusRaw);
       const statusParsed = normalizedStatusFilter ? productionStatusSchema.safeParse(normalizedStatusFilter) : null;
       const viewParsed = viewRaw ? productionViewKeySchema.safeParse(viewRaw) : null;
@@ -999,6 +998,7 @@ export function registerProductionJobsRoutes(
               : inArray(productionJobs.stationKey as any, stationAliases))
           : undefined,
         status ? eq(productionJobs.status, status) : undefined,
+        productionOnly ? sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'` : undefined,
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
@@ -1052,96 +1052,12 @@ export function registerProductionJobsRoutes(
         .where(whereClause)
         .orderBy(...dbOrderBy);
 
-      const lineItemIdsForOwnership = Array.from(
-        new Set(
-          baseRows
-            .map((row) => row.lineItemId)
-            .filter((id): id is string => typeof id === 'string' && id.length > 0),
-        ),
-      );
-
-      const activeOwnerByLineItem = lineItemIdsForOwnership.length > 0
-        ? await resolveActiveProductionOwners(db, {
-            organizationId,
-            lineItemIds: lineItemIdsForOwnership,
-            debugLabel: "GET /api/production/jobs",
-          })
-        : new Map<string, any>();
-
-      let filteredRows = baseRows.filter((row) => {
-        if (!row.lineItemId) {
-          return activeBoardQuery ? !["done", "void", "canceled", "cancelled"].includes(String(row.status || "").toLowerCase()) : true;
-        }
-
-        if (!activeBoardQuery) {
-          return true;
-        }
-
-        const activeOwner = activeOwnerByLineItem.get(row.lineItemId);
-        if (!activeOwner) {
-          return false;
-        }
-
-        if (activeOwner.id !== row.id) {
-          return false;
-        }
-
-        if (prepressGateApplies && isPrepressOwnershipJob(activeOwner)) {
-          return false;
-        }
-
-        return true;
-      });
-
-      if (activeBoardQuery && filteredRows.length > 0) {
-        const candidateJobIds = filteredRows.map((row) => row.id);
-        const groupedMemberRows = await db
-          .select({ productionJobId: productionRunMembers.productionJobId })
-          .from(productionRunMembers)
-          .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
-          .where(and(
-            eq(productionRunMembers.organizationId, organizationId),
-            inArray(productionRunMembers.productionJobId, candidateJobIds),
-            inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
-            sql`coalesce(${productionRunMembers.remainingQuantity}, 0) > 0`,
-          ));
-        const groupedJobIds = new Set(groupedMemberRows.map((row) => row.productionJobId));
-        if (groupedJobIds.size > 0) {
-          filteredRows = filteredRows.filter((row) => !groupedJobIds.has(row.id));
-        }
-      }
-
-      // The Fulfillment station is an operational handoff, not a second
-      // fulfillment truth. Reuse the same line-level projection as the
-      // Fulfillment workspace before doing the expensive Production Overview
-      // hydration. This removes physical and administrative (Close Job
-      // Override / historical) completions without manufacturing any physical
-      // shipment or pickup evidence.
-      if (activeBoardQuery && filteredRows.length > 0) {
-        const fulfillmentLineItemIds = Array.from(new Set(
-          filteredRows
-            .filter((row) => String(row.stationKey ?? "").trim().toLowerCase() === FULFILLMENT_STATION_KEY)
-            .map((row) => row.lineItemId)
-            .filter((id): id is string => Boolean(id)),
-        ));
-
-        if (fulfillmentLineItemIds.length > 0) {
-          const fulfillmentLines = await new FulfillmentDashboardRepo(db).listLineEligibility(organizationId, {
-            lineItemIds: fulfillmentLineItemIds,
-          });
-          const fulfillmentProjectionByLineItemId = new Map(
-            fulfillmentLines.map((line) => [line.id, line.projection]),
-          );
-          filteredRows = filterActiveProductionOverviewFulfillmentJobs(
-            filteredRows,
-            fulfillmentProjectionByLineItemId,
-          );
-        } else if (filteredRows.some((row) => String(row.stationKey ?? "").trim().toLowerCase() === FULFILLMENT_STATION_KEY)) {
-          // A fulfillment job without a line item cannot establish a canonical
-          // fulfillment obligation, so it never belongs on the active board.
-          filteredRows = filterActiveProductionOverviewFulfillmentJobs(filteredRows, new Map());
-        }
-      }
+      // The badge and this route share one current-owner, grouped-run and
+      // canonical Fulfillment population gate. Historical rows are removed
+      // before the artwork and event hydration below.
+      const filteredRows = activeBoardQuery
+        ? await filterActiveProductionOverviewRows(organizationId, baseRows, prepressGateApplies ? station : null)
+        : baseRows;
 
       // DEV-only logging: show how many items were gated
       if (process.env.NODE_ENV !== "production") {

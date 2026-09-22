@@ -61,6 +61,7 @@ describe("Production board scrolling", () => {
     expect(track.className).toContain("flex-nowrap");
     expect(track.style.minWidth).toBe(`${8 * MIN_PRODUCTION_OVERVIEW_COLUMN_WIDTH + 7 * 16}px`);
     expect(track.style.width).toBe(`${minimumWidth}px`);
+    expect(container.querySelector('[data-testid="production-board-bottom-scrollbar"]')?.className).toContain("sticky bottom-0");
   });
 
   it("uses the board container width to fit columns when they remain readable", () => {
@@ -75,16 +76,28 @@ describe("Production board scrolling", () => {
     });
   });
 
-  it("falls back to readable minimum widths and horizontal scrolling in a narrow pane", () => {
+  it("wraps readable columns in fit mode without a wide natural board", () => {
     expect(calculateProductionBoardLayout({
       containerWidth: 900,
       columnCount: 4,
       fitColumns: true,
     })).toEqual({
-      columnWidth: MIN_PRODUCTION_OVERVIEW_COLUMN_WIDTH,
-      trackWidth: 1_328,
-      requiresHorizontalScroll: true,
+      columnWidth: 240,
+      trackWidth: 900,
+      requiresHorizontalScroll: false,
     });
+
+    act(() => root.render(
+      <ProductionBoardScrollArea minimumWidth={1_328} trackWidth={900} fitColumns>
+        <div>Column</div>
+      </ProductionBoardScrollArea>,
+    ));
+    const viewport = container.querySelector('[data-testid="production-board-scroll-viewport"]') as HTMLElement;
+    const track = container.querySelector('[data-testid="production-board-column-track"]') as HTMLElement;
+    expect(viewport.className).toContain("overflow-x-hidden");
+    expect(track.style.gridTemplateColumns).toContain("auto-fit");
+    expect(track.style.minWidth).toBe("");
+    expect(container.querySelector('[data-testid="production-board-bottom-scrollbar"]')).toBeNull();
   });
 
   it("keeps normal columns readable and scrollable without fitting", () => {
@@ -122,5 +135,25 @@ describe("Production board scrolling", () => {
 
     expect(onViewportWidthChange).toHaveBeenCalledWith(720);
     expect(onViewportWidthChange).toHaveBeenLastCalledWith(540);
+  });
+
+  it("keeps a bottom scrollbar synchronized with the board", () => {
+    act(() => root.render(
+      <ProductionBoardScrollArea minimumWidth={1_728} trackWidth={1_728}>
+        <div>Column</div>
+      </ProductionBoardScrollArea>,
+    ));
+    const viewport = container.querySelector('[data-testid="production-board-scroll-viewport"]') as HTMLElement;
+    const rail = container.querySelector('[data-testid="production-board-bottom-scrollbar"]') as HTMLElement;
+    act(() => {
+      rail.scrollLeft = 420;
+      rail.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(viewport.scrollLeft).toBe(420);
+    act(() => {
+      viewport.scrollLeft = 210;
+      viewport.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(rail.scrollLeft).toBe(210);
   });
 });

@@ -269,14 +269,20 @@ function formatFileSize(bytes: number): string {
 
 export default function ProductionOverviewPage() {
   const navigate = useNavigate();
+  const [searchOnlyProduction, setSearchOnlyProduction] = useState(true);
   // Fetch ALL production jobs (no station/status filter for overview)
   // This shows jobs across all production modules (flatbed, roll, apparel)
-  const { data: allJobs, isLoading, error } = useProductionJobs({});
+  const { data: allJobs, isLoading, error } = useProductionJobs({ productionOnly: searchOnlyProduction });
   const { data: productionStations = [], isLoading: stationsLoading } = useProductionStations();
-  const jobs = useMemo(() => allJobs ?? [], [allJobs]);
+  const jobs = useMemo(() => (allJobs ?? []).filter((job) =>
+    !searchOnlyProduction || String(job.stationKey ?? "").toLowerCase() !== "fulfillment"
+  ), [allJobs, searchOnlyProduction]);
   const boardColumns = useMemo(
-    () => buildProductionOverviewColumns(productionStations, jobs),
-    [jobs, productionStations],
+    () => buildProductionOverviewColumns(
+      productionStations.filter((station) => !searchOnlyProduction || station.key !== "fulfillment"),
+      jobs,
+    ),
+    [jobs, productionStations, searchOnlyProduction],
   );
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
@@ -391,7 +397,6 @@ export default function ProductionOverviewPage() {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchOnlyProduction, setSearchOnlyProduction] = useState(true);
   const [stationFilter, setStationFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
@@ -1380,6 +1385,7 @@ export default function ProductionOverviewPage() {
             <ProductionBoardScrollArea
               minimumWidth={minimumBoardWidth}
               trackWidth={boardLayout.trackWidth}
+              fitColumns={fitColumns}
               onViewportWidthChange={setBoardViewportWidth}
             >
                 {boardColumns.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
@@ -1396,6 +1402,7 @@ export default function ProductionOverviewPage() {
                       toggleCardExpanded={toggleCardExpanded}
                       documentNumberDisplayMode={productionNumberDisplayMode}
                       width={boardLayout.columnWidth}
+                      fitColumns={fitColumns}
                     />
                   );
                 })}
@@ -1410,6 +1417,7 @@ export default function ProductionOverviewPage() {
                   isDragOverlay
                   stationLabel={boardColumns.find((column) => column.id === resolveProductionOverviewJobColumn(activeJob))?.label}
                   documentNumberDisplayMode={productionNumberDisplayMode}
+                  fitColumns={fitColumns}
                 />
               )}
             </DragOverlay>
@@ -1601,6 +1609,7 @@ function KanbanColumn({
   toggleCardExpanded,
   documentNumberDisplayMode,
   width = DEFAULT_COLUMN_WIDTH,
+  fitColumns = false,
 }: {
   column: ProductionOverviewBoardColumn;
   jobs: ProductionJobListItem[];
@@ -1611,23 +1620,24 @@ function KanbanColumn({
   toggleCardExpanded: (jobId: string) => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
   width?: number;
+  fitColumns?: boolean;
 }) {
   const { setNodeRef } = useDroppable({ id: column.id });
 
   return (
     <Card 
-      className="flex flex-col flex-shrink-0" 
-      style={{ width: `${width}px`, minWidth: `${MIN_COLUMN_WIDTH}px`, flex: `0 0 ${Math.max(width, MIN_COLUMN_WIDTH)}px` }}
+      className={cn("flex min-w-0 flex-col", !fitColumns && "flex-shrink-0")}
+      style={fitColumns ? { width: "100%" } : { width: `${width}px`, minWidth: `${MIN_COLUMN_WIDTH}px`, flex: `0 0 ${Math.max(width, MIN_COLUMN_WIDTH)}px` }}
     >
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
-          <span>{column.label}</span>
-          <Badge variant="secondary" className="ml-2">
+      <CardHeader className={fitColumns ? "p-3 pb-2" : "pb-3"}>
+        <CardTitle className="flex min-w-0 items-center justify-between gap-2 text-sm font-medium">
+          <span className="min-w-0 truncate" title={column.label}>{column.label}</span>
+          <Badge variant="secondary" className="shrink-0">
             {jobs.length}
           </Badge>
         </CardTitle>
       </CardHeader>
-      <CardContent ref={setNodeRef} className="flex-1 space-y-2 pt-0 min-h-[200px]">
+      <CardContent ref={setNodeRef} className={cn("min-h-[200px] flex-1 space-y-2 pt-0", fitColumns && "px-2 pb-2")}>
         {jobs.length === 0 ? (
           <div className="text-xs text-muted-foreground text-center py-4">
             No jobs
@@ -1644,6 +1654,7 @@ function KanbanColumn({
               toggleExpanded={() => toggleCardExpanded(job.id)}
               documentNumberDisplayMode={documentNumberDisplayMode}
               stationLabel={column.label}
+              fitColumns={fitColumns}
             />
           ))
         )}
@@ -1761,14 +1772,14 @@ function StatusBullet({
         onMouseDownCapture={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
         className={cn(
-          "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[10px] font-semibold transition-all cursor-pointer",
+          "inline-flex max-w-full items-center gap-1 px-2 py-1.5 rounded-full text-[10px] leading-tight font-semibold transition-all cursor-pointer",
           "bg-muted/30 hover:bg-muted/50 border border-border/40",
           "shadow-sm hover:shadow-md",
           disabled && "opacity-50 cursor-not-allowed"
         )}
       >
-        <div className={cn("w-2 h-2 rounded-full shadow-sm", colors.dot)} />
-        <span className={colors.label}>{getCurrentLabel()}</span>
+        <div className={cn("h-2 w-2 shrink-0 rounded-full shadow-sm", colors.dot)} />
+        <span className={cn("min-w-0 whitespace-normal break-words text-center", colors.label)}>{getCurrentLabel()}</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="center" className="w-40">
         <DropdownMenuItem
@@ -1916,6 +1927,7 @@ function JobCard({
   toggleExpanded,
   documentNumberDisplayMode,
   stationLabel,
+  fitColumns = false,
 }: { 
   job: ProductionJobListItem; 
   boardCardConfig: BoardCardConfig;
@@ -1926,6 +1938,7 @@ function JobCard({
   toggleExpanded?: () => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
   stationLabel?: string;
+  fitColumns?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: job.id,
@@ -1963,16 +1976,17 @@ function JobCard({
         urgency === 'due_today' && cn(productionCardTheme.dueToday.outline, "shadow-lg", productionCardTheme.dueToday.glow),
       )}
     >
-      <CardContent className="p-5 space-y-3">
-        {/* Header Row: Customer | Status Bullet | Order # | Expand/Collapse */}
-        <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-start gap-3">
-          {/* Left: Customer */}
-          {boardCardConfig.customer && (
-            <div className="justify-self-start min-w-0" data-no-dnd="true">
+      <CardContent className={cn("min-w-0 space-y-3", fitColumns ? "p-3" : "p-5")}>
+        {/* Customer and status have separate regions; the order lives below. */}
+        <div className="min-w-0 space-y-1.5">
+          <div className="flex min-w-0 items-start justify-between gap-2">
+            {boardCardConfig.customer && (
+            <div className="min-w-0 flex-1" data-no-dnd="true">
               {customerId ? (
                 <Link
                   to={ROUTES.customers.detail(customerId)}
-                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline inline-flex max-w-full truncate uppercase tracking-wide"
+                  className="block min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-blue-600 hover:text-blue-700 hover:underline"
+                  title={job.order.customerName}
                   onClick={(e) => e.stopPropagation()}
                   onPointerDownCapture={(e) => e.stopPropagation()}
                   onMouseDownCapture={(e) => e.stopPropagation()}
@@ -1980,16 +1994,14 @@ function JobCard({
                   {job.order.customerName}
                 </Link>
               ) : (
-                <span className="text-xs font-semibold truncate block uppercase tracking-wide">
+                <span className="block min-w-0 truncate text-xs font-semibold uppercase tracking-wide" title={job.order.customerName}>
                   {job.order.customerName}
                 </span>
               )}
             </div>
           )}
-
-          {/* Center: Status Bullet */}
           {boardCardConfig.status && (
-            <div className="justify-self-center shrink-0">
+            <div className="max-w-[120px] shrink-0">
               <StatusBullet
                 status={job.status}
                 disabled={updateStatus.isPending || isDragOverlay}
@@ -2001,13 +2013,14 @@ function JobCard({
               />
             </div>
           )}
-
-          {/* Right: Order # */}
+          </div>
+          <div className="flex min-w-0 items-center justify-between gap-2">
           {boardCardConfig.orderNumber && orderId && (
-            <div className="min-w-0 justify-self-end text-right" data-no-dnd="true">
+            <div className="min-w-0 flex-1" data-no-dnd="true">
               <Link
                 to={ROUTES.orders.detail(orderId)}
-                className="block max-w-full truncate text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
+                className="block min-w-0 truncate text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
+                title={`Order ${orderNumberLabel || job.order.orderNumber}`}
                 onClick={(e) => e.stopPropagation()}
                 onPointerDownCapture={(e) => e.stopPropagation()}
                 onMouseDownCapture={(e) => e.stopPropagation()}
@@ -2019,7 +2032,7 @@ function JobCard({
 
           {/* Expand/Collapse Button */}
           {toggleExpanded && (
-            <div className="justify-self-end" data-no-dnd="true">
+            <div className="shrink-0" data-no-dnd="true">
               <Button
                 variant="ghost"
                 size="sm"
@@ -2039,6 +2052,7 @@ function JobCard({
               </Button>
             </div>
           )}
+          </div>
         </div>
 
         {/* Collapsed View */}
@@ -2046,13 +2060,13 @@ function JobCard({
           <>
             {/* Title */}
             {boardCardConfig.jobDescription && (
-              <div className="text-sm font-medium truncate">
+              <div className="min-w-0 truncate text-sm font-medium" title={job.jobDescription || "Untitled Job"}>
                 {job.lineNumber ? `Line ${job.lineNumber} · ` : ""}{job.jobDescription || "Untitled Job"}
               </div>
             )}
             {/* Material + Due Date compact row */}
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>{job.media || "—"}</span>
+            <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span className="min-w-0 truncate" title={job.media || "—"}>{job.media || "—"}</span>
               {dueDate ? (
                 <span className={cn(
                   "font-medium",
@@ -2073,8 +2087,9 @@ function JobCard({
           <>
             {/* Title: Job Description */}
             {boardCardConfig.jobDescription && (
-              <h3 
-                className="text-lg font-semibold leading-tight cursor-pointer"
+              <h3
+                className={cn("min-w-0 cursor-pointer break-words font-semibold leading-tight line-clamp-2", fitColumns ? "text-sm" : "text-lg")}
+                title={job.jobDescription || "Untitled Job"}
                 onClick={handleCardClick}
               >
                 {job.lineNumber ? `Line ${job.lineNumber} · ` : ""}{job.jobDescription || "Untitled Job"}
@@ -2082,14 +2097,14 @@ function JobCard({
         )}
 
         {/* Metadata Grid: 2 columns */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+        <div className={cn("grid min-w-0 grid-cols-2", fitColumns ? "gap-x-2 gap-y-2" : "gap-x-4 gap-y-3")}>
           {/* Material */}
           {boardCardConfig.media && (
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
                 Material
               </div>
-              <div className="text-sm font-medium">
+              <div className="truncate text-sm font-medium" title={job.media || "—"}>
                 {job.media || "—"}
               </div>
             </div>
@@ -2097,7 +2112,7 @@ function JobCard({
 
           {/* Quantity */}
           {boardCardConfig.qty && (
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
                 Quantity
               </div>
@@ -2109,13 +2124,13 @@ function JobCard({
 
           {/* Machine/Station */}
           {boardCardConfig.station && job.stationKey && (
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
                 Machine
               </div>
-              <div className="text-sm font-medium flex items-center gap-1.5">
+              <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                 <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                <span>{stationLabel || job.stationKey}</span>
+                <span className="min-w-0 truncate" title={stationLabel || job.stationKey}>{stationLabel || job.stationKey}</span>
                 <RoutingReasonAffordance
                   routingReason={job.routingReason}
                   idempotencyNote={job.idempotencyNote}
@@ -2127,7 +2142,7 @@ function JobCard({
 
           {/* Due Date - Always show with fallback */}
           {boardCardConfig.dueDate && (
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
                 Due Date
               </div>

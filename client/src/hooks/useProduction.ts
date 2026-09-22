@@ -499,6 +499,7 @@ export function useProductionJobs(
     search?: string;
     sortBy?: string;
     sortDirection?: string;
+    productionOnly?: boolean;
   },
   options?: { enabled?: boolean }
 ) {
@@ -513,6 +514,7 @@ export function useProductionJobs(
       if (filters?.search?.trim()) params.set("search", filters.search.trim());
       if (filters?.sortBy) params.set("sortBy", filters.sortBy);
       if (filters?.sortDirection) params.set("sortDirection", filters.sortDirection);
+      if (filters?.productionOnly) params.set("productionOnly", "true");
       const url = `/api/production/jobs${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch production jobs");

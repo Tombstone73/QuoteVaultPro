@@ -6,6 +6,7 @@ import {
   filterActiveProductionOverviewFulfillmentJobs,
   isActiveProductionOverviewFulfillmentJob,
 } from "../services/fulfillment/productionOverviewFulfillment";
+import { countDistinctActiveProductionOverviewWork } from "../services/productionOverviewPopulation";
 
 const fulfilledBy = (input: { shipped?: number; administrativelyReconciled?: number; ordered?: number } = {}) =>
   resolveFulfillmentLineQuantity({
@@ -58,18 +59,40 @@ describe("Production Overview Fulfillment projection", () => {
 
   test("filters the Overview route before its expensive job hydration", () => {
     const source = readFileSync(path.join(process.cwd(), "server/routes/productionJobs.routes.ts"), "utf8");
-    const canonicalProjectionIndex = source.indexOf("const fulfillmentLineItemIds");
-    const filterIndex = source.indexOf("filteredRows = filterActiveProductionOverviewFulfillmentJobs(", canonicalProjectionIndex);
+    const filterIndex = source.indexOf("await filterActiveProductionOverviewRows(");
     const hydrationIndex = source.indexOf("const jobIds = filteredRows.map");
-    expect(source).toContain("new FulfillmentDashboardRepo(db).listLineEligibility");
-    expect(canonicalProjectionIndex).toBeGreaterThan(-1);
+    const population = readFileSync(path.join(process.cwd(), "server/services/productionOverviewPopulation.ts"), "utf8");
+    expect(population).toContain("new FulfillmentDashboardRepo(executor).listLineEligibility");
     expect(filterIndex).toBeGreaterThan(-1);
     expect(filterIndex).toBeLessThan(hydrationIndex);
   });
 
-  test("reserves a dedicated grid cell for the card status and truncates long order labels", () => {
+  test("badge counts distinct active production lines and excludes fulfillment and history", () => {
+    const rows = [
+      { id: "print-owner", lineItemId: "line-1", stationKey: "roll", status: "in_progress" },
+      { id: "duplicate", lineItemId: "line-1", stationKey: "finishing", status: "queued" },
+      { id: "fulfillment", lineItemId: "line-2", stationKey: "fulfillment", status: "queued" },
+      { id: "old", lineItemId: "line-3", stationKey: "roll", status: "done" },
+    ];
+    expect(countDistinctActiveProductionOverviewWork(rows)).toBe(1);
+    expect(countDistinctActiveProductionOverviewWork(rows, false)).toBe(2);
+    const summary = readFileSync(path.join(process.cwd(), "server/services/operationalSummary.ts"), "utf8");
+    const route = readFileSync(path.join(process.cwd(), "server/routes/productionJobs.routes.ts"), "utf8");
+    const hook = readFileSync(path.join(process.cwd(), "client/src/hooks/useProduction.ts"), "utf8");
+    const overview = readFileSync(path.join(process.cwd(), "client/src/features/production/views/ProductionOverviewPage.tsx"), "utf8");
+    expect(summary).toContain("filterActiveProductionOverviewRows(organizationId, candidates)");
+    expect(summary).toContain("countDistinctActiveProductionOverviewWork(active, true)");
+    expect(summary).toContain("lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'");
+    expect(route).toContain("productionOnly ? sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'`");
+    expect(hook).toContain('params.set("productionOnly", "true")');
+    expect(overview).toContain("useProductionJobs({ productionOnly: searchOnlyProduction })");
+  });
+
+  test("reserves card header regions and truncates long identity text", () => {
     const source = readFileSync(path.join(process.cwd(), "client/src/features/production/views/ProductionOverviewPage.tsx"), "utf8");
-    expect(source).toContain("grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]");
-    expect(source).toContain("block max-w-full truncate text-xs font-medium");
+    expect(source).toContain("Customer and status have separate regions; the order lives below");
+    expect(source).toContain("title={job.order.customerName}");
+    expect(source).toContain("title={job.jobDescription || \"Untitled Job\"}");
+    expect(source).toContain("title={`Order ${orderNumberLabel || job.order.orderNumber}`}");
   });
 });

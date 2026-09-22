@@ -27,6 +27,8 @@ import { listProofingQueue } from "./proofingService";
 import type { ProofingQueueRow } from "@shared/proofing";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { resolvePrepressQueueEligibility } from "./prepressQueueEligibility";
+import { countDistinctActiveProductionOverviewWork, filterActiveProductionOverviewRows } from "./productionOverviewPopulation";
+import { TERMINAL_PRODUCTION_STATUSES } from "@shared/operationalState";
 
 export interface OperationalSummary {
   inboundOrders: number;
@@ -134,6 +136,27 @@ async function countVisibleProductionJobs(
   }).length;
 }
 
+async function countCanonicalProductionOverviewJobs(organizationId: string): Promise<number> {
+  // Match the Overview route's base population, then run its shared active
+  // owner, grouped-run and canonical Fulfillment gates. The sidebar follows
+  // the board's default "Only production" scope.
+  const candidates = await db.select({
+    id: productionJobs.id,
+    lineItemId: productionJobs.lineItemId,
+    stationKey: productionJobs.stationKey,
+    status: productionJobs.status,
+  }).from(productionJobs)
+    .innerJoin(orders, eq(productionJobs.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(and(
+      eq(productionJobs.organizationId, organizationId),
+      notInArray(productionJobs.status, [...TERMINAL_PRODUCTION_STATUSES]),
+      sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'`,
+    ));
+  const active = await filterActiveProductionOverviewRows(organizationId, candidates);
+  return countDistinctActiveProductionOverviewWork(active, true);
+}
+
 export async function computeOperationalSummary(organizationId: string): Promise<OperationalSummary> {
   // Keep this dependency lazy so the lightweight badge mapping helpers remain
   // usable in DB-free tests; the authoritative list query is needed only when
@@ -184,7 +207,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
       debugLabel: "operational-summary-prepress",
     }),
 
-    countVisibleProductionJobs(organizationId),
+    countCanonicalProductionOverviewJobs(organizationId),
     countVisibleProductionJobs(organizationId, "flatbed"),
     countVisibleProductionJobs(organizationId, "roll"),
 
