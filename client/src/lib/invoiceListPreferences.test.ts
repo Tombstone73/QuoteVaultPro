@@ -153,4 +153,26 @@ describe("Invoice list preferences", () => {
       customerIds: "customer-a,customer-z", columnFilters: { excludeCustomerIds: "customer-b,customer-d" },
     });
   });
+
+  it("persists bounded, user-scoped saved views as ordinary Invoice filter state", () => {
+    const storage = createStorage();
+    persistInvoiceListPreferences("user-1", "org-1", {
+      ...DEFAULT_INVOICE_LIST_PREFERENCES,
+      savedViews: [{
+        id: "ready-to-send",
+        name: "Ready to send",
+        filters: { columnFilters: { jobStatus: "job_complete,fulfillment_complete", sendStatus: "never_sent" } },
+        sortKey: "dueDate",
+        sortDir: "asc",
+      }],
+    }, storage);
+
+    expect(readPersistedInvoiceListPreferences("user-1", "org-1", storage).savedViews).toEqual([{
+      id: "ready-to-send",
+      name: "Ready to send",
+      filters: { columnFilters: { jobStatus: "job_complete,fulfillment_complete", sendStatus: "never_sent" } },
+      sortKey: "dueDate",
+      sortDir: "asc",
+    }]);
+  });
 });

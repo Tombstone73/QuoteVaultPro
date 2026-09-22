@@ -23,6 +23,16 @@ export type InvoiceListPreferences = {
   sortDir: InvoiceSortDir;
   pageSize: InvoiceListPageSize;
   filters: InvoiceListStickyFilters;
+  savedViews?: InvoiceListSavedView[];
+};
+
+/** A user-scoped shortcut to ordinary URL-backed Invoice list state. */
+export type InvoiceListSavedView = {
+  id: string;
+  name: string;
+  filters: InvoiceListStickyFilters;
+  sortKey?: InvoiceSortKey;
+  sortDir?: InvoiceSortDir;
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -89,6 +99,26 @@ function normalizeFilters(value: unknown): InvoiceListStickyFilters {
   return Object.fromEntries(Object.entries(filters).filter(([, item]) => item !== undefined)) as InvoiceListStickyFilters;
 }
 
+function normalizeSavedViews(value: unknown): InvoiceListSavedView[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = new Set<string>();
+  const savedViews = value.reduce<InvoiceListSavedView[]>((result, item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item) || result.length >= 20) return result;
+    const raw = item as Record<string, unknown>;
+    const id = nonBlankString(raw.id);
+    const name = nonBlankString(raw.name)?.slice(0, 60);
+    if (!id || !name || names.has(name.toLocaleLowerCase())) return result;
+    names.add(name.toLocaleLowerCase());
+    const sortKey = typeof raw.sortKey === "string" && SORT_KEYS.has(raw.sortKey as InvoiceSortKey)
+      ? raw.sortKey as InvoiceSortKey
+      : undefined;
+    const sortDir = raw.sortDir === "asc" || raw.sortDir === "desc" ? raw.sortDir : undefined;
+    result.push({ id, name, filters: normalizeFilters(raw.filters), ...(sortKey ? { sortKey } : {}), ...(sortDir ? { sortDir } : {}) });
+    return result;
+  }, []);
+  return savedViews.length ? savedViews : undefined;
+}
+
 export function getInvoiceListPreferencesStorageKey(userId: string, organizationId?: string | null): string {
   const userScope = String(userId || "").trim() || "unknown";
   const organizationScope = String(organizationId || "").trim() || "unknown";
@@ -116,6 +146,7 @@ export function normalizeInvoiceListPreferences(value: unknown): InvoiceListPref
     sortDir,
     pageSize,
     filters: normalizeFilters(raw.filters),
+    savedViews: normalizeSavedViews(raw.savedViews),
   };
 }
 

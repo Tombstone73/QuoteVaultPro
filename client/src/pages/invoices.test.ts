@@ -73,13 +73,13 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("Fulfillment Complete");
     expect(invoiceHooksSource).toContain("excludeCustomerId");
     expect(invoiceHooksSource).toContain("jobStatus");
-    expect(invoicesPageSource).toContain("Show Paid Historical");
-    expect(invoicesPageSource).toContain("Show Canceled");
+    expect(invoicesPageSource).toContain("Paid / Historical");
+    expect(invoicesPageSource).toContain("Canceled");
     expect(invoicesPageSource).toContain("InvoiceCategoricalFilter");
     expect(invoicesPageSource).toContain("INVOICE_STATUS_OPTIONS");
     expect(invoicesPageSource).toContain("ACCOUNTING_APPROVAL_OPTIONS");
     expect(invoicesPageSource).toContain("Approved + Unsent");
-    expect(invoicesPageSource).toContain("applyApprovedUnsentQuickFilter");
+    expect(invoicesPageSource).toContain("INVOICE_BUILTIN_PRESETS");
     expect(invoicesPageSource).toContain('accountingApproval: "approved", sendStatus: "never_sent"');
     expect(invoicesPageSource).toContain("updated_after_sent");
     expect(invoicesPageSource).toContain("includePaidHistorical");
@@ -87,12 +87,10 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("includeCanceled");
     expect(invoiceHooksSource).toContain("includeCanceled");
     expect(invoicesPageSource).toContain("Ready to Finalize");
-    expect(invoicesPageSource).toContain("applyReadyToFinalizeQuickFilter");
-    const readyToFinalize = invoicesPageSource.slice(invoicesPageSource.indexOf("const applyReadyToFinalizeQuickFilter"), invoicesPageSource.indexOf("const clearAllFilters"));
+    const readyToFinalize = invoicesPageSource.slice(invoicesPageSource.indexOf('id: "ready_to_finalize"'), invoicesPageSource.indexOf('id: "approved_unsent"'));
     expect(readyToFinalize).toContain('jobStatus: "job_complete,fulfillment_complete"');
+    expect(readyToFinalize).toContain('sendStatus: "never_sent"');
     expect(readyToFinalize).not.toContain("accountingApproval");
-    expect(readyToFinalize).not.toContain("sendStatus");
-    expect(readyToFinalize).not.toContain("payment");
   });
 
   it("uses the selected-invoice workflow to manually mark invoices sent without invoking email delivery", () => {
@@ -131,22 +129,36 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("readPersistedInvoiceListPreferences");
     expect(invoicesPageSource).toContain("persistInvoiceListPreferences");
     expect(invoicesPageSource).toContain("hasExplicitInvoiceListFilters");
-    expect(invoicesPageSource).toContain("Sticky sorting &amp; filters");
+    expect(invoicesPageSource).toContain("Sticky Sorting &amp; Filters");
     expect(invoicesPageSource).toContain("stickySortingAndFilters");
     expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortKey : preferences.sortKey");
     expect(invoicesPageSource).toContain("hasExplicitSort ? listState.sortDir : preferences.sortDir");
     expect(invoicesPageSource).toContain("pageSize: searchParams.has(\"pageSize\") ? listState.pageSize : preferences.pageSize");
-    expect(invoicesPageSource).toContain("Reset sort");
+    expect(invoicesPageSource).toContain("Reset Sort");
     expect(invoicesPageSource).toContain("clearAllFilters");
   });
 
   it("keeps active filter chips inside the wrapping Invoice toolbar without reserving a separate filter strip", () => {
     expect(invoicesPageSource).toContain('data-testid="invoice-active-filter-chips"');
-    expect(invoicesPageSource).toContain('className="flex flex-wrap items-center gap-1" aria-label="Active invoice column filters"');
-    expect(invoicesPageSource).toContain('className="flex flex-wrap items-center gap-2 p-3" data-testid="invoice-toolbar"');
+    expect(invoicesPageSource).toContain('className="mt-2 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2" aria-label="Active invoice column filters"');
+    expect(invoicesPageSource).toContain('className="p-3" data-testid="invoice-toolbar"');
     expect(invoicesPageSource).toContain('onClick={() => clearActiveFilter(key)}');
     expect(invoicesPageSource).toContain('onClick={clearAllFilters}>Clear all</Button>');
     expect(invoicesPageSource).not.toContain('border-t border-titan-border-subtle px-3 pb-3 pt-2');
+  });
+
+  it("keeps bulk actions contextual and makes preset labels Custom after any manual search change", () => {
+    expect(invoicesPageSource).toContain("selectedCount > 0 ?");
+    expect(invoicesPageSource).toContain('data-testid="invoice-selection-actions"');
+    expect(invoicesPageSource).toContain("normalizeInvoiceListSearchQuery(search)");
+    expect(invoicesPageSource).toContain('activePresetLabel = activeBuiltinPreset?.label || activeSavedView?.name || "Custom"');
+  });
+
+  it("uses dialog-consistent confirmation for saved-view rename and deletion", () => {
+    expect(invoicesPageSource).toContain("Rename Invoice view");
+    expect(invoicesPageSource).toContain("Delete saved Invoice view?");
+    expect(invoicesPageSource).not.toContain("window.prompt");
+    expect(invoicesPageSource).toContain("setDeletingSavedView(view)");
   });
 
   it("keeps the global filter popover within Radix's available viewport height", () => {
@@ -184,7 +196,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain('data-testid="invoice-summary-strip"');
     expect(invoicesPageSource).toContain("getInvoiceTotalsVisible");
     expect(invoicesPageSource).toContain("setInvoiceTotalsVisible");
-    expect(invoicesPageSource).toContain("flex flex-wrap items-center gap-2 p-3");
+    expect(invoicesPageSource).toContain("flex flex-wrap items-center gap-2");
     expect(invoicesPageSource).toContain("min-w-[16rem] max-w-xl flex-1 basis-[22rem]");
   });
 
@@ -256,7 +268,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain('getOrderJobStatus(invoice)');
     expect(invoicesPageSource).toContain('CloseJobOverrideAction');
     expect(invoicesPageSource).toContain("renderInvoiceEmailButton(invoice)");
-    expect(invoicesPageSource).not.toContain('DropdownMenu');
+    expect(invoicesPageSource).toContain('DropdownMenu');
   });
 
   it("detects an uncertain delivery before opening the normal direct-send dialog", () => {

@@ -4,12 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, Settings2, X } from "lucide-react";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, Settings2, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useBulkMarkInvoicesSent, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
@@ -23,7 +22,7 @@ import { applyVisibleRowSelection } from "@/lib/visibleRowRangeSelection";
 import { getInvoiceTotalsVisible, setInvoiceTotalsVisible } from "@/lib/invoiceDashboardPreferences";
 import { hasExplicitInvoiceListFilters, INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS, normalizeInvoiceListCustomerIds, normalizeInvoiceListSearchQuery, parseInvoiceListUrlState, updateInvoiceListUrlState, type InvoiceListUrlState } from "@/lib/invoiceListUrlState";
 import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
-import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
+import { DEFAULT_INVOICE_LIST_PREFERENCES, persistInvoiceListPreferences, readPersistedInvoiceListPreferences, resolveInvoiceListViewPreferences, type InvoiceListPreferences, type InvoiceListSavedView, type InvoiceListStickyFilters } from "@/lib/invoiceListPreferences";
 import { CustomerMultiSelect } from "@/components/CustomerMultiSelect";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
 import {
@@ -231,6 +230,22 @@ function stickyFiltersToUrlChanges(filters: InvoiceListStickyFilters): Record<st
   };
 }
 
+type InvoiceBuiltinPreset = {
+  id: string;
+  label: string;
+  changes: Record<string, string | undefined>;
+};
+
+const INVOICE_BUILTIN_PRESETS: InvoiceBuiltinPreset[] = [
+  { id: "all", label: "All Invoices", changes: {} },
+  { id: "ready_to_finalize", label: "Ready to Finalize", changes: { jobStatus: "job_complete,fulfillment_complete", sendStatus: "never_sent" } },
+  { id: "approved_unsent", label: "Approved + Unsent", changes: { accountingApproval: "approved", sendStatus: "never_sent" } },
+  { id: "overdue", label: "Overdue", changes: { status: "overdue" } },
+  { id: "unpaid", label: "Unpaid", changes: { status: "unpaid" } },
+  { id: "paid_historical", label: "Paid / Historical", changes: { status: "paid_historical", includePaidHistorical: "1" } },
+  { id: "canceled", label: "Canceled", changes: { status: "void", includeCanceled: "1" } },
+];
+
 export default function InvoicesListPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -335,6 +350,12 @@ export default function InvoicesListPage() {
   const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'all'>('active');
   const [emailQueuePage, setEmailQueuePage] = useState(1);
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [savedViewsOpen, setSavedViewsOpen] = useState(false);
+  const [saveViewOpen, setSaveViewOpen] = useState(false);
+  const [savedViewName, setSavedViewName] = useState("");
+  const [renamingSavedView, setRenamingSavedView] = useState<InvoiceListSavedView | null>(null);
+  const [renamedSavedViewName, setRenamedSavedViewName] = useState("");
+  const [deletingSavedView, setDeletingSavedView] = useState<InvoiceListSavedView | null>(null);
   const [quickSendInvoice, setQuickSendInvoice] = useState<{ id: string; label: string } | null>(null);
   const [needsReviewPromptJob, setNeedsReviewPromptJob] = useState<{ id: string; invoiceId: string; label: string } | null>(null);
   const [reviewJob, setReviewJob] = useState<{ id: string; invoiceId: string; label: string; source: 'direct' | 'queue' } | null>(null);
@@ -446,26 +467,103 @@ export default function InvoicesListPage() {
     setColumnFilter(key, value);
   };
 
-  const applyApprovedUnsentQuickFilter = () => {
-    updateListState({ accountingApproval: "approved", sendStatus: "never_sent" }, true);
+  const presetResetChanges = (): Record<string, string | undefined> => ({
+    search: undefined,
+    status: undefined,
+    includePaidHistorical: undefined,
+    includeCanceled: undefined,
+    customerId: undefined,
+    customerIds: undefined,
+    customerName: undefined,
+    excludeCustomerName: undefined,
+    issueDatePreset: undefined,
+    ...Object.fromEntries(INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.map((key) => [key, undefined])),
+  });
+
+  const applyPreset = (preset: InvoiceBuiltinPreset) => {
+    updateListState({ ...presetResetChanges(), ...preset.changes }, true);
   };
-  const applyReadyToFinalizeQuickFilter = () => {
-    updateListState({ jobStatus: "job_complete,fulfillment_complete" }, true);
+
+  const applySavedView = (view: InvoiceListSavedView) => {
+    updateListState({
+      ...presetResetChanges(),
+      ...stickyFiltersToUrlChanges(view.filters),
+      sortBy: view.sortKey,
+      sortDir: view.sortDir,
+    }, true);
+  };
+
+  const currentViewMatches = (changes: Record<string, string | undefined>) => {
+    // Global search is also server-backed list state. A typed search narrows a
+    // preset result, so never imply the unmodified built-in view is still active.
+    if (normalizeInvoiceListSearchQuery(search)) return false;
+    const current = updateInvoiceListUrlState(new URLSearchParams(), {
+      ...presetResetChanges(),
+      ...stickyFiltersToUrlChanges(toStickyFilters(effectiveListState)),
+    }, true).toString();
+    const expected = updateInvoiceListUrlState(new URLSearchParams(), { ...presetResetChanges(), ...changes }, true).toString();
+    return current === expected;
+  };
+
+  const activeBuiltinPreset = INVOICE_BUILTIN_PRESETS.find((preset) => currentViewMatches(preset.changes));
+  const activeSavedView = (savedPreferences.savedViews || []).find((view) => currentViewMatches(stickyFiltersToUrlChanges(view.filters)) && (!view.sortKey || view.sortKey === sortKey) && (!view.sortDir || view.sortDir === sortDir));
+  const activePresetLabel = activeBuiltinPreset?.label || activeSavedView?.name || "Custom";
+
+  const saveCurrentView = () => {
+    if (!user?.id) return;
+    const name = savedViewName.trim().replace(/\s+/g, " ").slice(0, 60);
+    if (!name) return;
+    const existing = readPersistedInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null);
+    if ((existing.savedViews || []).some((view) => view.name.localeCompare(name, undefined, { sensitivity: "accent" }) === 0)) {
+      toast({ title: "Saved view name already exists", description: "Choose a unique name for this view.", variant: "destructive" });
+      return;
+    }
+    const nextPreferences: InvoiceListPreferences = {
+      ...existing,
+      savedViews: [...(existing.savedViews || []), {
+        id: `invoice-view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name,
+        filters: toStickyFilters(effectiveListState),
+        sortKey,
+        sortDir,
+      }],
+    };
+    persistInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null, nextPreferences);
+    setPreferencesRevision((current) => current + 1);
+    setSavedViewName("");
+    setSaveViewOpen(false);
+    toast({ title: "Saved view created", description: `${name} is available in Preset.` });
+  };
+
+  const renameSavedView = () => {
+    const view = renamingSavedView;
+    if (!user?.id) return;
+    if (!view) return;
+    const name = renamedSavedViewName.trim().replace(/\s+/g, " ").slice(0, 60);
+    if (!name || name === view.name) return;
+    const existing = readPersistedInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null);
+    if ((existing.savedViews || []).some((candidate) => candidate.id !== view.id && candidate.name.localeCompare(name, undefined, { sensitivity: "accent" }) === 0)) {
+      toast({ title: "Saved view name already exists", variant: "destructive" });
+      return;
+    }
+    persistInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null, { ...existing, savedViews: (existing.savedViews || []).map((candidate) => candidate.id === view.id ? { ...candidate, name } : candidate) });
+    setPreferencesRevision((current) => current + 1);
+    setRenamingSavedView(null);
+    setRenamedSavedViewName("");
+  };
+
+  const deleteSavedView = () => {
+    const view = deletingSavedView;
+    if (!user?.id) return;
+    if (!view) return;
+    const existing = readPersistedInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null);
+    persistInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null, { ...existing, savedViews: (existing.savedViews || []).filter((candidate) => candidate.id !== view.id) });
+    setPreferencesRevision((current) => current + 1);
+    setDeletingSavedView(null);
   };
 
   const clearAllFilters = () => {
-    updateListState({
-      search: undefined,
-      status: undefined,
-      includePaidHistorical: undefined,
-      includeCanceled: undefined,
-      customerId: undefined,
-      customerIds: undefined,
-      customerName: undefined,
-      excludeCustomerName: undefined,
-      issueDatePreset: undefined,
-      ...Object.fromEntries(INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.map((key) => [key, undefined])),
-    }, true);
+    updateListState(presetResetChanges(), true);
   };
 
   const clearActiveFilter = (key: string) => {
@@ -846,18 +944,16 @@ export default function InvoicesListPage() {
         subtitle="Manage invoices and payments"
         actions={
           isAdminOrOwner && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" onClick={handleBatchSend} disabled={selectedCount === 0 || batchSendInvoices.isPending}>
-                <Mail className="mr-2 h-4 w-4" />
-                {batchSendInvoices.isPending ? "Preparing..." : `Send Selected${selectedCount ? ` (${selectedCount})` : ""}`}
-              </Button>
-              <Button variant="outline" onClick={() => setMarkSelectedSentOpen(true)} disabled={selectedCount === 0 || bulkMarkInvoicesSent.isPending}>
-                {bulkMarkInvoicesSent.isPending ? 'Marking…' : `Mark as Sent${selectedCount ? ` (${selectedCount})` : ''}`}
-              </Button>
-              <Button variant="outline" onClick={handleApproveSelected} disabled={selectedCount === 0 || approveInvoices.isPending}>
-                {approveInvoices.isPending ? 'Approving…' : `Approve Selected${selectedCount ? ` (${selectedCount})` : ''}`}
-              </Button>
-              <Button variant="outline" onClick={() => setCustomerPaymentOpen(true)} disabled={selectedCount === 0}>Add Payment{selectedCount ? ` (${selectedCount})` : ''}</Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {selectedCount > 0 ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-titan-border-subtle bg-titan-bg-card px-2 py-1.5" data-testid="invoice-selection-actions">
+                <span className="text-sm font-medium text-titan-text-primary">{selectedCount} selected</span>
+                <Button variant="outline" size="sm" onClick={handleBatchSend} disabled={batchSendInvoices.isPending}>
+                  <Mail className="mr-1.5 h-4 w-4" />{batchSendInvoices.isPending ? "Preparing..." : "Send Selected"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setMarkSelectedSentOpen(true)} disabled={bulkMarkInvoicesSent.isPending}>{bulkMarkInvoicesSent.isPending ? 'Marking…' : 'Mark as Sent'}</Button>
+                <Button variant="outline" size="sm" onClick={handleApproveSelected} disabled={approveInvoices.isPending}>{approveInvoices.isPending ? 'Approving…' : 'Approve Selected'}</Button>
+                <Button variant="outline" size="sm" onClick={() => setCustomerPaymentOpen(true)}>Add Payment</Button>
+              </div> : null}
               <Button asChild>
                 <Link to={ROUTES.orders.list}>
                   <Plus className="mr-2 h-4 w-4" />
@@ -886,7 +982,8 @@ export default function InvoicesListPage() {
         )}
 
         <DataCard noPadding>
-          <div className="flex flex-wrap items-center gap-2 p-3" data-testid="invoice-toolbar">
+          <div className="p-3" data-testid="invoice-toolbar">
+            <div className="flex flex-wrap items-center gap-2">
             <TitanSearchInput
               placeholder="Search invoice, customer, contact, order, PO, or job..."
               value={search}
@@ -895,35 +992,23 @@ export default function InvoicesListPage() {
               }}
               containerClassName="min-w-[16rem] max-w-xl flex-1 basis-[22rem]"
             />
-            <InvoiceCategoricalFilter label="Invoice Status" value={statusFilter === "all" ? "" : statusFilter} options={INVOICE_STATUS_OPTIONS} onChange={(value) => setStatusFilter(value || "all")} className="min-w-[180px] justify-start" />
-            <Button type="button" variant="outline" className="gap-2" onClick={applyApprovedUnsentQuickFilter} data-testid="invoice-quick-filter-approved-unsent">
-              <Check className="h-4 w-4" />Approved + Unsent
-            </Button>
-            <Button type="button" variant="outline" className="gap-2" onClick={applyReadyToFinalizeQuickFilter} title="Jobs marked Complete or Fulfillment Complete that are likely ready for pricing review, approval, sending, and job closure." data-testid="invoice-quick-filter-ready-to-finalize">
-              <Check className="h-4 w-4" />Ready to Finalize
-            </Button>
-            <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include QuickBooks invoices in the canonical Paid Historical state">
-              <Checkbox checked={includePaidHistorical} onCheckedChange={(checked) => setIncludePaidHistorical(checked === true)} aria-label="Show Paid Historical" />
-              <span>Show Paid Historical</span>
-            </label>
-            <label className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap" title="Include voided invoice lifecycle records">
-              <Checkbox checked={includeCanceled} onCheckedChange={(checked) => setIncludeCanceled(checked === true)} aria-label="Show Canceled" />
-              <span>Show Canceled</span>
-            </label>
-            <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2" title="Remember sorting and filters for this Invoice list.">
-              <Switch
-                id="invoices-sticky-sorting-and-filters"
-                checked={preferences.stickySortingAndFilters}
-                onCheckedChange={(checked) => handleStickySortingAndFiltersChange(checked === true)}
-                aria-label="Toggle sticky sorting and filters"
-              />
-              <Label htmlFor="invoices-sticky-sorting-and-filters" className="cursor-pointer text-sm text-foreground">
-                Sticky sorting &amp; filters
-              </Label>
-              <Badge variant={preferences.stickySortingAndFilters ? "default" : "secondary"} className="pointer-events-none text-[10px] uppercase tracking-wide">
-                {preferences.stickySortingAndFilters ? "On" : "Off"}
-              </Badge>
-            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" className="gap-1.5" data-testid="invoice-preset-menu">
+                  Preset: {activePresetLabel}<ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-64">
+                <DropdownMenuLabel>Built-in</DropdownMenuLabel>
+                {INVOICE_BUILTIN_PRESETS.map((preset) => <DropdownMenuItem key={preset.id} onSelect={() => applyPreset(preset)}>{activeBuiltinPreset?.id === preset.id && <Check className="h-4 w-4" />}{preset.label}</DropdownMenuItem>)}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Saved Views</DropdownMenuLabel>
+                {(savedPreferences.savedViews || []).length ? (savedPreferences.savedViews || []).map((view) => <DropdownMenuItem key={view.id} onSelect={() => applySavedView(view)}>{activeSavedView?.id === view.id && <Check className="h-4 w-4" />}{view.name}</DropdownMenuItem>) : <div className="px-2 py-1.5 text-sm text-muted-foreground">No saved views yet</div>}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => { setSavedViewName(""); setSaveViewOpen(true); }}>Save Current View</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setSavedViewsOpen(true)}>Manage Saved Views</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Popover>
               <PopoverTrigger asChild>
                 <Button type="button" variant="outline" className="gap-2">
@@ -979,26 +1064,25 @@ export default function InvoicesListPage() {
                 </div>
               </PopoverContent>
             </Popover>
-            <Button type="button" variant="outline" size="sm" className="gap-2" onClick={resetSort} disabled={!hasNonDefaultSort} aria-label="Reset global Invoice sort preference">
-              <RotateCcw className="h-4 w-4" />Reset sort
-            </Button>
-            <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => setColumnsOpen(true)} aria-label="Configure global Invoice columns">
-              <Settings2 className="h-4 w-4" />Columns
-            </Button>
-            <Button
-              type="button"
-              variant={showTotals ? "secondary" : "outline"}
-              size="sm"
-              aria-pressed={showTotals}
-              onClick={toggleTotals}
-            >
-              Totals
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><Button type="button" variant="outline" className="gap-1.5">View<ChevronDown className="h-3.5 w-3.5" /></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-60">
+                <DropdownMenuCheckboxItem checked={showTotals} onSelect={(event) => event.preventDefault()} onCheckedChange={toggleTotals}>Show Summary Cards</DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem checked={preferences.stickySortingAndFilters} onSelect={(event) => event.preventDefault()} onCheckedChange={handleStickySortingAndFiltersChange}>Sticky Sorting &amp; Filters</DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setColumnsOpen(true)}><Settings2 className="h-4 w-4" />Configure Columns</DropdownMenuItem>
+                <DropdownMenuItem disabled={!hasNonDefaultSort} onSelect={resetSort}><RotateCcw className="h-4 w-4" />Reset Sort</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {isAdminOrOwner ? <Button type="button" variant="outline" size="sm" onClick={() => setEmailQueueOpen(true)} data-testid="invoice-email-queue-open">
               <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.needsReview ? ` (${emailQueue.data.counts.needsReview} review)` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
             </Button> : null}
+            <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
+              {renderPaginationControls("top")}
+            </div>
+            </div>
             {activeFilters.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1" aria-label="Active invoice column filters" data-testid="invoice-active-filter-chips">
+              <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-border/60 pt-2" aria-label="Active invoice column filters" data-testid="invoice-active-filter-chips">
                 {activeFilters.map(({ key, label, value }) => (
                   <Button key={key} type="button" variant="secondary" size="sm" className="h-7 gap-1" onClick={() => clearActiveFilter(key)}>
                     {label}: {value} <X className="h-3 w-3" />
@@ -1007,9 +1091,6 @@ export default function InvoicesListPage() {
                 <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={clearAllFilters}>Clear all</Button>
               </div>
             )}
-            <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
-              {renderPaginationControls("top")}
-            </div>
           </div>
         </DataCard>
 
@@ -1226,6 +1307,48 @@ export default function InvoicesListPage() {
             ))}
           </div>
           <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={resetTable}>Reset Table</Button><Button type="button" onClick={() => setColumnsOpen(false)}>Done</Button></div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={saveViewOpen} onOpenChange={setSaveViewOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Save Invoice view</DialogTitle>
+            <DialogDescription>Save the current server-backed filters and sort for your own reuse.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="invoice-saved-view-name">View name</Label>
+            <Input id="invoice-saved-view-name" value={savedViewName} maxLength={60} onChange={(event) => setSavedViewName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveCurrentView(); }} placeholder="e.g. Ready to send" autoFocus />
+          </div>
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setSaveViewOpen(false)}>Cancel</Button><Button type="button" onClick={saveCurrentView} disabled={!savedViewName.trim()}>Save View</Button></div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={savedViewsOpen} onOpenChange={setSavedViewsOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Manage saved Invoice views</DialogTitle>
+            <DialogDescription>Saved views are private to your current organization and account.</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] space-y-2 overflow-y-auto">
+            {(savedPreferences.savedViews || []).length ? (savedPreferences.savedViews || []).map((view) => (
+              <div key={view.id} className="flex items-center justify-between gap-3 rounded-md border p-2">
+                <span className="truncate text-sm font-medium">{view.name}</span>
+                    <div className="flex shrink-0 gap-1"><Button type="button" variant="ghost" size="sm" onClick={() => { setRenamingSavedView(view); setRenamedSavedViewName(view.name); }}>Rename</Button><Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeletingSavedView(view)}>Delete</Button></div>
+              </div>
+            )) : <p className="py-6 text-center text-sm text-muted-foreground">No saved views yet.</p>}
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(renamingSavedView)} onOpenChange={(open) => { if (!open) setRenamingSavedView(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Rename Invoice view</DialogTitle><DialogDescription>Choose a clear, unique name for this private saved view.</DialogDescription></DialogHeader>
+          <div className="grid gap-2"><Label htmlFor="invoice-renamed-view-name">View name</Label><Input id="invoice-renamed-view-name" value={renamedSavedViewName} maxLength={60} onChange={(event) => setRenamedSavedViewName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") renameSavedView(); }} autoFocus /></div>
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setRenamingSavedView(null)}>Cancel</Button><Button type="button" onClick={renameSavedView} disabled={!renamedSavedViewName.trim()}>Rename View</Button></div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(deletingSavedView)} onOpenChange={(open) => { if (!open) setDeletingSavedView(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Delete saved Invoice view?</DialogTitle><DialogDescription>{deletingSavedView ? `Delete “${deletingSavedView.name}”? This cannot be undone.` : ""}</DialogDescription></DialogHeader>
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setDeletingSavedView(null)}>Cancel</Button><Button type="button" variant="destructive" onClick={deleteSavedView}>Delete View</Button></div>
         </DialogContent>
       </Dialog>
       <Dialog open={emailQueueOpen} onOpenChange={setEmailQueueOpen}>
