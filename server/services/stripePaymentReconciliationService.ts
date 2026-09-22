@@ -1,6 +1,8 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { integrationConnections, invoices, payments, paymentWebhookEvents, stripePaymentAttempts, stripeRefundRequests } from "../../shared/schema";
+import { resolveStripePaymentLineage } from "./stripePaymentLineage.service";
+import { finalizeStripeCustomerPaymentBatch } from "./stripeCustomerPaymentBatchFinalization.service";
 import { reconcileInvoicePaymentStateInTransaction } from "../invoicesService";
 
 /**
@@ -242,7 +244,50 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
       // those separately from the per-event lock before reading or mutating it.
       await lock(tx, `stripe-payment:${organizationId}:${paymentIntentId}`);
 
-      let payment = await findPaymentByIntent(tx, organizationId, paymentIntentId);
+      const lineage = await resolveStripePaymentLineage(tx, { organizationId, stripePaymentIntentId: paymentIntentId });
+      let payment = lineage?.payment || null;
+      if (lineage?.source === "customer_payment_batch" && effect === "succeeded") {
+        const finalized = await finalizeStripeCustomerPaymentBatch({
+          organizationId,
+          paymentIntentId,
+          amountCents: observation.amountCents ?? 0,
+          currency: observation.currency || "",
+          stripeAccountId: observation.stripeAccountId || String((lineage.batch as any).stripeAccountId || "") || null,
+          occurredAt: new Date(observation.occurredAt),
+          actorUserId: (lineage.batch as any).createdByUserId || null,
+          source: "stripe_webhook",
+        });
+        await markProcessed(tx, normalizedEventId, now);
+        return {
+          eventId: normalizedEventId,
+          processed: true,
+          alreadyProcessed: Boolean((finalized as any).reused),
+          effect: "succeeded",
+          paymentId: (finalized as any).payments?.[0]?.id ? String((finalized as any).payments[0].id) : null,
+          invoiceId: null,
+        };
+      }
+      if (lineage?.source === "customer_payment_batch" && effect === "refunded") {
+        const refundRequestId = textOrNull(observation.refundRequestId);
+        const refundId = textOrNull(observation.refundId);
+        const [refundRequest] = await tx.select().from(stripeRefundRequests).where(and(
+          eq(stripeRefundRequests.organizationId, organizationId),
+          refundRequestId ? eq(stripeRefundRequests.id, refundRequestId) : eq(stripeRefundRequests.stripeRefundId, refundId || ""),
+        )).limit(1);
+        if (!refundRequest || String(refundRequest.stripePaymentIntentId) !== paymentIntentId) {
+          throw Object.assign(new Error("Grouped Stripe refund does not match a durable invoice refund request."), { code: "STRIPE_REFUND_REQUEST_MISMATCH" });
+        }
+        const [refundPayment] = await tx.select().from(payments).where(and(
+          eq(payments.id, refundRequest.paymentId),
+          eq(payments.invoiceId, refundRequest.invoiceId),
+          eq(payments.organizationId, organizationId),
+        )).limit(1);
+        if (!refundPayment) throw Object.assign(new Error("Original invoice payment was not found for grouped Stripe refund."), { code: "STRIPE_REFUND_PAYMENT_NOT_FOUND" });
+        payment = refundPayment as any;
+      } else if (lineage?.source === "customer_payment_batch") {
+        await markProcessed(tx, normalizedEventId, now);
+        return { eventId: normalizedEventId, processed: true, alreadyProcessed: false, effect, paymentId: null, invoiceId: null };
+      }
       if (!payment && effect !== "succeeded") {
         if (effect === "failed" || effect === "canceled") {
           await tx.update(stripePaymentAttempts).set({
@@ -263,7 +308,7 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
       }
 
       const invoiceId = payment ? String(payment.invoiceId) : required(observation.invoiceId, "STRIPE_EVENT_INVOICE_REQUIRED", "Stripe success observation is missing its invoice.");
-      const stripeAccountId = observation.stripeAccountId || textOrNull((payment as any)?.metadata?.stripeAccountId);
+      const stripeAccountId = observation.stripeAccountId || textOrNull((payment as any)?.metadata?.stripeAccountId) || textOrNull((lineage as any)?.batch?.stripeAccountId);
       const requiredStripeAccountId = required(stripeAccountId, "STRIPE_EVENT_ACCOUNT_REQUIRED", "Stripe observation is missing its connected-account identity.");
       const [connection] = await tx.select({ organizationId: integrationConnections.organizationId }).from(integrationConnections).where(and(
         eq(integrationConnections.provider, "stripe"),

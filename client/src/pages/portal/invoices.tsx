@@ -1,12 +1,14 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { ArrowDown, ArrowUp, ArrowUpDown, Download, FileText, Loader2, Settings2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import StripePayDialog from "@/components/payments/StripePayDialog";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
-import { portalInvoicePdfUrl, usePortalInvoices, usePortalSession, type PortalInvoiceDto } from "@/hooks/usePortal";
+import { portalInvoiceKeys, portalInvoicePdfUrl, usePortalInvoices, usePortalSession, type PortalInvoiceDto } from "@/hooks/usePortal";
 
 export type PortalInvoiceInfoColumnId = "po" | "job" | "issued" | "due" | "amountDue" | "total" | "status";
 export type PortalInvoiceSortKey = "invoice" | PortalInvoiceInfoColumnId;
@@ -57,6 +59,7 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
   return "outline";
 }
 function invoiceLabel(invoice: PortalInvoiceDto) { return invoice.displayNumber || String(invoice.invoiceNumber); }
+export function isPortalInvoiceSelectable(invoice: PortalInvoiceDto) { return Number(invoice.amountDue || 0) > 0 && !["paid", "void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()); }
 function jobOrOrderLabel(invoice: PortalInvoiceDto) { return invoice.jobLabel || (invoice.orderNumber ? `Order ${invoice.orderNumber}` : "—"); }
 function timestamp(value: string | null) { const parsed = value ? new Date(value).getTime() : NaN; return Number.isFinite(parsed) ? parsed : null; }
 function finiteNumber(value: unknown) {
@@ -112,10 +115,11 @@ function InvoiceActions({ invoice, mobile = false }: { invoice: PortalInvoiceDto
   </div>;
 }
 
-export function PortalInvoiceMobileCard({ invoice }: { invoice: PortalInvoiceDto }) {
+export function PortalInvoiceMobileCard({ invoice, selected = false, onSelectionChange }: { invoice: PortalInvoiceDto; selected?: boolean; onSelectionChange?: (selected: boolean) => void }) {
   const job = jobOrOrderLabel(invoice);
+  const selectable = isPortalInvoiceSelectable(invoice);
   return <article className="border-b px-4 py-4 last:border-b-0 2xl:hidden">
-    <div className="flex flex-wrap items-start justify-between gap-2"><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">Invoice {invoiceLabel(invoice)}</Link><Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2"><input aria-label={`Select invoice ${invoiceLabel(invoice)}`} type="checkbox" disabled={!selectable} checked={selected} onChange={(event) => onSelectionChange?.(event.target.checked)} /><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">Invoice {invoiceLabel(invoice)}</Link></div><Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge></div>
     <div className="mt-3 min-w-0 space-y-1 text-sm"><p className="break-words font-medium text-foreground" title={job}>{job}</p><p className="break-words text-muted-foreground">PO # {invoice.customerPoNumber || "—"}</p>{invoice.jobLabel && invoice.orderNumber ? <p className="text-muted-foreground">Order {invoice.orderNumber}</p> : null}</div>
     <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
       <div><dt className="text-muted-foreground">Issued</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.issueDate)}</dd></div><div><dt className="text-muted-foreground">Due</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.dueDate)}</dd></div>
@@ -147,29 +151,51 @@ function InvoiceInfoCell({ column, invoice }: { column: PortalInvoiceInfoColumnI
   }
 }
 
-export function PortalInvoiceDesktopTable({ invoices, columns = DEFAULT_PORTAL_INVOICE_COLUMNS, preference = DEFAULT_PORTAL_INVOICE_SORT, onSort = () => undefined }: { invoices: PortalInvoiceDto[]; columns?: ColumnConfig[]; preference?: PortalInvoiceSortPreference; onSort?: (key: PortalInvoiceSortKey) => void }) {
+export function PortalInvoiceDesktopTable({ invoices, columns = DEFAULT_PORTAL_INVOICE_COLUMNS, preference = DEFAULT_PORTAL_INVOICE_SORT, onSort = () => undefined, selectedIds = new Set<string>(), onSelectionChange = () => undefined }: { invoices: PortalInvoiceDto[]; columns?: ColumnConfig[]; preference?: PortalInvoiceSortPreference; onSort?: (key: PortalInvoiceSortKey) => void; selectedIds?: Set<string>; onSelectionChange?: (ids: Set<string>) => void }) {
   const infoColumns = columns.map((column) => column.id as PortalInvoiceInfoColumnId);
+  const selectable = invoices.filter(isPortalInvoiceSelectable);
+  const allSelected = selectable.length > 0 && selectable.every((invoice) => selectedIds.has(invoice.id));
+  const someSelected = selectable.some((invoice) => selectedIds.has(invoice.id));
+  const toggleAll = () => onSelectionChange(allSelected ? new Set([...selectedIds].filter((id) => !selectable.some((invoice) => invoice.id === id))) : new Set([...selectedIds, ...selectable.map((invoice) => invoice.id)]));
+  const toggle = (invoiceId: string) => { const next = new Set(selectedIds); next.has(invoiceId) ? next.delete(invoiceId) : next.add(invoiceId); onSelectionChange(next); };
   return <div className="hidden 2xl:block"><table className="w-full min-w-[72rem] table-fixed" aria-label="Customer invoices">
-    <colgroup><col className="w-[10%]" />{infoColumns.map((column) => <col key={column} className={columnMeta[column].width} />)}<col className="w-[13%]" /></colgroup>
-    <thead><tr className="border-b bg-muted/30 text-left text-xs font-medium text-muted-foreground"><SortableHeader sortKey="invoice" label="Invoice" preference={preference} onSort={onSort} />{infoColumns.map((column) => <SortableHeader key={column} sortKey={column} label={DEFAULT_PORTAL_INVOICE_COLUMNS.find((item) => item.id === column)?.label || column} preference={preference} onSort={onSort} numeric={columnMeta[column].numeric} />)}<th scope="col" className="px-3 py-3 text-right">Actions</th></tr></thead>
-    <tbody>{invoices.map((invoice) => <tr key={invoice.id} className="border-b text-sm last:border-b-0 hover:bg-muted/20"><td className="px-4 py-3 align-middle"><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">{invoiceLabel(invoice)}</Link></td>{infoColumns.map((column) => <InvoiceInfoCell key={column} column={column} invoice={invoice} />)}<td className="px-3 py-3 align-middle"><InvoiceActions invoice={invoice} /></td></tr>)}</tbody>
+    <colgroup><col className="w-[4%]" /><col className="w-[9%]" />{infoColumns.map((column) => <col key={column} className={columnMeta[column].width} />)}<col className="w-[10%]" /></colgroup>
+    <thead><tr className="border-b bg-muted/30 text-left text-xs font-medium text-muted-foreground"><th className="px-3"><input aria-label="Select all payable invoices" type="checkbox" ref={(node) => { if (node) node.indeterminate = someSelected && !allSelected; }} checked={allSelected} onChange={toggleAll} /></th><SortableHeader sortKey="invoice" label="Invoice" preference={preference} onSort={onSort} />{infoColumns.map((column) => <SortableHeader key={column} sortKey={column} label={DEFAULT_PORTAL_INVOICE_COLUMNS.find((item) => item.id === column)?.label || column} preference={preference} onSort={onSort} numeric={columnMeta[column].numeric} />)}<th scope="col" className="px-3 py-3 text-right">Actions</th></tr></thead>
+    <tbody>{invoices.map((invoice) => <tr key={invoice.id} className="border-b text-sm last:border-b-0 hover:bg-muted/20"><td className="px-3"><input aria-label={`Select invoice ${invoiceLabel(invoice)}`} type="checkbox" disabled={!isPortalInvoiceSelectable(invoice)} checked={selectedIds.has(invoice.id)} onChange={() => toggle(invoice.id)} /></td><td className="px-4 py-3 align-middle"><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">{invoiceLabel(invoice)}</Link></td>{infoColumns.map((column) => <InvoiceInfoCell key={column} column={column} invoice={invoice} />)}<td className="px-3 py-3 align-middle"><InvoiceActions invoice={invoice} /></td></tr>)}</tbody>
   </table></div>;
 }
 
-function PortalInvoicesContent({ invoices, userId, portalCustomerId }: { invoices: PortalInvoiceDto[]; userId: string; portalCustomerId: string }) {
+export function sanitizePortalInvoiceSelection(invoices: PortalInvoiceDto[], selectedIds: Set<string>) {
+  const selectableIds = new Set(invoices.filter(isPortalInvoiceSelectable).map((invoice) => invoice.id));
+  return new Set([...selectedIds].filter((id) => selectableIds.has(id)));
+}
+export function portalInvoiceSelectionTotal(invoices: PortalInvoiceDto[], selectedIds: Set<string>) {
+  return invoices.filter((invoice) => isPortalInvoiceSelectable(invoice) && selectedIds.has(invoice.id)).reduce((sum, invoice) => sum + Number(invoice.amountDue || 0), 0);
+}
+
+function PortalInvoicesContent({ invoices, userId, portalCustomerId, staffPreview }: { invoices: PortalInvoiceDto[]; userId: string; portalCustomerId: string; staffPreview: boolean }) {
+  const queryClient = useQueryClient();
   const columnConfig = useTableColumnConfig(`portal_invoices:user_${userId}:customer_${portalCustomerId}`, DEFAULT_PORTAL_INVOICE_COLUMNS);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [preference, setPreference] = useState<PortalInvoiceSortPreference>(() => readPortalInvoiceSortPreference(userId, portalCustomerId));
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
   const sortedInvoices = useMemo(() => sortPortalInvoices(invoices, preference), [invoices, preference]);
+  const selectableInvoices = useMemo(() => sortedInvoices.filter(isPortalInvoiceSelectable), [sortedInvoices]);
+  useEffect(() => { setSelectedInvoiceIds((current) => { const next = sanitizePortalInvoiceSelection(selectableInvoices, current); return next.size === current.size ? current : next; }); }, [selectableInvoices]);
+  const selectedInvoices = selectableInvoices.filter((invoice) => selectedInvoiceIds.has(invoice.id));
+  const selectedTotal = portalInvoiceSelectionTotal(selectableInvoices, selectedInvoiceIds);
+  const allSelectableInvoicesSelected = selectableInvoices.length > 0 && selectableInvoices.every((invoice) => selectedInvoiceIds.has(invoice.id));
+  const setMobileSelectAll = (selected: boolean) => setSelectedInvoiceIds(selected ? new Set(selectableInvoices.map((invoice) => invoice.id)) : new Set());
   const updateSort = (key: PortalInvoiceSortKey) => { const next = nextPortalInvoiceSort(preference, key); setPreference(next); persistPortalInvoiceSortPreference(userId, portalCustomerId, next); };
   const reset = () => { columnConfig.reset(); clearPortalInvoiceSortPreference(userId, portalCustomerId); setPreference(DEFAULT_PORTAL_INVOICE_SORT); };
   return <><Card>
     <div className="hidden items-center justify-end border-b px-3 py-2 2xl:flex"><Button type="button" variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => setColumnsOpen(true)}><Settings2 className="h-4 w-4" aria-hidden="true" />Columns</Button></div>
-    <CardContent className="p-0"><PortalInvoiceDesktopTable invoices={sortedInvoices} columns={columnConfig.columns} preference={preference} onSort={updateSort} /><div className="2xl:hidden">{sortedInvoices.map((invoice) => <PortalInvoiceMobileCard key={invoice.id} invoice={invoice} />)}</div></CardContent>
+    <CardContent className="p-0"><PortalInvoiceDesktopTable invoices={sortedInvoices} columns={columnConfig.columns} preference={preference} onSort={updateSort} selectedIds={selectedInvoiceIds} onSelectionChange={setSelectedInvoiceIds} /><div className="border-b px-4 py-3 2xl:hidden"><label className="flex w-fit items-center gap-2 text-sm font-medium"><input aria-label="Select all payable invoices" type="checkbox" checked={allSelectableInvoicesSelected} disabled={selectableInvoices.length === 0} onChange={(event) => setMobileSelectAll(event.target.checked)} />Select all payable invoices</label></div><div className="2xl:hidden">{sortedInvoices.map((invoice) => <PortalInvoiceMobileCard key={invoice.id} invoice={invoice} selected={selectedInvoiceIds.has(invoice.id)} onSelectionChange={(selected) => setSelectedInvoiceIds((current) => { const next = new Set(current); if (selected && isPortalInvoiceSelectable(invoice)) next.add(invoice.id); else next.delete(invoice.id); return next; })} />)}</div></CardContent>
   </Card><Dialog open={columnsOpen} onOpenChange={setColumnsOpen}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>Invoice columns</DialogTitle><DialogDescription>Choose the order of the informational columns. Invoice and Actions stay anchored.</DialogDescription></DialogHeader>
     <div className="space-y-2">{columnConfig.columns.map((column) => <div key={column.id} className="flex items-center gap-2 rounded-md border px-3 py-2"><span className="min-w-0 flex-1 truncate text-sm font-medium">{column.label}</span><Button type="button" size="sm" variant="ghost" className="h-8 px-2" disabled={!columnConfig.canMoveColumn(column.id, "up")} onClick={() => columnConfig.moveColumn(column.id, "up")} aria-label={`Move ${column.label} up`}><ArrowUp className="mr-1 h-3.5 w-3.5" aria-hidden="true" />Up</Button><Button type="button" size="sm" variant="ghost" className="h-8 px-2" disabled={!columnConfig.canMoveColumn(column.id, "down")} onClick={() => columnConfig.moveColumn(column.id, "down")} aria-label={`Move ${column.label} down`}><ArrowDown className="mr-1 h-3.5 w-3.5" aria-hidden="true" />Down</Button></div>)}</div>
     <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={reset}>Reset to default</Button><Button type="button" onClick={() => setColumnsOpen(false)}>Done</Button></div>
-  </DialogContent></Dialog></>;
+  </DialogContent></Dialog>{selectedInvoices.length ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 px-4 py-3" data-testid="portal-invoice-selection-summary"><div><p className="font-medium">{selectedInvoices.length} {selectedInvoices.length === 1 ? "invoice" : "invoices"} selected</p><p className="text-sm text-muted-foreground">Total Due: {formatCurrency(selectedTotal, selectedInvoices[0]?.currency)}</p></div><div className="flex gap-2"><Button type="button" variant="outline" onClick={() => setSelectedInvoiceIds(new Set())}>Clear Selection</Button><Button type="button" onClick={() => setCheckoutOpen(true)}>Pay Selected Invoices</Button></div></div> : null}<StripePayDialog open={checkoutOpen} onOpenChange={setCheckoutOpen} invoiceId={selectedInvoices[0]?.id || ""} invoiceIds={selectedInvoices.map((invoice) => invoice.id)} invoiceSummaries={selectedInvoices.map((invoice) => ({ invoiceNumber: invoiceLabel(invoice), amountDue: Number(invoice.amountDue || 0), currency: invoice.currency }))} apiBasePath="/api/portal/invoices" groupedInitiation={selectedInvoices.length > 1} previewMode={staffPreview} onSettled={async () => { await queryClient.invalidateQueries({ queryKey: portalInvoiceKeys.all }); setSelectedInvoiceIds(new Set()); return { reconciled: true }; }} /></>;
 }
 
 export default function PortalInvoicesPage() {
@@ -180,6 +206,6 @@ export default function PortalInvoicesPage() {
   return <div className="mx-auto w-full max-w-screen-2xl space-y-6"><div><h1 className="text-2xl font-semibold tracking-normal">Invoices</h1><p className="mt-1 text-sm text-muted-foreground">Review balances, payment history, and available invoice documents.</p></div>
     {error || !session ? <Card><CardContent className="py-10 text-center"><p className="font-medium text-destructive">Could not load invoices</p><p className="mt-1 text-sm text-muted-foreground">{(error as Error | undefined)?.message || "Portal session unavailable."}</p></CardContent></Card>
       : invoices.length === 0 ? <Card><CardContent className="flex flex-col items-center justify-center py-14 text-center"><FileText className="mb-3 h-9 w-9 text-muted-foreground" /><p className="font-medium">No invoices yet</p><p className="mt-1 text-sm text-muted-foreground">Invoices will appear here when they are ready for you.</p></CardContent></Card>
-      : <PortalInvoicesContent key={`${session.userId}:${session.customerId}`} invoices={invoices} userId={session.userId} portalCustomerId={session.customerId} />}
+      : <PortalInvoicesContent key={`${session.userId}:${session.customerId}`} invoices={invoices} userId={session.userId} portalCustomerId={session.customerId} staffPreview={Boolean(session.staffPreview?.active)} />}
   </div>;
 }

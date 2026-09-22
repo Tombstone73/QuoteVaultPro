@@ -5417,11 +5417,18 @@ export const customerPaymentBatches = pgTable("customer_payment_batches", {
   amountCents: integer("amount_cents").notNull(),
   method: varchar("method", { length: 50 }).notNull(),
   allocationMode: varchar("allocation_mode", { length: 32 }).notNull(),
+  provider: varchar("provider", { length: 20 }).notNull().default("manual"),
+  status: varchar("status", { length: 20 }).notNull().default("succeeded"),
+  currency: varchar("currency", { length: 8 }).notNull().default("USD"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  stripeAccountId: text("stripe_account_id"),
+  providerEvidence: jsonb("provider_evidence").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   idempotencyKey: text("idempotency_key").notNull(),
   reference: text("reference"), notes: text("notes"), appliedAt: timestamp("applied_at", { withTimezone: true }).notNull(),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at").defaultNow().notNull(), updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => [uniqueIndex("customer_payment_batches_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey), index("customer_payment_batches_customer_idx").on(table.organizationId, table.customerId)]);
+}, (table) => [uniqueIndex("customer_payment_batches_org_idempotency_uidx").on(table.organizationId, table.idempotencyKey), uniqueIndex("customer_payment_batches_org_stripe_intent_uidx").on(table.organizationId, table.stripePaymentIntentId).where(sql`${table.stripePaymentIntentId} IS NOT NULL`), index("customer_payment_batches_customer_idx").on(table.organizationId, table.customerId)]);
 
 // Customer-held funds and courtesy value are a durable ledger. They are not
 // credit-limit usage and are never derived from the legacy currentBalance.

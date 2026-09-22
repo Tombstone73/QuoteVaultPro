@@ -26,12 +26,17 @@ function nextSessionId() {
  */
 function StripePayInner(props: {
   invoiceId: string;
+  /** Grouped checkout data; provider authorization is owned by the parent batch. */
+  invoiceIds?: string[];
+  invoiceSummaries?: Array<{ invoiceNumber: string; amountDue: number; currency?: string }>;
+  groupedInitiation?: boolean;
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
   onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
   sessionId: string;
 }) {
+  const isMultiInvoice = (props.invoiceIds?.length || 1) > 1;
   const stripe = useStripe();
   const elements = useElements();
   const { toast } = useToast();
@@ -165,7 +170,10 @@ function StripePayInner(props: {
       // with Stripe and refreshes invoice state before the UI refetches.
       if (result.paymentIntent) {
         try {
-          const confirmRes = await fetch(`${props.apiBasePath}/${props.invoiceId}/payments/stripe/confirm`, {
+          const confirmUrl = props.groupedInitiation
+            ? '/api/portal/payments/stripe/confirm'
+            : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/confirm`;
+          const confirmRes = await fetch(confirmUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ paymentIntentId: result.paymentIntent.id }),
@@ -178,8 +186,8 @@ function StripePayInner(props: {
               sessionId: props.sessionId,
             });
           } else {
-            const confirmData = await confirmRes.json() as StripePaymentConfirmResponse;
-            if (isStripePaymentConfirmSucceeded(confirmData)) {
+            const confirmData = await confirmRes.json() as StripePaymentConfirmResponse & { data?: { finalized?: boolean } };
+            if (props.groupedInitiation ? confirmData?.data?.finalized === true : isStripePaymentConfirmSucceeded(confirmData)) {
               serverConfirmed = true;
               if (DEV) {
                 console.log('[StripePayDialog] Payment confirmed', {
@@ -291,13 +299,18 @@ export default function StripePayDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   invoiceId: string;
+  invoiceIds?: string[];
+  invoiceSummaries?: Array<{ invoiceNumber: string; amountDue: number; currency?: string }>;
   apiBasePath: string;
+  /** Uses the pending customer-payment-batch endpoint; allocation waits for reconciliation. */
+  groupedInitiation?: boolean;
   disabled?: boolean;
   /** Staff preview deliberately stops before any provider mutation. */
   previewMode?: boolean;
   onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
 }) {
   const apiBasePath = props.apiBasePath;
+  const isMultiInvoice = (props.invoiceIds?.length || 1) > 1;
   const [runtimeConfig, setRuntimeConfig] = useState<{
     provider: 'stripe';
     publishableKey: string;
@@ -329,6 +342,7 @@ export default function StripePayDialog(props: {
   const frozenClientSecret = clientSecretRef.current;
   const frozenElementsOptions = elementsOptionsRef.current;
   const currentSessionId = sessionIdRef.current;
+  const checkoutIdempotencyKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (DEV) {
@@ -350,6 +364,7 @@ export default function StripePayDialog(props: {
       elementsOptionsRef.current = null;
       sessionIdRef.current = null;
       intentRequestedRef.current = false;
+      checkoutIdempotencyKeyRef.current = null;
       setRuntimeConfig(null);
       return;
     }
@@ -366,6 +381,9 @@ export default function StripePayDialog(props: {
     intentRequestedRef.current = true;
     const sessionId = nextSessionId();
     sessionIdRef.current = sessionId;
+    checkoutIdempotencyKeyRef.current = typeof crypto?.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${sessionId}-${Date.now()}`;
 
     if (DEV) {
       console.log('[StripePayDialog] runtime configuration requested', {
@@ -404,13 +422,26 @@ export default function StripePayDialog(props: {
         setRuntimeConfig(frozenConfig);
         setState('creating_intent');
 
-        const res = await fetch(`${apiBasePath}/${props.invoiceId}/payments/stripe/create-intent`, {
+        const createIntentUrl = props.groupedInitiation
+          ? '/api/portal/payments/stripe/create-intent'
+          : `${apiBasePath}/${props.invoiceId}/payments/stripe/create-intent`;
+        const expectedRemainingCents = Object.fromEntries((props.invoiceIds || [props.invoiceId]).map((invoiceId, index) => [
+          invoiceId,
+          Math.round(Number(props.invoiceSummaries?.[index]?.amountDue || 0) * 100),
+        ]));
+        const res = await fetch(createIntentUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
+          body: props.groupedInitiation ? JSON.stringify({
+            invoiceIds: props.invoiceIds || [props.invoiceId],
+            expectedRemainingCents,
+            idempotencyKey: checkoutIdempotencyKeyRef.current,
+          }) : undefined,
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error((json as any)?.message || (json as any)?.error || 'Failed to create payment intent');
+        if ((json as any)?.data?.stale) throw new Error('One or more invoice balances changed. Refresh the invoices and review the updated total before paying.');
 
         const secret = (json as any)?.data?.clientSecret as string | undefined;
         if (!secret) throw new Error('Missing clientSecret');
@@ -447,7 +478,7 @@ export default function StripePayDialog(props: {
 
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.invoiceId, apiBasePath, props.previewMode]);
+  }, [props.open, props.invoiceId, apiBasePath, props.previewMode, props.groupedInitiation, props.invoiceIds, props.invoiceSummaries]);
 
   const close = () => props.onOpenChange(false);
 
@@ -459,8 +490,9 @@ export default function StripePayDialog(props: {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{props.previewMode ? 'Payment preview' : 'Pay Invoice'}</DialogTitle>
+          <DialogTitle>{props.previewMode ? 'Payment preview' : isMultiInvoice ? 'Pay Selected Invoices' : 'Pay Invoice'}</DialogTitle>
         </DialogHeader>
+        {isMultiInvoice ? <div className="space-y-2 rounded-md border p-3 text-sm"><p className="font-medium">{props.invoiceIds?.length} invoices selected</p>{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex justify-between"><span>Invoice {invoice.invoiceNumber}</span><span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}<div className="flex justify-between border-t pt-2 font-semibold"><span>Total Due</span><span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
 
         {(state === 'loading_runtime_config' || state === 'creating_intent') && (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>
@@ -484,8 +516,11 @@ export default function StripePayDialog(props: {
         {/* Once we have a clientSecret, keep <Elements> mounted until the dialog closes. */}
         {shouldRenderElements && (
           <Elements stripe={stripePromise!} options={frozenElementsOptions!}>
-            <StripePayInner
-              invoiceId={props.invoiceId}
+        <StripePayInner
+          invoiceId={props.invoiceId}
+          invoiceIds={props.invoiceIds}
+          invoiceSummaries={props.invoiceSummaries}
+          groupedInitiation={props.groupedInitiation}
               clientSecret={frozenClientSecret!}
               apiBasePath={apiBasePath}
               onClose={close}

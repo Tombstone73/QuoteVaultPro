@@ -42,6 +42,7 @@ import { resolveStripeReadiness } from "../services/stripeReadiness.service";
 import { resolveStripeRuntimeConfig } from "../services/stripeRuntimeConfig.service";
 import { getStripeRefundEligibility, stripeRefundIdempotencyKey, validateStripeRefundAmount } from "../services/stripeRefund.service";
 import { recoverStripeRefundFromProcessor, StripeRefundRecoveryError } from "../services/stripeRefundRecovery.service";
+import { resolveStripeRefundProviderLineage } from "../services/stripePaymentLineage.service";
 import { applyInvoiceSendSuccessLifecycle } from "../services/invoiceSendLifecycleAutomation";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
 import { getCanonicalInvoiceCustomerContext } from "../services/invoiceCustomerProjection";
@@ -1785,8 +1786,13 @@ export async function registerMvpInvoicingRoutes(
       )).limit(1);
       if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
 
-      const originalAccountId = String((payment as any).metadata?.stripeAccountId || '').trim();
-      const eligibility = getStripeRefundEligibility({ originalPayment: payment as any, refundEffects: [] });
+      const providerLineage = await resolveStripeRefundProviderLineage(db, { organizationId, payment });
+      if (!providerLineage) {
+        return res.status(409).json({ success: false, code: 'STRIPE_REFUND_PAYMENT_INTENT_MISSING', error: 'The original Stripe payment reference is missing.' });
+      }
+      const originalAccountId = providerLineage.stripeAccountId;
+      const paymentIntentId = providerLineage.paymentIntentId;
+      const eligibility = getStripeRefundEligibility({ originalPayment: { ...(payment as any), stripePaymentIntentId: paymentIntentId }, refundEffects: [] });
       if (!eligibility.ok) return res.status(409).json({ success: false, code: eligibility.code, error: eligibility.error });
       if (!originalAccountId) {
         return res.status(409).json({ success: false, code: 'STRIPE_REFUND_ORIGINAL_ACCOUNT_MISSING', error: 'The original Stripe connected-account context is missing.' });
@@ -1801,13 +1807,19 @@ export async function registerMvpInvoicingRoutes(
         return res.status(409).json({ success: false, code: 'STRIPE_REFUND_CONNECTED_ACCOUNT_MISMATCH', error: 'The connected Stripe account does not match the original payment.' });
       }
 
-      const paymentIntentId = String((payment as any).stripePaymentIntentId || '').trim();
       const stripe = getStripeClient();
       const intent: any = await stripe.paymentIntents.retrieve(paymentIntentId, { stripeAccount: stripeAccountId } as any);
       const intentAmountCents = Math.max(0, Math.round(Number(intent.amount_received ?? intent.amount ?? 0)));
-      if (String(intent.status || '').toLowerCase() !== 'succeeded' || intentAmountCents !== Number((payment as any).amountCents || 0) ||
-        String(intent.metadata?.organizationId || '') !== organizationId || String(intent.metadata?.invoiceId || '') !== invoiceId ||
-        String(intent.metadata?.stripeAccountId || '') !== stripeAccountId) {
+      const legacyPaymentContextMatches = providerLineage.source === 'legacy_invoice_payment' &&
+        intentAmountCents === Number((payment as any).amountCents || 0) &&
+        String(intent.metadata?.invoiceId || '') === invoiceId && String(intent.metadata?.stripeAccountId || '') === stripeAccountId;
+      const groupedPaymentContextMatches = providerLineage.source === 'customer_payment_batch' &&
+        intentAmountCents === Number((providerLineage.batch as any).amountCents || 0) &&
+        String(intent.metadata?.customerPaymentBatchId || '') === String((providerLineage.batch as any).id) &&
+        String(intent.metadata?.customerId || '') === String((providerLineage.batch as any).customerId);
+      if (String(intent.status || '').toLowerCase() !== 'succeeded' ||
+        String(intent.metadata?.organizationId || '') !== organizationId ||
+        (!legacyPaymentContextMatches && !groupedPaymentContextMatches)) {
         return res.status(409).json({ success: false, code: 'STRIPE_REFUND_PAYMENT_CONTEXT_MISMATCH', error: 'The original Stripe payment could not be verified for this invoice and connected account.' });
       }
 
@@ -2046,19 +2058,21 @@ export async function registerMvpInvoicingRoutes(
         const pi: any = obj;
         const intentId = String(pi.id);
         const invoiceId = pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null;
+        const customerPaymentBatchId = pi?.metadata?.customerPaymentBatchId ? String(pi.metadata.customerPaymentBatchId) : null;
         const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : resolvedOrganizationId;
         const stripeAccountId = stripeAccountIdFromEvent || (pi?.metadata?.stripeAccountId ? String(pi.metadata.stripeAccountId) : null);
 
-        if (!invoiceId || !organizationId) {
+        if ((!invoiceId && !customerPaymentBatchId) || !organizationId) {
           console.error('[StripeWebhook] missing metadata', {
             eventId,
             type,
             hasStripePaymentIntentId: !!intentId,
             hasInvoiceId: !!invoiceId,
+            hasCustomerPaymentBatchId: !!customerPaymentBatchId,
             hasOrganizationId: !!organizationId,
             hasStripeAccountId: !!stripeAccountId,
           });
-          throw new Error('Missing invoiceId/organizationId in PaymentIntent metadata');
+          throw new Error('Missing invoiceId or customerPaymentBatchId/organizationId in PaymentIntent metadata');
         }
 
         if (stripeAccountId) {

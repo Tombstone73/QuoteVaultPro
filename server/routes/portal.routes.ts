@@ -6,7 +6,9 @@ import {
   approvePortalQuote,
   approvePortalProof,
   confirmPortalStripePayment,
+  confirmPortalGroupedStripePayment,
   createPortalStripePaymentIntent,
+  createPortalGroupedStripePaymentIntent,
   declinePortalQuote,
   getPortalDashboard,
   getPortalCustomerQuoteDebug,
@@ -111,6 +113,22 @@ function portalPostById<T>(
         return res.status(404).json({ success: false, message: "Not found" });
       }
 
+      return res.json({ success: true, data });
+    } catch (error) {
+      console.error("[Portal] request failed", {
+        path: req.path,
+        method: req.method,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return sendPortalError(res, error);
+    }
+  };
+}
+
+function portalPost<T>(handler: PortalHandler<T>) {
+  return async (req: Request, res: Response) => {
+    try {
+      const data = await handler(req);
       return res.json({ success: true, data });
     } catch (error) {
       console.error("[Portal] request failed", {
@@ -348,6 +366,8 @@ export function registerPortalRoutes(
   app.get("/api/portal/invoices/:id/payments", ...portalMiddlewares, portalGetById("id", listPortalInvoicePayments));
   app.get("/api/portal/invoices/:id/payments/stripe/runtime-config", ...portalMiddlewares, portalGetById("id", getPortalStripeRuntimeConfig));
   app.post("/api/portal/invoices/:id/payments/stripe/create-intent", ...portalMiddlewares, portalPostById("id", createPortalStripePaymentIntent));
+  app.post("/api/portal/payments/stripe/create-intent", ...portalMiddlewares, portalPost(createPortalGroupedStripePaymentIntent));
+  app.post("/api/portal/payments/stripe/confirm", ...portalMiddlewares, portalPost(confirmPortalGroupedStripePayment));
   app.post("/api/portal/invoices/:id/payments/stripe/confirm", ...portalMiddlewares, portalPostById("id", confirmPortalStripePayment));
   app.get("/api/portal/invoices/:id", ...portalMiddlewares, portalGetById("id", getPortalInvoice));
 

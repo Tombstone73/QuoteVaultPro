@@ -16,7 +16,7 @@ describe("Stripe payment reconciliation contract", () => {
   });
 
   test("applies payment, canonical rollup, and reconciliation completion in one transaction", () => {
-    const transactionStart = processor.indexOf("return await db.transaction");
+    const transactionStart = processor.indexOf("const result = await db.transaction");
     const transactionBody = processor.slice(transactionStart);
     expect(transactionBody).toContain("reconcileInvoicePaymentStateInTransaction");
     expect(transactionBody).toContain("await markProcessed(tx, normalizedEventId, now)");

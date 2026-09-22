@@ -23,6 +23,6 @@ export class CanonicalPaymentOperations {
     return appendPaymentNoteCanonical({ organizationId: input.organizationId, paymentId: input.paymentId, userId: input.actorUserId, note: input.note });
   }
   previewCustomerPayment(input: { organizationId: string; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[] }) { return previewCustomerPayment(input); }
-  recordCustomerPayment(input: { organizationId: string; actorUserId: string; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[]; method: CanonicalManualPaymentMethod; appliedAt: Date; notes?: string; reference?: string; idempotencyKey: string; expectedRemainingCents?: Record<string, number> }) { return recordCustomerPayment(input); }
+  recordCustomerPayment(input: { organizationId: string; actorUserId: string | null; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[]; method: CanonicalManualPaymentMethod; appliedAt: Date; notes?: string; reference?: string; idempotencyKey: string; expectedRemainingCents?: Record<string, number>; provider?: "manual" | "stripe"; stripePaymentIntentId?: string; stripeAccountId?: string; existingBatchId?: string }) { return recordCustomerPayment(input); }
 }
 export const canonicalPaymentOperations = new CanonicalPaymentOperations();

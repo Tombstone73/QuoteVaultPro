@@ -4,6 +4,7 @@ import { getStripeClient } from "../lib/stripe";
 import { integrationConnections, invoices, payments, stripeRefundRequests } from "../../shared/schema";
 import { captureAndApply, type StripePaymentReconciliationResult } from "./stripePaymentReconciliationService";
 import { StripeRefundRecoveryError, verifyStripeRefundRecoveryTruth } from "./stripeRefundRecoveryValidation";
+import { resolveStripeRefundProviderLineage } from "./stripePaymentLineage.service";
 
 export { StripeRefundRecoveryError, verifyStripeRefundRecoveryTruth } from "./stripeRefundRecoveryValidation";
 
@@ -67,14 +68,16 @@ export async function recoverStripeRefundFromProcessor(input: RecoveryInput): Pr
   if (!["succeeded", "captured"].includes(String((payment as any).status || "").toLowerCase())) {
     throw new StripeRefundRecoveryError("STRIPE_REFUND_RECOVERY_PAYMENT_NOT_SETTLED", "The original Stripe payment is not settled.");
   }
-  const paymentIntentId = requiredText((payment as any).stripePaymentIntentId, "STRIPE_REFUND_PAYMENT_INTENT_MISSING", "The original payment has no Stripe PaymentIntent id.");
+  const providerLineage = await resolveStripeRefundProviderLineage(db, { organizationId, payment });
+  if (!providerLineage) throw new StripeRefundRecoveryError("STRIPE_REFUND_PAYMENT_INTENT_MISSING", "The original payment has no Stripe PaymentIntent id.");
+  const paymentIntentId = providerLineage.paymentIntentId;
   if (String(refundRequest.stripePaymentIntentId) !== paymentIntentId) {
     throw new StripeRefundRecoveryError("STRIPE_REFUND_REQUEST_PAYMENT_INTENT_MISMATCH", "Refund request PaymentIntent does not match the original payment.");
   }
 
   const stripeRefundId = requiredText(refundRequest.stripeRefundId, "STRIPE_REFUND_PROCESSOR_ID_MISSING", "The durable refund request has no Stripe refund id.");
   const stripeAccountId = requiredText(refundRequest.stripeAccountId, "STRIPE_REFUND_CONNECTED_ACCOUNT_MISSING", "The durable refund request has no connected-account id.");
-  const paymentAccountId = requiredText((payment as any).metadata?.stripeAccountId, "STRIPE_REFUND_ORIGINAL_ACCOUNT_MISSING", "The original payment has no connected-account identity.");
+  const paymentAccountId = requiredText(providerLineage.stripeAccountId, "STRIPE_REFUND_ORIGINAL_ACCOUNT_MISSING", "The original payment has no connected-account identity.");
   if (paymentAccountId !== stripeAccountId) {
     throw new StripeRefundRecoveryError("STRIPE_REFUND_CONNECTED_ACCOUNT_MISMATCH", "Refund request and original payment have different connected accounts.");
   }
@@ -102,7 +105,7 @@ export async function recoverStripeRefundFromProcessor(input: RecoveryInput): Pr
   } catch {
     throw new StripeRefundRecoveryError("STRIPE_REFUND_PROCESSOR_READ_FAILED", "Unable to retrieve the existing Stripe refund.", 502);
   }
-  const verified = verifyStripeRefundRecoveryTruth({ refundRequest, payment, stripeAccountId, refund });
+  const verified = verifyStripeRefundRecoveryTruth({ refundRequest, payment: { ...(payment as any), stripePaymentIntentId: paymentIntentId }, stripeAccountId, refund });
 
   // This is deliberately not the missing Stripe event id. It is a stable,
   // local recovery-observation identity, so retries and later webhooks converge.

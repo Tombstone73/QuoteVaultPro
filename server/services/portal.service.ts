@@ -8,6 +8,7 @@ import {
   companySettings,
   customerContacts,
   customerContactLinks,
+  customerPaymentBatches,
   customers,
   integrationConnections,
   invoiceLineItems,
@@ -57,6 +58,7 @@ import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessServi
 import { resolveStripeRuntimeConfig, type StripeBrowserRuntimeConfig } from "./stripeRuntimeConfig.service";
 import { recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "./stripePaymentAttempt.service";
 import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
+import { finalizeStripeCustomerPaymentBatch } from "./stripeCustomerPaymentBatchFinalization.service";
 
 export type PortalSessionDto = {
   userId: string;
@@ -267,9 +269,34 @@ export type PortalStripePaymentIntentDto = {
   stripeAccountId: string;
 };
 
+export type PortalGroupedStripePaymentIntentDto = {
+  clientSecret: string;
+  paymentBatchId: string;
+  invoiceIds: string[];
+  allocations: Array<{ invoiceId: string; amountCents: number }>;
+  amount: number;
+  currency: string;
+  stripeAccountId: string;
+  stale?: false;
+};
+
+export type PortalGroupedStripePaymentIntentResult = PortalGroupedStripePaymentIntentDto | {
+  stale: true;
+  invoiceIds: string[];
+  allocations: Array<{ invoiceId: string; amountCents: number }>;
+  amount: number;
+  currency: string;
+};
+
 export type PortalStripeConfirmDto = {
   payment: PortalInvoicePaymentDto;
   invoice: InvoicePortalDto;
+};
+
+export type PortalGroupedStripeConfirmDto = {
+  finalized: boolean;
+  paymentBatchId: string;
+  invoiceIds: string[];
 };
 
 export type PortalInvoicePdfResult = {
@@ -1847,6 +1874,149 @@ export async function getPortalStripeRuntimeConfig(req: Request, invoiceId: stri
   return getStripeRuntimeConfigForOrganization(scope.organizationId);
 }
 
+const groupedPortalStripeInitiationSchema = z.object({
+  invoiceIds: z.array(z.string().trim().min(1)).min(1).max(50),
+  expectedRemainingCents: z.record(z.string(), z.number().int().min(0)).optional(),
+  idempotencyKey: z.string().trim().min(8).max(200),
+});
+
+/**
+ * Starts one Stripe-funded portal checkout for one or more invoices. This is
+ * intentionally an initiation-only operation: it owns the provider attempt on
+ * the parent customer_payment_batches row and creates no invoice payment rows.
+ * The later success reconciliation path must call recordCustomerPayment.
+ */
+export async function createPortalGroupedStripePaymentIntent(req: Request): Promise<PortalGroupedStripePaymentIntentResult> {
+  const scope = getPortalScope(req);
+  const parsed = groupedPortalStripeInitiationSchema.safeParse(req.body ?? {});
+  if (!parsed.success) throw new PortalAccessError(400, "invoiceIds and idempotencyKey are required");
+
+  const invoiceIds = parsed.data.invoiceIds.map((id) => id.trim());
+  if (new Set(invoiceIds).size !== invoiceIds.length) {
+    throw new PortalAccessError(400, "Each invoice can be selected only once");
+  }
+
+  const loaded = await Promise.all(invoiceIds.map(async (invoiceId) => {
+    const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+    if (!invoice) throw new PortalAccessError(404, "One or more selected invoices were not found");
+    const paymentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+    return { invoice, amountCents: assertPortalInvoicePayable(invoice, paymentRows) };
+  }));
+  const currency = String(loaded[0]?.invoice.currency || "USD").toUpperCase();
+  if (loaded.some(({ invoice }) => String(invoice.currency || "USD").toUpperCase() !== currency)) {
+    throw new PortalAccessError(409, "Selected invoices must use the same currency");
+  }
+
+  const allocations = loaded.map(({ invoice, amountCents }) => ({ invoiceId: invoice.id, amountCents }));
+  const amountCents = allocations.reduce((total, allocation) => total + allocation.amountCents, 0);
+  const stale = parsed.data.expectedRemainingCents && allocations.some((allocation) => (
+    parsed.data.expectedRemainingCents?.[allocation.invoiceId] !== allocation.amountCents
+  ));
+  if (stale) {
+    return {
+      stale: true,
+      invoiceIds,
+      allocations,
+      amount: centsToMoney(amountCents),
+      currency,
+    };
+  }
+
+  const stripeAccountId = await getStripeAccountId(scope.organizationId);
+  const idempotencyKey = `portal-stripe-batch:${scope.userId}:${parsed.data.idempotencyKey}`;
+  const providerEvidence = {
+    portal: true,
+    invoiceIds,
+    allocations,
+    invoiceCount: allocations.length,
+    initiatedByCustomerId: scope.customerId,
+  };
+  const now = new Date();
+  let batch: any;
+
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`portal-stripe-batch:${scope.organizationId}:${scope.customerId}:${parsed.data.idempotencyKey}`}))`);
+    const [existing] = await tx.select().from(customerPaymentBatches).where(and(
+      eq(customerPaymentBatches.organizationId, scope.organizationId),
+      eq(customerPaymentBatches.idempotencyKey, idempotencyKey),
+    )).limit(1);
+    if (existing) {
+      if (existing.customerId !== scope.customerId || Number(existing.amountCents) !== amountCents || String(existing.currency).toUpperCase() !== currency) {
+        throw new PortalAccessError(409, "This checkout attempt no longer matches the selected invoices");
+      }
+      batch = existing;
+      return;
+    }
+    [batch] = await tx.insert(customerPaymentBatches).values({
+      organizationId: scope.organizationId,
+      customerId: scope.customerId,
+      amountCents,
+      method: "credit_card",
+      allocationMode: "custom",
+      provider: "stripe",
+      status: "pending",
+      currency,
+      stripeAccountId,
+      providerEvidence,
+      idempotencyKey,
+      reference: null,
+      notes: "Portal Stripe payment pending",
+      appliedAt: now,
+      createdByUserId: scope.userId,
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning();
+  });
+
+  const stripe = getStripeClient();
+  if (batch.stripePaymentIntentId) {
+    const existingIntent = await stripe.paymentIntents.retrieve(String(batch.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
+    const status = String((existingIntent as any).status || "").toLowerCase();
+    if (status !== "canceled" && status !== "failed" && (existingIntent as any).client_secret) {
+      return {
+        clientSecret: String((existingIntent as any).client_secret), paymentBatchId: batch.id, invoiceIds,
+        allocations, amount: centsToMoney(amountCents), currency, stripeAccountId,
+      };
+    }
+    throw new PortalAccessError(409, "A previous portal payment attempt is no longer available");
+  }
+
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: amountCents,
+    currency: currency.toLowerCase(),
+    description: `${allocations.length} portal invoice${allocations.length === 1 ? "" : "s"}`,
+    automatic_payment_methods: { enabled: true },
+    metadata: {
+      organizationId: scope.organizationId,
+      customerPaymentBatchId: batch.id,
+      customerId: scope.customerId,
+      invoiceCount: String(allocations.length),
+    },
+  }, { idempotencyKey: `portal-stripe-batch:${batch.id}`, stripeAccount: stripeAccountId } as any);
+  if (!paymentIntent.client_secret) throw new PortalAccessError(502, "Payment processor did not return a client secret");
+
+  await db.update(customerPaymentBatches).set({
+    stripePaymentIntentId: String(paymentIntent.id),
+    stripeAccountId,
+    providerEvidence: { ...providerEvidence, stripeStatus: String((paymentIntent as any).status || "requires_payment_method") },
+    updatedAt: new Date(),
+  } as any).where(and(
+    eq(customerPaymentBatches.id, batch.id),
+    eq(customerPaymentBatches.organizationId, scope.organizationId),
+    eq(customerPaymentBatches.status, "pending"),
+  ));
+
+  return {
+    clientSecret: String(paymentIntent.client_secret),
+    paymentBatchId: batch.id,
+    invoiceIds,
+    allocations,
+    amount: centsToMoney(amountCents),
+    currency,
+    stripeAccountId,
+  };
+}
+
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {
   const scope = getPortalScope(req);
   // Guest links deliberately use this exact payment/reconciliation path.  The
@@ -2219,6 +2389,52 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
   return {
     payment: mapPayment(updatedPayment),
     invoice: await refreshPortalInvoiceDto(scope, invoice.id),
+  };
+}
+
+/** Browser confirmation for a batch-owned PaymentIntent. Allocation remains in
+ * finalizeStripeCustomerPaymentBatch so browser and signed webhook converge. */
+export async function confirmPortalGroupedStripePayment(req: Request): Promise<PortalGroupedStripeConfirmDto> {
+  const scope = getPortalScope(req);
+  const paymentIntentId = String((req.body as any)?.paymentIntentId || "").trim();
+  if (!paymentIntentId) throw new PortalAccessError(400, "Missing payment intent");
+
+  const [batch] = await db.select().from(customerPaymentBatches).where(and(
+    eq(customerPaymentBatches.organizationId, scope.organizationId),
+    eq(customerPaymentBatches.customerId, scope.customerId),
+    eq(customerPaymentBatches.provider, "stripe"),
+    eq(customerPaymentBatches.stripePaymentIntentId, paymentIntentId),
+  )).limit(1);
+  if (!batch) throw new PortalAccessError(404, "Not found");
+
+  const stripeAccountId = String(batch.stripeAccountId || "").trim();
+  if (!stripeAccountId) throw new PortalAccessError(409, "Portal payment is missing its Stripe account identity");
+  const paymentIntent = await getStripeClient().paymentIntents.retrieve(paymentIntentId, { stripeAccount: stripeAccountId } as any);
+  const metadata = ((paymentIntent as any).metadata || {}) as Record<string, unknown>;
+  if (String(metadata.organizationId || "") !== scope.organizationId ||
+    String(metadata.customerPaymentBatchId || "") !== batch.id ||
+    String(metadata.customerId || "") !== scope.customerId) {
+    throw new PortalAccessError(404, "Not found");
+  }
+  if (String((paymentIntent as any).status || "").toLowerCase() !== "succeeded") {
+    throw new PortalAccessError(409, "Payment has not succeeded yet");
+  }
+
+  const finalized = await finalizeStripeCustomerPaymentBatch({
+    organizationId: scope.organizationId,
+    paymentIntentId,
+    amountCents: Math.max(0, Math.round(Number((paymentIntent as any).amount_received ?? (paymentIntent as any).amount ?? 0))),
+    currency: String((paymentIntent as any).currency || ""),
+    stripeAccountId,
+    occurredAt: new Date(),
+    actorUserId: scope.userId,
+    source: "browser_confirmation",
+  });
+  const allocations = (batch.providerEvidence as any)?.allocations;
+  return {
+    finalized: true,
+    paymentBatchId: String((finalized as any).batch.id),
+    invoiceIds: Array.isArray(allocations) ? allocations.map((allocation: any) => String(allocation.invoiceId)) : [],
   };
 }
 
