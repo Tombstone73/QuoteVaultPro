@@ -21,6 +21,7 @@ import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quick
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloadsWithDiagnostics } from './lib/downstreamEffectivePricing';
+import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, buildQuickBooksInvoiceProjection } from './lib/quickBooksInvoiceProjection';
 import { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
 import {
   resolveBillingCustomerForOrder,
@@ -1372,13 +1373,15 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
   );
 
   const invoiceLines = buildQuickBooksInvoiceLinePayloadsWithDiagnostics(getBillableBundleRoots(lineItems as any[]));
-  const qbInvoiceData: any = {
-    CustomerRef: { value: qbCustomerId },
-    DocNumber: invoiceDisplayNumber,
-    TxnDate: new Date(txnDate).toISOString().split('T')[0],
-    DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
-    Line: invoiceLines.payloads,
-  };
+  const projection = buildQuickBooksInvoiceProjection({
+    invoice: invoice as any,
+    qbCustomerId,
+    docNumber: invoiceDisplayNumber,
+    txnDate: new Date(txnDate).toISOString().split('T')[0],
+    dueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
+    productLines: invoiceLines.payloads,
+  });
+  const qbInvoiceData: any = projection.payload;
 
   console.info('[QuickBooks] Invoice pre-send payload', {
     organizationId,
@@ -1386,38 +1389,50 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     lines: invoiceLines.diagnostics,
   });
 
-  // Remove undefined properties for QB API
-  if (!qbInvoiceData.DueDate) delete qbInvoiceData.DueDate;
-
   const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId) as string | null;
   if (existingId) {
     const existing = await makeQBRequest('GET', `/invoice/${existingId}`, undefined, organizationId);
+    assertQuickBooksInvoiceIdentity({
+      qbInvoice: existing?.Invoice,
+      qbInvoiceId: existingId,
+      qbCustomerId,
+      docNumber: invoiceDisplayNumber,
+    });
     qbInvoiceData.Id = existingId;
     qbInvoiceData.SyncToken = existing?.Invoice?.SyncToken;
     const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
     const qb = response?.Invoice;
     if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
+    assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
     return { qbInvoiceId: qb.Id };
   }
 
   // Idempotency fallback: look up by DocNumber + CustomerRef if local link missing.
   const docNumber = invoiceDisplayNumber;
-  const findQuery = `SELECT Id, DocNumber FROM Invoice WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 1`;
+  const findQuery = `SELECT Id, DocNumber, CustomerRef FROM Invoice WHERE DocNumber = '${escapeQBQueryString(docNumber)}' AND CustomerRef = '${escapeQBQueryString(qbCustomerId)}' MAXRESULTS 1`;
   const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
   const found = findResp?.QueryResponse?.Invoice?.[0];
   if (found?.Id) {
     const existing = await makeQBRequest('GET', `/invoice/${String(found.Id)}`, undefined, organizationId);
+    assertQuickBooksInvoiceIdentity({
+      qbInvoice: existing?.Invoice,
+      qbInvoiceId: String(found.Id),
+      qbCustomerId,
+      docNumber: invoiceDisplayNumber,
+    });
     qbInvoiceData.Id = String(found.Id);
     qbInvoiceData.SyncToken = existing?.Invoice?.SyncToken;
     const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
     const qb = response?.Invoice;
     if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
+    assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
     return { qbInvoiceId: qb.Id };
   }
 
   const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
   const qb = response?.Invoice;
   if (!qb?.Id) throw new Error('QuickBooks invoice create returned no Id');
+  assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
   return { qbInvoiceId: qb.Id };
 }
 
@@ -2412,40 +2427,22 @@ export async function processPushInvoices(jobId: string, organizationId: string)
 
     for (const invoice of localInvoices) {
       try {
-        // Get customer's QB ID
-        const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId: orgId, invoiceId: invoice.id });
-        const customer = customerContext?.customer ?? null;
-
-        if (!customer?.externalAccountingId) {
-          throw new Error('Customer not synced to QuickBooks');
+        // Keep bulk push on the same approved, canonical create/update path as
+        // queue and manual resync.  It must never emit an independent partial
+        // invoice payload (historically this path sent Line: []).
+        const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(invoice as any);
+        if (!approvalEligibility.eligible) {
+          console.info(`[QB Push Invoices] Skipping unapproved invoice ${invoice.invoiceNumber}`, { reason: approvalEligibility.reason });
+          continue;
         }
 
-        // Build QB invoice
-        const qbInvoiceData: any = {
-          CustomerRef: { value: customer.externalAccountingId },
-          TxnDate: invoice.issueDate.toISOString().split('T')[0],
-          DueDate: invoice.dueDate?.toISOString().split('T')[0],
-          Line: [], // Would need line items from invoice_line_items table
-        };
-
-        let qbInvoice;
-        if (invoice.externalAccountingId) {
-          // Update existing
-          const existing = await makeQBRequest('GET', `/invoice/${invoice.externalAccountingId}`, undefined, orgId);
-          qbInvoiceData.Id = invoice.externalAccountingId;
-          qbInvoiceData.SyncToken = existing.Invoice.SyncToken;
-          const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, orgId);
-          qbInvoice = response.Invoice;
-        } else {
-          // Create new
-          const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, orgId);
-          qbInvoice = response.Invoice;
-        }
+        const { qbInvoiceId } = await syncSingleInvoiceToQuickBooksForOrganization(orgId, invoice.id);
 
         await db
           .update(invoices)
           .set({
-            externalAccountingId: qbInvoice.Id,
+            externalAccountingId: qbInvoiceId,
+            qbInvoiceId,
             syncStatus: 'synced',
             syncError: null,
             syncedAt: new Date(),

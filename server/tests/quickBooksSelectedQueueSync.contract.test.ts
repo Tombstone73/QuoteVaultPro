@@ -147,7 +147,20 @@ test('Force Sync invoice export rebuilds current snapshot lines with provider pr
   expect(pricing).toContain('quickBooksUnitPriceForTotalOverride');
   expect(pricing).toContain('authoritativeTotalMismatch');
   expect(service).toContain('const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId)');
-  expect(service).toContain("SELECT Id, DocNumber FROM Invoice WHERE DocNumber");
+  expect(service).toContain("SELECT Id, DocNumber, CustomerRef FROM Invoice WHERE DocNumber");
+  expect(service).toContain('AND CustomerRef =');
+  expect(service).toContain('assertQuickBooksInvoiceIdentity({');
+  expect(service).toContain('buildQuickBooksInvoiceProjection({');
+  expect(service).toContain('assertQuickBooksInvoiceEconomicParity({');
+});
+
+test('legacy bulk push delegates to the approved canonical invoice sync instead of emitting its own incomplete payload', () => {
+  const service = read('server/quickbooksService.ts');
+  const bulkPush = service.slice(service.indexOf('export async function processPushInvoices'));
+
+  expect(bulkPush).toContain('getInvoiceQuickBooksApprovalEligibility(invoice as any)');
+  expect(bulkPush).toContain('syncSingleInvoiceToQuickBooksForOrganization(orgId, invoice.id)');
+  expect(bulkPush).not.toContain('Line: [], // Would need line items from invoice_line_items table');
 });
 
 test('Force Sync payment export records only a safe reference diagnostic and retains its existing duplicate recovery path', () => {
