@@ -51,8 +51,8 @@ describe("DEV QA full-access provisioning", () => {
     const plan = devQaM78iOperationalProvisioningPlan(getDevQaProvisioningConfig(devEnv));
     expect(plan.permissionSet).toMatchObject({ name: DEV_QA_M78I_PERMISSION_SET_NAME, principalKind: "staff" });
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
-    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["proof.view", "proof.prepare", "proof.issue", "fulfillment.pickup", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price", "production.output.reject", "production.run.create", "production.run.execute"]));
-    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.adopt", "artwork.view", "artwork.assign", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal", "pricing.configure", "pricing.publish", "route.manageTemplates", "payment.record", "refund.issue", "invoice.send", "communications.configure", "platform.admin" as never]));
+    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["artwork.view", "artwork.adopt", "proof.view", "proof.prepare", "proof.issue", "fulfillment.pickup", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price", "production.output.reject", "production.run.create", "production.run.execute"]));
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.assign", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal", "pricing.configure", "pricing.publish", "route.manageTemplates", "payment.record", "refund.issue", "invoice.send", "communications.configure", "platform.admin" as never]));
   });
 
   test("keeps the M7.8I database administrator floor on a separate non-interactive DEV identity", () => {
@@ -74,13 +74,13 @@ describe("DEV QA full-access provisioning", () => {
     expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
   });
 
-  test("limits temporary fixture Artwork authority to canonical adoption", () => {
+  test("keeps the guarded Artwork fixture profile compatible with ordinary m78i adoption", () => {
     const plan = devQaM78iFixtureArtworkProvisioningPlan(getDevQaProvisioningConfig(devEnv));
     expect(plan.permissionSet.name).toBe(DEV_QA_M78I_FIXTURE_ARTWORK_SET_NAME);
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES);
-    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["artwork.adopt"]));
-    expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 1);
-    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.view", "artwork.assign", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
+    expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["artwork.view", "artwork.adopt"]));
+    expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length);
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.assign", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
   });
 
   test("limits temporary fixture route authority to route-template management", () => {
@@ -89,15 +89,15 @@ describe("DEV QA full-access provisioning", () => {
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES);
     expect(plan.permissionSet.capabilities).toEqual(expect.arrayContaining(["route.manageTemplates"]));
     expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 1);
-    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.adopt", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
+    expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["artwork.assign", "pricing.configure", "pricing.publish", "payment.record", "refund.issue", "invoice.send", "permissions.manageSets"]));
   });
 
-  test("limits complete fixture setup authority to the four reviewed prerequisites", () => {
+  test("limits complete fixture setup authority to the remaining reviewed prerequisites", () => {
     const plan = devQaM78iFixtureSetupProvisioningPlan(getDevQaProvisioningConfig(devEnv));
     expect(plan.permissionSet.name).toBe(DEV_QA_M78I_FIXTURE_SETUP_SET_NAME);
     expect(plan.permissionSet.capabilities).toEqual(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES);
-    expect(plan.permissionSet.capabilities.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["pricing.configure", "pricing.publish", "route.manageTemplates", "artwork.adopt"]);
-    expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 4);
+    expect(plan.permissionSet.capabilities.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["pricing.configure", "pricing.publish", "route.manageTemplates"]);
+    expect(plan.permissionSet.capabilities).toHaveLength(DEV_QA_M78I_OPERATIONAL_CAPABILITIES.length + 3);
     expect(plan.permissionSet.capabilities).not.toEqual(expect.arrayContaining(["payment.record", "refund.issue", "invoice.send", "communications.configure", "permissions.manageSets", "permissions.assignStaff"]));
   });
 

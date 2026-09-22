@@ -14,6 +14,7 @@ export const DEV_QA_M78I_OPERATIONAL_CAPABILITIES = Object.freeze([
   "organization.configure",
   "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue", "payment.view",
   "route.view", "route.advance",
+  "artwork.view", "artwork.adopt",
   "proof.view", "proof.prepare", "proof.issue",
   "prepress.view", "prepress.work", "prepress.complete",
   "production.view", "production.work", "production.complete", "production.hold", "production.rework", "production.note", "production.output.reject", "production.run.create", "production.run.execute",
@@ -29,13 +30,12 @@ export const DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES = Object.freeze([
 ] as const satisfies readonly Capability[]);
 export const DEV_QA_M78I_FIXTURE_PRICING_SET_NAME = "DEV QA M7.8I Fixture Pricing Setup";
 export const DEV_QA_M78I_FIXTURE_PRICING_SET_DESCRIPTION = "Temporary DEV-only pricing authority to publish the marked M7.8I synthetic fixture Product.";
-/** One-shot Artwork fixture intake only; immediately converge back to m78i after upload. */
+/** Retained for guarded command compatibility; Artwork adoption is now ordinary m78i authority. */
 export const DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES = Object.freeze([
   ...DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
-  "artwork.adopt",
 ] as const satisfies readonly Capability[]);
 export const DEV_QA_M78I_FIXTURE_ARTWORK_SET_NAME = "DEV QA M7.8I Fixture Artwork Setup";
-export const DEV_QA_M78I_FIXTURE_ARTWORK_SET_DESCRIPTION = "Temporary DEV-only Artwork adoption authority for the marked M7.8I synthetic fixture.";
+export const DEV_QA_M78I_FIXTURE_ARTWORK_SET_DESCRIPTION = "Guarded DEV-only compatibility profile; ordinary m78i includes Artwork adoption.";
 /** One-shot fixture route setup only; immediately converge back to m78i after creation. */
 export const DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES = Object.freeze([
   ...DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
@@ -49,7 +49,6 @@ export const DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES = Object.freeze([
   "pricing.configure",
   "pricing.publish",
   "route.manageTemplates",
-  "artwork.adopt",
 ] as const satisfies readonly Capability[]);
 export const DEV_QA_M78I_FIXTURE_SETUP_SET_NAME = "DEV QA M7.8I Fixture Setup";
 export const DEV_QA_M78I_FIXTURE_SETUP_SET_DESCRIPTION = "Temporary DEV-only authority to establish the complete marked M7.8I synthetic fixture graph.";

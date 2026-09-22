@@ -43,6 +43,7 @@ import {
   OrderLineArtworkCompact,
   OrderLineArtworkDetail,
 } from "./OrderLineArtwork";
+import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
 import { orderRoutePresentation } from "./orderRoutingPresentation";
 
 const message = (error: unknown): string => {
@@ -76,6 +77,7 @@ export const OrderWorkspace = (
     canOverridePrice: boolean;
     canViewInvoice: boolean;
     canViewArtwork: boolean;
+    canAdoptArtwork?: boolean;
     canViewProofing: boolean;
     canViewProduction: boolean;
     csrfReady: boolean;
@@ -171,7 +173,9 @@ export const OrderWorkspace = (
       props.orderId,
     ],
     queryFn: () => artworkApi.forOrder(props.organizationId, props.orderId),
-    enabled: Boolean(props.organizationId && props.sessionScope && current),
+    enabled: Boolean(
+      props.organizationId && props.sessionScope && current && props.canViewArtwork,
+    ),
   });
   const fulfillment = useQuery({
     queryKey: [
@@ -935,13 +939,19 @@ export const OrderWorkspace = (
           Artwork: (
             <OrderArtworkPanel
               organizationId={props.organizationId}
+              orderId={current.order.orderId}
+              orderNumber={current.number.display}
               lines={current.order.lines}
               artwork={artwork.data ?? []}
               loading={artwork.isLoading}
-              canUpload={props.canViewArtwork && editable}
+              canView={props.canViewArtwork}
+              canUpload={props.canAdoptArtwork === true}
               onOpen={(lineId) =>
                 props.openArtwork?.(current.order.orderId, lineId)
               }
+              onUploaded={() => {
+                void artwork.refetch();
+              }}
             />
           ),
           Notes: (
@@ -1927,75 +1937,100 @@ const artworkRole = (value: ArtworkOrderProjection) =>
   ]
     .filter(Boolean)
     .join(" · ");
-const OrderArtworkPanel = ({
+export const OrderArtworkPanel = ({
   organizationId,
+  orderId,
+  orderNumber,
   lines,
   artwork,
   loading,
+  canView,
   canUpload,
   onOpen,
+  onUploaded,
 }: Readonly<{
   organizationId: string;
+  orderId: string;
+  orderNumber: string;
   lines: readonly { lineId: string; description: string }[];
   artwork: readonly ArtworkOrderProjection[];
   loading: boolean;
+  canView: boolean;
   canUpload: boolean;
   onOpen: (lineId: string) => void;
-}>) => (
-  <section className="v2-order-tab">
-    <header>
-      <div>
-        <h2>Artwork</h2>
-        <p>
-          {loading
-            ? "Loading…"
-            : artwork.length
-              ? `${artwork.length} file${artwork.length === 1 ? "" : "s"}`
-              : "No artwork is attached."}
-        </p>
-      </div>
-    </header>
-    {!loading && (
-      <ul className="v2-order-artwork">
-        {lines.map((line) => {
-          const assigned = artwork.filter(
-            (entry) => entry.assignment.orderLineId === line.lineId,
-          );
-          return (
-            <li key={line.lineId}>
-              <b>{line.description || "Order line"}</b>
-              {assigned.length ? (
-                assigned.map((entry) => (
-                  <div
-                    key={entry.assignment.id}
-                    className="v2-order-art-preview"
-                  >
-                    <iframe
-                      title={`Artwork preview ${entry.file.displayFilename}`}
-                      src={`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(entry.file.id)}/content#page=${(entry.assignment.sourcePageIndex ?? 0) + 1}`}
-                    />
-                    <span>
-                      {entry.file.displayFilename} · {artworkRole(entry)} ·{" "}
-                      {bytes(entry.file.byteSize)}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <span>No artwork attached</span>
-              )}
-              {canUpload && (
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => onOpen(line.lineId)}
-                >
-                  Open Artwork
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    )}
-  </section>
-);
+  onUploaded: () => void;
+}>) => {
+  const [uploadLineId, setUploadLineId] = useState<string | undefined>();
+  const uploadLine = lines.find((line) => line.lineId === uploadLineId);
+  return (
+    <section className="v2-order-tab">
+      <header>
+        <div>
+          <h2>Artwork</h2>
+          <p>
+            {!canView
+              ? canUpload
+                ? "Artwork details are unavailable, but you can upload a new file for a named Order line."
+                : "Artwork access is unavailable."
+              : loading
+                ? "Loading…"
+                : artwork.length
+                  ? `${artwork.length} file${artwork.length === 1 ? "" : "s"}`
+                  : "No artwork is attached."}
+          </p>
+        </div>
+      </header>
+      {!loading && (canView || canUpload) && (
+        <ul className="v2-order-artwork">
+          {lines.map((line) => {
+            const assigned = canView
+              ? artwork.filter((entry) => entry.assignment.orderLineId === line.lineId)
+              : [];
+            const activeUpload = uploadLine?.lineId === line.lineId;
+            return (
+              <li key={line.lineId}>
+                <b>{line.description || "Order line"}</b>
+                {canView && (assigned.length ? (
+                  assigned.map((entry) => (
+                    <div key={entry.assignment.id} className="v2-order-art-preview">
+                      <iframe
+                        title={`Artwork preview ${entry.file.displayFilename}`}
+                        src={`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(entry.file.id)}/content#page=${(entry.assignment.sourcePageIndex ?? 0) + 1}`}
+                      />
+                      <span>
+                        {entry.file.displayFilename} · {artworkRole(entry)} · {bytes(entry.file.byteSize)}
+                      </span>
+                    </div>
+                  ))
+                ) : <span>No artwork attached</span>)}
+                <div className="v2-order-artwork-actions">
+                  {canView && (
+                    <button className="button secondary" type="button" onClick={() => onOpen(line.lineId)}>
+                      Open Artwork
+                    </button>
+                  )}
+                  {canUpload && (
+                    <button className="button secondary" type="button" onClick={() => setUploadLineId(activeUpload ? undefined : line.lineId)}>
+                      {activeUpload ? "Cancel upload" : "Upload Artwork"}
+                    </button>
+                  )}
+                </div>
+                {activeUpload && (
+                  <ArtworkUploadPanel
+                    organizationId={organizationId}
+                    target={{ orderId, orderLineId: line.lineId, orderNumber, lineDescription: line.description || "Order line" }}
+                    currentAssignments={assigned.map((entry) => entry.assignment)}
+                    onUploaded={() => {
+                      setUploadLineId(undefined);
+                      onUploaded();
+                    }}
+                  />
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+};

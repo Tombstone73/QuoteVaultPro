@@ -581,6 +581,7 @@ export const App = ({
           organizationId={organizationId}
           sessionScope={sessionScope}
           canView={bootstrap.data?.capabilities.artworkView === true}
+          canAdopt={bootstrap.data?.capabilities.artworkAdopt === true}
           artworkFileId={artworkFileId || undefined}
           orderId={artworkOrderId || undefined}
           lineId={artworkLineId || undefined}
@@ -1534,6 +1535,7 @@ const OrdersPage = ({
         canOverridePrice={bootstrap?.capabilities.orderOverridePrice === true}
         canViewInvoice={bootstrap?.capabilities.invoiceView === true}
         canViewArtwork={bootstrap?.capabilities.artworkView === true}
+        canAdoptArtwork={bootstrap?.capabilities.artworkAdopt === true}
         canViewProofing={bootstrap?.capabilities.proofView === true}
         canViewProduction={bootstrap?.capabilities.productionView === true}
         csrfReady={Boolean(bootstrap)}

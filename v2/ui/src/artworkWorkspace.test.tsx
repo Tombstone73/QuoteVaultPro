@@ -29,4 +29,19 @@ legacyMetadataClient.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", 
 const legacyMetadata = renderToStaticMarkup(<QueryClientProvider client={legacyMetadataClient}><ArtworkWorkspace organizationId="org-a" sessionScope="scope-a" canView artworkFileId="file-b" openArtwork={() => {}} openCustomer={() => {}} openOrder={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 for (const text of ["live-like.pdf", "Not recorded", "Original canonical Artwork file.", "production · front", "customer supplied · front", "ORD-1007", "—"]) assert.match(legacyMetadata, new RegExp(text));
 assert.doesNotMatch(legacyMetadata, /assignment-production|object_key|storageProvider/);
+
+const orderContext = (canAdopt: boolean) => {
+  const contextClient = new QueryClient();
+  contextClient.setQueryData(["v2", "scope-a", "org-a", "artwork", "target-order", "order-a"], {
+    order: { lines: [{ lineId: "line-a", description: "Window graphic", position: 1 }] },
+    number: { display: "ORD-1001" },
+  });
+  contextClient.setQueryData(["v2", "scope-a", "org-a", "artwork", "order", "order-a"], []);
+  return renderToStaticMarkup(<QueryClientProvider client={contextClient}><ArtworkWorkspace organizationId="org-a" sessionScope="scope-a" canView canAdopt={canAdopt} orderId="order-a" lineId="line-a" openArtwork={() => {}} openCustomer={() => {}} openOrder={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+};
+const viewOnlyContext = orderContext(false);
+assert.doesNotMatch(viewOnlyContext, /Order artwork PDF/, "view-only staff must not receive an actionable upload control");
+const adoptionContext = orderContext(true);
+assert.match(adoptionContext, /Order artwork PDF/, "Artwork adoption authority exposes canonical Order-line upload");
+
 console.log("Artwork workspace visual contract tests passed.");
