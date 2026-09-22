@@ -1965,7 +1965,7 @@ function JobCard({
     >
       <CardContent className="p-5 space-y-3">
         {/* Header Row: Customer | Status Bullet | Order # | Expand/Collapse */}
-        <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-3">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-start gap-3">
           {/* Left: Customer */}
           {boardCardConfig.customer && (
             <div className="justify-self-start min-w-0" data-no-dnd="true">
@@ -1989,7 +1989,7 @@ function JobCard({
 
           {/* Center: Status Bullet */}
           {boardCardConfig.status && (
-            <div className="justify-self-center">
+            <div className="justify-self-center shrink-0">
               <StatusBullet
                 status={job.status}
                 disabled={updateStatus.isPending || isDragOverlay}
@@ -2004,10 +2004,10 @@ function JobCard({
 
           {/* Right: Order # */}
           {boardCardConfig.orderNumber && orderId && (
-            <div className="justify-self-end" data-no-dnd="true">
+            <div className="min-w-0 justify-self-end text-right" data-no-dnd="true">
               <Link
                 to={ROUTES.orders.detail(orderId)}
-                className="text-xs text-muted-foreground hover:text-foreground hover:underline shrink-0 font-medium"
+                className="block max-w-full truncate text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
                 onClick={(e) => e.stopPropagation()}
                 onPointerDownCapture={(e) => e.stopPropagation()}
                 onMouseDownCapture={(e) => e.stopPropagation()}

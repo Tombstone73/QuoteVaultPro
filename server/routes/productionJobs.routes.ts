@@ -87,6 +87,8 @@ import {
   hasOutstandingCanonicalProductionObligations,
   projectCanonicalProductionObligations,
 } from "../services/orderProductionCompletionPolicy";
+import { FulfillmentDashboardRepo } from "../services/fulfillment/repository";
+import { filterActiveProductionOverviewFulfillmentJobs } from "../services/fulfillment/productionOverviewFulfillment";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -1106,6 +1108,38 @@ export function registerProductionJobsRoutes(
         const groupedJobIds = new Set(groupedMemberRows.map((row) => row.productionJobId));
         if (groupedJobIds.size > 0) {
           filteredRows = filteredRows.filter((row) => !groupedJobIds.has(row.id));
+        }
+      }
+
+      // The Fulfillment station is an operational handoff, not a second
+      // fulfillment truth. Reuse the same line-level projection as the
+      // Fulfillment workspace before doing the expensive Production Overview
+      // hydration. This removes physical and administrative (Close Job
+      // Override / historical) completions without manufacturing any physical
+      // shipment or pickup evidence.
+      if (activeBoardQuery && filteredRows.length > 0) {
+        const fulfillmentLineItemIds = Array.from(new Set(
+          filteredRows
+            .filter((row) => String(row.stationKey ?? "").trim().toLowerCase() === FULFILLMENT_STATION_KEY)
+            .map((row) => row.lineItemId)
+            .filter((id): id is string => Boolean(id)),
+        ));
+
+        if (fulfillmentLineItemIds.length > 0) {
+          const fulfillmentLines = await new FulfillmentDashboardRepo(db).listLineEligibility(organizationId, {
+            lineItemIds: fulfillmentLineItemIds,
+          });
+          const fulfillmentProjectionByLineItemId = new Map(
+            fulfillmentLines.map((line) => [line.id, line.projection]),
+          );
+          filteredRows = filterActiveProductionOverviewFulfillmentJobs(
+            filteredRows,
+            fulfillmentProjectionByLineItemId,
+          );
+        } else if (filteredRows.some((row) => String(row.stationKey ?? "").trim().toLowerCase() === FULFILLMENT_STATION_KEY)) {
+          // A fulfillment job without a line item cannot establish a canonical
+          // fulfillment obligation, so it never belongs on the active board.
+          filteredRows = filterActiveProductionOverviewFulfillmentJobs(filteredRows, new Map());
         }
       }
 
