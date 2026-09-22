@@ -3,15 +3,17 @@ import { TextDecoder, TextEncoder } from "node:util";
 
 import type { PortalInvoiceDto } from "@/hooks/usePortal";
 
-Object.assign(globalThis, { TextDecoder, TextEncoder });
+Object.assign(globalThis, { TextDecoder, TextEncoder, IS_REACT_ACT_ENVIRONMENT: true });
 jest.mock("@/components/payments/StripePayDialog", () => () => null);
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
+const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");
 const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
 const {
   DEFAULT_PORTAL_INVOICE_COLUMNS,
   DEFAULT_PORTAL_INVOICE_SORT,
   PortalInvoiceDesktopTable,
   PortalInvoiceMobileCard,
+  PortalInvoicePaymentActionTray,
   clearPortalInvoiceSortPreference,
   nextPortalInvoiceSort,
   persistPortalInvoiceSortPreference,
@@ -48,6 +50,16 @@ function render(component: React.ReactElement) {
   document.body.innerHTML = renderToStaticMarkup(
     React.createElement(MemoryRouter, null, component),
   );
+}
+
+function clickActionTrayButton(label: string, props: React.ComponentProps<typeof PortalInvoicePaymentActionTray>) {
+  const container = document.createElement("div");
+  document.body.replaceChildren(container);
+  const root = createRoot(container);
+  React.act(() => root.render(React.createElement(PortalInvoicePaymentActionTray, props)));
+  const button = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+  React.act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  React.act(() => root.unmount());
 }
 
 describe("V1 Portal invoice list presentation", () => {
@@ -246,5 +258,67 @@ describe("V1 Portal invoice payment selection", () => {
     expect(document.querySelector('input[aria-label="Select invoice INV-P"]')?.disabled).toBe(false);
     expect(document.querySelector('input[aria-label="Select invoice INV-PAID"]')?.disabled).toBe(true);
     expect(document.querySelector('input[aria-label="Select invoice INV-VOID"]')?.disabled).toBe(true);
+  });
+
+  test("hides the payment action tray until an invoice is selected", () => {
+    render(React.createElement(PortalInvoicePaymentActionTray, {
+      selectedCount: 0,
+      selectedTotal: 0,
+      currency: "USD",
+      onClear: jest.fn(),
+      onPay: jest.fn(),
+    }));
+
+    expect(document.querySelector('[data-testid="portal-invoice-selection-tray"]')).toBeNull();
+  });
+
+  test("keeps the selected count, total, and checkout actions fixed in the portal content region", () => {
+    render(React.createElement(PortalInvoicePaymentActionTray, {
+      selectedCount: 3,
+      selectedTotal: 426.58,
+      currency: "USD",
+      onClear: jest.fn(),
+      onPay: jest.fn(),
+    }));
+
+    const tray = document.querySelector('[data-testid="portal-invoice-selection-tray"]');
+    expect(tray?.className).toContain("fixed");
+    expect(tray?.className).toContain("bottom-0");
+    expect(tray?.className).toContain("md:left-64");
+    expect(tray?.getAttribute("aria-label")).toBe("Selected invoice payment actions");
+    expect(tray?.textContent).toContain("3 invoices selected");
+    expect(tray?.textContent).toContain("Total Due: $426.58");
+    expect(tray?.textContent).toContain("Clear Selection");
+    expect(tray?.textContent).toContain("Pay Selected Invoices");
+
+    const actions = [...(tray?.querySelectorAll("button") ?? [])];
+    expect(actions).toHaveLength(2);
+    expect(actions.every((action) => action.className.includes("w-full") && action.className.includes("sm:w-auto"))).toBe(true);
+  });
+
+  test("uses singular selection copy without changing the total hierarchy", () => {
+    render(React.createElement(PortalInvoicePaymentActionTray, {
+      selectedCount: 1,
+      selectedTotal: 165,
+      currency: "USD",
+      onClear: jest.fn(),
+      onPay: jest.fn(),
+    }));
+
+    const tray = document.querySelector('[data-testid="portal-invoice-selection-tray"]');
+    expect(tray?.textContent).toContain("1 invoice selected");
+    expect(tray?.textContent).toContain("Total Due: $165.00");
+  });
+
+  test("wires Clear Selection and checkout opening to the existing action callbacks", () => {
+    const onClear = jest.fn();
+    const onPay = jest.fn();
+    const props = { selectedCount: 2, selectedTotal: 221.88, currency: "USD", onClear, onPay };
+
+    clickActionTrayButton("Clear Selection", props);
+    clickActionTrayButton("Pay Selected Invoices", props);
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onPay).toHaveBeenCalledTimes(1);
   });
 });
