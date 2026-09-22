@@ -189,13 +189,14 @@ interface OperationalSummaryData {
   roll: number;
   fulfillment: number;
   invoices: {
+    readyToFinalizeNeverSent?: number;
     pendingSend: number;
     unpaid: number;
   };
 }
 
 // Map operational summary data to per-nav-item-id counts.
-// Invoice badge shows pendingSend for the primary count.
+// Invoice badge mirrors the staff Invoices Ready to Finalize + Never Sent queue.
 function buildBadgeCounts(
   summary: OperationalSummaryData | undefined,
   approvalCount: number,
@@ -209,7 +210,7 @@ function buildBadgeCounts(
     flatbed: 0,
     roll: 0,
     fulfillment: 0,
-    invoices: { pendingSend: 0, unpaid: 0 },
+    invoices: { readyToFinalizeNeverSent: 0, pendingSend: 0, unpaid: 0 },
   };
   const safeSummary = summary ?? emptySummary;
   return {
@@ -222,7 +223,7 @@ function buildBadgeCounts(
     "production-flatbed": safeSummary.flatbed,
     "production-roll": safeSummary.roll,
     fulfillment: safeSummary.fulfillment,
-    invoices: safeSummary.invoices.pendingSend,
+    invoices: safeSummary.invoices.readyToFinalizeNeverSent ?? 0,
   };
 }
 

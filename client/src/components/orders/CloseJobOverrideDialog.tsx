@@ -169,6 +169,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["invoices"] }),
         queryClient.invalidateQueries({ queryKey: ["orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
       ]);
       toast({ title: "Job operationally completed", description: "Production and fulfillment were reconciled. Invoice and payment status were not changed." });
       resetAndClose();

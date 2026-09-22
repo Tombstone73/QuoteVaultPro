@@ -38,6 +38,8 @@ export interface OperationalSummary {
   roll: number;
   fulfillment: number;
   invoices: {
+    /** Same server-side working set as Invoices → Ready to Finalize + Never Sent. */
+    readyToFinalizeNeverSent?: number;
     pendingSend: number;
     unpaid: number;
   };
@@ -133,6 +135,10 @@ async function countVisibleProductionJobs(
 }
 
 export async function computeOperationalSummary(organizationId: string): Promise<OperationalSummary> {
+  // Keep this dependency lazy so the lightweight badge mapping helpers remain
+  // usable in DB-free tests; the authoritative list query is needed only when
+  // a live operational summary is actually computed.
+  const { listInvoicesPageForOrganization } = await import("../invoicesService");
   const [
     inboundResult,
     designResult,
@@ -144,6 +150,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
     fulfillmentResult,
     invoiceDraftResult,
     invoiceUnpaidResult,
+    readyToFinalizeNeverSentPage,
   ] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int` })
@@ -227,6 +234,21 @@ export async function computeOperationalSummary(organizationId: string): Promise
           inArray(invoices.status as any, ["finalized", "billed", "sent", "partially_paid", "overdue"]),
         ),
       ),
+
+    // Reuse the exact canonical invoice-list query and count authority used by
+    // the staff working set. This deliberately does not infer readiness from
+    // a parent state or from a bounded browser page.
+    listInvoicesPageForOrganization({
+      organizationId,
+      limit: 1,
+      offset: 0,
+      includePaidHistorical: false,
+      includeCanceled: false,
+      columnFilters: {
+        jobStatus: ["job_complete", "fulfillment_complete"],
+        sendStatus: "never_sent",
+      },
+    }),
   ]);
 
   return {
@@ -240,6 +262,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
     roll: rollCount,
     fulfillment: fulfillmentResult,
     invoices: {
+      readyToFinalizeNeverSent: readyToFinalizeNeverSentPage.totalCount,
       pendingSend: count(invoiceDraftResult),
       unpaid: count(invoiceUnpaidResult),
     },

@@ -25,6 +25,7 @@ interface OperationalSummary {
   roll: number;
   fulfillment: number;
   invoices: {
+    readyToFinalizeNeverSent?: number;
     pendingSend: number;
     unpaid: number;
   };
@@ -45,7 +46,7 @@ function buildBadgeCounts(
     "production-flatbed": safeSummary.flatbed,
     "production-roll": safeSummary.roll,
     fulfillment: safeSummary.fulfillment,
-    invoices: safeSummary.invoices.pendingSend,
+    invoices: safeSummary.invoices.readyToFinalizeNeverSent ?? 0,
   };
 }
 
@@ -59,7 +60,7 @@ function makeZeroSummary(): OperationalSummary {
     flatbed: 0,
     roll: 0,
     fulfillment: 0,
-    invoices: { pendingSend: 0, unpaid: 0 },
+    invoices: { readyToFinalizeNeverSent: 0, pendingSend: 0, unpaid: 0 },
   };
 }
 
@@ -240,10 +241,10 @@ describe("buildBadgeCounts — full mapping", () => {
     expect(buildBadgeCounts(s, 0).fulfillment).toBe(9);
   });
 
-  test("invoice badge shows pendingSend only", () => {
+  test("invoice badge shows the ready-to-finalize never-sent working set", () => {
     const s = {
       ...makeZeroSummary(),
-      invoices: { pendingSend: 8, unpaid: 14 },
+      invoices: { readyToFinalizeNeverSent: 8, pendingSend: 411, unpaid: 14 },
     };
     expect(buildBadgeCounts(s, 0).invoices).toBe(8);
   });
@@ -301,21 +302,21 @@ describe("production station badges", () => {
 // Invoice breakdown
 // ---------------------------------------------------------------------------
 
-describe("invoice badge — pending send vs unpaid", () => {
-  test("pendingSend is zero when no draft invoices", () => {
+describe("invoice badge — ready-to-finalize never-sent queue", () => {
+  test("badge is zero when the actionable working set is empty", () => {
     const s = {
       ...makeZeroSummary(),
-      invoices: { pendingSend: 0, unpaid: 10 },
+      invoices: { readyToFinalizeNeverSent: 0, pendingSend: 10, unpaid: 10 },
     };
     expect(buildBadgeCounts(s, 0).invoices).toBe(0);
   });
 
-  test("pendingSend captures draft invoices correctly", () => {
+  test("a qualifying invoice is counted once regardless of broader pending-send counts", () => {
     const s = {
       ...makeZeroSummary(),
-      invoices: { pendingSend: 3, unpaid: 0 },
+      invoices: { readyToFinalizeNeverSent: 1, pendingSend: 3, unpaid: 0 },
     };
-    expect(buildBadgeCounts(s, 0).invoices).toBe(3);
+    expect(buildBadgeCounts(s, 0).invoices).toBe(1);
   });
 });
 
