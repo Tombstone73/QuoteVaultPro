@@ -7,6 +7,7 @@ describe("OrderNumberLink contract", () => {
     expect(source).toContain("to={`/orders/${orderId}`}");
     expect(source).not.toContain("to={`/orders/${orderNumber}`}");
     expect(source).toContain("event.stopPropagation()");
+    expect(source).toContain("state={{ referrer: buildReferrer(location) }}");
   });
 
   it("renders a safe empty state instead of a broken link without an Order", () => {

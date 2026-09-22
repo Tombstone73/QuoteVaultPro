@@ -1,5 +1,6 @@
 import React from "react";
-import { useLocation } from "wouter";
+import { useLocation, useNavigate } from "react-router-dom";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import { DataCard } from "@/components/titan";
 import { Badge } from "@/components/ui/badge";
 import { ArrowRight } from "lucide-react";
@@ -17,17 +18,18 @@ interface CustomerActivityTabsProps {
 }
 
 export default function CustomerActivityTabs({ items, type }: CustomerActivityTabsProps) {
-  const [, setLocation] = useLocation();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const handleClick = (id: string) => {
     // Navigate to the respective detail page
     // Note: Ensure these routes exist in your application
     if (type === "order") {
-      setLocation(`/orders/${id}`);
+      navigate(`/orders/${id}`, { state: { referrer: buildReferrer(location) } });
     } else if (type === "quote") {
-      setLocation(`/quotes/${id}`);
+      navigate(`/quotes/${id}`);
     } else if (type === "invoice") {
-      setLocation(`/invoices/${id}`);
+      navigate(`/invoices/${id}`);
     }
   };
 

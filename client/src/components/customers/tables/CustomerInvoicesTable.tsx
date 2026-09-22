@@ -10,6 +10,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
 import { CloseJobOverrideAction, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
 import { OrderNumberLink } from "@/components/orders/OrderNumberLink";
+import { Link, useLocation } from "react-router-dom";
+import { buildReferrer } from "@/lib/nav/smartBack";
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "invoiceNumber", label: "Invoice #", visible: true, order: 0 },
@@ -70,6 +72,7 @@ function toOverrideTarget(invoice: InvoiceListItem): CloseJobOverrideTarget | nu
 }
 
 export function CustomerInvoicesTable({ customerId }: { customerId: string }) {
+  const location = useLocation();
   const { data: invoices = [], isLoading } = useInvoices({ customerId });
   const cfg = useTableColumnConfig("customer_invoices_v2", DEFAULT_COLUMNS);
   const { user, isAdmin } = useAuth();
@@ -117,7 +120,7 @@ export function CustomerInvoicesTable({ customerId }: { customerId: string }) {
                 case "invoiceStatus": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{invoice.displayStatus || titleCase(invoice.status)}</td>;
                 case "actions": return <td className="px-3 py-2" key={column.id}><div className="flex min-w-max flex-wrap gap-2">
                   <a href={`/invoices/${invoice.id}`}><Button size="sm" variant="outline"><Eye className="mr-1.5 h-4 w-4" aria-hidden="true" />View Invoice</Button></a>
-                  {invoice.orderId ? <a href={`/orders/${invoice.orderId}`}><Button size="sm" variant="outline"><ExternalLink className="mr-1.5 h-4 w-4" aria-hidden="true" />View Order</Button></a> : null}
+                  {invoice.orderId ? <Link to={`/orders/${invoice.orderId}`} state={{ referrer: buildReferrer(location) }}><Button size="sm" variant="outline"><ExternalLink className="mr-1.5 h-4 w-4" aria-hidden="true" />View Order</Button></Link> : null}
                   {isAdminOrOwner && canApproveInvoice(invoice) ? <Button size="sm" variant="outline" disabled={approveInvoices.isPending} onClick={() => void approve(invoice)}><Check className="mr-1.5 h-4 w-4" aria-hidden="true" />Approve</Button> : null}
                   {isAdminOrOwner && String(invoice.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={invoice.id} invoiceNumber={invoice.invoiceNumber} alreadySent={Boolean(invoice.lastSentAt)} /> : null}
                   <CloseJobOverrideAction target={toOverrideTarget(invoice)} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} />

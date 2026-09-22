@@ -5,7 +5,8 @@ import { useTableColumnConfig, ColumnConfig } from "@/hooks/useTableColumnConfig
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { Link } from "wouter";
+import { Link, useLocation } from "react-router-dom";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import { Eye, Ticket } from "lucide-react";
 import { formatOrderDate } from "@/lib/orderDate";
 import { CloseJobOverrideAction, CloseJobOverrideDialog, type CloseJobOverrideTarget, getOrderJobStatus } from "@/components/orders/CloseJobOverrideDialog";
@@ -22,6 +23,7 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
 ];
 
 export function CustomerOrdersTable({ customerId }: { customerId: string }) {
+  const location = useLocation();
   const { data: orders = [], isLoading } = useOrders({ customerId });
   const cfg = useTableColumnConfig("customer_orders", DEFAULT_COLUMNS);
   const { user, isAdmin } = useAuth();
@@ -121,7 +123,7 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
                     case "actions": return (
                       <td className="px-3 py-2" key={c.id}>
                         <div className="flex min-w-max flex-wrap items-center justify-end gap-2">
-                          <Link href={`/orders/${o.id}`}>
+                          <Link to={`/orders/${o.id}`} state={{ referrer: buildReferrer(location) }}>
                             <Button size="sm" variant="outline"><Eye className="mr-1.5 h-4 w-4" aria-hidden="true" />View Order</Button>
                           </Link>
                           <Button size="sm" variant="outline" onClick={() => window.open(`/orders/${o.id}/traveler`, "_blank")}><Ticket className="mr-1.5 h-4 w-4" aria-hidden="true" />Traveler</Button>

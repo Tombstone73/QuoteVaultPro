@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { describeProductionPrintPasses, resolveProductionArtworkSides } from "@shared/productionHydration";
 import {
   ProductionJobListItem,
@@ -1925,7 +1926,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       variant="default"
                       onClick={() => {
                         const orderId = (selectedDisplayJob as any).orderId || selectedDisplayJob.order?.id;
-                        if (orderId) window.location.href = `/orders/${orderId}`;
+                        if (orderId) window.location.href = buildOrderDetailReturnPath(`/orders/${orderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`);
                       }}
                       className="gap-1.5"
                     >

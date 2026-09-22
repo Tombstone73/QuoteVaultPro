@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
 import { Copy, ExternalLink } from "lucide-react";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 
 // Thickness unit labels for display
 const THICKNESS_UNITS: Record<string, string> = {
@@ -173,7 +174,7 @@ export default function MaterialDetailPage({ params }: Props) {
             <tbody>
               {usage?.map(u => (
                 <tr key={u.id} className="border-t">
-                  <td className="p-2"><a className="text-primary underline" href={`/orders/${u.orderId}`}>{u.orderId.substring(0,8)}</a></td>
+                  <td className="p-2"><a className="text-primary underline" href={buildOrderDetailReturnPath(`/orders/${u.orderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`)}>{u.orderId.substring(0,8)}</a></td>
                   <td className="p-2">{u.orderLineItemId.substring(0,8)}</td>
                   <td className="p-2">{u.quantityUsed}</td>
                   <td className="p-2">{u.unitOfMeasure}</td>

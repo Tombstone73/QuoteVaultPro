@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -1246,7 +1247,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                     variant="link"
                                     size="sm"
                                     className="text-amber-900 dark:text-amber-100 underline"
-                                    onClick={() => navigate(`/orders/${convertedToOrderId}`)}
+                                    onClick={() => navigate(`/orders/${convertedToOrderId}`, { state: { referrer: buildReferrer(location) } })}
                                 >
                                     View Order <ExternalLink className="ml-1 h-3 w-3" />
                                 </Button>

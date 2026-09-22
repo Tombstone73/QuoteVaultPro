@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -1522,7 +1523,7 @@ export default function ProductionOverviewPage() {
                       variant="default"
                       onClick={() => {
                         const orderId = selectedJob.order.id;
-                        if (orderId) window.location.href = `/orders/${orderId}`;
+                        if (orderId) window.location.href = buildOrderDetailReturnPath(`/orders/${orderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`);
                       }}
                       className="gap-1.5"
                     >

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link as RouterLink, useLocation } from "react-router-dom";
 import { Link } from "wouter";
+import { buildReferrer } from "@/lib/nav/smartBack";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -21,6 +23,7 @@ import ColumnConfigModal from "@/components/ColumnConfigModal";
 
 // Component for showing customer orders
 function OrdersForCustomer({ customerId }: { customerId: string }) {
+  const location = useLocation();
   const { data: orders, isLoading } = useOrders({ customerId });
 
   const formatCurrency = (amount: string) => {
@@ -63,7 +66,7 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
         ) : (
           <div className="space-y-2">
             {orders.map((order: any) => (
-              <Link key={order.id} href={`/orders/${order.id}`}>
+              <RouterLink key={order.id} to={`/orders/${order.id}`} state={{ referrer: buildReferrer(location) }}>
                 <div className="flex items-center justify-between p-4 border border-border/60 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors">
                   <div className="flex-1">
                     <div className="font-medium font-mono text-foreground">{order.orderNumber}</div>
@@ -82,7 +85,7 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
                     </div>
                   </div>
                 </div>
-              </Link>
+              </RouterLink>
             ))}
           </div>
         )}

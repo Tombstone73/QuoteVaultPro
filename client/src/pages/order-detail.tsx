@@ -82,7 +82,7 @@ import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
 import BackNavControls from "@/components/BackNavControls";
 import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
-import { parseDetailReturnPath, resolveDetailBackPath, useListDetailNavigation } from "@/lib/listDetailNavigation";
+import { parseDetailReturnPath, parseOrderDetailReturnPath, resolveOrderDetailBackPath, useListDetailNavigation } from "@/lib/listDetailNavigation";
 import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
@@ -263,9 +263,14 @@ export default function OrderDetail() {
   const [searchParams] = useSearchParams();
   const orderId = params.id;
   const listNavigation = useListDetailNavigation("order", orderId);
-  const detailReturnTo = parseDetailReturnPath(searchParams);
+  const detailReturnTo = parseDetailReturnPath(searchParams) ?? parseOrderDetailReturnPath(searchParams);
   const orderDetailPath = `${ROUTES.orders.detail(orderId ?? "")}${location.search}`;
-  const orderBackPath = resolveDetailBackPath(detailReturnTo, listNavigation.backPath, "/orders");
+  const orderBackPath = resolveOrderDetailBackPath(
+    detailReturnTo,
+    location.state && (location.state as { referrer?: unknown }).referrer,
+    listNavigation.backPath,
+    `${location.pathname}${location.search}${location.hash}`,
+  );
   const isOrderEditRoute = location.pathname.endsWith("/edit");
   const { registerGuard, guardedNavigate, getGuardDiagnostics } = useNavigationGuard();
   const { toast } = useToast();
@@ -1539,7 +1544,7 @@ export default function OrderDetail() {
       setPendingOrderPatch({});
       logOrderDirtyAudit("after-clear-before-navigate");
       const postSavePath = isOrderEditRoute ? orderDetailPath : ROUTES.orders.list;
-      navigate(postSavePath);
+      navigate(postSavePath, { state: location.state });
       notifyBrowserRouterOfCurrentUrlSoon();
       recoverBrowserRouterMismatchSoon({
         targetPath: postSavePath,
@@ -2194,7 +2199,7 @@ export default function OrderDetail() {
             <div className="flex items-center gap-3">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
-                <Link to={orderDetailPath}>
+                <Link to={orderDetailPath} state={location.state}>
                   View Order
                 </Link>
               </Button>

@@ -27,6 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import {
   ProductionJobListItem,
   ProductionOrderArtworkSummary,
@@ -1947,7 +1948,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                       variant="default"
                       onClick={() => {
                         const orderId = (selectedJob as any).orderId || selectedJob.order?.id;
-                        if (orderId) window.location.href = `/orders/${orderId}`;
+                        if (orderId) window.location.href = buildOrderDetailReturnPath(`/orders/${orderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`);
                       }}
                       className="gap-1.5"
                     >

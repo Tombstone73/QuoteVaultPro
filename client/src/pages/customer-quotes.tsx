@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -81,7 +82,7 @@ export default function CustomerQuotes() {
       });
 
       if (order?.id) {
-        navigate(`/orders/${order.id}`);
+        navigate(buildOrderDetailReturnPath(`/orders/${order.id}`, `${window.location.pathname}${window.location.search}${window.location.hash}`));
       }
     } catch (error) {
       console.error('[CUSTOMER QUOTES] Conversion error:', error);

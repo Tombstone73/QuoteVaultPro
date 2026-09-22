@@ -6580,8 +6580,8 @@ describe("InboundOrdersPage", () => {
         expect.objectContaining({ id: "order_1", orderNumber: "1001" }),
       );
       expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: ["orders", "list"] });
-      expect(container.querySelector("a[href='/orders/order_1']")?.textContent).toContain("Open order 1001");
-      expect(container.querySelector("a[href='/orders/order_1']")).toBeTruthy();
+      expect(container.querySelector("a[href^='/orders/order_1?orderReturnTo=']")?.textContent).toContain("Open order 1001");
+      expect(container.querySelector("a[href^='/orders/order_1?orderReturnTo=']")).toBeTruthy();
       await waitForText("No inbound records");
 
       act(() => {
@@ -6600,7 +6600,7 @@ describe("InboundOrdersPage", () => {
       await waitForText("PO-123");
       expect(container.textContent).toContain("Converted");
       await waitForText("View Draft Order");
-      expect(container.querySelector("a[href='/orders/order_1']")).toBeTruthy();
+      expect(container.querySelector("a[href^='/orders/order_1?orderReturnTo=']")).toBeTruthy();
     } finally {
       confirmSpy.mockRestore();
     }

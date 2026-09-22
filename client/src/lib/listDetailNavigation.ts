@@ -4,10 +4,13 @@ import { apiFetch } from "@/lib/queryClient";
 import { buildListDetailPath, parseListDetailContext, type ListNavigationEntity } from "@/lib/listDetailNavigationContext";
 export {
   buildDetailReturnPath,
+  buildOrderDetailReturnPath,
   buildListDetailPath,
   parseDetailReturnPath,
+  parseOrderDetailReturnPath,
   parseListDetailContext,
   resolveDetailBackPath,
+  resolveOrderDetailBackPath,
   type ListDetailContext,
   type ListNavigationEntity,
 } from "@/lib/listDetailNavigationContext";

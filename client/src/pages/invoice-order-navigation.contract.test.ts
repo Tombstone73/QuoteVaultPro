@@ -12,9 +12,10 @@ test("Invoice to Order links carry the current invoice URL into both detail and 
 });
 
 test("Order resolves an explicit validated return before list context and preserves it across edit transitions", () => {
-  expect(orderDetail).toContain('const detailReturnTo = parseDetailReturnPath(searchParams);');
-  expect(orderDetail).toContain('resolveDetailBackPath(detailReturnTo, listNavigation.backPath, "/orders")');
+  expect(orderDetail).toContain('const detailReturnTo = parseDetailReturnPath(searchParams) ?? parseOrderDetailReturnPath(searchParams);');
+  expect(orderDetail).toContain('resolveOrderDetailBackPath(');
+  expect(orderDetail).toContain('location.state && (location.state as { referrer?: unknown }).referrer');
   expect(orderDetail).toContain('const orderDetailPath = `${ROUTES.orders.detail(orderId ?? "")}${location.search}`;');
   expect(orderDetail).toContain('const postSavePath = isOrderEditRoute ? orderDetailPath : ROUTES.orders.list;');
-  expect(orderDetail).toContain('<Link to={orderDetailPath}>');
+  expect(orderDetail).toContain('<Link to={orderDetailPath} state={location.state}>');
 });

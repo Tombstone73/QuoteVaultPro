@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -141,7 +142,7 @@ export default function QuoteHistory() {
       setOrderPriority("normal");
       
       const orderId = extractOrderIdFromConvertResult(result);
-      if (orderId) navigate(`/orders/${orderId}`);
+      if (orderId) navigate(buildOrderDetailReturnPath(`/orders/${orderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`));
     } catch (error) {
       // Error toast handled by mutation
     }

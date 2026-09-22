@@ -3,6 +3,7 @@ import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
 import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?url";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { formatDistanceToNow } from "date-fns";
 import {
   AlertTriangle,
@@ -10021,7 +10022,7 @@ function DraftBuilderPanel({
             {hasConvertedOrder ? (
               <>
                 <Button type="button" asChild size="sm" className="h-8 px-2 text-xs">
-                <a href={`/orders/${convertedOrderId}`}>
+                <a href={buildOrderDetailReturnPath(`/orders/${convertedOrderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`)}>
                   <ExternalLink className="mr-2 h-4 w-4" />
                   View Draft Order
                 </a>
@@ -10606,7 +10607,7 @@ export default function InboundOrdersPage() {
         title: "Inbound record attached to order",
         description: `Attached to ${response.data.orderNumber ?? response.data.orderId}.`,
       });
-      window.location.assign(`/orders/${response.data.orderId}`);
+      window.location.assign(buildOrderDetailReturnPath(`/orders/${response.data.orderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`));
     },
   });
 
@@ -11521,7 +11522,7 @@ export default function InboundOrdersPage() {
             <Sparkles className="h-4 w-4" />
             <AlertTitle>Draft order created</AlertTitle>
             <AlertDescription>
-              <a className="font-medium text-primary underline" href={`/orders/${lastConvertedOrderId}`}>
+              <a className="font-medium text-primary underline" href={buildOrderDetailReturnPath(`/orders/${lastConvertedOrderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`)}>
                 Open order {lastConvertedOrderNumber ?? lastConvertedOrderId}
               </a>
             </AlertDescription>
