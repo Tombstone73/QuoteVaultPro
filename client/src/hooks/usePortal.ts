@@ -60,6 +60,21 @@ export type PortalInvoicePaymentDto = {
   referenceNumber: string | null;
 };
 
+export type PortalCustomerStatementDto = {
+  statementDate: string;
+  organization: { companyName: string; email: string | null; phone: string | null; address: string | null };
+  customer: { id: string; companyName: string; email: string | null; phone: string | null; billingAddress: string | null };
+  summary: {
+    outstandingCents: number;
+    unappliedCreditCents: number;
+    amountDueCents: number;
+    agingCents: { current: number; oneToThirty: number; thirtyOneToSixty: number; sixtyOneToNinety: number; ninetyPlus: number; noDueDate: number };
+  };
+  openItems: Array<{ invoiceId: string; invoiceNumber: string; issueDate: string | null; dueDate: string | null; poNumber: string | null; orderNumber: string | null; originalCents: number; paidCents: number; remainingCents: number; agingBucket: string }>;
+  recentPayments: Array<{ id: string; invoiceId: string; amountCents: number; paidAt: string | null; method: string | null }>;
+  unappliedCredits: Array<{ id: string; amountCents: number; sourceType: string; createdAt: string; reference: string | null; reason: string | null }>;
+};
+
 export type PortalFileDto = {
   id: string;
   displayName: string;
@@ -349,6 +364,10 @@ export const portalDashboardKeys = {
   all: ["portal", "dashboard"] as const,
 };
 
+export const portalStatementKeys = {
+  current: ["portal", "statement"] as const,
+};
+
 export const portalInvoiceKeys = {
   all: ["portal", "invoices"] as const,
   detail: (invoiceId: string | undefined) => ["portal", "invoices", invoiceId] as const,
@@ -410,6 +429,10 @@ export function portalProofFileUrl(proofId: string) {
   return `/api/portal/proofs/${encodeURIComponent(proofId)}/file`;
 }
 
+export function portalStatementPdfUrl(download = false) {
+  return `/api/portal/statement/pdf${download ? "?download=1" : ""}`;
+}
+
 export function usePortalSession() {
   return useQuery({
     queryKey: ["portal", "me"],
@@ -422,6 +445,13 @@ export function usePortalDashboard() {
   return useQuery({
     queryKey: portalDashboardKeys.all,
     queryFn: () => portalFetch<PortalDashboardDto>("/api/portal/dashboard"),
+  });
+}
+
+export function usePortalStatement() {
+  return useQuery({
+    queryKey: portalStatementKeys.current,
+    queryFn: () => portalFetch<PortalCustomerStatementDto>("/api/portal/statement"),
   });
 }
 

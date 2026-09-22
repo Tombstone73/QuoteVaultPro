@@ -26,6 +26,7 @@ describe("portal shell", () => {
       "Orders",
       "Proofs",
       "Invoices",
+      "Statement",
       "Documents",
       "Profile",
     ]);

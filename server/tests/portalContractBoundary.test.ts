@@ -66,6 +66,8 @@ describe("customer portal contract boundary", () => {
     for (const path of [
       "/api/portal/me",
       "/api/portal/dashboard",
+      "/api/portal/statement",
+      "/api/portal/statement/pdf",
       "/api/portal/profile",
       "/api/portal/invoices/:id/payments/stripe/create-intent",
       "/api/portal/invoices/:id/payments/stripe/confirm",
@@ -86,6 +88,8 @@ describe("customer portal contract boundary", () => {
     const scopedHandlers = [
       "getPortalSession",
       "getPortalDashboard",
+      "getPortalCustomerStatement",
+      "getPortalCustomerStatementPdf",
       "getPortalProfile",
       "updatePortalProfile",
       "listPortalInvoices",
@@ -105,6 +109,19 @@ describe("customer portal contract boundary", () => {
     for (const handler of scopedHandlers) {
       expect(sourceForExport(service, handler)).toContain("getPortalScope(req)");
     }
+  });
+
+  test("statement reads and its PDF derive the customer exclusively from portal scope", () => {
+    const routes = read("server/routes/portal.routes.ts");
+    const service = read("server/services/portal.service.ts");
+
+    expect(routes).toContain('app.get("/api/portal/statement", ...portalMiddlewares, portalGet(getPortalCustomerStatement))');
+    expect(routes).toContain('app.get("/api/portal/statement/pdf", ...portalMiddlewares, portalStatementPdf())');
+    expect(sourceForExport(service, "getPortalCustomerStatement")).toContain("getPortalScope(req)");
+    expect(sourceForExport(service, "getPortalCustomerStatement")).toContain("customerId: scope.customerId");
+    expect(sourceForExport(service, "getPortalCustomerStatement")).toContain("getCustomerStatement");
+    expect(sourceForExport(service, "getPortalCustomerStatementPdf")).toContain("getPortalCustomerStatement(req)");
+    expect(sourceForExport(service, "getPortalCustomerStatementPdf")).toContain("generateCustomerStatementPdfBytes");
   });
 
   test("file downloads are backend-scoped and never routed through object storage directly from the portal", () => {

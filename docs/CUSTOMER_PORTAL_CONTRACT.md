@@ -17,6 +17,7 @@
 | GET | `/api/portal/me` | Customer-safe session and portal capability DTO. |
 | GET/PATCH | `/api/portal/profile` | Scoped profile read/update; login-managed identity fields remain protected. |
 | GET | `/api/portal/dashboard` | Customer-safe summary assembled from portal DTO services. |
+| GET | `/api/portal/statement`, `/api/portal/statement/pdf` | Customer-scoped, read-only current A/R statement and canonical PDF. Customer identity is always derived from portal session scope. |
 
 ## Customer records and files
 

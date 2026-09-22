@@ -10,6 +10,7 @@ import {
   LogOut,
   Moon,
   ReceiptText,
+  ScrollText,
   ShoppingBag,
   Sun,
   UserCircle,
@@ -43,6 +44,7 @@ const NAV_ICONS = {
   orders: ShoppingBag,
   proofs: FileCheck,
   invoices: ReceiptText,
+  statement: ScrollText,
   documents: Files,
   profile: UserCircle,
 };

@@ -12,6 +12,8 @@ import {
   declinePortalQuote,
   getPortalDashboard,
   getPortalCustomerQuoteDebug,
+  getPortalCustomerStatement,
+  getPortalCustomerStatementPdf,
   getPortalInvoiceFileDownload,
   getPortalInvoicePdf,
   getPortalInvoice,
@@ -186,6 +188,26 @@ function portalInvoicePdf() {
   };
 }
 
+function portalStatementPdf() {
+  return async (req: Request, res: Response) => {
+    try {
+      const result = await getPortalCustomerStatementPdf(req);
+      const wantsDownload = String(req.query.download || "") === "1";
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Disposition", `${wantsDownload ? "attachment" : "inline"}; filename="${contentDispositionFilename(result.filename)}"`);
+      return res.status(200).send(Buffer.from(result.bytes));
+    } catch (error) {
+      console.error("[Portal] statement PDF request failed", {
+        path: req.path,
+        method: req.method,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return sendPortalError(res, error);
+    }
+  };
+}
+
 function contentDispositionFilename(filename: string) {
   return filename.replace(/[\r\n\t\0]/g, " ").replace(/"/g, "'").slice(0, 240) || "download";
 }
@@ -341,6 +363,8 @@ export function registerPortalRoutes(
 
   app.get("/api/portal/me", ...portalMiddlewares, portalGet(getPortalSession));
   app.get("/api/portal/dashboard", ...portalMiddlewares, portalGet(getPortalDashboard));
+  app.get("/api/portal/statement", ...portalMiddlewares, portalGet(getPortalCustomerStatement));
+  app.get("/api/portal/statement/pdf", ...portalMiddlewares, portalStatementPdf());
   app.get("/api/portal/profile", ...portalMiddlewares, portalGet(getPortalProfile));
   app.patch("/api/portal/profile", ...portalMiddlewares, portalPatch(updatePortalProfile));
   app.get("/api/portal/debug/customer-quotes", isAuthenticated, tenantContext, requireNonProductionStaff, async (req: Request, res: Response) => {

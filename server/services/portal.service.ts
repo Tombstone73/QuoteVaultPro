@@ -59,6 +59,8 @@ import { resolveStripeRuntimeConfig, type StripeBrowserRuntimeConfig } from "./s
 import { recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "./stripePaymentAttempt.service";
 import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 import { finalizeStripeCustomerPaymentBatch } from "./stripeCustomerPaymentBatchFinalization.service";
+import { getCustomerStatement, type CustomerStatement } from "./customerStatement.service";
+import { customerStatementPdfFilename, generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
 
 export type PortalSessionDto = {
   userId: string;
@@ -110,6 +112,14 @@ export type PortalInvoicePaymentDto = {
   paidAt: string | null;
   methodLabel: string;
   referenceNumber: string | null;
+};
+
+/** The portal reads the exact same A/R projection used by staff statements. */
+export type PortalCustomerStatementDto = CustomerStatement;
+
+export type PortalCustomerStatementPdfResult = {
+  bytes: Uint8Array;
+  filename: string;
 };
 
 export type PortalFileDto = {
@@ -4045,6 +4055,24 @@ async function loadQuoteLineItems(quoteIds: string[]) {
     byQuoteId.set(row.quoteId, list);
   }
   return byQuoteId;
+}
+
+/**
+ * The customer ID is deliberately resolved exclusively from the portal
+ * session.  This avoids a customer-supplied ID becoming an authorization
+ * input while keeping staff preview on the same scoped read path.
+ */
+export async function getPortalCustomerStatement(req: Request): Promise<PortalCustomerStatementDto> {
+  const scope = getPortalScope(req);
+  return getCustomerStatement({ organizationId: scope.organizationId, customerId: scope.customerId });
+}
+
+export async function getPortalCustomerStatementPdf(req: Request): Promise<PortalCustomerStatementPdfResult> {
+  const statement = await getPortalCustomerStatement(req);
+  return {
+    bytes: await generateCustomerStatementPdfBytes(statement),
+    filename: customerStatementPdfFilename(statement),
+  };
 }
 
 async function loadConvertedQuotePurchaseOrders(scope: Pick<PortalScope, "organizationId" | "customerId">, quoteRows: QuotePortalRow[]) {
