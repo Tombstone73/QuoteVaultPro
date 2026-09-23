@@ -3,11 +3,14 @@ import { TextDecoder, TextEncoder } from "node:util";
 
 import type { PortalOrderListDto, PortalQuoteListDto } from "@/hooks/usePortal";
 
+jest.mock("@/hooks/usePortalDownload", () => ({ usePortalDownload: jest.fn() }));
+
 Object.assign(globalThis, { TextDecoder, TextEncoder });
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
 const { OrderRow } = require("./my-orders") as typeof import("./my-orders");
 const { QuoteRow } = require("./my-quotes") as typeof import("./my-quotes");
+const { OrderItem } = require("./dashboard") as typeof import("./dashboard");
 
 const quote = (overrides: Partial<PortalQuoteListDto> = {}): PortalQuoteListDto => ({
   id: "quote-1",
@@ -73,5 +76,29 @@ describe("portal quote and order job context", () => {
     const job = document.querySelector('p[title^="A very long"]');
     expect(job?.className).toContain("line-clamp-2");
     expect(job?.className).toContain("md:truncate");
+  });
+
+  test("dashboard Active Order shows canonical Job and PO with existing status and readiness", () => {
+    render(<OrderItem order={order({ displayNumber: "ORD-20507", jobLabel: "G$C 4×4 Signs", customerPoNumber: "PO-20507", itemCount: 1, displayStatus: "Received", fulfillmentSummary: { ...order().fulfillmentSummary, statusLabel: "Not ready" } })} />);
+    expect(document.body.textContent).toContain("Order ORD-20507");
+    expect(document.body.textContent).toContain("Received");
+    expect(document.body.textContent).toContain("Job: G$C 4×4 Signs");
+    expect(document.body.textContent).toContain("PO # PO-20507");
+    expect(document.body.textContent).toContain("1 item / Not ready");
+    expect(document.body.textContent).toContain("View order");
+  });
+
+  test("dashboard Active Order shows invoice-style PO fallback when Job exists without PO", () => {
+    render(<OrderItem order={order({ jobLabel: "Campus wayfinding refresh", customerPoNumber: null })} />);
+    expect(document.body.textContent).toContain("Job: Campus wayfinding refresh");
+    expect(document.body.textContent).toContain("PO # —");
+    expect(document.body.textContent).not.toContain("null");
+  });
+
+  test("dashboard Active Order handles absent optional Job while retaining PO", () => {
+    render(<OrderItem order={order({ jobLabel: null, customerPoNumber: "PO-9842" })} />);
+    expect(document.body.textContent).toContain("Job: —");
+    expect(document.body.textContent).toContain("PO # PO-9842");
+    expect(document.body.textContent).not.toContain("undefined");
   });
 });

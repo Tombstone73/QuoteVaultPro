@@ -139,11 +139,13 @@ function QuoteItem({ quote }: { quote: PortalQuoteListDto }) {
   );
 }
 
-function OrderItem({ order }: { order: PortalOrderListDto }) {
+export function OrderItem({ order }: { order: PortalOrderListDto }) {
+  const jobLabel = order.jobLabel?.trim() || "—";
+  const customerPoNumber = order.customerPoNumber?.trim() || "—";
   return (
     <div className="rounded-md border bg-background p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <Link to={`/portal/orders/${order.id}`} className="font-medium hover:underline">
               Order {order.displayNumber || order.orderNumber}
@@ -155,6 +157,12 @@ function OrderItem({ order }: { order: PortalOrderListDto }) {
                 Awaiting Your Approval
               </Badge>
             ) : null}
+          </div>
+          <div className="mt-2 min-w-0 space-y-1 text-sm">
+            <p className="line-clamp-2 break-words text-foreground sm:truncate" title={order.jobLabel?.trim() || undefined}>
+              <span className="text-muted-foreground">Job:</span> {jobLabel}
+            </p>
+            <p className="truncate text-muted-foreground" title={order.customerPoNumber?.trim() || undefined}>PO # {customerPoNumber}</p>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {order.itemCount} item{order.itemCount === 1 ? "" : "s"} / {order.fulfillmentSummary.statusLabel}
