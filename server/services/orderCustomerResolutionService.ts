@@ -8,6 +8,7 @@ export async function resolveOrderCustomerContactIds(input: {
   organizationId: string;
   customerId?: string | null;
   contactId?: string | null;
+  preserveExplicitCustomerClear?: boolean;
 }): Promise<{ customerId: string | null; contactId: string | null }> {
   const customerId = input.customerId?.trim() || null;
   const contactId = input.contactId?.trim() || null;
@@ -21,6 +22,12 @@ export async function resolveOrderCustomerContactIds(input: {
 
   // Preserve the repository's existing typed not-found error for invalid contacts.
   if (!contact) return { customerId, contactId };
+
+  // Clearing the company while retaining a Contact is an explicit edit choice.
+  // Creation/conversion retain their linked-customer resolution by default.
+  if (input.preserveExplicitCustomerClear && input.customerId === null) {
+    return { customerId: null, contactId };
+  }
 
   const links = await db
     .select({ id: customers.id, isPrimary: customerContactLinks.isPrimary })

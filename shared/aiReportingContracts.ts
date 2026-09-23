@@ -113,7 +113,7 @@ export const analyticsInvoiceActivityInputSchema = z.object({
 export const analyticsInvoiceActivityRowSchema = z.object({
   invoiceId: z.string().trim().min(1).max(128),
   invoiceNumber: z.string().trim().min(1).max(80),
-  customerId: z.string().trim().min(1).max(128),
+  customerId: z.string().trim().min(1).max(128).nullable(),
   customerName: z.string().trim().min(1).max(240),
   postedAt: z.string().datetime({ offset: true }),
   dueAt: z.string().datetime({ offset: true }).nullable(),

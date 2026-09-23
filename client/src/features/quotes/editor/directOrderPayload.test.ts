@@ -4,6 +4,17 @@ import { buildDirectOrderPayloadFromEditorState } from "./directOrderPayload";
 import type { QuoteLineItemDraft } from "./types";
 
 describe("buildDirectOrderPayloadFromEditorState", () => {
+  test("preserves an explicit Customer clear despite cached Customer data", () => {
+    const payload = buildDirectOrderPayloadFromEditorState({
+      selectedCustomerId: null, selectedCustomer: { id: "old-company" }, selectedContactId: "contact-1",
+      lineItems: [{ productId: "product-1", productName: "Sign", quantity: 1, linePrice: 25, status: "active" }],
+      subtotal: 25, effectiveTaxRate: 0, taxAmount: 0, effectiveDiscount: 0,
+      jobLabel: "Sign", orderPoNumber: "", requestedDueDate: "", orderPromisedDate: "",
+      orderPriority: "normal", orderInternalNotes: "", deliveryMethod: "pickup", shippingCents: 0, quoteNotes: "",
+    } as any);
+    expect(payload.customerId).toBeNull();
+    expect(payload.contactId).toBe("contact-1");
+  });
   test("builds the /orders/new direct POST payload without quote linkage", () => {
     const lineItem: QuoteLineItemDraft = {
       tempId: "temp-1",

@@ -19,7 +19,6 @@ import { CustomerSelect } from "@/components/CustomerSelect";
 import { ContactSelect } from "@/components/ContactSelect";
 import {
   getContactCustomerConflict,
-  resolveOrderCustomerIdFromContact,
   type ContactPickerContact,
 } from "@/lib/contactPicker";
 import {
@@ -430,7 +429,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       setCreateOrderSubmitting(false);
       toast({
         title: "Validation Error",
-        description: "Please select a customer, a contact, or both",
+        description: "Select a customer or contact for this order.",
         variant: "destructive",
       });
       return;
@@ -567,11 +566,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                       onChange={(contactId, contact) => {
                         setSelectedContactId(contactId || "");
                         setSelectedContact(contact ?? null);
-                        if (contact) {
-                          setSelectedCustomerId((currentCustomerId) =>
-                            resolveOrderCustomerIdFromContact(currentCustomerId, contact),
-                          );
-                        }
+                        // Selecting a Contact does not implicitly select its company.
+                        // A blank Customer is an intentional Contact-only billing choice.
                       }}
                       onResolvedContact={setSelectedContact}
                       label="Contact (optional)"

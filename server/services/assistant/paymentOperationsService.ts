@@ -119,6 +119,7 @@ export class PaymentOperationsService {
     if (!invoice.orderId) throw new PaymentOperationError("ORDER_NOT_FOUND", "The invoice has no order context.");
     const [order] = await db.select().from(orders).where(and(eq(orders.id, invoice.orderId), eq(orders.organizationId, organizationId))).limit(1);
     if (!order) throw new PaymentOperationError("ORDER_NOT_FOUND", "The invoice order is unavailable.");
+    if (!invoice.customerId) throw new PaymentOperationError("CONTACT_INVOICE_ASSISTANT_UNSUPPORTED", "Contact-owned Invoices require staff review; the Customer payment assistant cannot resolve their owner.");
     const [customer] = await db.select().from(customers).where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, organizationId))).limit(1);
     if (!customer) throw new PaymentOperationError("CUSTOMER_NOT_FOUND", "The invoice customer is unavailable.");
     const contact = order.contactId

@@ -43,6 +43,17 @@ describe("Order mutation UI contract", () => {
     expect(orderDetail).not.toContain("enterContactEdit");
   });
 
+  it("allows a contact-only Order to replace its Contact without presenting it as a company", async () => {
+    const orderDetail = await source("client/src/pages/order-detail.tsx");
+    expect(orderDetail).toContain('onClick={() => saveOrderOwner({ customerId: null })}');
+    expect(orderDetail).toContain('aria-label="Clear customer"');
+    expect(orderDetail).toContain("!order.customerId ? (");
+    expect(orderDetail).toContain("<ContactSelect");
+    expect(orderDetail).toContain("saveOrderOwner({ contactId });");
+    expect(orderDetail).toContain("Select a customer or contact for this order.");
+    expect(orderDetail).toContain('contactNameFromContact ? `Contact: ${contactNameFromContact}`');
+  });
+
   it("keeps notes and safe metadata available after completion without unlocking commercial controls", async () => {
     const orderDetail = await source("client/src/pages/order-detail.tsx");
 

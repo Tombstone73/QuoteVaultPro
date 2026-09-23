@@ -219,6 +219,7 @@ export async function getInvoiceEmailDeliveryStates(input: {
     .orderBy(invoiceEmailDeliveryJobs.invoiceId, desc(invoiceEmailDeliveryJobs.updatedAt), desc(invoiceEmailDeliveryJobs.createdAt));
 
   for (const row of rows) {
+    if (!row.invoiceId) continue; // Statement delivery jobs have no Invoice identity.
     if (result.has(row.invoiceId)) continue;
     result.set(row.invoiceId, {
       id: row.id,
@@ -508,6 +509,15 @@ async function enqueueInvoiceEmailCampaign(input: {
     let alreadyQueued = 0;
     const blocked: Array<{ invoiceId: string; recipientEmail: string; status: "queued" | "processing" | "retrying" | "needs_review" }> = [];
     for (const candidate of input.candidates) {
+      // Serialize delivery queueing with an Order billing-owner transition.
+      // A candidate resolved before a Contact-only edit must never be queued
+      // against the new owner with the old recipient or Invoice version.
+      const lockedResult: any = await tx.execute(sql`select invoice_version as "invoiceVersion" from ${invoices} where ${invoices.id} = ${candidate.invoiceId} and ${invoices.organizationId} = ${input.organizationId} for update`);
+      const lockedVersion = (lockedResult.rows || lockedResult)[0]?.invoiceVersion;
+      if (Number(lockedVersion) !== Number(candidate.invoiceVersion)) {
+        alreadyQueued += 1;
+        continue;
+      }
       const recipientKey = normalizeRecipient(candidate.recipientEmail);
       const [job] = await tx.insert(invoiceEmailDeliveryJobs).values({
         organizationId: input.organizationId,

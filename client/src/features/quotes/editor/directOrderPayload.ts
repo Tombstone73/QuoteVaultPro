@@ -48,7 +48,9 @@ export type BuildDirectOrderPayloadInput = {
 };
 
 export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPayloadInput): DirectOrderPayload {
-    const payloadCustomerId = input.selectedCustomerId ?? input.selectedCustomer?.id ?? null;
+    // The selection ID is authoritative: null is a deliberate unlink, even if
+    // a cached Customer object has not yet been cleared.
+    const payloadCustomerId = input.selectedCustomerId;
     const lineItemPayloads = input.lineItems
         .filter((li) => li.status !== "canceled" && !!li.productId)
         .map((li, index) => ({

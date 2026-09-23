@@ -1,6 +1,7 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -216,6 +217,13 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                     placeholder="Search customers..."
                                     disabled={readOnly}
                                 />
+                            )}
+
+                            {showOrderFields && !readOnly && selectedCustomerId && (
+                                <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs"
+                                    aria-label="Clear customer" onClick={() => onCustomerChange(null, undefined)}>
+                                    Clear customer
+                                </Button>
                             )}
 
                             {hasCustomerAddress && (

@@ -220,6 +220,36 @@ describe("InvoiceEmailSendDialog recipients", () => {
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["one-time@example.com"] }));
   });
 
+  test("sends to a trimmed one-time address with no saved customer recipient", async () => {
+    configureRecipients([]);
+    await renderDialog();
+    await changeManualEmail("  individual@example.com  ");
+
+    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    await act(async () => { send.click(); await Promise.resolve(); });
+    expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["individual@example.com"] }));
+  });
+
+  test("a valid one-time address remains usable while saved recipients cannot load", async () => {
+    configureRecipients([], { loading: true });
+    await renderDialog();
+    await changeManualEmail("individual@example.com");
+    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+  });
+
+  test("rejects an invalid one-time address and no recipient at all", async () => {
+    configureRecipients([]);
+    await renderDialog();
+    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await changeManualEmail("invalid-address");
+    expect(send.disabled).toBe(true);
+    expect(container.textContent).toContain("Enter a valid email address.");
+    expect(sendMutation).not.toHaveBeenCalled();
+  });
+
   test("deduplicates a one-time address that matches a configured recipient", async () => {
     configureRecipients(recipients.slice(0, 2));
     await renderDialog();

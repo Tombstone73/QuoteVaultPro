@@ -37,6 +37,13 @@ describe("invoice email recipients", () => {
     expect(() => normalizeExplicitInvoiceRecipientEmails(["valid@example.com", "not-an-email"])).toThrow("Enter only valid recipient");
   });
 
+  test("accepts a manual-only recipient independently of saved customer addresses", () => {
+    expect(normalizeExplicitInvoiceRecipientEmails(["  person@example.com  "]))
+      .toEqual(["person@example.com"]);
+    expect(normalizeExplicitInvoiceRecipientEmails(["PERSON@example.com", "person@example.com"]))
+      .toEqual(["PERSON@example.com"]);
+  });
+
   test("uses the established inline email validation format", () => {
     expect(isValidInvoiceRecipientEmail(" customer@example.com ")).toBe(true);
     expect(isValidInvoiceRecipientEmail("not-an-email")).toBe(false);

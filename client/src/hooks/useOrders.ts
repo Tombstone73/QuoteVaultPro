@@ -691,6 +691,8 @@ export function useUpdateOrder(id: string) {
     },
     onSuccess: (updatedOrder) => {
       invalidateOrderOperationalQueries(queryClient, id);
+      // An owner change can retarget the untouched Order-backed Invoice too.
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       
       // Optimistically update the detail cache
       queryClient.setQueryData(orderDetailQueryKey(id), (old: any) => {

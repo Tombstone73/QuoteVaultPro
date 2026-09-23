@@ -2461,6 +2461,7 @@ export async function registerOrderRoutes(
                 organizationId,
                 customerId: orderFields.customerId,
                 contactId: orderFields.contactId,
+                preserveExplicitCustomerClear: orderFields.customerId === null,
             });
             orderFields.customerId = resolvedIdentity.customerId;
             orderFields.contactId = resolvedIdentity.contactId;
@@ -2943,6 +2944,7 @@ export async function registerOrderRoutes(
                     organizationId,
                     customerId: req.body.customerId !== undefined ? req.body.customerId : existingOrder.customerId,
                     contactId: req.body.contactId !== undefined ? req.body.contactId : existingOrder.contactId,
+                    preserveExplicitCustomerClear: req.body.customerId === null || (existingOrder.customerId === null && req.body.customerId === undefined),
                 });
                 req.body.customerId = resolvedIdentity.customerId;
                 req.body.contactId = resolvedIdentity.contactId;

@@ -76,7 +76,7 @@ export interface CandidateInvoice {
   totalCents: number;
   balanceDueCents: number;
   balanceDue: string | null;
-  customerId: string;
+  customerId: string | null;
   customerName: string;
   recipientEmail: string | null;
   customer?: any | null;

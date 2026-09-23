@@ -28,7 +28,8 @@ async function load(tx: any, organizationId: string, ids: string[]) {
     const invoice = row.invoice; const order = row.order;
     if (String(invoice.importSource || "").toLowerCase() === "quickbooks") throw new CustomerPaymentOperationError("IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "Imported QuickBooks invoices must be reconciled from QuickBooks.");
     if (invoice.orderId && (!order || isCanceledOrder(order))) throw new CustomerPaymentOperationError(order ? "ORDER_CANCELLED" : "ORDER_NOT_FOUND", order ? "Cancelled orders cannot receive payments." : "The invoice order is unavailable.");
-    const owner = resolveCanonicalInvoiceCustomerOwnership({ invoiceCustomerId: invoice.customerId, invoiceImportSource: invoice.importSource, linkedOrderId: invoice.orderId, linkedOrderCustomerId: order?.customerId, linkedOrderContactId: order?.customerContactId });
+    const owner = resolveCanonicalInvoiceCustomerOwnership({ invoiceCustomerId: invoice.customerId, invoiceContactId: invoice.contactId, invoiceImportSource: invoice.importSource, linkedOrderId: invoice.orderId, linkedOrderCustomerId: order?.customerId, linkedOrderContactId: order?.contactId });
+    if (!owner.customerId) throw new CustomerPaymentOperationError("CONTACT_INVOICE_CUSTOMER_PAYMENT_UNSUPPORTED", "Contact-owned Invoices cannot enter a Customer payment batch. Record an invoice-scoped payment instead.");
     const rollup = computeInvoicePaymentRollup({ invoiceTotalCents: Number(invoice.totalCents || 0), payments: (byInvoice.get(invoice.id) || []).map((p: any) => ({ id: p.id, status: p.status, amountCents: Number(p.amountCents || 0) })) });
     const eligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents: rollup.amountDueCents });
     if (!eligibility.payable) throw new CustomerPaymentOperationError("INVOICE_NOT_PAYABLE", eligibility.blockedReason || "Invoice cannot accept payment.");

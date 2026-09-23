@@ -125,7 +125,7 @@ function hasQuoteLineItemPricingPatch(updates: Partial<QuoteLineItemDraft>): boo
  * Main hook for Quote Editor state management and business logic.
  * Centralizes all data fetching, state, and handlers for the quote editor.
  */
-export function useQuoteEditorState() {
+export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyOrder?: boolean } = {}) {
     const { toast } = useToast();
     const { user } = useAuth();
     const params = useParams<QuoteEditorRouteParams>();
@@ -2812,7 +2812,7 @@ export function useQuoteEditorState() {
             setContactId: (contactId: string | null, contact?: ContactPickerContact | null) => {
                 setSelectedContactId(contactId);
                 setSelectedContact(contact ?? null);
-                if (contact) {
+                if (contact && !contactOnlyOrder) {
                     const resolvedCustomerId = resolveOrderCustomerIdFromContact(selectedCustomerId, contact) || null;
                     if (resolvedCustomerId && resolvedCustomerId !== selectedCustomerId) {
                         setSelectedCustomerId(resolvedCustomerId);

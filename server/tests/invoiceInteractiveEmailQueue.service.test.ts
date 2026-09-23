@@ -38,7 +38,7 @@ function valuesReturning(result: unknown) {
 describe("interactive invoice email queue", () => {
   beforeEach(() => {
     insertedValues.splice(0);
-    execute.mockReset().mockResolvedValue({ rows: [{ latestScheduledAt: null }] });
+    execute.mockReset().mockResolvedValue({ rows: [{ latestScheduledAt: null, invoiceVersion: 4 }] });
     select.mockReset();
     update.mockReset();
     insert.mockReset();
@@ -92,5 +92,15 @@ describe("interactive invoice email queue", () => {
     });
     expect(insertedValues[1]).not.toHaveProperty("sentAt");
     expect(insertedValues[1].availableAt).toBeInstanceOf(Date);
+  });
+
+  test("does not queue a stale recipient snapshot after billing ownership changes", async () => {
+    execute.mockResolvedValue({ rows: [{ latestScheduledAt: null, invoiceVersion: 5 }] });
+    const result = await enqueueInteractiveInvoiceEmailCampaign({
+      organizationId: "org-1", createdByUserId: "user-1", invoiceId: "invoice-1",
+      idempotencyKey: "stale-owner", candidates: [{ invoiceId: "invoice-1", invoiceVersion: 4, recipientEmail: "former-owner@example.test" }],
+    });
+    expect(result.queued).toBe(0);
+    expect(insertedValues).toHaveLength(1); // Campaign only; no delivery job.
   });
 });

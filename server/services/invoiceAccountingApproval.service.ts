@@ -60,7 +60,8 @@ export async function approveInvoicesForAccounting(input: {
       }
       const approvedVersion = Number(invoice.invoiceVersion || 1);
       const hasProviderInvoiceLink = Boolean(String(invoice.qbInvoiceId || invoice.externalAccountingId || '').trim());
-      const shouldQueueInitialSync = autoQueueApprovedInvoices && !hasProviderInvoiceLink;
+      const contactQuickBooksHold = Boolean(invoice.contactId && !invoice.customerId);
+      const shouldQueueInitialSync = autoQueueApprovedInvoices && !hasProviderInvoiceLink && !contactQuickBooksHold;
       await tx.update(invoices).set({
         accountingApprovedAt: now,
         accountingApprovedByUserId: input.actorUserId,
@@ -73,7 +74,9 @@ export async function approveInvoicesForAccounting(input: {
         } : {}),
         // Approval changes only local queue state. Existing provider-linked
         // invoices retain their established update/resync behavior.
-        ...(shouldQueueInitialSync
+        ...(contactQuickBooksHold
+          ? { qbSyncStatus: 'failed', qbLastError: 'Invoice billing owner is a Contact without a QuickBooks customer mapping. Review before syncing.', syncStatus: 'skipped', syncError: 'Contact billing owner requires QuickBooks mapping review.' }
+          : shouldQueueInitialSync
           ? { qbSyncStatus: 'pending', qbLastError: null, syncStatus: 'pending', syncError: null }
           : String(invoice.qbSyncStatus || '').toLowerCase() === 'pending'
             ? { qbSyncStatus: 'not_synced', qbLastError: null, syncStatus: 'pending', syncError: null }
@@ -96,6 +99,7 @@ export async function approveInvoicesForAccounting(input: {
           approvedAt: now.toISOString(),
           source: input.source || 'manual',
           quickBooksAutoQueued: shouldQueueInitialSync,
+          quickBooksReviewHold: contactQuickBooksHold,
           ...(termsStart ? {
             terms: termsStart.terms,
             termsStartedAt: now.toISOString(),

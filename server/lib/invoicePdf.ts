@@ -25,6 +25,7 @@ type CompanySettingsLike = CompanyDocumentBrandingInput & {
 } | null;
 
 type CustomerLike = {
+  name?: string | null;
   companyName?: string | null;
   email?: string | null;
   phone?: string | null;
@@ -634,7 +635,7 @@ export async function generateInvoicePdfBytes(
   ]);
 
   const billToBlock = joinNonEmpty([
-    (customer.companyName || '').trim() || null,
+    (customer.name || customer.companyName || '').trim() || null,
     buildAddressBlock({
       line1: customer.billingStreet1,
       line2: customer.billingStreet2,

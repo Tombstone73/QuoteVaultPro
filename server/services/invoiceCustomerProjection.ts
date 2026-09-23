@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
-import { customers, invoices, orders } from "../../shared/schema";
+import { customerContacts, customers, invoices, orders } from "../../shared/schema";
 import { resolveCanonicalInvoiceCustomerOwnership } from "../../shared/invoiceCustomerOwnership";
+import { resolveInvoiceBillingParty } from "../../shared/invoiceBillingParty";
 import { db } from "../db";
 
 /**
@@ -11,6 +12,7 @@ import { db } from "../db";
 export const canonicalInvoiceCustomerId = sql<string | null>`case
   when ${orders.id} is not null
     and ${orders.customerId} is not null
+    and ${invoices.contactId} is null
     and lower(coalesce(${invoices.importSource}, '')) <> 'quickbooks'
   then ${orders.customerId}
   else ${invoices.customerId}
@@ -19,10 +21,12 @@ end`;
 export type CanonicalInvoiceCustomerContext = {
   invoice: any;
   customer: any | null;
-  resolvedCustomerId: string;
-  storedCustomerId: string;
+  contact: any | null;
+  billingParty: ReturnType<typeof resolveInvoiceBillingParty>;
+  resolvedCustomerId: string | null;
+  storedCustomerId: string | null;
   resolvedContactId: string | null;
-  source: "order" | "invoice";
+  source: "order" | "invoice" | "contact";
 };
 
 /**
@@ -40,6 +44,7 @@ export async function getCanonicalInvoiceCustomerContext(input: {
       orderCustomerId: orders.customerId,
       orderContactId: orders.contactId,
       customer: customers,
+      contact: customerContacts,
     })
     .from(invoices)
     .leftJoin(orders, and(
@@ -50,6 +55,10 @@ export async function getCanonicalInvoiceCustomerContext(input: {
       eq(customers.id, canonicalInvoiceCustomerId),
       eq(customers.organizationId, input.organizationId),
     ))
+    .leftJoin(customerContacts, and(
+      eq(customerContacts.id, invoices.contactId),
+      eq(customerContacts.organizationId, input.organizationId),
+    ))
     .where(and(
       eq(invoices.id, input.invoiceId),
       eq(invoices.organizationId, input.organizationId),
@@ -59,6 +68,7 @@ export async function getCanonicalInvoiceCustomerContext(input: {
   if (!row) return null;
   const ownership = resolveCanonicalInvoiceCustomerOwnership({
     invoiceCustomerId: row.invoice.customerId,
+    invoiceContactId: row.invoice.contactId,
     invoiceImportSource: row.invoice.importSource,
     linkedOrderId: row.orderId,
     linkedOrderCustomerId: row.orderCustomerId,
@@ -68,6 +78,8 @@ export async function getCanonicalInvoiceCustomerContext(input: {
   return {
     invoice: { ...row.invoice, customerId: ownership.customerId },
     customer: row.customer ?? null,
+    contact: row.contact ?? null,
+    billingParty: resolveInvoiceBillingParty({ customer: row.customer, contact: row.contact }),
     resolvedCustomerId: ownership.customerId,
     storedCustomerId: row.invoice.customerId,
     resolvedContactId: ownership.contactId,

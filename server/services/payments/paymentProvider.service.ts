@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../db";
 import {
   auditLogs,
+  customerContacts,
   customers,
   invoices,
   organizationPaymentSettings,
@@ -631,11 +632,17 @@ export async function createHostedSession(input: {
     return existingPaymentResult(existingPending as any);
   }
 
-  const [customer] = await db
+  const [customer] = invoice.customerId ? await db
     .select()
     .from(customers)
     .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, input.organizationId)))
-    .limit(1);
+    .limit(1) : [null];
+  const [contact] = invoice.contactId ? await db
+    .select()
+    .from(customerContacts)
+    .where(and(eq(customerContacts.id, invoice.contactId), eq(customerContacts.organizationId, input.organizationId)))
+    .limit(1) : [null];
+  if (!customer && !contact) throw new PaymentProviderError("Invoice billing owner is unavailable.", "INVOICE_BILLING_OWNER_UNAVAILABLE", 409);
 
   const client = createEpsClient(settings);
   const payload = buildHostedPtkRequest({
@@ -643,11 +650,11 @@ export async function createHostedSession(input: {
     amountCents: input.amountCents,
     ticketId: asString(invoice.displayNumber) || String(invoice.invoiceNumber || invoice.id),
     userId: input.actor?.userName || input.actor?.userId || "TitanOS",
-    firstName: (customer as any)?.contactFirstName || (customer as any)?.firstName || "",
-    lastName: (customer as any)?.contactLastName || (customer as any)?.lastName || "",
-    email: (customer as any)?.email || null,
-    address: (customer as any)?.billingAddress || (customer as any)?.address || null,
-    zip: (customer as any)?.billingZip || (customer as any)?.zipCode || null,
+    firstName: contact?.firstName || (customer as any)?.contactFirstName || (customer as any)?.firstName || "",
+    lastName: contact?.lastName || (customer as any)?.contactLastName || (customer as any)?.lastName || "",
+    email: contact?.email || (customer as any)?.email || null,
+    address: contact?.street1 || (customer as any)?.billingAddress || (customer as any)?.address || null,
+    zip: contact?.postalCode || (customer as any)?.billingZip || (customer as any)?.zipCode || null,
   });
   const response = await client.getHostedPtk(payload);
   if (!response.ptk) {

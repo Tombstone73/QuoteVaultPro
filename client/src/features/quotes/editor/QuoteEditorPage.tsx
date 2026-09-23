@@ -75,7 +75,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const { user, isAuthenticated } = useAuth();
     const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
-    const state = useQuoteEditorState();
+    const state = useQuoteEditorState({ contactOnlyOrder: createTarget === "order" });
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
     const [orderRouteAfterSave, setOrderRouteAfterSave] = useState<"save_only" | "route_eligible" | null>(null);

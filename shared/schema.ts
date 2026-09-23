@@ -14,6 +14,7 @@ import {
   pgEnum,
   pgTable,
   primaryKey,
+  check,
   text,
   timestamp,
   varchar,
@@ -4955,7 +4956,8 @@ export const invoices = pgTable("invoices", {
   numberCore: integer("number_core"),
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
   sourceOrderNumber: integer("source_order_number"), // Snapshot of order number at time of invoice creation (immutable)
-  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'restrict' }),
+  contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'restrict' }),
   status: varchar("status", { length: 50 }).notNull().default('draft'), // MVP: draft | billed | paid | void (legacy values may exist)
   // Lightweight invoice versioning
   invoiceVersion: integer("invoice_version").notNull().default(1),
@@ -5019,7 +5021,9 @@ export const invoices = pgTable("invoices", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  check("invoices_billing_owner_check", sql`(${table.customerId} IS NOT NULL) <> (${table.contactId} IS NOT NULL)`),
   index("invoices_organization_id_idx").on(table.organizationId),
+  index("invoices_contact_id_idx").on(table.organizationId, table.contactId),
   index("invoices_invoice_number_idx").on(table.invoiceNumber),
   index("invoices_job_number_idx").on(table.organizationId, table.jobNumber),
   index("invoices_display_number_idx").on(table.displayNumber),

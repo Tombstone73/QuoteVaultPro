@@ -46,6 +46,7 @@ import { desc } from 'drizzle-orm';
 import { getInvoiceOrderContext } from './services/invoiceOrderContext';
 import { hydrateInvoicePdfLineItemsWithArtwork } from './services/invoicePdfArtwork';
 import { getCanonicalInvoiceCustomerContext } from './services/invoiceCustomerProjection';
+import { toInvoicePdfBillingParty } from '../shared/invoiceBillingParty';
 
 // ---------------------------------------------------------------------------
 // In-process singleton guard — prevents overlapping job runs.
@@ -367,13 +368,13 @@ export async function sendManualInvoiceReminder(opts: {
     return { success: false, message: 'Invoice is void — reminders cannot be sent' };
   }
 
-  // Resolve recipient email from customer record
+  // Manual reminders may target either explicit Invoice billing owner.
   const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId });
-  const customer = customerContext?.customer ?? null;
+  const customer = toInvoicePdfBillingParty(customerContext?.billingParty ?? null);
 
-  const recipientEmail = customer?.email ?? null;
+  const recipientEmail = customerContext?.billingParty?.email ?? null;
   if (!recipientEmail) {
-    return { success: false, message: 'No email address on customer record' };
+    return { success: false, message: 'No email address on Invoice billing owner' };
   }
 
   // --- Idempotency: block if sent within the last 5 minutes -------------------
@@ -428,7 +429,7 @@ export async function sendManualInvoiceReminder(opts: {
     balanceDueCents,
     balanceDue: fullInv.balanceDue ?? null,
     customerId: customerContext?.resolvedCustomerId ?? fullInv.customerId,
-    customerName: customer?.companyName ?? recipientEmail,
+    customerName: customerContext?.billingParty?.name ?? recipientEmail,
     recipientEmail,
     customer,
   };

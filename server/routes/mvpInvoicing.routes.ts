@@ -46,6 +46,7 @@ import { resolveStripeRefundProviderLineage } from "../services/stripePaymentLin
 import { applyInvoiceSendSuccessLifecycle } from "../services/invoiceSendLifecycleAutomation";
 import { getInvoiceFinancialPaymentEligibility } from "../../shared/paymentOrchestration";
 import { getCanonicalInvoiceCustomerContext } from "../services/invoiceCustomerProjection";
+import { toInvoicePdfBillingParty } from "../../shared/invoiceBillingParty";
 import { calculateInvoiceDueDateFromTerms, resolveInvoicePaymentTerms } from "../../shared/invoicePaymentTerms";
 import {
   calculateDueDateFromSuccessfulCustomerSend,
@@ -322,6 +323,12 @@ export async function registerMvpInvoicingRoutes(
 
     const invoice: any = rel.invoice;
     const customer = (rel as any).customer;
+    const billingParty = (rel as any).billingParty;
+    if (!billingParty) throw Object.assign(new Error("Invoice billing owner not found"), { statusCode: 404 });
+    if (billingParty.kind === "contact") {
+      const recipients = buildInvoiceEmailRecipients([{ email: billingParty.email, name: billingParty.name, source: "order_contact" as const }]);
+      return { invoice, customer: billingParty, recipients, defaultRecipient: recipients[0] ?? null };
+    }
     if (!customer) throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
 
     let orderContact: { firstName: string; lastName: string; email: string | null } | null = null;
@@ -377,7 +384,7 @@ export async function registerMvpInvoicingRoutes(
           ...otherContacts.map((contact) => ({ email: contact.email, name: contactName(contact), source: "customer_contact" as const })),
         ]);
 
-    return { invoice, customer, recipients, defaultRecipient: recipients[0] ?? null };
+    return { invoice, customer: billingParty, recipients, defaultRecipient: recipients[0] ?? null };
   }
 
   /**
@@ -420,7 +427,7 @@ export async function registerMvpInvoicingRoutes(
       draft: buildInvoiceEmailDraft({
         invoiceNumber,
         companyName: input.companyName,
-        customerName: input.customer.companyName || input.customer.email || "Valued Customer",
+        customerName: input.customer.name || input.customer.email || "Valued Customer",
         totalFormatted: (Number(input.invoice.totalCents || 0) / 100).toFixed(2),
         dueDate,
       }),
@@ -576,7 +583,7 @@ export async function registerMvpInvoicingRoutes(
     await logQueueDeliveryStage("invoice_pdf_generation_started");
     const pdfBytes = await withInvoiceEmailPreparationTimeout("Invoice PDF generation", generateInvoicePdfBytes({
       invoice: invoiceForCustomerDelivery as any,
-      customer: (cust as any) || null,
+      customer: toInvoicePdfBillingParty(cust),
       companySettings: (orgCompany as any) || null,
       paymentSummary,
       lineItems: pdfLineItems as any,
@@ -600,12 +607,12 @@ export async function registerMvpInvoicingRoutes(
       throw error;
     }
 
-    const canInvoiceBePaidOnline = getInvoiceFinancialPaymentEligibility({
+    const canInvoiceBePaidOnline = cust.kind === "customer" && getInvoiceFinancialPaymentEligibility({
       invoiceStatus: (inv as any).status,
       remainingCents: paymentSummary.amountDueCents,
     }).payable;
     const publicWebOrigin = getInvoiceEmailPublicWebOrigin();
-    if (!publicWebOrigin) {
+    if (!publicWebOrigin && cust.kind === "customer") {
       throw Object.assign(new Error("A valid HTTPS public web origin is required for invoice portal delivery."), {
         status: 503,
         code: "INVOICE_PORTAL_ORIGIN_UNAVAILABLE",
@@ -617,13 +624,13 @@ export async function registerMvpInvoicingRoutes(
       // A customer portal CTA is useful, but it is not a prerequisite for
       // delivering the invoice PDF.  Fall back to the canonical direct
       // invoice link if access preparation is unavailable.
-      portalDestination = await withInvoiceEmailPreparationTimeout("Invoice portal link preparation", resolveInvoiceEmailPortalDestination({
+      portalDestination = cust.kind === "customer" ? await withInvoiceEmailPreparationTimeout("Invoice portal link preparation", resolveInvoiceEmailPortalDestination({
         organizationId: input.organizationId,
         customerId: inv.customerId,
         recipientEmail,
         actorUserId: input.userId,
         returnTo: `/portal/invoices/${encodeURIComponent(inv.id)}`,
-      }), 5_000);
+      }), 5_000) : null;
       await logQueueDeliveryStage("invoice_portal_destination_completed");
     } catch (error) {
       console.warn("[InvoiceEmailQueue] Invoice portal link omitted", {
@@ -634,8 +641,8 @@ export async function registerMvpInvoicingRoutes(
       await logQueueDeliveryStage("invoice_portal_destination_omitted");
     }
     await logQueueDeliveryStage("invoice_rendering_completed", { pdfBytes: pdfBytes.length });
-    const directInvoiceUrl = buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id });
-    const portalUrl = portalDestination?.kind === "setup"
+    const directInvoiceUrl = publicWebOrigin ? buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id }) : null;
+    const portalUrl = cust.kind === "contact" ? null : portalDestination?.kind === "setup"
       ? portalDestination.url
       : directInvoiceUrl;
     let guestPaymentUrl: string | null = null;
@@ -643,7 +650,7 @@ export async function registerMvpInvoicingRoutes(
       await logQueueDeliveryStage("invoice_payment_link_started");
       try {
         const token = await withInvoiceEmailPreparationTimeout("Invoice payment link preparation", issueGuestInvoicePaymentToken({ organizationId: input.organizationId, invoiceId: inv.id, createdByUserId: input.userId }), 5_000);
-        guestPaymentUrl = `${publicWebOrigin}/pay/invoice/${encodeURIComponent(token)}`;
+        guestPaymentUrl = `${publicWebOrigin!}/pay/invoice/${encodeURIComponent(token)}`;
         await logQueueDeliveryStage("invoice_payment_link_completed");
       } catch (error) {
         console.warn("[InvoiceEmailQueue] Invoice payment link omitted", {
@@ -655,7 +662,7 @@ export async function registerMvpInvoicingRoutes(
       }
     }
 
-    const customerName = cust.companyName || cust.email || "Valued Customer";
+    const customerName = cust.name || cust.email || "Valued Customer";
     const totalFormatted = (Number(inv.totalCents || 0) / 100).toFixed(2);
     const dueDate = invoiceForCustomerDelivery.dueDate ? new Date(invoiceForCustomerDelivery.dueDate).toLocaleDateString() : "upon receipt";
     const emailHtml = buildInvoiceEmailHtml({
@@ -1561,7 +1568,7 @@ export async function registerMvpInvoicingRoutes(
         : null;
 
       const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId: inv.id });
-      const cust = customerContext?.customer ?? null;
+      const cust = toInvoicePdfBillingParty(customerContext?.billingParty ?? null);
 
       // Company settings are optional; only include branding fields if present.
       const [orgCompany] = await db
@@ -1590,7 +1597,7 @@ export async function registerMvpInvoicingRoutes(
       });
       const pdfBytes = await generateInvoicePdfBytes({
         invoice: inv as any,
-        customer: (cust as any) || null,
+        customer: cust,
         companySettings: (orgCompany as any) || null,
         paymentSummary,
         lineItems: pdfLineItems as any,
@@ -3201,6 +3208,7 @@ export async function registerMvpInvoicingRoutes(
 
       // Customer/customer-visible identity changes
       if (typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId) {
+        if (existing.contactId) return res.status(409).json({ error: "Change Contact-owned Invoice billing through its Order while the Invoice has no financial history.", code: "INVOICE_CONTACT_BILLING_OWNER_REVIEW_REQUIRED" });
         if (isImportedQuickBooks) return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });

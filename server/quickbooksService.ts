@@ -1332,6 +1332,12 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found');
+  if (invoice.contactId && !invoice.customerId) {
+    const error: any = new Error('Invoice billing owner is a Contact without a QuickBooks customer mapping. Review before syncing.');
+    error.code = 'CONTACT_INVOICE_QB_MAPPING_REQUIRED';
+    error.statusCode = 409;
+    throw error;
+  }
   const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(invoice as any);
   if (!approvalEligibility.eligible) {
     const error: any = new Error(approvalEligibility.reason || 'Approve invoice for accounting before syncing.');
@@ -1453,6 +1459,12 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, (payment as any).invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found for payment');
+  if (invoice.contactId && !invoice.customerId) {
+    const error: any = new Error('Contact-owned Invoice payments require a QuickBooks customer mapping review.');
+    error.code = 'CONTACT_INVOICE_QB_MAPPING_REQUIRED';
+    error.statusCode = 409;
+    throw error;
+  }
   if (!isInvoiceApprovedForAccounting(invoice as any)) {
     const error: any = new Error('Approve the invoice for accounting before syncing its payment.');
     error.code = 'INVOICE_ACCOUNTING_APPROVAL_REQUIRED';

@@ -1139,6 +1139,7 @@ export default function InvoiceDetailPage() {
   };
 
   const resolvedBillAddress = (() => {
+    if (data?.billingParty?.kind === 'contact') return getAddressParts(data.billingParty);
     if (!order) return null;
     if (order.billToAddress1 || order.billToAddress2 || order.billToCity || order.billToState || order.billToPostalCode) {
       return getAddressParts({
@@ -2204,14 +2205,20 @@ export default function InvoiceDetailPage() {
             <Card>
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="text-base">Customer</CardTitle>
+                  <CardTitle className="text-base">{data?.billingParty?.kind === 'contact' ? 'Bill To: Contact' : 'Customer'}</CardTitle>
                   <SaveIndicator state={customerSaveState} />
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1 space-y-2">
-                    <CustomerSelect
+                    {data?.billingParty?.kind === 'contact' ? (
+                      <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                        <div className="font-medium">{data.billingParty.name}</div>
+                        {data.billingParty.email ? <div className="text-muted-foreground">{data.billingParty.email}</div> : null}
+                        {data.billingParty.phone ? <div className="text-muted-foreground">{data.billingParty.phone}</div> : null}
+                      </div>
+                    ) : <CustomerSelect
                       value={customerIdDraft}
                       initialCustomer={effectiveCustomer}
                       disabled={!canEditInvoice || updateInvoice.isPending}
@@ -2227,9 +2234,9 @@ export default function InvoiceDetailPage() {
                           if (invoice?.orderId) void commitOrderContact(nextContactId);
                         }
                       }}
-                    />
+                    />}
 
-                    <div className="space-y-2">
+                    {data?.billingParty?.kind !== 'contact' ? <div className="space-y-2">
                       <Label>Contact</Label>
                       <Select
                         value={contactIdDraft || ''}
@@ -2264,17 +2271,17 @@ export default function InvoiceDetailPage() {
                           Contact updates are saved on the Order.
                         </div>
                       ) : null}
-                    </div>
+                    </div> : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    {orderCustomerId || invoice.customerId ? (
+                    {(data?.billingParty?.kind !== 'contact' && (orderCustomerId || invoice.customerId)) ? (
                       <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
                         <Link to={`/customers/${orderCustomerId || invoice.customerId}`}>View Customer</Link>
                       </Button>
                     ) : null}
-                    {linkedOrderContactId ? (
+                    {(data?.billingParty?.kind === 'contact' ? data.billingParty.id : linkedOrderContactId) ? (
                       <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
-                        <Link to={`/contacts/${linkedOrderContactId}`}>View Contact</Link>
+                        <Link to={`/contacts/${data?.billingParty?.kind === 'contact' ? data.billingParty.id : linkedOrderContactId}`}>View Contact</Link>
                       </Button>
                     ) : null}
                     {(invoice.orderId || invoice.sourceOrderNumber) ? (

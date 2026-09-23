@@ -208,7 +208,7 @@ export function InvoiceEmailSendDialog({ invoiceId, open, onOpenChange, onQueued
             <Button variant="destructive" onClick={() => void handleSend(true)} disabled={sendInvoice.isPending || !draftInitializedForOpen}>{sendInvoice.isPending ? "Queueing..." : "Send Anyway"}</Button>
           </> : <>
             <DialogClose asChild><Button variant="outline" onClick={() => resetCompose()} disabled={sendInvoice.isPending}>Cancel</Button></DialogClose>
-            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailRecipients.isLoading || invoiceEmailDraft.isFetching || invoiceEmailDraft.isError || !draftInitializedForOpen || finalRecipientEmails.length === 0 || manualRecipientInvalid}>{sendInvoice.isPending ? "Queueing..." : "Send"}</Button>
+            <Button onClick={() => void handleSend()} disabled={sendInvoice.isPending || invoiceEmailDraft.isFetching || invoiceEmailDraft.isError || !draftInitializedForOpen || finalRecipientEmails.length === 0 || manualRecipientInvalid}>{sendInvoice.isPending ? "Queueing..." : "Send"}</Button>
           </>}
         </DialogFooter>
       </DialogContent>

@@ -119,6 +119,7 @@ export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, I
 
 interface InvoiceWithRelations {
   invoice: InvoiceWithEmailTracking;
+  billingParty?: { kind: "customer" | "contact"; id: string; name: string; email: string | null; phone: string | null; street1: string | null; street2: string | null; city: string | null; state: string | null; postalCode: string | null; country: string | null } | null;
   lineItems: InvoiceLineItem[];
   payments: Payment[];
   importedQuickBooksLineItems?: QuickBooksLineItemDisplay[];

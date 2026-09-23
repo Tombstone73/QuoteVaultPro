@@ -32,6 +32,7 @@ import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, P
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
+import { ContactSelect } from "@/components/ContactSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -1153,6 +1154,12 @@ export default function OrderDetail() {
 
   const saveOrderOwner = (changes: { customerId?: string | null; contactId?: string | null }) => {
     if (!canEditSafeOrderMetadata) return;
+    const customerId = changes.customerId !== undefined ? changes.customerId : order?.customerId;
+    const contactId = changes.contactId !== undefined ? changes.contactId : order?.contactId;
+    if (!customerId && !contactId) {
+      toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
+      return;
+    }
     updateOrder.mutate(changes, {
       onSuccess: () => {
         setIsCustomerPickerOpen(false);
@@ -2080,7 +2087,7 @@ export default function OrderDetail() {
   const normalizePhoneKey = (value: string | null | undefined) =>
     (value || '').replace(/\D+/g, '');
 
-  const customerCompanyName: string | null = order.customer?.companyName || order.billToCompany || null;
+  const customerCompanyName: string | null = order.customer?.companyName || (order.customerId ? order.billToCompany : null) || null;
   const defaultCustomerShipTo = resolveCustomerShipTo(order.customer);
   const contactNameFromContact: string | null = (() => {
     const c: any = order.contact;
@@ -2311,14 +2318,6 @@ export default function OrderDetail() {
                               <Command shouldFilter={true}>
                                   <CommandInput placeholder="Search customers..." autoFocus />
                                 <CommandList>
-                                  {order?.contactId && order?.customerId && (
-                                    <CommandItem
-                                      value="contact-only"
-                                      onSelect={() => saveOrderOwner({ customerId: null })}
-                                    >
-                                      Keep the selected contact; remove customer
-                                    </CommandItem>
-                                  )}
                                   <CommandEmpty>No customers found.</CommandEmpty>
                                   {customers.map((customer: any) => {
                                     const searchValue = [customer.companyName, customer.email]
@@ -2370,15 +2369,15 @@ export default function OrderDetail() {
                                   <span
                                     tabIndex={0}
                                     className="block truncate text-sm font-semibold leading-5 text-foreground"
-                                    title={customerCompanyName || "—"}
+                                    title={customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "—")}
                                   >
-                                    {customerCompanyName || "—"}
+                                    {customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "—")}
                                   </span>
                                 )}
                               </HoverCardTrigger>
                               <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
                                 <div className="space-y-2">
-                                  <div className="text-sm font-semibold text-foreground">{customerCompanyName || "Customer"}</div>
+                                  <div className="text-sm font-semibold text-foreground">{customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "No customer")}</div>
                                   {hasBillAddress && (
                                     <div className="text-sm">
                                       <div className="font-medium text-foreground">Billing</div>
@@ -2426,6 +2425,21 @@ export default function OrderDetail() {
                             </Button>
                           )}
                         </div>
+                      )}
+
+                      {order.customerId && canEditSafeOrderMetadata && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={updateOrder.isPending}
+                          onClick={() => saveOrderOwner({ customerId: null })}
+                          aria-label="Clear customer"
+                        >
+                          <X className="mr-1 h-3 w-3" />
+                          Clear customer
+                        </Button>
                       )}
 
                       {hasBillAddress && (
@@ -2480,6 +2494,22 @@ export default function OrderDetail() {
                     <Separator />
 
                     <div className="space-y-2">
+                      {!order.customerId ? (
+                        <ContactSelect
+                          value={order.contactId ?? null}
+                          customerId={null}
+                          label=""
+                          placeholder="Search contacts..."
+                          disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
+                          onChange={(contactId) => {
+                            if (!contactId) {
+                              toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
+                              return;
+                            }
+                            saveOrderOwner({ contactId });
+                          }}
+                        />
+                      ) : (
                       <Popover
                         open={isContactPickerOpen}
                         onOpenChange={(open) => {
@@ -2563,6 +2593,7 @@ export default function OrderDetail() {
                           </Command>
                         </PopoverContent>
                       </Popover>
+                      )}
 
                       {order.contact?.id && contactNameFromContact ? (
                         <div className="space-y-1">

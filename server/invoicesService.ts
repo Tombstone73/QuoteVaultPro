@@ -1,6 +1,6 @@
 import { db } from './db';
 import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems } from '../shared/schema';
-import { asc, count, desc, eq, and, ilike, inArray, notInArray, or, sql, ne } from 'drizzle-orm';
+import { asc, count, desc, eq, and, ilike, inArray, isNull, notInArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
@@ -556,8 +556,8 @@ export async function listInvoicesPageForOrganization(
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
   const categoricalValues = <T,>(value: T | readonly T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? [...new Set(value)] : [value];
-  if (excludedCustomerIds.length === 1) whereClauses.push(ne(canonicalInvoiceCustomerId, excludedCustomerIds[0]!));
-  if (excludedCustomerIds.length > 1) whereClauses.push(notInArray(canonicalInvoiceCustomerId, excludedCustomerIds));
+  if (excludedCustomerIds.length === 1) whereClauses.push(or(isNull(canonicalInvoiceCustomerId), ne(canonicalInvoiceCustomerId, excludedCustomerIds[0]!))!);
+  if (excludedCustomerIds.length > 1) whereClauses.push(or(isNull(canonicalInvoiceCustomerId), notInArray(canonicalInvoiceCustomerId, excludedCustomerIds))!);
   // This is the same order lifecycle boundary shown by Job Status: an open
   // job is linked to an order that is neither terminally closed/canceled nor
   // completed through fulfillment. Invoices without an order stay visible in
@@ -591,7 +591,7 @@ export async function listInvoicesPageForOrganization(
     return trimmed ? `%${trimmed}%` : null;
   };
   const customerPattern = contains(columnFilters.customer);
-  if (customerPattern) whereClauses.push(or(ilike(customers.companyName, customerPattern), ilike(customers.email, customerPattern)));
+  if (customerPattern) whereClauses.push(or(ilike(customers.companyName, customerPattern), ilike(customers.email, customerPattern), sql`${invoices.contactId} is not null and (trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})) ILIKE ${customerPattern} or ${customerContacts.email} ILIKE ${customerPattern})`));
   const contactPattern = contains(columnFilters.contact);
   if (contactPattern) whereClauses.push(or(
     ilike(customerContacts.firstName, contactPattern),
@@ -679,7 +679,7 @@ export async function listInvoicesPageForOrganization(
   const rowsQuery = db
     .select({
       invoice: invoices,
-      customerName: customers.companyName,
+      customerName: sql<string | null>`coalesce(${customers.companyName}, nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), ''), ${customerContacts.email})`,
       companyName: customers.companyName,
       contactName: sql<string | null>`nullif(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')), '')`,
       contactEmail: customerContacts.email,
@@ -702,8 +702,8 @@ export async function listInvoicesPageForOrganization(
       eq(customers.organizationId, opts.organizationId),
     ))
     .leftJoin(customerContacts, and(
-      eq(customerContacts.id, orders.contactId),
-      eq(customerContacts.customerId, customers.id),
+      eq(customerContacts.id, sql<string>`coalesce(${invoices.contactId}, ${orders.contactId})`),
+      eq(customerContacts.organizationId, opts.organizationId),
     ))
     .where(and(...whereClauses))
     .orderBy(sortDirection(sortExpression), desc(invoices.issueDate), desc(invoices.createdAt), desc(invoices.id))
@@ -724,8 +724,8 @@ export async function listInvoicesPageForOrganization(
       eq(customers.organizationId, opts.organizationId),
     ))
     .leftJoin(customerContacts, and(
-      eq(customerContacts.id, orders.contactId),
-      eq(customerContacts.customerId, customers.id),
+      eq(customerContacts.id, sql<string>`coalesce(${invoices.contactId}, ${orders.contactId})`),
+      eq(customerContacts.organizationId, opts.organizationId),
     ))
     .where(and(...whereClauses));
 
@@ -750,14 +750,14 @@ export async function listInvoicesPageForOrganization(
         .from(invoices)
         .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, opts.organizationId)))
         .leftJoin(customers, and(eq(customers.id, canonicalInvoiceCustomerId), eq(customers.organizationId, opts.organizationId)))
-        .leftJoin(customerContacts, and(eq(customerContacts.id, orders.contactId), eq(customerContacts.customerId, customers.id)))
+        .leftJoin(customerContacts, and(eq(customerContacts.id, sql<string>`coalesce(${invoices.contactId}, ${orders.contactId})`), eq(customerContacts.organizationId, opts.organizationId)))
         .where(and(...whereClauses)),
       db.select({ paidThisMonthCents: sql<string>`coalesce(sum(${payments.amountCents}), 0)` })
         .from(payments)
         .innerJoin(invoices, and(eq(invoices.id, payments.invoiceId), eq(invoices.organizationId, opts.organizationId)))
         .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, opts.organizationId)))
         .leftJoin(customers, and(eq(customers.id, canonicalInvoiceCustomerId), eq(customers.organizationId, opts.organizationId)))
-        .leftJoin(customerContacts, and(eq(customerContacts.id, orders.contactId), eq(customerContacts.customerId, customers.id)))
+        .leftJoin(customerContacts, and(eq(customerContacts.id, sql<string>`coalesce(${invoices.contactId}, ${orders.contactId})`), eq(customerContacts.organizationId, opts.organizationId)))
         .where(and(
           ...whereClauses,
           eq(payments.organizationId, opts.organizationId),
@@ -1091,11 +1091,12 @@ export async function createInvoiceFromOrderInTransaction(
     // Fetch order & its line items
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
     if (!order) throw new Error('Order not found');
-    const billingCustomer = await resolveBillingCustomerForOrder(tx, {
+    if (!order.customerId && !order.contactId) throw new Error("Select a customer or contact before creating an invoice.");
+    const billingCustomer = order.customerId ? await resolveBillingCustomerForOrder(tx, {
       organizationId,
       order,
       actorUserId: userId,
-    });
+    }) : null;
     const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
 
     // New-style Orders carry a frozen Job Number. The first Invoice has no
@@ -1135,7 +1136,8 @@ export async function createInvoiceFromOrderInTransaction(
       numberCore,
       orderId: order.id,
       sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
-      customerId: billingCustomer.customerId,
+      customerId: billingCustomer?.customerId ?? null,
+      contactId: billingCustomer ? null : order.contactId,
       // An Order-backed invoice is live as soon as the Order exists. The
       // Order remains its commercial source; payment eligibility is derived
       // from the current balance, not a manual document-finalization step.
@@ -1178,7 +1180,7 @@ export async function createInvoiceFromOrderInTransaction(
       updatedAt: new Date(),
     } as any).where(and(eq(orders.id, order.id), eq(orders.organizationId, organizationId)));
 
-    await writeContactAccountingPromotionAudit(tx, {
+    if (billingCustomer) await writeContactAccountingPromotionAudit(tx, {
       organizationId,
       actorUserId: userId,
       orderId: order.id,
@@ -1199,7 +1201,7 @@ export async function createInvoiceFromOrderInTransaction(
 
     return {
       ...invoice,
-      accountingPromotion: billingCustomer.resolution === "existing_order_customer"
+      accountingPromotion: !billingCustomer || billingCustomer.resolution === "existing_order_customer"
         ? null
         : {
             resolution: billingCustomer.resolution,
@@ -1337,7 +1339,8 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     Number((invoice as any).taxCents ?? 0) !== snapshot.taxCents ||
     Number((invoice as any).shippingCents ?? 0) !== snapshot.shippingCents ||
     Number((invoice as any).totalCents ?? 0) !== snapshot.totalCents ||
-    String((invoice as any).customerId ?? "") !== String((order as any).customerId ?? (invoice as any).customerId ?? "");
+    String((invoice as any).customerId ?? "") !== String((order as any).customerId ?? "") ||
+    String((invoice as any).contactId ?? "") !== String((order as any).customerId ? "" : (order as any).contactId ?? "");
   if (!lineSnapshotsChanged && !financialChanged) return { status: "unchanged" as const, invoice };
 
   const paymentRows = await tx.select().from(payments).where(and(
@@ -1374,7 +1377,8 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   const hasQuickBooksLink = Boolean(String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || "").trim());
   const nextInvoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;
   const [updated] = await tx.update(invoices).set({
-    customerId: order.customerId ?? invoice.customerId,
+    customerId: order.customerId,
+    contactId: order.customerId ? null : order.contactId,
     subtotal: snapshot.subtotal.toFixed(2),
     tax: snapshot.tax.toFixed(2),
     total: snapshot.total.toFixed(2),
@@ -1620,6 +1624,8 @@ export async function getInvoiceWithRelations(id: string) {
   return {
     invoice: { ...customerContext.invoice, ...sendTracking },
     customer: customerContext.customer,
+    contact: customerContext.contact,
+    billingParty: customerContext.billingParty,
     customerContext,
     lineItems,
     payments: paymentRows,

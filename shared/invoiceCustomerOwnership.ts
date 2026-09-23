@@ -1,5 +1,6 @@
 export type InvoiceCustomerOwnershipInput = {
-  invoiceCustomerId: string;
+  invoiceCustomerId: string | null;
+  invoiceContactId?: string | null;
   invoiceImportSource?: string | null;
   linkedOrderId?: string | null;
   linkedOrderCustomerId?: string | null;
@@ -11,10 +12,13 @@ export type InvoiceCustomerOwnershipInput = {
  * QuickBooks imports intentionally retain their stored accounting identity.
  */
 export function resolveCanonicalInvoiceCustomerOwnership(input: InvoiceCustomerOwnershipInput): {
-  customerId: string;
+  customerId: string | null;
   contactId: string | null;
-  source: "order" | "invoice";
+  source: "order" | "invoice" | "contact";
 } {
+  if (input.invoiceContactId) {
+    return { customerId: null, contactId: input.invoiceContactId, source: "contact" };
+  }
   const orderBacked = Boolean(
     input.linkedOrderId
     && input.linkedOrderCustomerId

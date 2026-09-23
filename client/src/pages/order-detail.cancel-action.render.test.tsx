@@ -24,6 +24,8 @@ let mockEligibility: any = { canCancel: true, code: null, message: null, details
 const mockCancelOrder = jest.fn(async () => ({ success: true }));
 const mockInvalidateQueries = jest.fn();
 const mockRefetchQueries = jest.fn();
+const mockUpdateOwner = jest.fn();
+const mockOwnerToast = jest.fn();
 
 jest.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({
@@ -65,7 +67,7 @@ jest.mock("@/hooks/useOrders", () => ({
   useOrder: () => ({ data: mockOrder, isLoading: false }),
   useCancelOrder: () => ({ mutateAsync: mockCancelOrder, isPending: false }),
   useDeleteOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useUpdateOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
+  useUpdateOrder: () => ({ mutate: mockUpdateOwner, mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useUpdateOrderTaxTreatment: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useBulkUpdateOrderLineItemStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useTransitionOrderStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
@@ -130,7 +132,7 @@ jest.mock("@/hooks/useSmartBack", () => ({
 }));
 
 jest.mock("@/hooks/use-toast", () => ({
-  useToast: () => ({ toast: jest.fn() }),
+  useToast: () => ({ toast: mockOwnerToast }),
 }));
 
 jest.mock("@/lib/nav/browserRouterSync", () => ({
@@ -266,6 +268,29 @@ function renderOrderDetail(path = "/orders/order-1/edit") {
   });
   return { container, root: root! };
 }
+
+describe("Order ownership controls", () => {
+  test("visible Clear customer submits explicit null without clearing the selected Contact", () => {
+    mockOrder = baseOrder({ contactId: "contact-1", contact: { id: "contact-1", firstName: "Logan", lastName: "Payne" } });
+    const { container, root } = renderOrderDetail();
+    const clear = container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement;
+    expect(clear).not.toBeNull();
+    expect(container.textContent).toContain("Logan Payne");
+    act(() => clear.click());
+    expect(mockUpdateOwner).toHaveBeenCalledWith({ customerId: null }, expect.any(Object));
+    expect(mockOrder.contactId).toBe("contact-1");
+    act(() => root.unmount());
+  });
+
+  test("Customer-only clear explains the missing owner and sends no invalid mutation", () => {
+    mockOrder = baseOrder({ contactId: null });
+    const { container, root } = renderOrderDetail();
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    expect(mockUpdateOwner).not.toHaveBeenCalled();
+    expect(mockOwnerToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Select a customer or contact for this order." }));
+    act(() => root.unmount());
+  });
+});
 
 afterEach(() => {
   document.body.innerHTML = "";

@@ -28,6 +28,16 @@ describe("invoice recipients and guest payment contract", () => {
     expect(route).toContain("buildInvoiceEmailSentAudit");
   });
 
+  test("interactive invoice send accepts an explicit one-time address without a saved recipient", () => {
+    const start = route.indexOf("async function queueInteractiveInvoiceEmailForOperations");
+    const queue = route.slice(start, route.indexOf("// The browser configuration", start));
+    expect(queue).toContain("normalizeExplicitInvoiceRecipientEmails(input.recipientEmails)");
+    expect(queue).toMatch(/requestedRecipients\s*\?\?\s*\(requestedRecipient \? \[requestedRecipient\] : resolution\.recipients\.map/);
+    expect(queue).toContain("enqueueInteractiveInvoiceEmailCampaign");
+    expect(queue).not.toContain("update(customers)");
+    expect(queue).not.toContain("insert(customerContacts)");
+  });
+
   test("keeps guest tokens hashed, expiring, and on the canonical Stripe reconciliation path", () => {
     expect(guestService).toContain("crypto.randomBytes(32)");
     expect(guestService).toContain("sha256Hex(rawToken)");
