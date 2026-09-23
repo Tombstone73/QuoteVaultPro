@@ -44,6 +44,7 @@ import { captureAndApply as captureAndApplyStripeObservation } from "./stripePay
 import { generateInvoicePdfBytes } from "./invoicePdf";
 import { hydrateInvoicePdfLineItemsWithArtwork } from "./invoicePdfArtwork";
 import { getBillableBundleRoots, getCustomerVisibleBundleLines } from "./lineItemBundles";
+import { projectCommercialDocumentLines } from "@shared/commercialDocumentLines";
 import { getInvoiceOrderContext } from "./invoiceOrderContext";
 import { storage } from "../storage";
 import { canonicalOrderOperations } from "./orders/canonicalOrderOperations";
@@ -3996,7 +3997,7 @@ function safeQuoteDisplayOptions(selectedOptions: unknown): string[] {
     .filter((value): value is string => Boolean(value));
 }
 
-function mapQuoteDetail(
+export function mapQuoteDetail(
   quote: QuotePortalRow,
   lineItems: QuoteLineItemPortalRow[],
   workflowState: QuoteWorkflowPortalRow | null = null,
@@ -4008,10 +4009,10 @@ function mapQuoteDetail(
     convertedToOrderId: quote.convertedToOrderId,
     workflowStatus: workflowState?.status,
   });
-  const customerLineItems = getCustomerVisibleBundleLines(lineItems);
-  const mappedLineItems = customerLineItems.map((lineItem) => {
+  const customerLineItems = projectCommercialDocumentLines(lineItems, (line) => Math.round(toMoney(line.linePrice) * 100));
+  const mappedLineItems = customerLineItems.map(({ line: lineItem, totalCents }) => {
     const quantity = Math.max(1, Number(lineItem.quantity || 0));
-    const lineTotal = toMoney(lineItem.linePrice);
+    const lineTotal = totalCents / 100;
     return {
       id: lineItem.id,
       name: lineItem.productName,
@@ -4041,7 +4042,7 @@ function mapQuoteDetail(
     validUntil: toIso(quote.validUntil),
     displayStatus,
     total: toMoney(quote.totalPrice),
-    itemCount: getBillableBundleRoots(lineItems).length,
+    itemCount: mappedLineItems.length,
     customerVisibleActions: mapQuoteActions(displayStatus),
     subtotal: toMoney(quote.subtotal),
     tax: toMoney(quote.taxAmount),

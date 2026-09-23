@@ -11,7 +11,8 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronDown, ChevronRight, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, GripVertical, Undo2 } from "lucide-react";
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { SortableContext, useSortable, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { groupQuoteLines, moveQuoteLineGroup } from "@shared/quoteLineOrder";
 import { CSS } from "@dnd-kit/utilities";
 import type { Product, ProductOptionItem } from "@shared/schema";
 import type { QuoteLineItemDraft, OptionSelection } from "../types";
@@ -328,7 +329,7 @@ export function LineItemsSection({
   const { preferences: orgPreferences } = useOrgPreferences();
   const count = lineItems.filter((li) => li.status !== "canceled").length;
 
-  // TEMP UI-only reorder state (not persisted)
+  // Optimistic order only while the canonical editor/server update is pending.
   const [uiOrderKeys, setUiOrderKeys] = useState<string[] | null>(null);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [parentLinkTargetKey, setParentLinkTargetKey] = useState<string | null>(null);
@@ -353,20 +354,7 @@ export function LineItemsSection({
   }, [orderedKeys, lineItems]);
 
   const displayLineItems = useMemo(() => {
-    const childrenByParent = new Map<string, QuoteLineItemDraft[]>();
-    const topLevel: QuoteLineItemDraft[] = [];
-    for (const item of orderedLineItems) {
-      if (item.parentLineItemId) {
-        const children = childrenByParent.get(item.parentLineItemId) ?? [];
-        children.push(item);
-        childrenByParent.set(item.parentLineItemId, children);
-      } else {
-        topLevel.push(item);
-      }
-    }
-    const grouped = topLevel.flatMap((item) => [item, ...(item.id ? childrenByParent.get(item.id) ?? [] : [])]);
-    const renderedKeys = new Set(grouped.map(getItemKey));
-    return [...grouped, ...orderedLineItems.filter((item) => !renderedKeys.has(getItemKey(item)))];
+    return groupQuoteLines(orderedLineItems);
   }, [orderedLineItems]);
 
   const parentLinkTarget = useMemo(
@@ -417,32 +405,25 @@ export function LineItemsSection({
 
   // Handle drag end
   async function handleDragEnd(event: DragEndEvent) {
+    if (readOnly || isSavingOrder || !onReorderLineItems) return;
     const { active, over } = event;
     if (!over) return;
     if (active.id === over.id) return;
 
-    // Compute new order
-    const current = uiOrderKeys ?? baseKeys;
-    const oldIndex = current.indexOf(active.id as string);
-    const newIndex = current.indexOf(over.id as string);
-    if (oldIndex < 0 || newIndex < 0) return;
-    
-    const nextKeys = arrayMove(current, oldIndex, newIndex);
+    const nextKeys = moveQuoteLineGroup(orderedLineItems, String(active.id), String(over.id)).map(getItemKey);
     
     // Update UI immediately
     setUiOrderKeys(nextKeys);
 
     // Persist if we have a persisted quote and handler
-    if (quoteId && onReorderLineItems && !readOnly) {
+    if (onReorderLineItems) {
       setIsSavingOrder(true);
-      const result = await onReorderLineItems(nextKeys);
-      setIsSavingOrder(false);
-      
-      if (result.ok) {
-        // Clear UI order after successful save (let server order drive)
+      try {
+        await onReorderLineItems(nextKeys);
+      } finally {
+        setIsSavingOrder(false);
         setUiOrderKeys(null);
       }
-      // If failed, uiOrderKeys stays set and will be reset on next lineItems change
     }
   }
 
@@ -1221,7 +1202,7 @@ export function LineItemsSection({
           </div>
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={orderedKeys} strategy={verticalListSortingStrategy}>
+            <SortableContext items={displayLineItems.map(getItemKey)} strategy={verticalListSortingStrategy}>
               <div className="space-y-2">
                 {displayLineItems
                   .filter((li) => li.status !== "canceled")

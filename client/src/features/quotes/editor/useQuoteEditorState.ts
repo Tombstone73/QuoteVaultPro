@@ -26,6 +26,7 @@ import { cloneQuoteLineItemDraft, createQuoteLineItemTempId } from "./quoteLineI
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
+import { applyQuoteLineSequence } from "./quoteLineSequence";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -96,7 +97,7 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
             ? baseOverrideCents / 100
             : linePrice,
         priceBreakdown: item.priceBreakdown,
-        displayOrder: idx,
+        displayOrder: item.displayOrder ?? idx,
         notes: (item.specsJson as any)?.notes || undefined,
         productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
         requiresDesign: typeof item.requiresDesign === "boolean" ? item.requiresDesign : undefined,
@@ -391,9 +392,9 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         error: quoteError,
     } = useQuery<QuoteWithRelations, Error>({
         queryKey: ["/api/quotes", quoteId],
-        queryFn: async () => {
+        queryFn: async ({ signal }) => {
             if (!quoteId) throw new Error("Quote ID is required");
-            const response = await fetch(`/api/quotes/${quoteId}`, { credentials: "include" });
+            const response = await fetch(`/api/quotes/${quoteId}`, { credentials: "include", signal });
             if (!response.ok) throw new Error("Failed to load quote");
             return response.json();
         },
@@ -1935,6 +1936,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     };
 
                     if (li.id) {
+                        delete payloadLi.displayOrder;
                         await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${li.id}`, payloadLi);
                     } else {
                         await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payloadLi)
@@ -2558,51 +2560,37 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         ]
     );
 
-    /**
-     * Persist reordered line items by updating displayOrder via PATCH endpoint.
-     * Only updates items whose displayOrder has actually changed.
-     * Fail-soft: if any PATCH fails, refetch quote and return ok: false.
-     */
+    const reorderInFlightRef = useRef(false);
+    /** One sequence-only transaction; normal autosaves never own ordering. */
     const reorderLineItemsByKeys = useCallback(
         async (orderedKeys: string[]): Promise<{ ok: boolean }> => {
-            if (!quoteId) {
-                // No persisted quote yet - fail soft
-                return { ok: true };
-            }
-
+            if (reorderInFlightRef.current || !orderedKeys.length) return { ok: false };
+            reorderInFlightRef.current = true;
             try {
-                // Map keys to line items
-                const orderedItems = orderedKeys
-                    .map(key => lineItems.find(li => getStableLineItemKey(li) === key))
-                    .filter((li): li is QuoteLineItemDraft => !!li && !!li.id); // Only persist items with real IDs
-
-                if (orderedItems.length === 0) {
+                const orderedItems = applyQuoteLineSequence(lineItems, orderedKeys);
+                if (!quoteId) {
+                    setLineItems(orderedItems);
                     return { ok: true };
                 }
-
-                // Build list of updates (only for items where displayOrder changed)
-                const updates: Array<{ id: string; newDisplayOrder: number }> = [];
-                orderedItems.forEach((item, index) => {
-                    const newDisplayOrder = index;
-                    if (item.displayOrder !== newDisplayOrder) {
-                        updates.push({ id: item.id!, newDisplayOrder });
-                    }
-                });
-
-                if (updates.length === 0) {
-                    return { ok: true };
+                const orderedIds = orderedItems.filter((li) => li.id).map((li) => li.id!);
+                const expectedIds = [...lineItems].filter((li) => li.id)
+                    .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0) || a.id!.localeCompare(b.id!))
+                    .map((li) => li.id!);
+                if (orderedIds.length) {
+                    await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/order`, { orderedIds, expectedIds });
                 }
-
-                // Persist updates sequentially (simplest and safest)
-                for (const { id, newDisplayOrder } of updates) {
-                    await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${id}`, {
-                        displayOrder: newDisplayOrder,
-                    });
+                // Cancel reads started before the commit, then align the editor,
+                // discard snapshot and query cache before the authoritative refetch.
+                await queryClientInstance.cancelQueries({ queryKey: ["/api/quotes", quoteId] });
+                setLineItems((prev) => applyQuoteLineSequence(prev, orderedKeys, true));
+                if (savedSnapshotRef.current) {
+                    savedSnapshotRef.current.lineItems = applyQuoteLineSequence(savedSnapshotRef.current.lineItems, orderedKeys, true);
                 }
-
-                // Invalidate and refetch quote to sync server state
+                queryClientInstance.setQueryData<QuoteWithRelations>(["/api/quotes", quoteId], (current) => current ? {
+                    ...current,
+                    lineItems: applyQuoteLineSequence(current.lineItems, orderedIds, true),
+                } : current);
                 await queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
-                
                 return { ok: true };
             } catch (error) {
                 console.error("[reorderLineItemsByKeys] failed:", error);
@@ -2612,11 +2600,13 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 
                 toast({
                     title: "Failed to save order",
-                    description: "Line item order could not be saved. Changes have been reverted.",
+                    description: error instanceof Error ? error.message : "Line item order could not be saved. Refresh and try again.",
                     variant: "destructive",
                 });
                 
                 return { ok: false };
+            } finally {
+                reorderInFlightRef.current = false;
             }
         },
         [quoteId, lineItems, queryClientInstance, toast]

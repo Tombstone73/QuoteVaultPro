@@ -775,7 +775,7 @@ export class QuotesRepository {
                 variantInfo: item.priceBreakdown.variantInfo as string | undefined,
             }).value as any,
             materialUsages: sanitizeJsonForPostgres((item as any).materialUsages ?? []).value as any,
-            displayOrder: item.displayOrder || index,
+            displayOrder: item.displayOrder ?? index,
             // Tax fields
             taxAmount: (item as any).taxAmount != null ? (item as any).taxAmount.toString() : null,
             isTaxableSnapshot: (item as any).isTaxableSnapshot ?? null,

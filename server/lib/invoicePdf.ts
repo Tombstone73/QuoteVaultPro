@@ -13,8 +13,9 @@ import {
   type CompanyDocumentBrandingInput,
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
-import { getCustomerVisibleBundleLines } from '../services/lineItemBundles';
-import { isNestedInvoiceLineItem, resolveInvoiceLinePresentation } from '../../shared/invoiceLinePresentation';
+import { projectCommercialDocumentLines } from '@shared/commercialDocumentLines';
+import { isCommerciallyRemovedLine } from '../services/lineItemBundles';
+import { resolveInvoiceLinePresentation } from '../../shared/invoiceLinePresentation';
 import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';
 
 type CompanySettingsLike = CompanyDocumentBrandingInput & {
@@ -62,6 +63,9 @@ type InvoiceLike = {
 } | null;
 
 type InvoiceLineItemLike = {
+  status?: string | null;
+  orderLineItemId?: string | null;
+  sortOrder?: number | null;
   id?: string | null;
   description?: string | null;
   quantity?: number | null;
@@ -773,14 +777,18 @@ export async function generateInvoicePdfBytes(
 
   drawTableHeader();
 
-  const lineItems = getCustomerVisibleBundleLines((params.lineItems || []).filter((line): line is NonNullable<InvoiceLineItemLike> => Boolean(line)));
-  for (const li of lineItems) {
+  const lineItems = projectCommercialDocumentLines(
+    (params.lineItems || []).filter((line): line is NonNullable<InvoiceLineItemLike> => Boolean(line) && !isCommerciallyRemovedLine(line!)),
+    (line) => line.lineTotalCents != null ? toSafeCents(line.lineTotalCents) : toCentsFromDecimal(line.totalPrice),
+    { identity: "invoice" },
+  );
+  for (const { line: li, totalCents, memberCount } of lineItems) {
     ensureSpace(bottomSafeY + 170);
 
     const hourlyTerms = resolveHourlyServiceCommercialTerms(li as Record<string, any>);
     const qty = hourlyTerms?.quantity ?? Math.max(0, Math.round(Number(li?.quantity ?? 0) || 0));
-    const unitCents = hourlyTerms?.rateCents ?? (li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice));
-    const totalCents = li?.lineTotalCents != null ? toSafeCents(li.lineTotalCents) : toCentsFromDecimal(li?.totalPrice);
+    const unitCents = memberCount > 1 && qty > 0 ? Math.round(totalCents / qty)
+      : hourlyTerms?.rateCents ?? (li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice));
 
     const presentation = resolveInvoiceLinePresentation(li);
     const sku = (li?.sku || '').toString().trim();
@@ -790,7 +798,7 @@ export async function generateInvoicePdfBytes(
       .filter((line): line is string => Boolean(line));
     const baseDesc = [presentation.primaryLabel, ...detailLines].join('\n');
 
-    const childIndent = isNestedInvoiceLineItem(li, lineItems) ? 14 : 0;
+    const childIndent = 0;
     const descriptionX = xDesc + childIndent;
     const descriptionWidth = Math.max(24, descW - childIndent);
     const descLines = wrapText({

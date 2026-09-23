@@ -58,6 +58,7 @@ import {
 } from "@shared/proofApprovalLock";
 import { eq, desc, and, inArray, ne, sql } from "drizzle-orm";
 import { storage } from "../storage";
+import { persistQuoteLineOrder } from "../storage/quoteLineOrder.repo";
 import { inboundOrdersRepository } from "../storage/inboundOrders.repo";
 import { getRequestOrganizationId } from "../tenantContext";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "../quoteOrderPricing";
@@ -2621,6 +2622,21 @@ export function registerQuoteRoutes(
     }
   });
 
+  app.patch("/api/quotes/:id/line-items/order", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const internal = ['owner', 'admin', 'manager', 'employee'].includes(normalizeRole(req.actorOrgRole ?? req.orgRole));
+      if (!internal && !userId) return res.status(403).json({ message: "Not authorized" });
+      const body = z.object({ orderedIds: z.array(z.string().min(1)).min(1), expectedIds: z.array(z.string().min(1)).min(1) }).strict().parse(req.body);
+      const data = await persistQuoteLineOrder(db, { organizationId, quoteId: String(req.params.id), userId: internal ? undefined : userId!, ...body });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(error instanceof z.ZodError ? 400 : error?.statusCode ?? 500).json({ message: error?.message ?? "Unable to save Quote line order" });
+    }
+  });
+
   app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
     const patchDiagnostics: Record<string, unknown> = {
       quoteId: req.params?.id,
@@ -2751,7 +2767,8 @@ export function registerQuoteRoutes(
       if (lineItem.height !== undefined && pricingProduct?.measurementMode !== "quantity_only" && pricingProduct?.pricingProfileKey !== "fee") updateData.height = parseFloat(lineItem.height);
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
       if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
-      if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+      // Existing-line sequence is owned exclusively by the atomic order endpoint.
+      // Autosave payloads (including older clients) may carry a stale displayOrder.
       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
       if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;

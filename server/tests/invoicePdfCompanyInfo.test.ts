@@ -58,7 +58,7 @@ function extractDecodedPdfContent(bytes: Uint8Array): string {
 }
 
 describe("invoice PDF company info and remittance data", () => {
-  test("renders each independently billable child line and keeps visible amounts aligned with the subtotal", async () => {
+  test("rolls independently billable child prices into the visible parent, preserving subtotal", async () => {
     const bytes = await generateInvoicePdfBytes({
       ...baseInvoiceParams,
       invoice: {
@@ -96,9 +96,9 @@ describe("invoice PDF company info and remittance data", () => {
 
     const text = extractDecodedPdfContent(bytes);
     expect(text).toContain('Substance 2755 - Sign Vinyl');
-    expect(text).toContain('ACM / Dibond / Max Metal / Aluminum Composite Material');
-    expect(text).toContain('$123.00');
-    expect(text).toContain('$57.00');
+    expect(text).not.toContain('ACM / Dibond / Max Metal / Aluminum Composite Material');
+    expect(text).not.toContain('$123.00');
+    expect(text).not.toContain('$57.00');
     expect(text).toContain('$180.00');
   });
 

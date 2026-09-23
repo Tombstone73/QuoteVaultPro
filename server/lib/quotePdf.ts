@@ -7,7 +7,8 @@ import {
   type CompanyDocumentBrandingInput,
 } from "./documentCompanyBranding";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
-import { getBillableBundleRoots, getCustomerVisibleBundleLines } from "../services/lineItemBundles";
+import { getBillableBundleRoots, isCommerciallyRemovedLine } from "../services/lineItemBundles";
+import { projectCommercialDocumentLines } from "@shared/commercialDocumentLines";
 
 export class QuotePdfEligibilityError extends Error {
   statusCode: number;
@@ -20,6 +21,7 @@ export class QuotePdfEligibilityError extends Error {
 }
 
 type QuotePdfLineItem = {
+  displayOrder?: number | null;
   id?: string | null;
   productId?: string | null;
   productName?: string | null;
@@ -142,7 +144,7 @@ function getPdfLineItemTotalCents(lineItem: QuotePdfLineItem): number {
 
 export function getQuotePdfEligibility(quote: QuotePdfInput["quote"]): QuotePdfEligibility {
   const lineItems = Array.isArray(quote.lineItems)
-    ? getCustomerVisibleBundleLines(quote.lineItems).filter((lineItem) => lineItem.status !== "canceled")
+    ? quote.lineItems.filter((lineItem) => !isCommerciallyRemovedLine(lineItem))
     : [];
 
   if (!hasText(quote.id)) {
@@ -339,7 +341,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
 
-  for (const lineItem of eligibility.lineItems) {
+  for (const { line: lineItem, totalCents: commercialTotalCents } of projectCommercialDocumentLines(eligibility.lineItems, getPdfLineItemTotalCents)) {
     if (y < 130) {
       page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
       y = PAGE_HEIGHT - MARGIN;
@@ -356,7 +358,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
     const sizeLabel = width > 0 && height > 0 ? `${width} x ${height}` : "-";
     drawRight(page, String(toNumber(lineItem.quantity)), 390, y, regular, 10);
     drawRight(page, sizeLabel, 462, y, regular, 10);
-    drawRight(page, formatMoney(getPdfLineItemTotalCents(lineItem), currency), PAGE_WIDTH - MARGIN, y, regular, 10);
+    drawRight(page, formatMoney(commercialTotalCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
     y -= Math.max(26, wrapped.length * 12 + 10);
   }
 
