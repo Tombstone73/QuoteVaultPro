@@ -119,7 +119,7 @@ test("historical reconciliation completes fulfilled-only backlog without billing
     actorUserId: "session-user-1",
     actorUserName: "Operator",
     reason: "historical_backlog_cleanup",
-  })).resolves.toMatchObject({ alreadyCompleted: false, remainingFulfillmentQuantity: 2 });
+  })).resolves.toMatchObject({ alreadyCompleted: false, remainingFulfillmentQuantity: 0, previousRemainingFulfillmentQuantity: 2 });
 
   expect(dashboardRepo.reconcileAdministrativeFulfillment).toHaveBeenCalledWith("org-1", expect.objectContaining({
     orderId: "order-1", reason: "historical_backlog_cleanup",

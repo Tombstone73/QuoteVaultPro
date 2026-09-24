@@ -997,6 +997,7 @@ export function mapPortalOrderStatus(params: {
 
   if (state === "canceled" || status === "canceled" || status === "cancelled") return "Canceled";
   if (state === "closed" || status === "completed" || status === "complete") return "Completed";
+  if (status === "operationally_complete") return "Completed";
   if (fulfillmentStatus === "delivered") return shippingMethod === "pickup" ? "Completed" : "Delivered";
   if (fulfillmentStatus === "shipped") return "Shipped";
   if (fulfillmentStatus === "packed") return shippingMethod === "pickup" ? "Ready for Pickup" : "Ready to Ship";

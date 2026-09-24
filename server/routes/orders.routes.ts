@@ -3949,7 +3949,8 @@ export async function registerOrderRoutes(
             const now = new Date().toISOString();
             await db.update(orders).set({
                 state: "production_complete",
-                status: "ready_for_shipment",
+                status: "operationally_complete",
+                canonicalState: "completed",
                 ...(!assessment.serviceFeeOnly && !order.productionCompletedAt ? { productionCompletedAt: now } : {}),
                 routingTarget: assessment.needsInvoicing ? "invoicing" : null,
                 updatedAt: sql`now()` as any,

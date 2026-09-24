@@ -36,6 +36,7 @@ import { resolveActiveProductionOwners } from '../productionOwnership';
 import { resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
 import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from '@shared/fulfillmentTerminalReversal';
 import { isProvenLegacyCloseJobOverrideEvidence } from './legacyCloseJobOverrideEvidence';
+import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -1422,6 +1423,7 @@ export class FulfillmentDashboardRepo {
     sourceInvoiceId?: string | null;
   }, executor: DbExecutor) {
     await executor.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${input.orderId} FOR UPDATE`);
+    await this.assertNoActiveProduction(orgId, input.orderId, executor);
     const before = (await this.listLineEligibility(orgId, { orderIds: [input.orderId] }, executor))
       .filter((line) => line.projection.requiresFulfillment);
     const incompleteProduction = before.find((line) =>
@@ -1452,8 +1454,17 @@ export class FulfillmentDashboardRepo {
     const after = (await this.listLineEligibility(orgId, { orderIds: [input.orderId] }, executor))
       .filter((line) => line.projection.requiresFulfillment);
     const remainingQuantity = after.reduce((total, line) => total + line.projection.remainingQuantity, 0);
+    if (remainingQuantity !== 0) throw new FulfillmentHttpError(409, 'Administrative fulfillment is incomplete.', 'FULFILLMENT_RECONCILIATION_INCOMPLETE');
+    // Close station ownership as administrative work, without a physical
+    // shipment/pickup event. The service records this in its override audit.
+    const completedFulfillmentJobs = await executor.update(productionJobs).set({ status: 'done', completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, input.orderId),
+        eq(productionJobs.stationKey, 'fulfillment'),
+        sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+      )).returning({ id: productionJobs.id });
     return {
       ok: true as const,
+      completedFulfillmentJobIds: completedFulfillmentJobs.map(row => row.id),
       allocations,
       remainingQuantity,
       physicallyFulfilledQuantity: after.reduce((total, line) => total + line.projection.fulfilledQuantity, 0),
@@ -1461,75 +1472,37 @@ export class FulfillmentDashboardRepo {
     };
   }
 
+  /** Administrative fulfillment never completes a production owner or a run.
+   * Those must pass the existing production completion/bootstrap operation. */
+  async assertNoActiveProduction(orgId: string, orderId: string, executor: DbExecutor) {
+    const active = await executor.select({ id: productionJobs.id }).from(productionJobs).where(and(
+      eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId),
+      sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'`,
+      sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+    )).limit(1);
+    if (active.length) throw new FulfillmentHttpError(409, 'Production work remains.', 'PRODUCTION_NOT_COMPLETE');
+    const runs = await executor.select({ id: productionRuns.id }).from(productionRuns)
+      .innerJoin(productionRunMembers, eq(productionRunMembers.productionRunId, productionRuns.id))
+      .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
+      .where(and(eq(productionRuns.organizationId, orgId), eq(orderLineItems.orderId, orderId),
+        inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+      )).limit(1);
+    if (runs.length) throw new FulfillmentHttpError(409, 'An active production run still owns this order.', 'ACTIVE_COMBINED_RUN_CONFLICT');
+  }
+
   /** Explicit, idempotent repair for the narrow legacy workflow proven by both
    * the historical Fulfillment event and its paired Close Job Override audit.
    * This never runs from the queue or migration path; the operator-only script
    * must request apply mode. */
   async backfillProvenLegacyCloseJobOverride(orgId: string, orderId: string) {
-    return this.dbInstance.transaction(async (tx) => {
-      const [order] = await tx.select({
-        id: orders.id,
-        state: orders.state,
-        status: orders.status,
-        fulfillmentStatus: orders.fulfillmentStatus,
-      }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).for('update').limit(1);
-      if (!order) return { status: 'skipped' as const, reason: 'ORDER_NOT_FOUND' };
-      if (!['shipped', 'delivered'].includes(cleanText(order.fulfillmentStatus).toLowerCase())) {
-        return { status: 'skipped' as const, reason: 'PARENT_NOT_TERMINAL' };
-      }
-      const [events, audit] = await Promise.all([
-        tx.select({ id: fulfillmentEvents.id, actorUserId: fulfillmentEvents.actorUserId, eventType: fulfillmentEvents.eventType, payloadJson: fulfillmentEvents.payloadJson })
-          .from(fulfillmentEvents).where(and(
-            eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, orderId),
-            eq(fulfillmentEvents.eventType, 'FULFILLMENT_HISTORICAL_RECONCILED' as any),
-          )),
-        tx.select({ id: auditLogs.id, actionType: auditLogs.actionType, entityType: auditLogs.entityType })
-          .from(auditLogs).where(and(
-            eq(auditLogs.organizationId, orgId), eq(auditLogs.entityId, orderId),
-            eq(auditLogs.actionType, 'ORDER_HISTORICAL_FULFILLMENT_RECONCILED'), eq(auditLogs.entityType, 'order'),
-          )).limit(1),
-      ]);
-      const event = events.find((candidate) => isProvenLegacyCloseJobOverrideEvidence({ event: candidate, audit: audit[0] ?? null }));
-      if (!event) {
-        return { status: 'skipped' as const, reason: 'UNPROVEN_LEGACY_OVERRIDE' };
-      }
-      const result = await this.reconcileAdministrativeFulfillment(orgId, {
-        orderId,
-        actorUserId: event.actorUserId ?? null,
-        reason: 'legacy_close_job_override_reconciliation',
-        note: 'Backfilled from proven pre-0212 Close Job Override evidence.',
-      }, tx as any);
-      if (!result.ok) return { status: 'skipped' as const, reason: result.code, message: result.message };
-      if (result.allocations.length === 0) return { status: 'skipped' as const, reason: 'NO_REMAINING_OBLIGATION' };
-      if (result.remainingQuantity !== 0) return { status: 'skipped' as const, reason: 'REMAINING_OBLIGATION' };
-      const safeActorUserId = await resolveExistingActorUserId(tx, event.actorUserId ?? null);
-      await tx.insert(fulfillmentEvents).values({
-        organizationId: orgId,
-        actorUserId: safeActorUserId,
-        entityType: 'ORDER',
-        entityId: orderId,
-        eventType: 'FULFILLMENT_HISTORICAL_RECONCILED',
-        payloadJson: {
-          source: 'legacy_close_job_override_backfill',
-          originalEventId: event.id,
-          originalAuditId: audit[0]!.id,
-          allocations: result.allocations,
-          shipmentOrPickupEvidenceCreated: false,
-          billingAutomationSuppressed: true,
-        },
-      } as any);
-      await tx.insert(auditLogs).values({
-        organizationId: orgId,
-        userId: safeActorUserId,
-        actionType: 'ORDER_LEGACY_CLOSE_JOB_OVERRIDE_RECONCILED',
-        entityType: 'order',
-        entityId: orderId,
-        entityName: null,
-        description: 'Backfilled administrative fulfillment from proven legacy Close Job Override evidence.',
-        newValues: { originalEventId: event.id, originalAuditId: audit[0]!.id, allocations: result.allocations },
-      } as any);
-      return { status: 'applied' as const, ...result };
-    });
+    // Keep the older operator entry point on the same guarded repair path.
+    const { applyHistoricalCloseJobOperationalRepair } = await import('../historicalCloseJobOperationalRepairService');
+    try {
+      return await applyHistoricalCloseJobOperationalRepair(this.dbInstance, { organizationId: orgId, orderId });
+    } catch (error: any) {
+      if (!error.preview) throw error;
+      return { status: 'skipped' as const, reason: 'HISTORICAL_OPERATIONAL_REPAIR_BLOCKED', preview: error.preview };
+    }
   }
 
   async getFulfillmentLifecycleDiagnostic(orgId: string, orderNumber: string) {

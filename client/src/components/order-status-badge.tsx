@@ -44,6 +44,11 @@ export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
           label: "Completed",
           className: "bg-green-600/10 text-green-600 border-green-600/20",
         };
+      case "operationally_complete":
+        return {
+          label: "Operationally Complete",
+          className: "bg-green-600/10 text-green-600 border-green-600/20",
+        };
       case "on_hold":
         return {
           label: "On Hold",

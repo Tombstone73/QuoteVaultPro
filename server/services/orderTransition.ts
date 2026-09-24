@@ -8,7 +8,7 @@
 import type { Order, InsertOrder } from '@shared/schema';
 import { isOrderCommerciallyEditable } from '@shared/orderCommercialEditability';
 
-export type OrderStatus = 'new' | 'in_production' | 'on_hold' | 'ready_for_shipment' | 'completed' | 'canceled';
+export type OrderStatus = 'new' | 'in_production' | 'on_hold' | 'ready_for_shipment' | 'operationally_complete' | 'completed' | 'canceled';
 
 export interface OrgPreferences {
   orders?: {
@@ -47,6 +47,9 @@ export function validateOrderTransition(
   // Normalize status values
   const from = fromStatus as OrderStatus;
   const to = toStatus as OrderStatus;
+  if (from === 'operationally_complete' || to === 'operationally_complete') {
+    return { ok: false, code: 'USE_CANONICAL_OPERATION', message: 'Use operational completion, financial close, or explicit reopen.' };
+  }
 
   // Terminal states cannot transition
   if (from === 'completed') {

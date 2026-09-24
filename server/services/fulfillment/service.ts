@@ -12,6 +12,7 @@ import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSe
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
+import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -230,15 +231,13 @@ export class FulfillmentService {
     }
 
     const remainingFulfillmentQuantity = eligibleLines.reduce((total, line) => total + line.projection.remainingQuantity, 0);
-    if (remainingFulfillmentQuantity === 0) return { alreadyCompleted: true, remainingFulfillmentQuantity: 0 };
     const reconciliationNote = [
       'Administrative historical fulfillment reconciliation.',
       input.note?.trim() || null,
     ].filter(Boolean).join(' ');
 
     const now = new Date();
-    let reconciliation: { allocations: Array<{ lineItemId: string; quantity: number }>; remainingQuantity: number; physicallyFulfilledQuantity: number; administrativelyReconciledQuantity: number } | null = null;
-    await this.dbInstance.transaction(async (tx) => {
+    const reconciliation = await this.dbInstance.transaction(async (tx) => {
       const [lockedOrder] = await tx
         .select({ state: orders.state, status: orders.status, canceledAt: orders.canceledAt, fulfillmentStatus: orders.fulfillmentStatus, routingTarget: orders.routingTarget })
         .from(orders)
@@ -258,9 +257,16 @@ export class FulfillmentService {
       if (result.remainingQuantity !== 0) {
         throw new FulfillmentHttpError(409, 'Administrative fulfillment did not reconcile every remaining operational obligation.', 'FULFILLMENT_RECONCILIATION_INCOMPLETE');
       }
-      reconciliation = result;
+      const parentComplete = lockedOrder.state === 'closed' || (
+        lockedOrder.state === 'production_complete' && lockedOrder.status === OPERATIONALLY_COMPLETE_STATUS
+        && lockedOrder.routingTarget == null && lockedOrder.fulfillmentStatus === 'delivered'
+      );
+      // Recheck under the parent/line locks: concurrent retries must not append
+      // another event or audit after the first transaction consumes the work.
+      if (result.allocations.length === 0 && !result.completedFulfillmentJobIds?.length && parentComplete) return { ...result, alreadyCompleted: true };
       const safeActorUserId = await resolveExistingActorUserId(tx, input.actorUserId);
       await tx.update(orders).set({
+        ...operationalCompletionOrderPatch(lockedOrder),
         fulfillmentStatus: 'delivered',
         routingTarget: null,
         updatedAt: now.toISOString(),
@@ -280,6 +286,7 @@ export class FulfillmentService {
           administrativelyReconciledQuantity: result.administrativelyReconciledQuantity,
           physicallyFulfilledQuantity: result.physicallyFulfilledQuantity,
           allocations: result.allocations,
+          completedFulfillmentJobIds: result.completedFulfillmentJobIds,
           reconciliationTimestamp: now.toISOString(),
           shipmentOrPickupEvidenceCreated: false,
           billingAutomationSuppressed: true,
@@ -301,9 +308,7 @@ export class FulfillmentService {
           routingTarget: lockedOrder.routingTarget,
         },
         newValues: {
-          // This override reconciles fulfillment from already-complete line
-          // facts; it must not fabricate an Order production-state mutation.
-          state: lockedOrder.state,
+          ...operationalCompletionOrderPatch(lockedOrder),
           fulfillmentStatus: 'delivered',
           routingTarget: null,
           reason: input.reason,
@@ -318,12 +323,13 @@ export class FulfillmentService {
           billingAutomationSuppressed: true,
         },
       } as any);
+      return { ...result, alreadyCompleted: false };
     });
 
     await this.reconcileOrderAutoCloseAfterFulfillment(orgId, input.orderId, input.actorUserId, 'historical_fulfillment_reconciliation', {
       sourceInvoiceId: input.sourceInvoiceId ?? null,
     });
-    return { alreadyCompleted: false, remainingFulfillmentQuantity, reconciliationNote, ...reconciliation };
+    return { ...reconciliation, remainingFulfillmentQuantity: reconciliation.remainingQuantity, previousRemainingFulfillmentQuantity: remainingFulfillmentQuantity, reconciliationNote };
   }
 
   private isOrderProductionComplete(order: {
@@ -892,6 +898,7 @@ export class FulfillmentService {
         fulfillmentStatus: terminal ? 'delivered' : fulfilledQuantity > 0 ? 'packed' : 'pending',
         routingTarget: terminal ? null : 'fulfillment',
         ...(reopeningClosedOrder ? { state: 'production_complete', status: 'ready_for_shipment' } : {}),
+        ...(!terminal && order.status === OPERATIONALLY_COMPLETE_STATUS ? { status: 'ready_for_shipment', canonicalState: 'ready' } : {}),
         updatedAt: now.toISOString(),
       }).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
       if (sourceType === 'PICKUP_HANDOFF' && pickupTicketId) {

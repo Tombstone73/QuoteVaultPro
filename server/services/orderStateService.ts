@@ -196,6 +196,7 @@ export async function transitionOrderState(args: {
   }
 
   const currentState = order.state as OrderState;
+  if (order.status === 'operationally_complete' && nextState === 'production_complete') return order;
   const now = new Date().toISOString();
 
   // Prepare update data

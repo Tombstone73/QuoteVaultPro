@@ -3,6 +3,8 @@ import { db } from "../db";
 import { auditLogs, invoices, orderAuditLog, orderLineItems, orders, products } from "@shared/schema";
 import { mapStateToLegacyStatus } from "./orderStateService";
 import { assessOrderAutoClose, isApplicableOrderInvoice, type OrderAutoCloseDecision } from "./orderAutoClosePolicy";
+import { FulfillmentDashboardRepo } from './fulfillment/repository';
+import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
 
 export type OrderAutoCloseResult = OrderAutoCloseDecision & { orderId: string };
 
@@ -24,6 +26,7 @@ export async function reconcileOrderAutoClose(input: {
     const [order] = await tx.select({
       id: orders.id,
       state: orders.state,
+      status: orders.status,
       fulfillmentStatus: orders.fulfillmentStatus,
       routingTarget: orders.routingTarget,
     }).from(orders).where(and(
@@ -31,6 +34,23 @@ export async function reconcileOrderAutoClose(input: {
       eq(orders.id, input.orderId),
     )).for("update").limit(1);
     if (!order) return { action: "no_op", reason: "ORDER_NOT_FOUND" } as const;
+
+    // Physical fulfillment and administrative fulfillment share the same
+    // canonical quantities. Project operational completion before considering
+    // payment, so unpaid invoices cannot leave a ready-for-shipment label.
+    if (order.state === 'production_complete') {
+      const repository = new FulfillmentDashboardRepo(tx as any);
+      const lines = await repository.listLineEligibility(input.organizationId, { orderIds: [input.orderId] }, tx as any);
+      const complete = lines.length > 0 && lines.every(({ projection: p }) =>
+        p.remainingQuantity === 0 && (!p.requiresFulfillment || p.productionCompleteQuantity >= p.orderedQuantity));
+      if (!complete) return { action: 'not_eligible', reason: 'OPERATIONAL_COMPLETION_REQUIRED' } as const;
+      await repository.assertNoActiveProduction(input.organizationId, input.orderId, tx as any);
+      if (order.status !== 'operationally_complete' || order.routingTarget === 'fulfillment') {
+        await tx.update(orders).set({ ...operationalCompletionOrderPatch(order), updatedAt: sql`now()` as any })
+          .where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, input.orderId)));
+        order.routingTarget = null;
+      }
+    }
 
     const lineRows = await tx.select({ productId: orderLineItems.productId, status: orderLineItems.status })
       .from(orderLineItems).where(eq(orderLineItems.orderId, input.orderId));

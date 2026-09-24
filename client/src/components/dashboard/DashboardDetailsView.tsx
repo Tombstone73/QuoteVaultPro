@@ -434,7 +434,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
             ) : filteredOrders.map((o: any) => (
               <TableRow key={o.id} className="cursor-pointer" onClick={() => navigate(ROUTES.orders.detail(o.id), { state: { referrer: buildReferrer(location) } })}>
                 <TableCell className="font-medium">{o.orderNumber || "—"}</TableCell>
-                <TableCell>{o.status || "—"}</TableCell>
+                <TableCell>{o.status === "operationally_complete" ? "Operationally Complete" : o.status || "—"}</TableCell>
                 <TableCell>{formatOrderDate(o.dueDate, "short")}</TableCell>
                 <TableCell>{o.customer?.companyName || o.customerName || "—"}</TableCell>
                 <TableCell className="text-right">{formatCurrency(o.total)}</TableCell>

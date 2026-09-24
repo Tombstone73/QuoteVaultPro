@@ -50,6 +50,7 @@ export function mapLegacyStatusToCategory(status: string): WorkflowCategory {
     case "ready_for_shipment":
       return "ready";
     case "completed":
+    case "operationally_complete":
       return "completed";
     case "canceled":
       return "canceled";
@@ -368,6 +369,9 @@ export async function updateOrderWorkflowStatus(args: {
 
     if (!orderRow) {
       throw new Error("Order not found");
+    }
+    if (orderRow.status === 'operationally_complete') {
+      throw new Error('Operationally complete orders require an explicit operational reopen before changing workflow status.');
     }
 
     let fromStatusLabel: string | null = null;

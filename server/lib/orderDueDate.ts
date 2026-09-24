@@ -59,11 +59,12 @@ export function orderDueDatePredicate(filter: OrderDueFilter, datePart: string):
     : sql`${dateExpression} = ${datePart}::date`;
 }
 
-/** Production-complete Orders remain operational until closed/canceled. */
+/** Financially open Orders with completed operations are not actionable due work. */
 export function activeOrderDuePredicates(filter: OrderDueFilter, datePart: string): SQL[] {
   return [
     orderDueDatePredicate(filter, datePart),
     not(eq(orders.state, "closed")),
     not(eq(orders.state, "canceled")),
+    not(eq(orders.status, "operationally_complete")),
   ];
 }

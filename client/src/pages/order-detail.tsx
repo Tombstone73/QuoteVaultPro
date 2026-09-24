@@ -2182,14 +2182,14 @@ export default function OrderDetail() {
           </div>
 
             <div className="flex flex-1 items-center justify-center px-4">
-            <OrderStatusPillSelector
+            {order.status === 'operationally_complete' ? <OrderStatusBadge status={order.status} /> : <OrderStatusPillSelector
               orderId={order.id}
               currentState={order.state as OrderState}
               currentPillId={order.statusPillId}
               currentPillValue={order.statusPillValue}
               disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
               className="h-10 w-[260px] rounded-full text-base"
-            />
+            />}
             </div>
 
             <ListDetailNavigator
@@ -2702,6 +2702,12 @@ export default function OrderDetail() {
                       </div>
                     )}
                 
+                {order.status === 'operationally_complete' && (
+                  <div className="space-y-1">
+                    <OrderStatusBadge status={order.status} />
+                    <p className="text-sm text-muted-foreground">Nothing remains to produce, ship, deliver, or pick up. Invoice balances and payment remain separate.</p>
+                  </div>
+                )}
                 {/* State Transition Actions */}
                 {isAdminOrOwner && (
                   <div className="flex gap-2 flex-wrap">

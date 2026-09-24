@@ -740,7 +740,7 @@ export const assistantOrderDueSummaryInputSchema = z.object({
     end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   }).strict().optional(),
   customer: assistantOrderDueCustomerFilterSchema.optional(),
-  status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "closed", "canceled", "cancelled"]).optional(),
+  status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "operationally_complete", "completed", "closed", "canceled", "cancelled"]).optional(),
   limit: z.number().int().min(1).max(20).optional(),
   includeOperationalSummary: z.boolean().optional(),
 }).strict().superRefine((value, ctx) => {

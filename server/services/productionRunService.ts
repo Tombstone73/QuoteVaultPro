@@ -1342,7 +1342,10 @@ async function markCompletedRunOrdersReadyForFulfillment(tx: any, input: {
       routingTarget: FULFILLMENT_STATION_KEY,
       productionCompletedAt: sql`coalesce(${orders.productionCompletedAt}, now()::text)`,
       updatedAt: sql`now()`,
-    } as any).where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, orderId)));
+    } as any).where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, orderId),
+      sql`${orders.state} not in ('closed', 'canceled')`,
+      sql`${orders.status} <> 'operationally_complete'`,
+    ));
   }
 }
 

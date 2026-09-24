@@ -83,7 +83,7 @@ const row = {
   statusPillValue: "Design Needed",
 };
 
-async function renderCell(currentRow = row) {
+async function renderCell(currentRow: React.ComponentProps<typeof OrdersListStatusCell>['row'] = row) {
   const { act } = require("react") as typeof import("react");
   const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -94,6 +94,13 @@ async function renderCell(currentRow = row) {
 }
 
 describe("Orders list status cell", () => {
+  test('operational completion takes precedence over an old ready-for-shipment pill', async () => {
+    const { act, container, root } = await renderCell({ ...row, state: 'production_complete', status: 'operationally_complete', statusPillValue: 'Ready for Shipment' });
+    expect(container.textContent).toBe('Operationally Complete');
+    expect(container.querySelector('[data-testid="status-select"]')).toBeNull();
+    await act(async () => root.unmount());
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  });
   beforeEach(() => {
     mockMutate.mockReset();
     mockUseOrderStatusPills.mockReturnValue({ data: pills, isLoading: false });

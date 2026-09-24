@@ -3766,7 +3766,7 @@ export const orders = pgTable("orders", {
   // enforces that at least one of customerId/contactId is present.
   customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
-  status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
+  status: varchar("status", { length: 50 }).notNull().default("new"), // Legacy projection plus operationally_complete; financial lifecycle is held in state.
   // TitanOS State Architecture (canonical workflow states)
   state: varchar("state", { length: 50 }).notNull().default("open"), // open, production_complete, closed, canceled
   // Per-org configurable workflow status system (Phase 1)
@@ -3907,7 +3907,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   organizationId: true,
 }).extend({
   orderNumber: z.string().min(1),
-  status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "canceled"]).default("new"),
+  status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "operationally_complete", "completed", "canceled"]).default("new"),
   state: z.enum(["open", "production_complete", "closed", "canceled"]).default("open"),
   statusPillValue: z.string().max(100).optional().nullable(),
   paymentStatus: z.enum(["unpaid", "partial", "paid"]).default("unpaid"),

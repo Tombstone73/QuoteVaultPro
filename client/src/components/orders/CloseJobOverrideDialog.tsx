@@ -170,6 +170,9 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
         queryClient.invalidateQueries({ queryKey: ["invoices"] }),
         queryClient.invalidateQueries({ queryKey: ["orders"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboardSummary"] }),
+        queryClient.invalidateQueries({ queryKey: ["fulfillment"] }),
+        queryClient.invalidateQueries({ predicate: query => query.queryKey.some(key => typeof key === 'string' && key.includes('production')) }),
       ]);
       toast({ title: "Job operationally completed", description: "Production and fulfillment were reconciled. Invoice and payment status were not changed." });
       resetAndClose();

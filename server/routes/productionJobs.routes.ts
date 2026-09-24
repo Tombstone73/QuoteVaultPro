@@ -213,9 +213,10 @@ export async function markOrderReadyForFulfillmentIfProductionComplete(
     })
     .from(orders)
     .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId)))
+    .for('update')
     .limit(1);
 
-  if (!order || isCanceledOrder(order)) {
+  if (!order || isCanceledOrder(order) || order.state === 'closed' || order.status === 'operationally_complete') {
     return { changed: false, reason: "order_missing_or_canceled" as const };
   }
 
