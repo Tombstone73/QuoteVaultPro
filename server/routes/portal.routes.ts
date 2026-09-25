@@ -1,4 +1,6 @@
 import type { Express, Request, Response } from "express";
+import { stripeDiagnosticHandler, stripeDiagnosticLimiter } from "../services/stripePaymentDiagnostics";
+import { getPortalStripeDiagnosticScope } from "../services/portal.service";
 import { Readable } from "node:stream";
 import { promises as fsPromises } from "node:fs";
 
@@ -391,6 +393,8 @@ export function registerPortalRoutes(
   app.get("/api/portal/invoices/:id/files/:fileId", ...portalMiddlewares, portalFileDownload(getPortalInvoiceFileDownload));
   app.get("/api/portal/invoices/:id/payments", ...portalMiddlewares, portalGetById("id", listPortalInvoicePayments));
   app.get("/api/portal/invoices/:id/payments/stripe/runtime-config", ...portalMiddlewares, portalGetById("id", getPortalStripeRuntimeConfig));
+  app.post("/api/portal/invoices/:id/payments/stripe/diagnostics", stripeDiagnosticLimiter, ...portalPaymentMiddlewares,
+    stripeDiagnosticHandler((req) => getPortalStripeDiagnosticScope(req, req.params.id), ["portal_invoice", "grouped_portal_invoices"]));
   app.post("/api/portal/invoices/:id/payments/stripe/create-intent", ...portalPaymentMiddlewares, portalPostById("id", createPortalStripePaymentIntent));
   app.post("/api/portal/payments/stripe/create-intent", ...portalPaymentMiddlewares, portalPost(createPortalGroupedStripePaymentIntent));
   app.post("/api/portal/payments/stripe/confirm", ...portalPaymentMiddlewares, portalPost(confirmPortalGroupedStripePayment));

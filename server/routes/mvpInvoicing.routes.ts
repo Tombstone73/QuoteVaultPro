@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema, stripeRefundRequests } from "../../shared/schema";
+import { stripeDiagnosticHandler, stripeDiagnosticLimiter } from "../services/stripePaymentDiagnostics";
 import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceSendStatus, getInvoiceSendStatuses, getInvoiceWithRelations, listInvoicesPageForOrganization, refreshInvoiceStatus, type InvoiceListColumnFilters, voidManualPaymentCanonical } from "../invoicesService";
 import { buildInvoiceEmailSentAudit } from "../lib/invoiceEmailAudit";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
@@ -921,6 +922,14 @@ export async function registerMvpInvoicingRoutes(
       return res.status(500).json({ success: false, error: "Unable to prepare Stripe payment configuration" });
     }
   });
+
+  app.post("/api/invoices/:id/payments/stripe/diagnostics", stripeDiagnosticLimiter, isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []),
+    stripeDiagnosticHandler(async (req) => {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return null;
+      const rel = await getInvoiceWithRelations(req.params.id);
+      return rel && rel.invoice.organizationId === organizationId ? { organizationId, invoiceId: rel.invoice.id } : null;
+    }, ["staff_payment"]));
 
   // ------------------------------------------------------------
   // Stripe: Create PaymentIntent for invoice (full payment only)

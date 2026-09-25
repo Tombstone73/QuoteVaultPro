@@ -1,4 +1,6 @@
 import type { Express, Request, Response } from "express";
+import { stripeDiagnosticHandler, stripeDiagnosticLimiter } from "../services/stripePaymentDiagnostics";
+import { getGuestStripeDiagnosticScope } from "../services/guestInvoicePayment.service";
 import { confirmGuestStripePayment, createGuestStripePaymentIntent, getGuestInvoice, getGuestStripeRuntimeConfig } from "../services/guestInvoicePayment.service";
 
 function sendError(res: Response, error: any) {
@@ -9,6 +11,8 @@ function sendError(res: Response, error: any) {
   return res.status(status).json({ success: false, message: safeMessage });
 }
 export function registerGuestInvoicePaymentRoutes(app: Express) {
+  app.post("/api/guest/invoices/:token/payments/stripe/diagnostics", stripeDiagnosticLimiter,
+    stripeDiagnosticHandler((req) => getGuestStripeDiagnosticScope(req.params.token), ["guest_invoice"]));
   app.get("/api/guest/invoices/:token", async (req, res) => { try { const data = await getGuestInvoice(req.params.token); return data ? res.setHeader("Referrer-Policy", "no-referrer").json({ success: true, data }) : res.status(404).json({ success: false, message: "Invoice payment link is invalid or expired." }); } catch (e) { return sendError(res, e); } });
   app.get("/api/guest/invoices/:token/payments/stripe/runtime-config", async (req, res) => { try { const data = await getGuestStripeRuntimeConfig(req.params.token); return data ? res.json({ success: true, data }) : res.status(404).json({ success: false }); } catch (e) { return sendError(res, e); } });
   app.post("/api/guest/invoices/:token/payments/stripe/create-intent", async (req, res) => { try { const data = await createGuestStripePaymentIntent(req.params.token); return data ? res.json({ success: true, data }) : res.status(404).json({ success: false }); } catch (e) { return sendError(res, e); } });

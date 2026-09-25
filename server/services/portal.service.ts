@@ -1896,6 +1896,13 @@ export async function listPortalInvoicePayments(req: Request, invoiceId: string)
   return rows.map(mapPayment);
 }
 
+/** Read-only diagnostic authority, using the same tenant/customer invoice scope. */
+export async function getPortalStripeDiagnosticScope(req: Request, invoiceId: string) {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  return invoice ? { organizationId: scope.organizationId, invoiceId: invoice.id } : null;
+}
+
 /** Browser-safe Stripe configuration, scoped to the authenticated portal invoice. */
 export async function getPortalStripeRuntimeConfig(req: Request, invoiceId: string): Promise<StripeBrowserRuntimeConfig | null> {
   const scope = getPortalScope(req);

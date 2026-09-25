@@ -1,21 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { getStripePromise } from '@/lib/stripeClient';
+import { createStripePaymentDiagnostics, type StripePaymentDiagnostics } from '@/lib/stripePaymentDiagnostics';
+import { safeStripeDiagnosticError } from '@shared/stripePaymentDiagnostics';
 import { isStripePaymentConfirmSucceeded, type StripePaymentConfirmResponse } from '@shared/stripePaymentConfirm';
 
-const DEV = Boolean((import.meta as any).env?.DEV);
-
 /**
- * Generate a unique session ID for debugging Elements lifecycle.
- * Each dialog open gets a new session ID.
+ * Fallback suffix for checkout idempotency in browsers without randomUUID.
  */
 let sessionCounter = 0;
 function nextSessionId() {
   return `stripe-session-${++sessionCounter}`;
+}
+
+function applyPaymentViewport(node: HTMLDivElement | null) {
+  const viewport = window.visualViewport;
+  const height = viewport?.height ?? window.innerHeight;
+  node?.style.setProperty('--payment-viewport-height', `${height}px`);
+  node?.style.setProperty('--payment-viewport-center', `${(viewport?.offsetTop ?? 0) + height / 2}px`);
 }
 
 /**
@@ -35,7 +41,7 @@ function StripePayInner(props: {
   apiBasePath: string;
   onClose: () => void;
   onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
-  sessionId: string;
+  diagnostics: StripePaymentDiagnostics | null;
 }) {
   const isMultiInvoice = (props.invoiceIds?.length || 1) > 1;
   const stripe = useStripe();
@@ -44,70 +50,34 @@ function StripePayInner(props: {
   const [submitting, setSubmitting] = useState(false);
   const [awaitingReconciliation, setAwaitingReconciliation] = useState(false);
   const [paymentElementReady, setPaymentElementReady] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
-  const confirmAttemptRef = useRef(0);
   const mountedRef = useRef(true);
 
   useEffect(() => {
-    if (DEV) {
-      console.log('[StripePayDialog] StripePayInner mounted', { sessionId: props.sessionId });
-    }
+    mountedRef.current = true;
+    props.diagnostics?.emit('element_mount');
+
     return () => {
       mountedRef.current = false;
-      if (DEV) {
-        console.log('[StripePayDialog] StripePayInner unmounting', { sessionId: props.sessionId });
-      }
+      props.diagnostics?.emit('element_unmount');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (DEV) {
-      console.log('[StripePayDialog] clientSecret changed (inner)', {
-        sessionId: props.sessionId,
-        hasClientSecret: Boolean(props.clientSecret),
-      });
-    }
     // Reset ready state if clientSecret changes (new intent).
     setPaymentElementReady(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.clientSecret]);
 
-  useEffect(() => {
-    if (!DEV) return;
-    const hasStripe = Boolean(stripe);
-    const hasElements = Boolean(elements);
-    const hasPaymentEl = Boolean(elements?.getElement(PaymentElement));
-    console.log('[StripePayDialog] readiness check', {
-      sessionId: props.sessionId,
-      hasStripe,
-      hasElements,
-      paymentElementReady,
-      hasPaymentEl,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stripe, elements, paymentElementReady]);
-
   const handleConfirm = async () => {
-    confirmAttemptRef.current += 1;
-    const attempt = confirmAttemptRef.current;
-    if (DEV) {
-      console.log('[StripePayDialog] Pay clicked', { sessionId: props.sessionId, attempt });
-    }
-
     // Guard: confirmPayment requires a mounted PaymentElement.
     if (!stripe || !elements || !props.clientSecret) {
-      if (DEV) console.log('[StripePayDialog] confirm blocked (missing stripe/elements/clientSecret)');
       return;
     }
     const paymentElement = elements.getElement(PaymentElement);
     if (!paymentElementReady || !paymentElement) {
-      if (DEV) {
-        console.log('[StripePayDialog] confirm blocked (PaymentElement not ready)', {
-          paymentElementReady,
-          hasPaymentEl: Boolean(paymentElement),
-        });
-      }
       toast({
         title: 'Payment form is still loading',
         description: 'Please wait for the card fields to load, then try again.',
@@ -116,21 +86,16 @@ function StripePayInner(props: {
       return;
     }
 
-    if (DEV) {
-      console.log('[StripePayDialog] confirmPayment starting', {
-        sessionId: props.sessionId,
-        attempt,
-        hasStripe: Boolean(stripe),
-        hasElements: Boolean(elements),
-        hasPaymentEl: Boolean(paymentElement),
-      });
-    }
-
     setSubmitting(true);
+    setPaymentError(null);
+    let stage: 'submit_result' | 'confirm_result' = 'submit_result';
     try {
       // Validate form data before confirming
       const submitResult = await elements.submit();
+      props.diagnostics?.emit('submit_result', { success: !submitResult.error,
+        ...(submitResult.error ? { error: safeStripeDiagnosticError(submitResult.error) } : {}) });
       if (submitResult.error) {
+        setPaymentError(submitResult.error.message || 'Please check your payment details.');
         toast({
           title: 'Validation failed',
           description: submitResult.error.message || 'Please check your payment details.',
@@ -139,6 +104,7 @@ function StripePayInner(props: {
         return;
       }
 
+      stage = 'confirm_result';
       const result = await stripe.confirmPayment({
         elements,
         confirmParams: {
@@ -146,17 +112,11 @@ function StripePayInner(props: {
         },
         redirect: 'if_required',
       });
-
-      if (DEV) {
-        console.log('[StripePayDialog] confirmPayment result', {
-          sessionId: props.sessionId,
-          hasError: Boolean(result.error),
-          errorType: result.error?.type,
-          paymentIntentStatus: result.paymentIntent?.status,
-        });
-      }
+      props.diagnostics?.emit('confirm_result', { success: !result.error,
+        ...(result.error ? { error: safeStripeDiagnosticError(result.error) } : {}) });
 
       if (result.error) {
+        setPaymentError(result.error.message || 'Please try again.');
         toast({
           title: 'Payment failed',
           description: result.error.message || 'Please try again.',
@@ -184,22 +144,16 @@ function StripePayInner(props: {
           if (!confirmRes.ok) {
             console.warn('[StripePayDialog] Confirm endpoint failed, relying on webhook', {
               status: confirmRes.status,
-              sessionId: props.sessionId,
+              sessionId: props.diagnostics?.sessionId,
             });
           } else {
             const confirmData = await confirmRes.json() as StripePaymentConfirmResponse & { data?: { finalized?: boolean } };
             if (props.groupedInitiation ? confirmData?.data?.finalized === true : isStripePaymentConfirmSucceeded(confirmData)) {
               serverConfirmed = true;
-              if (DEV) {
-                console.log('[StripePayDialog] Payment confirmed', {
-                  sessionId: props.sessionId,
-                  paymentStatus: confirmData.data.paymentStatus,
-                });
-              }
             }
           }
         } catch (confirmErr) {
-          console.warn('[StripePayDialog] Confirm call failed, relying on webhook', confirmErr);
+          // Processor reconciliation remains authoritative; never log raw exceptions.
         }
       }
 
@@ -220,10 +174,11 @@ function StripePayInner(props: {
           paymentIntentId: result.paymentIntent.id,
         })).reconciled;
       } catch (refreshError) {
-        console.warn('[StripePayDialog] Settlement refresh failed', refreshError);
+        // No raw exception payloads in payment diagnostics.
       }
 
       if (reconciled) {
+        props.diagnostics?.emit('dialog_success');
         // Close only after the authoritative invoice and payment-history fetch
         // has observed the canonical succeeded payment.
         setTimeout(() => {
@@ -236,6 +191,11 @@ function StripePayInner(props: {
           description: 'Waiting for processor reconciliation. This invoice will remain open until its payment state is confirmed.',
         });
       }
+    } catch (error) {
+      props.diagnostics?.emit(stage, { success: false, error: safeStripeDiagnosticError(error) });
+      const message = 'Unable to validate or submit payment. Please check your connection and try again.';
+      setPaymentError(message);
+      toast({ title: 'Payment could not continue', description: message, variant: 'destructive' });
     } finally {
       if (mountedRef.current) setSubmitting(false);
     }
@@ -243,18 +203,22 @@ function StripePayInner(props: {
 
   return (
     <>
-      <div className="space-y-4">
+      <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden overscroll-contain pr-1" data-testid="stripe-payment-scroll-body">
+        {isMultiInvoice ? <div className="flex min-h-0 shrink flex-col rounded-md border text-sm"><p className="shrink-0 px-3 pb-2 pt-3 font-medium">{props.invoiceIds?.length} invoices selected</p><div className="min-h-0 max-h-[min(15rem,32dvh)] space-y-2 overflow-y-auto overscroll-contain px-3 pb-3" data-testid="stripe-invoice-scroll-region">{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex min-w-0 justify-between gap-4"><span className="min-w-0 truncate">Invoice {invoice.invoiceNumber}</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}</div><div className="flex shrink-0 justify-between gap-4 border-t px-3 py-3 font-semibold"><span>Total Due</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
         {/* Guard rendering with clientSecret in parent; onReady confirms the PaymentElement is mounted. */}
         <PaymentElement
           onReady={() => {
-            if (DEV) {
-              console.log('[StripePayDialog] PaymentElement onReady fired', {
-                sessionId: props.sessionId,
-              });
-            }
             setPaymentElementReady(true);
+            props.diagnostics?.emit('element_ready');
+          }}
+          onChange={(event) => props.diagnostics?.emit('element_change', { elementType: 'payment', complete: event.complete, empty: event.empty })}
+          onLoadError={(event) => {
+            setPaymentElementReady(false);
+            setPaymentError(event.error.message || 'Unable to load the payment form. Please close and reopen it.');
+            props.diagnostics?.emit('element_load_error', { error: safeStripeDiagnosticError(event.error) });
           }}
         />
+        {paymentError ? <p role="alert" className="text-sm text-destructive">{paymentError}</p> : null}
         {!paymentElementReady ? (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>
         ) : null}
@@ -263,13 +227,14 @@ function StripePayInner(props: {
             Payment received. Waiting for processor reconciliation…
           </div>
         ) : null}
+        {props.developerPreviewPayment ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-950">
+            Developer preview: payment submission enabled. This will create a real payment.
+          </p>
+        ) : null}
+        {props.diagnostics ? <p className="break-all text-xs text-muted-foreground">Payment reference: {props.diagnostics.sessionId}</p> : null}
       </div>
-      {props.developerPreviewPayment ? (
-        <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-950">
-          Developer preview: payment submission enabled. This will create a real payment.
-        </p>
-      ) : null}
-      <DialogFooter>
+      <DialogFooter className="shrink-0">
         <Button variant="outline" onClick={props.onClose} disabled={submitting}>
           Close
         </Button>
@@ -341,35 +306,55 @@ export default function StripePayDialog(props: {
   // This prevents <Elements> from being unmounted/remounted due to state changes.
   const clientSecretRef = useRef<string | null>(null);
   const elementsOptionsRef = useRef<{ clientSecret: string } | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
 
   // Track if intent request has been initiated for this open session.
   const intentRequestedRef = useRef(false);
 
   const frozenClientSecret = clientSecretRef.current;
   const frozenElementsOptions = elementsOptionsRef.current;
-  const currentSessionId = sessionIdRef.current;
   const checkoutIdempotencyKeyRef = useRef<string | null>(null);
+  const diagnosticsRef = useRef<StripePaymentDiagnostics | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const attachDialog = useCallback((node: HTMLDivElement | null) => {
+    dialogRef.current = node;
+    applyPaymentViewport(node);
+  }, []);
 
   useEffect(() => {
-    if (DEV) {
-      console.log('[StripePayDialog] Dialog open changed', {
-        open: props.open,
-      });
-    }
+    if (!props.open) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const updateViewport = () => {
+      applyPaymentViewport(dialogRef.current);
+      clearTimeout(timer);
+      timer = setTimeout(() => diagnosticsRef.current?.emit('viewport_change'), 250);
+    };
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('scroll', updateViewport);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', updateViewport);
+      window.visualViewport?.removeEventListener('resize', updateViewport);
+      window.visualViewport?.removeEventListener('scroll', updateViewport);
+    };
+  }, [props.open]);
 
+  useEffect(() => () => {
+    diagnosticsRef.current?.emit('dialog_close');
+    diagnosticsRef.current?.flush();
+  }, []);
+
+  useEffect(() => {
     if (!props.open) {
+      diagnosticsRef.current?.emit('dialog_close');
+      diagnosticsRef.current?.flush();
+      diagnosticsRef.current = null;
       // Dialog closed - reset everything for next open.
-      if (DEV && sessionIdRef.current) {
-        console.log('[StripePayDialog] Dialog closed, resetting state', {
-          sessionId: sessionIdRef.current,
-        });
-      }
       setState('idle');
       setIntentError(null);
       clientSecretRef.current = null;
       elementsOptionsRef.current = null;
-      sessionIdRef.current = null;
       intentRequestedRef.current = false;
       checkoutIdempotencyKeyRef.current = null;
       setRuntimeConfig(null);
@@ -387,17 +372,13 @@ export default function StripePayDialog(props: {
     // Start a new payment session.
     intentRequestedRef.current = true;
     const sessionId = nextSessionId();
-    sessionIdRef.current = sessionId;
+    try {
+      diagnosticsRef.current = createStripePaymentDiagnostics(apiBasePath, props.invoiceId, props.groupedInitiation);
+      diagnosticsRef.current.emit('dialog_open');
+    } catch { diagnosticsRef.current = null; } // Unsupported telemetry must not stop checkout.
     checkoutIdempotencyKeyRef.current = typeof crypto?.randomUUID === 'function'
       ? crypto.randomUUID()
       : `${sessionId}-${Date.now()}`;
-
-    if (DEV) {
-      console.log('[StripePayDialog] runtime configuration requested', {
-        invoiceId: props.invoiceId,
-        sessionId,
-      });
-    }
 
     const run = async () => {
       setState('loading_runtime_config');
@@ -457,22 +438,14 @@ export default function StripePayDialog(props: {
           throw new Error('Stripe payment account context changed. Please reopen the payment dialog.');
         }
 
-        if (DEV) {
-          console.log('[StripePayDialog] clientSecret received', {
-            sessionId,
-            hasClientSecret: Boolean(secret),
-          });
-        }
-
         // Freeze the secret + options ONCE; never overwrite while the dialog is open.
         clientSecretRef.current = secret;
         elementsOptionsRef.current = { clientSecret: secret };
         setState('ready');
       } catch (e: any) {
+        diagnosticsRef.current?.emit('initialization_error', { error: safeStripeDiagnosticError(e) });
         const message = e?.message || 'Please try again.';
-        if (DEV) {
-          console.error('[StripePayDialog] create-intent failed', { sessionId, error: message });
-        }
+
         toast({
           title: 'Unable to start payment',
           description: message,
@@ -495,11 +468,10 @@ export default function StripePayDialog(props: {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-h-[calc(100dvh-4rem)]">
+      <DialogContent ref={attachDialog} aria-describedby={undefined} style={{ top: 'var(--payment-viewport-center, 50%)' }} className="flex max-h-[calc(var(--payment-viewport-height,100dvh)-2rem)] min-w-0 flex-col overflow-hidden sm:max-h-[calc(var(--payment-viewport-height,100dvh)-4rem)]">
         <DialogHeader className="shrink-0">
           <DialogTitle>{props.previewMode ? 'Payment preview' : isMultiInvoice ? 'Pay Selected Invoices' : 'Pay Invoice'}</DialogTitle>
         </DialogHeader>
-        {isMultiInvoice ? <div className="flex min-h-0 shrink flex-col rounded-md border text-sm"><p className="shrink-0 px-3 pb-2 pt-3 font-medium">{props.invoiceIds?.length} invoices selected</p><div className="min-h-0 max-h-[min(15rem,32dvh)] space-y-2 overflow-y-auto overscroll-contain px-3 pb-3" data-testid="stripe-invoice-scroll-region">{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex min-w-0 justify-between gap-4"><span className="min-w-0 truncate">Invoice {invoice.invoiceNumber}</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}</div><div className="flex shrink-0 justify-between gap-4 border-t px-3 py-3 font-semibold"><span>Total Due</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
 
         {(state === 'loading_runtime_config' || state === 'creating_intent') && (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>
@@ -523,17 +495,17 @@ export default function StripePayDialog(props: {
         {/* Once we have a clientSecret, keep <Elements> mounted until the dialog closes. */}
         {shouldRenderElements && (
           <Elements stripe={stripePromise!} options={frozenElementsOptions!}>
-        <StripePayInner
-          invoiceId={props.invoiceId}
-          invoiceIds={props.invoiceIds}
-          invoiceSummaries={props.invoiceSummaries}
-          groupedInitiation={props.groupedInitiation}
-          developerPreviewPayment={Boolean(props.previewMode && props.previewPaymentAuthorized)}
+            <StripePayInner
+              invoiceId={props.invoiceId}
+              invoiceIds={props.invoiceIds}
+              invoiceSummaries={props.invoiceSummaries}
+              groupedInitiation={props.groupedInitiation}
+              developerPreviewPayment={Boolean(props.previewMode && props.previewPaymentAuthorized)}
               clientSecret={frozenClientSecret!}
               apiBasePath={apiBasePath}
               onClose={close}
               onSettled={props.onSettled}
-              sessionId={currentSessionId!}
+              diagnostics={diagnosticsRef.current}
             />
           </Elements>
         )}

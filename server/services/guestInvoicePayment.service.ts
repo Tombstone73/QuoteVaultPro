@@ -10,6 +10,7 @@ import {
   createPortalStripePaymentIntent,
   getPortalInvoice,
   getPortalStripeRuntimeConfig,
+  getPortalStripeDiagnosticScope,
 } from "./portal.service";
 
 const GUEST_TOKEN_TTL_DAYS = 30;
@@ -86,6 +87,10 @@ export async function getGuestInvoice(rawToken: string) {
 export async function getGuestStripeRuntimeConfig(rawToken: string) {
   const req = await guestRequest(rawToken);
   return req ? getPortalStripeRuntimeConfig(req, (req as any).guestPaymentScope.invoiceId) : null;
+}
+export async function getGuestStripeDiagnosticScope(rawToken: string) {
+  const req = await guestRequest(rawToken);
+  return req ? getPortalStripeDiagnosticScope(req, (req as any).guestPaymentScope.invoiceId) : null;
 }
 export async function createGuestStripePaymentIntent(rawToken: string) {
   const req = await guestRequest(rawToken);
