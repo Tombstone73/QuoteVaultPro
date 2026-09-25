@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import { ArtworkApplicationService, type ArtworkTransaction, type ArtworkTransactionRunner } from "../../src/modules/artwork/artworkApplication";
 import type { ArtworkAssignment, ArtworkFile, ArtworkMutationResult } from "../../src/modules/artwork/contracts";
 import { brandedId } from "../../src/modules/shared/commercialValues";
+import { V2ApplicationError } from "../../src/errors/applicationError";
 
 const org = "art-org";
 const principal = { kind: "staff" as const, organizationId: org, userId: "staff", authority: { membershipId: "membership", capabilities: ["artwork.view", "artwork.adopt", "artwork.assign"] as const } };
@@ -10,13 +11,23 @@ const usage = (overrides: object = {}) => ({ orderId: brandedId<"OrderId">("orde
 const input = (id: string, overrides: object = {}) => ({ businessRequestId: id, objectReference: { storageProvider: "test", objectKey: `object/${id}` }, originalFilename: "sign.pdf", contentType: "application/pdf", byteSize: 12, source: "customer_upload" as const, usage: usage(), ...overrides });
 
 class MemoryArtworkTransaction implements ArtworkTransaction {
+  readonly removals = new Map<string, NonNullable<ArtworkMutationResult["removal"]>>();
+  readonly inUse = new Set<string>();
+  async removeAssignment(input: Parameters<ArtworkTransaction["removeAssignment"]>[0]) {
+    const assignment = this.assignments.get(input.artworkAssignmentId);
+    if (!assignment || assignment.organizationId !== input.organizationId || assignment.orderId !== input.orderId || assignment.orderLineId !== input.orderLineId) throw new V2ApplicationError("NOT_FOUND", "Assignment not found");
+    if (this.inUse.has(assignment.id)) throw new V2ApplicationError("CONFLICT", "Artwork is in use by the current Proof");
+    const removal = this.removals.get(assignment.id) ?? { removedAt: "2026-09-25T00:00:00Z", removedByUserId: input.removedByUserId };
+    this.removals.set(assignment.id, removal);
+    return { assignment, artworkFile: this.files.get(assignment.artworkFileId)!, removal };
+  }
   readonly files = new Map<string, ArtworkFile>(); readonly assignments = new Map<string, ArtworkAssignment>(); readonly requests = new Map<string, ArtworkMutationResult>(); readonly auditRows: unknown[] = [];
   async reserve(input: Parameters<ArtworkTransaction["reserve"]>[0]) { const prior=this.requests.get(input.businessRequestId); return prior ? { kind: "replay" as const, request:{id:input.businessRequestId,resultJson:prior} } : { kind:"new" as const,request:{id:input.businessRequestId,resultJson:null} }; }
   async succeed(_org:string,requestId:string,result:ArtworkMutationResult) { this.requests.set(requestId,result); }
   async attribute() {} async audit(input: Parameters<ArtworkTransaction["audit"]>[0]) { this.auditRows.push(input); }
   async findFile(_org: never, id: never) { return this.files.get(id) ?? null; }
-  async findOrderLineArtwork(_org: never, line: string) { return [...this.assignments.values()].filter((a)=>a.orderLineId===line&&!([...(this.assignments.values())].some((successor)=>successor.supersedesArtworkAssignmentId===a.id))).map((a)=>({assignment:a,file:this.files.get(a.artworkFileId)!})); }
-  async findOrderArtwork(_org: never, orderId: string) { return [...this.assignments.values()].filter((a)=>a.orderId===orderId&&!([...(this.assignments.values())].some((successor)=>successor.supersedesArtworkAssignmentId===a.id))).map((a)=>({assignment:a,file:this.files.get(a.artworkFileId)!})); }
+  async findOrderLineArtwork(_org: never, line: string) { return [...this.assignments.values()].filter((a)=>!this.removals.has(a.id)&&a.orderLineId===line&&!([...(this.assignments.values())].some((successor)=>successor.supersedesArtworkAssignmentId===a.id))).map((a)=>({assignment:a,file:this.files.get(a.artworkFileId)!})); }
+  async findOrderArtwork(_org: never, orderId: string) { return [...this.assignments.values()].filter((a)=>!this.removals.has(a.id)&&a.orderId===orderId&&!([...(this.assignments.values())].some((successor)=>successor.supersedesArtworkAssignmentId===a.id))).map((a)=>({assignment:a,file:this.files.get(a.artworkFileId)!})); }
   async createOrGetFile(input: Parameters<ArtworkTransaction["createOrGetFile"]>[0]) { const prior=[...this.files.values()].find((f)=>f.objectReference.storageProvider===input.file.objectReference.storageProvider&&f.objectReference.objectKey===input.file.objectReference.objectKey); if(prior)return prior; const f:ArtworkFile={id:input.id,organizationId:input.organizationId,objectReference:input.file.objectReference,originalFilename:input.file.originalFilename,displayFilename:input.file.displayFilename??input.file.originalFilename,contentType:input.file.contentType,byteSize:input.file.byteSize,source:input.file.source,createdAt:"now",...(input.derivedFromArtworkFileId?{derivedFromArtworkFileId:input.derivedFromArtworkFileId}:{})};this.files.set(f.id,f);return f; }
   async createOrGetAssignment(input: Parameters<ArtworkTransaction["createOrGetAssignment"]>[0]) { const prior=[...this.assignments.values()].find((a)=>a.artworkFileId===input.artworkFileId&&a.orderLineId===input.usage.orderLineId&&a.purpose===input.usage.purpose&&a.side===input.usage.side&&a.sourcePageIndex===input.usage.sourcePageIndex&&a.layerKey===input.usage.layerKey&&a.layerOrder===input.usage.layerOrder);if(prior)return prior;const a:ArtworkAssignment={id:input.id,organizationId:input.organizationId,artworkFileId:input.artworkFileId,orderId:input.usage.orderId,orderLineId:input.usage.orderLineId,purpose:input.usage.purpose,createdAt:"now",...(input.usage.side?{side:input.usage.side}:{}),...(input.usage.sourcePageIndex!==undefined?{sourcePageIndex:input.usage.sourcePageIndex}:{}),...(input.usage.layerKey?{layerKey:input.usage.layerKey}:{}),...(input.usage.layerOrder!==undefined?{layerOrder:input.usage.layerOrder}:{})};this.assignments.set(a.id,a);return a; }
   async createOrGetReplacementAssignment(input: Parameters<ArtworkTransaction["createOrGetReplacementAssignment"]>[0]) { const predecessor=this.assignments.get(input.supersedesArtworkAssignmentId);if(!predecessor||predecessor.orderId!==input.usage.orderId||predecessor.orderLineId!==input.usage.orderLineId||predecessor.purpose!=="customer_supplied"||predecessor.side!==input.usage.side)throw Error("replacement target mismatch");const existing=[...this.assignments.values()].find((a)=>a.supersedesArtworkAssignmentId===input.supersedesArtworkAssignmentId);if(existing)return existing;const a:ArtworkAssignment={id:input.id,organizationId:input.organizationId,artworkFileId:input.artworkFileId,orderId:input.usage.orderId,orderLineId:input.usage.orderLineId,purpose:input.usage.purpose,createdAt:"now",supersedesArtworkAssignmentId:input.supersedesArtworkAssignmentId,...(input.usage.side?{side:input.usage.side}:{})};this.assignments.set(a.id,a);return a; }
@@ -24,6 +35,41 @@ class MemoryArtworkTransaction implements ArtworkTransaction {
 const memory=new MemoryArtworkTransaction(); const runner:ArtworkTransactionRunner={transaction:async(action)=>action(memory)}; const service=new ArtworkApplicationService(runner);
 
 describe("M2.0 Artwork contracts", () => {
+  test("assignment-specific removal retains files/history, isolates other lines and is retryable", async () => {
+    const tx = new MemoryArtworkTransaction();
+    const app = new ArtworkApplicationService({ transaction: async (action) => action(tx) });
+    const a = await app.adopt(context("remove-a"), input("remove-a"));
+    const b = await app.adopt(context("remove-b"), input("remove-b"));
+    const c = await app.adopt(context("remove-c"), input("remove-c"));
+    if (!a.ok || !b.ok || !c.ok) throw Error("setup");
+    const other = await app.assign(context("remove-other"), { businessRequestId: "remove-other", artworkFileId: b.value.artworkFile.id, usage: usage({ orderLineId: brandedId<"OrderLineId">("other-line") }) });
+    if (!other.ok) throw Error("other");
+    const command = { businessRequestId: "remove", artworkAssignmentId: b.value.assignment.id, orderId: b.value.assignment.orderId, orderLineId: b.value.assignment.orderLineId };
+    expect(await app.remove({ ...context("remove"), principal: { ...principal, authority: { ...principal.authority, capabilities: ["artwork.view", "artwork.adopt"] } } }, command)).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+    expect(await app.remove({ ...context("remove"), organizationId: "foreign" }, command)).toMatchObject({ ok: false });
+    expect(await app.remove(context("wrong-line"), { ...command, businessRequestId: "wrong-line", orderLineId: brandedId<"OrderLineId">("wrong") })).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    tx.inUse.add(b.value.assignment.id);
+    expect(await app.remove(context("remove"), command)).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(tx.removals.size).toBe(0);
+    tx.inUse.clear();
+    const removed = await app.remove(context("remove"), command);
+    expect(removed).toMatchObject({ ok: true, value: { assignment: { id: b.value.assignment.id }, removal: { removedByUserId: "staff" } } });
+    const audits = tx.auditRows.length;
+    expect(await app.remove(context("remove"), command)).toEqual(removed);
+    expect(tx.auditRows.length).toBe(audits);
+    expect(await app.remove(context("remove-again"), { ...command, businessRequestId: "remove-again" })).toEqual(removed);
+    expect(tx.removals.size).toBe(1);
+    expect(tx.assignments.get(b.value.assignment.id)).toEqual(b.value.assignment);
+    expect(tx.files.size).toBe(3);
+    expect(tx.assignments.get(other.value.assignment.id)).toEqual(other.value.assignment);
+    const current = await app.listForOrderLine(context("read"), "line");
+    expect(current.ok && current.value.map((entry) => entry.assignment.id)).toEqual([a.value.assignment.id,c.value.assignment.id]);
+    const d = await app.adopt(context("remove-d"), input("remove-d"));
+    expect(d.ok).toBe(true);
+    const after = await app.listForOrderLine(context("read-after"), "line");
+    expect(after.ok && after.value.length).toBe(3);
+    expect(tx.auditRows).toContainEqual(expect.objectContaining({ eventType: "artwork_assignment_removed", resourceId: b.value.assignment.id }));
+  });
   test("one file has customer and production usages without duplication", async () => {
     const adopted=await service.adopt(context("adopt"),input("adopt",{usage:usage({purpose:"customer_supplied"})}));expect(adopted.ok).toBe(true);if(!adopted.ok)return;
     const assigned=await service.assign(context("assign"),{businessRequestId:"assign",artworkFileId:adopted.value.artworkFile.id,usage:usage()});expect(assigned.ok).toBe(true);expect(memory.files.size).toBe(1);expect(memory.assignments.size).toBe(2);

@@ -45,21 +45,43 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
   constructor(private readonly client: PoolClient, private readonly hooks?: Readonly<{ afterFile?: () => Promise<void>; afterAssignment?: () => Promise<void>; afterAudit?: () => Promise<void> }>) {}
   async reserve(input: Parameters<ArtworkTransaction["reserve"]>[0]) { const r = await this.requests.reserve(this.client, input); return { kind: r.kind, request: { id: r.request.id, resultJson: r.request.resultJson } }; }
-  async succeed(organizationId: string, requestId: string, result: Parameters<ArtworkTransaction["succeed"]>[2]) { await this.requests.succeed(this.client, organizationId, requestId, { resourceType: "artwork_file", resourceId: result.artworkFile.id, resultJson: result }); }
-  async attribute(input: Parameters<ArtworkTransaction["attribute"]>[0]) { await this.requests.recordAttribution(this.client, input); }
+  async succeed(organizationId: string, requestId: string, result: Parameters<ArtworkTransaction["succeed"]>[2]) { await this.requests.succeed(this.client, organizationId, requestId, { resourceType: result.removal ? "artwork_assignment" : "artwork_file", resourceId: result.removal ? result.assignment.id : result.artworkFile.id, resultJson: result }); }
+  async attribute(input: Parameters<ArtworkTransaction["attribute"]>[0]) { await this.requests.recordAttribution(this.client, { ...input, operationRequestId: input.requestId }); }
   async audit(input: Parameters<ArtworkTransaction["audit"]>[0]) {
-    await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,'artwork_file',$5,$6,$7,$8,$9::jsonb)", [input.organizationId,input.requestId,input.operation,input.eventType,input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId ?? null,JSON.stringify(input.changes)]);
+    const resourceType = input.eventType === "artwork_assignment_removed" ? "artwork_assignment" : "artwork_file";
+    await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)", [input.organizationId,input.requestId,input.operation,input.eventType,resourceType,input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId ?? null,JSON.stringify(input.changes)]);
     await this.hooks?.afterAudit?.();
   }
   async findFile(organizationId: OrganizationId, artworkFileId: ArtworkFileId): Promise<ArtworkFile | null> {
     const r = await this.client.query<FileRow>("SELECT * FROM v2_artwork_files WHERE organization_id=$1 AND id=$2", [organizationId, artworkFileId]); return r.rows[0] ? file(r.rows[0]) : null;
   }
+  async removeAssignment(input: Parameters<ArtworkTransaction["removeAssignment"]>[0]) {
+    const found = await this.client.query<AssignmentRow>("SELECT * FROM v2_artwork_assignments WHERE organization_id=$1 AND id=$2 AND order_document_id=$3 AND order_line_id=$4", [input.organizationId,input.artworkAssignmentId,input.orderId,input.orderLineId]);
+    const row = found.rows[0];
+    if (!row) throw new V2ApplicationError("NOT_FOUND", "Artwork assignment was not found on this Order line.");
+    const artworkFile = await this.findFile(brandedId<"OrganizationId">(input.organizationId), brandedId<"ArtworkFileId">(row.artwork_file_id));
+    if (!artworkFile) throw new V2ApplicationError("NOT_FOUND", "Artwork file was not found.");
+    const read = () => this.client.query<{removed_at: Date; removed_by_user_id: string}>("SELECT removed_at,removed_by_user_id FROM v2_artwork_assignment_removals WHERE organization_id=$1 AND artwork_assignment_id=$2", [input.organizationId,input.artworkAssignmentId]);
+    let removal = (await read()).rows[0];
+    if (!removal) {
+      try {
+        await this.client.query("INSERT INTO v2_artwork_assignment_removals(organization_id,artwork_assignment_id,removed_by_user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", [input.organizationId,input.artworkAssignmentId,input.removedByUserId]);
+      } catch (cause) {
+        const error = cause as {code?: string; message?: string};
+        if (error.code === "23514") throw new V2ApplicationError("CONFLICT", error.message?.startsWith("Artwork is in use by") ? error.message : "Artwork removal requires a current assignment on an open, unarchived Order.");
+        throw cause;
+      }
+      removal = (await read()).rows[0];
+    }
+    if (!removal) throw new Error("Artwork removal could not reload its authoritative record.");
+    return { artworkFile, assignment: assignment(row), removal: { removedAt: removal.removed_at.toISOString(), removedByUserId: removal.removed_by_user_id } };
+  }
   async findOrderLineArtwork(organizationId: OrganizationId, orderLineId: string): Promise<readonly OrderLineArtworkProjection[]> {
-    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.supersedes_artwork_assignment_id,a.created_at AS assignment_created_at,f.* FROM v2_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_line_id=$2 AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) ORDER BY a.created_at,a.id", [organizationId,orderLineId]);
+    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.supersedes_artwork_assignment_id,a.created_at AS assignment_created_at,f.* FROM v2_current_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_line_id=$2 AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) ORDER BY a.created_at,a.id", [organizationId,orderLineId]);
     return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, supersedes_artwork_assignment_id: row.supersedes_artwork_assignment_id, created_at: row.assignment_created_at }) }));
   }
   async findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]> {
-    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.supersedes_artwork_assignment_id,a.created_at AS assignment_created_at,f.* FROM v2_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_document_id=$2 AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) ORDER BY a.order_line_id,a.created_at,a.id", [organizationId,orderId]);
+    const r = await this.client.query<ProjectionRow>("SELECT a.id AS assignment_id,a.organization_id AS assignment_organization_id,a.artwork_file_id,a.order_document_id,a.order_line_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,a.supersedes_artwork_assignment_id,a.created_at AS assignment_created_at,f.* FROM v2_current_artwork_assignments a JOIN v2_artwork_files f ON f.id=a.artwork_file_id AND f.organization_id=a.organization_id WHERE a.organization_id=$1 AND a.order_document_id=$2 AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) ORDER BY a.order_line_id,a.created_at,a.id", [organizationId,orderId]);
     return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, supersedes_artwork_assignment_id: row.supersedes_artwork_assignment_id, created_at: row.assignment_created_at }) }));
   }
   async createOrGetFile(input: Parameters<ArtworkTransaction["createOrGetFile"]>[0]): Promise<ArtworkFile> {
@@ -80,6 +102,8 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     if (r.rows[0]) { await this.hooks?.afterAssignment?.(); return assignment(r.rows[0]); }
     const existing = await this.client.query<AssignmentRow>("SELECT * FROM v2_artwork_assignments WHERE organization_id=$1 AND order_line_id=$2 AND identity_fingerprint=$3 FOR UPDATE", [input.organizationId,u.orderLineId,fingerprint]);
     if (!existing.rows[0]) throw new Error("Artwork assignment race could not reload its authoritative row.");
+    const removed = await this.client.query("SELECT 1 FROM v2_artwork_assignment_removals WHERE organization_id=$1 AND artwork_assignment_id=$2", [input.organizationId,existing.rows[0].id]);
+    if (removed.rows.length) throw new V2ApplicationError("CONFLICT", "This exact Artwork assignment was removed. It cannot be silently reactivated by another upload or assignment.");
     return assignment(existing.rows[0]);
   }
   async createOrGetReplacementAssignment(input: Parameters<ArtworkTransaction["createOrGetReplacementAssignment"]>[0]): Promise<ArtworkAssignment> {

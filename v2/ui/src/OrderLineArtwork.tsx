@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import type { ArtworkOrderProjection } from "./api";
 import { ArtworkUploadPanel, type ArtworkUploadTarget } from "./ArtworkUploadPanel";
-import { OrderArtworkFile } from "./OrderArtworkFile";
+import { OrderArtworkFile, type ArtworkRemovalAction } from "./OrderArtworkFile";
 
 export const artworkForOrderLine = (
   artwork: readonly ArtworkOrderProjection[],
@@ -37,6 +37,7 @@ type DetailProps = Props &
     canAdopt?: boolean;
     uploadTarget?: ArtworkUploadTarget;
     onUploaded?: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
+    removal?: ArtworkRemovalAction;
   }>;
 const Preview = ({
   organizationId,
@@ -101,6 +102,7 @@ export const OrderLineArtworkDetail = ({
   canAdopt = false,
   uploadTarget,
   onUploaded,
+  removal,
 }: DetailProps) => {
   const [uploading, setUploading] = useState(false);
   if (!canView && !canAdopt)
@@ -147,7 +149,7 @@ export const OrderLineArtworkDetail = ({
         <ul>
           {assigned.map((entry) => (
             <li key={entry.assignment.id}>
-              <OrderArtworkFile organizationId={organizationId} entry={entry} canView />
+              <OrderArtworkFile organizationId={organizationId} entry={entry} canView removal={removal} />
             </li>
           ))}
         </ul>

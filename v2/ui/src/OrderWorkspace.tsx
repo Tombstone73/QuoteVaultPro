@@ -45,8 +45,8 @@ import {
   lineArtworkUploadTarget,
 } from "./OrderLineArtwork";
 import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
-import { OrderArtworkFile } from "./OrderArtworkFile";
-import { cacheOrderArtworkUpload, confirmArtworkProjection, orderArtworkKey } from "./orderArtworkCache";
+import { OrderArtworkFile, type ArtworkRemovalAction } from "./OrderArtworkFile";
+import { cacheOrderArtworkRemoval, cacheOrderArtworkUpload, confirmArtworkProjection, orderArtworkKey } from "./orderArtworkCache";
 import { orderRoutePresentation } from "./orderRoutingPresentation";
 
 const message = (error: unknown): string => {
@@ -81,6 +81,7 @@ export const OrderWorkspace = (
     canViewInvoice: boolean;
     canViewArtwork: boolean;
     canAdoptArtwork?: boolean;
+    canRemoveArtwork?: boolean;
     canViewProofing: boolean;
     canViewProduction: boolean;
     csrfReady: boolean;
@@ -167,9 +168,11 @@ export const OrderWorkspace = (
     props.organizationId,
   );
   const pendingArtwork = useRef(new Map<string, Parameters<typeof cacheOrderArtworkUpload>[2]>());
+  const removedArtwork = useRef(new Map<string, string>());
   const loadOrderArtwork = async () => confirmArtworkProjection(
     await artworkApi.forOrder(props.organizationId, props.orderId),
     [...pendingArtwork.current.values()].filter((result) => result.assignment.orderId === props.orderId),
+    [...removedArtwork.current].filter(([, orderId]) => orderId === props.orderId).map(([id]) => id),
   );
   const artwork = useQuery({
     queryKey: orderArtworkKey(props.sessionScope, props.organizationId, props.orderId),
@@ -195,6 +198,20 @@ export const OrderWorkspace = (
     pendingArtwork.current.delete(result.assignment.id);
     setNotice(reused ? "This Artwork is already assigned to this line. No duplicate was created." : "Artwork uploaded and assigned to this line.");
   };
+  const artworkRemoval: ArtworkRemovalAction | undefined = props.canViewArtwork && props.canRemoveArtwork && current ? {
+    orderNumber: current.number.display,
+    onRemoved: async (result) => {
+      const key = orderArtworkKey(props.sessionScope, props.organizationId, result.assignment.orderId);
+      removedArtwork.current.set(result.assignment.id, result.assignment.orderId);
+      pendingArtwork.current.delete(result.assignment.id);
+      await cacheOrderArtworkRemoval(queryClient, key, result.assignment.id);
+      setNotice("Artwork removed from the current job. File and history retained.");
+      try {
+        await queryClient.fetchQuery({ queryKey: key, queryFn: loadOrderArtwork, staleTime: 0 });
+        removedArtwork.current.delete(result.assignment.id);
+      } catch { setNotice("Artwork was removed, but the refreshed list could not be confirmed. Reload the Order to reconcile it."); }
+    },
+  } : undefined;
   const fulfillment = useQuery({
     queryKey: [
       "v2",
@@ -786,6 +803,7 @@ export const OrderWorkspace = (
               props.openArtwork?.(current.order.orderId, selectedLine.lineId)
             }
             onArtworkUploaded={artworkUploaded}
+            artworkRemoval={artworkRemoval}
             products={products.data ?? []}
             editable={editable}
             busy={update.isPending}
@@ -973,6 +991,7 @@ export const OrderWorkspace = (
                 props.openArtwork?.(current.order.orderId, lineId)
               }
               onUploaded={artworkUploaded}
+              removal={artworkRemoval}
             />
           ),
           Notes: (
@@ -1339,6 +1358,7 @@ const OrderLineEditor = ({
   artworkLoading,
   onOpenArtwork,
   onArtworkUploaded,
+  artworkRemoval,
   products,
   editable,
   busy,
@@ -1367,6 +1387,7 @@ const OrderLineEditor = ({
   artworkLoading: boolean;
   onOpenArtwork: () => void;
   onArtworkUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
+  artworkRemoval?: ArtworkRemovalAction;
   products: readonly { productId?: string; displayName: string }[];
   editable: boolean;
   busy: boolean;
@@ -1485,6 +1506,7 @@ const OrderLineEditor = ({
         uploadTarget={lineArtworkUploadTarget(orderId, orderNumber, line)}
         onOpen={onOpenArtwork}
         onUploaded={onArtworkUploaded}
+        removal={artworkRemoval}
       />
     </section>
   );
@@ -1980,6 +2002,7 @@ export const OrderArtworkPanel = ({
   canUpload,
   onOpen,
   onUploaded,
+  removal,
 }: Readonly<{
   organizationId: string;
   orderId: string;
@@ -1991,6 +2014,7 @@ export const OrderArtworkPanel = ({
   canUpload: boolean;
   onOpen: (lineId: string) => void;
   onUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
+  removal?: ArtworkRemovalAction;
 }>) => {
   const [uploadLineId, setUploadLineId] = useState<string | undefined>();
   const uploadLine = lines.find((line) => line.lineId === uploadLineId);
@@ -2025,7 +2049,7 @@ export const OrderArtworkPanel = ({
                 {canView && (assigned.length ? (
                   assigned.map((entry) => (
                     <div key={entry.assignment.id} className="v2-order-art-preview">
-                      <OrderArtworkFile organizationId={organizationId} entry={entry} canView />
+                      <OrderArtworkFile organizationId={organizationId} entry={entry} canView removal={removal} />
                     </div>
                   ))
                 ) : <span>No artwork attached</span>)}

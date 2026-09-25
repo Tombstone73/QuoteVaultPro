@@ -100,7 +100,7 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
   }
   private async productionArtworkComplete(organizationId: string, lineId: string) {
     const result = await this.client.query<{ complete: boolean }>(`SELECT count(*) > 0 AND count(*) = count(a.id) complete FROM v2_sales_line_production_requirements req
-      LEFT JOIN LATERAL (SELECT a.id FROM v2_artwork_assignments a WHERE a.organization_id=req.organization_id AND a.order_line_id=req.order_line_id AND a.purpose='production' AND a.side IS NOT DISTINCT FROM req.side AND a.source_page_index IS NOT DISTINCT FROM req.source_page_index AND a.layer_key IS NOT DISTINCT FROM req.layer_key AND a.layer_order IS NOT DISTINCT FROM req.layer_order AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) LIMIT 1) a ON true
+      LEFT JOIN LATERAL (SELECT a.id FROM v2_current_artwork_assignments a WHERE a.organization_id=req.organization_id AND a.order_line_id=req.order_line_id AND a.purpose='production' AND a.side IS NOT DISTINCT FROM req.side AND a.source_page_index IS NOT DISTINCT FROM req.source_page_index AND a.layer_key IS NOT DISTINCT FROM req.layer_key AND a.layer_order IS NOT DISTINCT FROM req.layer_order AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) LIMIT 1) a ON true
       WHERE req.organization_id=$1 AND req.order_line_id=$2`, [organizationId, lineId]);
     return result.rows[0]?.complete===true;
   }

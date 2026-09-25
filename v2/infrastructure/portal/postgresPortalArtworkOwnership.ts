@@ -76,7 +76,7 @@ export class PostgresPortalArtworkOwnershipRead implements PortalArtworkOwnershi
           ON line.organization_id=document.organization_id
          AND line.document_id=document.id
          AND line.id=$5
-        JOIN v2_artwork_assignments artwork
+        JOIN v2_current_artwork_assignments artwork
           ON artwork.organization_id=document.organization_id
          AND artwork.order_document_id=document.id
          AND artwork.order_line_id=line.id

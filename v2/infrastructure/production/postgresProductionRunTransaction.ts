@@ -56,7 +56,7 @@ export class PostgresProductionRunTransaction implements ProductionRunTransactio
     JOIN v2_production_works prepared_work ON prepared_work.organization_id=ra.organization_id AND prepared_work.id=ra.production_work_id
     JOIN LATERAL (
       SELECT a.id,a.organization_id,a.artwork_file_id,a.identity_fingerprint
-      FROM v2_artwork_assignments a
+      FROM v2_current_artwork_assignments a
       WHERE a.organization_id=prepared_work.organization_id AND a.order_document_id=prepared_work.order_document_id AND a.order_line_id=prepared_work.order_line_id
         AND a.purpose='production' AND a.side IS NOT DISTINCT FROM prepared_work.side AND a.source_page_index IS NOT DISTINCT FROM prepared_work.source_page_index
         AND a.layer_key IS NOT DISTINCT FROM prepared_work.layer_key AND a.layer_order IS NOT DISTINCT FROM prepared_work.layer_order

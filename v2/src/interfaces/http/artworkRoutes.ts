@@ -4,6 +4,7 @@ import type { OperationContext } from "../../application/operation.js";
 import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { ArtworkFileId } from "../../modules/shared/commercialValues.js";
+import type { RemoveArtworkInput } from "../../modules/artwork/contracts.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import type { ArtworkWorkspaceDetail, ArtworkWorkspaceItem } from "../../../infrastructure/artwork/postgresArtworkWorkspaceReads.js";
 import type { ArtworkUploadService } from "../../../infrastructure/artwork/artworkUploadService.js";
@@ -12,6 +13,7 @@ import busboy from "busboy";
 export interface ArtworkHttpService {
   listForOrder(context: OperationContext, orderId: string): Promise<ApplicationResult<unknown>>;
   assign(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<unknown>>;
+  remove?(context: OperationContext, input: RemoveArtworkInput): Promise<ApplicationResult<unknown>>;
 }
 export interface VerifiedV2ArtworkPrincipalProvider { principal(request: Request, organizationId: string): Promise<Principal>; }
 export type ArtworkHttpDependencies = Readonly<{ service: ArtworkHttpService; upload?: ArtworkUploadService; workspace: Readonly<{ list(organizationId: string, query?: string): Promise<readonly ArtworkWorkspaceItem[]>; get(organizationId: string, artworkFileId: string): Promise<ArtworkWorkspaceDetail | null> }>; delivery?: Readonly<{ file(organizationId: string, artworkFileId: string): Promise<Readonly<{ contentType: string; bytes: Buffer }> | null> }>; principals: VerifiedV2ArtworkPrincipalProvider }>;
@@ -135,6 +137,17 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
       const body = command(request.body);
       send(response, await dependencies.service.assign(await context(request, dependencies, true), { ...body, artworkFileId: request.params.artworkFileId as ArtworkFileId }));
     } catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Artwork assignment is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }
+  });
+  router.post("/assignments/:artworkAssignmentId/remove", async (request, response) => {
+    try {
+      const body = command(request.body);
+      if (!dependencies.service.remove) throw new V2ApplicationError("RETRYABLE_FAILURE", "Artwork removal is unavailable.");
+      const input = { businessRequestId: body.businessRequestId, orderId: body.orderId, orderLineId: body.orderLineId, artworkAssignmentId: request.params.artworkAssignmentId } as RemoveArtworkInput;
+      send(response, await dependencies.service.remove(await context(request, dependencies, true), input));
+    } catch (cause) {
+      const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Artwork removal is unavailable.");
+      response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } });
+    }
   });
   router.post("/uploads", async (request, response) => {
     try {

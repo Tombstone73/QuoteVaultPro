@@ -1,5 +1,23 @@
 import React, { useEffect, useId, useRef, useState } from "react";
-import { artworkApi, type ArtworkOrderProjection } from "./api";
+import { useMutation } from "@tanstack/react-query";
+import { artworkApi, newBusinessRequestId, type ArtworkOrderProjection, type ArtworkRemovalResult } from "./api";
+
+export type ArtworkRemovalAction = Readonly<{ orderNumber: string; onRemoved: (result: ArtworkRemovalResult) => Promise<void> }>;
+const RemoveArtwork = ({ organizationId, entry, action }: Readonly<{ organizationId: string; entry: ArtworkOrderProjection; action: ArtworkRemovalAction }>) => {
+  const requestId = useRef<string>();
+  const mutation = useMutation({
+    mutationFn: () => artworkApi.remove(organizationId, requestId.current!, entry.assignment),
+    onSuccess: action.onRemoved,
+  });
+  const error = mutation.error as { code?: string; message?: string } | null;
+  return <div><button type="button" className="button secondary" aria-label={`Remove Artwork: ${entry.file.displayFilename}`} disabled={mutation.isPending} onClick={() => {
+    if (!window.confirm(`Remove "${entry.file.displayFilename}" from Order #${action.orderNumber.replace(/^#/, "")}? This removes it from the current job. The file and historical evidence are retained.`)) return;
+    requestId.current ??= newBusinessRequestId();
+    mutation.mutate();
+  }}>{mutation.isPending ? "Removing…" : "Remove"}</button>
+    {error && <p role="alert">{error.code === "CONFLICT" ? error.message : error.code === "FORBIDDEN" ? "You do not have permission to remove Artwork." : "Artwork removal could not be confirmed. Refresh the Order or retry this action."}</p>}
+  </div>;
+};
 
 /** The V2 streaming route enforces tenant and artwork.view; never use storage URLs. */
 export const loadArtworkPdf = async (organizationId: string, fileId: string, signal: AbortSignal): Promise<Blob> => {
@@ -47,8 +65,8 @@ export const ArtworkFileViewer = ({ organizationId, entry, onClose }: Readonly<{
 };
 
 /** Shared per-file action for line detail, the Order-wide tab and compact previews. */
-export const OrderArtworkFile = ({ organizationId, entry, canView, compact = false }: Readonly<{
-  organizationId: string; entry: ArtworkOrderProjection; canView: boolean; compact?: boolean;
+export const OrderArtworkFile = ({ organizationId, entry, canView, compact = false, removal }: Readonly<{
+  organizationId: string; entry: ArtworkOrderProjection; canView: boolean; compact?: boolean; removal?: ArtworkRemovalAction;
 }>) => {
   const [open, setOpen] = useState(false);
   if (!canView) return null;
@@ -58,6 +76,7 @@ export const OrderArtworkFile = ({ organizationId, entry, canView, compact = fal
       <iframe tabIndex={-1} aria-hidden="true" title={`Artwork preview ${filename}`} className="v2-order-line-artwork-preview" src={`${artworkApi.contentUrl(organizationId, entry.file.id)}#page=${(entry.assignment.sourcePageIndex ?? 0) + 1}`} />
     </button>
     {!compact && <><span><button type="button" className="v2-sales-inline-button" onClick={() => setOpen(true)}>{filename}</button><small>{entry.assignment.purpose.replaceAll("_", " ")} · {entry.assignment.side ?? "unspecified side"}</small></span><button type="button" className="button secondary" aria-label={`View Artwork: ${filename}`} onClick={() => setOpen(true)}>View Artwork</button></>}
+    {!compact && removal && <RemoveArtwork organizationId={organizationId} entry={entry} action={removal} />}
     {open && <ArtworkFileViewer organizationId={organizationId} entry={entry} onClose={() => setOpen(false)} />}
   </div>;
 };

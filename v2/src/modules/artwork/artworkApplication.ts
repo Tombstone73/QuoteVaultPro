@@ -8,7 +8,7 @@ import {
   validateArtworkObjectReference, validateArtworkUsage,
   type AdoptArtworkInput, type ReplaceArtworkInput, type ArtworkAssignment, type ArtworkFile, type ArtworkFileInput,
   type ArtworkMutationResult, type AssignArtworkInput, type DeriveArtworkInput,
-  type OrderLineArtworkProjection,
+  type OrderLineArtworkProjection, type RemoveArtworkInput,
 } from "./contracts.js";
 
 export type ArtworkReservation = Readonly<{
@@ -20,13 +20,14 @@ export interface ArtworkTransaction {
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string; principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>): Promise<ArtworkReservation>;
   succeed(organizationId: string, requestId: string, result: ArtworkMutationResult): Promise<void>;
   attribute(input: Readonly<{ organizationId: string; requestId: string; operation: string; resourceType: "artwork_file" | "artwork_assignment"; resourceId: string; principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
-  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added"; resourceId: string; changes: readonly Readonly<{ kind: string; summary: string }>[]; principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
+  audit(input: Readonly<{ organizationId: string; requestId: string; operation: string; eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added" | "artwork_assignment_removed"; resourceId: string; changes: readonly Readonly<{ kind: string; summary: string }>[]; principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>): Promise<void>;
   findFile(organizationId: OrganizationId, artworkFileId: ArtworkFileId): Promise<ArtworkFile | null>;
   findOrderLineArtwork(organizationId: OrganizationId, orderLineId: string): Promise<readonly OrderLineArtworkProjection[]>;
   findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]>;
   createOrGetFile(input: Readonly<{ id: ArtworkFileId; organizationId: OrganizationId; file: ArtworkFileInput; derivedFromArtworkFileId?: ArtworkFileId }>): Promise<ArtworkFile>;
   createOrGetAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: AdoptArtworkInput["usage"] }>): Promise<ArtworkAssignment>;
   createOrGetReplacementAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: ReplaceArtworkInput["usage"]; supersedesArtworkAssignmentId: ArtworkAssignmentId }>): Promise<ArtworkAssignment>;
+  removeAssignment(input: RemoveArtworkInput & Readonly<{ organizationId: string; removedByUserId: string }>): Promise<ArtworkMutationResult>;
 }
 
 export interface ArtworkTransactionRunner { transaction<T>(action: (transaction: ArtworkTransaction) => Promise<T>): Promise<T>; }
@@ -118,6 +119,16 @@ export class ArtworkApplicationService {
     }, "artwork_file_derived", "Derived Artwork file adopted for OrderLine work.");
   }
 
+  async remove(context: OperationContext, input: RemoveArtworkInput): Promise<ApplicationResult<ArtworkMutationResult>> {
+    if (context.principal.kind !== "staff") return failure(new V2ApplicationError("FORBIDDEN", "Only authorized staff may remove Order Artwork."));
+    const removedByUserId = context.principal.userId;
+    return this.mutate(context, "artwork.remove.v1", input, "artwork.assign", async (tx) => {
+      if (![input.artworkAssignmentId, input.orderId, input.orderLineId].every((value) => typeof value === "string" && value.trim()))
+        throw new V2ApplicationError("VALIDATION_ERROR", "The exact Order, line and Artwork assignment are required.");
+      return tx.removeAssignment({ ...input, organizationId: context.organizationId, removedByUserId });
+    }, "artwork_assignment_removed", "Artwork assignment removed from current OrderLine work; file and history retained.");
+  }
+
   private require(context: OperationContext, capability: "artwork.view" | "artwork.adopt" | "artwork.assign"): void {
     // A Portal principal is only ever delegated here by the narrow Portal
     // Artwork boundary after it has verified the Customer-owned open Order
@@ -131,7 +142,7 @@ export class ArtworkApplicationService {
       throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Artwork operation.");
   }
 
-  private async mutate<T extends { businessRequestId: string }>(context: OperationContext, operation: "artwork.adopt.v1" | "artwork.replace.v1" | "artwork.assign.v1" | "artwork.derive.v1", input: T, capability: "artwork.adopt" | "artwork.assign", work: (tx: ArtworkTransaction) => Promise<ArtworkMutationResult>, eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added", summary: string): Promise<ApplicationResult<ArtworkMutationResult>> {
+  private async mutate<T extends { businessRequestId: string }>(context: OperationContext, operation: "artwork.adopt.v1" | "artwork.replace.v1" | "artwork.assign.v1" | "artwork.derive.v1" | "artwork.remove.v1", input: T, capability: "artwork.adopt" | "artwork.assign", work: (tx: ArtworkTransaction) => Promise<ArtworkMutationResult>, eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added" | "artwork_assignment_removed", summary: string): Promise<ApplicationResult<ArtworkMutationResult>> {
     try {
       requireOperationPrincipalScope(context); this.require(context, capability);
       if (!context.businessRequest || input.businessRequestId !== context.businessRequest.id) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
@@ -139,8 +150,10 @@ export class ArtworkApplicationService {
         const reservation = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) });
         if (reservation.kind === "replay") return reservation.request.resultJson as ArtworkMutationResult;
         const result = await work(tx);
-        await tx.attribute({ organizationId: context.organizationId, requestId: reservation.request.id, operation, resourceType: "artwork_file", resourceId: result.artworkFile.id, ...actor(context) });
-        await tx.audit({ organizationId: context.organizationId, requestId: reservation.request.id, operation, eventType, resourceId: result.artworkFile.id, changes: [{ kind: eventType, summary }], ...actor(context) });
+        const resourceType = operation === "artwork.remove.v1" ? "artwork_assignment" : "artwork_file";
+        const resourceId = operation === "artwork.remove.v1" ? result.assignment.id : result.artworkFile.id;
+        await tx.attribute({ organizationId: context.organizationId, requestId: reservation.request.id, operation, resourceType, resourceId, ...actor(context) });
+        await tx.audit({ organizationId: context.organizationId, requestId: reservation.request.id, operation, eventType, resourceId, changes: [{ kind: eventType, summary }], ...actor(context) });
         await tx.succeed(context.organizationId, reservation.request.id, result);
         return result;
       }));

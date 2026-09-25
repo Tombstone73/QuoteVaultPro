@@ -1261,6 +1261,7 @@ export type ArtworkUploadResult = Readonly<{
   artworkFile: ArtworkOrderProjection["file"];
   assignment: ArtworkOrderProjection["assignment"];
 }>;
+export type ArtworkRemovalResult = ArtworkUploadResult & Readonly<{ removal: { removedAt: string; removedByUserId: string } }>;
 /**
  * A Quote-line usage of the canonical Artwork file.  This is deliberately a
  * business association, not a second file representation: the file remains
@@ -2870,6 +2871,15 @@ export const financeApi = {
   beginStripeRefund: (organizationId: string, invoiceId: string, businessRequestId: string, input: Readonly<{paymentId:string;amountCents:number;currency:string}>) => request<Readonly<{providerOperationId:string;refundId:string}>>(financeEndpoint(organizationId, `/invoices/${encodeURIComponent(invoiceId)}/stripe/refunds`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""}, body:JSON.stringify({...input,businessRequestId}) }),
 };
 export const artworkApi = {
+  remove: async (organizationId: string, businessRequestId: string, assignment: Pick<ArtworkOrderProjection["assignment"], "id" | "orderId" | "orderLineId">): Promise<ArtworkRemovalResult> => {
+    const result = await request<ArtworkRemovalResult>(`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/assignments/${encodeURIComponent(assignment.id)}/remove`, {
+      method: "POST", headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "" },
+      body: JSON.stringify({ businessRequestId, orderId: assignment.orderId, orderLineId: assignment.orderLineId }),
+    });
+    if (!result?.removal?.removedAt || result.assignment?.id !== assignment.id || result.assignment.orderId !== assignment.orderId || result.assignment.orderLineId !== assignment.orderLineId)
+      throw { code: "INTERNAL_ERROR", message: "Removal could not be confirmed. Refresh the Order or retry the same action." };
+    return result;
+  },
   contentUrl: (organizationId: string, artworkFileId: string) =>
     `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(artworkFileId)}/content`,
   workspace: (organizationId: string, query = "") =>

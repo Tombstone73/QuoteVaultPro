@@ -60,7 +60,7 @@ export class PostgresArtworkWorkspaceReads {
   constructor(private readonly pool: Pool) {}
   async list(organizationId: string, query = ""): Promise<readonly ArtworkWorkspaceItem[]> {
     const pattern = `%${query.trim().slice(0, 120)}%`;
-    const result = await this.pool.query<Row>(`${select}\n  JOIN v2_artwork_assignments a ON a.organization_id=f.organization_id AND a.artwork_file_id=f.id
+    const result = await this.pool.query<Row>(`${select}\n  JOIN v2_current_artwork_assignments a ON a.organization_id=f.organization_id AND a.artwork_file_id=f.id
   JOIN v2_sales_documents d ON d.organization_id=a.organization_id AND d.id=a.order_document_id
   JOIN v2_sales_document_lines l ON l.organization_id=a.organization_id AND l.id=a.order_line_id
   LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id

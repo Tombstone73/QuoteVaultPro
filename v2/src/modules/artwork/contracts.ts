@@ -105,6 +105,14 @@ export type DeriveArtworkInput = ArtworkFileInput & Readonly<{
 export type ArtworkMutationResult = Readonly<{
   artworkFile: ArtworkFile;
   assignment: ArtworkAssignment;
+  removal?: Readonly<{ removedAt: string; removedByUserId: string }>;
+}>;
+
+export type RemoveArtworkInput = Readonly<{
+  businessRequestId: string;
+  artworkAssignmentId: ArtworkAssignmentId;
+  orderId: OrderId;
+  orderLineId: OrderLineId;
 }>;
 
 export const validateArtworkObjectReference = (reference: ArtworkObjectReference): ArtworkObjectReference => {

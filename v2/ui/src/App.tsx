@@ -1536,6 +1536,7 @@ const OrdersPage = ({
         canViewInvoice={bootstrap?.capabilities.invoiceView === true}
         canViewArtwork={bootstrap?.capabilities.artworkView === true}
         canAdoptArtwork={bootstrap?.capabilities.artworkAdopt === true}
+        canRemoveArtwork={bootstrap?.capabilities.artworkAssign === true}
         canViewProofing={bootstrap?.capabilities.proofView === true}
         canViewProduction={bootstrap?.capabilities.productionView === true}
         csrfReady={Boolean(bootstrap)}
