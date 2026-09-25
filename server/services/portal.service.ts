@@ -1,3 +1,6 @@
+import { getInvoiceCustomerPaymentEligibility, type CustomerPaymentInvoice } from '../lib/invoiceCustomerPaymentEligibility';
+import { isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
+import { withInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
 import { z } from "zod";
@@ -38,7 +41,6 @@ import {
 } from "@shared/rollups/invoicePaymentRollup";
 import { resolveInvoicePdfFinancialSummary } from "@shared/invoiceAccountingDisplay";
 import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared/portalFileVisibility";
-import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { getStripeClient } from "../lib/stripe";
 import { captureAndApply as captureAndApplyStripeObservation } from "./stripePaymentReconciliationService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
@@ -87,6 +89,7 @@ export type PortalSessionDto = {
 };
 
 export type InvoicePortalDto = {
+  paymentEligibility: { payable: boolean; blockedReason: string | null };
   id: string;
   invoiceNumber: number;
   displayNumber: string;
@@ -518,7 +521,7 @@ type PortalProfileUpdatePayload = {
   };
 };
 
-type InvoicePortalRow = Pick<
+type InvoicePortalRow = CustomerPaymentInvoice & Pick<
   typeof invoices.$inferSelect,
   | "id"
   | "invoiceNumber"
@@ -564,7 +567,7 @@ type PaymentPortalRow = Pick<
   | "createdAt"
 >;
 
-type InvoicePaymentPortalRow = Pick<
+type InvoicePaymentPortalRow = CustomerPaymentInvoice & Pick<
   typeof invoices.$inferSelect,
   | "id"
   | "invoiceNumber"
@@ -1617,6 +1620,7 @@ function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[
     orderNumber: identity.orderNumber,
     pdfAvailable: String(row.status || "").toLowerCase() !== "draft",
     paymentStatusLabel: getInvoicePaymentStatusLabel({ invoiceStatus: row.status, rollup }),
+    paymentEligibility: getInvoiceCustomerPaymentEligibility(row, rollup.amountDueCents),
   };
 }
 
@@ -1651,6 +1655,16 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
       status: invoices.status,
+      invoiceVersion: invoices.invoiceVersion,
+      accountingApprovedVersion: invoices.accountingApprovedVersion,
+      accountingApprovedAt: invoices.accountingApprovedAt,
+      accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt,
+      qbSyncStatus: invoices.qbSyncStatus,
+      qbInvoiceId: invoices.qbInvoiceId,
+      externalAccountingId: invoices.externalAccountingId,
+      lastQbSyncedVersion: invoices.lastQbSyncedVersion,
+      importSource: invoices.importSource,
+      isHistorical: invoices.isHistorical,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
@@ -1695,6 +1709,16 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
       status: invoices.status,
+      invoiceVersion: invoices.invoiceVersion,
+      accountingApprovedVersion: invoices.accountingApprovedVersion,
+      accountingApprovedAt: invoices.accountingApprovedAt,
+      accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt,
+      qbSyncStatus: invoices.qbSyncStatus,
+      qbInvoiceId: invoices.qbInvoiceId,
+      externalAccountingId: invoices.externalAccountingId,
+      lastQbSyncedVersion: invoices.lastQbSyncedVersion,
+      importSource: invoices.importSource,
+      isHistorical: invoices.isHistorical,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
@@ -1739,6 +1763,16 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
       status: invoices.status,
+      invoiceVersion: invoices.invoiceVersion,
+      accountingApprovedVersion: invoices.accountingApprovedVersion,
+      accountingApprovedAt: invoices.accountingApprovedAt,
+      accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt,
+      qbSyncStatus: invoices.qbSyncStatus,
+      qbInvoiceId: invoices.qbInvoiceId,
+      externalAccountingId: invoices.externalAccountingId,
+      lastQbSyncedVersion: invoices.lastQbSyncedVersion,
+      importSource: invoices.importSource,
+      isHistorical: invoices.isHistorical,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
@@ -1753,8 +1787,6 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
       notesPublic: invoices.notesPublic,
       terms: invoices.terms,
       customTerms: invoices.customTerms,
-      importSource: invoices.importSource,
-      isHistorical: invoices.isHistorical,
     })
     .from(invoices)
     .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, scope.organizationId)))
@@ -1808,10 +1840,7 @@ function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRow
 
   const rollup = invoiceRollup(invoice, paymentRows);
   const amountDueCents = Math.max(0, Math.round(Number(rollup.amountDueCents || 0)));
-  const paymentEligibility = getInvoiceFinancialPaymentEligibility({
-    invoiceStatus: invoice.status,
-    remainingCents: amountDueCents,
-  });
+  const paymentEligibility = getInvoiceCustomerPaymentEligibility(invoice, amountDueCents);
   if (!paymentEligibility.payable) {
     throw new PortalAccessError(409, paymentEligibility.blockedReason || "Invoice is not payable");
   }
@@ -1926,7 +1955,14 @@ const groupedPortalStripeInitiationSchema = z.object({
  * the parent customer_payment_batches row and creates no invoice payment rows.
  * The later success reconciliation path must call recordCustomerPayment.
  */
-export async function createPortalGroupedStripePaymentIntent(req: Request): Promise<PortalGroupedStripePaymentIntentResult> {
+export async function createPortalGroupedStripePaymentIntent(req: Request) {
+  const scope = getPortalScope(req);
+  const parsed = groupedPortalStripeInitiationSchema.safeParse(req.body);
+  if (!parsed.success) throw new PortalAccessError(400, "invoiceIds and idempotencyKey are required");
+  return withInvoicePaymentContext(scope.organizationId, parsed.data.invoiceIds, () => createPortalGroupedStripePaymentIntentLocked(req));
+}
+
+async function createPortalGroupedStripePaymentIntentLocked(req: Request): Promise<PortalGroupedStripePaymentIntentResult> {
   const scope = getPortalScope(req);
   const previewPayment = staffPreviewPaymentEvidence(req);
   const parsed = groupedPortalStripeInitiationSchema.safeParse(req.body ?? {});
@@ -1983,7 +2019,10 @@ export async function createPortalGroupedStripePaymentIntent(req: Request): Prom
       eq(customerPaymentBatches.idempotencyKey, idempotencyKey),
     )).limit(1);
     if (existing) {
-      if (existing.customerId !== scope.customerId || Number(existing.amountCents) !== amountCents || String(existing.currency).toUpperCase() !== currency) {
+      const existingAllocations = (existing.providerEvidence as { allocations?: unknown }).allocations;
+      if (existing.status !== 'pending' || existing.stripeAccountId !== stripeAccountId ||
+        JSON.stringify(existingAllocations) !== JSON.stringify(allocations) || existing.customerId !== scope.customerId ||
+        Number(existing.amountCents) !== amountCents || String(existing.currency).toUpperCase() !== currency) {
         throw new PortalAccessError(409, "This checkout attempt no longer matches the selected invoices");
       }
       batch = existing;
@@ -2013,6 +2052,10 @@ export async function createPortalGroupedStripePaymentIntent(req: Request): Prom
   const stripe = getStripeClient();
   if (batch.stripePaymentIntentId) {
     const existingIntent = await stripe.paymentIntents.retrieve(String(batch.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
+    if (existingIntent.metadata.organizationId !== scope.organizationId || existingIntent.metadata.customerId !== scope.customerId ||
+      existingIntent.metadata.customerPaymentBatchId !== batch.id || existingIntent.amount !== amountCents) {
+      throw new PortalAccessError(409, "Payment billing context changed. Resolve the previous attempt first.");
+    }
     const status = String((existingIntent as any).status || "").toLowerCase();
     if (status !== "canceled" && status !== "failed" && (existingIntent as any).client_secret) {
       return {
@@ -2059,7 +2102,12 @@ export async function createPortalGroupedStripePaymentIntent(req: Request): Prom
   };
 }
 
-export async function createPortalStripePaymentIntent(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {
+export async function createPortalStripePaymentIntent(req: Request, invoiceId: string) {
+  const scope = getPortalScope(req);
+  return withInvoicePaymentContext(scope.organizationId, [invoiceId], () => createPortalStripePaymentIntentLocked(req, invoiceId));
+}
+
+async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: string): Promise<PortalStripePaymentIntentDto | null> {
   const scope = getPortalScope(req);
   const previewPayment = staffPreviewPaymentEvidence(req);
   // Guest links deliberately use this exact payment/reconciliation path.  The
@@ -2138,6 +2186,10 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     try {
       const stripe = getStripeClient();
       const pi = await stripe.paymentIntents.retrieve(String(existingPending.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
+      if (pi.metadata?.customerId !== scope.customerId || pi.metadata?.invoiceId !== invoice.id ||
+        pi.metadata?.organizationId !== scope.organizationId || pi.amount !== amountDueCents) {
+        throw new PortalAccessError(409, "Payment billing context changed. Resolve the previous attempt first.");
+      }
       const piStatus = String((pi as any).status || "").toLowerCase();
 
       if (piStatus === "succeeded") {
@@ -2185,6 +2237,7 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
     (previewPayment && reservedPreviewActor !== previewPayment.actorUserId)) {
     throw new PortalAccessError(409, "A different portal payment attempt is already pending for this invoice");
   }
+  if ((attempt as any).metadata?.customerId !== scope.customerId) throw new PortalAccessError(409, "Payment billing context changed. Resolve the previous attempt first.");
   if (Number(attempt.amountCents) !== amountDueCents || String(attempt.stripeAccountId) !== stripeAccountId) {
     throw new PortalAccessError(409, "A previous portal payment is still awaiting completion");
   }
@@ -2343,11 +2396,45 @@ export async function createPortalStripePaymentIntent(req: Request, invoiceId: s
   };
 }
 
+/** Pre-submit check before Stripe.js confirmation; context changes also cancel
+ * the intent, closing the race after this check returns. */
+export async function validatePortalStripePayment(req: Request, invoiceId: string) {
+  const scope = getPortalScope(req);
+  const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!invoice) throw new PortalAccessError(404, "Not found");
+  const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+  const amount = assertPortalInvoicePayable(invoice, rows);
+  const payment = rows.find(row => row.stripePaymentIntentId === req.body?.paymentIntentId);
+  if (!payment || payment.status !== 'pending' || Number(payment.amountCents) !== amount || payment.metadata?.customerId !== scope.customerId) {
+    throw new PortalAccessError(409, "Payment context changed. Close and reopen the payment form.");
+  }
+  return { eligible: true };
+}
+
+export async function validatePortalGroupedStripePayment(req: Request) {
+  const scope = getPortalScope(req);
+  const [batch] = await db.select().from(customerPaymentBatches).where(and(
+    eq(customerPaymentBatches.organizationId, scope.organizationId), eq(customerPaymentBatches.customerId, scope.customerId),
+    eq(customerPaymentBatches.stripePaymentIntentId, String(req.body?.paymentIntentId || '')), eq(customerPaymentBatches.status, 'pending'),
+  )).limit(1);
+  if (!batch) throw new PortalAccessError(409, "Payment context changed. Close and reopen the payment form.");
+  const allocations = (batch.providerEvidence as { allocations?: Array<{ invoiceId: string; amountCents: number }> }).allocations;
+  if (!allocations?.length) throw new PortalAccessError(409, "Payment invoice selection is missing");
+  for (const allocation of allocations) {
+    const invoice = await getPortalInvoiceForPayment(scope, allocation.invoiceId);
+    if (!invoice) throw new PortalAccessError(404, "Not found");
+    const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
+    if (assertPortalInvoicePayable(invoice, rows) !== allocation.amountCents) throw new PortalAccessError(409, "Invoice balance changed. Close and reopen the payment form.");
+  }
+  return { eligible: true };
+}
+
 export async function confirmPortalStripePayment(req: Request, invoiceId: string): Promise<PortalStripeConfirmDto | null> {
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice) return null;
 
+  if (!isInvoiceApprovedForAccounting(invoice)) throw new PortalAccessError(409, "Awaiting approval");
   const paymentIntentId = String((req.body as any)?.paymentIntentId || "").trim();
   if (!paymentIntentId) {
     throw new PortalAccessError(400, "Missing payment intent");
@@ -2462,6 +2549,13 @@ export async function confirmPortalGroupedStripePayment(req: Request): Promise<P
     eq(customerPaymentBatches.stripePaymentIntentId, paymentIntentId),
   )).limit(1);
   if (!batch) throw new PortalAccessError(404, "Not found");
+  const selected = (batch.providerEvidence as { allocations?: Array<{ invoiceId: string }> }).allocations;
+  if (!selected?.length) throw new PortalAccessError(409, "Payment invoice selection is missing");
+  for (const allocation of selected) {
+    const invoice = await getPortalInvoiceForPayment(scope, allocation.invoiceId);
+    if (!invoice) throw new PortalAccessError(404, "Not found");
+    if (!isInvoiceApprovedForAccounting(invoice)) throw new PortalAccessError(409, "Awaiting approval");
+  }
 
   const stripeAccountId = String(batch.stripeAccountId || "").trim();
   if (!stripeAccountId) throw new PortalAccessError(409, "Portal payment is missing its Stripe account identity");
@@ -3472,10 +3566,7 @@ export async function getPortalDashboard(req: Request): Promise<PortalDashboardD
 
   const unpaidInvoices = invoices.filter((invoice) => Number(invoice.amountDue || 0) > 0);
   const payableInvoices = unpaidInvoices
-    .filter((invoice) => getInvoiceFinancialPaymentEligibility({
-      invoiceStatus: invoice.status,
-      remainingCents: Math.round(Number(invoice.amountDue || 0) * 100),
-    }).payable)
+    .filter((invoice) => invoice.paymentEligibility.payable)
     .sort((a, b) => timestampMs(a.dueDate || a.issueDate) - timestampMs(b.dueDate || b.issueDate))
     .slice(0, 4);
 

@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { stripeDiagnosticHandler, stripeDiagnosticLimiter } from "../services/stripePaymentDiagnostics";
 import { getGuestStripeDiagnosticScope } from "../services/guestInvoicePayment.service";
-import { confirmGuestStripePayment, createGuestStripePaymentIntent, getGuestInvoice, getGuestStripeRuntimeConfig } from "../services/guestInvoicePayment.service";
+import { validateGuestStripePayment, confirmGuestStripePayment, createGuestStripePaymentIntent, getGuestInvoice, getGuestStripeRuntimeConfig } from "../services/guestInvoicePayment.service";
 
 function sendError(res: Response, error: any) {
   const status = Number(error?.statusCode || 404);
@@ -16,5 +16,6 @@ export function registerGuestInvoicePaymentRoutes(app: Express) {
   app.get("/api/guest/invoices/:token", async (req, res) => { try { const data = await getGuestInvoice(req.params.token); return data ? res.setHeader("Referrer-Policy", "no-referrer").json({ success: true, data }) : res.status(404).json({ success: false, message: "Invoice payment link is invalid or expired." }); } catch (e) { return sendError(res, e); } });
   app.get("/api/guest/invoices/:token/payments/stripe/runtime-config", async (req, res) => { try { const data = await getGuestStripeRuntimeConfig(req.params.token); return data ? res.json({ success: true, data }) : res.status(404).json({ success: false }); } catch (e) { return sendError(res, e); } });
   app.post("/api/guest/invoices/:token/payments/stripe/create-intent", async (req, res) => { try { const data = await createGuestStripePaymentIntent(req.params.token); return data ? res.json({ success: true, data }) : res.status(404).json({ success: false }); } catch (e) { return sendError(res, e); } });
+  app.post("/api/guest/invoices/:token/payments/stripe/validate", async (req, res) => { try { const data = await validateGuestStripePayment(req.params.token, String(req.body?.paymentIntentId || "")); return data ? res.json({ success: true, data }) : res.status(404).json({ success: false }); } catch (e) { return sendError(res, e); } });
   app.post("/api/guest/invoices/:token/payments/stripe/confirm", async (req, res) => { try { const data = await confirmGuestStripePayment(req.params.token, String(req.body?.paymentIntentId || "")); return data ? res.json({ success: true, data }) : res.status(404).json({ success: false }); } catch (e) { return sendError(res, e); } });
 }

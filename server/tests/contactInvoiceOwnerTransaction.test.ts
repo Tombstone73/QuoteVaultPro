@@ -4,6 +4,9 @@ import { getTableName } from "drizzle-orm";
 let rows: Record<string, any[]>;
 let writes: string[];
 let failOrderWrite = false;
+const retrieveIntent = jest.fn<(...args: any[]) => Promise<any>>();
+const cancelIntent = jest.fn<(...args: any[]) => Promise<any>>();
+jest.unstable_mockModule('../lib/stripe', () => ({ getStripeClient: () => ({ paymentIntents: { retrieve: retrieveIntent, cancel: cancelIntent } }) }));
 const query = () => {
   let table = "";
   const q: any = {
@@ -18,7 +21,7 @@ const tx: any = {
   select: query,
   execute: jest.fn(async () => ({ rows: [] })),
   update: (t: any) => ({ set: (patch: any) => ({ where: async () => {
-    const table = getTableName(t); writes.push(table); Object.assign(rows[table][0], patch);
+    const table = getTableName(t); if (!rows[table]?.length) return; writes.push(table); Object.assign(rows[table][0], patch);
   } }) }),
   insert: () => ({ values: async () => {} }),
 };
@@ -56,6 +59,8 @@ beforeEach(() => {
     audit_logs: [{ id: "automatic-creation" }],
   };
   writes = []; failOrderWrite = false;
+  retrieveIntent.mockReset().mockResolvedValue({ id: 'pi_unpaid', status: 'requires_payment_method', amount_received: 0, latest_charge: null, metadata: { organizationId: 'org', invoiceId: 'invoice' } });
+  cancelIntent.mockReset().mockResolvedValue({ id: 'pi_unpaid', status: 'canceled' });
 });
 const save = (changes: any) => operations.updateEditableHeader({ organizationId: "org", actorUserId: "staff", orderId: "order", changes });
 
@@ -76,7 +81,7 @@ describe("canonical contact billing owner transaction (mocked persistence)", () 
     expect(writes).toEqual([]);
   });
   test.each(["payments", "invoice_email_logs", "invoice_email_delivery_jobs", "customer_payment_batches"])("blocks %s evidence without changing either owner", async table => {
-    rows[table] = [{ id: "history" }];
+    rows[table] = [{ id: "history", status: "succeeded" }];
     await expect(save({ customerId: null })).rejects.toThrow(/Invoice|payment/);
     expect(writes).toEqual([]);
     expect(rows.invoices[0].customerId).toBe("company");
@@ -91,4 +96,66 @@ describe("canonical contact billing owner transaction (mocked persistence)", () 
     await expect(save({ customerId: null })).rejects.toThrow("order write failed");
     expect(rows.invoices[0]).toMatchObject({ customerId: "company", contactId: null, invoiceVersion: 1 });
   });
+});
+
+for (const status of ['requires_payment_method', 'requires_confirmation', 'requires_action', 'canceled']) {
+  test(`20544 incomplete intent ${status} is retired before both owners change`, async () => {
+    rows.payments = [{ id: 'payment', provider: 'stripe', status: 'pending', amountCents: 25000, appliedAt: new Date(), stripePaymentIntentId: 'pi_unpaid', metadata: { stripeAccountId: 'acct_original' } }];
+    retrieveIntent.mockResolvedValue({ status, amount_received: 0, latest_charge: null, metadata: { organizationId: 'org', invoiceId: 'invoice' } });
+    await save({ customerId: 'correct-company', contactId: null });
+    expect(rows.orders[0].customerId).toBe('correct-company');
+    expect(rows.invoices[0]).toMatchObject({ customerId: 'correct-company', contactId: null });
+    expect(rows.payments[0].status).toBe('canceled');
+    if (status !== 'canceled') expect(cancelIntent).toHaveBeenCalledWith('pi_unpaid', {}, expect.objectContaining({ stripeAccount: 'acct_original' }));
+    else expect(cancelIntent).not.toHaveBeenCalled();
+  });
+}
+test.each(['failed', 'canceled'])('%s attempt without money does not lock the owner', async status => {
+  rows.payments = [{ id: 'payment', provider: 'stripe', status, amountCents: 25000, appliedAt: new Date() }];
+  await save({ customerId: 'correct-company' });
+  expect(rows.invoices[0].customerId).toBe('correct-company');
+});
+test.each(['succeeded', 'captured', 'refunded'])('%s payment preserves financial ownership', async status => {
+  rows.payments = [{ id: 'payment', status }];
+  await expect(save({ customerId: null })).rejects.toThrow('payment applied or refunded');
+  expect(writes).toEqual([]);
+});
+test.each(['customer_account_credit_applications', 'customer_account_credits', 'stripe_refund_requests'])('%s locks financial ownership', async table => {
+  rows[table] = [{ id: 'financial-history' }];
+  await expect(save({ customerId: null })).rejects.toThrow(/credit|refund/);
+  expect(writes).toEqual([]);
+});
+test('processing or externally succeeded payment cannot be reattributed despite a stale pending ledger', async () => {
+  rows.payments = [{ id: 'payment', provider: 'stripe', status: 'pending', stripePaymentIntentId: 'pi_unpaid', metadata: { stripeAccountId: 'acct_original' } }];
+  for (const status of ['processing', 'requires_capture', 'succeeded']) {
+    retrieveIntent.mockResolvedValue({ status, amount_received: status === 'succeeded' ? 25000 : 0, metadata: { organizationId: 'org', invoiceId: 'invoice' } });
+    await expect(save({ customerId: null })).rejects.toThrow(/Stripe/);
+    expect(rows.invoices[0].customerId).toBe('company');
+  }
+  expect(cancelIntent).not.toHaveBeenCalled();
+});
+test('a Stripe confirmation racing cancellation leaves both owners unchanged', async () => {
+  rows.payments = [{ id: 'payment', provider: 'stripe', status: 'pending', stripePaymentIntentId: 'pi_unpaid', metadata: { stripeAccountId: 'acct_original' } }];
+  cancelIntent.mockRejectedValue(new Error('payment_intent_unexpected_state'));
+  await expect(save({ customerId: null })).rejects.toThrow('Billing details were not changed');
+  expect(rows.invoices[0].customerId).toBe('company');
+  expect(rows.orders[0].customerId).toBe('company');
+  expect(rows.payments[0].status).toBe('pending');
+});
+
+test('an unfunded grouped session is canceled before owner transfer without creating allocation rows', async () => {
+  rows.customer_payment_batches = [{ id: 'batch', status: 'pending', stripeAccountId: 'acct_original', stripePaymentIntentId: 'pi_grouped' }];
+  retrieveIntent.mockResolvedValue({ status: 'requires_confirmation', amount_received: 0, metadata: { organizationId: 'org', customerPaymentBatchId: 'batch' } });
+  await save({ customerId: 'correct-company' });
+  expect(rows.customer_payment_batches[0].status).toBe('canceled');
+  expect(rows.invoices[0].customerId).toBe('correct-company');
+  expect(rows.payments).toBeUndefined();
+});
+
+test('provider identity mismatch fails closed without canceling another billing context', async () => {
+  rows.payments = [{ id: 'payment', provider: 'stripe', status: 'pending', stripePaymentIntentId: 'pi_other', metadata: { stripeAccountId: 'acct_original' } }];
+  retrieveIntent.mockResolvedValue({ status: 'requires_payment_method', amount_received: 0, metadata: { organizationId: 'other', invoiceId: 'invoice' } });
+  await expect(save({ customerId: null })).rejects.toThrow('identity does not match');
+  expect(cancelIntent).not.toHaveBeenCalled();
+  expect(rows.invoices[0].customerId).toBe('company');
 });

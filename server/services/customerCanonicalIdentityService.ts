@@ -1,3 +1,4 @@
+import { retireInvoicePaymentSessions, lockInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -383,6 +384,11 @@ export async function mergeDuplicateCustomers(input: {
     // Unsynchronized invoices resolve their CustomerRef at send time and must
     // be re-approved after their local customer changes. Completed provider
     // history stays immutable: retain its version, approval and sync state.
+    const movedInvoices = await tx.select().from(invoices).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.customerId, duplicate.id)));
+    await lockInvoicePaymentContext(tx, input.organizationId, movedInvoices.map((invoice: typeof invoices.$inferSelect) => invoice.id));
+    for (const invoice of movedInvoices) {
+      await retireInvoicePaymentSessions(tx, { organizationId: input.organizationId, invoiceId: invoice.id, expectedVersion: Number(invoice.invoiceVersion || 1) });
+    }
     counts.invoicesMoved = Number((await tx.update(invoices).set({
       customerId: survivor.id,
       accountingUpdatedAt: sql`case when coalesce(${invoices.qbInvoiceId}, ${invoices.externalAccountingId}, '') = '' then now() else ${invoices.accountingUpdatedAt} end`,

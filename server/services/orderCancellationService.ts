@@ -1,3 +1,4 @@
+import { retireInvoicePaymentSessions, lockInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, desc, eq, inArray, ne, or } from "drizzle-orm";
 
 import { db } from "../db";
@@ -733,9 +734,11 @@ export async function cancelOrder(args: {
       sideEffects.cancelledProofVersionIds.push(...proofVersionIds);
     }
 
+    await lockInvoicePaymentContext(tx, args.organizationId, invoiceDecisions.filter((decision: InvoiceDecision) => decision.action === "void").map((decision: InvoiceDecision) => decision.invoiceId));
     for (const decision of invoiceDecisions) {
       if (decision.action !== "void") continue;
       const invoice = orderInvoices.find((row: any) => row.id === decision.invoiceId);
+      await retireInvoicePaymentSessions(tx, { organizationId: args.organizationId, invoiceId: decision.invoiceId, expectedVersion: Number(invoice?.invoiceVersion || 1) });
       const voidNote = `Voided by order cancellation (${reasonLabel})${noteText ? `: ${noteText}` : ""}`;
       const existingNote = String(invoice?.notesInternal || "").trim();
       await tx

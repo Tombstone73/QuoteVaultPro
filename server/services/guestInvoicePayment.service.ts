@@ -7,6 +7,7 @@ import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 import { sha256Hex } from "../lib/tokenHash";
 import {
   confirmPortalStripePayment,
+  validatePortalStripePayment,
   createPortalStripePaymentIntent,
   getPortalInvoice,
   getPortalStripeRuntimeConfig,
@@ -81,6 +82,7 @@ export async function getGuestInvoice(rawToken: string) {
     currency: invoice.currency,
     paymentStatusLabel: invoice.paymentStatusLabel,
     status: invoice.status,
+    paymentEligibility: invoice.paymentEligibility,
   };
 }
 
@@ -101,4 +103,11 @@ export async function confirmGuestStripePayment(rawToken: string, paymentIntentI
   if (!req) return null;
   (req as any).body = { paymentIntentId };
   return confirmPortalStripePayment(req, (req as any).guestPaymentScope.invoiceId);
+}
+
+export async function validateGuestStripePayment(rawToken: string, paymentIntentId: string) {
+  const req = await guestRequest(rawToken);
+  if (!req) return null;
+  req.body = { paymentIntentId };
+  return validatePortalStripePayment(req, (req as any).guestPaymentScope.invoiceId);
 }

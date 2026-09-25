@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 async function source(file: string) {
-  return readFile(path.resolve(process.cwd(), file), "utf8");
+  return (await readFile(path.resolve(process.cwd(), file), "utf8")).replace(/\r\n/g, "\n");
 }
 
 describe("admin customer merge workflow wiring", () => {

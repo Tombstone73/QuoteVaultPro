@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/queryClient';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 
@@ -104,6 +105,20 @@ function StripePayInner(props: {
         return;
       }
 
+      if (props.groupedInitiation || props.apiBasePath === '/api/portal/invoices' || props.apiBasePath === '/api/guest/invoices') {
+        const validationUrl = props.groupedInitiation ? '/api/portal/payments/stripe/validate' : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/validate`;
+        const validation = await apiFetch(validationUrl, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+          body: JSON.stringify({ paymentIntentId: props.clientSecret.split('_secret_')[0] }),
+        });
+        const eligibility = await validation.json().catch(() => null);
+        if (!validation.ok || eligibility?.data?.eligible !== true) {
+          const message = eligibility?.message || 'Payment eligibility changed. Close and reopen the payment form.';
+          setPaymentError(message);
+          toast({ title: 'Payment is not available', description: message, variant: 'destructive' });
+          return;
+        }
+      }
       stage = 'confirm_result';
       const result = await stripe.confirmPayment({
         elements,

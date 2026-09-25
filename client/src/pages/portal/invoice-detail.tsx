@@ -9,7 +9,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestration";
 import { usePortalDownload } from "@/hooks/usePortalDownload";
 import {
   portalInvoiceKeys,
@@ -83,7 +82,7 @@ export default function PortalInvoiceDetailPage() {
   const files = filesQuery.data ?? [];
 
   const paymentEligibility = useMemo(() => invoice
-    ? getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents: Math.round(Number(invoice.amountDue || 0) * 100) })
+    ? (invoice.paymentEligibility ?? { payable: false, blockedReason: "Payment is not available." })
     : { payable: false, blockedReason: "Invoice is not payable." }, [invoice]);
   const payable = paymentEligibility.payable;
 

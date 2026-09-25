@@ -1,3 +1,4 @@
+import { InvoicePaymentContextError, retireInvoicePaymentSessions, withInvoicePaymentContext } from '../services/invoicePaymentSession.service';
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
@@ -935,6 +936,9 @@ export async function registerMvpInvoicingRoutes(
   // Stripe: Create PaymentIntent for invoice (full payment only)
   // ------------------------------------------------------------
   app.post("/api/invoices/:id/payments/stripe/create-intent", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    const paymentOrganizationId = getRequestOrganizationId(req);
+    if (!paymentOrganizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+    return withInvoicePaymentContext(paymentOrganizationId, [req.params.id], async () => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -1317,6 +1321,7 @@ export async function registerMvpInvoicingRoutes(
       });
       return res.status(500).json({ success: false, error: error.message || 'Failed to create payment intent' });
     }
+    });
   });
 
   // ------------------------------------------------------------
@@ -3331,7 +3336,12 @@ export async function registerMvpInvoicingRoutes(
         } catch {}
       }
 
-      await db.update(invoices).set({ ...updates, ...financialUpdates, updatedAt: new Date() } as any).where(eq(invoices.id, id));
+      await db.transaction(async (tx) => {
+        if (financialOrCustomerVisibleChanged || updates.status === 'void') {
+          await retireInvoicePaymentSessions(tx, { organizationId, invoiceId: id, expectedVersion: existingInvoiceVersion });
+        }
+        await tx.update(invoices).set({ ...updates, ...financialUpdates, updatedAt: new Date() } as any).where(and(eq(invoices.id, id), eq(invoices.organizationId, organizationId)));
+      });
       if (financialOrCustomerVisibleChanged && getInvoiceAccountingApprovalState(existing) === 'approved') {
         await db.insert(auditLogs).values({ organizationId, userId: userId || null, userName, actionType: 'invoice_accounting_approval_revoked', entityType: 'invoice', entityId: id, entityName: String(existing.displayNumber || existing.invoiceNumber), description: 'Accounting approval was revoked because an accounting-relevant invoice field changed.', oldValues: { approvedAccountingVersion: existing.accountingApprovedVersion } as any, newValues: { currentAccountingVersion: nextInvoiceVersion, trigger: 'invoice_patch' } as any } as any);
       }
@@ -3340,6 +3350,7 @@ export async function registerMvpInvoicingRoutes(
       res.json({ success: true, data: refreshed?.invoice ?? null });
     } catch (error: any) {
       console.error("Error updating invoice:", error);
+      if (error instanceof InvoicePaymentContextError) return res.status(409).json({ error: error.message, code: error.code });
       res.status(500).json({ error: error.message || "Failed to update invoice" });
     }
   });

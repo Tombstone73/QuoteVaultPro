@@ -1,6 +1,8 @@
+import { hasAppliedInvoicePayment } from '../../lib/invoicePaymentEvidence';
+import { InvoicePaymentContextError, lockInvoicePaymentContext, retireInvoicePaymentSessions } from '../invoicePaymentSession.service';
 import { and, eq, ne, sql } from "drizzle-orm";
 
-import { auditLogs, customerPaymentBatches, invoiceEmailDeliveryJobs, invoiceEmailLogs, invoices, orders, payments } from "@shared/schema";
+import { auditLogs, customerAccountCreditApplications, customerAccountCredits, stripeRefundRequests, invoiceEmailDeliveryJobs, invoiceEmailLogs, invoices, orders, payments } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
 import { OrdersRepository } from "../../storage/orders.repo";
@@ -69,25 +71,22 @@ class CanonicalOrderOperations {
         if (linkedInvoices.length > 1) throw new CanonicalOrderOperationError("ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED", "This Order has multiple live Invoices. Resolve billing ownership through a reviewed correction.");
         let invoice = linkedInvoices[0];
         if (invoice) {
+          await lockInvoicePaymentContext(tx, input.organizationId, [invoice.id]);
           await tx.execute(sql`select id from ${invoices} where ${invoices.id} = ${invoice.id} for update`);
           [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).limit(1);
           if (!invoice) throw new CanonicalOrderOperationError("ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED", "Invoice changed while its billing owner was being reviewed. Retry the Order edit.");
-          // Portal funding can exist before invoice-level payment effects do.
-          const [pendingFunding] = await tx.select({ id: customerPaymentBatches.id }).from(customerPaymentBatches).where(and(
-            eq(customerPaymentBatches.organizationId, input.organizationId),
-            eq(customerPaymentBatches.provider, "stripe"),
-            eq(customerPaymentBatches.status, "pending"),
-            sql`${customerPaymentBatches.providerEvidence}->'allocations' @> ${JSON.stringify([{ invoiceId: invoice.id }])}::jsonb`,
-          )).limit(1);
-          if (pendingFunding) throw new CanonicalOrderOperationError("ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED", "This Invoice has a pending customer payment. Resolve that payment before changing billing ownership.");
-          const [[payment], [email], [delivery], [autoCreated]] = await Promise.all([
-            tx.select({ id: payments.id }).from(payments).where(and(eq(payments.organizationId, input.organizationId), eq(payments.invoiceId, invoice.id))).limit(1),
+          const [paymentRows, [email], [delivery], [autoCreated], [credit], [creditSource], [refund]] = await Promise.all([
+            tx.select().from(payments).where(and(eq(payments.organizationId, input.organizationId), eq(payments.invoiceId, invoice.id))),
             tx.select({ id: invoiceEmailLogs.id }).from(invoiceEmailLogs).where(and(eq(invoiceEmailLogs.organizationId, input.organizationId), eq(invoiceEmailLogs.invoiceId, invoice.id), eq(invoiceEmailLogs.status, "sent"))).limit(1),
             tx.select({ id: invoiceEmailDeliveryJobs.id }).from(invoiceEmailDeliveryJobs).where(and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), eq(invoiceEmailDeliveryJobs.invoiceId, invoice.id))).limit(1),
             tx.select({ id: auditLogs.id }).from(auditLogs).where(and(eq(auditLogs.organizationId, input.organizationId), eq(auditLogs.entityId, invoice.id), eq(auditLogs.entityType, "invoice"), eq(auditLogs.actionType, "invoice_order_backed_created"))).limit(1),
+            tx.select({ id: customerAccountCreditApplications.id }).from(customerAccountCreditApplications).where(and(eq(customerAccountCreditApplications.organizationId, input.organizationId), eq(customerAccountCreditApplications.invoiceId, invoice.id))).limit(1),
+            tx.select({ id: customerAccountCredits.id }).from(customerAccountCredits).where(and(eq(customerAccountCredits.organizationId, input.organizationId), eq(customerAccountCredits.sourceInvoiceId, invoice.id))).limit(1),
+            tx.select({ id: stripeRefundRequests.id }).from(stripeRefundRequests).where(and(eq(stripeRefundRequests.organizationId, input.organizationId), eq(stripeRefundRequests.invoiceId, invoice.id))).limit(1),
           ]);
-          const reason = getInvoiceBillingOwnerTransitionBlocker(invoice, { paymentExists: !!payment, successfulEmailExists: !!email, deliveryJobExists: !!delivery, autoCreatedInvoiceEvidence: !!autoCreated });
+          const reason = getInvoiceBillingOwnerTransitionBlocker(invoice, { paymentExists: paymentRows.some(hasAppliedInvoicePayment), creditExists: !!credit || !!creditSource, refundExists: !!refund, successfulEmailExists: !!email, deliveryJobExists: !!delivery, autoCreatedInvoiceEvidence: !!autoCreated });
           if (reason) throw new CanonicalOrderOperationError("ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED", `${reason} Billing ownership cannot be changed through the Order editor; review the Invoice first.`);
+          await retireInvoicePaymentSessions(tx, { organizationId: input.organizationId, invoiceId: invoice.id, expectedVersion: Number(invoice.invoiceVersion || 1), ownerChange: true });
           await tx.update(invoices).set({
             customerId: nextCustomerId,
             contactId: nextCustomerId ? null : nextContactId,
@@ -116,6 +115,11 @@ class CanonicalOrderOperations {
       }
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
       return order;
+    }).catch((error: unknown) => {
+      if (error instanceof InvoicePaymentContextError) {
+        throw new CanonicalOrderOperationError('ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED', error.message);
+      }
+      throw error;
     });
   }
 

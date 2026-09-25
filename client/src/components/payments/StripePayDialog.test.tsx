@@ -42,7 +42,7 @@ jest.mock('@stripe/react-stripe-js', () => ({
 }));
 
 const props = { open: true, onOpenChange: jest.fn(), invoiceId: 'invoice-fixture', apiBasePath: '/api/guest/invoices', onSettled: jest.fn().mockResolvedValue({ reconciled: true }) };
-const events = () => (apiFetch as jest.Mock).mock.calls.flatMap(([, request]) => JSON.parse(request.body).events);
+const events = () => (apiFetch as jest.Mock).mock.calls.flatMap(([, request]) => JSON.parse(request.body).events || []);
 async function openDialog() {
   const result = render(<StripePayDialog {...props} />);
   await screen.findByTestId('hosted-payment-element');
@@ -56,7 +56,7 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   jest.clearAllMocks(); mounts = 0; unmounts = 0;
   Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'd27ead56-687b-4e7e-9886-7e06962f6943' });
-  (apiFetch as jest.Mock).mockResolvedValue({ ok: true });
+  (apiFetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ data: { eligible: true } }) });
   global.fetch = jest.fn().mockImplementation(async (url) => ({ ok: true, json: async () => ({ data: String(url).endsWith('runtime-config')
     ? { provider: 'stripe', mode: 'test', publishableKey: 'pk_test_fixture', connectedAccountId: 'acct_fixture', readyForPayments: true }
     : { clientSecret: 'secret_do_not_log', stripeAccountId: 'acct_fixture' } }) }));
@@ -101,7 +101,7 @@ test('submit validation feedback stays visible and confirmation is never attempt
 });
 
 test('confirm errors are captured and failed telemetry does not block Stripe confirmation', async () => {
-  (apiFetch as jest.Mock).mockRejectedValue(new Error('offline'));
+  (apiFetch as jest.Mock).mockImplementation(async (url) => { if (String(url).endsWith('/validate')) return { ok: true, json: async () => ({ data: { eligible: true } }) }; throw new Error('offline'); });
   await openDialog();
   fireEvent.click(screen.getByRole('button', { name: 'Pay', exact: true }));
   await screen.findByRole('alert');
@@ -138,4 +138,16 @@ test('successful confirmation still uses the existing settlement callback and em
   expect(events().some(e => e.event === 'confirm_result' && e.success)).toBe(true);
   expect(events().some(e => e.event === 'dialog_success')).toBe(true);
   expect(JSON.stringify((apiFetch as jest.Mock).mock.calls)).not.toContain('pi_fixture');
+});
+
+test('approval revoked while the dialog is open blocks Stripe confirmation and preserves the mounted Element', async () => {
+  await openDialog();
+  (apiFetch as jest.Mock).mockImplementation(async url => String(url).endsWith('/validate')
+    ? { ok: false, json: async () => ({ success: false, message: 'Awaiting approval' }) }
+    : { ok: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Pay', exact: true }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('alert').textContent).toBe('Awaiting approval');
+  expect(confirmPayment).not.toHaveBeenCalled();
+  expect(mounts).toBe(1); expect(unmounts).toBe(0);
 });

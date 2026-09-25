@@ -17,6 +17,7 @@ describe("Contact-owned Invoice boundary", () => {
 
   test("the untouched auto-created Invoice can change owner despite its billed/issuedAt markers", () => {
     expect(getInvoiceBillingOwnerTransitionBlocker(autoCreated, noHistory)).toBeNull();
+    expect(getInvoiceBillingOwnerTransitionBlocker({ ...autoCreated, status: 'finalized' }, noHistory)).toBeNull();
     expect(getInvoiceBillingOwnerTransitionBlocker(autoCreated, { ...noHistory, autoCreatedInvoiceEvidence: false })).toMatch(/issued checkpoint/);
   });
 

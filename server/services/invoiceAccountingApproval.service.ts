@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { auditLogs, customers, invoices, organizations } from '@shared/schema';
 import { db } from '../db';
+import { lockInvoicePaymentContext } from './invoicePaymentSession.service';
 export { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
 import { resolveQuickBooksPreferencesFromOrgPreferences } from '@shared/quickBooksPreferences';
@@ -18,6 +19,7 @@ export async function approveInvoicesForAccounting(input: {
 }, options?: { tx?: any }) {
   const uniqueIds = [...new Set(input.invoiceIds.map(String).filter(Boolean))];
   const approve = async (tx: any) => {
+    await lockInvoicePaymentContext(tx, input.organizationId, uniqueIds);
     const [organization] = await tx
       .select({ settings: organizations.settings })
       .from(organizations)

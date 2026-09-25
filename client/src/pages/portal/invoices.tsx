@@ -61,7 +61,7 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
   return "outline";
 }
 function invoiceLabel(invoice: PortalInvoiceDto) { return invoice.displayNumber || String(invoice.invoiceNumber); }
-export function isPortalInvoiceSelectable(invoice: PortalInvoiceDto) { return Number(invoice.amountDue || 0) > 0 && !["paid", "void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()); }
+export function isPortalInvoiceSelectable(invoice: PortalInvoiceDto) { return invoice.paymentEligibility?.payable === true; }
 function jobLabel(invoice: PortalInvoiceDto) { return invoice.jobLabel?.trim() || "—"; }
 function timestamp(value: string | null) { const parsed = value ? new Date(value).getTime() : NaN; return Number.isFinite(parsed) ? parsed : null; }
 function finiteNumber(value: unknown) {
@@ -123,7 +123,7 @@ export function PortalInvoiceMobileCard({ invoice, selected = false, onSelection
   const job = jobLabel(invoice);
   const selectable = isPortalInvoiceSelectable(invoice);
   return <article className="border-b px-4 py-4 last:border-b-0 2xl:hidden">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2"><input aria-label={`Select invoice ${invoiceLabel(invoice)}`} type="checkbox" disabled={!selectable} checked={selected} onChange={(event) => onSelectionChange?.(event.target.checked)} /><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">Invoice {invoiceLabel(invoice)}</Link></div><Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2"><input aria-label={`Select invoice ${invoiceLabel(invoice)}`} type="checkbox" disabled={!selectable} checked={selected} onChange={(event) => onSelectionChange?.(event.target.checked)} /><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">Invoice {invoiceLabel(invoice)}</Link></div><Badge variant={statusVariant(invoice.status)}>{invoice.paymentEligibility?.blockedReason === "Awaiting approval" ? "Awaiting approval" : invoice.paymentStatusLabel}</Badge></div>
     <div className="mt-3 min-w-0 space-y-1 text-sm"><p className="break-words font-medium text-foreground" title={job}>{job}</p><p className="break-words text-muted-foreground">PO # {invoice.customerPoNumber || "—"}</p><p className="break-words text-muted-foreground">Order # {invoice.orderNumber || "—"}</p></div>
     <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
       <div><dt className="text-muted-foreground">Issued</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.issueDate)}</dd></div><div><dt className="text-muted-foreground">Due</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.dueDate)}</dd></div>
@@ -152,7 +152,7 @@ function InvoiceInfoCell({ column, invoice }: { column: PortalInvoiceInfoColumnI
     case "due": return <td className="whitespace-nowrap px-3 py-3 align-middle text-foreground">{formatDate(invoice.dueDate)}</td>;
     case "amountDue": return <td className="whitespace-nowrap px-3 py-3 text-right align-middle font-semibold text-foreground">{formatCurrency(invoice.amountDue, invoice.currency)}</td>;
     case "total": return <td className="whitespace-nowrap px-3 py-3 text-right align-middle text-foreground">{formatCurrency(invoice.total, invoice.currency)}</td>;
-    case "status": return <td className="px-3 py-3 align-middle"><Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge></td>;
+    case "status": return <td className="px-3 py-3 align-middle"><Badge variant={statusVariant(invoice.status)}>{invoice.paymentEligibility?.blockedReason === "Awaiting approval" ? "Awaiting approval" : invoice.paymentStatusLabel}</Badge></td>;
   }
 }
 

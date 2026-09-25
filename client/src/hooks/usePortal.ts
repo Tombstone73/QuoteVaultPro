@@ -31,6 +31,7 @@ export type PortalSessionDto = {
 };
 
 export type PortalInvoiceDto = {
+  paymentEligibility?: { payable: boolean; blockedReason: string | null };
   id: string;
   invoiceNumber: number;
   displayNumber: string;

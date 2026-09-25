@@ -92,7 +92,8 @@ describe("portal frontend API boundary", () => {
   test("grouped checkout bounds only the invoice list while keeping its total visible", () => {
     const stripeDialog = read("client/src/components/payments/StripePayDialog.tsx");
 
-    expect(stripeDialog).toContain("max-h-[calc(100dvh-2rem)]");
+    expect(stripeDialog).toContain("max-h-[calc(var(--payment-viewport-height,100dvh)-2rem)]");
+    expect(stripeDialog).toContain('data-testid="stripe-payment-scroll-body"');
     expect(stripeDialog).toContain('data-testid="stripe-invoice-scroll-region"');
     expect(stripeDialog).toContain("overflow-y-auto overscroll-contain");
     expect(stripeDialog.indexOf('data-testid="stripe-invoice-scroll-region"')).toBeLessThan(stripeDialog.indexOf("Total Due"));

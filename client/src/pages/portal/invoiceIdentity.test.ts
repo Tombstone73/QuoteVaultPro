@@ -47,6 +47,7 @@ const invoice = (overrides: Partial<PortalInvoiceDto> = {}): PortalInvoiceDto =>
   orderNumber: "ORD-20047",
   pdfAvailable: true,
   paymentStatusLabel: "Unpaid",
+  paymentEligibility: { payable: (overrides.amountDue ?? 69) > 0 && overrides.status !== "void", blockedReason: null },
   ...overrides,
 });
 
@@ -358,4 +359,13 @@ describe("V1 Portal invoice payment selection", () => {
     expect(onClear).toHaveBeenCalledTimes(1);
     expect(onPay).toHaveBeenCalledTimes(1);
   });
+});
+
+test('unapproved invoice remains visible with its balance but cannot enter grouped selection', () => {
+  const awaiting = invoice({ paymentEligibility: { payable: false, blockedReason: 'Awaiting approval' } });
+  render(React.createElement(PortalInvoiceMobileCard, { invoice: awaiting }));
+  expect(document.body.textContent).toContain('Awaiting approval');
+  expect(document.body.textContent).toContain('$69.00');
+  expect(document.querySelector('input')?.disabled).toBe(true);
+  expect(sanitizePortalInvoiceSelection([awaiting], new Set([awaiting.id])).size).toBe(0);
 });

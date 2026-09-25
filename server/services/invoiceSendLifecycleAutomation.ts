@@ -1,3 +1,4 @@
+import { lockInvoicePaymentContext, retireInvoicePaymentSessions } from './invoicePaymentSession.service';
 import { and, eq, sql } from "drizzle-orm";
 import { auditLogs, customers, invoices, organizations } from "@shared/schema";
 import {
@@ -31,6 +32,8 @@ export async function applyInvoiceSendSuccessLifecycle(input: {
   suppressAutomaticAccountingApproval?: boolean;
 }): Promise<InvoiceSendLifecycleResult> {
   return db.transaction(async (tx) => {
+    // Acquire before any invoice UPDATE: automatic approval uses this same lock.
+    await lockInvoicePaymentContext(tx, input.organizationId, [input.invoiceId]);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-send-lifecycle:${input.organizationId}:${input.invoiceId}`}))`);
 
     const [invoice] = await tx.select().from(invoices).where(and(
@@ -74,6 +77,7 @@ export async function applyInvoiceSendSuccessLifecycle(input: {
         }),
       });
       if (dueDate && (!invoice.dueDate || dueDate.getTime() !== new Date(invoice.dueDate).getTime())) {
+        await retireInvoicePaymentSessions(tx, { organizationId: input.organizationId, invoiceId: invoice.id, expectedVersion: Number(invoice.invoiceVersion || 1) });
         dueDateUpdated = true;
         updates.dueDate = dueDate;
         updates.invoiceVersion = Number(invoice.invoiceVersion || 1) + 1;

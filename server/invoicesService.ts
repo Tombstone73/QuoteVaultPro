@@ -1,3 +1,4 @@
+import { retireInvoicePaymentSessions } from './services/invoicePaymentSession.service';
 import { db } from './db';
 import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems } from '../shared/schema';
 import { asc, count, desc, eq, and, ilike, inArray, isNull, notInArray, or, sql, ne } from 'drizzle-orm';
@@ -1370,6 +1371,7 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     return { status: "paid_invoice_adjustment_required" as const, invoiceId: invoice.id };
   }
 
+  await retireInvoicePaymentSessions(tx, { organizationId: input.organizationId, invoiceId: invoice.id, expectedVersion: Number(invoice.invoiceVersion || 1) });
   if (lineSnapshotsChanged) {
     await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
     if (desiredRows.length) await tx.insert(invoiceLineItems).values(desiredRows as any);
@@ -1490,6 +1492,7 @@ export async function updateInvoiceSafeDraftCanonical(input: {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (input.patch.terms !== undefined) updates.terms = input.patch.terms;
     if (input.patch.customDueDate !== undefined) {
+      await retireInvoicePaymentSessions(tx, { organizationId: input.organizationId, invoiceId: invoice.id, expectedVersion: Number(invoice.invoiceVersion || 1) });
       updates.dueDate = input.patch.customDueDate;
       updates.accountingUpdatedAt = new Date();
       updates.invoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;
