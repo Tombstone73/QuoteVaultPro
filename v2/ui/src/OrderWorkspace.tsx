@@ -2037,7 +2037,6 @@ export const OrderArtworkPanel = ({
                   <ArtworkUploadPanel
                     organizationId={organizationId}
                     target={{ orderId, orderLineId: line.lineId, orderNumber, lineDescription: line.description || "Order line" }}
-                    currentAssignments={assigned.map((entry) => entry.assignment)}
                     onUploaded={() => {
                       setUploadLineId(undefined);
                       onUploaded();

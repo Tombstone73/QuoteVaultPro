@@ -15,27 +15,35 @@ type ArtworkUploadRequest = Readonly<{
   file: File;
   purpose: ArtworkOrderProjection["assignment"]["purpose"];
   side: NonNullable<ArtworkOrderProjection["assignment"]["side"]>;
-  supersedesArtworkAssignmentId?: string;
 }>;
 
-export const currentArtworkAssignmentId = (
-  assignments: readonly ArtworkOrderProjection["assignment"][],
+/** A new selection is always a new additive adoption. Retries retain this exact request. */
+export const newArtworkUploadRequest = (
+  file: File,
   purpose: ArtworkOrderProjection["assignment"]["purpose"],
   side: NonNullable<ArtworkOrderProjection["assignment"]["side"]>,
-): string | undefined => assignments.find((assignment) => assignment.purpose === purpose && assignment.side === side)?.id;
+): ArtworkUploadRequest => ({
+  businessRequestId: newBusinessRequestId(),
+  file,
+  purpose,
+  side,
+});
 
 /** Artwork owns binary intake; Sales supplies an already-authorized OrderLine target. */
-export const ArtworkUploadPanel = ({ organizationId, target, currentAssignments = [], onUploaded }: Readonly<{ organizationId: string; target: ArtworkUploadTarget; currentAssignments?: readonly ArtworkOrderProjection["assignment"][]; onUploaded: () => void }>) => {
+export const ArtworkUploadPanel = ({ organizationId, target, onUploaded }: Readonly<{ organizationId: string; target: ArtworkUploadTarget; onUploaded: () => void }>) => {
   const [request, setRequest] = useState<ArtworkUploadRequest | undefined>();
   const [purpose, setPurpose] = useState<"customer_supplied" | "production" | "proof" | "reference">("customer_supplied");
   const [side, setSide] = useState<"front" | "back">("front");
   const upload = useMutation({
-    mutationFn: (pending: ArtworkUploadRequest) => artworkApi.upload(organizationId, pending.businessRequestId, { orderId: target.orderId, orderLineId: target.orderLineId, purpose: pending.purpose, side: pending.side, ...(pending.supersedesArtworkAssignmentId ? { supersedesArtworkAssignmentId: pending.supersedesArtworkAssignmentId } : {}), file: pending.file }),
-    onSuccess: () => { setRequest(undefined); onUploaded(); },
+    mutationFn: (pending: ArtworkUploadRequest) => artworkApi.upload(organizationId, pending.businessRequestId, { orderId: target.orderId, orderLineId: target.orderLineId, purpose: pending.purpose, side: pending.side, file: pending.file }),
+    onSuccess: () => {
+      setRequest(undefined);
+      upload.reset();
+      onUploaded();
+    },
   });
   const select = (file: File) => {
-    const supersedesArtworkAssignmentId = currentArtworkAssignmentId(currentAssignments, purpose, side);
-    const pending: ArtworkUploadRequest = { businessRequestId: newBusinessRequestId(), file, purpose, side, ...(supersedesArtworkAssignmentId ? { supersedesArtworkAssignmentId } : {}) };
+    const pending = newArtworkUploadRequest(file, purpose, side);
     setRequest(pending);
     upload.mutate(pending);
   };

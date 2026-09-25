@@ -175,7 +175,6 @@ export const OrderLineArtworkDetail = ({
         <ArtworkUploadPanel
           organizationId={organizationId}
           target={uploadTarget}
-          currentAssignments={assigned.map((entry) => entry.assignment)}
           onUploaded={() => {
             setUploading(false);
             onUploaded?.();

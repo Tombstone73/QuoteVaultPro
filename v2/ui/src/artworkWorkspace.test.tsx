@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -43,5 +44,8 @@ const viewOnlyContext = orderContext(false);
 assert.doesNotMatch(viewOnlyContext, /Order artwork PDF/, "view-only staff must not receive an actionable upload control");
 const adoptionContext = orderContext(true);
 assert.match(adoptionContext, /Order artwork PDF/, "Artwork adoption authority exposes canonical Order-line upload");
+const workspaceSource = await readFile(new URL("./ArtworkWorkspace.tsx", import.meta.url), "utf8");
+assert.doesNotMatch(workspaceSource, /currentOrderArtwork/, "additive uploads must not wait for a stale current-assignment read");
+assert.match(workspaceSource, /targetLine && canAdopt && <ArtworkUploadPanel/, "an authorized line context must remain ready for the next upload");
 
 console.log("Artwork workspace visual contract tests passed.");

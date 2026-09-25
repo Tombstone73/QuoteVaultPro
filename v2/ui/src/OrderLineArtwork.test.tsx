@@ -7,16 +7,17 @@ import { orderConfigurationPresentation } from "./orderConfigurationPresentation
 import type { ArtworkOrderProjection } from "./api";
 
 const entry = (id: string, lineId: string, filename: string, side?: "front" | "back"): ArtworkOrderProjection => ({ file: { id: `file-${id}`, originalFilename: filename, displayFilename: filename, contentType: "application/pdf", byteSize: 1024, source: "customer_upload", createdAt: "2026-08-26" }, assignment: { id: `assignment-${id}`, artworkFileId: `file-${id}`, orderId: "order-a", orderLineId: lineId, purpose: "customer_supplied", ...(side ? { side } : {}), createdAt: "2026-08-26" } });
-const artwork = [entry("front", "line-a", "front.pdf", "front"), entry("back", "line-a", "back.pdf", "back"), entry("other", "line-b", "other.pdf")];
-assert.deepEqual(artworkForOrderLine(artwork, "line-a").map((value) => value.file.displayFilename), ["front.pdf", "back.pdf"]);
+const artwork = [entry("front", "line-a", "front.pdf", "front"), entry("back", "line-a", "back.pdf", "back"), entry("additional", "line-a", "additional.pdf", "front"), entry("other", "line-b", "other.pdf")];
+assert.deepEqual(artworkForOrderLine(artwork, "line-a").map((value) => value.file.displayFilename), ["front.pdf", "back.pdf", "additional.pdf"]);
 assert.equal(protectedArtworkContentPath("org/a", artwork[0]!), "/v2/organizations/org%2Fa/artwork/files/file-front/content#page=1");
 const compact = renderToStaticMarkup(<OrderLineArtworkCompact organizationId="org-a" orderLineId="line-a" artwork={artwork} loading={false} canView onOpen={() => undefined} />);
-assert.match(compact, /front\.pdf|2 files/);
+assert.match(compact, /front\.pdf|3 files/);
 assert.match(compact, /\/v2\/organizations\/org-a\/artwork\/files\/file-front\/content/);
 assert.doesNotMatch(compact, /other\.pdf|assignment-front|object_key|storageProvider/);
 const detail = renderToStaticMarkup(<OrderLineArtworkDetail organizationId="org-a" orderLineId="line-a" artwork={artwork} loading={false} canView canAdopt uploadTarget={{ orderId: "order-a", orderLineId: "line-a", orderNumber: "ORD-1", lineDescription: "Banner" }} onOpen={() => undefined} onUploaded={() => undefined} />);
 assert.match(detail, /front\.pdf.*Customer Supplied · front/s);
 assert.match(detail, /back\.pdf.*Customer Supplied · back/s);
+assert.match(detail, /additional\.pdf.*Customer Supplied · front/s);
 assert.match(detail, /Upload Artwork/);
 assert.doesNotMatch(detail, /Select (an? )?line/i, "expanded-line upload must not need a second line picker");
 assert.deepEqual(lineArtworkUploadTarget("order-a", "ORD-1", { lineId: "line-a", description: "Banner", position: 1 }), { orderId: "order-a", orderLineId: "line-a", orderNumber: "ORD-1", lineDescription: "Banner" });

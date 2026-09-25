@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { artworkApi } from "./api";
-import { ArtworkUploadPanel, currentArtworkAssignmentId, type ArtworkUploadTarget } from "./ArtworkUploadPanel";
+import { ArtworkUploadPanel, newArtworkUploadRequest, type ArtworkUploadTarget } from "./ArtworkUploadPanel";
 
 const target: ArtworkUploadTarget = {
   orderId: "order-a",
@@ -22,13 +23,15 @@ assert.match(markup, /aria-label="Artwork side"/);
 assert.doesNotMatch(markup, />Upload Artwork<\/button>/);
 assert.doesNotMatch(markup, /Artwork Order ID|Artwork Order line ID/);
 
-const assignments = [
-  { id: "assignment-front", artworkFileId: "file-front", orderId: "order-a", orderLineId: "line-a", purpose: "customer_supplied" as const, side: "front" as const, createdAt: "2026-09-03T00:00:00.000Z" },
-  { id: "assignment-back", artworkFileId: "file-back", orderId: "order-a", orderLineId: "line-a", purpose: "customer_supplied" as const, side: "back" as const, createdAt: "2026-09-03T00:00:00.000Z" },
-];
-assert.equal(currentArtworkAssignmentId(assignments, "customer_supplied", "front"), "assignment-front");
-assert.equal(currentArtworkAssignmentId(assignments, "customer_supplied", "back"), "assignment-back");
-assert.equal(currentArtworkAssignmentId(assignments, "proof", "front"), undefined);
+const firstRequest = newArtworkUploadRequest(new File(["%PDF-1.4\nfirst"], "first.pdf", { type: "application/pdf" }), "customer_supplied", "front");
+const secondRequest = newArtworkUploadRequest(new File(["%PDF-1.4\nsecond"], "second.pdf", { type: "application/pdf" }), "customer_supplied", "front");
+assert.notEqual(firstRequest.businessRequestId, secondRequest.businessRequestId, "each new upload receives a fresh request identity");
+assert.equal(firstRequest.file.name, "first.pdf");
+assert.equal(secondRequest.file.name, "second.pdf");
+const panelSource = await readFile(new URL("./ArtworkUploadPanel.tsx", import.meta.url), "utf8");
+assert.doesNotMatch(panelSource, /supersedesArtworkAssignmentId/, "ordinary Artwork upload must never infer replacement lineage from purpose or side");
+assert.match(panelSource, /setRequest\(undefined\);\s*upload\.reset\(\);\s*onUploaded\(\);/, "successful upload clears request and mutation state for the next upload");
+assert.match(panelSource, /onRetry=\{request \? \(\) => upload\.mutate\(request\) : undefined\}/, "retry keeps the same request identity and semantic upload");
 
 const originalFetch = globalThis.fetch;
 const seen: { url?: string; headers?: HeadersInit; body?: BodyInit | null } = {};
@@ -38,7 +41,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 }) as typeof fetch;
 try {
   const file = new File(["%PDF-1.4\nqa"], "qa-artwork.pdf", { type: "application/pdf" });
-  await artworkApi.upload("org a", "request-a", { orderId: target.orderId, orderLineId: target.orderLineId, purpose: "customer_supplied", side: "front", supersedesArtworkAssignmentId: "assignment-front", file });
+  await artworkApi.upload("org a", "request-a", { orderId: target.orderId, orderLineId: target.orderLineId, purpose: "customer_supplied", side: "front", file });
 } finally { globalThis.fetch = originalFetch; }
 assert.equal(seen.url, "/v2/organizations/org%20a/artwork/uploads");
 assert.equal((seen.headers as Record<string, string>)["content-type"], undefined, "browser must supply the multipart boundary");
@@ -48,7 +51,7 @@ assert.equal(body.get("orderId"), "order-a");
 assert.equal(body.get("orderLineId"), "line-a");
 assert.equal(body.get("purpose"), "customer_supplied");
 assert.equal(body.get("side"), "front");
-assert.equal(body.get("supersedesArtworkAssignmentId"), "assignment-front");
+assert.equal(body.get("supersedesArtworkAssignmentId"), null, "ordinary upload is additive and never sends replacement lineage");
 assert.equal((body.get("file") as File).name, "qa-artwork.pdf");
 
 const productionFile = new File(["%PDF-1.4\nprint"], "print-ready.pdf", { type: "application/pdf" });

@@ -47,6 +47,23 @@ describe("M2.0 Artwork contracts", () => {
     const result=await new ArtworkApplicationService(runner).adopt({principal:portal,organizationId:org,operationId:"portal-adopt",businessRequest:{id:"portal-adopt",payloadFingerprint:"portal"}},input("portal-adopt",{usage:usage({purpose:"customer_supplied"})}));
     expect(result.ok).toBe(true);
   });
+  test("ordinary uploads append same-purpose, same-side files without superseding an earlier line assignment", async () => {
+    const transaction = new MemoryArtworkTransaction();
+    const isolated = new ArtworkApplicationService({ transaction: async (action) => action(transaction) });
+    const uploads = [
+      await isolated.adopt(context("add-a"), input("add-a", { usage: usage({ purpose: "customer_supplied", side: "front" }) })),
+      await isolated.adopt(context("add-b"), input("add-b", { usage: usage({ purpose: "customer_supplied", side: "front" }) })),
+      await isolated.adopt(context("add-c"), input("add-c", { usage: usage({ purpose: "customer_supplied", side: "front" }) })),
+    ];
+    expect(uploads.every((result) => result.ok)).toBe(true);
+    const current = await isolated.listForOrderLine(context("add-read"), "line");
+    expect(current.ok).toBe(true);
+    if (!current.ok) return;
+    expect(current.value).toHaveLength(3);
+    const uploadedFileIds = uploads.flatMap((result) => result.ok ? [result.value.artworkFile.id] : []);
+    expect(current.value.map((entry) => entry.assignment.artworkFileId)).toEqual(expect.arrayContaining(uploadedFileIds));
+    expect(current.value.every((entry) => entry.assignment.supersedesArtworkAssignmentId === undefined)).toBe(true);
+  });
   test("replacement preserves the inherited assignment and appends one current successor", async () => {
     const inherited=await service.adopt(context("inherited"),input("inherited",{usage:usage({purpose:"customer_supplied"})}));if(!inherited.ok)throw Error("inherited");
     const replacement=await service.replace(context("replacement"),{...input("replacement",{usage:usage({purpose:"customer_supplied"})}),supersedesArtworkAssignmentId:inherited.value.assignment.id});
