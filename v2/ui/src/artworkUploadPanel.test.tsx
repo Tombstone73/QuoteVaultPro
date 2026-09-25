@@ -56,6 +56,7 @@ assert.equal(body.get("purpose"), "customer_supplied");
 assert.equal(body.get("side"), "front");
 assert.equal(body.get("supersedesArtworkAssignmentId"), null, "ordinary upload is additive and never sends replacement lineage");
 assert.equal((body.get("file") as File).name, "qa-artwork.pdf");
+assert.deepEqual(Buffer.from(await (body.get("file") as File).arrayBuffer()), Buffer.from("%PDF-1.4\nqa"), "FormData preserves the File bytes");
 
 const productionFile = new File(["%PDF-1.4\nprint"], "print-ready.pdf", { type: "application/pdf" });
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {

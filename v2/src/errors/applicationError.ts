@@ -1,5 +1,10 @@
 export const applicationErrorCodes = [
   "VALIDATION_ERROR",
+  "EMPTY_FILE",
+  "SIZE_LIMIT",
+  "NOT_PDF",
+  "CORRUPT_PDF",
+  "UPLOAD_TRANSPORT_CORRUPTION",
   "NOT_FOUND",
   "FORBIDDEN",
   "WRONG_TENANT",

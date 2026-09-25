@@ -15,6 +15,8 @@ assert.equal(isArtworkPdf(new File(["%PDF"], "proof.pdf", { type: "application/p
 assert.equal(isArtworkPdf(new File(["pdf without MIME"], "proof.pdf")), true);
 assert.equal(isArtworkPdf(new File(["png"], "proof.png", { type: "image/png" })), false);
 assert.equal(artworkUploadErrorMessage({ code: "VALIDATION_ERROR", message: "Only valid PDF Artwork files are supported." }), "The selected file is not a valid PDF. Choose a valid PDF and try again.");
+assert.equal(artworkUploadErrorMessage({ code: "SIZE_LIMIT" }), "The selected PDF exceeds the 10 MB upload limit.");
+assert.equal(artworkUploadErrorMessage({ code: "UPLOAD_TRANSPORT_CORRUPTION" }), "Artwork upload could not be read. Retry the upload.");
 assert.equal(artworkUploadErrorMessage({ code: "CONFLICT", message: "internal detail" }), "Artwork changed while this upload was in progress. Refresh the Order and try again.");
 assert.equal(artworkUploadErrorMessage({ code: "UNEXPECTED", message: "internal detail" }), "Artwork upload failed. Existing artwork was not changed.");
 const validationMarkup = renderToStaticMarkup(<ArtworkAutoUploadDropzone label="Order artwork PDF" isUploading={false} isSuccess={false} error={{ code: "VALIDATION_ERROR" }} onFileSelected={() => undefined} />);

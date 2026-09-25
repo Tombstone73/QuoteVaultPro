@@ -6,6 +6,7 @@ import type { ArtworkMutationResult, ArtworkPurpose, ArtworkSide } from "../../s
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 import type { ArtworkBinaryStorage } from "./artworkBinaryStorage.js";
 import type { ArtworkStorageUploadLedger } from "./artworkStorageUploadLedger.js";
+import { canonicalArtworkPdfContentType, validateArtworkPdf } from "./artworkPdfValidation.js";
 
 export type ArtworkUploadInput = Readonly<{
   businessRequestId: string;
@@ -50,28 +51,27 @@ export class ArtworkUploadService {
       if (replacement && !input.supersedesArtworkAssignmentId?.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "The current Artwork assignment is required for replacement.");
       if (!validPurpose(input.purpose)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork purpose is invalid.");
       if (input.side !== undefined && !validSide(input.side)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork side is invalid.");
-      if (input.bytes.length === 0) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork file cannot be empty.");
-      if (input.bytes.length > maximumBytes) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork file exceeds the 10 MB limit.");
-      if (input.contentType !== "application/pdf" || input.bytes.subarray(0, 5).toString("ascii") !== "%PDF-")
-        throw new V2ApplicationError("VALIDATION_ERROR", "Only valid PDF Artwork files are supported.");
+      if (input.bytes.length > maximumBytes) throw new V2ApplicationError("SIZE_LIMIT", "Artwork file exceeds the 10 MB limit.");
+      await validateArtworkPdf(input.bytes);
       if (input.sourcePageIndex !== undefined && (!Number.isInteger(input.sourcePageIndex) || input.sourcePageIndex < 0)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork source page index is invalid.");
       if ((input.layerKey === undefined) !== (input.layerOrder === undefined) || (input.layerKey !== undefined && (!input.layerKey.trim() || !Number.isInteger(input.layerOrder) || input.layerOrder! < 0))) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork layer metadata is invalid.");
 
       const checksum = createHash("sha256").update(input.bytes).digest("hex");
+      const contentType = canonicalArtworkPdfContentType;
       const objectKey = `v2-artwork/${context.organizationId}/${checksum}.pdf`;
       // This durable record is deliberately written before bytes leave the
       // process. A crash after put() is therefore recoverable without bucket
       // listing or browser state.
       const objectAlreadyExists = await this.storage.exists(objectKey);
-      const upload = await this.uploads.reserve({ organizationId: context.organizationId, storageProvider: "supabase", objectKey, requestIdentity: input.businessRequestId, expectedChecksumSha256: checksum, expectedContentType: input.contentType, expectedByteSize: input.bytes.length, objectExpectedToBeCreated: !objectAlreadyExists });
-      const stored = await this.storage.put({ organizationId: context.organizationId, objectKey, contentType: input.contentType, bytes: input.bytes });
+      const upload = await this.uploads.reserve({ organizationId: context.organizationId, storageProvider: "supabase", objectKey, requestIdentity: input.businessRequestId, expectedChecksumSha256: checksum, expectedContentType: contentType, expectedByteSize: input.bytes.length, objectExpectedToBeCreated: !objectAlreadyExists });
+      const stored = await this.storage.put({ organizationId: context.organizationId, objectKey, contentType, bytes: input.bytes });
       await this.uploads.markStored({ organizationId: context.organizationId, intentId: upload.id, objectCreatedByIntent: stored.created });
       const common = {
         businessRequestId: input.businessRequestId,
         objectReference: { storageProvider: stored.storageProvider, objectKey: stored.objectKey },
         originalFilename: filename,
         displayFilename: filename,
-        contentType: input.contentType,
+        contentType,
         byteSize: input.bytes.length,
         checksum: { algorithm: "sha256", value: checksum },
         source: "customer_upload",

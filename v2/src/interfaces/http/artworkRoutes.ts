@@ -34,10 +34,10 @@ export const parseArtworkMultipart = (request: Request): Promise<MultipartArtwor
     if (name !== "file" || file) { failure ??= new V2ApplicationError("VALIDATION_ERROR", "Exactly one Artwork file is required."); stream.resume(); return; }
     const chunks: Buffer[] = [];
     stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-    stream.on("limit", () => { failure = new V2ApplicationError("VALIDATION_ERROR", "Artwork file exceeds the 10 MB limit."); });
+    stream.on("limit", () => { failure = new V2ApplicationError("SIZE_LIMIT", "Artwork file exceeds the 10 MB limit."); });
     stream.on("end", () => { if (!failure) file = { filename: info.filename, contentType: info.mimeType, bytes: Buffer.concat(chunks) }; });
   });
-  parser.on("error", () => reject(new V2ApplicationError("VALIDATION_ERROR", "Artwork upload could not be read.")));
+  parser.on("error", () => reject(new V2ApplicationError("UPLOAD_TRANSPORT_CORRUPTION", "Artwork upload could not be read.")));
   parser.on("finish", () => {
     if (failure) return reject(failure);
     if (!file) return reject(new V2ApplicationError("VALIDATION_ERROR", "Exactly one Artwork file is required."));
@@ -52,7 +52,7 @@ export const parseArtworkMultipart = (request: Request): Promise<MultipartArtwor
   request.pipe(parser);
 });
 
-const status = (code: string): number => code === "VALIDATION_ERROR" ? 400 : code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" || code === "WRONG_TENANT" ? 404 : code === "CONFLICT" || code === "STALE_STATE" || code === "IDEMPOTENCY_CONFLICT" ? 409 : code === "RETRYABLE_FAILURE" ? 503 : 500;
+const status = (code: string): number => ["VALIDATION_ERROR", "EMPTY_FILE", "SIZE_LIMIT", "NOT_PDF", "CORRUPT_PDF", "UPLOAD_TRANSPORT_CORRUPTION"].includes(code) ? 400 : code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" || code === "WRONG_TENANT" ? 404 : code === "CONFLICT" || code === "STALE_STATE" || code === "IDEMPOTENCY_CONFLICT" ? 409 : code === "RETRYABLE_FAILURE" ? 503 : 500;
 const send = (response: Response, result: ApplicationResult<unknown>): void => {
   if (!result.ok) { response.status(status(result.error.code)).json({ ok: false, error: { code: result.error.code, message: result.error.publicMessage } }); return; }
   response.status(200).json({ ok: true, data: result.value });

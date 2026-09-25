@@ -23,6 +23,11 @@ export const artworkUploadErrorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   if (!isCanonicalArtworkUploadError(error)) return error ? "Artwork upload failed. Existing artwork was not changed." : "";
   switch (error.code) {
+    case "EMPTY_FILE": return "Choose a non-empty PDF file and try again.";
+    case "SIZE_LIMIT": return "The selected PDF exceeds the 10 MB upload limit.";
+    case "NOT_PDF":
+    case "CORRUPT_PDF": return "The selected file is not a readable PDF. Choose a valid PDF and try again.";
+    case "UPLOAD_TRANSPORT_CORRUPTION": return "Artwork upload could not be read. Retry the upload.";
     case "VALIDATION_ERROR": return "The selected file is not a valid PDF. Choose a valid PDF and try again.";
     case "CONFLICT": return "Artwork changed while this upload was in progress. Refresh the Order and try again.";
     case "STALE_STATE": return "This Order changed. Refresh it before uploading Artwork again.";

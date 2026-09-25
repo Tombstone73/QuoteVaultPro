@@ -10,8 +10,10 @@ const app = (actor = principal) => express().use("/v2/organizations/:organizatio
 describe("Artwork upload HTTP transport", () => {
   test("parses a scoped multipart PDF into the authenticated Artwork operation", async () => {
     seen.length = 0;
-    await request(app()).post("/v2/organizations/org-a/artwork/uploads").field("businessRequestId", "request-a").field("orderId", "order-a").field("orderLineId", "line-a").field("purpose", "customer_supplied").field("side", "front").attach("file", Buffer.from("%PDF-1.4\nqa"), { filename: "qa.pdf", contentType: "application/pdf" }).expect(200, { ok: true, data: { artworkFile: { id: "file-a" }, assignment: { id: "assignment-a" } } });
-    expect(seen).toEqual([expect.objectContaining({ businessRequestId: "request-a", orderId: "order-a", orderLineId: "line-a", purpose: "customer_supplied", side: "front", filename: "qa.pdf", contentType: "application/pdf" })]);
+    const original = Buffer.from("%PDF-1.4\nraw-binary-\x00-preserved");
+    await request(app()).post("/v2/organizations/org-a/artwork/uploads").field("businessRequestId", "request-a").field("orderId", "order-a").field("orderLineId", "line-a").field("purpose", "customer_supplied").field("side", "front").attach("file", original, { filename: "qa.pdf", contentType: "application/octet-stream" }).expect(200, { ok: true, data: { artworkFile: { id: "file-a" }, assignment: { id: "assignment-a" } } });
+    expect(seen).toEqual([expect.objectContaining({ businessRequestId: "request-a", orderId: "order-a", orderLineId: "line-a", purpose: "customer_supplied", side: "front", filename: "qa.pdf", contentType: "application/octet-stream", bytes: original })]);
+    expect((seen[0] as { bytes: Buffer }).bytes).toHaveLength(original.length);
   });
 
   test("rejects missing multipart binary before mutation", async () => {
