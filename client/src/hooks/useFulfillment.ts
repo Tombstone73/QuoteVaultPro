@@ -1,3 +1,4 @@
+import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getApiUrl } from "@/lib/apiConfig";
 
@@ -154,7 +155,8 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     contactEmail: string | null;
     contactPhone: string | null;
   } | null;
-  pickupHandoffs: Array<{
+  pickupTravelers?: PickupTravelerHistoryEntry[];
+  pickupHandoffs: Array<Partial<PickupReversalHistory> & {
     id: string;
     handedOffAt: string;
     handedOffByUserId: string | null;
@@ -599,10 +601,10 @@ export function useMarkPickupPickedUpMutation(ticketId: string, orderId?: string
 export function useRecordPickupHandoffMutation(orderId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { ticketId: string; items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null; clientRequestId?: string }) => apiCall<any>(`/api/fulfillment/pickup/${payload.ticketId}/handoffs`, {
+    mutationFn: (payload: { ticketId: string; travelerJobIds?: string[]; items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null; clientRequestId?: string }) => apiCall<any>(`/api/fulfillment/pickup/${payload.ticketId}/handoffs`, {
       method: "POST",
       headers: payload.clientRequestId ? { "Idempotency-Key": payload.clientRequestId } : undefined,
-      body: JSON.stringify({ items: payload.items, notes: payload.notes, clientRequestId: payload.clientRequestId }),
+      body: JSON.stringify({ items: payload.items, notes: payload.notes, clientRequestId: payload.clientRequestId, ...(payload.travelerJobIds?.length ? { travelerJobIds: payload.travelerJobIds } : {}) }),
     }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });

@@ -1,5 +1,44 @@
 import type { FulfillmentLineQuantityProjection } from "./fulfillmentReadiness";
 import type { PickupTravelerPrintContext } from "./productionTicket";
+import { z } from "zod";
+import { netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from "./fulfillmentTerminalReversal";
+
+const optionalBoxNumber = z.preprocess(value => value === null || (typeof value === "string" && !value.trim()) ? undefined : value,
+  z.union([z.number(), z.string().trim().regex(/^\d+$/).transform(Number)]).pipe(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)).optional());
+export const pickupTravelerBoxSchema = z.object({ currentBox: optionalBoxNumber, totalBoxes: optionalBoxNumber })
+  .superRefine((box, ctx) => {
+    if ((box.currentBox === undefined) !== (box.totalBoxes === undefined) || (box.currentBox ?? 0) > (box.totalBoxes ?? 0)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Enter both box numbers, with the current box no greater than the total." });
+    }
+  }).transform(box => box.currentBox === undefined ? null : { current: box.currentBox, total: box.totalBoxes! });
+
+export type PickupTravelerHistoryEntry = {
+  id: string; createdAt: string; pickupHandoffId: string | null;
+  box: { current: number; total: number } | null; legacyBoxCount?: number;
+  lines: Array<{ orderLineItemId: string; quantity: number; description: string }>;
+};
+export type PickupReversalHistory = {
+  status: "COMPLETED" | "REVERSED" | "PARTIALLY_REVERSED";
+  remainingByLine: Record<string, number>;
+  reversals: Array<{ id: string; createdAt: string | null; actorName: string | null; actorUserId: string | null; reason: string | null }>;
+};
+export function pickupReversalHistory(handoffId: string, items: Array<{ orderLineItemId: string; quantity: number }>,
+  events: Array<{ id: string; eventType: string; payloadJson: unknown; createdAt?: Date | string | null; actorUserId?: string | null; actorFirstName?: string | null; actorLastName?: string | null }>): PickupReversalHistory {
+  const matching = events.filter(e => e.eventType === "PICKUP_HANDOFF_REVERSED" && (e.payloadJson as any)?.sourceId === handoffId);
+  const reversed = terminalReversalQuantitiesByLine(matching, items.map(i => i.orderLineItemId)).pickup;
+  const remainingByLine = Object.fromEntries(items.map(i => [i.orderLineItemId, netTerminalFulfillmentQuantity(i.quantity, reversed.get(i.orderLineItemId) ?? 0)]));
+  const hasReversed = items.some(i => (reversed.get(i.orderLineItemId) ?? 0) > 0);
+  return { status: !hasReversed ? "COMPLETED" : items.every(i => remainingByLine[i.orderLineItemId] === 0) ? "REVERSED" : "PARTIALLY_REVERSED",
+    remainingByLine, reversals: matching.map(e => ({ id: e.id, createdAt: e.createdAt ? new Date(e.createdAt).toISOString() : null,
+      actorName: [e.actorFirstName, e.actorLastName].filter(Boolean).join(" ") || null, actorUserId: e.actorUserId ?? null,
+      reason: typeof (e.payloadJson as any)?.reason === "string" ? (e.payloadJson as any).reason : null })) };
+}
+
+export function samePickupQuantities(a: Array<{ orderLineItemId: string; quantity: number }>, b: Array<{ orderLineItemId: string; quantity: number }>) {
+  const totals = (items: typeof a) => { const result = new Map<string, number>(); for (const item of items) result.set(item.orderLineItemId, (result.get(item.orderLineItemId) ?? 0) + item.quantity); return result; };
+  const left = totals(a), right = totals(b);
+  return left.size === right.size && Array.from(left).every(([id, qty]) => right.get(id) === qty);
+}
 
 export type PickupTravelerLineProgress = {
   orderLineItemId: string;
@@ -57,6 +96,9 @@ export function buildPickupTravelerProgressSnapshot(
 export function pickupTravelerContext(value: unknown): PickupTravelerPrintContext | null {
   if (!value || typeof value !== "object") return null;
   const context = value as PickupTravelerPrintContext;
+  if (context.box !== undefined && context.box !== null && (!quantity(context.box.current) || !quantity(context.box.total)
+    || context.box.current < 1 || context.box.current > context.box.total)) return null;
+  if ([context.pickupHandoffId, context.reprintOf].some(id => id !== undefined && (typeof id !== "string" || !id))) return null;
   if (context.fulfillmentMode !== "pickup" || !quantity(context.boxCount) || context.boxCount < 1 || context.boxCount > 100
     || !Array.isArray(context.lineQuantities) || !context.lineQuantities.length) return null;
   const ids = new Set<string>();
@@ -64,6 +106,12 @@ export function pickupTravelerContext(value: unknown): PickupTravelerPrintContex
     if (!item || typeof item.orderLineItemId !== "string" || !item.orderLineItemId || ids.has(item.orderLineItemId)
       || !quantity(item.quantity) || item.quantity === 0) return null;
     ids.add(item.orderLineItemId);
+  }
+  if (context.documentSnapshot) {
+    const doc = context.documentSnapshot;
+    if (typeof doc.orderId !== "string" || typeof doc.orderNumber !== "string" || typeof doc.customerName !== "string"
+      || !Array.isArray(doc.lineItems) || doc.lineItems.some(l => !l || typeof l.orderLineItemId !== "string" || typeof l.description !== "string" || !quantity(l.quantity))
+      || !samePickupQuantities(context.lineQuantities, doc.lineItems.map(l => ({ orderLineItemId: l.orderLineItemId!, quantity: l.quantity })))) return null;
   }
   const snapshot = context.progressSnapshot;
   if (snapshot !== undefined) {
@@ -83,5 +131,9 @@ export function pickupTravelerContext(value: unknown): PickupTravelerPrintContex
     }
   }
   return { fulfillmentMode: "pickup", boxCount: context.boxCount, lineQuantities: context.lineQuantities,
+    ...(context.box !== undefined ? { box: context.box } : {}),
+    ...(context.pickupHandoffId ? { pickupHandoffId: context.pickupHandoffId } : {}),
+    ...(context.reprintOf ? { reprintOf: context.reprintOf } : {}),
+    ...(context.documentSnapshot ? { documentSnapshot: context.documentSnapshot } : {}),
     ...(snapshot ? { progressSnapshot: snapshot } : {}) };
 }

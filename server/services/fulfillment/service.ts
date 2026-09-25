@@ -1131,6 +1131,7 @@ export class FulfillmentService {
   }
 
   async recordPickupHandoff(orgId: string, ticketId: string, payload: {
+    travelerJobIds?: string[];
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
     clientRequestId?: string | null;

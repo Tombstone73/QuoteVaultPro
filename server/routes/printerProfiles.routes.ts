@@ -1,4 +1,6 @@
-import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
+import { buildPickupTravelerProgressSnapshot, pickupTravelerBoxSchema, pickupTravelerContext } from "@shared/pickupTravelerProgress";
+import { loadSavedPickupTraveler } from "../services/pickupTravelerLifecycle";
+import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import type { Express } from "express";
 import { z } from "zod";
 import { insertPrinterProfileSchema, updatePrinterProfileSchema } from "@shared/schema";
@@ -13,15 +15,14 @@ import { canonicalFulfillmentOperations } from "../services/fulfillment/canonica
 import type { PickupTravelerPrintContext } from "@shared/productionTicket";
 import { supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
 
-const pickupTravelerPrintSchema = z.object({
-  destinationId: z.string().min(1),
-  boxCount: z.coerce.number().int().min(1).max(100),
-  lineQuantities: z.array(z.object({
-    orderLineItemId: z.string().min(1),
-    quantity: z.coerce.number().int().positive(),
-  })).min(1).max(100),
-  requestKey: z.string().min(1).max(160).optional(),
-});
+const pickupTravelerPrintSchema = z.union([
+  z.object({ destinationId: z.string().min(1), reprintJobId: z.string().min(1), requestKey: z.string().min(1).max(160).optional() }).strict(),
+  z.object({
+    destinationId: z.string().min(1), currentBox: z.unknown().optional(), totalBoxes: z.unknown().optional(),
+    lineQuantities: z.array(z.object({ orderLineItemId: z.string().min(1), quantity: z.coerce.number().int().positive() })).min(1).max(100),
+    requestKey: z.string().min(1).max(160).optional(),
+  }).strict(),
+]);
 const quickNotePrintSchema = z.object({
   destinationId: z.string().min(1),
   headline: z.string().max(240).optional().default(""),
@@ -263,18 +264,30 @@ export function registerPrinterProfileRoutes(
         return res.status(400).json({ success: false, code: "PICKUP_TRAVELER_VALIDATION", error: "A valid pickup traveler print request is required." });
       }
 
-      const detail = await canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId);
-      if (detail.fulfillmentType !== "PICKUP") {
-        return res.status(409).json({ success: false, code: "PICKUP_TRAVELER_NOT_PICKUP", error: "Pickup travelers are available only for pickup orders." });
-      }
-      const remainingByLine = new Map(detail.lineItems.map((line) => [line.id, line.production.remainingQuantity]));
-      const seen = new Set<string>();
-      for (const item of parsed.lineQuantities) {
-        const remaining = remainingByLine.get(item.orderLineItemId);
-        if (seen.has(item.orderLineItemId) || remaining === undefined || item.quantity > remaining) {
-          return res.status(400).json({ success: false, code: "PICKUP_TRAVELER_QUANTITY_INVALID", error: "Pickup quantities must be positive, unique line items, and no greater than the current remaining quantity." });
+      let printContext: PickupTravelerPrintContext;
+      if ("reprintJobId" in parsed) {
+        const saved = await loadSavedPickupTraveler(db, organizationId, orderId, parsed.reprintJobId);
+        if (!saved) return res.status(404).json({ success: false, error: "Saved Pickup Traveler not found." });
+        printContext = { ...saved, reprintOf: saved.reprintOf ?? parsed.reprintJobId };
+      } else {
+        const box = pickupTravelerBoxSchema.parse(parsed);
+        const detail = await canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId);
+        if (detail.fulfillmentType !== "PICKUP") return res.status(409).json({ success: false, code: "PICKUP_TRAVELER_NOT_PICKUP", error: "Pickup travelers are available only for pickup orders." });
+        const remainingByLine = new Map(detail.lineItems.map((line) => [line.id, line.production.remainingQuantity]));
+        const seen = new Set<string>();
+        for (const item of parsed.lineQuantities) {
+          const remaining = remainingByLine.get(item.orderLineItemId);
+          if (seen.has(item.orderLineItemId) || remaining === undefined || item.quantity > remaining) {
+            return res.status(400).json({ success: false, code: "PICKUP_TRAVELER_QUANTITY_INVALID", error: "Pickup quantities must be positive, unique line items, and no greater than the current remaining quantity." });
+          }
+          seen.add(item.orderLineItemId);
         }
-        seen.add(item.orderLineItemId);
+        printContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: 1, box,
+          progressSnapshot: buildPickupTravelerProgressSnapshot(detail.lineItems, parsed.lineQuantities, new Date().toISOString()) };
+        const source = await getOrderTravelerSource(organizationId, orderId, printContext);
+        if (!source) return res.status(404).json({ success: false, error: "Order not found." });
+        const { pickupPrintContext: ignoredContext, pickupStatus: ignoredStatus, ...documentSnapshot } = source;
+        printContext.documentSnapshot = documentSnapshot;
       }
 
       const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, parsed.destinationId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? 'traveler'`)).limit(1);
@@ -282,14 +295,12 @@ export function registerPrinterProfileRoutes(
       const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
       if (!agent?.configuredTravelerPrinterName || agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ success: false, code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The Print Agent's selected Traveler printer does not match this destination." });
 
-      const printContext: PickupTravelerPrintContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: parsed.boxCount, progressSnapshot: buildPickupTravelerProgressSnapshot(detail.lineItems, parsed.lineQuantities, new Date().toISOString()) };
-      // Copies remains one: the canonical traveler page renders one sequential
-      // label per box so each tag receives its own deterministic box number.
+      // One manual package label per new job; legacy reprints retain their original batch.
       const created = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId: destination.id, agentId: agent.id, documentType: "pickup_traveler", copies: 1, printContext, trailingFeedMm: destination.trailingFeedMm, requestKey, createdByUserId: getUserId(req.user) ?? null }).onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
       const job = created[0] ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.requestKey, requestKey))).limit(1))[0];
       if (!job) return res.status(500).json({ success: false, code: "PICKUP_TRAVELER_CREATE_FAILED", error: "Could not queue pickup travelers." });
       const wake = await publishPrintAgentWake(agent.tokenHash);
-      return res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, boxCount: parsed.boxCount, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
+      return res.status(created[0] ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status, boxCount: printContext.boxCount, destination: destination.displayName, duplicate: !created[0], durablyQueued: true, wake: { status: wake.published ? "published" : "not_published", attempts: wake.attempts } } });
     } catch (error) { return sendError(res, error, "Failed to queue pickup travelers"); }
   });
 

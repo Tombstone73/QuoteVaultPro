@@ -1,3 +1,7 @@
+import { bindPickupTravelers, lockPickupTravelers, listPickupTravelers } from '../pickupTravelerLifecycle';
+import { getOrderTravelerSource } from '../orderTravelerSourceService';
+import type { PickupTravelerPrintContext } from '@shared/productionTicket';
+import { pickupReversalHistory, buildPickupTravelerProgressSnapshot } from '@shared/pickupTravelerProgress';
 import { and, desc, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -1048,6 +1052,7 @@ export class PickupRepo {
    * locked so pickup cannot race shipment or another pickup; immutable prior
    * fulfillment is the authority for the remaining-order ceiling. */
   async recordPartialPickup(orgId: string, ticketId: string, payload: {
+    travelerJobIds?: string[];
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
     clientRequestId?: string | null;
@@ -1119,7 +1124,19 @@ export class PickupRepo {
         }
       }
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+      const travelerJobs = await lockPickupTravelers(tx, orgId, ticket.orderId, payload.travelerJobIds ?? [], payload.items);
+      let travelerContext: PickupTravelerPrintContext | undefined;
+      if (!travelerJobs.length) {
+        const lineQuantities = Array.from(requested, ([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
+        travelerContext = { fulfillmentMode: "pickup", boxCount: 1, box: null, lineQuantities,
+          progressSnapshot: buildPickupTravelerProgressSnapshot(lines.map((line, index) => ({ id: line.id, production: projections[index] })), lineQuantities, new Date().toISOString()) };
+        const source = await getOrderTravelerSource(orgId, ticket.orderId, travelerContext, tx as unknown as typeof db);
+        if (!source) throw new FulfillmentHttpError(409, "Could not save the Pickup Traveler.", "PICKUP_TRAVELER_SOURCE_MISSING");
+        const { pickupPrintContext: ignoredContext, pickupStatus: ignoredStatus, ...documentSnapshot } = source;
+        travelerContext.documentSnapshot = documentSnapshot;
+      }
       const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null, clientRequestId: payload.clientRequestId ?? null }).returning();
+      await bindPickupTravelers(tx, orgId, travelerJobs, handoff.id);
       await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({ organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity })));
       const now = new Date();
       const allFulfilled = projections.every((projection, index) => !projection.requiresFulfillment || projection.remainingQuantity - (requested.get(lines[index].id) ?? 0) <= 0);
@@ -1129,7 +1146,7 @@ export class PickupRepo {
       await tx.update(orders).set({ fulfillmentStatus: allFulfilled ? 'delivered' : 'partially_picked_up', updatedAt: now.toISOString() })
         .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
       await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: safeActorUserId, entityType: 'PICKUP_TICKET', entityId: ticketId,
-        eventType: 'PICKUP_HANDOFF_RECORDED', payloadJson: { handoffId: handoff.id, itemCount: requested.size, terminal: allFulfilled } });
+        eventType: 'PICKUP_HANDOFF_RECORDED', payloadJson: { handoffId: handoff.id, itemCount: requested.size, terminal: allFulfilled, ...(travelerContext ? { travelerContext: { ...travelerContext, pickupHandoffId: handoff.id } } : {}) } });
       return { ok: true as const, ticket: updatedTicket, handoff, terminal: allFulfilled };
     });
   }
@@ -2804,7 +2821,9 @@ export class FulfillmentDashboardRepo {
         contactEmail: pickupTicket.contactEmail ?? null,
         contactPhone: pickupTicket.contactPhone ?? null,
       } : null,
+      pickupTravelers: await listPickupTravelers(this.dbInstance, orgId, orderId),
       pickupHandoffs: handoffRows.map((handoff) => ({
+        ...pickupReversalHistory(handoff.id, handoffItemsByHandoffId.get(handoff.id) ?? [], events),
         id: handoff.id,
         handedOffAt: toIso(handoff.handedOffAt) || new Date().toISOString(),
         handedOffByUserId: handoff.handedOffByUserId ?? null,

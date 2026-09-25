@@ -79,6 +79,7 @@ export const pickupReadySchema = z.object({
 });
 
 export const pickupHandoffSchema = z.object({
+  travelerJobIds: z.array(z.string().min(1)).max(100).optional(),
   items: z.array(z.object({
     orderLineItemId: z.string().min(1),
     quantity: z.coerce.number().int().positive(),

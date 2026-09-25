@@ -213,7 +213,8 @@ describe("Pickup Traveler planned progress", () => {
       expect(section.textContent).toContain("After pickup: " + after + " / " + ordered);
       expect(section.textContent).toContain("Remaining after pickup: " + remaining);
     }
-    expect(container.textContent).toContain("Not pickup confirmation.");
+    expect(container.textContent).not.toContain("Not pickup confirmation.");
+    expect(container.textContent).not.toContain("Planned quantities at preparation.");
     expect(container.textContent).not.toContain("Total Qty");
     expect(container.textContent).not.toContain("Pickup Qty");
     expect(container.textContent).not.toContain("Pickup 1 of");
@@ -242,5 +243,36 @@ describe("Pickup Traveler planned progress", () => {
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.textContent).toContain("Progress unavailable for this older Traveler.");
     expect(container.textContent).not.toContain("After pickup:");
+  });
+});
+
+describe("Pickup Traveler optional boxes and reversal status", () => {
+  test.each([
+    [null, undefined, ""],
+    [{ current: 1, total: 1 }, undefined, "Box 1 of 1"],
+    [{ current: 2, total: 3 }, "COMPLETED", "Box 2 of 3"],
+    [null, "REVERSED", "REVERSED"],
+    [{ current: 2, total: 3 }, "PARTIALLY_REVERSED", "PARTIALLY REVERSED"],
+  ])("renders saved label %j and status %s", async (box, pickupStatus, expected) => {
+    const lineQuantities = [{ orderLineItemId: "line-1", quantity: 150 }];
+    const progressSnapshot = buildPickupTravelerProgressSnapshot([{ id: "line-1", production: { orderedQuantity: 500, pickedUpQuantity: 250, remainingQuantity: 250 } }], lineQuantities, "2026-09-25T12:00:00Z");
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, pickupStatus,
+      pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 1, box, lineQuantities, progressSnapshot },
+      lineItems: [{ ...travelerSource.lineItems[0], quantity: 150, pickupProgress: progressSnapshot.lines[0] }],
+    }, isLoading: false, error: null } as any);
+    mockSearchParams = new URLSearchParams({ directPrintJobId: "saved-pickup" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(1);
+    expect(container.textContent).toContain(expected);
+    if (!box) expect(container.textContent).not.toContain("Box ");
+    expect(container.textContent).not.toContain("Not pickup confirmation");
+    expect(container.textContent).not.toContain("Planned quantities");
+    expect(container.textContent).toContain("After pickup: 400 / 500");
+    expect(container.textContent).toContain("Remaining after pickup: 100");
+    expect(container.textContent).toContain("SO-1042");
+    expect(container.textContent).toContain("Front Lobby Signs");
+    expect(container.textContent).toContain("Acme Signs Inc.");
+    expect(container.querySelector('img[alt="Order QR code"]')).toBeTruthy();
+    expect((container.querySelector('[data-traveler-ready]') as HTMLElement).style.breakBefore).toBe("");
   });
 });

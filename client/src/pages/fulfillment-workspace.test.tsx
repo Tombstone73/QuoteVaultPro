@@ -45,6 +45,7 @@ jest.mock("@/hooks/useFulfillment", () => ({
   useCreatePickupTicketMutation: () => ({ mutateAsync: createTicket, isPending: false }),
   useMarkOrderReadyForPickupMutation: () => ({ mutateAsync: markOrderReady, isPending: false }),
   useAddFulfillmentNoteMutation: () => ({ mutateAsync: addNote, isPending: false }),
+  useReverseTerminalFulfillmentMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useRecordPickupHandoffMutation: () => ({ mutateAsync: recordHandoff, isPending: false }),
 }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));

@@ -160,7 +160,7 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
     return buildOrderTravelerData(data, template);
   }, [data, template]);
   const pickupContext = data?.pickupPrintContext?.fulfillmentMode === "pickup" ? data.pickupPrintContext : null;
-  const boxIndexes = pickupContext ? Array.from({ length: pickupContext.boxCount }, (_, index) => index + 1) : [null];
+  const boxIndexes = pickupContext?.box !== undefined ? [pickupContext.box?.current ?? null] : pickupContext ? Array.from({ length: pickupContext.boxCount }, (_, index) => index + 1) : [null];
   if (isLoading) return <CenteredMessage>Loading order traveler...</CenteredMessage>;
   if (error || !data || !traveler) {
     return <CenteredMessage>Failed to load order traveler.</CenteredMessage>;
@@ -174,11 +174,12 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
 
       <div className="mx-auto max-w-md px-4 py-6">
         {boxIndexes.map((boxIndex) => (
-          <ThermalPrintPage ready key={boxIndex ?? "standard"} feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)} forceFeedSentinel={forceFeedSentinel} style={boxIndex && boxIndex > 1 ? { marginTop: "8mm", breakBefore: "page" } : undefined}>
+          <ThermalPrintPage ready key={boxIndex ?? "standard"} feedSpacer={controls ? undefined : travelerFeedSpacerMm(feedMm)} forceFeedSentinel={forceFeedSentinel} style={pickupContext?.box === undefined && boxIndex && boxIndex > 1 ? { marginTop: "8mm", breakBefore: "page" } : undefined}>
           <ThermalValue align="center" size="normal" style={{ textTransform: "uppercase" }}>
             {pickupContext ? "Pickup Traveler" : "Order Traveler"}
           </ThermalValue>
-          {pickupContext && boxIndex ? <><ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>Box {boxIndex} of {pickupContext.boxCount}</ThermalValue><ThermalDivider heavy /></> : null}
+          {data.pickupStatus === "REVERSED" || data.pickupStatus === "PARTIALLY_REVERSED" ? <ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>{data.pickupStatus === "REVERSED" ? "REVERSED" : "PARTIALLY REVERSED"}</ThermalValue> : null}
+          {pickupContext && boxIndex ? <><ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>Box {boxIndex} of {pickupContext.box?.total ?? pickupContext.boxCount}</ThermalValue><ThermalDivider heavy /></> : null}
           <ThermalDivider heavy />
 
           {traveler.headerRows.map((row) => (
@@ -200,7 +201,6 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
           <ThermalLabel>
             Line Items ({traveler.lineItemCount}){!pickupContext ? ` - Total Qty ${traveler.totalQuantity}` : ""}
           </ThermalLabel>
-          {pickupContext?.progressSnapshot ? <div style={{ fontSize: "14px", fontWeight: 800, lineHeight: 1.15, margin: "1mm 0" }}>Planned quantities at preparation.<br />Not pickup confirmation.</div> : null}
           {traveler.lineItems.length === 0 ? (
             <ThermalValue size="normal" style={{ margin: "1.5mm 0" }}>
               No line items on this order.

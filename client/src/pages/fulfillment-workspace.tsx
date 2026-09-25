@@ -1,5 +1,7 @@
+import { PickupHistory } from "@/components/fulfillment/PickupHistory";
+import type { PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useState } from "react";
-import { ArrowLeft, ExternalLink, PackagePlus, RefreshCw, Store, Truck } from "lucide-react";
+import { ArrowLeft, ExternalLink, PackagePlus, RefreshCw, Truck } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Input } from "@/components/ui/input";
@@ -37,6 +39,8 @@ export default function FulfillmentWorkspacePage() {
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
   const [note, setNote] = useState("");
   const [pickupRequestId, setPickupRequestId] = useState<string | null>(null);
+  const [selectedTravelerIds, setSelectedTravelerIds] = useState<string[]>([]);
+  const [reprintTraveler, setReprintTraveler] = useState<PickupTravelerHistoryEntry | null>(null);
   const [pickupTravelerOpen, setPickupTravelerOpen] = useState(false);
   const [pickupReversal, setPickupReversal] = useState<{ handoffId: string; items: Array<{ orderLineItemId: string; quantity: number; label: string }> } | null>(null);
   const [pickupReversalReason, setPickupReversalReason] = useState("");
@@ -90,7 +94,8 @@ export default function FulfillmentWorkspacePage() {
       }
       const clientRequestId = pickupRequestId || crypto.randomUUID();
       setPickupRequestId(clientRequestId);
-      await recordPickupHandoff.mutateAsync({ ticketId, items, clientRequestId });
+      await recordPickupHandoff.mutateAsync({ ticketId, items, clientRequestId, ...(selectedTravelerIds.length ? { travelerJobIds: selectedTravelerIds } : {}) });
+      setSelectedTravelerIds([]);
       setPickupQuantityByLine({});
       setPickupRequestId(null);
     } catch (error) {
@@ -114,7 +119,7 @@ export default function FulfillmentWorkspacePage() {
   };
 
   const openPickupReversal = (handoff: NonNullable<typeof detail>["pickupHandoffs"][number]) => {
-    const items = handoff.items.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: item.quantity, label: item.productName || item.description || "line item" }));
+    const items = handoff.items.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: handoff.remainingByLine?.[item.orderLineItemId] ?? item.quantity, label: item.productName || item.description || "line item" }));
     setPickupReversal({ handoffId: handoff.id, items });
     setPickupReversalQuantities(Object.fromEntries(items.map((item) => [item.orderLineItemId, item.quantity])));
     setPickupReversalReason("");
@@ -164,21 +169,23 @@ export default function FulfillmentWorkspacePage() {
           {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
-      {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupTravelerOpen(true)}>Print Pickup Travelers</button><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
+      {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => { setReprintTraveler(null); setPickupTravelerOpen(true); }}>Print Pickup Travelers</button><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
     </section>
 
-    {isPickup && <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} />}
+    <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} reprint={reprintTraveler} onQueued={(id) => { setSelectedTravelerIds(ids => [...ids, id]); void detailQuery.refetch(); }} />
 
     {!isPickup && <section className="space-y-3"><div className="rounded-xl border bg-card p-4"><h2 className="font-bold"><Truck className="mr-2 inline h-4 w-4" />Shipping</h2><p className="mt-1 text-sm text-muted-foreground">{shipmentId ? "Allocate what is leaving in the shipment package." : "Start a shipment to record what physically leaves the shop."}</p></div>{shipmentId && <FulfillmentShipmentEditor shipmentId={shipmentId} embedded onMutationComplete={() => detailQuery.refetch()} />}{workspaceMode.combinedShipments.map((shipment) => <div key={shipment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div><p className="font-semibold">Included in combined shipment {shipment.shipmentReference || shipment.id} · {shipment.status}</p><p className="text-sm text-muted-foreground">Shared by {shipment.orderCount} orders.</p></div><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.shipmentDetail(shipment.id))}>Open Combined Shipment</button></div>)}</section>}
 
     <section className="rounded-xl border bg-card p-4" data-testid="fulfillment-order-notes"><h2 className="font-bold">Order Notes</h2><p className="mt-1 text-sm text-muted-foreground">Internal fulfillment notes. They do not change fulfillment quantities or status.</p><div className="mt-3 flex gap-2"><Textarea aria-label="Order note" value={note} maxLength={2000} className="min-h-20 flex-1" placeholder="Add a note for the fulfillment team" onChange={(event) => setNote(event.target.value)} /><button type="button" disabled={!note.trim() || addNote.isPending} className="h-fit rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitNote()}>{addNote.isPending ? "Adding…" : "Add note"}</button></div>{fulfillmentNotes.length > 0 ? <div className="mt-3 divide-y">{fulfillmentNotes.map((event) => <div key={event.id} className="py-3 text-sm"><p>{String(event.payloadJson?.note || "")}</p><p className="mt-1 text-xs text-muted-foreground">{event.actorName || "Staff"} · {new Date(event.createdAt).toLocaleString()}</p></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">No fulfillment notes yet.</p>}</section>
 
-    {detail.pickupHandoffs.length > 0 && <section className="rounded-xl border bg-card px-4 py-3" data-testid="pickup-history"><h2 className="font-bold"><Store className="mr-2 inline h-4 w-4" />Pickup History</h2><div className="mt-2 divide-y">{detail.pickupHandoffs.map((handoff) => <div key={handoff.id} className="py-3 text-sm"><div className="flex flex-wrap items-start justify-between gap-2"><p className="font-medium">{new Date(handoff.handedOffAt).toLocaleString()}</p>{detail.permissions?.canReverseTerminalFulfillment ? <button type="button" className="rounded border border-destructive/40 px-2 py-1 text-xs font-semibold text-destructive hover:bg-destructive/10" onClick={() => openPickupReversal(handoff)}>Reverse Pickup</button> : null}</div>{handoff.items.map((item) => <p key={`${handoff.id}-${item.orderLineItemId}`}>{item.quantity} {item.productName || item.description || "line item"}</p>)}{handoff.handedOffByName && <p className="text-muted-foreground">{handoff.handedOffByName}</p>}{handoff.notes && <p className="text-muted-foreground">{handoff.notes}</p>}</div>)}</div></section>}
+    <PickupHistory detail={detail} selectedTravelerIds={selectedTravelerIds}
+      onToggle={(id, selected) => setSelectedTravelerIds(ids => selected ? [...ids, id] : ids.filter(value => value !== id))}
+      onReprint={traveler => { setReprintTraveler(traveler); setPickupTravelerOpen(true); }} onReverse={openPickupReversal} />
 
     <AlertDialog open={!!pickupReversal} onOpenChange={(open) => !open && setPickupReversal(null)}>
       <AlertDialogContent>
         <AlertDialogHeader><AlertDialogTitle>Reverse Pickup</AlertDialogTitle><AlertDialogDescription>Original pickup history will be retained. The selected quantity will reopen for fulfillment. Invoice and payment records are not changed.</AlertDialogDescription></AlertDialogHeader>
-        <div className="space-y-3">{pickupReversal?.items.map((item) => <label key={item.orderLineItemId} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.label} <span className="text-muted-foreground">(originally {item.quantity})</span></span><Input type="number" min={0} max={item.quantity} className="w-24" value={pickupReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setPickupReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: bounded(event.target.value, item.quantity) }))} /></label>)}<Textarea aria-label="Pickup reversal reason" value={pickupReversalReason} onChange={(event) => setPickupReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={pickupReversalConfirmed} onChange={(event) => setPickupReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without deleting the original pickup evidence.</span></label></div>
+        <div className="space-y-3">{pickupReversal?.items.map((item) => <label key={item.orderLineItemId} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.label} <span className="text-muted-foreground">(available to reverse: {item.quantity})</span></span><Input type="number" min={0} max={item.quantity} className="w-24" value={pickupReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setPickupReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: bounded(event.target.value, item.quantity) }))} /></label>)}<Textarea aria-label="Pickup reversal reason" value={pickupReversalReason} onChange={(event) => setPickupReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={pickupReversalConfirmed} onChange={(event) => setPickupReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without deleting the original pickup evidence.</span></label></div>
         <AlertDialogFooter><AlertDialogCancel disabled={reverseTerminalFulfillment.isPending}>Cancel</AlertDialogCancel><AlertDialogAction disabled={!pickupReversalReason.trim() || !pickupReversalConfirmed || reverseTerminalFulfillment.isPending} onClick={(event) => { event.preventDefault(); void submitPickupReversal(); }}>{reverseTerminalFulfillment.isPending ? "Reversing…" : "Reverse Pickup"}</AlertDialogAction></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

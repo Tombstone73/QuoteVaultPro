@@ -405,6 +405,12 @@ export interface TravelerLineItemSource {
  * does not correspond to an order or fulfillment mutation.
  */
 export interface PickupTravelerPrintContext {
+  /** Explicit manual package label; null omits it. Undefined preserves legacy batches. */
+  box?: { current: number; total: number } | null;
+  /** Bound only by the validated Complete Pickup transaction. */
+  pickupHandoffId?: string;
+  reprintOf?: string;
+  documentSnapshot?: Omit<OrderTravelerSource, "pickupPrintContext" | "pickupStatus">;
   progressSnapshot?: PickupTravelerProgressSnapshot;
   fulfillmentMode: "pickup";
   lineQuantities: Array<{ orderLineItemId: string; quantity: number }>;
@@ -413,6 +419,7 @@ export interface PickupTravelerPrintContext {
 
 /** Raw order-level values for an order traveler. */
 export interface OrderTravelerSource {
+  pickupStatus?: "COMPLETED" | "REVERSED" | "PARTIALLY_REVERSED";
   orderId: string;
   orderNumber: string;
   /** Customer-provided PO or job-request reference. */

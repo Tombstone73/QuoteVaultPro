@@ -18,6 +18,26 @@ function readChain(result: unknown[]) {
 }
 
 describe("claimed Pickup Traveler source", () => {
+  test.each(["COMPLETED", "REVERSED", "PARTIALLY_REVERSED"])("%s reprints keep original line details, progress, and box label without writes", async status => {
+    const lineQuantities = [{ orderLineItemId: "signs", quantity: 150 }];
+    const progressSnapshot = buildPickupTravelerProgressSnapshot([{ id: "signs", production: { orderedQuantity: 500, pickedUpQuantity: 250, remainingQuantity: 250 } }], lineQuantities, "2026-09-25T12:00:00Z");
+    const documentSnapshot = { orderId: "order", orderNumber: "20538", customerName: "Original customer", jobLabel: "Original job",
+      lineItems: [{ orderLineItemId: "signs", quantity: 150, description: "Original Coroplast", size: "24 x 20", material: "4mm", pickupProgress: progressSnapshot.lines[0] }] };
+    const original = { fulfillmentMode: "pickup" as const, boxCount: 1, box: { current: 2, total: 3 }, lineQuantities, progressSnapshot, documentSnapshot, pickupHandoffId: "handoff" };
+    // A copy queued before completion has no handoff ID yet. Its root now does.
+    const copy = { ...original, reprintOf: "original-job", pickupHandoffId: undefined };
+    const events = status === "COMPLETED" ? [] : [{ id: "r", eventType: "PICKUP_HANDOFF_REVERSED", payloadJson: { sourceId: "handoff", items: [{ orderLineItemId: "signs", quantity: status === "REVERSED" ? 150 : 50 }] } }];
+    const results = [[{ printContext: original }], [{ id: "handoff", ticketId: "ticket" }], lineQuantities, events];
+    select.mockImplementation(() => readChain(results[(select.mock.calls.length - 1) % 4]));
+    const before = JSON.stringify(copy);
+    for (let i = 0; i < 2; i++) {
+      const source = await getOrderTravelerSource("org", "order", copy);
+      expect(source).toMatchObject({ ...documentSnapshot, pickupStatus: status, pickupPrintContext: { box: { current: 2, total: 3 }, progressSnapshot } });
+    }
+    expect(JSON.stringify(copy)).toBe(before);
+    expect(write).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(8);
+  });
   test("repeated reads preserve queued progress after completion/correction and never write operational or financial data", async () => {
     const lineQuantities = [{ orderLineItemId: "signs", quantity: 150 }];
     const context = pickupTravelerContext({ fulfillmentMode: "pickup", boxCount: 2, lineQuantities,

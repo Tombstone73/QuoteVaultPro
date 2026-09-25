@@ -1,3 +1,4 @@
+import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 export type FulfillmentType = 'SHIP' | 'PICKUP';
 
 export type DerivedOrderFulfillmentStatus =
@@ -157,7 +158,8 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     contactEmail: string | null;
     contactPhone: string | null;
   } | null;
-  pickupHandoffs: Array<{
+  pickupTravelers?: PickupTravelerHistoryEntry[];
+  pickupHandoffs: Array<Partial<PickupReversalHistory> & {
     id: string;
     handedOffAt: string;
     handedOffByUserId: string | null;

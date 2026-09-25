@@ -1,3 +1,4 @@
+import { readPickupTravelerStatus, loadSavedPickupTraveler } from "./pickupTravelerLifecycle";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -23,8 +24,20 @@ export async function getOrderTravelerSource(
   organizationId: string,
   orderId: string,
   pickupPrintContext?: PickupTravelerPrintContext | null,
+  executor: typeof db = db,
 ): Promise<OrderTravelerSource | null> {
-  const orderRows = await db
+  let handoffId = pickupPrintContext?.pickupHandoffId;
+  if (pickupPrintContext?.reprintOf) {
+    const original = await loadSavedPickupTraveler(executor, organizationId, orderId, pickupPrintContext.reprintOf);
+    if (!original) return null;
+    handoffId = original.pickupHandoffId;
+  }
+  const pickupStatus = handoffId ? await readPickupTravelerStatus(executor, organizationId, orderId, handoffId) : undefined;
+  if (pickupPrintContext?.documentSnapshot) {
+    if (pickupPrintContext.documentSnapshot.orderId !== orderId) return null;
+    return { ...pickupPrintContext.documentSnapshot, pickupPrintContext, pickupStatus };
+  }
+  const orderRows = await executor
     .select({
       id: orders.id,
       orderNumber: orders.orderNumber,
@@ -44,7 +57,7 @@ export async function getOrderTravelerSource(
 
   let contactName: string | null = null;
   if (order.contactId) {
-    const [contact] = await db
+    const [contact] = await executor
       .select({ firstName: customerContacts.firstName, lastName: customerContacts.lastName })
       .from(customerContacts)
       .where(eq(customerContacts.id, order.contactId))
@@ -52,7 +65,7 @@ export async function getOrderTravelerSource(
     if (contact) contactName = `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim() || null;
   }
 
-  const lineItemRows = await db
+  const lineItemRows = await executor
     .select({
       id: orderLineItems.id,
       description: orderLineItems.description,
@@ -84,7 +97,7 @@ export async function getOrderTravelerSource(
   )));
   const materialNameById = new Map<string, string>();
   if (materialIds.length) {
-    const materialRows = await db
+    const materialRows = await executor
       .select({ id: materials.id, name: materials.name })
       .from(materials)
       .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)));
@@ -113,6 +126,7 @@ export async function getOrderTravelerSource(
     }));
 
   return {
+    pickupStatus,
     orderId: order.id,
     orderNumber: order.orderNumber,
     poNumber: order.poNumber ?? null,

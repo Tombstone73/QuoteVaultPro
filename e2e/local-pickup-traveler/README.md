@@ -1,43 +1,73 @@
-# Local Pickup Traveler validation
+# Pickup Traveler lifecycle validation
 
 Run `node e2e/local-pickup-traveler/server.mjs`, then open:
 
-`http://127.0.0.1:4180/orders/fixture-20538/traveler?directPrintJobId=first`
+`http://127.0.0.1:4180/fulfillment/orders/fixture-20538`
 
-Supported `directPrintJobId` fixtures: `full`, `first`, `second`, `final`, `multi`.
-These synthetic GET-only endpoints mount the actual Order Traveler page and use
-the shared canonical quantity resolver and Pickup Traveler snapshot builder.
-No database, production endpoint, print job, or physical printer is involved.
+This mounts the actual Fulfillment workspace, print dialog, history, and thermal
+Traveler. API responses and mutations exist only in server memory. There is no
+application database connection or physical print submission. Restarting the
+fixture clears its state. The fixture uses the shared canonical quantity,
+reversal, progress-snapshot, and box-validation helpers.
 
-On September 25, 2026, all five scenarios were inspected in Chrome using the
-existing 80 mm thermal template. The Coroplast fixture uses 24.00 x 20.00 and
-Coroplast - 4mm, modeled after the reported Order 20538-style label. It is not
-live Order 20538 data. Progress text is 16 px; the 80 mm page measured 302.35 CSS
-pixels. Quantity blocks had no horizontal overflow. Product, size, material,
-QR, and distinct Box 1/2/3 of 3 labels remained present. Multi-line quantities
-were 400/500 with 100 remaining and 50/50 with zero remaining on each box.
+Static thermal examples use:
+`/orders/fixture-20538/traveler?directPrintJobId=none`
 
-## Lifecycle and reprints
+Other example IDs: `one`, `two`, `completed`, `reversed`, `multi` (also the prior
+`full`, `first`, `second`, `final` examples). `latest` displays the most recently
+queued in-memory document. All Order 20538-style data is synthetic.
 
-The Fulfillment workspace queues Pickup Travelers before the separate Complete
-Pickup action. The queue route obtains current canonical per-line obligations
-and saves the prepared progress in existing `direct_print_jobs.print_context`.
-There is no handoff identity on a print job. Thus, rendering must never add a
-queued pickup to a later live completed aggregate, which could already include it.
+## Evidence collected September 25, 2026
 
-New print preparation uses current canonical ordered, net picked-up, and
-remaining quantities. Projected after-pickup count is previous picked-up plus
-this pickup; projected remaining is canonical remaining minus this pickup.
-Other physical/admin resolution reduces remaining without being called pickup.
-Canceled/service/parent lines and production replacement semantics remain under
-the existing canonical fulfillment projection.
+Chrome local workflow:
 
-Re-rendering an existing job retains its prepared quantity snapshot, including
-after completion or a later quantity edit. It remains explicitly a preparation
-document, not proof of pickup. A new preparation uses current quantities.
-Legacy queued jobs without snapshots show their selected quantity and explicitly
-unavailable progress: historical pickup identity cannot safely be guessed.
-Non-quantity order/line metadata still uses the existing live metadata projection.
+1. Entered all 500 Coroplast pieces; printed Box 1 of 2.
+2. The saved preparation appeared, selected for the pending pickup.
+3. Complete Pickup changed live totals to 500 picked up / 0 remaining.
+4. Pickup History retained Reprint Traveler, including Box 1 of 2.
+5. Reprint retained previous 0, this 500, after 500/500, remaining 0.
+6. Reversed the pickup using the existing reason and acknowledgment controls.
+7. History retained the original 500-piece event with Reversed, timestamp,
+   staff, and reason. Live totals returned to 0 picked up / 500 remaining.
+8. Historical reprint displayed REVERSED, original quantities and Box 1 of 2.
+9. Prepared a new 150-piece pickup with blank boxes after reversal; it showed
+   previous 0, this 150, after 150/500, remaining 350, and no Box line.
 
-This browser inspection does not validate printer-driver pagination, physical
-printing, DEV, MAIN, or database-backed request execution.
+Inspected the actual 80 mm template for omitted boxes, 1 of 1, 2 of 3,
+completion, reversal, and multiple lines. Quantity text remains 16 px. The QR,
+order/job/customer/contact, product, size and material remain present. The
+pickup disclaimer is gone. Omitted box labels leave no reserved gap. No
+horizontal clipping was observed. These are browser-rendered checks, not
+printer-driver pagination, physical printing, DEV, MAIN, or database evidence.
+
+## Durable behavior
+
+New print preparations save optional manual box labels, canonical per-line
+progress, and document details in existing direct-print job JSON. Each new job
+prints one supplied label; omitted values produce no Box line. Legacy saved
+batches retain their original box sequence when reprinted.
+
+Staff explicitly selects which preparations belong to Complete Pickup; newly
+queued paperwork is selected automatically. The existing completion transaction
+locks and validates those jobs against the exact handoff quantities, then adds
+only a handoff ID to their JSON. It does not rewrite any snapshot. Selection
+survives as the durable association; after a page reload, pending preparations
+can be selected again. No matching by event order, date, or similar quantities.
+
+When no preparation is selected, Complete Pickup saves its pre-handoff document
+and progress, with no box label, in the existing PICKUP_HANDOFF_RECORDED event
+JSON. The completed event therefore has a Print Traveler action even if nothing
+was printed beforehand. Reprints use this same canonical print endpoint.
+
+Reversal display reads canonical append-only events. Live fulfillment quantities
+remain under the unchanged canonical reversal/projection engine. The thermal
+status is read separately from the saved quantity/document snapshot; a reprint
+queued before an association was recorded resolves its original document's
+current association before rendering. Partial reversal is distinguished from
+full reversal. Printing changes only print jobs, not physical fulfillment.
+
+Historical jobs without associations are available separately. Historical
+handoffs without a saved snapshot cannot be reconstructed safely and show that
+no saved Traveler is associated. Older print jobs without a document-detail
+snapshot retain their existing metadata behavior; new snapshots preserve line
+and order details. No schema migration or historical-data backfill is included.
