@@ -63,6 +63,48 @@ describe("M2.0 Artwork contracts", () => {
     const uploadedFileIds = uploads.flatMap((result) => result.ok ? [result.value.artworkFile.id] : []);
     expect(current.value.map((entry) => entry.assignment.artworkFileId)).toEqual(expect.arrayContaining(uploadedFileIds));
     expect(current.value.every((entry) => entry.assignment.supersedesArtworkAssignmentId === undefined)).toBe(true);
+    expect(await isolated.listForOrder(context("order-read"), "order")).toEqual(current);
+
+    const first = uploads[0]!;
+    if (!first.ok) throw new Error("First adoption failed");
+    const replay = await isolated.adopt(context("add-a"), input("add-a", { usage: usage({ purpose: "customer_supplied", side: "front" }) }));
+    expect(replay).toEqual(first);
+    expect(transaction.files.size).toBe(3);
+    expect(transaction.assignments.size).toBe(3);
+
+    const replacement = await isolated.replace(context("replace-a"), { ...input("replace-a", { usage: usage({ purpose: "customer_supplied", side: "front" }) }), supersedesArtworkAssignmentId: first.value.assignment.id });
+    if (!replacement.ok) throw new Error("Explicit replacement failed");
+    const after = await isolated.listForOrderLine(context("after-read"), "line");
+    if (!after.ok) throw new Error("Current read failed");
+    expect(after.value.map((item) => item.assignment.id).sort()).toEqual([
+      ...current.value.filter((item) => item.assignment.id !== first.value.assignment.id).map((item) => item.assignment.id),
+      replacement.value.assignment.id,
+    ].sort());
+    expect(await isolated.listForOrder(context("after-order-read"), "order")).toEqual(after);
+    expect(transaction.assignments.get(first.value.assignment.id)).toEqual(first.value.assignment);
+
+    await isolated.adopt(context("other-line"), input("other-line", { usage: usage({ purpose: "customer_supplied", orderLineId: brandedId<"OrderLineId">("line-other") }) }));
+    expect(await isolated.listForOrderLine(context("isolated-line-read"), "line")).toEqual(after);
+    const beforeFailure = transaction.assignments.size;
+    const failure = await isolated.adopt(context("invalid"), input("invalid", { usage: usage({ sourcePageIndex: -1 }) }));
+    expect(failure.ok).toBe(false);
+    expect(transaction.assignments.size).toBe(beforeFailure);
+    expect(await isolated.listForOrderLine(context("after-failure-read"), "line")).toEqual(after);
+  });
+  test("adoption does not grant artwork.assign and foreign tenant scope is rejected before reservation", async () => {
+    const transaction = new MemoryArtworkTransaction();
+    const isolated = new ArtworkApplicationService({ transaction: async (action) => action(transaction) });
+    const adoptOnly = { ...context("adopt-only"), principal: { ...principal, authority: { ...principal.authority, capabilities: ["artwork.adopt"] as const } } };
+    const adopted = await isolated.adopt(adoptOnly, input("adopt-only"));
+    if (!adopted.ok) throw new Error("Adoption failed");
+    const assignContext = { ...adoptOnly, businessRequest: { id: "assign-denied", payloadFingerprint: "test" } };
+    const denied = await isolated.assign(assignContext, { businessRequestId: "assign-denied", artworkFileId: adopted.value.artworkFile.id, usage: usage() });
+    expect(denied).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+    const before = transaction.requests.size;
+    const foreign = await isolated.adopt({ ...context("foreign"), organizationId: "other-org" }, input("foreign"));
+    expect(foreign.ok).toBe(false);
+    expect(transaction.requests.size).toBe(before);
+    expect(transaction.assignments.size).toBe(1);
   });
   test("replacement preserves the inherited assignment and appends one current successor", async () => {
     const inherited=await service.adopt(context("inherited"),input("inherited",{usage:usage({purpose:"customer_supplied"})}));if(!inherited.ok)throw Error("inherited");

@@ -1996,6 +1996,13 @@
       "when": 1788048000136,
       "tag": "0289_v2_billing_invoice_revision_history_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 291,
+      "version": "7",
+      "when": 1788048000137,
+      "tag": "0290_v2_artwork_additive_line_assignments",
+      "breakpoints": true
     }
   ]
 }
