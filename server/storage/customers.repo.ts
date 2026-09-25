@@ -880,15 +880,25 @@ export class CustomersRepository {
     }
 
     async unlinkCustomerContactForOrganization(organizationId: string, customerId: string, contactId: string): Promise<void> {
-        await this.dbInstance
-            .update(customerContactLinks)
-            .set({ status: "removed", isPrimary: false, updatedAt: new Date() })
-            .where(and(
-                eq(customerContactLinks.organizationId, organizationId),
-                eq(customerContactLinks.customerId, customerId),
-                eq(customerContactLinks.contactId, contactId),
-                sql`${customerContactLinks.status} <> 'removed'`,
-            ));
+        await this.dbInstance.transaction(async (tx: any) => {
+            await tx
+                .update(customerContactLinks)
+                .set({ status: "removed", isPrimary: false, updatedAt: new Date() })
+                .where(and(
+                    eq(customerContactLinks.organizationId, organizationId),
+                    eq(customerContactLinks.customerId, customerId),
+                    eq(customerContactLinks.contactId, contactId),
+                    sql`${customerContactLinks.status} <> 'removed'`,
+                ));
+            await tx
+                .update(customerContacts)
+                .set({ customerId: null, updatedAt: new Date() })
+                .where(and(
+                    eq(customerContacts.id, contactId),
+                    eq(customerContacts.organizationId, organizationId),
+                    eq(customerContacts.customerId, customerId),
+                ));
+        });
     }
 
     async setCustomerContactLinkStatusForOrganization(
@@ -1162,7 +1172,7 @@ export class CustomersRepository {
         return result.items;
     }
 
-    async getContactWithRelations(id: string, organizationId?: string): Promise<(CustomerContact & { customer?: Customer }) | undefined> {
+    async getContactWithRelations(id: string, organizationId?: string): Promise<(CustomerContact & { customer: Customer | null }) | undefined> {
         const rows = await this.dbInstance
             .select({ contact: customerContacts, link: customerContactLinks, customer: customers })
             .from(customerContacts)
@@ -1181,11 +1191,23 @@ export class CustomersRepository {
 
         const row = rows[0];
         if (!row?.contact) return undefined;
+        const [removedLegacyLink] = !row.link && row.contact.customerId
+            ? await this.dbInstance
+                .select({ id: customerContactLinks.id })
+                .from(customerContactLinks)
+                .where(and(
+                    eq(customerContactLinks.contactId, id),
+                    eq(customerContactLinks.customerId, row.contact.customerId),
+                    eq(customerContactLinks.status, "removed"),
+                    eq(customerContactLinks.organizationId, row.contact.organizationId),
+                ))
+                .limit(1)
+            : [];
         return {
             ...row.contact,
-            customerId: row.link?.customerId ?? row.contact.customerId ?? null,
+            customerId: row.link?.customerId ?? (removedLegacyLink ? null : row.contact.customerId),
             isPrimary: row.link?.isPrimary ?? false,
-            customer: row.customer ?? undefined,
+            customer: row.customer ?? null,
         };
     }
 
@@ -1403,7 +1425,14 @@ export class CustomersRepository {
 
         if (customerFilter) {
             baseConditions.push(sql`(
-                ${customerContacts.customerId} = ${customerFilter}
+                (${customerContacts.customerId} = ${customerFilter}
+                  and not exists (
+                      select 1 from customer_contact_links ccl
+                      where ccl.contact_id = ${customerContacts.id}
+                        and ccl.customer_id = ${customerFilter}
+                        and ccl.organization_id = ${organizationId}
+                        and ccl.status = 'removed'
+                  ))
                 or exists (
                     select 1
                     from customer_contact_links ccl
@@ -1441,6 +1470,13 @@ export class CustomersRepository {
                         where c.id = ${customerContacts.customerId}
                           and c.organization_id = ${organizationId}
                           and c.company_name ilike ${`%${searchTerm}%`}
+                          and not exists (
+                              select 1 from customer_contact_links ccl
+                              where ccl.contact_id = ${customerContacts.id}
+                                and ccl.customer_id = c.id
+                                and ccl.organization_id = ${organizationId}
+                                and ccl.status = 'removed'
+                          )
                     )`,
                 ),
             )
@@ -1475,11 +1511,10 @@ export class CustomersRepository {
                 .where(and(
                     eq(customerContactLinks.organizationId, organizationId),
                     eq(customerContactLinks.contactId, contact.id),
-                    sql`${customerContactLinks.status} <> 'removed'`,
                 ))
                 .orderBy(desc(customerContactLinks.isPrimary), asc(customers.companyName));
 
-            const linkedCustomers = linkedCustomerRows.map(({ link, customer }) => ({
+            const linkedCustomers = linkedCustomerRows.filter(({ link }) => link.status !== "removed").map(({ link, customer }) => ({
                 id: customer.id,
                 companyName: customer.companyName,
                 status: link.status,
@@ -1487,7 +1522,8 @@ export class CustomersRepository {
             }));
             const activeLinkedCustomers = linkedCustomers.filter((customer) => customer.status === "active");
             const associatedCustomers = [...activeLinkedCustomers];
-            if (contact.customerId && !associatedCustomers.some((customer) => customer.id === contact.customerId)) {
+            if (contact.customerId && !associatedCustomers.some((customer) => customer.id === contact.customerId)
+                && !linkedCustomerRows.some(({ link }) => link.customerId === contact.customerId)) {
                 const [legacyCustomer] = await this.dbInstance
                     .select({ id: customers.id, companyName: customers.companyName, status: customers.status })
                     .from(customers)
@@ -1521,7 +1557,7 @@ export class CustomersRepository {
 
             return {
                 ...contact,
-                customerId: associatedCustomers[0]?.id ?? contact.customerId ?? null,
+                customerId: associatedCustomers[0]?.id ?? (linkedCustomerRows.some(({ link }) => link.customerId === contact.customerId) ? null : contact.customerId),
                 isPrimary: linkedCustomerRows.some(({ link }) => link.isPrimary && link.status === "active"),
                 companyName,
                 customer: associatedCustomers[0] ?? null,

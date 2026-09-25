@@ -179,13 +179,20 @@ export default function ContactDetailPage() {
                 )}
 
                 {/* Company link */}
-                <button
-                  onClick={() => navigate(ROUTES.customers.detail(customer.id))}
-                  className="flex items-center gap-1 mt-1 text-titan-sm text-titan-text-secondary hover:text-titan-accent transition-colors group"
-                >
-                  <Building2 className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span className="group-hover:underline">{customer.companyName}</span>
-                </button>
+                {customer ? (
+                  <button
+                    onClick={() => navigate(ROUTES.customers.detail(customer.id))}
+                    className="flex items-center gap-1 mt-1 text-titan-sm text-titan-text-secondary hover:text-titan-accent transition-colors group"
+                  >
+                    <Building2 className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="group-hover:underline">{customer.companyName}</span>
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1 mt-1 text-titan-sm text-titan-text-muted">
+                    <Building2 className="w-3.5 h-3.5 flex-shrink-0" />
+                    Unlinked
+                  </span>
+                )}
 
                 {/* Quick contact metadata */}
                 <div className="flex items-center gap-4 mt-2 flex-wrap">
@@ -231,7 +238,7 @@ export default function ContactDetailPage() {
                 <Edit className="w-3.5 h-3.5 mr-1.5" />
                 Edit Contact
               </Button>
-              <Button
+              {customer && <Button
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(`${ROUTES.quotes.new}?customerId=${customer.id}`)}
@@ -239,8 +246,8 @@ export default function ContactDetailPage() {
               >
                 <FileText className="w-3.5 h-3.5 mr-1.5" />
                 New Quote
-              </Button>
-              <Button
+              </Button>}
+              {customer && <Button
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(`${ROUTES.orders.new}?customerId=${customer.id}`)}
@@ -248,8 +255,8 @@ export default function ContactDetailPage() {
               >
                 <ShoppingCart className="w-3.5 h-3.5 mr-1.5" />
                 New Order
-              </Button>
-              <Button
+              </Button>}
+              {customer && <Button
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(ROUTES.customers.detail(customer.id))}
@@ -257,7 +264,7 @@ export default function ContactDetailPage() {
               >
                 <Building2 className="w-3.5 h-3.5 mr-1.5" />
                 View Customer
-              </Button>
+              </Button>}
             </div>
           </div>
         </div>
@@ -356,10 +363,12 @@ export default function ContactDetailPage() {
             </div>
             <div className="space-y-3 flex-1">
               <InfoRow label="Company">
-                <span className="font-medium text-titan-text-primary">{customer.companyName}</span>
+                <span className={customer ? "font-medium text-titan-text-primary" : "text-titan-text-muted"}>
+                  {customer?.companyName ?? "Unlinked"}
+                </span>
               </InfoRow>
 
-              {customer.email && (
+              {customer?.email && (
                 <InfoRow label="Email">
                   <a
                     href={`mailto:${customer.email}`}
@@ -371,7 +380,7 @@ export default function ContactDetailPage() {
                 </InfoRow>
               )}
 
-              {customer.phone && (
+              {customer?.phone && (
                 <InfoRow label="Phone">
                   <a
                     href={`tel:${customer.phone}`}
@@ -383,7 +392,7 @@ export default function ContactDetailPage() {
                 </InfoRow>
               )}
 
-              {customer.website && (
+              {customer?.website && (
                 <InfoRow label="Website">
                   <a
                     href={
@@ -401,7 +410,7 @@ export default function ContactDetailPage() {
                 </InfoRow>
               )}
 
-              {customer.address && (
+              {customer?.address && (
                 <InfoRow label="Address">
                   <span className="text-titan-sm text-titan-text-secondary">
                     {customer.address}
@@ -410,7 +419,7 @@ export default function ContactDetailPage() {
               )}
             </div>
 
-            <div className="mt-5 pt-4 border-t border-titan-border-subtle">
+            {customer && <div className="mt-5 pt-4 border-t border-titan-border-subtle">
               <Button
                 variant="outline"
                 size="sm"
@@ -420,7 +429,7 @@ export default function ContactDetailPage() {
                 View Customer Details
                 <ExternalLink className="w-3.5 h-3.5 ml-1.5" />
               </Button>
-            </div>
+            </div>}
           </div>
         </div>
 
@@ -471,7 +480,7 @@ export default function ContactDetailPage() {
                 </span>
               )}
             </div>
-            <Button
+            {customer && <Button
               size="sm"
               variant="outline"
               onClick={() => navigate(`${ROUTES.orders.new}?customerId=${customer.id}`)}
@@ -479,7 +488,7 @@ export default function ContactDetailPage() {
             >
               <Plus className="w-3 h-3 mr-1" />
               New Order
-            </Button>
+            </Button>}
           </div>
 
           {recentOrders.length === 0 ? (
@@ -491,7 +500,7 @@ export default function ContactDetailPage() {
               <p className="text-titan-xs text-titan-text-muted mb-4">
                 No orders have been created for this contact yet.
               </p>
-              <Button
+              {customer && <Button
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(`${ROUTES.orders.new}?customerId=${customer.id}`)}
@@ -499,7 +508,7 @@ export default function ContactDetailPage() {
               >
                 <Plus className="w-3.5 h-3.5 mr-1.5" />
                 Create Order
-              </Button>
+              </Button>}
             </div>
           ) : (
             <table className="w-full">
@@ -567,7 +576,7 @@ export default function ContactDetailPage() {
                 </span>
               )}
             </div>
-            <Button
+            {customer && <Button
               size="sm"
               variant="outline"
               onClick={() => navigate(`${ROUTES.quotes.new}?customerId=${customer.id}`)}
@@ -575,7 +584,7 @@ export default function ContactDetailPage() {
             >
               <Plus className="w-3 h-3 mr-1" />
               New Quote
-            </Button>
+            </Button>}
           </div>
 
           {recentQuotes.length === 0 ? (
@@ -587,7 +596,7 @@ export default function ContactDetailPage() {
               <p className="text-titan-xs text-titan-text-muted mb-4">
                 No quotes have been created for this contact yet.
               </p>
-              <Button
+              {customer && <Button
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(`${ROUTES.quotes.new}?customerId=${customer.id}`)}
@@ -595,7 +604,7 @@ export default function ContactDetailPage() {
               >
                 <Plus className="w-3.5 h-3.5 mr-1.5" />
                 Create Quote
-              </Button>
+              </Button>}
             </div>
           ) : (
             <table className="w-full">

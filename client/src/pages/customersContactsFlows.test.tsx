@@ -4,9 +4,10 @@ import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { describe, expect, jest, test, beforeEach, afterEach } from "@jest/globals";
 import ContactsPage from "./contacts";
+import ContactDetailPage from "./contact-detail";
 import CustomersPage from "./customers";
 import CustomerList from "@/components/CustomerList";
-import { useContacts, useCreateContact, useDeleteContact, useUpdateContact } from "@/hooks/useContacts";
+import { useContactDetail, useContacts, useCreateContact, useDeleteContact, useUpdateContact, type ContactDetailResponse, type ContactsResponse } from "@/hooks/useContacts";
 import { useQuery } from "@tanstack/react-query";
 
 jest.mock("@/lib/queryClient", () => ({
@@ -17,6 +18,7 @@ jest.mock("@/lib/queryClient", () => ({
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a>,
   useNavigate: () => jest.fn(),
+  useParams: () => ({ id: "contact-1" }),
 }));
 
 jest.mock("@/hooks/useAuth", () => ({
@@ -44,6 +46,7 @@ jest.mock("@/hooks/useListViewSettings", () => ({
 
 jest.mock("@/hooks/useContacts", () => ({
   useContacts: jest.fn(),
+  useContactDetail: jest.fn(),
   useCreateContact: jest.fn(),
   useDeleteContact: jest.fn(),
   useUpdateContact: jest.fn(),
@@ -178,6 +181,7 @@ jest.mock("@/components/ui/avatar", () => ({
 }));
 
 const useContactsMock = jest.mocked(useContacts);
+const useContactDetailMock = jest.mocked(useContactDetail);
 const useCreateContactMock = jest.mocked(useCreateContact);
 const useDeleteContactMock = jest.mocked(useDeleteContact);
 const useUpdateContactMock = jest.mocked(useUpdateContact);
@@ -224,6 +228,20 @@ beforeEach(() => {
     isLoading: false,
     error: null,
   } as any);
+
+  useContactDetailMock.mockReturnValue({
+    data: {
+      contact: {
+        id: "contact-1", customerId: "customer-1", firstName: "Ada", lastName: "Lovelace",
+        title: null, email: "ada@example.com", phone: null, mobile: null,
+        isPrimary: false, createdAt: new Date(), updatedAt: new Date(),
+      },
+      customer: { id: "customer-1", companyName: "Analytical Print", email: null, phone: null, website: null, address: null },
+      recentOrders: [], recentQuotes: [],
+    },
+    isLoading: false,
+    error: null,
+  } as unknown as ReturnType<typeof useContactDetail>);
 
   useCreateContactMock.mockReturnValue({ mutateAsync: jest.fn(async () => ({})) } as any);
   useUpdateContactMock.mockReturnValue({ mutateAsync: jest.fn(async () => ({})) } as any);
@@ -290,6 +308,48 @@ test("Contacts uses the full application workspace and removes the redundant lis
   expect(container.textContent).not.toContain("All Contacts");
   expect(container.textContent).not.toContain("Search contacts by name, email, or company name");
   expect(container.querySelector("table")).toBeTruthy();
+});
+
+test("Contact detail renders the linked company", () => {
+  act(() => root.render(<ContactDetailPage />));
+  expect(container.textContent).toContain("Analytical Print");
+  expect(container.textContent).toContain("View Customer Details");
+});
+
+test("refetched standalone Contact remains visible in list and detail without a Customer link", () => {
+  act(() => root.render(<ContactsPage />));
+  const listData = (useContactsMock.mock.results.at(-1)?.value as { data: ContactsResponse }).data;
+  const linkedContact = listData.contacts[0];
+  act(() => root.render(<ContactDetailPage />));
+  const linkedDetail = (useContactDetailMock.mock.results.at(-1)?.value as { data: ContactDetailResponse }).data;
+  useContactsMock.mockReturnValue({
+    data: { ...listData, contacts: [{ ...linkedContact, customerId: null, companyName: "Unlinked" }] },
+    isLoading: false, error: null,
+  } as ReturnType<typeof useContacts>);
+  useContactDetailMock.mockReturnValue({
+    data: { ...linkedDetail, contact: { ...linkedDetail.contact, customerId: null }, customer: null },
+    isLoading: false, error: null,
+  } as ReturnType<typeof useContactDetail>);
+
+  act(() => root.render(<ContactsPage />));
+  expect(container.textContent).toContain("Ada");
+  expect(container.textContent).toContain("Unlinked");
+  expect(container.querySelector('a[href="/customers/customer-1"]')).toBeNull();
+
+  act(() => root.render(<ContactDetailPage />));
+  expect(container.textContent).toContain("Ada Lovelace");
+  expect(container.textContent).toContain("Unlinked");
+  expect(container.textContent).toContain("Recent Orders");
+  expect(container.textContent).not.toContain("New Order");
+  expect(container.textContent).not.toContain("View Customer Details");
+
+  act(() => root.render(null));
+  act(() => root.render(<ContactDetailPage />));
+  expect(container.textContent).toContain("Unlinked");
+
+  useContactDetailMock.mockReturnValue({ data: linkedDetail, isLoading: false, error: null } as ReturnType<typeof useContactDetail>);
+  act(() => root.render(<ContactDetailPage />));
+  expect(container.textContent).toContain("Analytical Print");
 });
 
 test("Contacts relationship filter changes the backend query identity and resets pagination", () => {

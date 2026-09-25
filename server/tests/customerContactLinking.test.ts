@@ -8,6 +8,7 @@ import { registerCustomerRelationsRoutes } from "../routes/customerRelations.rou
 import {
   createCustomerContactForOrganization,
   getContactWithRelations,
+  getContactsPaged,
   getCustomerContacts,
 } from "../storage";
 import { readFileSync } from "node:fs";
@@ -200,6 +201,34 @@ describe("customer detail contact linking", () => {
     const storedContact = await getContactWithRelations(contact.id, ORG_ID);
     expect(sourceContacts.some((row) => row.id === contact.id)).toBe(false);
     expect(storedContact?.id).toBe(contact.id);
+    expect(storedContact?.customer).toBeNull();
+    expect(storedContact?.customerId).toBeNull();
+
+    const detail = await request(app).get(`/api/contacts/${contact.id}`).set(authHeaders).expect(200);
+    expect(detail.body.customer).toBeNull();
+    expect(detail.body.contact.customerId).toBeNull();
+
+    // Older unlinks may have left the legacy column populated in MAIN.
+    await db.execute(sql`update customer_contacts set customer_id = ${SOURCE_CUSTOMER} where id = ${contact.id}`);
+    const legacyDetail = await request(app).get(`/api/contacts/${contact.id}`).set(authHeaders).expect(200);
+    expect(legacyDetail.body.customer).toBeNull();
+    expect(legacyDetail.body.contact.customerId).toBeNull();
+
+    const list = await getContactsPaged(ORG_ID, { search: "Unlink", sortBy: "company", page: 1, pageSize: 50 });
+    const listedContact = list.items.find((row) => row.id === contact.id);
+    expect(listedContact).toMatchObject({ companyName: "Unlinked", customerId: null, customer: null });
+    const unlinked = await getContactsPaged(ORG_ID, { filter: "unlinked", page: 1, pageSize: 50 });
+    expect(unlinked.items.some((row) => row.id === contact.id)).toBe(true);
+    const customerOnly = await getContactsPaged(ORG_ID, { customerId: SOURCE_CUSTOMER, page: 1, pageSize: 50 });
+    expect(customerOnly.items.some((row) => row.id === contact.id)).toBe(false);
+
+    await request(app)
+      .post(`/api/customers/${TARGET_CUSTOMER}/contacts/${contact.id}/link`)
+      .set(authHeaders)
+      .send({ setPrimary: false })
+      .expect(200);
+    const reattached = await request(app).get(`/api/contacts/${contact.id}`).set(authHeaders).expect(200);
+    expect(reattached.body.customer).toMatchObject({ id: TARGET_CUSTOMER, companyName: "Target Customer" });
   });
 
   test("setting a primary contact clears the prior primary for the same customer", async () => {

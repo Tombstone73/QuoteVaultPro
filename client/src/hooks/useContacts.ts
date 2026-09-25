@@ -71,7 +71,7 @@ export interface ContactDetailResponse {
     phone: string | null;
     website: string | null;
     address: string | null;
-  };
+  } | null;
   recentOrders: Array<{
     id: string;
     orderNumber: string;
