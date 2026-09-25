@@ -503,8 +503,8 @@ export function useProductionJobs(
   },
   options?: { enabled?: boolean }
 ) {
-  return useQuery<ProductionJobListItem[]>({
-    queryKey: ["/api/production/jobs", filters],
+  const query = useQuery<{ jobs: ProductionJobListItem[]; stationIssues: { jobId: string; reason: string }[] }>({
+    queryKey: ["/api/production/jobs", filters, "station-population-v1"],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters?.status) params.set("status", filters.status);
@@ -519,12 +519,13 @@ export function useProductionJobs(
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch production jobs");
       const json = await res.json();
-      return json.data || [];
+      return { jobs: json.data || [], stationIssues: json.stationIssues ?? [] };
     },
     staleTime: 30_000,
     refetchOnWindowFocus: false,
     enabled: options?.enabled !== false,
   });
+  return { ...query, data: query.data?.jobs, stationIssues: query.data?.stationIssues ?? [] };
 }
 
 export function useProductionJob(jobId: string | undefined) {
@@ -602,6 +603,7 @@ export function useCreateProductionRun() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       toast({ title: "Production run created" });
     },
     onError: (e: Error) => {
@@ -647,6 +649,7 @@ export function useCreatePrepressProductionRun() {
       qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       toast({ title: "Combined production run created" });
     },
     onError: (e: Error) => {
@@ -686,6 +689,7 @@ export function useRecordProductionRunOutcome() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       toast({ title: "Run results recorded" });
     },
     onError: (e: Error) => {
@@ -716,6 +720,7 @@ export function useRecordProductionRunSheetProgress() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       toast({ title: "Sheet progress recorded" });
     },
     onError: (e: Error) => {

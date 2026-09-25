@@ -20,9 +20,7 @@ import {
   productionJobs,
 } from "../../shared/schema";
 import { getProductionConfigForOrganization } from "../routes/production.shared";
-import { isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
-import { stationResolver } from "./stations/stationResolver";
-import { normalizeProductionStationKey } from "@shared/productionStations";
+import { resolveProductionStationWork } from "./productionStationPopulation";
 import { listProofingQueue } from "./proofingService";
 import type { ProofingQueueRow } from "@shared/proofing";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
@@ -61,79 +59,10 @@ export function countAwaitingProofQueueRows(rows: Array<Pick<ProofingQueueRow, "
   ).length;
 }
 
-async function countVisibleProductionJobs(
-  organizationId: string,
-  stationKey?: "flatbed" | "roll",
-  visibleStatuses: Array<"queued" | "in_progress" | "paused"> = ["queued", "in_progress", "paused"],
-): Promise<number> {
-  if (stationKey) {
-    const config = await getProductionConfigForOrganization(organizationId);
-    if (!config.enabledViews.includes(stationKey)) return 0;
-  }
-
-  const resolvedStationId = stationKey
-    ? await stationResolver.resolveStationId({ organizationId, stationKey })
-    : null;
-  const stationAliases = stationKey === "roll"
-    ? ["roll", "wide_roll"]
-    : stationKey === "flatbed"
-      ? ["flatbed"]
-      : [];
-
-  const baseRows = await db
-    .select({
-      id: productionJobs.id,
-      lineItemId: productionJobs.lineItemId,
-      status: productionJobs.status,
-    })
-    .from(productionJobs)
-    .innerJoin(orders, eq(productionJobs.orderId, orders.id))
-    .innerJoin(customers, eq(orders.customerId, customers.id))
-    .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
-    .where(
-      and(
-        eq(productionJobs.organizationId, organizationId),
-        stationKey
-          ? (resolvedStationId
-              ? or(sql`production_jobs.station_id = ${resolvedStationId}`, inArray(productionJobs.stationKey as any, stationAliases))
-              : inArray(productionJobs.stationKey as any, stationAliases))
-          : undefined,
-        inArray(productionJobs.status as any, visibleStatuses),
-      ),
-    );
-
-  const lineItemIds = Array.from(
-    new Set(
-      baseRows
-        .map((row) => row.lineItemId)
-        .filter((id): id is string => typeof id === "string" && id.length > 0),
-    ),
-  );
-
-  const activeOwnerByLineItem = lineItemIds.length > 0
-    ? await resolveActiveProductionOwners(db, {
-        organizationId,
-        lineItemIds,
-        debugLabel: "operational-summary",
-      })
-    : new Map<string, any>();
-
-  return baseRows.filter((row) => {
-    if (!row.lineItemId) return true;
-
-    const activeOwner = activeOwnerByLineItem.get(row.lineItemId);
-    if (!activeOwner || activeOwner.id !== row.id) return false;
-
-    if (stationKey && (stationKey === "flatbed" || stationKey === "roll") && isPrepressOwnershipJob(activeOwner)) {
-      return false;
-    }
-
-    if (stationKey && normalizeProductionStationKey(activeOwner.stationKey) !== stationKey) {
-      return false;
-    }
-
-    return true;
-  }).length;
+async function countVisibleProductionJobs(organizationId: string, stationKey: "flatbed" | "roll"): Promise<number> {
+  const config = await getProductionConfigForOrganization(organizationId);
+  if (!config.enabledViews.includes(stationKey)) return 0;
+  return (await resolveProductionStationWork(organizationId, stationKey)).count;
 }
 
 async function countCanonicalProductionOverviewJobs(organizationId: string): Promise<number> {

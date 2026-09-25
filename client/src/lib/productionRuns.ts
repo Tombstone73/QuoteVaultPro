@@ -70,3 +70,13 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
     },
   };
 }
+
+/** Apply the queue search to run containers as well as standalone jobs. */
+export function productionRunMatchesSearch(run: ProductionRunListItem, search: string): boolean {
+  const query = search.trim().toLowerCase();
+  if (!query) return true;
+  return [run.id, run.displayNumber, run.orderNumber, run.customerName, run.notes,
+    ...(run.members ?? []).flatMap(member => [member.orderNumber, member.customerName, member.description]),
+    ...(run.files ?? []).map(file => file.fileName),
+  ].some(value => String(value ?? "").toLowerCase().includes(query));
+}

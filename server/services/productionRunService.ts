@@ -690,6 +690,7 @@ export async function createPrepressProductionRun(input: {
 
 export async function listProductionRuns(input: {
   organizationId: string;
+  runIds?: string[];
   orderId?: string | null;
   stationKey?: string | null;
   status?: "queued" | "in_progress" | "done" | null;
@@ -708,6 +709,7 @@ export async function listProductionRuns(input: {
     .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, input.organizationId)))
     .where(and(
       eq(productionRuns.organizationId, input.organizationId),
+      input.runIds ? inArray(productionRuns.id, input.runIds) : undefined,
       input.orderId ? sql`(${productionRuns.orderId} = ${input.orderId} or exists (
         select 1 from ${productionRunMembers} prm
         join ${orderLineItems} oli on oli.id = prm.order_line_item_id

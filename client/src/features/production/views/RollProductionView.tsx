@@ -1409,7 +1409,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   const sortedJobs = useMemo(() => {
     return [...jobsSafe];
   }, [jobsSafe]);
-  const queueJobs = useMemo(() => sortedJobs.filter((job) => !isProductionRunItem(job)), [sortedJobs]);
+  const queueJobs = sortedJobs;
   const allBulkEligibleJobs = useMemo(
     () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
     [props.status, tabJobs],
@@ -1499,7 +1499,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
 
   const liveTimerSeconds = useLiveSeconds(derivedTimer.seconds, derivedTimer.isRunning);
 
-  if (isLoading) {
+  if (shouldFetchJobs && isLoading) {
     return (
       <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
         <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3">
@@ -1520,7 +1520,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     );
   }
 
-  if (error) {
+  if (shouldFetchJobs && error) {
     return (
       <Card className="bg-titan-bg-card border-titan-border-subtle">
         <CardContent className="p-4 text-sm text-titan-text-muted">
@@ -1676,6 +1676,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {printerFilter !== "all" ? (
+                  <TableRow><TableCell colSpan={12} className="text-sm">
+                    Printer filter: {printerFilter}. Showing {queueJobs.length} of {tabJobs.length} work units in this tab.
+                    <button type="button" className="ml-2 underline" onClick={() => setPrinterFilter("all")}>Clear printer filter</button>
+                  </TableCell></TableRow>
+                ) : null}
                 {queueJobs.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={10} className="py-8 text-center text-sm text-titan-text-muted">
@@ -1715,6 +1721,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                   return (
                     <TableRow
                       key={job.id}
+                      data-production-work-id={job.id}
                       className={selected ? "bg-titan-bg-muted" : "hover:bg-titan-bg-muted/40"}
                       onClick={() => setSelectedJobId(job.id)}
                       style={{ cursor: "pointer" }}
@@ -1768,7 +1775,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                             {orderNumber}
                           </Link>
                         ) : (
-                          <span className="text-sm text-titan-text-muted">—</span>
+                          <span className="text-sm text-titan-text-muted">{orderNumber}</span>
                         )}
                       </TableCell>
                       <TableCell className="py-5">

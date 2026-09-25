@@ -10,9 +10,9 @@ describe("reopened Combined Run board visibility", () => {
   test("uses one canonical run query for both active tab counts and rendered board containers", () => {
     expect(board).toContain("useProductionRuns(");
     expect(board).toContain("const stationBoardItems");
-    expect(board).toContain("...(stationRuns ?? []).map(productionRunToBoardItem)");
+    expect(board).toContain("...visibleRuns.map(productionRunToBoardItem)");
     expect(board).toContain("getProductionTabCountsWithRecentlyCompleted(stationBoardItems");
-    expect(board).toContain("runs={stationRuns ?? []}");
+    expect(board).toContain("runs={visibleRuns}");
   });
 
   for (const [name, source] of [["Flatbed", flatbed], ["Roll", roll]] as const) {
@@ -20,7 +20,7 @@ describe("reopened Combined Run board visibility", () => {
       expect(source).toContain("const runs = props.runs.map(productionRunToBoardItem)");
       expect(source).toContain("props.runsError && tabJobs.length === 0");
       expect(source).toContain("Combined Run visibility needs attention");
-      expect(source).toContain("const queueJobs = useMemo(() => sortedJobs.filter((job) => !isProductionRunItem(job))");
+      expect(source).toContain("const queueJobs = sortedJobs;");
       expect(source).toContain("queueJobs.map((job)");
     });
   }

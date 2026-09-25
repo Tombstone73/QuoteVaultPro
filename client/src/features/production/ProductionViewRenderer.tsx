@@ -1,3 +1,4 @@
+import { ProductionStationErrorBoundary } from "./ProductionStationErrorBoundary";
 import FlatbedProductionView from "@/features/production/views/FlatbedProductionView";
 import RollProductionView from "@/features/production/views/RollProductionView";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,5 +32,8 @@ export default function ProductionViewRenderer(props: ProductionViewProps) {
     );
   }
 
-  return <View {...props} />;
+  return <ProductionStationErrorBoundary key={props.viewKey} station={props.viewKey}
+    workIds={[...(props.jobs ?? []).map(job => job.id), ...props.runs.map(run => run.id)]}>
+    <View {...props} />
+  </ProductionStationErrorBoundary>;
 }

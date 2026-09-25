@@ -1,3 +1,4 @@
+import { resolveProductionStationWork } from "../services/productionStationPopulation";
 import type { Express } from "express";
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -988,12 +989,19 @@ export function registerProductionJobsRoutes(
         return res.json({ success: true, data: [] });
       }
 
-      // FIX: lineItemId filter was too strict - production_jobs can exist without line items during initial intake
-      // Station scoping is OPTIONAL - when omitted, returns ALL jobs across all stations (for Overview)
-      // orderId filtering for sibling production jobs on same order
+      // Station queues use canonical work identities. Unscoped and historical
+      // requests retain their existing Order/job population.
+      const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
+      const activeBoardQuery = !status || !["done", "void", "canceled", "cancelled"].includes(String(status).toLowerCase());
+      const stationWork = activeBoardQuery && prepressGateApplies
+        ? await resolveProductionStationWork(organizationId, station)
+        : null;
       const whereClause = and(
         eq(productionJobs.organizationId, organizationId),
-        station
+        // Optional customer display data must not remove an actionable station owner.
+        // Preserve the existing customer requirement for other list consumers.
+        stationWork ? undefined : sql`${customers.id} is not null`,
+        stationWork ? inArray(productionJobs.id, Array.from(stationWork.jobIds)) : station
           ? (resolvedStationId
               ? or(sql`production_jobs.station_id = ${resolvedStationId}`, inArray(productionJobs.stationKey as any, stationAliases))
               : inArray(productionJobs.stationKey as any, stationAliases))
@@ -1002,9 +1010,6 @@ export function registerProductionJobsRoutes(
         productionOnly ? sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'` : undefined,
         orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
-
-      const prepressGateApplies = station && (station === 'flatbed' || station === 'roll');
-      const activeBoardQuery = !status || !["done", "void", "canceled", "cancelled"].includes(String(status).toLowerCase());
 
       const baseRows = await db
         .select({
@@ -1048,17 +1053,19 @@ export function registerProductionJobsRoutes(
         })
         .from(productionJobs)
         .innerJoin(orders, eq(productionJobs.orderId, orders.id))
-        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(customers, eq(orders.customerId, customers.id))
         .leftJoin(orderLineItems, eq(productionJobs.lineItemId, orderLineItems.id))
         .where(whereClause)
         .orderBy(...dbOrderBy);
 
-      // The badge and this route share one current-owner, grouped-run and
-      // canonical Fulfillment population gate. Historical rows are removed
-      // before the artwork and event hydration below.
-      const filteredRows = activeBoardQuery
-        ? await filterActiveProductionOverviewRows(organizationId, baseRows, prepressGateApplies ? station : null)
-        : baseRows;
+      // Station identity selection is shared with the badge; other views
+      // retain their existing Overview/Fulfillment population gate.
+      const stationIssues = stationWork?.issues ?? [];
+      const filteredRows = stationWork
+        ? baseRows.filter(row => stationWork.jobIds.has(row.id))
+        : activeBoardQuery
+          ? await filterActiveProductionOverviewRows(organizationId, baseRows)
+          : baseRows;
 
       // DEV-only logging: show how many items were gated
       if (process.env.NODE_ENV !== "production") {
@@ -1073,7 +1080,7 @@ export function registerProductionJobsRoutes(
       }
 
       if (filteredRows.length === 0) {
-        return res.json({ success: true, data: [] });
+        return res.json({ success: true, data: [], stationIssues });
       }
 
       const jobIds = filteredRows.map((r) => r.id);
@@ -2011,7 +2018,7 @@ export function registerProductionJobsRoutes(
         }
       }
 
-      res.json({ success: true, data: sorted });
+      res.json({ success: true, data: sorted, stationIssues });
     } catch (error) {
       console.error("Error fetching production jobs:", error);
       res.status(500).json({ error: "Failed to fetch production jobs" });

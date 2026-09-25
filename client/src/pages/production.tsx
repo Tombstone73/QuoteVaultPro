@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ROUTES } from "@/config/routes";
 import { useProductionConfig, useProductionJobs, useProductionRuns, useRecentlyCompletedProductionJobs } from "@/hooks/useProduction";
 import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
-import { productionRunToBoardItem } from "@/lib/productionRuns";
+import { productionRunToBoardItem, productionRunMatchesSearch } from "@/lib/productionRuns";
 import ProductionOverviewPage from "@/features/production/views/ProductionOverviewPage";
 import {
   getProductionTabCountsWithRecentlyCompleted,
@@ -111,7 +111,7 @@ export default function ProductionBoard() {
     persistProductionQueueControls("roll", rollControls);
   }, [rollControls]);
 
-  const { data: stationJobs, isLoading: jobsLoading, error: jobsError } = useProductionJobs(
+  const { data: stationJobs, stationIssues, isLoading: jobsLoading, error: jobsError } = useProductionJobs(
     activeStation
       ? {
           view: activeStation,
@@ -136,12 +136,17 @@ export default function ProductionBoard() {
     { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
   );
 
+  const visibleRuns = useMemo(
+    () => (stationRuns ?? []).filter(run => productionRunMatchesSearch(run, debouncedSearch)),
+    [stationRuns, debouncedSearch],
+  );
+
   const stationBoardItems = useMemo(
     () => [
-      ...(stationRuns ?? []).map(productionRunToBoardItem),
+      ...visibleRuns.map(productionRunToBoardItem),
       ...(stationJobs ?? []),
     ],
-    [stationJobs, stationRuns],
+    [stationJobs, visibleRuns],
   );
 
   const tabCounts = useMemo(
@@ -296,6 +301,26 @@ export default function ProductionBoard() {
                   )}
                 </div>
                 {stationToolbar}
+                <div className="rounded-md border border-titan-border-subtle p-3 text-sm" role="status">
+                  <p>The sidebar counts all actionable jobs and Combined Runs. Each run counts once; its member jobs are grouped inside it.</p>
+                  <p>Current status: {status === "all" ? "All active work" : status.replace("_", " ")}.
+                    {debouncedSearch ? <> Search active: <strong>&quot;{debouncedSearch}&quot;</strong>. Tab counts show search matches.</> : null}
+                    {status === "done" ? " Completed history is separate from the actionable count." : null}
+                  </p>
+                  {status !== "all" || controls.search ? (
+                    <button type="button" className="mt-1 underline" onClick={() => {
+                      setStatus("all");
+                      setControls(current => updateControls(current, { search: "" }));
+                    }}>Show all active work</button>
+                  ) : null}
+                </div>
+                {runsError ? <p role="alert" className="text-sm text-destructive">Unable to load Combined Runs. The displayed queue may be incomplete; reload to retry.</p> : null}
+                {stationIssues?.length ? (
+                  <div role="alert" className="rounded-md border border-destructive p-3 text-sm">
+                    Production ownership needs attention. These records cannot be counted as actionable:
+                    <ul>{stationIssues.map(issue => <li key={issue.jobId}>Job {issue.jobId}: {issue.reason}</li>)}</ul>
+                  </div>
+                ) : null}
 
                 {/* Production view content */}
                 {jobsLoading || runsLoading ? (
@@ -307,7 +332,7 @@ export default function ProductionBoard() {
                     <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
                   </Card>
                 ) : (
-                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={stationJobs ?? []} runs={stationRuns ?? []} runsError={runsError} />
+                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={stationJobs ?? []} runs={visibleRuns} runsError={runsError} />
                 )}
               </div>
             )}
@@ -379,6 +404,26 @@ export default function ProductionBoard() {
                   )}
                 </div>
                 {stationToolbar}
+                <div className="rounded-md border border-titan-border-subtle p-3 text-sm" role="status">
+                  <p>The sidebar counts all actionable jobs and Combined Runs. Each run counts once; its member jobs are grouped inside it.</p>
+                  <p>Current status: {status === "all" ? "All active work" : status.replace("_", " ")}.
+                    {debouncedSearch ? <> Search active: <strong>&quot;{debouncedSearch}&quot;</strong>. Tab counts show search matches.</> : null}
+                    {status === "done" ? " Completed history is separate from the actionable count." : null}
+                  </p>
+                  {status !== "all" || controls.search ? (
+                    <button type="button" className="mt-1 underline" onClick={() => {
+                      setStatus("all");
+                      setControls(current => updateControls(current, { search: "" }));
+                    }}>Show all active work</button>
+                  ) : null}
+                </div>
+                {runsError ? <p role="alert" className="text-sm text-destructive">Unable to load Combined Runs. The displayed queue may be incomplete; reload to retry.</p> : null}
+                {stationIssues?.length ? (
+                  <div role="alert" className="rounded-md border border-destructive p-3 text-sm">
+                    Production ownership needs attention. These records cannot be counted as actionable:
+                    <ul>{stationIssues.map(issue => <li key={issue.jobId}>Job {issue.jobId}: {issue.reason}</li>)}</ul>
+                  </div>
+                ) : null}
 
                 {/* Production view content */}
                 {jobsLoading || runsLoading ? (
@@ -390,7 +435,7 @@ export default function ProductionBoard() {
                     <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
                   </Card>
                 ) : (
-                  <ProductionViewRenderer viewKey="roll" status={status} jobs={stationJobs ?? []} runs={stationRuns ?? []} runsError={runsError} />
+                  <ProductionViewRenderer viewKey="roll" status={status} jobs={stationJobs ?? []} runs={visibleRuns} runsError={runsError} />
                 )}
               </div>
             )}

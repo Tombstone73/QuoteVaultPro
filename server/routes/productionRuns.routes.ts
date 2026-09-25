@@ -1,3 +1,5 @@
+import { resolveProductionStationWork } from "../services/productionStationPopulation";
+import { normalizeProductionStationKey } from "@shared/productionStations";
 import busboy from "busboy";
 import type { Express } from "express";
 import { z } from "zod";
@@ -169,13 +171,20 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       if (!deps.assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const station = normalizeProductionStationKey(req.query.station ?? req.query.view);
+      // History and order queries retain their existing contract. Canonical
+      // identities prevent legacy station aliases from losing containers.
+      const stationWork = !req.query.orderId && req.query.status !== "done" && (station === "flatbed" || station === "roll")
+        ? await resolveProductionStationWork(organizationId, station)
+        : null;
       const result = await listProductionRuns({
         organizationId,
         orderId: typeof req.query.orderId === "string" ? req.query.orderId : null,
-        stationKey: typeof req.query.station === "string" ? req.query.station : typeof req.query.view === "string" ? req.query.view : null,
+        stationKey: stationWork ? null : typeof req.query.station === "string" ? req.query.station : typeof req.query.view === "string" ? req.query.view : null,
+        runIds: stationWork ? Array.from(stationWork.runIds) : undefined,
         status: req.query.status === "queued" || req.query.status === "in_progress" || req.query.status === "done" ? req.query.status : null,
       });
-      return res.json({ success: true, data: result });
+      return res.json({ success: true, data: stationWork ? result.filter(run => stationWork.runIds.has(run.id)) : result });
     } catch (error) {
       console.error("[production-runs] list failed", error);
       return res.status(500).json({ success: false, code: "PRODUCTION_RUN_LIST_FAILED", message: "Unable to list production runs." });
