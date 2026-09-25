@@ -52,7 +52,7 @@ export const SalesDocumentFrame = ({
   </section>;
 };
 
-export const SalesDocumentSplit = ({ left, right }: Readonly<{ left: ReactNode; right: ReactNode | null }>) => {
+export const SalesDocumentSplit = ({ left, right, className }: Readonly<{ left: ReactNode; right: ReactNode | null; className?: string }>) => {
   const [split, setSplit] = useState(DEFAULT_SPLIT);
   const splitRef = useRef(split);
   useEffect(() => {
@@ -69,10 +69,11 @@ export const SalesDocumentSplit = ({ left, right }: Readonly<{ left: ReactNode; 
     const rect = root.getBoundingClientRect();
     if (rect.width) setSplit(clamp(((clientX - rect.left) / rect.width) * 100));
   };
-  if (right === null) return <div className="v2-sales-split v2-sales-split-closed">
+  const classes = `v2-sales-split${className ? ` ${className}` : ""}`;
+  if (right === null) return <div className={`${classes} v2-sales-split-closed`}>
     <div className="v2-sales-split-left">{left}</div>
   </div>;
-  return <div className="v2-sales-split" style={{ "--sales-split": `${split}%` } as CSSProperties}>
+  return <div className={classes} style={{ "--sales-split": `${split}%` } as CSSProperties}>
     <div className="v2-sales-split-left">{left}</div>
     <div
       className="v2-sales-split-handle"

@@ -644,6 +644,7 @@ export const OrderWorkspace = (
   );
   const items = (
     <SalesDocumentSplit
+      className="v2-order-items-split"
       left={
         <section className="v2-sales-items">
           <header>

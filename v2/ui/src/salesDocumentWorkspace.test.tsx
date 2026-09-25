@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SalesDocumentFrame, SalesDocumentSplit } from "./SalesDocumentWorkspace";
@@ -42,5 +43,10 @@ for (const tab of ["Items", "Artwork", "Notes", "Billing", "Fulfillment", "Histo
 const closed = renderToStaticMarkup(<SalesDocumentSplit left={<span>Items table</span>} right={null} />);
 assert.match(closed, /Items table/);
 assert.doesNotMatch(closed, /Resize document editor/);
+const orderSplit = renderToStaticMarkup(<SalesDocumentSplit className="v2-order-items-split" left={<span>Items table</span>} right={<span>Artwork section</span>} />);
+assert.match(orderSplit, /v2-order-items-split/);
+const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+assert.match(styles, /\.v2-order-items-split\{align-items:start;min-height:0\}/, "Order detail split must grow with page content rather than claim a viewport-height pane");
+assert.match(styles, /\.v2-order-items-split[^\n]*max-height:none;overflow:visible/, "Order line detail must not establish desktop vertical scrolling");
 
 console.log("Shared Sales document workspace visual contract tests passed.");

@@ -25,9 +25,12 @@ assert.doesNotMatch(markup, /Artwork Order ID|Artwork Order line ID/);
 
 const firstRequest = newArtworkUploadRequest(new File(["%PDF-1.4\nfirst"], "first.pdf", { type: "application/pdf" }), "customer_supplied", "front");
 const secondRequest = newArtworkUploadRequest(new File(["%PDF-1.4\nsecond"], "second.pdf", { type: "application/pdf" }), "customer_supplied", "front");
+const thirdRequest = newArtworkUploadRequest(new File(["%PDF-1.4\nthird"], "third.pdf", { type: "application/pdf" }), "customer_supplied", "front");
 assert.notEqual(firstRequest.businessRequestId, secondRequest.businessRequestId, "each new upload receives a fresh request identity");
+assert.notEqual(secondRequest.businessRequestId, thirdRequest.businessRequestId, "a third ordinary selection remains a new additive request without a page refresh");
 assert.equal(firstRequest.file.name, "first.pdf");
 assert.equal(secondRequest.file.name, "second.pdf");
+assert.equal(thirdRequest.file.name, "third.pdf");
 const panelSource = await readFile(new URL("./ArtworkUploadPanel.tsx", import.meta.url), "utf8");
 assert.doesNotMatch(panelSource, /supersedesArtworkAssignmentId/, "ordinary Artwork upload must never infer replacement lineage from purpose or side");
 assert.match(panelSource, /setRequest\(undefined\);\s*upload\.reset\(\);\s*onUploaded\(\);/, "successful upload clears request and mutation state for the next upload");

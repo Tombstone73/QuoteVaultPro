@@ -13,6 +13,24 @@ type ArtworkAutoUploadDropzoneProps = Readonly<{
 
 export const isArtworkPdf = (file: File): boolean => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
+type CanonicalArtworkUploadError = Readonly<{ code: string; message?: string }>;
+
+const isCanonicalArtworkUploadError = (error: unknown): error is CanonicalArtworkUploadError =>
+  Boolean(error) && typeof error === "object" && typeof (error as { code?: unknown }).code === "string";
+
+/** Never render an arbitrary failed response; known V2 codes get safe staff guidance. */
+export const artworkUploadErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (!isCanonicalArtworkUploadError(error)) return error ? "Artwork upload failed. Existing artwork was not changed." : "";
+  switch (error.code) {
+    case "VALIDATION_ERROR": return "The selected file is not a valid PDF. Choose a valid PDF and try again.";
+    case "CONFLICT": return "Artwork changed while this upload was in progress. Refresh the Order and try again.";
+    case "STALE_STATE": return "This Order changed. Refresh it before uploading Artwork again.";
+    case "FORBIDDEN": return "You do not have permission to upload Artwork to this Order line.";
+    default: return "Artwork upload failed. Existing artwork was not changed.";
+  }
+};
+
 /** UI-only intake control; callers retain canonical Artwork upload authority. */
 export const ArtworkAutoUploadDropzone = ({ label, disabled = false, fileName, isUploading, isSuccess, error, onFileSelected, onRetry }: ArtworkAutoUploadDropzoneProps) => {
   const input = useRef<HTMLInputElement>(null);
@@ -30,7 +48,7 @@ export const ArtworkAutoUploadDropzone = ({ label, disabled = false, fileName, i
     }
     onFileSelected(file);
   };
-  const errorMessage = validationMessage || (error instanceof Error ? error.message : error ? "Artwork upload failed. Existing artwork was not changed." : "");
+  const errorMessage = validationMessage || artworkUploadErrorMessage(error);
   const status = isUploading ? `Uploading ${fileName ?? "artwork"}…` : isSuccess ? "Artwork uploaded and assigned to this line." : fileName ? `Selected ${fileName}.` : "Drag a PDF here or click to select.";
 
   return <>
