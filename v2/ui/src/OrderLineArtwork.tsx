@@ -47,7 +47,7 @@ type DetailProps = Props &
   Readonly<{
     canAdopt?: boolean;
     uploadTarget?: ArtworkUploadTarget;
-    onUploaded?: () => void;
+    onUploaded?: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
   }>;
 const Preview = ({
   organizationId,
@@ -175,9 +175,9 @@ export const OrderLineArtworkDetail = ({
         <ArtworkUploadPanel
           organizationId={organizationId}
           target={uploadTarget}
-          onUploaded={() => {
+          onUploaded={async (result) => {
+            await onUploaded?.(result);
             setUploading(false);
-            onUploaded?.();
           }}
         />
       )}

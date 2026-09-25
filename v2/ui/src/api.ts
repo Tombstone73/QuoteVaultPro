@@ -1257,6 +1257,10 @@ export type ArtworkOrderProjection = Readonly<{
     createdAt: string;
   }>;
 }>;
+export type ArtworkUploadResult = Readonly<{
+  artworkFile: ArtworkOrderProjection["file"];
+  assignment: ArtworkOrderProjection["assignment"];
+}>;
 /**
  * A Quote-line usage of the canonical Artwork file.  This is deliberately a
  * business association, not a second file representation: the file remains
@@ -2927,12 +2931,7 @@ export const artworkApi = {
     if (input.side) body.append("side", input.side);
     if (input.supersedesArtworkAssignmentId) body.append("supersedesArtworkAssignmentId", input.supersedesArtworkAssignmentId);
     body.append("file", input.file);
-    return request<
-      Readonly<{
-        artworkFile: ArtworkOrderProjection["file"];
-        assignment: ArtworkOrderProjection["assignment"];
-      }>
-    >(
+    return request<ArtworkUploadResult>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/uploads`,
       {
         method: "POST",
@@ -2941,7 +2940,20 @@ export const artworkApi = {
         },
         body,
       },
-    );
+    ).then((result) => {
+      // A completed HTTP request is not evidence of a committed adoption.
+      const file = result?.artworkFile, assignment = result?.assignment;
+      if (typeof file?.id !== "string" || !file.id.trim() ||
+          typeof assignment?.id !== "string" || !assignment.id.trim() ||
+          assignment.artworkFileId !== file.id || assignment.orderId !== input.orderId ||
+          assignment.orderLineId !== input.orderLineId || assignment.purpose !== input.purpose ||
+          assignment.side !== input.side ||
+          (input.supersedesArtworkAssignmentId !== undefined &&
+            assignment.supersedesArtworkAssignmentId !== input.supersedesArtworkAssignmentId)) {
+        throw { code: "UPLOAD_RESULT_UNCONFIRMED", message: "The upload response did not confirm the Artwork and its intended assignment." };
+      }
+      return result;
+    });
   },
   /** A Prepress-only affordance. The server still uses the canonical Artwork
    * storage, assignment, revision, idempotency, and audit authority. */

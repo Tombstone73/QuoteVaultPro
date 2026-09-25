@@ -33,5 +33,7 @@ assert.match(renderToStaticMarkup(<OrderLineArtworkDetail organizationId="org-a"
 assert.doesNotMatch(orderConfigurationPresentation({ selections: { opt_old: "choice_old", print_sides__import_x: "yes" } }), /opt_|choice_|_import/);
 const workspace = await readFile(new URL("./OrderWorkspace.tsx", import.meta.url), "utf8");
 assert.match(workspace, /onOpen=\{\(\) => setEditingLineId\(line\.lineId\)\}/, "Items Artwork status must select its line rather than navigate to the Order-wide Artwork tab");
-assert.match(workspace, /onArtworkUploaded=\{\(\) => \{\s*void artwork\.refetch\(\);\s*\}\}/, "successful line upload must refresh the current Artwork projection");
+assert.match(workspace, /onArtworkUploaded=\{artworkUploaded\}/, "line upload publishes to the shared Order Artwork cache");
+assert.match(workspace, /onUploaded=\{artworkUploaded\}/, "Order-wide upload uses the same cache publication");
+assert.match(workspace, /invalidateQueries\(\{ queryKey: key, exact: true \}/, "canonical Order Artwork is reconciled after publication");
 console.log("Saved Order line Artwork presentation tests passed.");

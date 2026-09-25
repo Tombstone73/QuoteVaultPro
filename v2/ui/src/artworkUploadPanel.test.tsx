@@ -33,14 +33,14 @@ assert.equal(secondRequest.file.name, "second.pdf");
 assert.equal(thirdRequest.file.name, "third.pdf");
 const panelSource = await readFile(new URL("./ArtworkUploadPanel.tsx", import.meta.url), "utf8");
 assert.doesNotMatch(panelSource, /supersedesArtworkAssignmentId/, "ordinary Artwork upload must never infer replacement lineage from purpose or side");
-assert.match(panelSource, /setRequest\(undefined\);\s*upload\.reset\(\);\s*onUploaded\(\);/, "successful upload clears request and mutation state for the next upload");
+assert.match(panelSource, /await onUploaded\(result\);\s*setRequest\(undefined\);\s*upload\.reset\(\);/, "successful upload publishes canonical state before clearing request and mutation state");
 assert.match(panelSource, /onRetry=\{request \? \(\) => upload\.mutate\(request\) : undefined\}/, "retry keeps the same request identity and semantic upload");
 
 const originalFetch = globalThis.fetch;
 const seen: { url?: string; headers?: HeadersInit; body?: BodyInit | null } = {};
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   seen.url = String(url); seen.headers = init?.headers; seen.body = init?.body;
-  return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify({ ok: true, data: { artworkFile: { id: "file-a" }, assignment: { id: "assignment-a", artworkFileId: "file-a", orderId: target.orderId, orderLineId: target.orderLineId, purpose: "customer_supplied", side: "front" } } }), { status: 200, headers: { "content-type": "application/json" } });
 }) as typeof fetch;
 try {
   const file = new File(["%PDF-1.4\nqa"], "qa-artwork.pdf", { type: "application/pdf" });

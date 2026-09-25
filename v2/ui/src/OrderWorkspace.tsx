@@ -45,6 +45,7 @@ import {
   lineArtworkUploadTarget,
 } from "./OrderLineArtwork";
 import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
+import { cacheOrderArtworkUpload, orderArtworkKey } from "./orderArtworkCache";
 import { orderRoutePresentation } from "./orderRoutingPresentation";
 
 const message = (error: unknown): string => {
@@ -165,19 +166,26 @@ export const OrderWorkspace = (
     props.organizationId,
   );
   const artwork = useQuery({
-    queryKey: [
-      "v2",
-      props.sessionScope,
-      props.organizationId,
-      "artwork",
-      "order",
-      props.orderId,
-    ],
+    queryKey: orderArtworkKey(props.sessionScope, props.organizationId, props.orderId),
     queryFn: () => artworkApi.forOrder(props.organizationId, props.orderId),
     enabled: Boolean(
       props.organizationId && props.sessionScope && current && props.canViewArtwork,
     ),
   });
+  const artworkUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"] = async (result) => {
+    if (!props.canViewArtwork) {
+      setNotice("Artwork uploaded and assigned to this line.");
+      return;
+    }
+    const key = orderArtworkKey(props.sessionScope, props.organizationId, props.orderId);
+    const reused = await cacheOrderArtworkUpload(queryClient, key, result);
+    setNotice(reused ? "This Artwork is already assigned to this line. No duplicate was created." : "Artwork uploaded and assigned to this line.");
+    // Cache evidence is available before the panel closes. Reconcile all three
+    // consumers (line detail, Items summary and Artwork tab) through this key.
+    void queryClient.invalidateQueries({ queryKey: key, exact: true }, { throwOnError: true }).catch(() => {
+      setNotice("Artwork was saved, but refreshing the Artwork list failed. Reload the Order to reconcile it.");
+    });
+  };
   const fulfillment = useQuery({
     queryKey: [
       "v2",
@@ -768,9 +776,7 @@ export const OrderWorkspace = (
             onOpenArtwork={() =>
               props.openArtwork?.(current.order.orderId, selectedLine.lineId)
             }
-            onArtworkUploaded={() => {
-              void artwork.refetch();
-            }}
+            onArtworkUploaded={artworkUploaded}
             products={products.data ?? []}
             editable={editable}
             busy={update.isPending}
@@ -957,9 +963,7 @@ export const OrderWorkspace = (
               onOpen={(lineId) =>
                 props.openArtwork?.(current.order.orderId, lineId)
               }
-              onUploaded={() => {
-                void artwork.refetch();
-              }}
+              onUploaded={artworkUploaded}
             />
           ),
           Notes: (
@@ -1353,7 +1357,7 @@ const OrderLineEditor = ({
   artwork: readonly ArtworkOrderProjection[];
   artworkLoading: boolean;
   onOpenArtwork: () => void;
-  onArtworkUploaded: () => void;
+  onArtworkUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
   products: readonly { productId?: string; displayName: string }[];
   editable: boolean;
   busy: boolean;
@@ -1977,7 +1981,7 @@ export const OrderArtworkPanel = ({
   canView: boolean;
   canUpload: boolean;
   onOpen: (lineId: string) => void;
-  onUploaded: () => void;
+  onUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
 }>) => {
   const [uploadLineId, setUploadLineId] = useState<string | undefined>();
   const uploadLine = lines.find((line) => line.lineId === uploadLineId);
@@ -2038,9 +2042,9 @@ export const OrderArtworkPanel = ({
                   <ArtworkUploadPanel
                     organizationId={organizationId}
                     target={{ orderId, orderLineId: line.lineId, orderNumber, lineDescription: line.description || "Order line" }}
-                    onUploaded={() => {
+                    onUploaded={async (result) => {
+                      await onUploaded(result);
                       setUploadLineId(undefined);
-                      onUploaded();
                     }}
                   />
                 )}

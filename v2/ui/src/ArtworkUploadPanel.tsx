@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { artworkApi, newBusinessRequestId, type ArtworkOrderProjection } from "./api";
+import { artworkApi, newBusinessRequestId, type ArtworkOrderProjection, type ArtworkUploadResult } from "./api";
 import { ArtworkAutoUploadDropzone } from "./ArtworkAutoUploadDropzone";
 
 export type ArtworkUploadTarget = Readonly<{
@@ -30,16 +30,16 @@ export const newArtworkUploadRequest = (
 });
 
 /** Artwork owns binary intake; Sales supplies an already-authorized OrderLine target. */
-export const ArtworkUploadPanel = ({ organizationId, target, onUploaded }: Readonly<{ organizationId: string; target: ArtworkUploadTarget; onUploaded: () => void }>) => {
+export const ArtworkUploadPanel = ({ organizationId, target, onUploaded }: Readonly<{ organizationId: string; target: ArtworkUploadTarget; onUploaded: (result: ArtworkUploadResult) => void | Promise<void> }>) => {
   const [request, setRequest] = useState<ArtworkUploadRequest | undefined>();
   const [purpose, setPurpose] = useState<"customer_supplied" | "production" | "proof" | "reference">("customer_supplied");
   const [side, setSide] = useState<"front" | "back">("front");
   const upload = useMutation({
     mutationFn: (pending: ArtworkUploadRequest) => artworkApi.upload(organizationId, pending.businessRequestId, { orderId: target.orderId, orderLineId: target.orderLineId, purpose: pending.purpose, side: pending.side, file: pending.file }),
-    onSuccess: () => {
+    onSuccess: async (result) => {
+      await onUploaded(result);
       setRequest(undefined);
       upload.reset();
-      onUploaded();
     },
   });
   const select = (file: File) => {
