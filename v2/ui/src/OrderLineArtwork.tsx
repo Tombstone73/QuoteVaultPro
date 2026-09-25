@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type { ArtworkOrderProjection } from "./api";
 import { ArtworkUploadPanel, type ArtworkUploadTarget } from "./ArtworkUploadPanel";
+import { OrderArtworkFile } from "./OrderArtworkFile";
 
 export const artworkForOrderLine = (
   artwork: readonly ArtworkOrderProjection[],
@@ -23,18 +24,6 @@ export const lineArtworkUploadTarget = (
   lineDescription: line.description || `Line ${line.position}`,
 });
 
-const label = (entry: ArtworkOrderProjection): string =>
-  [
-    entry.assignment.purpose
-      .replaceAll("_", " ")
-      .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()),
-    entry.assignment.side,
-    entry.assignment.sourcePageIndex === undefined
-      ? undefined
-      : `Page ${entry.assignment.sourcePageIndex + 1}`,
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join(" · ");
 type Props = Readonly<{
   organizationId: string;
   orderLineId: string;
@@ -53,11 +42,7 @@ const Preview = ({
   organizationId,
   entry,
 }: Readonly<{ organizationId: string; entry: ArtworkOrderProjection }>) => (
-  <iframe
-    className="v2-order-line-artwork-preview"
-    title={`Artwork preview ${entry.file.displayFilename}`}
-    src={protectedArtworkContentPath(organizationId, entry)}
-  />
+  <OrderArtworkFile organizationId={organizationId} entry={entry} canView compact />
 );
 
 /** Read-only projection of Artwork-owned assignments for one saved Order line. */
@@ -144,7 +129,7 @@ export const OrderLineArtworkDetail = ({
         <div className="v2-order-line-artwork-actions">
           {canView && (
             <button className="button secondary" type="button" onClick={onOpen}>
-              Open Artwork
+              Artwork workspace
             </button>
           )}
           {canAdopt && uploadTarget && (
@@ -162,11 +147,7 @@ export const OrderLineArtworkDetail = ({
         <ul>
           {assigned.map((entry) => (
             <li key={entry.assignment.id}>
-              <Preview organizationId={organizationId} entry={entry} />
-              <span>
-                <b>{entry.file.displayFilename}</b>
-                <small>{label(entry)}</small>
-              </span>
+              <OrderArtworkFile organizationId={organizationId} entry={entry} canView />
             </li>
           ))}
         </ul>

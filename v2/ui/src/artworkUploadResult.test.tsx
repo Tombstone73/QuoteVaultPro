@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { OrderArtworkPanel } from "./OrderWorkspace";
 import { OrderLineArtworkCompact, OrderLineArtworkDetail } from "./OrderLineArtwork";
 import { artworkApi, type ArtworkOrderProjection, type ArtworkUploadResult } from "./api";
-import { cacheOrderArtworkUpload, orderArtworkKey } from "./orderArtworkCache";
+import { cacheOrderArtworkUpload, confirmArtworkProjection, orderArtworkKey } from "./orderArtworkCache";
 
 const dom = new JSDOM("<div id='root'></div>", { url: "https://qa.invalid" });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true });
@@ -23,14 +23,18 @@ client.setQueryData(key, [entry("a")]);
 let backend: readonly ArtworkOrderProjection[] = [entry("a")];
 let refreshes = 0, completions = 0;
 let beforeCache: (() => Promise<void>) | undefined;
+const pendingUploads = new Map<string, ArtworkUploadResult>();
+const loadOrderArtwork = async () => { refreshes += 1; return confirmArtworkProjection(backend, [...pendingUploads.values()]); };
 const complete = async (value: ArtworkUploadResult) => {
   await beforeCache?.();
+  pendingUploads.set(value.assignment.id, value);
   await cacheOrderArtworkUpload(client, key, value);
+  await client.fetchQuery({ queryKey: key, queryFn: loadOrderArtwork, staleTime: 0 });
+  pendingUploads.delete(value.assignment.id);
   completions += 1;
-  void client.invalidateQueries({ queryKey: key, exact: true });
 };
 const Harness = () => {
-  const query = useQuery({ queryKey: key, queryFn: async () => { refreshes += 1; return backend; }, staleTime: Infinity });
+  const query = useQuery({ queryKey: key, queryFn: loadOrderArtwork, staleTime: Infinity });
   const artwork = query.data ?? [];
   return <>
     <div data-view="items"><OrderLineArtworkCompact organizationId="org-a" orderLineId="line-a" artwork={artwork} loading={false} canView onOpen={() => undefined} /></div>
@@ -67,6 +71,9 @@ try {
     { status: 400, body: { ok: false, error: { code: "VALIDATION_ERROR", message: "Artwork replacement must explicitly supersede the current customer-supplied Order-line slot" } } },
     { status: 200, body: { ok: true, data: {} } },
     { status: 200, body: { ok: true, data: { artworkFile: result("b").artworkFile } } },
+    { status: 200, body: { ok: true, data: { ...result("b"), artworkFile: { ...result("b").artworkFile, id: "" } } } },
+    { status: 200, body: { ok: true, data: { ...result("b"), assignment: { ...result("b").assignment, id: "" } } } },
+    { status: 200, body: { ok: true, data: { ...result("b"), assignment: { ...result("b").assignment, orderId: "wrong-order" } } } },
     { status: 200, body: { ok: true, data: { ...result("b"), assignment: { ...result("b").assignment, orderLineId: "wrong-line" } } } },
   ]) {
     responseStatus = failure.status; responseBody = failure.body;
@@ -107,6 +114,23 @@ try {
   assert.match(view("items").textContent!, /3 files/);
   await act(async () => { assert.equal(await cacheOrderArtworkUpload(client, key, result("c")), true); });
   assert.equal(client.getQueryData<readonly ArtworkOrderProjection[]>(key)!.length, 3, "idempotent response must not duplicate assignments");
+
+  // The next new upload has committed, but a stale read still returns A+B+C.
+  await clickUpload("order");
+  responseBody = { ok: true, data: result("d") };
+  await select("order");
+  assert.ok(view("order").querySelector('input[type="file"]'), "unconfirmed read must keep the upload open");
+  assert.match(view("order").textContent!, /could not be confirmed/);
+  assert.equal(client.getQueryData<readonly ArtworkOrderProjection[]>(key)!.length, 4, "stale refetch cannot erase committed D or C");
+  backend = [entry("a"), entry("b"), entry("c"), entry("d")];
+  const committedRequest = requests.at(-1);
+  await act(async () => { [...view("order").querySelectorAll("button")].find((node) => node.textContent === "Retry upload")!.click(); });
+  await flush();
+  assert.equal(requests.at(-1), committedRequest);
+  assert.equal(view("order").querySelector('input[type="file"]'), null);
+  for (const name of ["line", "order"]) assert.match(view(name).textContent!, /a\.pdf.*b\.pdf.*c\.pdf.*d\.pdf/s);
+  await act(async () => { await client.refetchQueries({ queryKey: key }); });
+  assert.equal(client.getQueryData<readonly ArtworkOrderProjection[]>(key)!.length, 4);
 
   // An in-flight pre-upload read is canceled before committed cache evidence is installed.
   let oldRead!: (value: readonly ArtworkOrderProjection[]) => void;

@@ -25,7 +25,7 @@ const render = (canView: boolean, canUpload: boolean) => renderToStaticMarkup(
 
 const viewOnly = render(true, false);
 assert.match(viewOnly, /front\.pdf/);
-assert.match(viewOnly, /Open Artwork/);
+assert.match(viewOnly, /View Artwork/);
 assert.doesNotMatch(viewOnly, />Upload Artwork</);
 
 const adopter = render(true, true);

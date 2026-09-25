@@ -45,7 +45,8 @@ import {
   lineArtworkUploadTarget,
 } from "./OrderLineArtwork";
 import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
-import { cacheOrderArtworkUpload, orderArtworkKey } from "./orderArtworkCache";
+import { OrderArtworkFile } from "./OrderArtworkFile";
+import { cacheOrderArtworkUpload, confirmArtworkProjection, orderArtworkKey } from "./orderArtworkCache";
 import { orderRoutePresentation } from "./orderRoutingPresentation";
 
 const message = (error: unknown): string => {
@@ -165,9 +166,14 @@ export const OrderWorkspace = (
     props.sessionScope,
     props.organizationId,
   );
+  const pendingArtwork = useRef(new Map<string, Parameters<typeof cacheOrderArtworkUpload>[2]>());
+  const loadOrderArtwork = async () => confirmArtworkProjection(
+    await artworkApi.forOrder(props.organizationId, props.orderId),
+    [...pendingArtwork.current.values()].filter((result) => result.assignment.orderId === props.orderId),
+  );
   const artwork = useQuery({
     queryKey: orderArtworkKey(props.sessionScope, props.organizationId, props.orderId),
-    queryFn: () => artworkApi.forOrder(props.organizationId, props.orderId),
+    queryFn: loadOrderArtwork,
     enabled: Boolean(
       props.organizationId && props.sessionScope && current && props.canViewArtwork,
     ),
@@ -178,13 +184,16 @@ export const OrderWorkspace = (
       return;
     }
     const key = orderArtworkKey(props.sessionScope, props.organizationId, props.orderId);
+    pendingArtwork.current.set(result.assignment.id, result);
     const reused = await cacheOrderArtworkUpload(queryClient, key, result);
+    try {
+      // Pin the read to the uploaded Order even if the operator navigates away.
+      await queryClient.fetchQuery({ queryKey: key, queryFn: loadOrderArtwork, staleTime: 0 });
+    } catch {
+      throw { code: "UPLOAD_REFRESH_UNCONFIRMED" };
+    }
+    pendingArtwork.current.delete(result.assignment.id);
     setNotice(reused ? "This Artwork is already assigned to this line. No duplicate was created." : "Artwork uploaded and assigned to this line.");
-    // Cache evidence is available before the panel closes. Reconcile all three
-    // consumers (line detail, Items summary and Artwork tab) through this key.
-    void queryClient.invalidateQueries({ queryKey: key, exact: true }, { throwOnError: true }).catch(() => {
-      setNotice("Artwork was saved, but refreshing the Artwork list failed. Reload the Order to reconcile it.");
-    });
   };
   const fulfillment = useQuery({
     queryKey: [
@@ -2016,20 +2025,14 @@ export const OrderArtworkPanel = ({
                 {canView && (assigned.length ? (
                   assigned.map((entry) => (
                     <div key={entry.assignment.id} className="v2-order-art-preview">
-                      <iframe
-                        title={`Artwork preview ${entry.file.displayFilename}`}
-                        src={`/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(entry.file.id)}/content#page=${(entry.assignment.sourcePageIndex ?? 0) + 1}`}
-                      />
-                      <span>
-                        {entry.file.displayFilename} · {artworkRole(entry)} · {bytes(entry.file.byteSize)}
-                      </span>
+                      <OrderArtworkFile organizationId={organizationId} entry={entry} canView />
                     </div>
                   ))
                 ) : <span>No artwork attached</span>)}
                 <div className="v2-order-artwork-actions">
                   {canView && (
                     <button className="button secondary" type="button" onClick={() => onOpen(line.lineId)}>
-                      Open Artwork
+                      Artwork workspace
                     </button>
                   )}
                   {canUpload && (

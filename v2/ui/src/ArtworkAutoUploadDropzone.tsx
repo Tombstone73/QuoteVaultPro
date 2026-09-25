@@ -23,6 +23,7 @@ export const artworkUploadErrorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   if (!isCanonicalArtworkUploadError(error)) return error ? "Artwork upload failed. Existing artwork was not changed." : "";
   switch (error.code) {
+    case "UPLOAD_REFRESH_UNCONFIRMED": return "Artwork was saved, but the current Order list could not be confirmed. Retry this same upload to reconcile it safely; do not select another copy.";
     case "UPLOAD_RESULT_UNCONFIRMED": return "The server did not confirm the Artwork assignment. Refresh the Order to check its state, or retry this same upload.";
     case "EMPTY_FILE": return "Choose a non-empty PDF file and try again.";
     case "SIZE_LIMIT": return "The selected PDF exceeds the 10 MB upload limit.";
