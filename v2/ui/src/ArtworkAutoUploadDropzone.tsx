@@ -28,7 +28,12 @@ export const artworkUploadErrorMessage = (error: unknown): string => {
     case "NOT_PDF":
     case "CORRUPT_PDF": return "The selected file is not a readable PDF. Choose a valid PDF and try again.";
     case "UPLOAD_TRANSPORT_CORRUPTION": return "Artwork upload could not be read. Retry the upload.";
-    case "VALIDATION_ERROR": return "The selected file is not a valid PDF. Choose a valid PDF and try again.";
+    case "VALIDATION_ERROR":
+      // The canonical upload also validates assignment and command metadata.
+      // Only the dedicated PDF codes above establish a file-validation failure.
+      if (error.message === "Artwork replacement must explicitly supersede the current customer-supplied Order-line slot")
+        return "Artwork could not be assigned to this Order line because it already has Artwork in this position. Existing artwork was not changed.";
+      return "Artwork upload could not be completed. Check the upload details and try again.";
     case "CONFLICT": return "Artwork changed while this upload was in progress. Refresh the Order and try again.";
     case "STALE_STATE": return "This Order changed. Refresh it before uploading Artwork again.";
     case "FORBIDDEN": return "You do not have permission to upload Artwork to this Order line.";
