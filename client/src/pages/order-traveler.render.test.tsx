@@ -21,6 +21,7 @@ jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: undefined }) }));
 jest.mock("@/components/production/PrinterPicker", () => ({ PrinterPicker: () => null }));
 jest.mock("@/lib/queryClient", () => ({ apiFetch: mockApiFetch }));
 
+import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
 import OrderTravelerPage from "./order-traveler";
 import { travelerBrowserPrintUrl } from "@/components/production/TravelerPrintDialog";
 
@@ -172,7 +173,7 @@ describe("OrderTravelerPage print-only notes", () => {
     expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(8);
     expect(container.textContent).toContain("Box 1 of 8");
     expect(container.textContent).toContain("Box 8 of 8");
-    expect(container.textContent).toContain("Pickup Qty: 250");
+    expect(container.textContent).toContain("This pickup: 250");
     expect(container.textContent).not.toContain("DO NOT PRINT");
     expect(container.querySelectorAll('[data-traveler-feed-sentinel="true"]')).toHaveLength(0);
   });
@@ -182,5 +183,64 @@ describe("OrderTravelerPage print-only notes", () => {
     mockSearchParams = new URLSearchParams({ directPrintJobId: "pickup-job", feedMm: "20" });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-feed-sentinel="true"]')).toHaveLength(2);
+  });
+});
+
+
+describe("Pickup Traveler planned progress", () => {
+  test.each([
+    ["full", 250, 0, 250, 250, 0],
+    ["first", 500, 0, 250, 250, 250],
+    ["second", 500, 250, 150, 400, 100],
+    ["final", 500, 400, 100, 500, 0],
+  ])("renders %s pickup with truthful labels and intact QR", async (_, ordered, previous, current, after, remaining) => {
+    const lineQuantities = [{ orderLineItemId: "line-1", quantity: current }];
+    const snapshot = buildPickupTravelerProgressSnapshot([{ id: "line-1", production: {
+      orderedQuantity: ordered, pickedUpQuantity: previous, remainingQuantity: ordered - previous,
+    } }], lineQuantities, "2026-09-25T12:00:00Z");
+    useQueryMock.mockReturnValue({ data: { ...travelerSource,
+      pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 3, lineQuantities, progressSnapshot: snapshot },
+      lineItems: [{ ...travelerSource.lineItems[0], quantity: current, pickupProgress: snapshot.lines[0] }],
+    }, isLoading: false, error: null } as any);
+    mockSearchParams = new URLSearchParams({ directPrintJobId: "prepared-pickup" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    const sections = container.querySelectorAll('[data-testid="pickup-quantity-progress"]');
+    expect(sections).toHaveLength(3);
+    for (const section of Array.from(sections)) {
+      expect(section.textContent).toContain("Qty ordered: " + ordered);
+      expect(section.textContent).toContain("Previously picked up: " + previous);
+      expect(section.textContent).toContain("This pickup: " + current);
+      expect(section.textContent).toContain("After pickup: " + after + " / " + ordered);
+      expect(section.textContent).toContain("Remaining after pickup: " + remaining);
+    }
+    expect(container.textContent).toContain("Not pickup confirmation.");
+    expect(container.textContent).not.toContain("Total Qty");
+    expect(container.textContent).not.toContain("Pickup Qty");
+    expect(container.textContent).not.toContain("Pickup 1 of");
+    expect(container.textContent).toContain("Box 3 of 3");
+    expect(container.querySelectorAll('img[alt="Order QR code"]')).toHaveLength(3);
+  });
+
+  test("multiple lines retain distinct progress and legacy jobs report unavailable progress", async () => {
+    const lines = [
+      { id: "signs", production: { orderedQuantity: 500, pickedUpQuantity: 150, remainingQuantity: 350 } },
+      { id: "stakes", production: { orderedQuantity: 50, pickedUpQuantity: 0, remainingQuantity: 50 } },
+    ];
+    const lineQuantities = [{ orderLineItemId: "signs", quantity: 250 }, { orderLineItemId: "stakes", quantity: 50 }];
+    const snapshot = buildPickupTravelerProgressSnapshot(lines, lineQuantities, "2026-09-25T12:00:00Z");
+    const data = { ...travelerSource,
+      pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 1, lineQuantities, progressSnapshot: snapshot },
+      lineItems: snapshot.lines.map(pickupProgress => ({ ...travelerSource.lineItems[0], pickupProgress })),
+    };
+    useQueryMock.mockReturnValue({ data, isLoading: false, error: null } as any);
+    await act(async () => root.render(<OrderTravelerPage />));
+    const sections = container.querySelectorAll('[data-testid="pickup-quantity-progress"]');
+    expect(sections[0].textContent).toContain("After pickup: 400 / 500Remaining after pickup: 100");
+    expect(sections[1].textContent).toContain("After pickup: 50 / 50Remaining after pickup: 0");
+    useQueryMock.mockReturnValue({ data: { ...data, pickupPrintContext: { ...data.pickupPrintContext, progressSnapshot: undefined },
+      lineItems: [{ ...travelerSource.lineItems[0], quantity: 250 }] }, isLoading: false, error: null } as any);
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.textContent).toContain("Progress unavailable for this older Traveler.");
+    expect(container.textContent).not.toContain("After pickup:");
   });
 });

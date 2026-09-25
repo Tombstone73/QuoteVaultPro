@@ -1,3 +1,4 @@
+import type { PickupTravelerLineProgress, PickupTravelerProgressSnapshot } from "./pickupTravelerProgress";
 /**
  * Production Ticket — shared template structure + data mapping.
  *
@@ -389,6 +390,7 @@ export function buildTicketData(
 
 /** Raw per-line-item values for an order traveler, before formatting. */
 export interface TravelerLineItemSource {
+  pickupProgress?: PickupTravelerLineProgress | null;
   /** Stable identity used only to apply a server-validated print-only override. */
   orderLineItemId?: string;
   description: string;
@@ -403,6 +405,7 @@ export interface TravelerLineItemSource {
  * does not correspond to an order or fulfillment mutation.
  */
 export interface PickupTravelerPrintContext {
+  progressSnapshot?: PickupTravelerProgressSnapshot;
   fulfillmentMode: "pickup";
   lineQuantities: Array<{ orderLineItemId: string; quantity: number }>;
   boxCount: number;
@@ -426,6 +429,7 @@ export interface OrderTravelerSource {
 
 /** One resolved line-item row on the traveler. */
 export interface TravelerLineItem {
+  pickupProgress?: PickupTravelerLineProgress | null;
   index: number;
   description: string;
   quantity: string;
@@ -520,6 +524,7 @@ export function buildOrderTravelerData(
 
   const lineItems: TravelerLineItem[] = (src.lineItems || []).map((li, idx) => ({
     index: idx + 1,
+    pickupProgress: li.pickupProgress ?? null,
     description: String(li.description || "").trim() || EM_DASH,
     quantity: Number.isFinite(li.quantity) ? String(li.quantity) : EM_DASH,
     size: String(li.size || "").trim() || EM_DASH,

@@ -198,8 +198,9 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
 
           <ThermalDivider heavy />
           <ThermalLabel>
-            Line Items ({traveler.lineItemCount}) - {pickupContext ? "Pickup Qty" : "Total Qty"} {traveler.totalQuantity}
+            Line Items ({traveler.lineItemCount}){!pickupContext ? ` - Total Qty ${traveler.totalQuantity}` : ""}
           </ThermalLabel>
+          {pickupContext?.progressSnapshot ? <div style={{ fontSize: "14px", fontWeight: 800, lineHeight: 1.15, margin: "1mm 0" }}>Planned quantities at preparation.<br />Not pickup confirmation.</div> : null}
           {traveler.lineItems.length === 0 ? (
             <ThermalValue size="normal" style={{ margin: "1.5mm 0" }}>
               No line items on this order.
@@ -224,12 +225,24 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
                     lineHeight: 1.1,
                   }}
                 >
-                  <span>{pickupContext ? "Pickup Qty" : "Qty"}: {li.quantity}</span>
+                  {!pickupContext ? <span>Qty: {li.quantity}</span> : null}
                   <span style={{ textAlign: "right" }}>{li.size}</span>
                 </div>
                 <div style={{ fontSize: "15px", fontWeight: 900, lineHeight: 1.15, marginTop: "1mm" }}>
                   Material: {li.material}
                 </div>
+                {pickupContext ? (
+                  <div data-testid="pickup-quantity-progress" style={{ fontSize: "16px", fontWeight: 900, lineHeight: 1.2, marginTop: "1.25mm", overflowWrap: "anywhere" }}>
+                    {li.pickupProgress ? <>
+                      <div>Qty ordered: {li.pickupProgress.orderedQuantity}</div>
+                      <div>Previously picked up: {li.pickupProgress.previouslyPickedUpQuantity}</div>
+                      <div>This pickup: {li.pickupProgress.thisPickupQuantity}</div>
+                      <div>After pickup: {li.pickupProgress.afterPickupQuantity} / {li.pickupProgress.orderedQuantity}</div>
+                      {li.pickupProgress.otherResolvedQuantity > 0 ? <div>Other fulfilled/closed: {li.pickupProgress.otherResolvedQuantity}</div> : null}
+                      <div>Remaining after pickup: {li.pickupProgress.remainingAfterPickupQuantity}</div>
+                    </> : <><div>This pickup: {li.quantity}</div><div>Progress unavailable for this older Traveler.</div></>}
+                  </div>
+                ) : null}
                 {li.productionNotes && (
                   <div style={{ fontSize: "14px", fontWeight: 800, lineHeight: 1.15, marginTop: "1mm" }}>
                     Notes: {li.productionNotes}

@@ -98,6 +98,7 @@ export async function getOrderTravelerSource(
     .filter((lineItem) => !requestedPickupQuantityByLine || requestedPickupQuantityByLine.has(lineItem.id))
     .map((lineItem) => ({
       orderLineItemId: lineItem.id,
+      pickupProgress: pickupPrintContext?.progressSnapshot?.lines.find(item => item.orderLineItemId === lineItem.id) ?? null,
       description: lineItem.description ?? "",
       quantity: requestedPickupQuantityByLine?.get(lineItem.id) ?? (Number(lineItem.quantity) || 0),
       size: lineItem.width && lineItem.height ? `${lineItem.width} × ${lineItem.height}` : null,

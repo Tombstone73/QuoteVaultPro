@@ -13,16 +13,9 @@ import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../li
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getPrintAgentRealtimeConfiguration } from "../services/printAgentWake";
 import { isNumericAgentVersion } from "../lib/directPrintAgentCapabilities";
-import type { PickupTravelerPrintContext } from "@shared/productionTicket";
+import { pickupTravelerContext } from "@shared/pickupTravelerProgress";
 
 const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
-function pickupTravelerContext(value: unknown): PickupTravelerPrintContext | null {
-  if (!value || typeof value !== "object") return null;
-  const context = value as Partial<PickupTravelerPrintContext>;
-  if (context.fulfillmentMode !== "pickup" || !Number.isInteger(context.boxCount) || (context.boxCount ?? 0) < 1 || !Array.isArray(context.lineQuantities)) return null;
-  const lineQuantities = context.lineQuantities.filter((item): item is { orderLineItemId: string; quantity: number } => Boolean(item && typeof item.orderLineItemId === "string" && Number.isInteger(item.quantity) && item.quantity > 0));
-  return lineQuantities.length === context.lineQuantities.length ? { fulfillmentMode: "pickup", boxCount: context.boxCount!, lineQuantities } : null;
-}
 const travelerPrintAgentPackageName = "PrintersHero-Traveler-Print-Agent-win-x64.zip";
 const bridgeAuth = async (req: any, res: any, next: any) => { const raw = String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""); if (!raw) return res.status(401).json({ error: "Bridge token required" }); const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.tokenHash, tokenHash(raw)), eq(localBridgeAgents.status, "active"))).limit(1); if (!agent) return res.status(401).json({ error: "Invalid or revoked bridge token" }); req.bridgeAgent = agent; next(); };
 const recordBridgeActivity = (agentId: string) => db.update(localBridgeAgents).set({ lastSeenAt: new Date(), updatedAt: new Date() }).where(eq(localBridgeAgents.id, agentId));

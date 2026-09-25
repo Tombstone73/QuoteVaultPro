@@ -1,3 +1,4 @@
+import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
 import type { Express } from "express";
 import { z } from "zod";
 import { insertPrinterProfileSchema, updatePrinterProfileSchema } from "@shared/schema";
@@ -281,7 +282,7 @@ export function registerPrinterProfileRoutes(
       const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
       if (!agent?.configuredTravelerPrinterName || agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ success: false, code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The Print Agent's selected Traveler printer does not match this destination." });
 
-      const printContext: PickupTravelerPrintContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: parsed.boxCount };
+      const printContext: PickupTravelerPrintContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: parsed.boxCount, progressSnapshot: buildPickupTravelerProgressSnapshot(detail.lineItems, parsed.lineQuantities, new Date().toISOString()) };
       // Copies remains one: the canonical traveler page renders one sequential
       // label per box so each tag receives its own deterministic box number.
       const created = await db.insert(directPrintJobs).values({ organizationId, orderId, destinationId: destination.id, agentId: agent.id, documentType: "pickup_traveler", copies: 1, printContext, trailingFeedMm: destination.trailingFeedMm, requestKey, createdByUserId: getUserId(req.user) ?? null }).onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
