@@ -42,6 +42,7 @@ import { orderConfigurationPresentation } from "./orderConfigurationPresentation
 import {
   OrderLineArtworkCompact,
   OrderLineArtworkDetail,
+  lineArtworkUploadTarget,
 } from "./OrderLineArtwork";
 import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
 import { orderRoutePresentation } from "./orderRoutingPresentation";
@@ -709,19 +710,19 @@ export const OrderWorkspace = (
                       </button>
                     </td>
                     <td>{lineConfiguration(line)}</td>
-                    <td>
+                    <td
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEditingLineId(line.lineId);
+                      }}
+                    >
                       <OrderLineArtworkCompact
                         organizationId={props.organizationId}
                         orderLineId={line.lineId}
                         artwork={artwork.data ?? []}
                         loading={artwork.isLoading}
                         canView={props.canViewArtwork}
-                        onOpen={() =>
-                          props.openArtwork?.(
-                            current.order.orderId,
-                            line.lineId,
-                          )
-                        }
+                        onOpen={() => setEditingLineId(line.lineId)}
                       />
                     </td>
                     <td className="num">{line.quantity}</td>
@@ -760,9 +761,15 @@ export const OrderWorkspace = (
             {...props}
             artwork={artwork.data ?? []}
             artworkLoading={artwork.isLoading}
+            canAdoptArtwork={props.canAdoptArtwork === true}
+            orderId={current.order.orderId}
+            orderNumber={current.number.display}
             onOpenArtwork={() =>
               props.openArtwork?.(current.order.orderId, selectedLine.lineId)
             }
+            onArtworkUploaded={() => {
+              void artwork.refetch();
+            }}
             products={products.data ?? []}
             editable={editable}
             busy={update.isPending}
@@ -1310,10 +1317,14 @@ const OrderLineEditor = ({
   sessionScope,
   canOverridePrice,
   canViewArtwork,
+  canAdoptArtwork,
+  orderId,
+  orderNumber,
   csrfReady,
   artwork,
   artworkLoading,
   onOpenArtwork,
+  onArtworkUploaded,
   products,
   editable,
   busy,
@@ -1334,10 +1345,14 @@ const OrderLineEditor = ({
   sessionScope: string;
   canOverridePrice: boolean;
   canViewArtwork: boolean;
+  canAdoptArtwork: boolean;
+  orderId: string;
+  orderNumber: string;
   csrfReady: boolean;
   artwork: readonly ArtworkOrderProjection[];
   artworkLoading: boolean;
   onOpenArtwork: () => void;
+  onArtworkUploaded: () => void;
   products: readonly { productId?: string; displayName: string }[];
   editable: boolean;
   busy: boolean;
@@ -1452,7 +1467,10 @@ const OrderLineEditor = ({
         artwork={artwork}
         loading={artworkLoading}
         canView={canViewArtwork}
+        canAdopt={canAdoptArtwork}
+        uploadTarget={lineArtworkUploadTarget(orderId, orderNumber, line)}
         onOpen={onOpenArtwork}
+        onUploaded={onArtworkUploaded}
       />
     </section>
   );
@@ -1952,7 +1970,7 @@ export const OrderArtworkPanel = ({
   organizationId: string;
   orderId: string;
   orderNumber: string;
-  lines: readonly { lineId: string; description: string }[];
+  lines: readonly { lineId: string; description: string; position?: number }[];
   artwork: readonly ArtworkOrderProjection[];
   loading: boolean;
   canView: boolean;
@@ -1975,21 +1993,21 @@ export const OrderArtworkPanel = ({
               : loading
                 ? "Loading…"
                 : artwork.length
-                  ? `${artwork.length} file${artwork.length === 1 ? "" : "s"}`
+                  ? `Order-wide overview · ${artwork.length} file${artwork.length === 1 ? "" : "s"}`
                   : "No artwork is attached."}
           </p>
         </div>
       </header>
       {!loading && (canView || canUpload) && (
         <ul className="v2-order-artwork">
-          {lines.map((line) => {
+          {lines.map((line, index) => {
             const assigned = canView
               ? artwork.filter((entry) => entry.assignment.orderLineId === line.lineId)
               : [];
             const activeUpload = uploadLine?.lineId === line.lineId;
             return (
               <li key={line.lineId}>
-                <b>{line.description || "Order line"}</b>
+                <b>Line {line.position ?? index + 1} · {line.description || "Order line"}</b>
                 {canView && (assigned.length ? (
                   assigned.map((entry) => (
                     <div key={entry.assignment.id} className="v2-order-art-preview">

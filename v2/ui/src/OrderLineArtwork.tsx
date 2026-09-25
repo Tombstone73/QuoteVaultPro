@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import type { ArtworkOrderProjection } from "./api";
+import { ArtworkUploadPanel, type ArtworkUploadTarget } from "./ArtworkUploadPanel";
 
 export const artworkForOrderLine = (
   artwork: readonly ArtworkOrderProjection[],
@@ -11,6 +12,16 @@ export const protectedArtworkContentPath = (
   entry: ArtworkOrderProjection,
 ): string =>
   `/v2/organizations/${encodeURIComponent(organizationId)}/artwork/files/${encodeURIComponent(entry.file.id)}/content#page=${(entry.assignment.sourcePageIndex ?? 0) + 1}`;
+export const lineArtworkUploadTarget = (
+  orderId: string,
+  orderNumber: string,
+  line: Readonly<{ lineId: string; description: string; position: number }>,
+): ArtworkUploadTarget => ({
+  orderId,
+  orderLineId: line.lineId,
+  orderNumber,
+  lineDescription: line.description || `Line ${line.position}`,
+});
 
 const label = (entry: ArtworkOrderProjection): string =>
   [
@@ -32,6 +43,12 @@ type Props = Readonly<{
   canView: boolean;
   onOpen: () => void;
 }>;
+type DetailProps = Props &
+  Readonly<{
+    canAdopt?: boolean;
+    uploadTarget?: ArtworkUploadTarget;
+    onUploaded?: () => void;
+  }>;
 const Preview = ({
   organizationId,
   entry,
@@ -66,7 +83,11 @@ export const OrderLineArtworkCompact = ({
     );
   const assigned = artworkForOrderLine(artwork, orderLineId);
   if (!assigned.length)
-    return <span className="v2-order-line-artwork-empty">No art</span>;
+    return (
+      <button className="v2-sales-inline-button" type="button" onClick={onOpen}>
+        No artwork
+      </button>
+    );
   return (
     <div className="v2-order-line-artwork-compact">
       <div>
@@ -79,7 +100,7 @@ export const OrderLineArtworkCompact = ({
         ))}
       </div>
       <button className="v2-sales-inline-button" type="button" onClick={onOpen}>
-        Artwork{assigned.length > 1 ? ` · +${assigned.length - 1}` : ""}
+        {assigned.length} file{assigned.length === 1 ? "" : "s"}
       </button>
     </div>
   );
@@ -92,19 +113,16 @@ export const OrderLineArtworkDetail = ({
   loading,
   canView,
   onOpen,
-}: Props) => {
-  if (!canView)
+  canAdopt = false,
+  uploadTarget,
+  onUploaded,
+}: DetailProps) => {
+  const [uploading, setUploading] = useState(false);
+  if (!canView && !canAdopt)
     return (
       <section className="v2-order-line-artwork-detail">
         <h3>Artwork</h3>
         <p>Artwork access is unavailable.</p>
-      </section>
-    );
-  if (loading)
-    return (
-      <section className="v2-order-line-artwork-detail">
-        <h3>Artwork</h3>
-        <p>Loading Artwork…</p>
       </section>
     );
   const assigned = artworkForOrderLine(artwork, orderLineId);
@@ -114,16 +132,33 @@ export const OrderLineArtworkDetail = ({
         <div>
           <h3>Artwork</h3>
           <p>
-            {assigned.length
+            {!canView
+              ? "Artwork details are unavailable, but you can upload a new file to this line."
+              : loading
+                ? "Loading Artwork…"
+                : assigned.length
               ? `${assigned.length} canonical assignment${assigned.length === 1 ? "" : "s"} on this line.`
               : "No art assigned."}
           </p>
         </div>
-        <button className="button secondary" type="button" onClick={onOpen}>
-          Open Artwork
-        </button>
+        <div className="v2-order-line-artwork-actions">
+          {canView && (
+            <button className="button secondary" type="button" onClick={onOpen}>
+              Open Artwork
+            </button>
+          )}
+          {canAdopt && uploadTarget && (
+            <button
+              className="button secondary"
+              type="button"
+              onClick={() => setUploading((value) => !value)}
+            >
+              {uploading ? "Cancel upload" : "Upload Artwork"}
+            </button>
+          )}
+        </div>
       </header>
-      {assigned.length ? (
+      {canView && !loading && assigned.length ? (
         <ul>
           {assigned.map((entry) => (
             <li key={entry.assignment.id}>
@@ -136,6 +171,17 @@ export const OrderLineArtworkDetail = ({
           ))}
         </ul>
       ) : null}
+      {uploading && uploadTarget && (
+        <ArtworkUploadPanel
+          organizationId={organizationId}
+          target={uploadTarget}
+          currentAssignments={assigned.map((entry) => entry.assignment)}
+          onUploaded={() => {
+            setUploading(false);
+            onUploaded?.();
+          }}
+        />
+      )}
     </section>
   );
 };
