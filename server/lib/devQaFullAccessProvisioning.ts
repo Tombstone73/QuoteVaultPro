@@ -1,30 +1,18 @@
 import { capabilityIds, type Capability } from "../../v2/src/authorization/capabilities";
+import { OPERATIONS_ROLE } from "../../v2/src/authorization/operationsRole";
 import type { DevQaProvisioningConfig } from "./devQaProvisioningGuard";
 
 export const DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME = "DEV QA Full Access";
 export const DEV_QA_FULL_ACCESS_PERMISSION_SET_DESCRIPTION = "Dedicated DEV-only full operational authority for the DEV QA Browser sandbox actor.";
 
-/**
- * Explicit, least-privilege authority for synthetic M7.8I DEV validation.
- * The existing full-access plan remains the provisioner's default.
- */
-export const DEV_QA_M78I_OPERATIONAL_CAPABILITIES = Object.freeze([
-  "customer.view", "customer.edit", "product.view", "product.edit", "pricing.preview",
-  "order.view", "order.create", "order.edit", "order.overridePrice",
-  "organization.configure",
-  "invoice.view", "invoice.editDraft", "invoice.editIssued", "invoice.issue", "payment.view",
-  "route.view", "route.advance",
-  "artwork.view", "artwork.adopt",
-  "proof.view", "proof.prepare", "proof.issue",
-  "prepress.view", "prepress.work", "prepress.complete",
-  "production.view", "production.work", "production.complete", "production.hold", "production.rework", "production.note", "production.output.reject", "production.run.create", "production.run.execute",
-  "fulfillment.view", "fulfillment.pickup", "fulfillment.ship", "fulfillment.replace", "fulfillment.shipping.cost", "fulfillment.shipping.price",
-] as const satisfies readonly Capability[]);
-export const DEV_QA_M78I_PERMISSION_SET_NAME = "DEV QA M7.8I Operations";
-export const DEV_QA_M78I_PERMISSION_SET_DESCRIPTION = "Dedicated DEV-only least-privilege authority for synthetic M7.8I live validation.";
+/** Compatibility exports; the real Operations role is the single source of authority. */
+export const DEV_QA_M78I_OPERATIONAL_CAPABILITIES = OPERATIONS_ROLE.capabilities;
+export const DEV_QA_M78I_PERMISSION_SET_NAME = OPERATIONS_ROLE.name;
+export const DEV_QA_M78I_PERMISSION_SET_DESCRIPTION = OPERATIONS_ROLE.description;
 /** One-shot fixture setup only; immediately converge back to m78i after publish. */
 export const DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES = Object.freeze([
   ...DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
+  "product.edit",
   "pricing.configure",
   "pricing.publish",
 ] as const satisfies readonly Capability[]);
@@ -46,6 +34,7 @@ export const DEV_QA_M78I_FIXTURE_ROUTE_SET_DESCRIPTION = "Temporary DEV-only rou
 /** One-shot complete fixture setup only; immediately converge back to m78i before live validation. */
 export const DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES = Object.freeze([
   ...DEV_QA_M78I_OPERATIONAL_CAPABILITIES,
+  "product.edit",
   "pricing.configure",
   "pricing.publish",
   "route.manageTemplates",
@@ -75,9 +64,9 @@ export const DEV_QA_M78I_PERMISSION_FLOOR_SET_DESCRIPTION = "Dedicated DEV-only 
 export const DEV_QA_FULL_ACCESS_CAPABILITIES = Object.freeze([...capabilityIds] as Capability[]);
 
 export type DevQaFullAccessProvisioningPlan = Readonly<{
-  account: Readonly<{ email: string; firstName: string; lastName: string; role: "admin"; isAdmin: true; isPlatformAdmin: false; isPlatformDeveloper: false }>;
-  membership: Readonly<{ organizationId: string; role: "admin" }>;
-  permissionSet: Readonly<{ name: string; description: string; principalKind: "staff"; capabilities: readonly Capability[] }>;
+  account: Readonly<{ email: string; firstName: string; lastName: string; role: "admin" | "employee"; isAdmin: boolean; isPlatformAdmin: false; isPlatformDeveloper: false }>;
+  membership: Readonly<{ organizationId: string; role: "admin" | "member" }>;
+  permissionSet: Readonly<{ name: string; description: string; principalKind: "staff"; sourceTemplateKey?: typeof OPERATIONS_ROLE.templateKey; capabilities: readonly Capability[] }>;
 }>;
 
 export function devQaFullAccessProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
@@ -85,7 +74,8 @@ export function devQaFullAccessProvisioningPlan(config: DevQaProvisioningConfig)
 }
 
 export function devQaM78iOperationalProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
-  return devQaProvisioningPlan(config, DEV_QA_M78I_PERMISSION_SET_NAME, DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
+  const plan = devQaProvisioningPlan(config, DEV_QA_M78I_PERMISSION_SET_NAME, DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, DEV_QA_M78I_OPERATIONAL_CAPABILITIES);
+  return Object.freeze({ ...plan, permissionSet: Object.freeze({ ...plan.permissionSet, sourceTemplateKey: OPERATIONS_ROLE.templateKey }) });
 }
 
 export function devQaM78iFixturePricingProvisioningPlan(config: DevQaProvisioningConfig): DevQaFullAccessProvisioningPlan {
@@ -124,8 +114,8 @@ function devQaProvisioningPlan(
   capabilities: readonly Capability[],
 ): DevQaFullAccessProvisioningPlan {
   return Object.freeze({
-    account: Object.freeze({ email: config.email, firstName: "DEV QA", lastName: "Browser", role: "admin", isAdmin: true, isPlatformAdmin: false, isPlatformDeveloper: false }),
-    membership: Object.freeze({ organizationId: config.organizationId, role: "admin" }),
+    account: Object.freeze({ email: config.email, firstName: "DEV QA", lastName: "Browser", role: permissionSetName === DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME ? "admin" : "employee", isAdmin: permissionSetName === DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME, isPlatformAdmin: false, isPlatformDeveloper: false }),
+    membership: Object.freeze({ organizationId: config.organizationId, role: permissionSetName === DEV_QA_FULL_ACCESS_PERMISSION_SET_NAME ? "admin" : "member" }),
     permissionSet: Object.freeze({
       name: permissionSetName,
       description: permissionSetDescription,

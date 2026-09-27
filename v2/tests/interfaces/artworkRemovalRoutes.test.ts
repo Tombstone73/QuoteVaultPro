@@ -1,4 +1,5 @@
 import express from "express";
+import { OPERATIONS_ROLE } from "../../src/authorization/operationsRole";
 import request from "supertest";
 import { describe, expect, test } from "@jest/globals";
 import { createArtworkRouter } from "../../src/interfaces/http/artworkRoutes";
@@ -25,6 +26,11 @@ const fixture = (actor = principal, blocked = false) => {
 const body = { businessRequestId: "remove-b", orderId: "order-a", orderLineId: "line-a" };
 const endpoint = "/v2/organizations/org-a/artwork/assignments/assignment-b/remove";
 describe("canonical assignment removal HTTP boundary", () => {
+  test("a real Operations staff member can remove without any administrator capability", async () => {
+    const f = fixture({ ...principal, authority: { membershipId: "member", capabilities: OPERATIONS_ROLE.capabilities } } as Principal);
+    await request(f.app).post(endpoint).send(body).expect(200);
+    expect(f.audits).toHaveLength(1);
+  });
   test("uses exact route assignment and canonical envelope, with assignment audit", async () => {
     const f = fixture();
     const response = await request(f.app).post(endpoint).send({ ...body, artworkAssignmentId: "body-cannot-override-route", artworkFileId: "not-the-target" }).expect(200);

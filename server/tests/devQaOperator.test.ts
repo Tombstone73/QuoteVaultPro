@@ -1,3 +1,4 @@
+import { OPERATIONS_ROLE } from "../../v2/src/authorization/operationsRole";
 import { describe, expect, test } from "@jest/globals";
 import {
   DEV_QA_APPROVED_PROFILES,
@@ -82,18 +83,22 @@ describe("guarded DEV QA operator", () => {
     expect(() => approvedDevQaProfile("arbitrary-admin")).toThrow();
   });
 
-  test("normal m78i contains the reviewed operational Proofing, Pickup, and Artwork capabilities", () => {
+  test("m78i references the canonical Operations authority without an independent list", () => {
+    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).toBe(OPERATIONS_ROLE.capabilities);
+    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).toContain("artwork.assign");
+    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).toContain("invoice.send");
+    for (const capability of ["product.edit", "organization.configure", "pricing.configure", "pricing.publish", "permissions.manageSets", "permissions.assignStaff", "payment.record", "refund.issue", "communications.configure"]) expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).not.toContain(capability);
     expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).toEqual(expect.arrayContaining(["proof.view", "proof.prepare", "proof.issue", "fulfillment.pickup", "artwork.view", "artwork.adopt"]));
-    expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).not.toEqual(expect.arrayContaining([
+    for (const capability of [
       "pricing.configure", "pricing.publish", "route.manageTemplates",
       "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal",
-      "invoice.send", "communications.configure", "payment.record", "refund.issue",
-      "artwork.assign", "platform.admin" as never,
-    ]));
+      "communications.configure", "payment.record", "refund.issue",
+      "platform.admin" as never,
+    ]) expect(DEV_QA_M78I_OPERATIONAL_CAPABILITIES).not.toContain(capability);
   });
 
   test("pricing fixture adds only the two approved pricing capabilities", () => {
-    expect(DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["pricing.configure", "pricing.publish"]);
+    expect(DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["product.edit", "pricing.configure", "pricing.publish"]);
   });
 
   test("artwork fixture remains a guarded compatibility profile with no broader authority", () => {
@@ -102,18 +107,21 @@ describe("guarded DEV QA operator", () => {
 
   test("route fixture adds only route.manageTemplates", () => {
     expect(DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["route.manageTemplates"]);
-    expect(DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES).not.toEqual(expect.arrayContaining(["artwork.assign", "pricing.configure", "pricing.publish", "permissions.manageSets", "permissions.assignStaff"]));
+    for (const capability of ["pricing.configure", "pricing.publish", "permissions.manageSets", "permissions.assignStaff"]) expect(DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES).not.toContain(capability);
   });
 
   test("fixture setup adds exactly the remaining reviewed setup capabilities", () => {
-    expect(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["pricing.configure", "pricing.publish", "route.manageTemplates"]);
-    expect(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES).not.toEqual(expect.arrayContaining(["payment.record", "refund.issue", "invoice.send", "communications.configure", "permissions.manageSets", "permissions.assignStaff"]));
+    expect(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES.filter((capability) => !DEV_QA_M78I_OPERATIONAL_CAPABILITIES.includes(capability as never))).toEqual(["product.edit", "pricing.configure", "pricing.publish", "route.manageTemplates"]);
+    for (const capability of ["payment.record", "refund.issue", "communications.configure", "permissions.manageSets", "permissions.assignStaff"]) expect(DEV_QA_M78I_FIXTURE_SETUP_CAPABILITIES).not.toContain(capability);
   });
 
   test("profile recognition requires one exact reviewed set and capability list", () => {
     const normal = devQaProfileDefinition("m78i");
-    expect(profileForPermissionState(normal.permissionSetName, normal.capabilities)).toBe("m78i");
-    expect(profileForPermissionState(normal.permissionSetName, [...normal.capabilities, "artwork.assign"])).toBeNull();
+    expect(normal.sourceTemplateKey).toBe("operations");
+    expect(profileForPermissionState(normal.permissionSetName, normal.capabilities)).toBeNull();
+    expect(profileForPermissionState("DEV QA M7.8I Operations", normal.capabilities)).toBeNull();
+    expect(profileForPermissionState(normal.permissionSetName, normal.capabilities, "operations")).toBe("m78i");
+    expect(profileForPermissionState(normal.permissionSetName, [...normal.capabilities, "permissions.manageSets"], "operations")).toBeNull();
     expect(profileForPermissionState("Unexpected set", normal.capabilities)).toBeNull();
     const route = devQaProfileDefinition("m78i_fixture_route");
     expect(profileForPermissionState(route.permissionSetName, route.capabilities)).toBe("m78i_fixture_route");

@@ -3,17 +3,19 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { devQaFullAccessProvisioningPlan, devQaM78iFixtureArtworkProvisioningPlan, devQaM78iFixturePricingProvisioningPlan, devQaM78iFixtureRouteProvisioningPlan, devQaM78iFixtureSetupProvisioningPlan, devQaM78iOperationalProvisioningPlan, devQaM78iPermissionFloorProvisioningPlan } from "../../server/lib/devQaFullAccessProvisioning";
-import { getDevQaProvisioningConfig } from "../../server/lib/devQaProvisioningGuard";
+import { sameCapabilitySet } from "../../server/lib/devQaOperator";
+import { DEV_QA_OPERATOR_BROWSER_EMAIL, getDevQaProvisioningConfig } from "../../server/lib/devQaProvisioningGuard";
 import { auditLogs, authIdentities, organizations, userOrganizations, users } from "../../shared/schema";
 
 let databaseModule: typeof import("../../server/db") | undefined;
 
 async function provision() {
   const config = getDevQaProvisioningConfig();
-  const permissionProfile = (process.env.PRINTERSHERO_DEV_QA_PERMISSION_PROFILE ?? "full").trim().toLowerCase();
+  const permissionProfile = (process.env.PRINTERSHERO_DEV_QA_PERMISSION_PROFILE ?? "m78i").trim().toLowerCase();
   if (permissionProfile !== "full" && permissionProfile !== "m78i" && permissionProfile !== "m78i_fixture_pricing" && permissionProfile !== "m78i_fixture_artwork" && permissionProfile !== "m78i_fixture_route" && permissionProfile !== "m78i_fixture_setup") {
     throw new Error("PRINTERSHERO_DEV_QA_PERMISSION_PROFILE must be 'full', 'm78i', 'm78i_fixture_pricing', 'm78i_fixture_artwork', 'm78i_fixture_route', or 'm78i_fixture_setup'.");
   }
+  if (permissionProfile === "full" && config.email === DEV_QA_OPERATOR_BROWSER_EMAIL) throw new Error("The primary QA browser must use Operations, not Full Access.");
   const plan = permissionProfile === "m78i" ? devQaM78iOperationalProvisioningPlan(config) : permissionProfile === "m78i_fixture_pricing" ? devQaM78iFixturePricingProvisioningPlan(config) : permissionProfile === "m78i_fixture_artwork" ? devQaM78iFixtureArtworkProvisioningPlan(config) : permissionProfile === "m78i_fixture_route" ? devQaM78iFixtureRouteProvisioningPlan(config) : permissionProfile === "m78i_fixture_setup" ? devQaM78iFixtureSetupProvisioningPlan(config) : devQaFullAccessProvisioningPlan(config);
   const permissionFloorPlan = permissionProfile === "m78i" || permissionProfile === "m78i_fixture_pricing" || permissionProfile === "m78i_fixture_artwork" || permissionProfile === "m78i_fixture_route" || permissionProfile === "m78i_fixture_setup" ? devQaM78iPermissionFloorProvisioningPlan(config) : undefined;
   const passwordHash = await bcrypt.hash(config.password, 12);
@@ -80,32 +82,43 @@ async function provision() {
       await tx.execute(sql`INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id,assignment_source) VALUES(${config.organizationId},${floorUser.id},${floorPermissionSetId},'dev_qa_full_access') ON CONFLICT(organization_id,user_id,permission_set_id) DO UPDATE SET active=true,assignment_source='dev_qa_full_access',updated_at=now()`);
       await tx.execute(sql`UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=${config.organizationId} AND user_id=${floorUser.id} AND permission_set_id<>${floorPermissionSetId} AND active=true`);
     }
-    const normalizedName = plan.permissionSet.name.toLocaleLowerCase("en-US");
-    const existingSet = await tx.execute<{ id: string; source_template_key: string | null; principal_kind: string }>(sql`SELECT id,source_template_key,principal_kind FROM v2_permission_sets WHERE organization_id=${config.organizationId} AND normalized_name=${normalizedName} FOR UPDATE`);
-    let permissionSetId = existingSet.rows[0]?.id;
-    if (existingSet.rows[0] && (existingSet.rows[0].source_template_key !== null || existingSet.rows[0].principal_kind !== plan.permissionSet.principalKind)) throw new Error("DEV QA Full Access permission-set name is already reserved by a non-custom Staff set.");
-    if (!permissionSetId) {
-      const inserted = await tx.execute<{ id: string }>(sql`INSERT INTO v2_permission_sets(organization_id,name,normalized_name,description,principal_kind) VALUES(${config.organizationId},${plan.permissionSet.name},${normalizedName},${plan.permissionSet.description},${plan.permissionSet.principalKind}) RETURNING id`);
-      permissionSetId = inserted.rows[0]?.id;
+    let permissionSetId: string | undefined;
+    let permissionSetCreated = false;
+    if (plan.permissionSet.sourceTemplateKey) {
+      const canonical = await tx.execute<{ id: string; name: string }>(sql`SELECT id,name FROM v2_permission_sets WHERE organization_id=${config.organizationId} AND source_template_key=${plan.permissionSet.sourceTemplateKey} AND active=true AND principal_kind='staff' FOR UPDATE`);
+      permissionSetId = canonical.rows[0]?.id;
+      if (canonical.rows.length !== 1 || canonical.rows[0].name !== plan.permissionSet.name) throw new Error("Canonical Operations role is missing. Deploy its migration first.");
+      const grants = await tx.execute<{ capability_id: string }>(sql`SELECT pc.capability_id FROM v2_permission_set_capabilities pc JOIN v2_permission_capabilities c ON c.id=pc.capability_id AND c.active=true WHERE pc.organization_id=${config.organizationId} AND pc.permission_set_id=${permissionSetId}`);
+      if (!sameCapabilitySet(grants.rows.map((row) => row.capability_id), plan.permissionSet.capabilities)) throw new Error("Canonical Operations grants differ from the production contract; no QA repair is allowed.");
     } else {
-      await tx.execute(sql`UPDATE v2_permission_sets SET name=${plan.permissionSet.name},description=${plan.permissionSet.description},active=true,updated_at=now() WHERE id=${permissionSetId} AND organization_id=${config.organizationId}`);
-    }
-    if (!permissionSetId) throw new Error("DEV QA Full Access permission set could not be created.");
+      const normalizedName = plan.permissionSet.name.toLocaleLowerCase("en-US");
+      const existingSet = await tx.execute<{ id: string; source_template_key: string | null; principal_kind: string }>(sql`SELECT id,source_template_key,principal_kind FROM v2_permission_sets WHERE organization_id=${config.organizationId} AND normalized_name=${normalizedName} FOR UPDATE`);
+      permissionSetId = existingSet.rows[0]?.id;
+      permissionSetCreated = !permissionSetId;
+      if (existingSet.rows[0] && (existingSet.rows[0].source_template_key !== null || existingSet.rows[0].principal_kind !== plan.permissionSet.principalKind)) throw new Error("DEV QA Full Access permission-set name is already reserved by a non-custom Staff set.");
+      if (!permissionSetId) {
+        const inserted = await tx.execute<{ id: string }>(sql`INSERT INTO v2_permission_sets(organization_id,name,normalized_name,description,principal_kind) VALUES(${config.organizationId},${plan.permissionSet.name},${normalizedName},${plan.permissionSet.description},${plan.permissionSet.principalKind}) RETURNING id`);
+        permissionSetId = inserted.rows[0]?.id;
+      } else {
+        await tx.execute(sql`UPDATE v2_permission_sets SET name=${plan.permissionSet.name},description=${plan.permissionSet.description},active=true,updated_at=now() WHERE id=${permissionSetId} AND organization_id=${config.organizationId}`);
+      }
+      if (!permissionSetId) throw new Error("DEV QA Full Access permission set could not be created.");
 
-    const otherAssignees = await tx.execute<{ user_id: string }>(sql`SELECT user_id FROM v2_staff_permission_set_assignments WHERE organization_id=${config.organizationId} AND permission_set_id=${permissionSetId} AND active=true AND user_id<>${user.id} LIMIT 1`);
-    if (otherAssignees.rows[0]) throw new Error("DEV QA Full Access permission set is assigned to another Staff identity; refusing to change it.");
+      const otherAssignees = await tx.execute<{ user_id: string }>(sql`SELECT user_id FROM v2_staff_permission_set_assignments WHERE organization_id=${config.organizationId} AND permission_set_id=${permissionSetId} AND active=true AND user_id<>${user.id} LIMIT 1`);
+      if (otherAssignees.rows[0]) throw new Error("DEV QA Full Access permission set is assigned to another Staff identity; refusing to change it.");
 
-    await tx.execute(sql`DELETE FROM v2_permission_set_capabilities WHERE organization_id=${config.organizationId} AND permission_set_id=${permissionSetId} AND capability_id NOT IN (${sql.join(plan.permissionSet.capabilities.map((capability) => sql`${capability}`), sql`, `)})`);
-    for (const capability of plan.permissionSet.capabilities) {
-      await tx.execute(sql`INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES(${config.organizationId},${permissionSetId},${capability}) ON CONFLICT DO NOTHING`);
+      await tx.execute(sql`DELETE FROM v2_permission_set_capabilities WHERE organization_id=${config.organizationId} AND permission_set_id=${permissionSetId} AND capability_id NOT IN (${sql.join(plan.permissionSet.capabilities.map((capability) => sql`${capability}`), sql`, `)})`);
+      for (const capability of plan.permissionSet.capabilities) {
+        await tx.execute(sql`INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES(${config.organizationId},${permissionSetId},${capability}) ON CONFLICT DO NOTHING`);
+      }
     }
     await tx.execute(sql`INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id,assignment_source) VALUES(${config.organizationId},${user.id},${permissionSetId},'dev_qa_full_access') ON CONFLICT(organization_id,user_id,permission_set_id) DO UPDATE SET active=true,assignment_source='dev_qa_full_access',updated_at=now()`);
-    // The custom QA set is the one effective V2 set for this sandbox actor; legacy bootstrap/template assignments remain preserved but inactive.
+    // The selected canonical or temporary fixture set is the one effective V2 set for this sandbox actor; legacy bootstrap/template assignments remain preserved but inactive.
     await tx.execute(sql`UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=${config.organizationId} AND user_id=${user.id} AND permission_set_id<>${permissionSetId} AND active=true`);
     await tx.execute(sql`UPDATE v2_permission_organization_state SET authority_revision=authority_revision+1,updated_at=now() WHERE organization_id=${config.organizationId}`);
     await tx.insert(auditLogs).values({ organizationId: config.organizationId, userId: user.id, userName: "DEV QA provisioner", actionType: "DEV_QA_FULL_ACCESS_ENSURED", entityType: "user", entityId: user.id, entityName: "DEV QA Browser", description: "DEV QA Browser converged to its dedicated DEV-only permission set.", newValues: { permissionProfile, permissionSet: plan.permissionSet.name, capabilities: plan.permissionSet.capabilities, source: "qa:provision-dev-user" }, ipAddress: "cli", userAgent: "qa-provision-dev-user" });
     await tx.execute(sql`INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,permission_set_id,target_user_id,detail) VALUES(${config.organizationId},'dev_qa_full_access_provisioned','service','dev-qa-provisioner',${permissionSetId},${user.id},${JSON.stringify({ permissionProfile, capabilities: plan.permissionSet.capabilities, source: "qa:provision-dev-user" })}::jsonb)`);
-    return { created: !existingUser, permissionSetCreated: !existingSet.rows[0], organizationId: config.organizationId, permissionProfile, capabilities: plan.permissionSet.capabilities };
+    return { created: !existingUser, permissionSetCreated, organizationId: config.organizationId, permissionProfile, capabilities: plan.permissionSet.capabilities };
   });
 }
 

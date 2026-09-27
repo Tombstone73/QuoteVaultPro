@@ -1,3 +1,4 @@
+import { OPERATIONS_ROLE } from "../../v2/src/authorization/operationsRole";
 import type { Capability } from "../../v2/src/authorization/capabilities";
 import {
   DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES,
@@ -34,10 +35,11 @@ export type DevQaProfileDefinition = Readonly<{
   permissionSetName: string;
   permissionSetDescription: string;
   capabilities: readonly Capability[];
+  sourceTemplateKey?: typeof OPERATIONS_ROLE.templateKey;
 }>;
 
 const profileDefinitions: Record<DevQaApprovedProfile, DevQaProfileDefinition> = {
-  m78i: Object.freeze({ name: "m78i", permissionSetName: DEV_QA_M78I_PERMISSION_SET_NAME, permissionSetDescription: DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, capabilities: DEV_QA_M78I_OPERATIONAL_CAPABILITIES }),
+  m78i: Object.freeze({ name: "m78i", sourceTemplateKey: OPERATIONS_ROLE.templateKey, permissionSetName: DEV_QA_M78I_PERMISSION_SET_NAME, permissionSetDescription: DEV_QA_M78I_PERMISSION_SET_DESCRIPTION, capabilities: DEV_QA_M78I_OPERATIONAL_CAPABILITIES }),
   m78i_fixture_pricing: Object.freeze({ name: "m78i_fixture_pricing", permissionSetName: DEV_QA_M78I_FIXTURE_PRICING_SET_NAME, permissionSetDescription: DEV_QA_M78I_FIXTURE_PRICING_SET_DESCRIPTION, capabilities: DEV_QA_M78I_FIXTURE_PRICING_CAPABILITIES }),
   m78i_fixture_artwork: Object.freeze({ name: "m78i_fixture_artwork", permissionSetName: DEV_QA_M78I_FIXTURE_ARTWORK_SET_NAME, permissionSetDescription: DEV_QA_M78I_FIXTURE_ARTWORK_SET_DESCRIPTION, capabilities: DEV_QA_M78I_FIXTURE_ARTWORK_CAPABILITIES }),
   m78i_fixture_route: Object.freeze({ name: "m78i_fixture_route", permissionSetName: DEV_QA_M78I_FIXTURE_ROUTE_SET_NAME, permissionSetDescription: DEV_QA_M78I_FIXTURE_ROUTE_SET_DESCRIPTION, capabilities: DEV_QA_M78I_FIXTURE_ROUTE_CAPABILITIES }),
@@ -61,10 +63,10 @@ export function sameCapabilitySet(left: readonly string[], right: readonly strin
   return normalizedLeft.length === normalizedRight.length && normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
-export function profileForPermissionState(permissionSetName: string | null, capabilities: readonly string[]): DevQaApprovedProfile | null {
+export function profileForPermissionState(permissionSetName: string | null, capabilities: readonly string[], sourceTemplateKey: string | null = null): DevQaApprovedProfile | null {
   for (const profile of DEV_QA_APPROVED_PROFILES) {
     const definition = profileDefinitions[profile];
-    if (definition.permissionSetName === permissionSetName && sameCapabilitySet(definition.capabilities, capabilities)) return profile;
+    if ((definition.sourceTemplateKey ?? null) === sourceTemplateKey && definition.permissionSetName === permissionSetName && sameCapabilitySet(definition.capabilities, capabilities)) return profile;
   }
   return null;
 }
