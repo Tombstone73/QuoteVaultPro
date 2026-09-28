@@ -14,6 +14,8 @@ import {
 } from "../lib/devQaOperator";
 import {
   DEV_QA_OPERATOR_BROWSER_EMAIL,
+  DEV_QA_OPERATOR_MANAGEMENT_EMAIL,
+  DEV_QA_OPERATOR_MANAGEMENT_NAME,
   DEV_QA_OPERATOR_ORGANIZATION_ID,
   DEV_QA_OPERATOR_ORGANIZATION_NAME,
   getDevQaOperatorConfig,
@@ -55,6 +57,12 @@ describe("guarded DEV QA operator", () => {
   test("status/verify guard accepts the approved deployed DEV identity without a password", () => {
     expect(getDevQaOperatorConfig(devEnv)).toEqual({ organizationId: DEV_QA_OPERATOR_ORGANIZATION_ID, organizationName: DEV_QA_OPERATOR_ORGANIZATION_NAME, browserEmail: DEV_QA_OPERATOR_BROWSER_EMAIL });
     expect(getDevQaOperatorConfig(devEnv)).not.toHaveProperty("password");
+  });
+
+  test("management bootstrap has one reviewed identity target and accepts no operator input", () => {
+    expect(DEV_QA_OPERATOR_MANAGEMENT_EMAIL).toBe("dale911@yahoo.com");
+    expect(DEV_QA_OPERATOR_MANAGEMENT_NAME).toBe("Dale Hensley");
+    expect(DEV_QA_OPERATOR_MANAGEMENT_EMAIL).not.toBe(DEV_QA_OPERATOR_BROWSER_EMAIL);
   });
 
   test.each([

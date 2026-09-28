@@ -14,12 +14,17 @@ import {
   sameCapabilitySet,
   type DevQaApprovedProfile,
 } from "../../server/lib/devQaOperator";
-import { DEV_QA_OPERATOR_BROWSER_EMAIL, getDevQaOperatorConfig } from "../../server/lib/devQaProvisioningGuard";
+import {
+  DEV_QA_OPERATOR_BROWSER_EMAIL,
+  DEV_QA_OPERATOR_MANAGEMENT_EMAIL,
+  DEV_QA_OPERATOR_MANAGEMENT_NAME,
+  getDevQaOperatorConfig,
+} from "../../server/lib/devQaProvisioningGuard";
 import { getRuntimeEnvironmentSummary } from "../../server/lib/runtimeEnvironment";
 
 type Database = typeof import("../../server/db");
 type Transaction = Parameters<Parameters<Database["db"]["transaction"]>[0]>[0];
-type Command = "status" | "user-password-set" | "profile-apply" | "profile-restore" | "verify";
+type Command = "status" | "user-password-set" | "profile-apply" | "profile-restore" | "management-bootstrap" | "verify";
 type ActiveSet = Readonly<{ id: string; name: string; sourceTemplateKey: string | null; capabilities: readonly string[] }>;
 type UserState = Readonly<{ nonAdmin: boolean; id: string; email: string; memberships: readonly Readonly<{ organizationId: string; active: boolean }>[]; activeSets: readonly ActiveSet[]; capabilities: readonly string[]; profile: DevQaApprovedProfile | null }>;
 
@@ -29,8 +34,8 @@ function fail(message: string): never { throw new Error(message); }
 
 function parseArgs(argv: readonly string[]): { command: Command; options: ReadonlyMap<string, string> } {
   const [command, ...rest] = argv;
-  if (command !== "status" && command !== "user-password-set" && command !== "profile-apply" && command !== "profile-restore" && command !== "verify") {
-    fail("Usage: qa:dev-operator <status|user-password-set|profile-apply|profile-restore|verify> [options]");
+  if (command !== "status" && command !== "user-password-set" && command !== "profile-apply" && command !== "profile-restore" && command !== "management-bootstrap" && command !== "verify") {
+    fail("Usage: qa:dev-operator <status|user-password-set|profile-apply|profile-restore|management-bootstrap|verify> [options]");
   }
   const options = new Map<string, string>();
   for (let index = 0; index < rest.length; index += 2) {
@@ -201,6 +206,43 @@ async function profileApply(tx: Transaction, requested: DevQaApprovedProfile) {
   return { success: true, profile: requested, changed: true, capabilities: postBrowser.capabilities, guardianUnchanged: true };
 }
 
+/**
+ * One-time recovery for the dedicated DEV QA tenant's intentionally
+ * non-interactive guardian. The live membership trigger creates the canonical
+ * Owner assignment and advances authority revision; this command supplies only
+ * the fixed, reviewed missing membership and its tenant-scoped audit event.
+ */
+async function managementBootstrap(tx: Transaction) {
+  const config = getDevQaOperatorConfig();
+  await assertTenant(tx);
+  const browserBefore = await checkedBrowser(tx, true);
+  const guardianBefore = await assertGuardian(tx);
+  const [management] = await tx.select({ id: users.id, email: users.email, firstName: users.firstName, lastName: users.lastName, accountType: users.accountType, isPlatformAdmin: users.isPlatformAdmin, isPlatformDeveloper: users.isPlatformDeveloper, mustSetPassword: users.mustSetPassword })
+    .from(users).where(eq(users.email, DEV_QA_OPERATOR_MANAGEMENT_EMAIL)).limit(1);
+  if (!management || management.email?.toLowerCase() !== DEV_QA_OPERATOR_MANAGEMENT_EMAIL) fail("Reviewed DEV management identity does not exist.");
+  if (`${management.firstName ?? ""} ${management.lastName ?? ""}`.trim() !== DEV_QA_OPERATOR_MANAGEMENT_NAME) fail("Reviewed DEV management identity does not match the approved Owner identity.");
+  if (management.accountType !== "INTERNAL_USER" || management.isPlatformAdmin || management.isPlatformDeveloper || management.mustSetPassword) fail("Reviewed DEV management identity is not an active non-platform internal Staff identity.");
+  const normalOwner = await tx.execute<{ organization_id: string }>(sql`SELECT organization_id FROM user_organizations WHERE user_id=${management.id} AND organization_id<>${config.organizationId} AND is_active=true AND role='owner' LIMIT 1`);
+  if (normalOwner.rowCount !== 1) fail("Reviewed DEV management identity must already be an Owner of another active DEV organization.");
+  const membership = await tx.execute<{ role: string; is_active: boolean }>(sql`SELECT role,is_active FROM user_organizations WHERE user_id=${management.id} AND organization_id=${config.organizationId} FOR UPDATE`);
+  if (membership.rowCount > 1) fail("Reviewed DEV management identity has duplicate QA memberships.");
+  if (membership.rowCount === 1 && (!membership.rows[0]!.is_active || membership.rows[0]!.role !== "owner")) fail("Reviewed DEV management identity has an unexpected QA membership; refusing to alter it.");
+  if (membership.rowCount === 0) {
+    // v2_permission_membership_bootstrap provides the real Owner set,
+    // assignment source, authority revision, and administrator-floor state.
+    await tx.execute(sql`INSERT INTO user_organizations(user_id,organization_id,role,is_default,is_active) VALUES(${management.id},${config.organizationId},'owner',false,true)`);
+  }
+  const ownerAssignment = await tx.execute<{ permission_set_id: string }>(sql`SELECT a.permission_set_id FROM v2_staff_permission_set_assignments a JOIN v2_permission_sets s ON s.id=a.permission_set_id AND s.organization_id=a.organization_id WHERE a.organization_id=${config.organizationId} AND a.user_id=${management.id} AND a.active=true AND s.active=true AND s.principal_kind='staff' AND s.source_template_key='owner'`);
+  if (ownerAssignment.rowCount !== 1) fail("Canonical QA Owner permission-set assignment was not established.");
+  const changed = membership.rowCount === 0;
+  if (changed) await tx.execute(sql`INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,permission_set_id,target_user_id,correlation_id,detail) VALUES(${config.organizationId},'dev_qa_management_bootstrapped','service','dev-qa-management-bootstrap',${ownerAssignment.rows[0]!.permission_set_id},${management.id},${`dev-qa-management-bootstrap:${management.id}`},${JSON.stringify({ source: "dev_qa_management_bootstrap", businessRequestId: "dev-qa-management-bootstrap:v1", structuralRole: "owner" })}::jsonb)`);
+  const browserAfter = await checkedBrowser(tx, true);
+  const guardianAfter = await assertGuardian(tx);
+  if (!sameCapabilitySet(browserBefore.capabilities, browserAfter.capabilities) || browserBefore.profile !== browserAfter.profile || !browserAfter.nonAdmin) fail("QA browser identity changed during management bootstrap.");
+  if (!sameCapabilitySet(guardianBefore.capabilities, guardianAfter.capabilities)) fail("QA guardian changed during management bootstrap.");
+  return { success: true, changed, management: { email: DEV_QA_OPERATOR_MANAGEMENT_EMAIL, structuralRole: "owner", canonicalOwnerAssignment: true }, qaBrowserUnchanged: true, guardianUnchanged: true };
+}
+
 async function verify(tx: Transaction) {
   const browser = await checkedBrowser(tx, true);
   const guardian = await assertGuardian(tx);
@@ -216,6 +258,7 @@ async function run(): Promise<unknown> {
   if (command === "verify") { rejectUnknownOptions(options, []); return db.transaction((tx) => verify(tx as Transaction)); }
   if (command === "user-password-set") return db.transaction((tx) => passwordSet(tx as Transaction, options));
   if (command === "profile-restore") { rejectUnknownOptions(options, ["--email"]); if (options.has("--email")) assertDedicatedBrowserEmail(requiredOption(options, "--email")); return db.transaction((tx) => profileApply(tx as Transaction, "m78i")); }
+  if (command === "management-bootstrap") { rejectUnknownOptions(options, []); return db.transaction((tx) => managementBootstrap(tx as Transaction)); }
   rejectUnknownOptions(options, ["--email", "--profile"]);
   assertDedicatedBrowserEmail(requiredOption(options, "--email"));
   return db.transaction((tx) => profileApply(tx as Transaction, approvedDevQaProfile(requiredOption(options, "--profile"))));

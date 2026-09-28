@@ -10,6 +10,9 @@ export type DevQaProvisioningConfig = {
 export const DEV_QA_OPERATOR_ORGANIZATION_ID = "b6f969b2-dda3-4133-9d75-c417dabb8f3a";
 export const DEV_QA_OPERATOR_ORGANIZATION_NAME = "PrintersHero M7 QA";
 export const DEV_QA_OPERATOR_BROWSER_EMAIL = "m7-7e-qa-browser@printershero.invalid";
+/** Fixed reviewed target for the one-time DEV QA management bootstrap. */
+export const DEV_QA_OPERATOR_MANAGEMENT_EMAIL = "dale911@yahoo.com";
+export const DEV_QA_OPERATOR_MANAGEMENT_NAME = "Dale Hensley";
 
 export type DevQaOperatorConfig = Readonly<{
   organizationId: typeof DEV_QA_OPERATOR_ORGANIZATION_ID;
