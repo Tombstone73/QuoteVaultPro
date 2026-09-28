@@ -47,6 +47,7 @@ import type { PortalCommercialRead } from "../../modules/portal/commercialReads.
 import type { PortalOrderCreationApplicationService } from "../../modules/portal/portalOrderCreation.js";
 import type { PortalArtworkApplicationService } from "../../modules/portal/portalArtwork.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import { canManageTeamAccess, canReadTeamAccess } from "../../authorization/teamAccessAuthority.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "../../../infrastructure/authentication/sessionCsrf.js";
 
 export type ReadinessProbe = () => Promise<Readonly<{ ready: boolean }>>;
@@ -193,6 +194,8 @@ export const createV2HttpApp = (
                 numberingConfigure: policy.decide(principal, { capability: "numbering.configure", resource: { organizationId } }).allowed,
                 communicationsConfigure: policy.decide(principal, { capability: "communications.configure", resource: { organizationId } }).allowed,
                 permissionsView: policy.decide(principal, { capability: "permissions.view", resource: { organizationId } }).allowed,
+                teamAccessView: canReadTeamAccess(principal),
+                teamAccessManage: canManageTeamAccess(principal),
                 permissionsManageSets: policy.decide(principal, { capability: "permissions.manageSets", resource: { organizationId } }).allowed,
                 permissionsAssignStaff: policy.decide(principal, { capability: "permissions.assignStaff", resource: { organizationId } }).allowed,
                 permissionsAssignPortal: policy.decide(principal, { capability: "permissions.assignPortal", resource: { organizationId } }).allowed,

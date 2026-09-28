@@ -16,7 +16,7 @@ const operationalCapabilities: UiBootstrap["capabilities"] = {
   productionView: true,
   inboundView: true,
   fulfillmentView: true,
-  permissionsView: true,
+  teamAccessView: true,
 };
 
 const permitted = labels(operationalCapabilities);

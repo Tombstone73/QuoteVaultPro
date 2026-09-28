@@ -12,6 +12,9 @@ export type StaffAuthority = Readonly<{
   /** Present only while M1.4 temporary membership compatibility is installed. */
   source?: "permission_set" | "temporary_staff_membership_compatibility";
   authorityRevision?: string;
+  /** Freshly derived from the exact organization membership and existing
+   * platform-developer flag. It is limited to Team & Access mutations. */
+  teamAccessManagement?: boolean;
   replacementMilestone?: "M1.5 — Permission-Set Foundation";
 }>;
 

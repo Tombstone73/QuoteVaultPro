@@ -106,6 +106,8 @@ export type UiBootstrap = Readonly<{
     numberingConfigure?: boolean;
     communicationsConfigure?: boolean;
     permissionsView?: boolean;
+    teamAccessView?: boolean;
+    teamAccessManage?: boolean;
     permissionsManageSets?: boolean;
     permissionsAssignStaff?: boolean;
     permissionsAssignPortal?: boolean;

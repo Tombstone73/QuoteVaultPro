@@ -9,7 +9,7 @@ const paymentCapabilities = ["payment.view", "payment.record"] as const;
 const reader = (sets: readonly Readonly<{ id: string; name: string; capabilities: readonly string[] }>[]): PermissionAuthorityReader => ({
   resolvePortal: async () => null,
   resolveStaff: async () => ({ organizationId: "org-a", organizationActive: true, authorityRevision: 1, staff: {
-    userId: "staff-a", membershipId: "membership-a", membershipActive: true,
+    userId: "staff-a", membershipId: "membership-a", membershipActive: true, teamAccessManagement: false,
     permissionSets: sets.map((set) => ({ id: set.id, name: set.name, active: true, revision: 1 })),
     capabilities: [...new Set(sets.flatMap((set) => set.capabilities))].sort() as never,
   } }),

@@ -20,10 +20,10 @@ const value: TeamAccessRead = {
   capabilityGroups: [{ key: "orders", label: "Orders", capabilities: [{ id: "order.view", label: "View orders", sensitive: false }] }],
 };
 
-const render = (section: "staff" | "permission-sets" | "portal", permissions = true) => {
+const render = (section: "staff" | "permission-sets" | "portal", canView = true, canManage = true) => {
   const client = new QueryClient();
   client.setQueryData(["v2", "scope-1", "organization-1", "settings", "team-access"], value);
-  return renderToStaticMarkup(<QueryClientProvider client={client}><TeamAccessWorkspace organizationId="organization-1" sessionScope="scope-1" canView={permissions} canManageSets={permissions} canAssignStaff={permissions} canAssignPortal={permissions} section={section} openCustomers={() => undefined}/></QueryClientProvider>);
+  return renderToStaticMarkup(<QueryClientProvider client={client}><TeamAccessWorkspace organizationId="organization-1" sessionScope="scope-1" canView={canView} canManage={canManage} section={section} openCustomers={() => undefined}/></QueryClientProvider>);
 };
 
 const staff = render("staff");
@@ -44,6 +44,14 @@ assert.match(portal, /Open Customers/);
 assert.match(portal, /does not create Contacts or convert Staff identities/);
 assert.match(portal, /Grant Portal access/);
 
-const denied = render("staff", false);
+const readonlyStaff = render("staff", true, false);
+assert.match(readonlyStaff, /View permissions/);
+assert.doesNotMatch(readonlyStaff, /Invite staff|Manage roles|Disable/);
+
+const readonlySets = render("permission-sets", true, false);
+assert.match(readonlySets, /Operations|QA custom/);
+assert.doesNotMatch(readonlySets, /Create custom role|Clone role|>Edit</);
+
+const denied = render("staff", false, false);
 assert.match(denied, /do not have permission to view this setting/);
 console.log("Team & Access canonical-wiring rendering tests passed.");

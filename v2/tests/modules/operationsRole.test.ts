@@ -23,7 +23,7 @@ describe("canonical Operations staff role", () => {
       resolvePortal: async () => null,
       resolveStaff: async (userId, organizationId) => ({
         organizationId, organizationActive: true, authorityRevision: 1,
-        staff: { userId, membershipId: "member", membershipActive: true,
+        staff: { userId, membershipId: "member", membershipActive: true, teamAccessManagement: false,
           permissionSets: [{ id: "operations-set", name: "Operations", active: true, revision: 1 }],
           capabilities: OPERATIONS_ROLE.capabilities },
       }),

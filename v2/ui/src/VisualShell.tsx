@@ -108,8 +108,8 @@ const sections: readonly NavigationSection[] = [
     label: "Administration",
     items: [
       { page: "assistant", label: "AI Assistant", icon: Bot, requiresAny: ["assistantUse"] },
-      { href: "/settings?section=staff", label: "Users & Permissions", icon: ShieldCheck, requiresAny: ["permissionsView"] },
-      { page: "settings", label: "Settings", icon: Settings, requiresAny: ["pricingConfigure", "organizationConfigure", "numberingConfigure", "communicationsConfigure", "permissionsView"] },
+      { href: "/settings?section=staff", label: "Users & Permissions", icon: ShieldCheck, requiresAny: ["teamAccessView"] },
+      { page: "settings", label: "Settings", icon: Settings, requiresAny: ["pricingConfigure", "organizationConfigure", "numberingConfigure", "communicationsConfigure", "teamAccessView"] },
       { page: "appearance", label: "Themes / Appearance", icon: Palette },
     ],
   },

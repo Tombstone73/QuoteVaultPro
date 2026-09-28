@@ -4,6 +4,7 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { Capability } from "../../src/authorization/capabilities.js";
 import type { StaffPrincipal } from "../../src/authorization/principals.js";
 import { principalSubject } from "../../src/authorization/principals.js";
+import { canManageTeamAccess } from "../../src/authorization/teamAccessAuthority.js";
 import { parseCapabilities, teamCapabilityGroups } from "../../src/modules/organization/teamAccess.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import { PostgresEmailIntegrationService } from "../communications/postgresEmailIntegration.js";
@@ -27,7 +28,7 @@ export class PostgresTeamAccess {
    * completion flow; only the provider delivery boundary is suppressed. */
   async captureM77fQaPortalReset(actor: StaffPrincipal, organizationId: string, input: { portalAccessId: string; customerId: string; contactId: string }, context: Context): Promise<{ portalResetUrl: string; deliveryState: typeof SUPPRESSED_DELIVERY_STATE }> {
     if (!shouldCaptureM77fQaPortalSetup(organizationId)) throw new V2ApplicationError("FORBIDDEN", "QA Portal reset capture is unavailable.");
-    if (actor.organizationId !== organizationId || actor.authority.source !== "permission_set" || !actor.authority.capabilities.includes("permissions.assignPortal")) throw new V2ApplicationError("FORBIDDEN", "You do not have permission to recover Customer Portal access.");
+    if (actor.organizationId !== organizationId || !canManageTeamAccess(actor)) throw new V2ApplicationError("FORBIDDEN", "Only an organization Owner, Administrator, or Platform Developer can change Team & Access.");
     if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
     const client=await this.pool.connect(); let token="";
     try { await client.query("BEGIN");
@@ -105,7 +106,7 @@ export class PostgresTeamAccess {
   async createInvitation(actor: StaffPrincipal, organizationId: string, input: { email: string; legacyRole?: "admin" | "manager" | "member" }, context: Context): Promise<{ invitationId: string; status: "pending" }> {
     const email = input.email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) throw new V2ApplicationError("VALIDATION_ERROR", "A valid staff email is required.");
-    if (actor.organizationId !== organizationId || actor.authority.source !== "permission_set" || !actor.authority.capabilities.includes("permissions.assignStaff")) throw new V2ApplicationError("FORBIDDEN", "You do not have permission to invite Staff.");
+    if (actor.organizationId !== organizationId || !canManageTeamAccess(actor)) throw new V2ApplicationError("FORBIDDEN", "Only an organization Owner, Administrator, or Platform Developer can change Team & Access.");
     if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
     await this.communications.requireReady(organizationId);
     const client=await this.pool.connect(); const operation="team_access.staff_invitation_created.v1"; const detail={email,role:input.legacyRole??"member"}; let invitationId=""; let token=""; let requestId="";
@@ -124,7 +125,7 @@ export class PostgresTeamAccess {
   async bootstrapPortalAccess(actor: StaffPrincipal, organizationId: string, input: { customerId: string; contactId: string; permissionSetId: string }, context: Context, options: Readonly<{ captureM77fQaSetupUrl?: boolean }> = {}): Promise<PortalBootstrapResult> {
     const captureM77fQaSetupUrl = options.captureM77fQaSetupUrl === true;
     if (captureM77fQaSetupUrl && !shouldCaptureM77fQaPortalSetup(organizationId)) throw new V2ApplicationError("FORBIDDEN", "QA Portal setup capture is unavailable.");
-    if (actor.organizationId !== organizationId || actor.authority.source !== "permission_set" || !actor.authority.capabilities.includes("permissions.assignPortal")) throw new V2ApplicationError("FORBIDDEN", "You do not have permission to grant Customer Portal access.");
+    if (actor.organizationId !== organizationId || !canManageTeamAccess(actor)) throw new V2ApplicationError("FORBIDDEN", "Only an organization Owner, Administrator, or Platform Developer can change Team & Access.");
     if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
     if (!captureM77fQaSetupUrl) await this.communications.requireReady(organizationId);
     const qaSetupOrigin = captureM77fQaSetupUrl ? (process.env.APP_PUBLIC_WEB_ORIGIN ?? process.env.APP_URL ?? "").replace(/\/$/u, "") : "";
@@ -167,7 +168,7 @@ export class PostgresTeamAccess {
   }
 
   async setMembershipActive(actor: StaffPrincipal, organizationId: string, userId: string, active: boolean, context: Context): Promise<void> {
-    await this.mutate(actor, organizationId, "permissions.assignStaff", active ? "staff_membership_enabled" : "staff_membership_disabled", { userId, active }, context, async (client) => {
+    await this.mutate(actor, organizationId, active ? "staff_membership_enabled" : "staff_membership_disabled", { userId, active }, context, async (client) => {
       const updated = await client.query("UPDATE user_organizations SET is_active=$3,updated_at=now() WHERE organization_id=$1 AND user_id=$2 AND is_active IS DISTINCT FROM $3", [organizationId, userId, active]);
       if (updated.rowCount) return { changed: true, result: { userId, status: active ? "active" : "disabled" } };
       const exists = await client.query("SELECT 1 FROM user_organizations WHERE organization_id=$1 AND user_id=$2", [organizationId, userId]);
@@ -181,7 +182,7 @@ export class PostgresTeamAccess {
   async resendPortalSetup(actor: StaffPrincipal, organizationId: string, portalAccessId: string, context: Context): Promise<{ portalAccessId: string; status: "pending" }> {
     await this.communications.requireReady(organizationId);
     let recipient = ""; let token = "";
-    const result = await this.mutate(actor, organizationId, "permissions.assignPortal", "portal_setup_resent", { portalAccessId }, context, async (client) => {
+    const result = await this.mutate(actor, organizationId, "portal_setup_resent", { portalAccessId }, context, async (client) => {
       const access = await client.query<{ email:string; status:string; customer_id:string; contact_id:string|null }>(
         `SELECT a.email,a.status::text,a.customer_id,a.contact_id FROM customer_portal_access a
          JOIN customers c ON c.id=a.customer_id AND c.organization_id=a.organization_id
@@ -214,7 +215,7 @@ export class PostgresTeamAccess {
   }
 
   async setPortalAccessStatus(actor: StaffPrincipal, organizationId: string, portalAccessId: string, status: "suspended" | "disabled", context: Context): Promise<void> {
-    await this.mutate(actor, organizationId, "permissions.assignPortal", `portal_access_${status}`, { portalAccessId, status }, context, async (client) => {
+    await this.mutate(actor, organizationId, `portal_access_${status}`, { portalAccessId, status }, context, async (client) => {
       const access=await client.query<{status:string}>("SELECT status::text FROM customer_portal_access WHERE organization_id=$1 AND id=$2 FOR UPDATE",[organizationId,portalAccessId]);
       if(!access.rows[0])throw new V2ApplicationError("NOT_FOUND","Customer Portal access was not found.");
       const next=status === "suspended" ? "SUSPENDED" : "DISABLED";
@@ -227,7 +228,7 @@ export class PostgresTeamAccess {
 
   async createCustomSet(actor: StaffPrincipal, organizationId: string, input: { name: string; description?: string; principalKind?: "staff" | "portal"; capabilities: readonly Capability[] }, context: Context): Promise<{ permissionSetId: string }> {
     const id = randomBytes(18).toString("base64url"); const capabilities = parseCapabilities(input.capabilities);
-    return this.mutate(actor, organizationId, "permissions.manageSets", "permission_set_created", { permissionSetId: id, name: input.name, capabilities }, context, async (client) => {
+    return this.mutate(actor, organizationId, "permission_set_created", { permissionSetId: id, name: input.name, capabilities }, context, async (client) => {
       this.ceiling(actor, capabilities); if (!input.name.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "Permission-set name is required.");
       await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,description,principal_kind) VALUES($1,$2,$3,$4,$5,$6)", [id, organizationId, input.name.trim(), normalized(input.name), input.description?.trim() || null, input.principalKind ?? "staff"]);
       for (const capability of capabilities) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [organizationId, id, capability]);
@@ -240,7 +241,7 @@ export class PostgresTeamAccess {
   async cloneStaffSet(actor: StaffPrincipal, organizationId: string, sourcePermissionSetId: string, input: { name: string; description?: string }, context: Context): Promise<{ permissionSetId: string }> {
     const permissionSetId = randomBytes(18).toString("base64url"); const name = input.name.trim();
     if (!name) throw new V2ApplicationError("VALIDATION_ERROR", "Role name is required.");
-    return this.mutate(actor, organizationId, "permissions.manageSets", "permission_set_cloned", { permissionSetId, sourcePermissionSetId, name }, context, async (client) => {
+    return this.mutate(actor, organizationId, "permission_set_cloned", { permissionSetId, sourcePermissionSetId, name }, context, async (client) => {
       const source = await client.query<{ id: string; principal_kind: "staff" | "portal"; capability_id: Capability | null }>("SELECT s.id,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, sourcePermissionSetId]);
       if (!source.rowCount) throw new V2ApplicationError("NOT_FOUND", "Source Staff role was not found.");
       if (source.rows.some((row) => row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Only Staff roles can be cloned here.");
@@ -254,7 +255,7 @@ export class PostgresTeamAccess {
   async updateCustomSet(actor: StaffPrincipal, organizationId: string, permissionSetId: string, input: { name: string; description?: string; capabilities: readonly Capability[]; active: boolean }, context: Context): Promise<void> {
     const capabilities = parseCapabilities(input.capabilities);
     const detail: Record<string, unknown> = { permissionSetId, name: input.name.trim(), capabilities, active: input.active };
-    await this.mutate(actor, organizationId, "permissions.manageSets", "permission_set_updated", detail, context, async (client) => {
+    await this.mutate(actor, organizationId, "permission_set_updated", detail, context, async (client) => {
       this.ceiling(actor, capabilities); await this.customSet(client, organizationId, permissionSetId);
       const current = await client.query<{ name: string; description: string | null; active: boolean; capability_id: Capability | null }>("SELECT s.name,s.description,s.active,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, permissionSetId]);
       const currentCapabilities = parseCapabilities(current.rows.flatMap((row) => row.capability_id ? [row.capability_id] : [])); const description = input.description?.trim() || null;
@@ -269,7 +270,7 @@ export class PostgresTeamAccess {
   }
 
   async replaceStaffAssignments(actor: StaffPrincipal, organizationId: string, userId: string, permissionSetIds: readonly string[], context: Context): Promise<void> {
-    await this.mutate(actor, organizationId, "permissions.assignStaff", "staff_permission_sets_replaced", { userId, permissionSetIds }, context, async (client) => {
+    await this.mutate(actor, organizationId, "staff_permission_sets_replaced", { userId, permissionSetIds }, context, async (client) => {
       const member = await client.query("SELECT 1 FROM user_organizations WHERE organization_id=$1 AND user_id=$2 AND is_active=true FOR UPDATE", [organizationId, userId]); if (!member.rowCount) throw new V2ApplicationError("NOT_FOUND", "Active Staff membership was not found.");
       const ids = [...new Set(permissionSetIds)]; if (!ids.length) throw new V2ApplicationError("VALIDATION_ERROR", "At least one Staff permission set is required.");
       const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
@@ -282,14 +283,14 @@ export class PostgresTeamAccess {
   }
 
   async replacePortalAssignments(actor: StaffPrincipal, organizationId: string, portalAccessId: string, permissionSetIds: readonly string[], context: Context): Promise<void> {
-    await this.mutate(actor, organizationId, "permissions.assignPortal", "portal_permission_sets_replaced", { portalAccessId, permissionSetIds }, context, async (client) => {
+    await this.mutate(actor, organizationId, "portal_permission_sets_replaced", { portalAccessId, permissionSetIds }, context, async (client) => {
       const access = await client.query("SELECT 1 FROM customer_portal_access WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, portalAccessId]); if (!access.rowCount) throw new V2ApplicationError("NOT_FOUND", "Customer Portal access was not found.");
       const ids = [...new Set(permissionSetIds)]; if (!ids.length) throw new V2ApplicationError("VALIDATION_ERROR", "At least one Portal permission set is required.");
       const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
       const setIds = [...new Set(found.rows.map((row) => row.id))]; if (setIds.length !== ids.length || found.rows.some((row) => !row.active || row.principal_kind !== "portal")) throw new V2ApplicationError("VALIDATION_ERROR", "Choose active Portal permission sets in this organization.");
-      // Portal capabilities describe customer authority. A staff member who
-      // has permissions.assignPortal may assign an active tenant portal set;
-      // they need not themselves hold every customer-facing capability.
+      // Portal capabilities describe customer authority. An elevated Team &
+      // Access manager may assign an active tenant Portal set without holding
+      // every customer-facing capability in that set.
       await client.query("UPDATE v2_portal_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=$1 AND portal_access_id=$2 AND active=true", [organizationId, portalAccessId]);
       for (const id of ids) await client.query("INSERT INTO v2_portal_permission_set_assignments(organization_id,portal_access_id,permission_set_id,active) VALUES($1,$2,$3,true) ON CONFLICT(organization_id,portal_access_id,permission_set_id) DO UPDATE SET active=true,updated_at=now()", [organizationId, portalAccessId, id]);
       return { changed: true, result: { portalAccessId, permissionSetIds: ids } };
@@ -305,8 +306,8 @@ export class PostgresTeamAccess {
   }
   private ceiling(actor: StaffPrincipal, capabilities: readonly Capability[]) { for (const capability of capabilities) if (!actor.authority.capabilities.includes(capability)) throw new V2ApplicationError("FORBIDDEN", "Permission administrators cannot grant a capability they do not currently hold."); }
   private async customSet(client: PoolClient, organizationId: string, id: string) { const result = await client.query<{ source_template_key: string | null }>("SELECT source_template_key FROM v2_permission_sets WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, id]); const row = result.rows[0]; if (!row) throw new V2ApplicationError("NOT_FOUND", "Permission set was not found."); if (row.source_template_key !== null) throw new V2ApplicationError("FORBIDDEN", "System permission sets are managed templates and cannot be edited."); }
-  private async mutate<T>(actor: StaffPrincipal, organizationId: string, required: Capability, event: string, detail: Record<string, unknown>, context: Context, action: (client: PoolClient) => Promise<{ changed: boolean; result: T }>): Promise<T> {
-    if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Team access is organization scoped."); if (actor.authority.source !== "permission_set" || !actor.authority.capabilities.includes(required)) throw new V2ApplicationError("FORBIDDEN", "You do not have permission to manage Team & Access."); if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
+  private async mutate<T>(actor: StaffPrincipal, organizationId: string, event: string, detail: Record<string, unknown>, context: Context, action: (client: PoolClient) => Promise<{ changed: boolean; result: T }>): Promise<T> {
+    if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Team access is organization scoped."); if (!canManageTeamAccess(actor)) throw new V2ApplicationError("FORBIDDEN", "Only an organization Owner, Administrator, or Platform Developer can change Team & Access."); if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
     const client = await this.pool.connect(); try { await client.query("BEGIN"); const operation = `team_access.${event}.v1`; const reservation = await this.requests.reserve(client, { organizationId, operation, businessRequestId: context.businessRequestId, payloadFingerprint: hash(detail), principalKind: actor.kind, principalSubject: principalSubject(actor), staffActorUserId: actor.userId }); if (reservation.kind === "replay") { await client.query("COMMIT"); return reservation.request.resultJson as T; }
       const state = await client.query<{ authority_revision: string }>("SELECT authority_revision FROM v2_permission_organization_state WHERE organization_id=$1 FOR UPDATE", [organizationId]); if (!state.rows[0]) throw new V2ApplicationError("NOT_FOUND", "Organization permission state was not found."); if (String(state.rows[0].authority_revision) !== context.expectedAuthorityRevision || actor.authority.authorityRevision !== context.expectedAuthorityRevision) throw new V2ApplicationError("STALE_STATE", "Team authority changed elsewhere. Reload and try again.");
       const output = await action(client); if (output.changed) { await this.floor(client, organizationId); await client.query("INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,staff_actor_user_id,permission_set_id,target_user_id,detail) VALUES($1,$2,'staff',$3,$3,$4,$5,$6::jsonb)", [organizationId,event,actor.userId,typeof detail.permissionSetId === "string" ? detail.permissionSetId : null,typeof detail.userId === "string" ? detail.userId : null,JSON.stringify({ ...detail, businessRequestId: context.businessRequestId })]); await client.query("UPDATE v2_permission_organization_state SET authority_revision=authority_revision+1,updated_at=now() WHERE organization_id=$1", [organizationId]); }

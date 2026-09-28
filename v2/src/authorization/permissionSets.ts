@@ -8,7 +8,7 @@ export type PermissionAuthoritySnapshot = Readonly<{
   organizationId: string;
   organizationActive: boolean;
   authorityRevision: string | number;
-  staff?: Readonly<{ userId: string; membershipId: string; membershipActive: boolean; permissionSets: readonly PermissionSetSummary[]; capabilities: readonly Capability[] }>;
+  staff?: Readonly<{ userId: string; membershipId: string; membershipActive: boolean; permissionSets: readonly PermissionSetSummary[]; capabilities: readonly Capability[]; teamAccessManagement: boolean }>;
   portal?: Readonly<{ userId: string; portalAccessId: string; customerId: string; accessActive: boolean; permissionSets: readonly PermissionSetSummary[]; assignedCapabilities: readonly Capability[]; ceilingCapabilities: readonly Capability[] }>;
 }>;
 
@@ -39,7 +39,7 @@ export class PermissionSetPrincipalIssuer implements PrincipalIssuer {
     const staff = snapshot?.staff;
     if (!snapshot || !staff || snapshot.organizationId !== organizationId || staff.userId !== identity.subjectId) return failure(new V2ApplicationError("NOT_FOUND", "Staff authority is unavailable for this organization."));
     if (!snapshot.organizationActive || !staff.membershipActive || staff.permissionSets.filter((set) => set.active).length === 0 || staff.capabilities.length === 0) return failure(new V2ApplicationError("FORBIDDEN", "No active V2 permission-set assignment grants Staff authority."));
-    return success(Object.freeze({ kind: "staff", organizationId, userId: identity.subjectId, authority: Object.freeze({ membershipId: staff.membershipId, permissionSetIds: Object.freeze(staff.permissionSets.filter((set) => set.active).map((set) => set.id)), capabilities: frozen(staff.capabilities), source: "permission_set", authorityRevision: String(snapshot.authorityRevision) }) }));
+    return success(Object.freeze({ kind: "staff", organizationId, userId: identity.subjectId, authority: Object.freeze({ membershipId: staff.membershipId, permissionSetIds: Object.freeze(staff.permissionSets.filter((set) => set.active).map((set) => set.id)), capabilities: frozen(staff.capabilities), source: "permission_set", authorityRevision: String(snapshot.authorityRevision), teamAccessManagement: staff.teamAccessManagement }) }));
   }
   async issuePortal(identity: AuthenticatedIdentity, organizationId: string): Promise<ApplicationResult<PortalPrincipal>> {
     if (!identity.subjectId || identity.authenticationMethod !== "portal_session") return failure(new V2ApplicationError("FORBIDDEN", "A verified Portal session is required."));
