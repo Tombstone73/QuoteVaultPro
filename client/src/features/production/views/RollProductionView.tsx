@@ -67,6 +67,7 @@ import { useToast } from "@/hooks/use-toast";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { ProductionFilePreviewPanel } from "@/components/production/ProductionFilePreviewPanel";
 import { ProductionPreviewArea, type ProductionPreviewSize } from "@/components/production/ProductionPreviewArea";
+import { ProductionStationSortHeader, useProductionStationSort } from "@/components/production/ProductionStationSortHeader";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
@@ -79,6 +80,7 @@ import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
+import { productionStationPoJob, sortProductionStationJobs } from "@/lib/productionStationSorting";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 
 type ProductionStatus = ProductionBoardTab;
@@ -1351,6 +1353,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     return saved === "compact" || saved === "large" ? saved : "normal";
   });
   const [printerFilter, setPrinterFilter] = useState("all");
+  const { sort, toggleSort } = useProductionStationSort("roll");
 
   useEffect(() => {
     window.localStorage.setItem("titan.production.roll.previewSize", previewSize);
@@ -1380,9 +1383,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     return tabJobs.filter((job) => String((job as any).assignedPrinterName || "").trim() === printerFilter);
   }, [tabJobs, printerFilter]);
 
-  const sortedJobs = useMemo(() => {
-    return [...jobsSafe];
-  }, [jobsSafe]);
+  const sortedJobs = useMemo(() => sortProductionStationJobs(jobsSafe, sort), [jobsSafe, sort]);
   const queueJobs = sortedJobs;
   const allBulkEligibleJobs = useMemo(
     () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
@@ -1634,27 +1635,28 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[44px]">SELECT</TableHead>
-                  <TableHead>CLIENT</TableHead>
-                  <TableHead className="w-[100px]">ORDER #</TableHead>
+                  <ProductionStationSortHeader field="customer" sort={sort} onSort={toggleSort}>CLIENT</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="order" sort={sort} onSort={toggleSort} className="w-[100px]">ORDER #</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="poJob" sort={sort} onSort={toggleSort} className="w-[180px]">PO / JOB</ProductionStationSortHeader>
                   <TableHead className="w-[120px]">ART</TableHead>
-                  <TableHead className="w-[140px]">MEDIA</TableHead>
-                  <TableHead className="w-[200px]">DUE DATE</TableHead>
-                  <TableHead className="text-right w-[80px]">QTY</TableHead>
-                  <TableHead className="text-right w-[80px]">SIDES</TableHead>
-                  <TableHead className="w-[120px]">MACHINE</TableHead>
-                  <TableHead className="w-[140px]">STATUS</TableHead>
+                  <ProductionStationSortHeader field="media" sort={sort} onSort={toggleSort} className="w-[140px]">MEDIA</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="due" sort={sort} onSort={toggleSort} className="w-[200px]">DUE DATE</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="qty" sort={sort} onSort={toggleSort} align="right" className="text-right w-[80px]">QTY</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="sides" sort={sort} onSort={toggleSort} align="right" className="text-right w-[80px]">SIDES</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="machine" sort={sort} onSort={toggleSort} className="w-[120px]">MACHINE</ProductionStationSortHeader>
+                  <ProductionStationSortHeader field="status" sort={sort} onSort={toggleSort} className="w-[140px]">STATUS</ProductionStationSortHeader>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {printerFilter !== "all" ? (
-                  <TableRow><TableCell colSpan={12} className="text-sm">
+                  <TableRow><TableCell colSpan={11} className="text-sm">
                     Printer filter: {printerFilter}. Showing {queueJobs.length} of {tabJobs.length} work units in this tab.
                     <button type="button" className="ml-2 underline" onClick={() => setPrinterFilter("all")}>Clear printer filter</button>
                   </TableCell></TableRow>
                 ) : null}
                 {queueJobs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-8 text-center text-sm text-titan-text-muted">
+                    <TableCell colSpan={11} className="py-8 text-center text-sm text-titan-text-muted">
                       No jobs match this printer filter.
                     </TableCell>
                   </TableRow>
@@ -1685,6 +1687,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
 
                   // Extract order number and ID for linking
                   const orderNumber = getProductionOrderNumber(job, productionNumberDisplayMode) || (job as any).orderNumber || job.order?.orderNumber || "—";
+                  const poJob = productionStationPoJob(job);
                   const orderId = (job as any).orderId || job.order?.id;
                   const customerId = (job as any).customerId || (job.order as any)?.customerId;
 
@@ -1747,6 +1750,10 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                         ) : (
                           <span className="text-sm text-titan-text-muted">{orderNumber}</span>
                         )}
+                      </TableCell>
+                      <TableCell className="max-w-[180px] py-5 text-sm">
+                        <div className="truncate" title={poJob.po ?? poJob.job ?? undefined}>{poJob.po ? `PO # ${poJob.po}` : poJob.job ?? "—"}</div>
+                        {poJob.po && poJob.job ? <div className="truncate text-xs text-titan-text-muted" title={poJob.job}>{poJob.job}</div> : null}
                       </TableCell>
                       <TableCell className="py-5">
                         <div className="flex items-center gap-1.5">
