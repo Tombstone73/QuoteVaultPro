@@ -81,6 +81,7 @@ describe("OrderTravelerPage print-only notes", () => {
     await renderTraveler();
     expect(container.querySelector('[data-testid="traveler-print-note"]')).toBeNull();
     expect(container.querySelector('[data-traveler-ready="true"]')).toBeTruthy();
+    expect(container.textContent).toContain("Scan to open order in Printers Hero");
   });
 
   test("renders the exact browser-print note after line items and before the QR footer", async () => {
@@ -171,8 +172,8 @@ describe("OrderTravelerPage print-only notes", () => {
     } as any);
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(8);
-    expect(container.textContent).toContain("Box 1 of 8");
-    expect(container.textContent).toContain("Box 8 of 8");
+    expect(container.textContent).toContain("BOX 1 of 8");
+    expect(container.textContent).toContain("BOX 8 of 8");
     expect(container.textContent).toContain("This pickup: 250");
     expect(container.textContent).not.toContain("DO NOT PRINT");
     expect(container.querySelectorAll('[data-traveler-feed-sentinel="true"]')).toHaveLength(0);
@@ -218,7 +219,7 @@ describe("Pickup Traveler planned progress", () => {
     expect(container.textContent).not.toContain("Total Qty");
     expect(container.textContent).not.toContain("Pickup Qty");
     expect(container.textContent).not.toContain("Pickup 1 of");
-    expect(container.textContent).toContain("Box 3 of 3");
+    expect(container.textContent).toContain("BOX 3 of 3");
     expect(container.querySelectorAll('img[alt="Order QR code"]')).toHaveLength(3);
   });
 
@@ -249,8 +250,8 @@ describe("Pickup Traveler planned progress", () => {
 describe("Pickup Traveler optional boxes and reversal status", () => {
   test.each([
     [null, undefined, ""],
-    [{ current: 1, total: 1 }, undefined, "Box 1 of 1"],
-    [{ current: 2, total: 3 }, "COMPLETED", "Box 2 of 3"],
+    [{ current: 1, total: 1 }, undefined, "BOX 1 of 1"],
+    [{ current: 2, total: 5 }, "COMPLETED", "BOX 2 of 5"],
     [null, "REVERSED", "REVERSED"],
     [{ current: 2, total: 3 }, "PARTIALLY_REVERSED", "PARTIALLY REVERSED"],
   ])("renders saved label %j and status %s", async (box, pickupStatus, expected) => {
@@ -264,7 +265,8 @@ describe("Pickup Traveler optional boxes and reversal status", () => {
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(1);
     expect(container.textContent).toContain(expected);
-    if (!box) expect(container.textContent).not.toContain("Box ");
+    if (!box) expect(container.textContent).not.toContain("BOX ");
+    expect(container.textContent).not.toContain("Scan to open order in Printers Hero");
     expect(container.textContent).not.toContain("Not pickup confirmation");
     expect(container.textContent).not.toContain("Planned quantities");
     expect(container.textContent).toContain("After pickup: 400 / 500");
@@ -274,5 +276,25 @@ describe("Pickup Traveler optional boxes and reversal status", () => {
     expect(container.textContent).toContain("Acme Signs Inc.");
     expect(container.querySelector('img[alt="Order QR code"]')).toBeTruthy();
     expect((container.querySelector('[data-traveler-ready]') as HTMLElement).style.breakBefore).toBe("");
+  });
+
+  test.each([
+    [false, ""],
+    [true, "BOX ____ of ____"],
+  ])("renders saved blank-fields choice %s without changing pickup progress", async (printBlankBoxFields, expected) => {
+    const lineQuantities = [{ orderLineItemId: "line-1", quantity: 150 }];
+    const progressSnapshot = buildPickupTravelerProgressSnapshot([{ id: "line-1", production: { orderedQuantity: 500, pickedUpQuantity: 250, remainingQuantity: 250 } }], lineQuantities, "2026-09-25T12:00:00Z");
+    useQueryMock.mockReturnValue({ data: { ...travelerSource,
+      pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 1, box: null, printBlankBoxFields, lineQuantities, progressSnapshot },
+      lineItems: [{ ...travelerSource.lineItems[0], quantity: 150, pickupProgress: progressSnapshot.lines[0] }],
+    }, isLoading: false, error: null } as any);
+    mockSearchParams = new URLSearchParams({ directPrintJobId: "saved-pickup" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(1);
+    expect(container.textContent).toContain(expected);
+    if (!printBlankBoxFields) expect(container.textContent).not.toContain("BOX ");
+    expect(container.textContent).toContain("After pickup: 400 / 500");
+    expect(container.querySelector('img[alt="Order QR code"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Scan to open order in Printers Hero");
   });
 });

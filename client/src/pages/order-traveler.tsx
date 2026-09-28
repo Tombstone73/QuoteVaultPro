@@ -179,7 +179,9 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
             {pickupContext ? "Pickup Traveler" : "Order Traveler"}
           </ThermalValue>
           {data.pickupStatus === "REVERSED" || data.pickupStatus === "PARTIALLY_REVERSED" ? <ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>{data.pickupStatus === "REVERSED" ? "REVERSED" : "PARTIALLY REVERSED"}</ThermalValue> : null}
-          {pickupContext && boxIndex ? <><ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>Box {boxIndex} of {pickupContext.box?.total ?? pickupContext.boxCount}</ThermalValue><ThermalDivider heavy /></> : null}
+          {pickupContext && (boxIndex || pickupContext.printBlankBoxFields) ? <ThermalValue align="center" size="large" style={{ marginTop: "1mm" }}>
+            {boxIndex ? `BOX ${boxIndex} of ${pickupContext.box?.total ?? pickupContext.boxCount}` : "BOX ____ of ____"}
+          </ThermalValue> : null}
           <ThermalDivider heavy />
 
           {traveler.headerRows.map((row) => (
@@ -257,7 +259,7 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
           <ThermalQrBlock
             qrDataUrl={qrDataUrl}
             alt="Order QR code"
-            instruction="Scan to open order in Printers Hero"
+            instruction={pickupContext ? undefined : "Scan to open order in Printers Hero"}
             timestamp={`Printed ${new Date().toLocaleString()}`}
           />
           </ThermalPrintPage>

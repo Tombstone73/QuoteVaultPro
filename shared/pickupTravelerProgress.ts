@@ -14,7 +14,7 @@ export const pickupTravelerBoxSchema = z.object({ currentBox: optionalBoxNumber,
 
 export type PickupTravelerHistoryEntry = {
   id: string; createdAt: string; pickupHandoffId: string | null;
-  box: { current: number; total: number } | null; legacyBoxCount?: number;
+  box: { current: number; total: number } | null; printBlankBoxFields?: boolean; legacyBoxCount?: number;
   lines: Array<{ orderLineItemId: string; quantity: number; description: string }>;
 };
 export type PickupReversalHistory = {
@@ -98,6 +98,7 @@ export function pickupTravelerContext(value: unknown): PickupTravelerPrintContex
   const context = value as PickupTravelerPrintContext;
   if (context.box !== undefined && context.box !== null && (!quantity(context.box.current) || !quantity(context.box.total)
     || context.box.current < 1 || context.box.current > context.box.total)) return null;
+  if (context.printBlankBoxFields !== undefined && typeof context.printBlankBoxFields !== "boolean") return null;
   if ([context.pickupHandoffId, context.reprintOf].some(id => id !== undefined && (typeof id !== "string" || !id))) return null;
   if (context.fulfillmentMode !== "pickup" || !quantity(context.boxCount) || context.boxCount < 1 || context.boxCount > 100
     || !Array.isArray(context.lineQuantities) || !context.lineQuantities.length) return null;
@@ -132,6 +133,7 @@ export function pickupTravelerContext(value: unknown): PickupTravelerPrintContex
   }
   return { fulfillmentMode: "pickup", boxCount: context.boxCount, lineQuantities: context.lineQuantities,
     ...(context.box !== undefined ? { box: context.box } : {}),
+    ...(context.printBlankBoxFields !== undefined ? { printBlankBoxFields: context.printBlankBoxFields } : {}),
     ...(context.pickupHandoffId ? { pickupHandoffId: context.pickupHandoffId } : {}),
     ...(context.reprintOf ? { reprintOf: context.reprintOf } : {}),
     ...(context.documentSnapshot ? { documentSnapshot: context.documentSnapshot } : {}),

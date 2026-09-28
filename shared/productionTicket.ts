@@ -407,6 +407,8 @@ export interface TravelerLineItemSource {
 export interface PickupTravelerPrintContext {
   /** Explicit manual package label; null omits it. Undefined preserves legacy batches. */
   box?: { current: number; total: number } | null;
+  /** Print empty handwriting fields when no actual box pair was entered. */
+  printBlankBoxFields?: boolean;
   /** Bound only by the validated Complete Pickup transaction. */
   pickupHandoffId?: string;
   reprintOf?: string;

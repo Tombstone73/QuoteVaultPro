@@ -84,4 +84,13 @@ describe("Pickup Traveler canonical preparation snapshot", () => {
     expect(pickupTravelerContext({ ...valid, lineQuantities: request(200) })).toBeNull();
     expect(pickupTravelerContext({ ...legacy, lineQuantities: [...request(150), ...request(150)] })).toBeNull();
   });
+  test("saved blank-box choice survives context validation without altering the pickup snapshot", () => {
+    const base = { fulfillmentMode: "pickup" as const, boxCount: 1, box: null, lineQuantities: request(150),
+      progressSnapshot: buildPickupTravelerProgressSnapshot([canonical(500, 250)], request(150), preparedAt) };
+    for (const printBlankBoxFields of [false, true]) {
+      const saved = { ...base, printBlankBoxFields };
+      expect(pickupTravelerContext(JSON.parse(JSON.stringify(saved)))).toEqual(saved);
+    }
+    expect(pickupTravelerContext({ ...base, printBlankBoxFields: "yes" })).toBeNull();
+  });
 });

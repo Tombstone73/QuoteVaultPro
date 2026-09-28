@@ -31,6 +31,22 @@ test.each([["", ""], ["1", "1"], ["2", "3"]])("queues manual package pair %s / %
   expect(JSON.parse((mockApi.mock.calls[0][1] as any).body)).toMatchObject({ currentBox, totalBoxes, lineQuantities: [{ orderLineItemId: "signs", quantity: 150 }] });
   expect(queued).toHaveBeenCalledWith("prepared-job");
 });
+test("queues blank handwriting fields, then allows clearing a partial number", async () => {
+  await act(async () => root.render(<PickupTravelerPrintDialog orderId="order" lines={lines} open onOpenChange={() => {}} />));
+  act(() => { change("pickup-current-box", "2"); Simulate.click(document.getElementById("pickup-blank-box-fields")!); });
+  await print("Print Traveler");
+  expect(mockApi).not.toHaveBeenCalled();
+  expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Invalid box numbers" }));
+  act(() => change("pickup-current-box", ""));
+  await print("Print Traveler");
+  expect(JSON.parse((mockApi.mock.calls[0][1] as any).body)).toMatchObject({ currentBox: "", totalBoxes: "", printBlankBoxFields: true });
+});
+test("actual numbers take priority when blank handwriting fields are selected", async () => {
+  await act(async () => root.render(<PickupTravelerPrintDialog orderId="order" lines={lines} open onOpenChange={() => {}} />));
+  act(() => { change("pickup-current-box", "2"); change("pickup-total-boxes", "5"); Simulate.click(document.getElementById("pickup-blank-box-fields")!); });
+  await print("Print Traveler");
+  expect(JSON.parse((mockApi.mock.calls[0][1] as any).body)).toMatchObject({ currentBox: "2", totalBoxes: "5", printBlankBoxFields: true });
+});
 test.each([["1", ""], ["", "3"], ["4", "3"], ["abc", "3"]])("rejects invalid manual pair %s / %s before queueing", async (currentBox, totalBoxes) => {
   await act(async () => root.render(<PickupTravelerPrintDialog orderId="order" lines={lines} open onOpenChange={() => {}} />));
   act(() => { change("pickup-current-box", currentBox); change("pickup-total-boxes", totalBoxes); });
@@ -47,6 +63,12 @@ test("completed/reversed reprint submits only the saved reference, never changed
   expect(JSON.parse((mockApi.mock.calls[0][1] as any).body)).toEqual({ destinationId: "printer", reprintJobId: "prepared-job", requestKey: "print-key" });
   expect(queued).not.toHaveBeenCalled();
 });
+test.each([[true, "BOX ____ of ____"], [false, "No box label"]])("reprint shows saved blank-fields choice %s", async (printBlankBoxFields, expected) => {
+  await act(async () => root.render(<PickupTravelerPrintDialog orderId="order" lines={[]} open reprint={{ ...saved, box: null, printBlankBoxFields }} onOpenChange={() => {}} />));
+  expect(document.body.textContent).toContain(expected);
+  await print("Reprint Traveler");
+  expect(JSON.parse((mockApi.mock.calls[0][1] as any).body)).toEqual({ destinationId: "printer", reprintJobId: "prepared-job", requestKey: "print-key" });
+});
 test.each(["COMPLETED", "REVERSED", "PARTIALLY_REVERSED"])("history retains %s event and reprint access with zero remaining order quantity", async status => {
   const reprint = jest.fn(), reverse = jest.fn();
   const detail: any = { fulfillmentType: "PICKUP", remainingQuantity: 0, permissions: { canReverseTerminalFulfillment: true }, pickupTravelers: [saved],
@@ -58,4 +80,14 @@ test.each(["COMPLETED", "REVERSED", "PARTIALLY_REVERSED"])("history retains %s e
   expect(reverse).not.toHaveBeenCalled();
   if (status !== "COMPLETED") expect(container.textContent).toContain("Dale — Entered in error");
   if (status === "REVERSED") expect(container.textContent).not.toContain("Reverse Pickup");
+});
+test("history identifies a saved blank-fields Traveler for reprint", async () => {
+  const blank = { ...saved, box: null, printBlankBoxFields: true };
+  const detail: any = { fulfillmentType: "PICKUP", remainingQuantity: 0, permissions: {}, pickupTravelers: [blank], pickupHandoffs: [
+    { id: "handoff", status: "COMPLETED", handedOffAt: saved.createdAt, items: lines, reversals: [] },
+  ] };
+  const reprint = jest.fn();
+  await act(async () => root.render(<PickupHistory detail={detail} selectedTravelerIds={[]} onToggle={() => {}} onReprint={reprint} onReverse={() => {}} />));
+  await print("Reprint Traveler · BOX ____ of ____");
+  expect(reprint).toHaveBeenCalledWith(blank);
 });

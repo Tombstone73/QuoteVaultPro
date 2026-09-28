@@ -38,7 +38,8 @@ export async function listPickupTravelers(executor: any, orgId: string, orderId:
     const context = pickupTravelerContext(job.printContext);
     if (!context || context.reprintOf) return [];
     return [{ id: job.id, createdAt: new Date(job.createdAt).toISOString(), pickupHandoffId: context.pickupHandoffId ?? null,
-      box: context.box ?? null, ...(context.box === undefined ? { legacyBoxCount: context.boxCount } : {}),
+      box: context.box ?? null, ...(context.printBlankBoxFields !== undefined ? { printBlankBoxFields: context.printBlankBoxFields } : {}),
+      ...(context.box === undefined ? { legacyBoxCount: context.boxCount } : {}),
       lines: context.lineQuantities.map(l => ({ ...l, description: context.documentSnapshot?.lineItems.find(d => d.orderLineItemId === l.orderLineItemId)?.description || "Line item" })) }];
   });
 }

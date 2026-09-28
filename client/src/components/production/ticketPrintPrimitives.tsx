@@ -144,7 +144,7 @@ export function ThermalQrBlock({
 }: {
   qrDataUrl: string | null;
   alt: string;
-  instruction: string;
+  instruction?: string;
   timestamp: string;
   unavailableText?: string;
   children?: ReactNode;
@@ -171,9 +171,9 @@ export function ThermalQrBlock({
         </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: "15px", fontWeight: 900, lineHeight: 1.12 }}>
+        {instruction ? <div style={{ fontSize: "15px", fontWeight: 900, lineHeight: 1.12 }}>
           {instruction}
-        </div>
+        </div> : null}
         {children}
         <div style={{ fontSize: "13px", fontWeight: 800, lineHeight: 1.12, marginTop: "1.5mm" }}>
           {timestamp}

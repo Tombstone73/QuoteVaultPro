@@ -58,11 +58,32 @@ test("completion-event snapshot prints through the same endpoint", async () => {
 test("new preparation uses current canonical quantities and omits unspecified box label", async () => {
   expect((await request({ destinationId: "printer", currentBox: "", totalBoxes: "", lineQuantities })).code).toBe(202);
   expect(detail).toHaveBeenCalledWith("org", "order");
-  expect(writes[0].values.printContext).toMatchObject({ box: null, boxCount: 1,
+  expect(writes[0].values.printContext).toMatchObject({ box: null, printBlankBoxFields: false, boxCount: 1,
     progressSnapshot: { lines: [{ afterPickupQuantity: 400, remainingAfterPickupQuantity: 100 }] }, documentSnapshot: { orderNumber: "20538" } });
+});
+test.each([
+  ["blank fields", "", "", true, null],
+  ["one box", "1", "1", false, { current: 1, total: 1 }],
+  ["actual wins", "2", "5", true, { current: 2, total: 5 }],
+])("saves %s in print-only context", async (_label, currentBox, totalBoxes, printBlankBoxFields, box) => {
+  expect((await request({ destinationId: "printer", currentBox, totalBoxes, printBlankBoxFields, lineQuantities })).code).toBe(202);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].values.printContext).toMatchObject({ box, printBlankBoxFields });
+});
+test.each([
+  [null, true],
+  [null, false],
+  [{ current: 2, total: 5 }, true],
+])("reprints saved box mode %j / %s without fulfillment writes", async (box, printBlankBoxFields) => {
+  rows.direct_print_jobs = [{ printContext: { ...context, box, printBlankBoxFields } }];
+  expect((await request({ destinationId: "printer", reprintJobId: "original-job" })).code).toBe(202);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].values.printContext).toMatchObject({ box, printBlankBoxFields, reprintOf: "original-job" });
+  expect(detail).not.toHaveBeenCalled();
 });
 test("invalid box pair and altered reprint snapshots are rejected without a write", async () => {
   expect((await request({ destinationId: "printer", currentBox: 4, totalBoxes: 3, lineQuantities })).code).toBe(400);
+  expect((await request({ destinationId: "printer", currentBox: 2, totalBoxes: "", printBlankBoxFields: true, lineQuantities })).code).toBe(400);
   expect((await request({ destinationId: "printer", reprintJobId: "original-job", lineQuantities })).code).toBe(400);
   expect(writes).toEqual([]);
 });

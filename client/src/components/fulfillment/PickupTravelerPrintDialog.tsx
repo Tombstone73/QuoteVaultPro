@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +20,7 @@ export function PickupTravelerPrintDialog({ orderId, lines, open, onOpenChange, 
   const [destinationId, setDestinationId] = useState("");
   const [currentBox, setCurrentBox] = useState("");
   const [totalBoxes, setTotalBoxes] = useState("");
+  const [printBlankBoxFields, setPrintBlankBoxFields] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const requestKey = useRef<string | null>(null);
   const query = useQuery<Destination[]>({ queryKey: ["/api/direct-print/traveler-destinations"], enabled: open,
@@ -26,9 +28,9 @@ export function PickupTravelerPrintDialog({ orderId, lines, open, onOpenChange, 
   const destinations = query.data ?? [];
   const selected = destinations.find(item => item.id === destinationId);
   useEffect(() => { if (!open || destinationId) return; const target = destinations.find(item => item.isDefault && item.available) ?? destinations.find(item => item.available); if (target) setDestinationId(target.id); }, [open, destinationId, destinations]);
-  useEffect(() => { if (!open) { setCurrentBox(""); setTotalBoxes(""); requestKey.current = null; } }, [open]);
+  useEffect(() => { if (!open) { setCurrentBox(""); setTotalBoxes(""); setPrintBlankBoxFields(false); requestKey.current = null; } }, [open]);
   const lineKey = JSON.stringify(lines);
-  useEffect(() => { requestKey.current = null; }, [currentBox, totalBoxes, destinationId, reprint?.id, lineKey]);
+  useEffect(() => { requestKey.current = null; }, [currentBox, totalBoxes, printBlankBoxFields, destinationId, reprint?.id, lineKey]);
   const visibleLines = reprint?.lines ?? lines;
 
   async function print() {
@@ -39,7 +41,7 @@ export function PickupTravelerPrintDialog({ orderId, lines, open, onOpenChange, 
     const key = requestKey.current ?? crypto.randomUUID(); requestKey.current = key; setSubmitting(true);
     try {
       const body = reprint ? { destinationId, reprintJobId: reprint.id, requestKey: key } : {
-        destinationId, currentBox, totalBoxes, lineQuantities: lines.map(({ orderLineItemId, quantity }) => ({ orderLineItemId, quantity })), requestKey: key,
+        destinationId, currentBox, totalBoxes, printBlankBoxFields, lineQuantities: lines.map(({ orderLineItemId, quantity }) => ({ orderLineItemId, quantity })), requestKey: key,
       };
       const r = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/direct-print/pickup-travelers`, {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body),
@@ -60,9 +62,12 @@ export function PickupTravelerPrintDialog({ orderId, lines, open, onOpenChange, 
       <div className="rounded border bg-muted/30 p-3"><p className="text-sm font-semibold">Pickup quantities</p><div className="mt-2 space-y-1 text-sm">{visibleLines.map(line => <div key={line.orderLineItemId} className="flex justify-between gap-3"><span>{line.description}</span><strong>{line.quantity}</strong></div>)}</div></div>
       <div className="space-y-1.5"><Label>Printer / Destination</Label><Select value={destinationId} onValueChange={setDestinationId}><SelectTrigger><SelectValue placeholder="Select a destination" /></SelectTrigger><SelectContent>{destinations.map(item => <SelectItem key={item.id} value={item.id} disabled={!item.available}>{item.displayName}{item.location ? ` — ${item.location}` : ""}{item.available ? "" : " (offline)"}</SelectItem>)}</SelectContent></Select></div>
       {query.isError && <div role="alert">Could not load printers. <Button variant="outline" onClick={() => void query.refetch()}>Retry</Button></div>}
-      {reprint ? <p className="text-sm">{reprint.box ? `Box ${reprint.box.current} of ${reprint.box.total}` : reprint.legacyBoxCount ? `Saved batch: ${reprint.legacyBoxCount} boxes` : "No box label"}</p> : <div className="flex items-end gap-2">
-        <div><Label htmlFor="pickup-current-box">Box (optional)</Label><Input id="pickup-current-box" inputMode="numeric" value={currentBox} onChange={e => setCurrentBox(e.target.value)} /></div>
-        <span className="pb-2">of</span><div><Label htmlFor="pickup-total-boxes">Total boxes (optional)</Label><Input id="pickup-total-boxes" inputMode="numeric" value={totalBoxes} onChange={e => setTotalBoxes(e.target.value)} /></div>
+      {reprint ? <p className="text-sm">{reprint.box ? `Box ${reprint.box.current} of ${reprint.box.total}` : reprint.printBlankBoxFields ? "BOX ____ of ____" : reprint.legacyBoxCount ? `Saved batch: ${reprint.legacyBoxCount} boxes` : "No box label"}</p> : <div className="space-y-3">
+        <div className="flex items-end gap-2">
+          <div><Label htmlFor="pickup-current-box">Box (optional)</Label><Input id="pickup-current-box" inputMode="numeric" value={currentBox} onChange={e => setCurrentBox(e.target.value)} /></div>
+          <span className="pb-2">of</span><div><Label htmlFor="pickup-total-boxes">Total boxes (optional)</Label><Input id="pickup-total-boxes" inputMode="numeric" value={totalBoxes} onChange={e => setTotalBoxes(e.target.value)} /></div>
+        </div>
+        <div className="flex items-center gap-2"><Checkbox id="pickup-blank-box-fields" checked={printBlankBoxFields} onCheckedChange={checked => setPrintBlankBoxFields(checked === true)} /><Label htmlFor="pickup-blank-box-fields">Print blank box fields</Label></div>
       </div>}
     </div><DialogFooter><Button variant="outline" disabled={submitting} onClick={() => onOpenChange(false)}>Cancel</Button>
       <Button onClick={() => void print()} disabled={query.isLoading || submitting || !selected?.available || (!reprint && !lines.length)}>{submitting ? "Queueing…" : reprint ? "Reprint Traveler" : "Print Traveler"}</Button>

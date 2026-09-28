@@ -13,7 +13,7 @@ export function PickupHistory({ detail, selectedTravelerIds, onToggle, onReprint
   const travelers = detail.pickupTravelers ?? [];
   const prepared = travelers.filter(t => !t.pickupHandoffId);
   const reprint = (t: PickupTravelerHistoryEntry) => <button key={t.id} type="button" className="rounded border px-3 py-2" onClick={() => onReprint(t)}>
-    {t.id.startsWith("handoff:") ? "Print Traveler" : "Reprint Traveler"}{t.box ? ` · Box ${t.box.current} of ${t.box.total}` : ""}
+    {t.id.startsWith("handoff:") ? "Print Traveler" : "Reprint Traveler"}{t.box ? ` · Box ${t.box.current} of ${t.box.total}` : t.printBlankBoxFields ? " · BOX ____ of ____" : ""}
   </button>;
   return <>
     {prepared.length > 0 && <section className="rounded-xl border bg-card p-4" data-testid="prepared-travelers">

@@ -18,7 +18,7 @@ import { supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
 const pickupTravelerPrintSchema = z.union([
   z.object({ destinationId: z.string().min(1), reprintJobId: z.string().min(1), requestKey: z.string().min(1).max(160).optional() }).strict(),
   z.object({
-    destinationId: z.string().min(1), currentBox: z.unknown().optional(), totalBoxes: z.unknown().optional(),
+    destinationId: z.string().min(1), currentBox: z.unknown().optional(), totalBoxes: z.unknown().optional(), printBlankBoxFields: z.boolean().optional(),
     lineQuantities: z.array(z.object({ orderLineItemId: z.string().min(1), quantity: z.coerce.number().int().positive() })).min(1).max(100),
     requestKey: z.string().min(1).max(160).optional(),
   }).strict(),
@@ -282,7 +282,7 @@ export function registerPrinterProfileRoutes(
           }
           seen.add(item.orderLineItemId);
         }
-        printContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: 1, box,
+        printContext = { fulfillmentMode: "pickup", lineQuantities: parsed.lineQuantities, boxCount: 1, box, printBlankBoxFields: parsed.printBlankBoxFields ?? false,
           progressSnapshot: buildPickupTravelerProgressSnapshot(detail.lineItems, parsed.lineQuantities, new Date().toISOString()) };
         const source = await getOrderTravelerSource(organizationId, orderId, printContext);
         if (!source) return res.status(404).json({ success: false, error: "Order not found." });
