@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { capabilityIds } from "../../src/authorization/capabilities.js";
-import { teamCapabilityGroups, parseCapabilities } from "../../src/modules/organization/teamAccess.js";
+import { teamCapabilityGroups, parseCapabilities, parseTenantStaffCapabilities } from "../../src/modules/organization/teamAccess.js";
 
-assert.ok(teamCapabilityGroups.some((group)=>group.key==="permissions"&&group.capabilities.some((capability)=>capability.id==="permissions.manageSets"&&capability.sensitive)));
-assert.deepEqual([...teamCapabilityGroups.flatMap((group)=>group.capabilities.map((capability)=>capability.id))].sort(),[...capabilityIds].sort(),"every canonical capability is present in the role editor");
+assert.ok(teamCapabilityGroups.some((group)=>group.key==="permissions"&&group.capabilities.some((capability)=>capability.id==="permissions.view"&&capability.sensitive===false)));
+assert.ok(!teamCapabilityGroups.flatMap((group)=>group.capabilities).some((capability)=>capability.id==="permissions.manageSets"),"system-protected authority is not selectable in custom Staff roles");
+assert.deepEqual([...teamCapabilityGroups.flatMap((group)=>group.capabilities.map((capability)=>capability.id))].sort(),capabilityIds.filter((capability)=>!['permissions.manageSets','permissions.assignStaff','permissions.assignPortal'].includes(capability)).sort(),"the role editor presents every structurally delegable tenant Staff capability");
 assert.deepEqual(parseCapabilities(["quote.view","quote.view"]),["quote.view"]);
 assert.throws(()=>parseCapabilities(["not-a-capability"]),/known capability IDs/);
+assert.deepEqual(parseTenantStaffCapabilities(["payment.view","payment.record"]),["payment.record","payment.view"]);
+assert.throws(()=>parseTenantStaffCapabilities(["permissions.manageSets"]),/system-protected/u);
 const migration=readFileSync(resolve("server/db/migrations_v2/0235_v2_team_access_membership_bootstrap.sql"),"utf8");
 assert.match(migration,/v2_bootstrap_permission_membership/u);
 assert.match(migration,/legacy_role_bootstrap/u);
@@ -24,6 +27,8 @@ const teamAccess=readFileSync(resolve("v2/infrastructure/organization/postgresTe
 assert.match(teamAccess,/bootstrapPortalAccess/u);
 assert.match(teamAccess,/cloneStaffSet/u);
 assert.match(teamAccess,/permission_set_cloned/u);
+assert.match(teamAccess,/assertActiveStaffCapabilities/u);
+assert.doesNotMatch(teamAccess,/Permission administrators cannot grant a capability they do not currently hold/u);
 assert.match(teamAccess,/effectivePermissions/u);
 assert.match(teamAccess,/customer_contact_links/u);
 assert.match(teamAccess,/sendPortalInvitation/u);
@@ -34,6 +39,7 @@ assert.match(bootstrap,/LEFT JOIN v2_permission_set_capabilities[\s\S]*FOR UPDAT
 const resend = teamAccess.slice(teamAccess.indexOf("async resendPortalSetup"), teamAccess.indexOf("async setPortalAccessStatus"));
 assert.match(resend,/LEFT JOIN customer_contacts[\s\S]*FOR UPDATE OF a/u, "portal setup resend must lock only the Portal access row, not nullable contact joins");
 const replaceStaff = teamAccess.slice(teamAccess.indexOf("async replaceStaffAssignments"), teamAccess.indexOf("async replacePortalAssignments"));
+assert.doesNotMatch(replaceStaff,/this\.ceiling/u,"canonical Team & Access managers may assign valid active Staff roles without self-capability comparison");
 assert.match(replaceStaff,/LEFT JOIN v2_permission_set_capabilities[\s\S]*FOR UPDATE OF s/u, "staff assignment must lock only the permission-set row");
 const replacePortal = teamAccess.slice(teamAccess.indexOf("async replacePortalAssignments"), teamAccess.indexOf("private async sets"));
 assert.doesNotMatch(replacePortal,/this\.ceiling\(actor, found\.rows/u, "portal-role assignment must not require portal-user capabilities on Staff");

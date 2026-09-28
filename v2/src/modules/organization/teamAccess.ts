@@ -10,6 +10,16 @@ const sensitiveCapabilities = new Set<Capability>([
   "route.manageTemplates", "workflow.override",
 ]);
 
+/** Team & Access mutation is owned by canonical Owner, Administrator, and
+ * Platform Developer authority. These legacy capability IDs neither confer
+ * that authority nor belong in tenant-created Staff roles. */
+const tenantStaffNonDelegableCapabilities = new Set<Capability>([
+  "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal",
+]);
+
+export const isTenantStaffDelegableCapability = (capability: Capability): boolean =>
+  !tenantStaffNonDelegableCapabilities.has(capability);
+
 const capabilityLabels: Readonly<Record<Capability, string>> = {
   "quote.view": "View quotes", "quote.create": "Create quotes", "quote.edit": "Edit quotes", "quote.send": "Send quotes", "quote.convert": "Convert quotes", "quote.overridePrice": "Override quote price",
   "order.view": "View orders", "order.create": "Create orders", "order.edit": "Edit orders", "order.cancel": "Cancel orders", "order.overridePrice": "Override order price",
@@ -60,7 +70,7 @@ export const teamCapabilityGroups: readonly TeamCapabilityGroup[] = Object.freez
   group("inbound", "Inbound", ["inbound.view", "inbound.review"]),
   group("communications", "Communications", ["communications.configure"]),
   group("organization", "Organization", ["organization.configure", "numbering.configure"]),
-  group("permissions", "Permissions & Security", ["permissions.view", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal"]),
+  group("permissions", "Permissions & Security", ["permissions.view"]),
   group("assistant", "Assistant", ["assistant.use"]),
 ]);
 
@@ -68,6 +78,16 @@ export const parseCapabilities = (value: unknown): readonly Capability[] => {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !isCapability(item)))
     throw new V2ApplicationError("VALIDATION_ERROR", "Capabilities must be known capability IDs.");
   return [...new Set(value)].sort() as Capability[];
+};
+
+/** Validates the static, principal-kind-safe part of a custom Staff role.
+ * Database-active status is checked by the transactional Team & Access
+ * adapter immediately before a role is persisted. */
+export const parseTenantStaffCapabilities = (value: unknown): readonly Capability[] => {
+  const capabilities = parseCapabilities(value);
+  const protectedCapabilities = capabilities.filter((capability) => !isTenantStaffDelegableCapability(capability));
+  if (protectedCapabilities.length) throw new V2ApplicationError("VALIDATION_ERROR", `These capabilities are system-protected and cannot be granted through a custom Staff role: ${protectedCapabilities.join(", ")}.`);
+  return capabilities;
 };
 
 export const requiredString = (value: unknown, field: string): string => {

@@ -5,7 +5,7 @@ import type { Capability } from "../../src/authorization/capabilities.js";
 import type { StaffPrincipal } from "../../src/authorization/principals.js";
 import { principalSubject } from "../../src/authorization/principals.js";
 import { canManageTeamAccess } from "../../src/authorization/teamAccessAuthority.js";
-import { parseCapabilities, teamCapabilityGroups } from "../../src/modules/organization/teamAccess.js";
+import { parseCapabilities, parseTenantStaffCapabilities, teamCapabilityGroups } from "../../src/modules/organization/teamAccess.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import { PostgresEmailIntegrationService } from "../communications/postgresEmailIntegration.js";
 import { shouldCaptureM77fQaPortalSetup } from "../communications/m77fQaProofDeliverySafety.js";
@@ -227,10 +227,11 @@ export class PostgresTeamAccess {
   }
 
   async createCustomSet(actor: StaffPrincipal, organizationId: string, input: { name: string; description?: string; principalKind?: "staff" | "portal"; capabilities: readonly Capability[] }, context: Context): Promise<{ permissionSetId: string }> {
-    const id = randomBytes(18).toString("base64url"); const capabilities = parseCapabilities(input.capabilities);
+    const id = randomBytes(18).toString("base64url"); const capabilities = parseTenantStaffCapabilities(input.capabilities);
     return this.mutate(actor, organizationId, "permission_set_created", { permissionSetId: id, name: input.name, capabilities }, context, async (client) => {
-      this.ceiling(actor, capabilities); if (!input.name.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "Permission-set name is required.");
-      await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,description,principal_kind) VALUES($1,$2,$3,$4,$5,$6)", [id, organizationId, input.name.trim(), normalized(input.name), input.description?.trim() || null, input.principalKind ?? "staff"]);
+      await this.assertActiveStaffCapabilities(client, capabilities); if (!input.name.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "Permission-set name is required.");
+      if (input.principalKind !== undefined && input.principalKind !== "staff") throw new V2ApplicationError("VALIDATION_ERROR", "Custom roles in Team & Access are Staff roles.");
+      await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,description,principal_kind) VALUES($1,$2,$3,$4,$5,'staff')", [id, organizationId, input.name.trim(), normalized(input.name), input.description?.trim() || null]);
       for (const capability of capabilities) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [organizationId, id, capability]);
       return { changed: true, result: { permissionSetId: id } };
     });
@@ -245,7 +246,7 @@ export class PostgresTeamAccess {
       const source = await client.query<{ id: string; principal_kind: "staff" | "portal"; capability_id: Capability | null }>("SELECT s.id,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, sourcePermissionSetId]);
       if (!source.rowCount) throw new V2ApplicationError("NOT_FOUND", "Source Staff role was not found.");
       if (source.rows.some((row) => row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Only Staff roles can be cloned here.");
-      const capabilities = parseCapabilities(source.rows.flatMap((row) => row.capability_id ? [row.capability_id] : [])); this.ceiling(actor, capabilities);
+      const capabilities = parseTenantStaffCapabilities(source.rows.flatMap((row) => row.capability_id ? [row.capability_id] : [])); await this.assertActiveStaffCapabilities(client, capabilities);
       await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,description,principal_kind) VALUES($1,$2,$3,$4,$5,'staff')", [permissionSetId, organizationId, name, normalized(name), input.description?.trim() || null]);
       for (const capability of capabilities) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [organizationId, permissionSetId, capability]);
       return { changed: true, result: { permissionSetId } };
@@ -253,10 +254,10 @@ export class PostgresTeamAccess {
   }
 
   async updateCustomSet(actor: StaffPrincipal, organizationId: string, permissionSetId: string, input: { name: string; description?: string; capabilities: readonly Capability[]; active: boolean }, context: Context): Promise<void> {
-    const capabilities = parseCapabilities(input.capabilities);
+    const capabilities = parseTenantStaffCapabilities(input.capabilities);
     const detail: Record<string, unknown> = { permissionSetId, name: input.name.trim(), capabilities, active: input.active };
     await this.mutate(actor, organizationId, "permission_set_updated", detail, context, async (client) => {
-      this.ceiling(actor, capabilities); await this.customSet(client, organizationId, permissionSetId);
+      await this.assertActiveStaffCapabilities(client, capabilities); await this.customSet(client, organizationId, permissionSetId);
       const current = await client.query<{ name: string; description: string | null; active: boolean; capability_id: Capability | null }>("SELECT s.name,s.description,s.active,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, permissionSetId]);
       const currentCapabilities = parseCapabilities(current.rows.flatMap((row) => row.capability_id ? [row.capability_id] : [])); const description = input.description?.trim() || null;
       if (current.rows[0].name === input.name.trim() && current.rows[0].description === description && current.rows[0].active === input.active && currentCapabilities.length === capabilities.length && currentCapabilities.every((capability, index) => capability === capabilities[index])) return { changed: false, result: undefined };
@@ -273,9 +274,9 @@ export class PostgresTeamAccess {
     await this.mutate(actor, organizationId, "staff_permission_sets_replaced", { userId, permissionSetIds }, context, async (client) => {
       const member = await client.query("SELECT 1 FROM user_organizations WHERE organization_id=$1 AND user_id=$2 AND is_active=true FOR UPDATE", [organizationId, userId]); if (!member.rowCount) throw new V2ApplicationError("NOT_FOUND", "Active Staff membership was not found.");
       const ids = [...new Set(permissionSetIds)]; if (!ids.length) throw new V2ApplicationError("VALIDATION_ERROR", "At least one Staff permission set is required.");
-      const found = await client.query<{ id: string; active: boolean; principal_kind: string; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
+      const found = await client.query<{ id: string; active: boolean; principal_kind: string; source_template_key: string | null; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,s.source_template_key,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
       const setIds = [...new Set(found.rows.map((row) => row.id))]; if (setIds.length !== ids.length || found.rows.some((row) => !row.active || row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Choose active Staff permission sets in this organization.");
-      this.ceiling(actor, found.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []));
+      const customCapabilities = parseTenantStaffCapabilities(found.rows.filter((row) => row.source_template_key === null).flatMap((row) => row.capability_id ? [row.capability_id] : [])); await this.assertActiveStaffCapabilities(client, customCapabilities);
       await client.query("UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=$1 AND user_id=$2 AND active=true", [organizationId, userId]);
       for (const id of ids) await client.query("INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id,active,assignment_source) VALUES($1,$2,$3,true,'manual') ON CONFLICT(organization_id,user_id,permission_set_id) DO UPDATE SET active=true,updated_at=now(),assignment_source='manual'", [organizationId, userId, id]);
       return { changed: true, result: { userId, permissionSetIds: ids } };
@@ -304,7 +305,11 @@ export class PostgresTeamAccess {
     const values = new Map<string, any>(); for (const row of result.rows) { const prior = values.get(row.id) ?? { permissionSetId: row.id, name: row.name, description: row.description ?? undefined, active: row.active, revision: String(row.revision), principalKind: row.principal_kind, systemManaged: row.source_template_key !== null, sourceTemplateKey: row.source_template_key ?? undefined, capabilities: [], assignmentCount: Number(row.assignment_count) }; if (row.capability_id) prior.capabilities.push(row.capability_id); values.set(row.id, prior); }
     return [...values.values()].map((set) => ({ ...set, capabilities: set.capabilities.sort() }));
   }
-  private ceiling(actor: StaffPrincipal, capabilities: readonly Capability[]) { for (const capability of capabilities) if (!actor.authority.capabilities.includes(capability)) throw new V2ApplicationError("FORBIDDEN", "Permission administrators cannot grant a capability they do not currently hold."); }
+  private async assertActiveStaffCapabilities(client: PoolClient, capabilities: readonly Capability[]) {
+    if (!capabilities.length) return;
+    const active = await client.query<{ id: Capability }>("SELECT id FROM v2_permission_capabilities WHERE id=ANY($1::varchar[]) AND active=true", [capabilities]);
+    if (active.rowCount !== capabilities.length) throw new V2ApplicationError("VALIDATION_ERROR", "Only active tenant Staff capabilities can be granted through a custom role.");
+  }
   private async customSet(client: PoolClient, organizationId: string, id: string) { const result = await client.query<{ source_template_key: string | null }>("SELECT source_template_key FROM v2_permission_sets WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, id]); const row = result.rows[0]; if (!row) throw new V2ApplicationError("NOT_FOUND", "Permission set was not found."); if (row.source_template_key !== null) throw new V2ApplicationError("FORBIDDEN", "System permission sets are managed templates and cannot be edited."); }
   private async mutate<T>(actor: StaffPrincipal, organizationId: string, event: string, detail: Record<string, unknown>, context: Context, action: (client: PoolClient) => Promise<{ changed: boolean; result: T }>): Promise<T> {
     if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Team access is organization scoped."); if (!canManageTeamAccess(actor)) throw new V2ApplicationError("FORBIDDEN", "Only an organization Owner, Administrator, or Platform Developer can change Team & Access."); if (!context.businessRequestId.trim() || !context.expectedAuthorityRevision.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId and expectedAuthorityRevision are required.");
