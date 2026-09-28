@@ -1033,11 +1033,7 @@ function PreviewPanel({
   notes,
   onPreviewArtwork,
   onPreviewProductionFile,
-  artworkCollapsed,
-  productionFileCollapsed,
   previewSize,
-  onToggleArtwork,
-  onToggleProductionFile,
   onPreviewSizeChange,
   documentNumberDisplayMode,
 }: {
@@ -1047,11 +1043,7 @@ function PreviewPanel({
   notes: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
   onPreviewProductionFile: (file: NonNullable<ProductionJobListItem["productionFiles"]>[number]) => void;
-  artworkCollapsed: boolean;
-  productionFileCollapsed: boolean;
   previewSize: ProductionPreviewSize;
-  onToggleArtwork: () => void;
-  onToggleProductionFile: () => void;
   onPreviewSizeChange: (size: ProductionPreviewSize) => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
@@ -1087,9 +1079,7 @@ function PreviewPanel({
   const productionFiles = job.productionFiles ?? job.order.productionFiles ?? [];
   const primaryProductionFile = productionFiles[0] ?? null;
   const designQuantities = productionDesignQuantities(job);
-  const previewColumnClass = artworkCollapsed && productionFileCollapsed
-    ? "xl:grid-cols-[300px_minmax(260px,1fr)_minmax(280px,360px)]"
-    : previewSize === "compact"
+  const previewColumnClass = previewSize === "compact"
       ? "xl:grid-cols-[minmax(320px,0.75fr)_minmax(260px,1.25fr)_minmax(280px,340px)]"
       : previewSize === "large"
         ? "xl:grid-cols-[minmax(520px,1.5fr)_minmax(240px,0.75fr)_minmax(280px,340px)]"
@@ -1117,14 +1107,12 @@ function PreviewPanel({
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
       <div className={`grid grid-cols-1 gap-4 ${previewColumnClass}`}>
         <ProductionPreviewArea
-          artworkCollapsed={artworkCollapsed}
-          productionFileCollapsed={productionFileCollapsed}
+          jobId={job.id}
           size={previewSize}
           artworkCount={thumbs.length}
+          productionFileCount={productionFiles.length}
           productionFileName={primaryProductionFile?.fileName}
           productionFileStatus={primaryProductionFile?.previewAvailabilityStatus}
-          onToggleArtwork={onToggleArtwork}
-          onToggleProductionFile={onToggleProductionFile}
           onSizeChange={onPreviewSizeChange}
           artworkPreview={
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1357,26 +1345,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
-  const [artworkCollapsed, setArtworkCollapsed] = useState(
-    () => typeof window !== "undefined" && window.localStorage.getItem("titan.production.roll.artworkCollapsed") === "true",
-  );
-  const [productionFileCollapsed, setProductionFileCollapsed] = useState(
-    () => typeof window !== "undefined" && window.localStorage.getItem("titan.production.roll.productionFileCollapsed") === "true",
-  );
   const [previewSize, setPreviewSize] = useState<ProductionPreviewSize>(() => {
     if (typeof window === "undefined") return "normal";
     const saved = window.localStorage.getItem("titan.production.roll.previewSize");
     return saved === "compact" || saved === "large" ? saved : "normal";
   });
   const [printerFilter, setPrinterFilter] = useState("all");
-
-  useEffect(() => {
-    window.localStorage.setItem("titan.production.roll.artworkCollapsed", String(artworkCollapsed));
-  }, [artworkCollapsed]);
-
-  useEffect(() => {
-    window.localStorage.setItem("titan.production.roll.productionFileCollapsed", String(productionFileCollapsed));
-  }, [productionFileCollapsed]);
 
   useEffect(() => {
     window.localStorage.setItem("titan.production.roll.previewSize", previewSize);
@@ -1620,11 +1594,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                 toast({ variant: "destructive", title: "Could not open production file. Please refresh and try again." });
               });
             }}
-            artworkCollapsed={artworkCollapsed}
-            productionFileCollapsed={productionFileCollapsed}
             previewSize={previewSize}
-            onToggleArtwork={() => setArtworkCollapsed((current) => !current)}
-            onToggleProductionFile={() => setProductionFileCollapsed((current) => !current)}
             onPreviewSizeChange={setPreviewSize}
             documentNumberDisplayMode={productionNumberDisplayMode}
           />

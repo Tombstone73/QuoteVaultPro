@@ -1,36 +1,46 @@
-import type { ReactNode } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export type ProductionPreviewSize = "compact" | "normal" | "large";
+type PreviewTab = "artwork" | "production";
+
+function availableTab(artworkCount: number, productionFileCount: number): PreviewTab {
+  return artworkCount > 0 || productionFileCount === 0 ? "artwork" : "production";
+}
 
 export function ProductionPreviewArea({
-  artworkCollapsed,
-  productionFileCollapsed,
+  jobId,
   size,
   artworkCount,
+  productionFileCount,
   productionFileName,
   productionFileStatus,
-  onToggleArtwork,
-  onToggleProductionFile,
   onSizeChange,
   artworkPreview,
   productionFilePreview,
 }: {
-  artworkCollapsed: boolean;
-  productionFileCollapsed: boolean;
+  jobId: string;
   size: ProductionPreviewSize;
   artworkCount: number;
+  productionFileCount: number;
   productionFileName?: string | null;
   productionFileStatus?: string | null;
-  onToggleArtwork: () => void;
-  onToggleProductionFile: () => void;
   onSizeChange: (size: ProductionPreviewSize) => void;
   artworkPreview: ReactNode;
   productionFilePreview: ReactNode;
 }) {
-  const bothCollapsed = artworkCollapsed && productionFileCollapsed;
+  const [activeTab, setActiveTab] = useState<PreviewTab>(() => availableTab(artworkCount, productionFileCount));
+
+  useEffect(() => {
+    setActiveTab((current) => {
+      if (current === "artwork" && artworkCount === 0 && productionFileCount > 0) return "production";
+      if (current === "production" && productionFileCount === 0 && artworkCount > 0) return "artwork";
+      if (artworkCount === 0 && productionFileCount === 0) return "artwork";
+      return current;
+    });
+  }, [jobId, artworkCount, productionFileCount]);
 
   return (
     <section className="rounded-lg border border-titan-border-subtle bg-titan-bg-subtle p-3">
@@ -58,22 +68,22 @@ export function ProductionPreviewArea({
               </Button>
             ))}
           </div>
-          <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5" onClick={onToggleArtwork}>
-            {artworkCollapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
-            {artworkCollapsed ? "Show Artwork" : "Collapse Artwork"}
-          </Button>
-          <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5" onClick={onToggleProductionFile}>
-            {productionFileCollapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
-            {productionFileCollapsed ? "Show Production File" : "Collapse Production File"}
-          </Button>
         </div>
       </div>
-      {!bothCollapsed ? (
-        <div className="mt-3 space-y-3">
-          {!artworkCollapsed ? <div data-testid="production-artwork-previews">{artworkPreview}</div> : null}
-          {!productionFileCollapsed ? <div data-testid="production-file-previews">{productionFilePreview}</div> : null}
-        </div>
-      ) : null}
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PreviewTab)} className="mt-3 min-w-0">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1">
+          <TabsTrigger value="artwork" className="min-h-11 min-w-0 whitespace-normal px-2 text-xs sm:text-sm">Original Artwork</TabsTrigger>
+          <TabsTrigger value="production" className="min-h-11 min-w-0 whitespace-normal px-2 text-xs sm:text-sm">Production File / Layout</TabsTrigger>
+        </TabsList>
+        {artworkCount === 0 && productionFileCount === 0 ? (
+          <p className="mt-3 rounded-md border border-titan-border-subtle p-4 text-sm text-titan-text-muted">No artwork or production file available for this job.</p>
+        ) : (
+          <>
+            <TabsContent value="artwork"><div data-testid="production-artwork-previews">{artworkPreview}</div></TabsContent>
+            <TabsContent value="production"><div data-testid="production-file-previews">{productionFilePreview}</div></TabsContent>
+          </>
+        )}
+      </Tabs>
     </section>
   );
 }
