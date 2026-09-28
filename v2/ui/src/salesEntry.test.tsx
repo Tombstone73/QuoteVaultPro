@@ -31,12 +31,14 @@ assert.match(shell, /aria-haspopup="menu"/);
 assert.match(shell, />\s*New</);
 
 const authenticatedShell = renderToStaticMarkup(
-  <AuthSessionControlsContext.Provider value={{ displayName: "dale@titan-graphics.com", busy: false, signOut: () => undefined }}>
+  <AuthSessionControlsContext.Provider value={{ displayName: "dale@titan-graphics.com", email: "dale@titan-graphics.com", organizations: [{ id: "org-a", name: "Titan Graphics" }], activeOrganizationId: "org-a", busy: false, signOut: () => undefined, selectOrganization: () => undefined }}>
     <V2VisualShell page="home" onNavigate={() => undefined} appearance={defaultVisualAppearance} setAppearance={() => undefined}><div /></V2VisualShell>
   </AuthSessionControlsContext.Provider>,
 );
 assert.equal((authenticatedShell.match(/<header/g) ?? []).length, 1);
-assert.match(authenticatedShell, /<header class="v2-topbar">[\s\S]*dale@titan-graphics\.com[\s\S]*Sign out[\s\S]*<\/header>/);
+assert.match(authenticatedShell, /dale@titan-graphics\.com/);
+assert.match(authenticatedShell, /Titan Graphics/);
+assert.match(authenticatedShell, /aria-haspopup="menu"/);
 assert.doesNotMatch(authenticatedShell, /<\/header><header class="v2-auth-session"/);
 
 console.log("Sales entry visual contract tests passed.");

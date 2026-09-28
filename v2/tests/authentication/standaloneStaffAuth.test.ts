@@ -78,8 +78,12 @@ describe("standalone V2 Staff authentication", () => {
     await agent.post("/v2/organizations/org-a/protected").send({}).expect(403);
     await agent.post("/v2/organizations/org-a/protected").set("x-v2-csrf-token", selected.body.data.csrfToken).send({}).expect(200, { ok: true });
     await agent.get("/v2/organizations/org-b/protected").expect(403);
+    const switched = await agent.post("/v2/auth/active-organization").send({ organizationId: "org-b" }).set("x-v2-csrf-token", selected.body.data.csrfToken).expect(200);
+    await agent.get("/v2/auth/session").expect(200).expect((response) => expect(response.body.data.activeOrganizationId).toBe("org-b"));
+    await agent.get("/v2/organizations/org-a/protected").expect(403);
+    await agent.get("/v2/organizations/org-b/protected").expect(200, { ok: true, data: { subjectId: "staff-a" } });
     await agent.post("/v2/auth/logout").send({}).expect(403);
-    await agent.post("/v2/auth/logout").send({}).set("x-v2-csrf-token", selected.body.data.csrfToken).expect(200);
+    await agent.post("/v2/auth/logout").send({}).set("x-v2-csrf-token", switched.body.data.csrfToken).expect(200);
     await agent.get("/v2/auth/session").expect(401);
   });
 

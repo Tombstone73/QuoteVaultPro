@@ -4,6 +4,7 @@ import {
   Bot,
   Bell,
   Building2,
+  Check,
   ChevronDown,
   Coffee,
   Contrast,
@@ -37,7 +38,7 @@ import {
 import type { VisualAppearance, VisualTheme } from "./appearance";
 import type { UiBootstrap } from "./api";
 import { InventoryWorkspace } from "./InventoryWorkspace";
-import { useAuthSessionControls } from "./AuthGate";
+import { useAuthSessionControls, type AuthSessionControls } from "./AuthGate";
 
 export type V2VisualPage = "home" | "quotes" | "orders" | "inboundOrders" | "customers" | "contacts" | "products" | "productBuilder" | "formulas" | "artwork" | "proofing" | "prepress" | "production" | "fulfillment" | "routing" | "invoices" | "payments" | "assistant" | "settings" | "appearance";
 
@@ -155,6 +156,57 @@ const themeLabel: Record<VisualTheme, string> = {
   warm: "Warm Neutral",
 };
 
+export const V2AccountMenu = ({
+  session,
+  open,
+  setOpen,
+}: Readonly<{
+  session: AuthSessionControls;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+}>) => {
+  const activeOrganization = session.organizations.find((organization) => organization.id === session.activeOrganizationId);
+  const hasOrganizationChoice = session.organizations.length > 1;
+  return <div className="v2-auth-session" aria-label="Authenticated V2 staff session">
+    <span className="v2-active-organization" title={activeOrganization?.name ?? "Organization unavailable"}>
+      <Building2 aria-hidden />
+      <span>{activeOrganization?.name ?? "Organization unavailable"}</span>
+    </span>
+    <div className="v2-account-menu">
+      <button
+        type="button"
+        className="v2-account-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={session.busy}
+        onClick={() => setOpen(!open)}
+      >
+        <span title={session.displayName}>{session.displayName}</span>
+        <ChevronDown aria-hidden />
+      </button>
+      {open && <div className="v2-account-dropdown" role="menu" aria-label="Account menu">
+        <div className="v2-account-identity"><strong>{session.displayName}</strong><small>{session.email}</small></div>
+        <div className="v2-account-current"><small>Current organization</small><strong>{activeOrganization?.name ?? "Organization unavailable"}</strong></div>
+        {hasOrganizationChoice && <div className="v2-account-organizations">
+          <small>Switch organization</small>
+          {session.organizations.map((organization) => {
+            const current = organization.id === session.activeOrganizationId;
+            return <button
+              key={organization.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={current}
+              disabled={session.busy || current}
+              onClick={() => { setOpen(false); session.selectOrganization(organization.id); }}
+            ><span>{organization.name}</span>{current && <Check aria-label="Current organization" />}</button>;
+          })}
+        </div>}
+        <button type="button" className="v2-account-signout" role="menuitem" disabled={session.busy} onClick={session.signOut}>Sign out</button>
+      </div>}
+    </div>
+  </div>;
+};
+
 export const V2VisualShell = ({
   children,
   page,
@@ -173,6 +225,7 @@ export const V2VisualShell = ({
   const collapsed = appearance.sidebar === "collapsed";
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [newOpen, setNewOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const session = useAuthSessionControls();
   const ThemeIcon = themeIcon[appearance.theme];
   const navigation = visibleNavigationSections(capabilities);
@@ -265,10 +318,7 @@ export const V2VisualShell = ({
             >
               <ThemeIcon aria-hidden />
             </button>
-            {session && <div className="v2-auth-session" aria-label="Authenticated V2 staff session">
-              <span title={session.displayName}>{session.displayName}</span>
-              <button className="button secondary" disabled={session.busy} onClick={session.signOut}>Sign out</button>
-            </div>}
+            {session && <V2AccountMenu session={session} open={accountOpen} setOpen={setAccountOpen} />}
           </div>
         </header>
         <main className="v2-workspace">{typeof window !== "undefined" && window.location.pathname === "/inventory" ? <InventoryWorkspace /> : children}</main>
