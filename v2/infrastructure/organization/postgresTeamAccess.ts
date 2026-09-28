@@ -248,7 +248,7 @@ export class PostgresTeamAccess {
     if (!name) throw new V2ApplicationError("VALIDATION_ERROR", "Role name is required.");
     const detail: Record<string, unknown> = { permissionSetId, sourcePermissionSetId, name };
     return this.mutate(actor, organizationId, "permission_set_cloned", detail, context, async (client) => {
-      const source = await client.query<{ id: string; principal_kind: "staff" | "portal"; capability_id: Capability | null }>("SELECT s.id,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, sourcePermissionSetId]);
+      const source = await client.query<{ id: string; principal_kind: "staff" | "portal"; capability_id: Capability | null }>("SELECT s.id,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 AND s.archived_at IS NULL FOR UPDATE OF s", [organizationId, sourcePermissionSetId]);
       if (!source.rowCount) throw new V2ApplicationError("NOT_FOUND", "Source Staff role was not found.");
       if (source.rows.some((row) => row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Only Staff roles can be cloned here.");
       const capabilities = parseTenantStaffCapabilities(delegableTeamCapabilities(actor, source.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []))); detail.capabilities = capabilities; await this.assertActiveStaffCapabilities(client, capabilities);
@@ -275,11 +275,36 @@ export class PostgresTeamAccess {
     }, "role_builder");
   }
 
+  /** Retires a custom Staff role without erasing the role, its audit events, or
+   * historical assignment rows. The permission-set lock is shared with Staff
+   * assignment replacement so the active-assignment check is race-safe. */
+  async archiveCustomSet(actor: StaffPrincipal, organizationId: string, permissionSetId: string, context: Context): Promise<{ permissionSetId: string; alreadyArchived: boolean }> {
+    const detail: Record<string, unknown> = { permissionSetId, lifecycleAction: "archived" };
+    return this.mutate<{ permissionSetId: string; alreadyArchived: boolean }>(actor, organizationId, "permission_set_archived", detail, context, async (client) => {
+      const current = await client.query<{ name: string; active: boolean; source_template_key: string | null; principal_kind: string; archived_at: string | null; capability_id: Capability | null }>("SELECT s.name,s.active,s.source_template_key,s.principal_kind,s.archived_at,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, permissionSetId]);
+      if (!current.rowCount) throw new V2ApplicationError("NOT_FOUND", "Permission set was not found.");
+      const role = current.rows[0];
+      if (role.source_template_key !== null) throw new V2ApplicationError("FORBIDDEN", "Built-in permission sets cannot be deleted.");
+      if (role.principal_kind !== "staff") throw new V2ApplicationError("VALIDATION_ERROR", "Only custom Staff roles can be deleted here.");
+      const capabilities = parseTenantStaffCapabilities(current.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []));
+      this.assertDelegableStaffCapabilities(actor, capabilities);
+      if (role.archived_at) return { changed: false, result: { permissionSetId, alreadyArchived: true } };
+      const assigned = await client.query<{ display_name: string; email: string }>("SELECT COALESCE(NULLIF(trim(concat_ws(' ',u.first_name,u.last_name)),''),u.email) display_name,u.email FROM v2_staff_permission_set_assignments a JOIN user_organizations m ON m.organization_id=a.organization_id AND m.user_id=a.user_id AND m.is_active JOIN users u ON u.id=a.user_id WHERE a.organization_id=$1 AND a.permission_set_id=$2 AND a.active ORDER BY lower(u.email),u.id FOR UPDATE OF a", [organizationId, permissionSetId]);
+      if (assigned.rowCount) {
+        const names = assigned.rows.map((member) => member.display_name).join(", ");
+        throw new V2ApplicationError("CONFLICT", `${role.name} cannot be deleted because it is currently assigned to ${assigned.rowCount} active staff member${assigned.rowCount === 1 ? "" : "s"}: ${names}.`);
+      }
+      detail.name = role.name; detail.priorActive = role.active; detail.capabilityCount = capabilities.length;
+      await client.query("UPDATE v2_permission_sets SET active=false,archived_at=now(),archived_by_user_id=$3,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, permissionSetId, actor.userId]);
+      return { changed: true, result: { permissionSetId, alreadyArchived: false } };
+    }, "role_builder");
+  }
+
   async replaceStaffAssignments(actor: StaffPrincipal, organizationId: string, userId: string, permissionSetIds: readonly string[], context: Context): Promise<void> {
     await this.mutate(actor, organizationId, "staff_permission_sets_replaced", { userId, permissionSetIds }, context, async (client) => {
       const member = await client.query("SELECT 1 FROM user_organizations WHERE organization_id=$1 AND user_id=$2 AND is_active=true FOR UPDATE", [organizationId, userId]); if (!member.rowCount) throw new V2ApplicationError("NOT_FOUND", "Active Staff membership was not found.");
       const ids = [...new Set(permissionSetIds)]; if (!ids.length) throw new V2ApplicationError("VALIDATION_ERROR", "At least one Staff permission set is required.");
-      const found = await client.query<{ id: string; active: boolean; principal_kind: string; source_template_key: string | null; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,s.source_template_key,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) FOR UPDATE OF s", [organizationId, ids]);
+      const found = await client.query<{ id: string; active: boolean; principal_kind: string; source_template_key: string | null; capability_id: Capability | null }>("SELECT s.id,s.active,s.principal_kind,s.source_template_key,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=ANY($2::varchar[]) AND s.archived_at IS NULL FOR UPDATE OF s", [organizationId, ids]);
       const setIds = [...new Set(found.rows.map((row) => row.id))]; if (setIds.length !== ids.length || found.rows.some((row) => !row.active || row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Choose active Staff permission sets in this organization.");
       this.assertDelegableStaffCapabilities(actor, found.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []));
       await client.query("UPDATE v2_staff_permission_set_assignments SET active=false,updated_at=now() WHERE organization_id=$1 AND user_id=$2 AND active=true", [organizationId, userId]);
@@ -305,11 +330,11 @@ export class PostgresTeamAccess {
 
   private async sets(organizationId: string) {
     const result = await this.pool.query<any>(`SELECT s.id,s.name,s.description,s.active,s.revision,s.principal_kind,s.source_template_key,c.capability_id,
-      (SELECT count(*) FROM v2_staff_permission_set_assignments a JOIN user_organizations m ON m.organization_id=a.organization_id AND m.user_id=a.user_id AND m.is_active WHERE a.organization_id=s.organization_id AND a.permission_set_id=s.id AND a.active AND s.active AND s.principal_kind='staff') assignment_count,
+      (SELECT count(*) FROM v2_staff_permission_set_assignments a JOIN user_organizations m ON m.organization_id=a.organization_id AND m.user_id=a.user_id AND m.is_active WHERE a.organization_id=s.organization_id AND a.permission_set_id=s.id AND a.active AND s.principal_kind='staff') assignment_count,
       COALESCE((SELECT json_agg(json_build_object('memberId',u.id,'displayName',COALESCE(NULLIF(trim(concat_ws(' ',u.first_name,u.last_name)),''),u.email),'email',u.email,'status','active') ORDER BY lower(u.email),u.id)
         FROM v2_staff_permission_set_assignments a JOIN user_organizations m ON m.organization_id=a.organization_id AND m.user_id=a.user_id AND m.is_active
-        JOIN users u ON u.id=a.user_id WHERE a.organization_id=s.organization_id AND a.permission_set_id=s.id AND a.active AND s.active AND s.principal_kind='staff'),'[]'::json) assigned_staff
-      FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 ORDER BY s.principal_kind,s.source_template_key NULLS LAST,lower(s.name),s.id`, [organizationId]);
+        JOIN users u ON u.id=a.user_id WHERE a.organization_id=s.organization_id AND a.permission_set_id=s.id AND a.active AND s.principal_kind='staff'),'[]'::json) assigned_staff
+      FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.archived_at IS NULL ORDER BY s.principal_kind,s.source_template_key NULLS LAST,lower(s.name),s.id`, [organizationId]);
     const values = new Map<string, any>(); for (const row of result.rows) { const prior = values.get(row.id) ?? { permissionSetId: row.id, name: row.name, description: row.description ?? undefined, active: row.active, revision: String(row.revision), principalKind: row.principal_kind, systemManaged: row.source_template_key !== null, sourceTemplateKey: row.source_template_key ?? undefined, capabilities: [], assignmentCount: Number(row.assignment_count), assignedStaff: row.assigned_staff ?? [] }; if (row.capability_id) prior.capabilities.push(row.capability_id); values.set(row.id, prior); }
     return [...values.values()].map((set) => ({ ...set, capabilities: set.capabilities.sort() }));
   }
@@ -322,7 +347,7 @@ export class PostgresTeamAccess {
     const prohibited = capabilities.filter((capability) => !canDelegateTeamCapability(actor, capability));
     if (prohibited.length) throw new V2ApplicationError("FORBIDDEN", "You do not have authority to delegate this permission.");
   }
-  private async customSet(client: PoolClient, organizationId: string, id: string) { const result = await client.query<{ source_template_key: string | null }>("SELECT source_template_key FROM v2_permission_sets WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, id]); const row = result.rows[0]; if (!row) throw new V2ApplicationError("NOT_FOUND", "Permission set was not found."); if (row.source_template_key !== null) throw new V2ApplicationError("FORBIDDEN", "System permission sets are managed templates and cannot be edited."); }
+  private async customSet(client: PoolClient, organizationId: string, id: string) { const result = await client.query<{ source_template_key: string | null; archived_at: string | null }>("SELECT source_template_key,archived_at FROM v2_permission_sets WHERE organization_id=$1 AND id=$2 FOR UPDATE", [organizationId, id]); const row = result.rows[0]; if (!row) throw new V2ApplicationError("NOT_FOUND", "Permission set was not found."); if (row.source_template_key !== null) throw new V2ApplicationError("FORBIDDEN", "System permission sets are managed templates and cannot be edited."); if (row.archived_at) throw new V2ApplicationError("FORBIDDEN", "Archived permission sets cannot be edited or restored."); }
   private async mutate<T>(actor: StaffPrincipal, organizationId: string, event: string, detail: Record<string, unknown>, context: Context, action: (client: PoolClient) => Promise<{ changed: boolean; result: T }>, authority: "team_access" | "role_builder" | "staff_role_assignment" = "team_access"): Promise<T> {
     if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Team access is organization scoped.");
     const permitted = authority === "team_access" ? canManageTeamAccess(actor) : authority === "role_builder" ? canBuildTeamRoles(actor) : canAssignStaffRoles(actor);

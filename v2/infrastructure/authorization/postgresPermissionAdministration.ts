@@ -52,9 +52,10 @@ export class PostgresPermissionAdministration {
   /** Tenant copies of system templates remain assignable but are never a
    * mutable second authority. Only custom sets may be edited/deactivated. */
   private async assertCustomSet(organizationId: string, permissionSetId: string): Promise<void> {
-    const result = await this.client.query<{ source_template_key: string | null }>("SELECT source_template_key FROM v2_permission_sets WHERE id=$1 AND organization_id=$2 FOR UPDATE", [permissionSetId, organizationId]);
+    const result = await this.client.query<{ source_template_key: string | null; archived_at: string | null }>("SELECT source_template_key,archived_at FROM v2_permission_sets WHERE id=$1 AND organization_id=$2 FOR UPDATE", [permissionSetId, organizationId]);
     if (!result.rows[0]) throw new V2ApplicationError("NOT_FOUND", "Permission set was not found.");
     if (result.rows[0].source_template_key !== null) throw new V2ApplicationError("FORBIDDEN", "System permission sets are managed templates and cannot be edited.");
+    if (result.rows[0].archived_at) throw new V2ApplicationError("FORBIDDEN", "Archived permission sets cannot be edited or restored.");
   }
   private async lock(organizationId: string): Promise<string> {
     const result = await this.client.query("SELECT id FROM organizations WHERE id = $1 FOR UPDATE", [organizationId]);
@@ -107,7 +108,7 @@ export class PostgresPermissionAdministration {
   }
   async assignStaff(actor: StaffPrincipal, organizationId: string, userId: string, permissionSetId: string, context: PermissionAdministrationOperationContext): Promise<void> {
     await this.mutate(actor,organizationId,"permissions.assignStaff","staff_permission_set_assigned",{userId,permissionSetId},{},context,async()=>{await this.assertSetGrantCeiling(actor,organizationId,permissionSetId,"staff");const inserted=await this.client.query(`INSERT INTO v2_staff_permission_set_assignments(organization_id,user_id,permission_set_id)
-      SELECT $1::varchar,$2::varchar,$3::varchar WHERE EXISTS(SELECT 1 FROM user_organizations WHERE user_id=$2::varchar AND organization_id=$1::varchar AND is_active) AND EXISTS(SELECT 1 FROM v2_permission_sets WHERE id=$3::varchar AND organization_id=$1::varchar AND principal_kind='staff')
+      SELECT $1::varchar,$2::varchar,$3::varchar WHERE EXISTS(SELECT 1 FROM user_organizations WHERE user_id=$2::varchar AND organization_id=$1::varchar AND is_active) AND EXISTS(SELECT 1 FROM v2_permission_sets WHERE id=$3::varchar AND organization_id=$1::varchar AND principal_kind='staff' AND active AND archived_at IS NULL)
       ON CONFLICT(organization_id,user_id,permission_set_id) DO UPDATE SET active=true,updated_at=now() WHERE v2_staff_permission_set_assignments.active=false`,[organizationId,userId,permissionSetId]);if(inserted.rowCount===1)return true;const membership=await this.client.query("SELECT 1 FROM user_organizations WHERE user_id=$1 AND organization_id=$2 AND is_active",[userId,organizationId]);if(membership.rowCount!==1)throw new V2ApplicationError("NOT_FOUND","Scoped Staff membership or Staff permission set was not found.");return false;});
   }
   async removeStaff(actor: StaffPrincipal, organizationId: string, userId: string, permissionSetId: string, context: PermissionAdministrationOperationContext): Promise<void> {

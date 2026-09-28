@@ -44,6 +44,7 @@ assert.match(sets, /Clone role/);
 assert.match(sets, /QA custom/);
 assert.match(sets, /1 staff assigned/);
 assert.match(sets, /0 staff assigned/);
+assert.match(sets, /QA custom[\s\S]*Delete role/);
 
 assert.deepEqual(filterCapabilityGroups([{ key: "payments", label: "Payments", capabilities: [{ id: "payment.view", label: "View payments", sensitive: false }, { id: "payment.record", label: "Record payments", sensitive: true }] }, { key: "orders", label: "Orders", capabilities: [{ id: "order.view", label: "View orders", sensitive: false }] }], "record"), [{ key: "payments", label: "Payments", capabilities: [{ id: "payment.record", label: "Record payments", sensitive: true }] }]);
 

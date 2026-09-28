@@ -17,7 +17,7 @@ export class PostgresPermissionBootstrap {
       const initialized=await this.client.query("INSERT INTO v2_permission_organization_state(organization_id) VALUES($1) ON CONFLICT DO NOTHING RETURNING organization_id",[input.organizationId]);
       if(initialized.rowCount){
         await this.client.query(`INSERT INTO v2_permission_sets(organization_id,name,normalized_name,source_template_key,principal_kind)
-          SELECT $1,t.name,lower(t.name),t.template_key,t.principal_kind FROM v2_permission_set_templates t ON CONFLICT(organization_id,normalized_name) DO NOTHING`,[input.organizationId]);
+          SELECT $1,t.name,lower(t.name),t.template_key,t.principal_kind FROM v2_permission_set_templates t ON CONFLICT DO NOTHING`,[input.organizationId]);
         await this.client.query(`INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id)
           SELECT ps.organization_id,ps.id,c.capability_id FROM v2_permission_sets ps JOIN v2_permission_set_templates t ON t.template_key=ps.source_template_key JOIN v2_permission_set_template_capabilities c ON c.template_id=t.id WHERE ps.organization_id=$1 ON CONFLICT DO NOTHING`,[input.organizationId]);
         await this.client.query("INSERT INTO v2_organization_portal_capability_defaults(organization_id,capability_id) SELECT $1,c.capability_id FROM (VALUES('quote.view'),('order.view'),('invoice.view'),('proof.respond'),('payment.view'),('payment.record')) c(capability_id) ON CONFLICT DO NOTHING",[input.organizationId]);

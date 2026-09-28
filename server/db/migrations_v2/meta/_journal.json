@@ -2017,6 +2017,13 @@
       "when": 1788048000139,
       "tag": "0292_v2_operations_permission_role",
       "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1788048000140,
+      "tag": "0293_v2_custom_role_archive",
+      "breakpoints": true
     }
   ]
 }
