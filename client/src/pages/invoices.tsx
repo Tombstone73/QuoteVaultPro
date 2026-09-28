@@ -1,3 +1,4 @@
+import { InvoiceEmailQueueDialog } from "@/components/invoices/InvoiceEmailQueueDialog";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -98,6 +99,7 @@ const deliveryStatusMeta = {
   needs_review: { label: "Needs Review", variant: "warning" },
   sent: { label: "Sent", variant: "info" },
   canceled: { label: "Delivery Canceled", variant: "muted" },
+  superseded: { label: "Superseded", variant: "muted" },
 } as const;
 
 const columnFilterLabels: Record<keyof InvoiceListColumnFilterQuery, string> = {
@@ -347,7 +349,7 @@ export default function InvoicesListPage() {
   const invoiceCheckboxClickRef = useRef<{ invoiceId: string; shiftKey: boolean } | null>(null);
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);
   const [emailQueueOpen, setEmailQueueOpen] = useState(false);
-  const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'all'>('active');
+  const [emailQueueView, setEmailQueueView] = useState<'active' | 'failed' | 'sent' | 'canceled' | 'superseded' | 'all'>('active');
   const [emailQueuePage, setEmailQueuePage] = useState(1);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [savedViewsOpen, setSavedViewsOpen] = useState(false);
@@ -783,7 +785,6 @@ export default function InvoicesListPage() {
       ? deliveryStatusMeta[queueStatus]
       : customerSendStatusMeta[invoice.customerSendStatus || invoice.emailStatus || 'not_sent'];
   };
-  const queueStatusLabel = (status: string) => deliveryStatusMeta[status as keyof typeof deliveryStatusMeta]?.label || status;
 
   const handleQuickSend = (invoice: InvoiceListItem) => {
     if (invoice.emailDeliveryStatus === 'needs_review' && invoice.emailDeliveryJobId) {
@@ -1351,42 +1352,9 @@ export default function InvoicesListPage() {
           <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setDeletingSavedView(null)}>Cancel</Button><Button type="button" variant="destructive" onClick={deleteSavedView}>Delete View</Button></div>
         </DialogContent>
       </Dialog>
-      <Dialog open={emailQueueOpen} onOpenChange={setEmailQueueOpen}>
-        <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
-          <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Waiting emails are sent oldest first, about one per minute. Sent updates only after provider acceptance.</DialogDescription></DialogHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select value={emailQueueView} onValueChange={(value: any) => { setEmailQueueView(value); setEmailQueuePage(1); }}><SelectTrigger className="w-[170px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Waiting / Sending</SelectItem><SelectItem value="failed">Problems</SelectItem><SelectItem value="sent">Sent History</SelectItem><SelectItem value="all">All History</SelectItem></SelectContent></Select>
-            <span className="text-xs text-muted-foreground">{emailQueue.data ? `${emailQueue.data.counts.active} waiting or sending · ${emailQueue.data.counts.failed} failed · ${emailQueue.data.counts.needsReview} need review` : ''}</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto rounded border">
-            <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left"><th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Queued</th><th className="p-2">Status</th><th className="p-2">Details</th><th className="p-2" /></tr></thead><tbody>
-              {emailQueue.isLoading ? <tr><td className="p-4" colSpan={6}>Loading queue…</td></tr> : emailQueue.data?.items.length ? emailQueue.data.items.map((job) => {
-                const stale = job.status === 'processing' && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > emailQueue.data.claimSeconds * 1000;
-                const needsReview = job.status === 'needs_review';
-                const retryable = job.status === 'failed';
-                const reviewed = job.metadata?.deliveryReview;
-                return <tr className="border-b align-top" key={job.id}>
-                  <td className="p-2">{job.deliveryType === 'customer_statement' ? `Statement${job.customerName ? ` · ${job.customerName}` : ''}` : job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'}</td>
-                  <td className="p-2 break-all">{job.recipientEmail}</td>
-                  <td className="p-2 text-xs">{format(new Date(job.queuedAt), 'PP p')}</td>
-                  <td className="p-2"><StatusPill variant={retryable ? 'error' : needsReview || job.status === 'processing' || job.status === 'retrying' ? 'warning' : job.status === 'sent' ? 'info' : 'muted'}>{queueStatusLabel(job.status)}{retryable ? ' · Retryable' : ''}{stale ? ' · Recovering' : ''}</StatusPill></td>
-                  <td className="max-w-[220px] p-2 text-xs text-muted-foreground">
-                    {job.status === 'queued' ? `Scheduled for ${format(new Date(job.availableAt), 'p')}.` : job.status === 'processing' && job.claimedAt ? `Sending since ${format(new Date(job.claimedAt), 'p')}.` : job.status === 'retrying' ? `Retry scheduled for ${format(new Date(job.availableAt), 'p')}.` : `Attempt ${job.attemptCount} of ${job.maxAttempts}.`}<br />
-                    {needsReview ? 'Delivery outcome uncertain. Retry blocked until reviewed. ' : retryable ? 'Safe to send again: ' : ''}
-                    {job.failureReason || (stale ? 'No activity past the normal claim window.' : '—')}
-                    {reviewed?.resolution === 'verified_not_sent' && reviewed.reviewedAt ? <><br />Reviewed {format(new Date(reviewed.reviewedAt), 'PP p')}{reviewed.reviewedByUserName ? ` by ${reviewed.reviewedByUserName}` : ''}. Operator verified email was not sent; retry allowed.</> : null}
-                  </td>
-                  <td className="p-2"><div className="flex gap-1">
-                    {needsReview && job.deliveryType !== 'customer_statement' ? <Button variant="outline" size="sm" onClick={() => setReviewJob({ id: job.id, invoiceId: job.invoiceId, label: String(job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'), source: 'queue' })}>Review</Button> : null}
-                    {job.invoiceId ? <Button variant="ghost" size="sm" onClick={() => { setEmailQueueOpen(false); navigate(`/invoices/${job.invoiceId}`); }}>Open</Button> : null}
-                  </div></td>
-                </tr>;
-              }) : <tr><td className="p-4 text-muted-foreground" colSpan={6}>No matching email delivery jobs.</td></tr>}
-            </tbody></table>
-          </div>
-          {emailQueue.data ? <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Page {emailQueue.data.pagination.page} of {emailQueue.data.pagination.totalPages}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={emailQueuePage <= 1} onClick={() => setEmailQueuePage((page) => page - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={emailQueuePage >= emailQueue.data.pagination.totalPages} onClick={() => setEmailQueuePage((page) => page + 1)}>Next</Button></div></div> : null}
-        </DialogContent>
-      </Dialog>
+      <InvoiceEmailQueueDialog open={emailQueueOpen} onOpenChange={setEmailQueueOpen} view={emailQueueView} setView={setEmailQueueView} page={emailQueuePage} setPage={setEmailQueuePage}
+        onOpenInvoice={id => { setEmailQueueOpen(false); navigate(`/invoices/${id}`); }}
+        onReview={job => setReviewJob({ id: job.id, invoiceId: job.invoiceId!, label: String(job.invoiceNumber || job.legacyInvoiceNumber || 'Invoice'), source: 'queue' })} />
       <Dialog open={Boolean(needsReviewPromptJob)} onOpenChange={(open) => { if (!open) setNeedsReviewPromptJob(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Previous delivery needs review</DialogTitle><DialogDescription>We could not confirm whether the previous email for invoice {needsReviewPromptJob?.label} was delivered. Sending again could create a duplicate email.</DialogDescription></DialogHeader>

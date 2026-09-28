@@ -3,6 +3,7 @@ import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/
 import type { InvoiceListItem } from "@/hooks/useInvoices";
 
 const invoicesPageSource = readFileSync("client/src/pages/invoices.tsx", "utf8");
+const queueDialogSource = readFileSync("client/src/components/invoices/InvoiceEmailQueueDialog.tsx", "utf8");
 const invoiceHooksSource = readFileSync("client/src/hooks/useInvoices.ts", "utf8");
 
 const invoice = (overrides: Partial<InvoiceListItem> = {}): InvoiceListItem => ({
@@ -291,19 +292,19 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("provides a bounded, polling email queue with an explicit needs-review resolution flow", () => {
-    expect(invoicesPageSource).toContain("Invoice Email Queue");
+    expect(queueDialogSource).toContain("Invoice Email Queue");
     expect(invoicesPageSource).toContain("invoice-email-queue-open");
-    expect(invoicesPageSource).toContain("Waiting / Sending");
-    expect(invoicesPageSource).toContain("Problems");
-    expect(invoicesPageSource).toContain("Delivery outcome uncertain. Retry blocked until reviewed.");
-    expect(invoicesPageSource).toContain("Safe to send again:");
-    expect(invoicesPageSource).toContain(">Review</Button>");
+    expect(queueDialogSource).toContain("Waiting / Sending");
+    expect(queueDialogSource).toContain("Problems");
+    expect(queueDialogSource).toContain("Delivery outcome uncertain. Retry blocked until reviewed.");
+    expect(queueDialogSource).toContain("Terminal failure; a new send request is required.");
+    expect(queueDialogSource).toContain(">Review</Button>");
     expect(invoicesPageSource).toContain("Retry through Queue");
     expect(invoicesPageSource).toContain("I verified this email was not sent");
     expect(invoicesPageSource).toContain("Keep Blocked");
     expect(invoicesPageSource).toContain("Previous delivery needs review");
-    expect(invoicesPageSource).toContain("Recovering");
-    expect(invoicesPageSource).toContain("navigate(`/invoices/${job.invoiceId}`)");
+    expect(queueDialogSource).toContain("Recovering");
+    expect(invoicesPageSource).toContain("navigate(`/invoices/${id}`)");
     expect(invoicesPageSource).not.toContain("Retry email");
     expect(invoiceHooksSource).toContain("useInvoiceEmailQueue");
     expect(invoiceHooksSource).toContain("email-queue?view=");

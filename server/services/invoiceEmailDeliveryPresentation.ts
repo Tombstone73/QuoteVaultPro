@@ -2,7 +2,7 @@
  * Durable queue states are delivery-operation history. The successful
  * invoice_email_logs projection remains the authority for Last Sent.
  */
-export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "needs_review" | "canceled";
+export type InvoiceEmailDeliveryStatus = "queued" | "processing" | "retrying" | "sent" | "failed" | "needs_review" | "canceled" | "superseded";
 
 export type InvoiceEmailDeliveryState = {
   id: string;

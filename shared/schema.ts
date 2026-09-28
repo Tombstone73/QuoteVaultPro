@@ -5235,7 +5235,7 @@ export const insertInvoiceEmailDeliveryJobSchema = createInsertSchema(invoiceEma
   failureReason: true,
   sentAt: true,
 }).extend({
-  status: z.enum(['queued', 'processing', 'retrying', 'sent', 'failed', 'canceled']).default('queued'),
+  status: z.enum(['queued', 'processing', 'retrying', 'sent', 'failed', 'needs_review', 'canceled', 'superseded']).default('queued'),
   invoiceId: z.string().min(1).optional().nullable(),
   invoiceVersion: z.number().int().positive(),
   attemptCount: z.number().int().nonnegative().default(0),

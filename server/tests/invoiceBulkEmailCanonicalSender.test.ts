@@ -140,7 +140,7 @@ describe("bulk invoice email canonical sender boundary", () => {
     }));
   });
 
-  test("uses durable success evidence instead of resending after a worker recovery", async () => {
+  test("holds ambiguous legacy success for review instead of claiming equivalence or resending", async () => {
     // The worker may perform additional durable lookup reads as its delivery
     // types grow; every lookup in this recovery test represents prior success.
     selectLimit.mockResolvedValue([{ id: "email-log-1", messageId: "gmail-existing" }]);
@@ -156,10 +156,10 @@ describe("bulk invoice email canonical sender boundary", () => {
       maxAttempts: 3,
       createdAt: new Date("2026-09-04T16:00:00.000Z"),
       campaignId: "campaign-1",
-    })).resolves.toBe("sent");
+    })).resolves.toBe("failed");
 
     expect(canonicalSender).not.toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "sent", providerMessageId: "gmail-existing" }));
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "needs_review" }));
   });
 
   test("never records a retryable provider failure as sent", async () => {

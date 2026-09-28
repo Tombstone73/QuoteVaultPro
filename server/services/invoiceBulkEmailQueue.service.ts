@@ -21,6 +21,7 @@ import {
   type InvoiceEmailDeliveryStatus,
 } from "./invoiceEmailDeliveryPresentation";
 import { getNextBulkInvoiceEmailSlot } from "./invoiceBulkEmailScheduling";
+import { reconcilePendingInvoiceSiblings, supersedePendingInvoiceJob, updateCampaignCompletion } from "./emailQueueLifecycle.service";
 
 export {
   resolveCurrentInvoiceEmailDeliveryState,
@@ -70,7 +71,7 @@ export type BulkInvoiceEmailCandidate = {
 
 export type BulkInvoiceEmailSkip = { invoiceId: string; reason: string };
 
-export type InvoiceEmailQueueView = "active" | "failed" | "sent" | "all";
+export type InvoiceEmailQueueView = "active" | "failed" | "sent" | "canceled" | "superseded" | "all";
 
 /**
  * A sender marks failures after the provider-submission boundary explicitly.
@@ -87,7 +88,7 @@ export async function listInvoiceEmailDeliveryJobs(input: {
   const pageSize = Math.max(1, Math.min(100, input.pageSize));
   const statuses = input.view === "active" ? ["queued", "processing", "retrying"]
     : input.view === "failed" ? ["failed", "needs_review"]
-      : input.view === "sent" ? ["sent"] : null;
+      : ["sent", "canceled", "superseded"].includes(input.view) ? [input.view] : null;
   const where = statuses
     ? and(eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId), inArray(invoiceEmailDeliveryJobs.status, statuses))
     : eq(invoiceEmailDeliveryJobs.organizationId, input.organizationId);
@@ -296,6 +297,9 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
     `);
     const original = (locked.rows || locked)[0] as any;
     if (!original) throw Object.assign(new Error("Invoice delivery job was not found"), { statusCode: 404 });
+    if (["canceled", "superseded"].includes(original.status)) {
+      throw Object.assign(new Error("This delivery is terminal. Create a new send request to send again."), { statusCode: 409 });
+    }
 
     const originalMetadata = asMetadata(original.metadata);
     const priorReview = originalMetadata.deliveryReview as Partial<InvoiceEmailDeliveryReviewMetadata> | undefined;
@@ -712,7 +716,7 @@ export async function markInvoiceEmailDeliveryProviderSubmissionStarted(input: {
   deliveryJobId: string | null | undefined;
 }): Promise<void> {
   if (!input.deliveryJobId) return;
-  await db.execute(sql`
+  const result: any = await db.execute(sql`
     UPDATE invoice_email_delivery_jobs
     SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
           'queueStage', 'provider_submitting',
@@ -722,7 +726,9 @@ export async function markInvoiceEmailDeliveryProviderSubmissionStarted(input: {
     WHERE id = ${input.deliveryJobId}
       AND organization_id = ${input.organizationId}
       AND status = 'processing'
+    RETURNING id
   `);
+  if (!(result.rows || result).length) throw new Error("Email delivery is no longer processing; provider submission stopped");
 }
 
 async function hasInvoiceEmailReachedProviderBoundary(job: ClaimedBulkInvoiceEmailJob): Promise<boolean> {
@@ -776,6 +782,7 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
     const expiredCampaignIds = Array.from(new Set(expiredRows.map((row) => String(row.campaignId || "")).filter(Boolean)));
     const result: any = await tx.execute(sql`
       SELECT id, organization_id AS "organizationId", invoice_id AS "invoiceId",
+             invoice_version AS "invoiceVersion", recipient_key AS "recipientKey", status,
              recipient_email AS "recipientEmail", attempt_count AS "attemptCount",
              max_attempts AS "maxAttempts", created_at AS "createdAt", campaign_id AS "campaignId",
              metadata AS "metadata", delivery_type AS "deliveryType",
@@ -790,6 +797,12 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
     `);
     const row = (result.rows || result)[0] as ClaimedBulkInvoiceEmailJob | undefined;
     if (!row) return { job: null, expiredCampaignIds };
+
+    // Reconcile proven historical siblings under the same row lock as claim.
+    if (row.deliveryType === "invoice") {
+      const older = { ...row, metadata: asMetadata(row.metadata), createdAt: normalizeInvoiceEmailQueueTimestamp(row.createdAt) } as typeof invoiceEmailDeliveryJobs.$inferSelect;
+      if (await supersedePendingInvoiceJob(tx, older)) return { job: null, expiredCampaignIds: [...expiredCampaignIds, row.campaignId] };
+    }
 
     const workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
     const claimResult: any = await tx.execute(sql`
@@ -842,26 +855,13 @@ function isAmbiguousProviderFailure(error: unknown): boolean {
   return /timeout|timed out|econn|socket|connection reset|network|fetch failed/.test(message);
 }
 
-async function updateCampaignCompletion(campaignId: string): Promise<void> {
-  const result: any = await db.execute(sql`
-    SELECT
-      count(*) FILTER (WHERE status IN ('queued', 'retrying', 'processing'))::int AS active,
-      count(*) FILTER (WHERE status IN ('failed', 'needs_review'))::int AS failed
-    FROM invoice_email_delivery_jobs WHERE campaign_id = ${campaignId}
-  `);
-  const row = (result.rows || result)[0] || {};
-  if (Number(row.active || 0) > 0) return;
-  await db.update(invoiceEmailCampaigns).set({
-    status: Number(row.failed || 0) > 0 ? "completed_with_errors" : "completed",
-    completedAt: new Date(),
-    updatedAt: new Date(),
-  } as any).where(eq(invoiceEmailCampaigns.id, campaignId));
-}
-
 /** The bulk worker's only delivery operation: invoke the registered canonical sender. */
 export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceEmailJob): Promise<"sent" | "failed"> {
   logDeliveryStage(job, "job_claimed");
   const stopHeartbeat = beginClaimHeartbeat(job);
+  const ownedClaim = and(eq(invoiceEmailDeliveryJobs.id, job.id), eq(invoiceEmailDeliveryJobs.organizationId, job.organizationId),
+    eq(invoiceEmailDeliveryJobs.status, "processing"),
+    ...(job.claimedByWorkerId ? [eq(invoiceEmailDeliveryJobs.claimedByWorkerId, job.claimedByWorkerId)] : []));
   try {
   // The claim query is intentionally raw SQL for SKIP LOCKED. Normalize its
   // timestamp result at this boundary before handing it to Drizzle below.
@@ -876,7 +876,7 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       claimExpiresAt: null,
       failureReason: isStatement ? "Canonical customer statement email sender is not registered" : "Canonical invoice email sender is not registered",
       updatedAt: new Date(),
-    } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    } as any).where(ownedClaim);
     logDeliveryStage(job, "sender_unavailable", { terminal });
     if (terminal) await updateCampaignCompletion(job.campaignId);
     return "failed";
@@ -900,6 +900,15 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       )).limit(1);
   }
 
+    if (alreadySent && !isStatement) {
+      // Legacy logs lack request/version/content lineage. They cannot prove
+      // supersession, but must not cause an uncertain duplicate either.
+      await db.update(invoiceEmailDeliveryJobs).set({ status: "needs_review", claimExpiresAt: null, updatedAt: new Date(),
+        failureReason: "A later successful Invoice email exists for this recipient, but its send lineage is not proven. Review before sending again.",
+      }).where(ownedClaim);
+      await updateCampaignCompletion(job.campaignId);
+      return "failed";
+    }
     logDeliveryStage(job, "canonical_sender_started", { alreadySent: Boolean(alreadySent) });
     // Do not construct the sender promise before checking durable success
     // evidence: constructing it would submit a duplicate email even though
@@ -917,9 +926,11 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       failureReason: null,
       claimExpiresAt: null,
       updatedAt: new Date(),
-    } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    } as any).where(ownedClaim);
     logDeliveryStage(job, "job_marked_sent", { providerMessageIdPresent: Boolean(outcome?.messageId) });
     await updateCampaignCompletion(job.campaignId);
+    if (!isStatement && job.invoiceId) await reconcilePendingInvoiceSiblings(job.organizationId, job.invoiceId)
+      .catch(error => console.warn("[InvoiceEmailQueue] sibling reconciliation deferred", { jobId: job.id, message: String(error) }));
     return "sent";
   } catch (error) {
     const rawMessage = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
@@ -941,7 +952,7 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
         ? `Delivery outcome is uncertain. Review before retrying to avoid a duplicate email: ${message}`
         : message,
       updatedAt: new Date(),
-    } as any).where(eq(invoiceEmailDeliveryJobs.id, job.id));
+    } as any).where(ownedClaim);
     logDeliveryStage(job, needsReview ? "job_marked_needs_review" : terminal ? "job_marked_failed" : "job_scheduled_retry", {
       failureKind: failureKind || "unclassified",
       terminal,

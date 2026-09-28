@@ -74,6 +74,7 @@ import {
   type BulkInvoiceEmailCandidate,
   type BulkInvoiceEmailSkip,
 } from "../services/invoiceBulkEmailQueue.service";
+import { cancelEmailQueueJobs, inspectInvoiceQueueSupersession } from "../services/emailQueueLifecycle.service";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -2532,11 +2533,38 @@ export async function registerMvpInvoicingRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-      const view = ["active", "failed", "sent", "all"].includes(String(req.query.view)) ? String(req.query.view) as any : "active";
+      const view = ["active", "failed", "sent", "canceled", "superseded", "all"].includes(String(req.query.view)) ? String(req.query.view) as any : "active";
       const data = await listInvoiceEmailDeliveryJobs({ organizationId, view, page: Math.max(1, Number(req.query.page || 1)), pageSize: Math.max(1, Math.min(100, Number(req.query.pageSize || 25))) });
       return res.json({ success: true, data });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message || "Failed to list invoice email queue" });
+    }
+  });
+
+  app.post("/api/invoices/email-queue/cancel", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req), userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(401).json({ success: false, error: "Missing organization or user context" });
+      const body = z.object({ jobIds: z.array(z.string().min(1)).max(100), reason: z.string().max(500).optional() }).parse(req.body);
+      const userName = String(req.user?.firstName && req.user?.lastName ? `${req.user.firstName} ${req.user.lastName}` : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
+      const data = await cancelEmailQueueJobs({ organizationId, userId, userName, ...body });
+      const singleConflict = body.jobIds.length === 1 && data.skipped.length === 1;
+      return res.status(singleConflict ? data.skipped[0].status === "not_found" ? 404 : 409 : 200).json({
+        success: !singleConflict, data, ...(singleConflict ? { error: data.skipped[0].reason } : {}),
+      });
+    } catch (error: any) {
+      return res.status(error?.name === "ZodError" ? 400 : Number(error.statusCode || 500)).json({ success: false, error: error.message || "Unable to cancel email jobs" });
+    }
+  });
+
+  app.get("/api/invoices/email-queue/reconciliation", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(401).json({ success: false, error: "Missing organization context" });
+      const invoiceId = z.string().min(1).parse(req.query.invoiceId);
+      return res.json({ success: true, data: await inspectInvoiceQueueSupersession(organizationId, invoiceId), dryRun: true });
+    } catch (error: any) {
+      return res.status(error?.name === "ZodError" ? 400 : 500).json({ success: false, error: error.message || "Unable to inspect queue supersession" });
     }
   });
 

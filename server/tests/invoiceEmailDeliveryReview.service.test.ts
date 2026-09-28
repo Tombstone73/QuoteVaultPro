@@ -103,4 +103,9 @@ describe("invoice email needs-review resolution", () => {
     expect(resolver).toContain('status,');
     expect(resolver).toContain('original.status !== "needs_review"');
   });
+  test.each(["canceled", "superseded"])("%s cannot be replayed through old review metadata", async status => {
+    execute.mockResolvedValueOnce({ rows: [{ ...lockedNeedsReviewJob(), status, metadata: { deliveryReview: { resolution: "verified_not_sent", replacementJobId: "previous-retry" } } }] });
+    await expect(resolveInvoiceEmailDeliveryNeedsReview({ organizationId: "org-1", jobId: "needs-review-job", retryThroughQueue: true })).rejects.toMatchObject({ statusCode: 409 });
+    expect(tx.insert).not.toHaveBeenCalled(); expect(tx.update).not.toHaveBeenCalled();
+  });
 });

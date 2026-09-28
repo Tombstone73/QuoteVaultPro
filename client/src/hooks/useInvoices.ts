@@ -5,7 +5,7 @@ import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
 import { apiFetch, apiRequest } from '@/lib/queryClient';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
-export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'needs_review' | 'canceled';
+export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'needs_review' | 'canceled' | 'superseded';
 
 export type ReminderListStatus =
   | 'due'
@@ -69,10 +69,13 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
 }
 
-export type InvoiceEmailQueueJob = { id: string; invoiceId: string; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: { deliveryReview?: { resolution?: 'verified_not_sent'; reviewedAt?: string; reviewedByUserName?: string | null; replacementJobId?: string | null } }; };
+export type InvoiceEmailQueueJob = { id: string; deliveryType?: 'invoice' | 'customer_statement'; invoiceId: string | null; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: {
+  cancellation?: { canceledAt: string; canceledByUserId: string; canceledByUserName?: string | null; reason?: string | null };
+  supersession?: { replacementJobId: string; successfulSentAt: string; evidence: string };
+  deliveryReview?: { resolution?: 'verified_not_sent'; reviewedAt?: string; reviewedByUserName?: string | null; replacementJobId?: string | null } }; };
 export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; pagination: InvoiceListPagination; counts: { active: number; failed: number; needsReview: number }; claimSeconds: number };
 
-export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'all', page: number) {
+export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'canceled' | 'superseded' | 'all', page: number) {
   return useQuery<InvoiceEmailQueueResponse>({
     queryKey: ['invoices', 'email-queue', view, page], enabled: open,
     refetchInterval: (query) => open && Number(query.state.data?.counts.active || 0) > 0 ? 5_000 : false,
@@ -115,6 +118,19 @@ export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, I
   lastSentVia?: 'email' | 'manual' | 'portal' | null;
   customerSendStatus?: InvoiceEmailStatus;
   emailStatus?: InvoiceEmailStatus;
+}
+
+export function useCancelInvoiceEmailQueueJobs() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { jobIds: string[]; reason?: string }) => {
+      const response = await apiFetch('/api/invoices/email-queue/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), credentials: 'include' });
+      const payload = await response.json();
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to cancel email jobs');
+      return payload.data as { canceled: string[]; alreadyCanceled: string[]; skipped: Array<{ id: string; status: string; reason: string }> };
+    },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['invoices'] }); },
+  });
 }
 
 interface InvoiceWithRelations {
