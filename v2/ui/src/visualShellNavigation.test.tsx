@@ -20,7 +20,7 @@ const operationalCapabilities: UiBootstrap["capabilities"] = {
 };
 
 const permitted = labels(operationalCapabilities);
-for (const label of ["Inbound Orders", "Proofing", "Production", "Flatbed", "Roll", "Fulfillment", "Users & Permissions", "Themes / Appearance"]) {
+for (const label of ["Inbound Orders", "Proofing", "Production", "Flatbed", "Roll", "Fulfillment", "Team & Access", "Themes / Appearance"]) {
   assert.ok(permitted.includes(label), `${label} should be exposed when permitted`);
 }
 for (const label of ["Quotes", "Orders", "Products", "Inventory", "QuickBooks", "Formula Library"]) {

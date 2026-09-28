@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TeamAccessWorkspace } from "./TeamAccessWorkspace";
+import { TeamAccessWorkspace, filterCapabilityGroups } from "./TeamAccessWorkspace";
 import type { TeamAccessRead } from "./api";
 
 const value: TeamAccessRead = {
@@ -27,6 +27,8 @@ const render = (section: "staff" | "permission-sets" | "portal", canView = true,
 };
 
 const staff = render("staff");
+assert.match(staff, /Team &amp; Access/);
+assert.match(staff, /Roles &amp; Permissions/);
 assert.match(staff, /Invite staff/);
 assert.match(staff, /Manage roles/);
 assert.match(staff, /View permissions/);
@@ -35,9 +37,12 @@ assert.match(staff, /Operations/);
 
 const sets = render("permission-sets");
 assert.match(sets, /Built-in/);
+assert.match(sets, /Roles &amp; Permissions/);
 assert.match(sets, /Create custom role/);
 assert.match(sets, /Clone role/);
 assert.match(sets, /QA custom/);
+
+assert.deepEqual(filterCapabilityGroups([{ key: "payments", label: "Payments", capabilities: [{ id: "payment.view", label: "View payments", sensitive: false }, { id: "payment.record", label: "Record payments", sensitive: true }] }, { key: "orders", label: "Orders", capabilities: [{ id: "order.view", label: "View orders", sensitive: false }] }], "record"), [{ key: "payments", label: "Payments", capabilities: [{ id: "payment.record", label: "Record payments", sensitive: true }] }]);
 
 const portal = render("portal");
 assert.match(portal, /Open Customers/);

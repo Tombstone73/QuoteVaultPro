@@ -6,7 +6,7 @@ type Item = Readonly<{ id: Section; label: string }>;
 const groups: readonly Readonly<{ label: string; items: readonly Item[] }>[] = [
   { label: "", items: [{ id: "overview", label: "Overview" }] },
   { label: "Organization", items: [{ id: "business-profile", label: "Business Profile" }, { id: "documents", label: "Documents & Branding" }, { id: "numbering", label: "Numbering" }] },
-  { label: "Team & Access", items: [{ id: "staff", label: "Staff & Users" }, { id: "permission-sets", label: "Permission Sets" }, { id: "portal-access", label: "Customer Portal Access" }] },
+  { label: "Team & Access", items: [{ id: "staff", label: "Team & Access" }, { id: "portal-access", label: "Customer Portal Access" }] },
   { label: "Sales", items: [{ id: "sales-tax", label: "Sales Tax" }] },
   { label: "Communications", items: [{ id: "email", label: "Email Delivery" }] },
   { label: "Billing & Payments", items: [{ id: "invoice-defaults", label: "Invoice Defaults" }, { id: "payments", label: "Payments" }] },
