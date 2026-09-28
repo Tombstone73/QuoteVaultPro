@@ -41,3 +41,14 @@ test("closed is displayed before terminal fulfillment without erasing fulfillmen
   expect(jobStatus.indexOf('return "Closed"')).toBeLessThan(jobStatus.indexOf('return "Fulfillment Complete"'));
   expect(invoiceSort).toContain("= 'closed' then 'closed'");
 });
+
+test('manual closure shares operational and canonical financial gates without an unpaid bypass', () => {
+  const routes = source('server/routes/orders.routes.ts');
+  const close = routes.slice(routes.indexOf('app.post("/api/orders/:orderId/close"'), routes.indexOf('app.post("/api/orders/:orderId/reopen"'));
+  expect(close).toContain('await reconcileOrderAutoClose(');
+  expect(close).not.toContain('transitionOrderState');
+  expect(close).not.toContain('confirmUnpaidInvoices');
+  expect(routes).toContain('source: "manual_operational_completion"');
+  const qb = source('server/quickbooksService.ts');
+  expect(qb.match(/source: 'quickbooks_invoice_balance'/g)).toHaveLength(2);
+});

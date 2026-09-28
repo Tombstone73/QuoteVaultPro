@@ -645,7 +645,7 @@ export default function Orders() {
       const request = action === "complete"
         ? { url: `/api/orders/${orderId}/complete`, method: "POST", body: { notes: note || undefined } }
         : action === "close"
-        ? { url: `/api/orders/${orderId}/close`, method: "POST", body: { notes: note || undefined, confirmUnpaidInvoices: true } }
+        ? { url: `/api/orders/${orderId}/close`, method: "POST", body: { notes: note || undefined } }
         : action === "reopen"
           ? { url: `/api/orders/${orderId}/reopen`, method: "POST", body: { reason: note, targetState: "open" } }
           : { url: `/api/orders/${orderId}/cancel`, method: "POST", body: { reason: "other", internalNote: note || undefined } };

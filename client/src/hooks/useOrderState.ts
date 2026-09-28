@@ -128,11 +128,11 @@ export function useCloseOrder(orderId: string) {
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async ({ notes, confirmUnpaidInvoices = false }: { notes?: string; confirmUnpaidInvoices?: boolean }) => {
+    mutationFn: async ({ notes }: { notes?: string }) => {
       const res = await fetch(`/api/orders/${orderId}/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notes, confirmUnpaidInvoices }),
+        body: JSON.stringify({ notes }),
         credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
@@ -146,7 +146,6 @@ export function useCloseOrder(orderId: string) {
       toast({ title: 'Order Closed', description: data.message || 'Order has been closed.' });
     },
     onError: (error: Error) => {
-      if (error instanceof OrderStateApiError && error.code === 'UNPAID_INVOICES_CONFIRMATION_REQUIRED') return;
       toast({ title: 'Close Order Failed', description: error.message, variant: 'destructive' });
     },
   });

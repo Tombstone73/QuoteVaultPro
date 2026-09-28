@@ -2372,7 +2372,14 @@ export async function processPullInvoices(jobId: string, organizationId: string)
               externalAccountingId: localData.externalAccountingId,
             })
             .where(eq(invoices.id, existing.id));
-          console.log(`[QB Pull Invoices] Updated invoice: ${qbInvoice.DocNumber}`);
+          // Reconsider lifecycle only after a new balance reduction, not an
+          // unchanged sync replay that could undo an explicit Order reopen.
+          if (existing.orderId && Number(localData.balanceDue) < Number(existing.balanceDue)) {
+            const { reconcileOrderAutoCloseFailSoft } = await import('./services/orderAutoCloseService');
+            await reconcileOrderAutoCloseFailSoft({ organizationId, orderId: existing.orderId,
+              source: 'quickbooks_invoice_balance', metadata: { invoiceId: existing.id } });
+          }
+          console.log('[QB Pull Invoices] Updated invoice:', qbInvoice.DocNumber);
         } else {
           // Would need createdByUserId - skip creation for now
           console.warn(`[QB Pull Invoices] Skipping new invoice ${qbInvoice.DocNumber} - requires user context`);
@@ -3684,6 +3691,8 @@ export async function importQBInvoicesByIds(
           customerPoNumber: invoices.customerPoNumber,
           importSource: invoices.importSource,
           qbImportBalanceDue: invoices.qbImportBalanceDue,
+          balanceDue: invoices.balanceDue,
+          orderId: invoices.orderId,
         })
         .from(invoices)
         .where(and(
@@ -3733,6 +3742,11 @@ export async function importQBInvoicesByIds(
             previousBalanceDue: existing.qbImportBalanceDue,
             nextBalanceDue: balance.toFixed(2),
           });
+        }
+        if (existing.orderId && balance < Number(existing.qbImportBalanceDue ?? existing.balanceDue)) {
+          const { reconcileOrderAutoCloseFailSoft } = await import('./services/orderAutoCloseService');
+          await reconcileOrderAutoCloseFailSoft({ organizationId, orderId: existing.orderId,
+            actorUserId: createdByUserId, source: 'quickbooks_invoice_balance', metadata: { invoiceId: existing.id } });
         }
         result.updated++;
         if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;

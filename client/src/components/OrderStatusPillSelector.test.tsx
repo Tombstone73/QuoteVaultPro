@@ -189,3 +189,17 @@ describe("OrderStatusPillSelector controlled display", () => {
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 });
+
+test('closed lifecycle shows a fixed Closed badge even while pill catalog loads', async () => {
+  mockUseOrderStatusPills.mockReturnValue({ isLoading: true, data: undefined });
+  mockUseAssignOrderStatusPill.mockReturnValue({ mutate: mockMutate, isPending: false });
+  const { act } = require('react') as typeof import('react');
+  const { createRoot } = require('react-dom/client') as typeof import('react-dom/client');
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const container = document.createElement('div'); const root = createRoot(container);
+  await act(async () => root.render(<OrderStatusPillSelector {...props({ currentState: 'closed', currentPillValue: 'Invoiced' })} />));
+  expect(container.textContent).toBe('Closed');
+  expect(container.querySelector('[data-testid="status-select"]')).toBeNull();
+  await act(async () => root.unmount());
+  delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+});

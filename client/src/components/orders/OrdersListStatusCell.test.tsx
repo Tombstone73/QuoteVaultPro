@@ -152,3 +152,13 @@ describe("Orders list status cell", () => {
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 });
+
+test.each(['invoiced', 'operationally_complete', 'completed'])('closed lifecycle overrides stale %s status and billing pill', async status => {
+  mockMutate.mockReset();
+  const { act, container, root } = await renderCell({ ...row, state: 'closed', status, statusPillValue: 'Invoiced' });
+  expect(container.textContent).toBe('Closed');
+  expect(container.querySelector('[data-testid="status-select"]')).toBeNull();
+  expect(mockMutate).not.toHaveBeenCalled();
+  await act(async () => root.unmount());
+  delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+});

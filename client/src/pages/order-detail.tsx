@@ -2182,7 +2182,7 @@ export default function OrderDetail() {
           </div>
 
             <div className="flex flex-1 items-center justify-center px-4">
-            {order.status === 'operationally_complete' ? <OrderStatusBadge status={order.status} /> : <OrderStatusPillSelector
+            {(order.state === 'closed' || order.status === 'operationally_complete') ? <OrderStatusBadge status={order.status} state={order.state} /> : <OrderStatusPillSelector
               orderId={order.id}
               currentState={order.state as OrderState}
               currentPillId={order.statusPillId}
@@ -2878,7 +2878,7 @@ export default function OrderDetail() {
                     </Badge>
                     {orderOperationalSummary.productionRequiredCount > 0 ? (
                       <Badge variant="secondary" className="h-6 px-2 text-xs">
-                        {orderOperationalSummary.productionRequiredCount} require production
+                        {orderOperationalSummary.productionRequiredCount} production items
                       </Badge>
                     ) : null}
                     <Badge

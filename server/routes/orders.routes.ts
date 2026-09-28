@@ -165,7 +165,7 @@ import {
 } from "../services/orderWorkflowService";
 import { assessOrderCancellationEligibility, cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
 import { duplicateOrder, OrderDuplicationError } from "../services/orderDuplicationService";
-import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
+import { reconcileOrderAutoClose, reconcileOrderAutoCloseFailSoft } from "../services/orderAutoCloseService";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
@@ -3990,6 +3990,7 @@ export async function registerOrderRoutes(
                 reason: "Order marked operationally complete",
                 metadata: { invoiceCount: assessment.activeInvoiceCount, needsInvoicing: assessment.needsInvoicing },
             });
+            await reconcileOrderAutoCloseFailSoft({ organizationId, orderId, actorUserId: userId, actorUserName: userName, source: "manual_operational_completion" });
 
             const updatedOrder = await storage.getOrderById(organizationId, orderId);
             return res.json({
@@ -4083,7 +4084,6 @@ export async function registerOrderRoutes(
 
             const parsed = z.object({
                 notes: z.string().trim().max(2000).optional(),
-                confirmUnpaidInvoices: z.boolean().optional(),
             }).parse(req.body ?? {});
             const orderId = String(req.params.orderId);
             const order = await storage.getOrderById(organizationId, orderId);
@@ -4092,65 +4092,27 @@ export async function registerOrderRoutes(
                 return res.status(409).json({ success: false, code: "TERMINAL_STATE", message: `Cannot close an order in ${order.state} state.` });
             }
 
-            const lineRows = await db.select({ productId: orderLineItems.productId, status: orderLineItems.status })
-                .from(orderLineItems)
-                .where(eq(orderLineItems.orderId, orderId));
-            const productIds = Array.from(new Set(lineRows.map((line) => line.productId)));
-            const productRows = productIds.length > 0
-                ? await db.select({ id: products.id, workflowIntent: products.workflowIntent }).from(products)
-                    .where(and(eq(products.organizationId, organizationId), inArray(products.id, productIds)))
-                : [];
-            const workflowIntentByProductId = new Map(productRows.map((product) => [product.id, product.workflowIntent]));
-            const invoiceRows = await db.select({ status: invoices.status }).from(invoices)
-                .where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, orderId)));
-            const nonVoidInvoices = invoiceRows.filter((invoice) => String(invoice.status).toLowerCase() !== "void");
-            const unpaidInvoiceCount = nonVoidInvoices.filter((invoice) => String(invoice.status).toLowerCase() !== "paid").length;
-            const eligibility = assessOrderCloseEligibility({
-                state: order.state,
-                routingTarget: order.routingTarget,
-                lineItems: lineRows.map((line) => ({ status: line.status, workflowIntent: workflowIntentByProductId.get(line.productId) })),
-                invoiceCount: nonVoidInvoices.length,
-                unpaidInvoiceCount,
+            const userName = [req.user.firstName, req.user.lastName].filter(Boolean).join(" ") || req.user.email;
+            const result = await reconcileOrderAutoClose({
+                organizationId, orderId, actorUserId: userId, actorUserName: userName,
+                source: "manual_close", metadata: { notes: parsed.notes ?? null },
             });
-            if (!eligibility.ok) {
-                return res.status(409).json({ success: false, code: eligibility.code, message: eligibility.message });
-            }
-            if (eligibility.requiresUnpaidConfirmation && !parsed.confirmUnpaidInvoices) {
+            if (result.action !== "closed") {
                 return res.status(409).json({
-                    success: false,
-                    code: "UNPAID_INVOICES_CONFIRMATION_REQUIRED",
-                    message: "This order has unpaid invoices. Close order anyway? Payment collection remains available after closing.",
-                    unpaidInvoiceCount,
+                    success: false, code: result.reason,
+                    message: result.reason === "UNPAID_INVOICES"
+                        ? "All applicable invoices must be settled before closing this order."
+                        : "Order closure requires completed operational work and at least one settled invoice.",
                 });
             }
-
-            const { transitionOrderState } = await import("../services/orderStateService");
-            const userName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
-            const updatedOrder = await transitionOrderState({
-                organizationId,
-                orderId,
-                nextState: "closed",
-                actorUserId: userId,
-                actorUserName: userName,
-                notes: parsed.notes,
-                metadata: { source: "manual_close", serviceFeeOnly: eligibility.serviceFeeOnly, unpaidInvoiceCount },
-            });
-            const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
-            await applyWorkflowStatusPillFailSoft({
-                organizationId,
-                orderId,
-                triggerKey: "order_closed",
-                actorUserId: userId,
-                actorUserName: userName,
-                source: "system",
-                reason: "Order closed",
-                metadata: { unpaidInvoiceCount },
-            });
             const refreshedOrder = await storage.getOrderById(organizationId, orderId);
-            return res.json({ success: true, data: refreshedOrder ?? updatedOrder, message: "Order closed." });
+            return res.json({ success: true, data: refreshedOrder, message: "Order closed." });
         } catch (error: any) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ success: false, code: "VALIDATION_ERROR", message: fromZodError(error).message });
+            }
+            if (error instanceof FulfillmentHttpError) {
+                return res.status(error.status).json({ success: false, code: error.code, message: error.message });
             }
             console.error("[POST /api/orders/:orderId/close] Error:", error);
             return res.status(500).json({ success: false, message: "Failed to close order" });
@@ -4198,6 +4160,7 @@ export async function registerOrderRoutes(
             const { nextState, notes } = req.body;
 
             if (!nextState) return res.status(400).json({ success: false, message: "nextState is required" });
+            if (String(nextState).trim().toLowerCase() === "closed") return res.status(409).json({ success: false, code: "USE_CANONICAL_CLOSURE", message: "Use the guarded Close Order operation." });
             if (['canceled', 'cancelled'].includes(String(nextState).trim().toLowerCase())) return res.status(409).json({ success: false, code: 'USE_CANONICAL_CANCELLATION', message: 'Use the canonical order cancellation operation.' });
 
             const { validateOrderStateTransition, transitionOrderState, isTerminalState } = await import('../services/orderStateService');

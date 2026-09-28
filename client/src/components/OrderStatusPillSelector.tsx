@@ -4,6 +4,7 @@
  * Dropdown selector for the tenant's active operational status-pill catalog.
  */
 
+import { OrderStatusBadge } from './order-status-badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useOrderStatusPills, useAssignOrderStatusPill } from '@/hooks/useOrderStatusPills';
 import type { OrderState } from '@/hooks/useOrderState';
@@ -57,6 +58,8 @@ export function OrderStatusPillSelector({
   const displayedPillId = pendingSelection?.pillId ?? controlledPillId;
   const displayedPill = choices.find((pill) => pill.id === displayedPillId)
     ?? choices.find((pill) => pill.name === currentPillValue);
+
+  if (currentState === 'closed') return <OrderStatusBadge status="closed" state={currentState} className={className} />;
 
   // TitanOS rule: canceled is a terminal workflow state and should not have editable pills
   if (currentState === 'canceled') {

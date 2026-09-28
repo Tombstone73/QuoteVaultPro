@@ -4,14 +4,15 @@ import { auditLogs, invoices, orderAuditLog, orderLineItems, orders, products } 
 import { mapStateToLegacyStatus } from "./orderStateService";
 import { assessOrderAutoClose, isApplicableOrderInvoice, type OrderAutoCloseDecision } from "./orderAutoClosePolicy";
 import { FulfillmentDashboardRepo } from './fulfillment/repository';
+import { loadOrderInvoicePaymentEvidence } from './orderPaymentSummary';
 import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
 
 export type OrderAutoCloseResult = OrderAutoCloseDecision & { orderId: string };
 
 
 /**
- * Event-driven and idempotent. Call only after a payment or terminal
- * fulfillment mutation commits; never from a read, page load, or scanner.
+ * Event-driven and idempotent. Called after payment/operational mutations or
+ * an explicit Close Order request; never from a read, page load, or scanner.
  */
 export async function reconcileOrderAutoClose(input: {
   organizationId: string;
@@ -60,8 +61,15 @@ export async function reconcileOrderAutoClose(input: {
         .where(and(eq(products.organizationId, input.organizationId), inArray(products.id, productIds)))
       : [];
     const workflowIntentByProductId = new Map(productRows.map((product) => [product.id, product.workflowIntent]));
-    const invoiceRows = await tx.select({ status: invoices.status, balanceDue: invoices.balanceDue })
+    const invoiceFacts = await tx.select({
+      id: invoices.id, orderId: invoices.orderId, status: invoices.status,
+      total: invoices.total, totalCents: invoices.totalCents,
+      amountPaid: invoices.amountPaid, balanceDue: invoices.balanceDue,
+      importSource: invoices.importSource, isHistorical: invoices.isHistorical,
+      qbImportBalanceDue: invoices.qbImportBalanceDue,
+    })
       .from(invoices).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.orderId, input.orderId)));
+    const invoiceRows = await loadOrderInvoicePaymentEvidence(tx, input.organizationId, invoiceFacts);
     const decision = assessOrderAutoClose({
       state: order.state,
       fulfillmentStatus: order.fulfillmentStatus,

@@ -8,7 +8,8 @@ export type OrderCloseEligibility =
   | { ok: false; code: "INVOICE_REQUIRED" | "PRODUCTION_COMPLETION_REQUIRED" | "OPERATIONAL_COMPLETION_REQUIRED"; message: string };
 
 /** Closing is terminal. Operational completion always happens first, and an
- * invoice must exist. Unpaid invoices require the route's explicit override.
+ * invoice must exist. The legacy unpaid-confirmation flag reports unsettled
+ * obligations; the shared closure reconciler rejects them without an override.
  */
 export function assessOrderCloseEligibility(input: {
   state: string | null | undefined;

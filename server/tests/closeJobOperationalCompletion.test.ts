@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, jest, test } from '@jest/globals';
 import { getTableColumns } from 'drizzle-orm';
-import { auditLogs, fulfillmentEvents, invoices, orderAuditLog, orderLineItems, orders, productionJobs, productionRuns } from '@shared/schema';
+import { auditLogs, fulfillmentEvents, invoices, orderAuditLog, orderLineItems, orders, payments, productionJobs, productionRuns } from '@shared/schema';
 import { resolveFulfillmentLineQuantity } from '@shared/fulfillmentReadiness';
 import { assessOrderAutoClose } from '../services/orderAutoClosePolicy';
 import { isFulfillmentQueueEligibleOrder } from '../services/fulfillment/eligibility';
@@ -56,13 +56,13 @@ function fixture(options: { method?: string; allocated?: number; evidence?: bool
     order: { id: 'order-20492', orderNumber: '20492', organizationId: 'org-1', state: 'production_complete', status: options.status ?? 'ready_for_shipment', fulfillmentStatus: 'delivered', routingTarget: 'fulfillment', shippingMethod: options.method ?? 'ship' },
     lines: [{ id: 'line-1', quantity: 5, status: options.lineStatus ?? 'complete', updatedAt: '2026-09-20T10:00:00Z' }],
     allocated: options.allocated ?? 0, events: [], audits: [], orderAudits: [], activeJobs: [], activeRuns: [], mutations: [],
-    invoice: { status: options.invoiceStatus ?? 'sent', balanceDue: options.balance ?? '125.00', subtotal: '100', tax: '25', approval: 'approved', sendHistory: ['send-1'], payments: [], quickbooksId: 'qb-1' },
+    invoice: { id: 'invoice-1', orderId: 'order-20492', totalCents: 12500, status: options.invoiceStatus ?? 'sent', balanceDue: options.balance ?? '125.00', subtotal: '100', tax: '25', approval: 'approved', sendHistory: ['send-1'], payments: [{ id: 'payment-1', invoiceId: 'invoice-1', status: 'succeeded', amountCents: 12500 - Math.round(Number(options.balance ?? '125') * 100) }], quickbooksId: 'qb-1' },
   };
   if (options.evidence !== false) {
     f.events.push({ id: 'event-1', entityId: f.order.id, eventType: 'FULFILLMENT_HISTORICAL_RECONCILED', actorUserId: 'actor-1', createdAt: '2026-09-21T10:00:00Z', payloadJson: { source: 'administrative_historical_reconciliation', shipmentOrPickupEvidenceCreated: false, billingAutomationSuppressed: true } });
     f.audits.push({ id: 'audit-1', actionType: 'ORDER_HISTORICAL_FULFILLMENT_RECONCILED', entityType: 'order' });
   }
-  const rows = (table: any) => table === orders ? [f.order] : table === orderLineItems ? f.lines : table === fulfillmentEvents ? f.events : table === auditLogs ? f.audits : table === orderAuditLog ? f.orderAudits : table === invoices ? [f.invoice] : table === productionJobs ? f.activeJobs : table === productionRuns ? f.activeRuns : [];
+  const rows = (table: any) => table === orders ? [f.order] : table === orderLineItems ? f.lines : table === fulfillmentEvents ? f.events : table === auditLogs ? f.audits : table === orderAuditLog ? f.orderAudits : table === invoices ? [f.invoice, ...(f.extraInvoices ?? [])] : table === payments ? f.invoice.payments : table === productionJobs ? f.activeJobs : table === productionRuns ? f.activeRuns : [];
   const db: any = {
     fixture: f,
     select: (fields?: any) => ({ from: (table: any) => {
@@ -77,7 +77,8 @@ function fixture(options: { method?: string; allocated?: number; evidence?: bool
     update: (table: any) => ({ set: (values: any) => ({ where: () => {
       const mutate = async () => {
         if (table !== orders) throw new Error('Unexpected mutation');
-        f.mutations.push(values); Object.assign(f.order, values); return [{ id: f.order.id }];
+        const stored = { ...values, ...(values.updatedAt ? { updatedAt: '2026-09-28T17:00:00Z' } : {}) };
+        f.mutations.push(stored); Object.assign(f.order, stored); return [{ id: f.order.id }];
       };
       return { then: (resolve: any, reject: any) => mutate().then(resolve, reject), returning: mutate };
     } }) }),
@@ -216,5 +217,52 @@ describe('Historical operational repair', () => {
     const { f, db } = fixture(); f.order.state = 'closed'; f.order.status = 'completed';
     await repair.applyHistoricalCloseJobOperationalRepair(db, input);
     expect(f.order).toMatchObject({ state: 'closed', status: 'completed' });
+  });
+});
+
+describe('final closure regression fixtures', () => {
+  async function reconcile(db: any, source = 'manual_payment') {
+    Object.assign(runtimeDb, db);
+    const { reconcileOrderAutoClose } = await import('../services/orderAutoCloseService');
+    return reconcileOrderAutoClose({ ...input, source });
+  }
+  test('20222: invoiced parent, four finished production lines and a paid $130 invoice close once', async () => {
+    const { f, db } = fixture({ status: 'invoiced', allocated: 5, balance: '0', invoiceStatus: 'paid' });
+    f.lines = Array.from({ length: 4 }, (_, i) => ({ ...f.lines[0], id: 'line-' + i }));
+    f.invoice.totalCents = 13000; f.invoice.payments[0].amountCents = 13000;
+    const before = structuredClone(f.invoice);
+    expect((await reconcile(db)).action).toBe('closed');
+    expect(f.order).toMatchObject({ state: 'closed', status: 'completed', routingTarget: null });
+    expect(f.orderAudits.filter((a: any) => a.actionType === 'order_auto_closed')).toHaveLength(1);
+    expect((await reconcile(db)).action).toBe('no_op');
+    expect(f.invoice).toEqual(before);
+  });
+  test.each(['manual_payment', 'stripe_payment', 'historical_fulfillment_reconciliation', 'pickup_handoff_recorded', 'shipment_shipped', 'quickbooks_invoice_balance'])('%s closes through the same guard', async source => {
+    const { db } = fixture({ allocated: 5, balance: '0', invoiceStatus: 'paid' });
+    expect((await reconcile(db, source)).action).toBe('closed');
+  });
+  test.each(['production', 'fulfillment', 'owner', 'run'])('%s remaining blocks final closure despite payment', async kind => {
+    const { f, db } = fixture({ allocated: kind === 'fulfillment' ? 0 : 5, balance: '0', invoiceStatus: 'paid', lineStatus: kind === 'production' ? 'new' : 'complete' });
+    if (kind === 'owner') f.activeJobs = [{ id: 'job' }];
+    if (kind === 'run') f.activeRuns = [{ id: 'run' }];
+    if (kind === 'owner' || kind === 'run') await expect(reconcile(db)).rejects.toThrow('Production work remains');
+    else expect((await reconcile(db)).action).toBe('not_eligible');
+    expect(f.order.state).toBe('production_complete');
+    expect(f.orderAudits).toHaveLength(0);
+  });
+  test('additional unpaid invoice blocks closure even with credit on the base invoice', async () => {
+    const { f, db } = fixture({ allocated: 5, balance: '0', invoiceStatus: 'paid' });
+    f.invoice.payments[0].amountCents = 20000;
+    f.extraInvoices = [{ id: 'invoice-2', orderId: f.order.id, status: 'billed', totalCents: 5000 }];
+    expect((await reconcile(db)).action).toBe('not_eligible');
+    expect(f.order.status).toBe('operationally_complete');
+    f.invoice.payments.push({ invoiceId: 'invoice-2', status: 'succeeded', amountCents: 5000 });
+    expect((await reconcile(db)).action).toBe('closed');
+  });
+  test('refund preserves historical closure and requires explicit reopening', async () => {
+    const { f, db } = fixture({ allocated: 5, balance: '125' });
+    f.order.state = 'closed'; f.order.status = 'completed';
+    expect((await reconcile(db, 'payment_reversal')).action).toBe('no_op');
+    expect(f.mutations).toHaveLength(0);
   });
 });

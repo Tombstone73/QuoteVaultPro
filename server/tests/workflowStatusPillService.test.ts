@@ -155,3 +155,16 @@ describe("workflow assignment boundary", () => {
     expect(captured.statusPillKey).toBe("canceled");
   });
 });
+
+test('billing milestones cannot mask closed lifecycle even with exception overwrite enabled', () => {
+  for (const key of ['invoiced', 'paid', 'complete']) {
+    expect(evaluateWorkflowStatusPillTarget({
+      mapping: { isActive: true, targetStatusKey: key, overwriteExceptionStatus: true },
+      currentState: 'closed', currentStatusPillId: 'closed-pill', currentStatusKey: 'closed', targetPill: pill({ key }),
+    })).toBe('closed_order');
+  }
+  expect(evaluateWorkflowStatusPillTarget({
+    mapping: { isActive: true, targetStatusKey: 'closed', overwriteExceptionStatus: true },
+    currentState: 'closed', currentStatusPillId: 'invoiced-pill', currentStatusKey: 'invoiced', targetPill: pill({ key: 'closed' }),
+  })).toBeNull();
+});

@@ -1,12 +1,14 @@
+import { getCanonicalOrderDisplayStatus } from '@shared/orderOperationalStatus';
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 interface OrderStatusBadgeProps {
   status: string;
+  state?: string | null;
   className?: string;
 }
 
-export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
+export function OrderStatusBadge({ status, state, className }: OrderStatusBadgeProps) {
   const getStatusConfig = (status: string) => {
     switch (status.toLowerCase()) {
       case "new":
@@ -39,6 +41,8 @@ export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
           label: "Shipped",
           className: "bg-teal-500/10 text-teal-500 border-teal-500/20",
         };
+      case "closed":
+        return { label: "Closed", className: "bg-green-600/10 text-green-600 border-green-600/20" };
       case "completed":
         return {
           label: "Completed",
@@ -67,7 +71,7 @@ export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
     }
   };
 
-  const config = getStatusConfig(status);
+  const config = getStatusConfig(getCanonicalOrderDisplayStatus({ status, state }));
 
   return (
     <Badge variant="outline" className={cn(config.className, className)}>

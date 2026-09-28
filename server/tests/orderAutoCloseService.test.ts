@@ -2,8 +2,8 @@ import { describe, expect, test } from "@jest/globals";
 import { assessOrderAutoClose } from "../services/orderAutoClosePolicy";
 
 const physicalLine = [{ workflowIntent: "standard_production", status: "active" }];
-const paidInvoice = { status: "paid", balanceDue: "0" };
-const unpaidInvoice = { status: "sent", balanceDue: "25.00" };
+const paidInvoice = { status: "paid", totalCents: 13000, balanceDue: "0", payments: [{ status: "succeeded", amountCents: 13000 }] };
+const unpaidInvoice = { status: "sent", totalCents: 2500, balanceDue: "25.00", payments: [] };
 
 function assess(input: Partial<Parameters<typeof assessOrderAutoClose>[0]> = {}) {
   return assessOrderAutoClose({
@@ -53,3 +53,27 @@ describe("order auto-close policy adapter", () => {
     expect(assess({ state: "canceled" })).toEqual({ action: "no_op", reason: "ORDER_CANCELED" });
   });
 });
+
+ test("canonical payment evidence outranks a stale paid label or zero balance", () => {
+   expect(assess({ invoices: [{ ...paidInvoice, payments: [] }] }).action).toBe('not_eligible');
+   expect(assess({ invoices: [{ ...paidInvoice, status: 'sent', balanceDue: '130' }] }).action).toBe('closed');
+ });
+ test("overpayment cannot cover a different invoice's balance", () => {
+   expect(assess({ invoices: [{ ...paidInvoice, payments: [{ status: 'captured', amountCents: 20000 }] }, unpaidInvoice] })).toMatchObject({ action: 'not_eligible', unpaidInvoiceCount: 1 });
+ });
+ test.each(['void', 'voided', 'canceled', 'cancelled'])('excludes %s exactly as OrderPaymentSummary', status => {
+   expect(assess({ invoices: [paidInvoice, { ...unpaidInvoice, status }] }).action).toBe('closed');
+   expect(assess({ invoices: [{ ...unpaidInvoice, status }] }).action).toBe('not_eligible');
+ });
+ test('zero-dollar invoice settles; absence of an invoice does not', () => {
+   expect(assess({ invoices: [{ status: 'billed', totalCents: 0, payments: [] }] }).action).toBe('closed');
+   expect(assess({ invoices: [] }).action).toBe('not_eligible');
+ });
+ test('QB imported balance and unreconciled canonical payment follow display authority', () => {
+   const imported = { status: 'billed', importSource: 'quickbooks', totalCents: 13000, qbImportBalanceDue: '130', payments: [{ status: 'succeeded', amountCents: 13000 }] };
+   expect(assess({ invoices: [imported] }).action).toBe('closed');
+   expect(assess({ invoices: [{ ...imported, payments: [{ ...imported.payments[0], qbReconciledAt: '2026-09-28' }] }] }).action).toBe('not_eligible');
+ });
+ test('refund does not silently reopen an already closed Order', () => {
+   expect(assess({ state: 'closed', invoices: [unpaidInvoice] })).toEqual({ action: 'no_op', reason: 'ORDER_CLOSED' });
+ });

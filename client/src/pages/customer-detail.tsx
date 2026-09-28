@@ -89,7 +89,7 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
                     <div className="text-sm text-white/80">{Array.isArray(order.lineItems) ? order.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 0), 0) : 0}</div>
                     <div className="text-sm text-right text-white">{formatCurrency(order.total)}</div>
                     <div className="text-sm text-white/60">{formatDate(order.dueDate)}</div>
-                    <div><OrderStatusBadge status={order.status} /></div>
+                    <div><OrderStatusBadge status={order.status} state={order.state} /></div>
                     <div className="flex items-center justify-end gap-2">
                       <Link href={ROUTES.orders.detail(order.id)}><Button variant="ghost" size="icon" className="hover:bg-white/10" title="View Order"><Eye className="w-4 h-4" /></Button></Link>
                       <Button variant="ghost" size="icon" className="hover:bg-white/10" title="Download" disabled><Download className="w-4 h-4" /></Button>

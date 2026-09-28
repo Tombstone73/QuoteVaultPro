@@ -462,6 +462,14 @@ export async function assignOrderStatusPill(args: {
   const previousIdentity = order.statusPillId ?? previousPill?.id ?? (previousPillValue ? `legacy:${previousPillValue}` : null);
   const sameAssignment = previousIdentity === (targetPill?.id ?? null);
   const change = await db.transaction(async (tx) => {
+    // Serialize with closure so late billing events cannot replace Closed.
+    const [lockedOrder] = await tx.select({ state: orders.state }).from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+      .for('update').limit(1);
+    if (!lockedOrder) throw new Error('Order not found');
+    if (lockedOrder.state === 'closed' && targetPill?.key !== 'closed') {
+      return { eventId: null, blocked: true };
+    }
     await tx
       .update(orders)
       .set({
@@ -487,6 +495,8 @@ export async function assignOrderStatusPill(args: {
     if (!event) throw new Error('Failed to record status pill change event');
     return { eventId: event.id };
   });
+
+  if (change.blocked) return { eventId: null, statusPill: previousPill ?? null };
 
   if (shouldScheduleProductionJobs) {
     const [{ scheduleOrderLineItemsForProduction }, { loadProductionLineItemStatusRulesForOrganization, appendEvent }] =

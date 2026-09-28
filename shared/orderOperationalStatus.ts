@@ -12,3 +12,8 @@ export function operationalCompletionOrderPatch(order: { state?: string | null }
     routingTarget: null,
   };
 }
+
+/** Lifecycle closure outranks legacy billing milestones and custom pills. */
+export function getCanonicalOrderDisplayStatus(order: { state?: string | null; status?: string | null }): string {
+  return order.state === 'closed' ? 'closed' : order.status ?? '';
+}

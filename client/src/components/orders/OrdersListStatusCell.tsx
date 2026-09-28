@@ -20,7 +20,7 @@ export function getOrdersListStatusSelectorProps(row: OrdersListStatusRow) {
 }
 
 export function OrdersListStatusCell({ row }: { row: OrdersListStatusRow }) {
-  if (row.status === 'operationally_complete') return <OrderStatusBadge status={row.status} />;
+  if (row.state === 'closed' || row.status === 'operationally_complete') return <OrderStatusBadge status={row.status ?? ''} state={row.state} />;
   return (
     <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
       <OrderStatusPillSelector

@@ -11,11 +11,13 @@ export type OrderPaymentSummary = {
   creditCents: number;
 };
 
+export function isApplicableOrderInvoice(invoice: InvoiceAccountingDisplayInput): boolean {
+  return !blockedInvoiceStatuses.some((status) => status === String(invoice.status ?? '').trim().toLowerCase());
+}
+
 /** Read-only payment display; the legacy Order payment_status is never an input. */
 export function deriveOrderPaymentSummary(invoices: readonly InvoiceAccountingDisplayInput[]): OrderPaymentSummary {
-  const active = invoices.filter((invoice) => !blockedInvoiceStatuses.some(
-    (status) => status === String(invoice.status ?? '').trim().toLowerCase(),
-  ));
+  const active = invoices.filter(isApplicableOrderInvoice);
   const totals = active.map(normalizeInvoiceAccountingDisplay).reduce((sum, invoice) => ({
     totalCents: sum.totalCents + invoice.displayTotalCents,
     paidCents: sum.paidCents + invoice.displayPaidCents,

@@ -4,12 +4,14 @@ import type { InvoiceAccountingDisplayInput, InvoiceAccountingPaymentInput } fro
 import { deriveOrderPaymentSummary, type OrderPaymentSummary } from '@shared/orderPaymentSummary';
 import type { db } from '../db';
 
+type OrderInvoice = InvoiceAccountingDisplayInput & { id: string; orderId: string | null };
+
 /** Batch payment evidence for already tenant-scoped Order Invoice rows. No writes. */
-export async function loadOrderPaymentSummaries(
+export async function loadOrderInvoicePaymentEvidence(
   connection: Pick<typeof db, 'select'>,
   organizationId: string,
-  invoiceRows: readonly (InvoiceAccountingDisplayInput & { id: string; orderId: string | null })[],
-): Promise<Map<string, OrderPaymentSummary>> {
+  invoiceRows: readonly OrderInvoice[],
+): Promise<OrderInvoice[]> {
   const byInvoice = new Map<string, InvoiceAccountingPaymentInput[]>();
   for (let offset = 0; offset < invoiceRows.length; offset += 500) {
     const ids = invoiceRows.slice(offset, offset + 500).map((invoice) => invoice.id);
@@ -24,11 +26,20 @@ export async function loadOrderPaymentSummaries(
       byInvoice.set(payment.invoiceId, bucket);
     }
   }
+  return invoiceRows.map((invoice) => ({ ...invoice, payments: byInvoice.get(invoice.id) ?? [] }));
+}
+
+export async function loadOrderPaymentSummaries(
+  connection: Pick<typeof db, 'select'>,
+  organizationId: string,
+  invoiceRows: readonly OrderInvoice[],
+): Promise<Map<string, OrderPaymentSummary>> {
+  const evidence = await loadOrderInvoicePaymentEvidence(connection, organizationId, invoiceRows);
   const byOrder = new Map<string, InvoiceAccountingDisplayInput[]>();
-  for (const invoice of invoiceRows) {
+  for (const invoice of evidence) {
     if (!invoice.orderId) continue;
     const bucket = byOrder.get(invoice.orderId) ?? [];
-    bucket.push({ ...invoice, payments: byInvoice.get(invoice.id) ?? [] });
+    bucket.push(invoice);
     byOrder.set(invoice.orderId, bucket);
   }
   const result = new Map<string, OrderPaymentSummary>();

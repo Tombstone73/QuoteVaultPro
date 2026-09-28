@@ -2866,7 +2866,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             <div className="text-sm font-semibold">Line Items</div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{count} {count === 1 ? "item" : "items"}</span>
-              {productionRequiredItemCount > 0 && <span>{productionRequiredItemCount} require production</span>}
+              {productionRequiredItemCount > 0 && <span>{productionRequiredItemCount} production items</span>}
               {actionNeededCount > 0 && <span>{actionNeededCount} need action</span>}
             </div>
           </div>

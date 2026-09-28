@@ -1,9 +1,9 @@
 import { assessOrderCloseEligibility, type OrderCloseEligibility } from "./orderCloseEligibility";
 
-type ReconciliationInvoice = {
-  status?: string | null;
-  balanceDue?: string | number | null;
-};
+import { deriveOrderPaymentSummary, isApplicableOrderInvoice } from '@shared/orderPaymentSummary';
+import type { InvoiceAccountingDisplayInput } from '@shared/invoiceAccountingDisplay';
+export { isApplicableOrderInvoice } from '@shared/orderPaymentSummary';
+type ReconciliationInvoice = InvoiceAccountingDisplayInput;
 
 export type OrderAutoCloseDecision =
   | { action: "closed"; eligibility: Extract<OrderCloseEligibility, { ok: true }>; unpaidInvoiceCount: 0 }
@@ -14,14 +14,8 @@ function isTerminalFulfillment(fulfillmentStatus: unknown): boolean {
   return ["shipped", "delivered"].includes(String(fulfillmentStatus ?? "").trim().toLowerCase());
 }
 
-export function isApplicableOrderInvoice(invoice: ReconciliationInvoice): boolean {
-  return !["void", "voided"].includes(String(invoice.status ?? "").trim().toLowerCase());
-}
-
 function isFinanciallySettled(invoice: ReconciliationInvoice): boolean {
-  const status = String(invoice.status ?? "").trim().toLowerCase();
-  const balance = invoice.balanceDue == null ? null : Number(invoice.balanceDue);
-  return status === "paid" || (balance != null && Number.isFinite(balance) && balance <= 0);
+  return deriveOrderPaymentSummary([invoice]).remainingCents === 0;
 }
 
 /** Uses the existing close policy with durable operational and invoice facts. */

@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { OrderStateApiError, useCloseOrder, useCompleteOrder, useReopenOrder, useTransitionOrderState } from '@/hooks/useOrderState';
+import { useCloseOrder, useCompleteOrder, useReopenOrder, useTransitionOrderState } from '@/hooks/useOrderState';
 import type { OrderState } from '@/hooks/useOrderState';
 import { useToast } from '@/hooks/use-toast';
 import { useQueryClient } from '@tanstack/react-query';
@@ -197,22 +197,15 @@ export function CompleteOrderButton({ orderId, disabled }: CompleteOrderButtonPr
 export function CloseOrderButton({ orderId, disabled }: CloseOrderButtonProps) {
   const [showDialog, setShowDialog] = useState(false);
   const [notes, setNotes] = useState('');
-  const [confirmUnpaidInvoices, setConfirmUnpaidInvoices] = useState(false);
   const closeOrder = useCloseOrder(orderId);
 
   const handleConfirm = () => {
     closeOrder.mutate(
-      { notes: notes || undefined, confirmUnpaidInvoices },
+      { notes: notes || undefined },
       {
         onSuccess: () => {
           setShowDialog(false);
           setNotes('');
-          setConfirmUnpaidInvoices(false);
-        },
-        onError: (error) => {
-          if (error instanceof OrderStateApiError && error.code === 'UNPAID_INVOICES_CONFIRMATION_REQUIRED') {
-            setConfirmUnpaidInvoices(true);
-          }
         },
       }
     );
@@ -230,9 +223,7 @@ export function CloseOrderButton({ orderId, disabled }: CloseOrderButtonProps) {
           <DialogHeader>
             <DialogTitle>Close Order</DialogTitle>
             <DialogDescription>
-              {confirmUnpaidInvoices
-                ? 'This order has unpaid invoices. Closing it does not affect payment collection. Close anyway?'
-                : 'Mark this order as closed. This is a terminal state and the order cannot be modified without using the Reopen action.'}
+              Closing requires completed operational work and settled invoices. Use Reopen to change a closed order.
             </DialogDescription>
           </DialogHeader>
 
@@ -258,7 +249,7 @@ export function CloseOrderButton({ orderId, disabled }: CloseOrderButtonProps) {
               Cancel
             </Button>
             <Button onClick={handleConfirm} disabled={closeOrder.isPending}>
-              {closeOrder.isPending ? 'Processing...' : confirmUnpaidInvoices ? 'Close Anyway' : 'Close Order'}
+              {closeOrder.isPending ? 'Processing...' : 'Close Order'}
             </Button>
           </DialogFooter>
         </DialogContent>

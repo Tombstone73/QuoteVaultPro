@@ -200,7 +200,7 @@ jest.mock("@/components/CustomerSelect", () => ({
 }));
 
 jest.mock("@/components/order-status-badge", () => ({
-  OrderStatusBadge: ({ status }: any) => <span>{status}</span>,
+  OrderStatusBadge: (jest.requireActual("@/components/order-status-badge") as any).OrderStatusBadge,
   OrderPriorityBadge: ({ priority }: any) => <span>{priority}</span>,
   LineItemStatusBadge: ({ status }: any) => <span>{status}</span>,
 }));
@@ -567,4 +567,13 @@ describe("OrderDetail cancellation action rendering", () => {
 
     act(() => root.unmount());
   });
+});
+
+test('closed Detail agrees with lifecycle despite stale Invoiced and preserves Reopen', () => {
+  mockOrder = baseOrder({ state: 'closed', status: 'invoiced', statusPillValue: 'Invoiced', fulfillmentStatus: 'delivered' });
+  const { container, root } = renderOrderDetail('/orders/order-1');
+  expect(container.textContent).toContain('Closed');
+  expect(container.querySelector('[data-testid="status-pill"]')).toBeNull();
+  expect(container.textContent).not.toContain('require production');
+  act(() => root.unmount());
 });
