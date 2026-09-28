@@ -13,6 +13,7 @@ import { resolveFulfillmentWorkspaceMode } from "@/lib/fulfillmentWorkspaceMode"
 import {
   toFulfillmentError,
   useAddFulfillmentNoteMutation,
+  useUpdatePickupHistoryNoteMutation,
   useCreatePickupTicketMutation,
   useCreateShipmentMutation,
   useFulfillmentOrderDetailQuery,
@@ -29,6 +30,7 @@ export default function FulfillmentWorkspacePage() {
   const { toast } = useToast();
   const { orderId } = useParams<{ orderId: string }>();
   const detailQuery = useFulfillmentOrderDetailQuery(orderId);
+  const updateHistoryNote = useUpdatePickupHistoryNoteMutation(orderId || "");
   const createShipment = useCreateShipmentMutation();
   const createPickupTicket = useCreatePickupTicketMutation();
   const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId);
@@ -178,7 +180,7 @@ export default function FulfillmentWorkspacePage() {
 
     <section className="rounded-xl border bg-card p-4" data-testid="fulfillment-order-notes"><h2 className="font-bold">Order Notes</h2><p className="mt-1 text-sm text-muted-foreground">Internal fulfillment notes. They do not change fulfillment quantities or status.</p><div className="mt-3 flex gap-2"><Textarea aria-label="Order note" value={note} maxLength={2000} className="min-h-20 flex-1" placeholder="Add a note for the fulfillment team" onChange={(event) => setNote(event.target.value)} /><button type="button" disabled={!note.trim() || addNote.isPending} className="h-fit rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitNote()}>{addNote.isPending ? "Adding…" : "Add note"}</button></div>{fulfillmentNotes.length > 0 ? <div className="mt-3 divide-y">{fulfillmentNotes.map((event) => <div key={event.id} className="py-3 text-sm"><p>{String(event.payloadJson?.note || "")}</p><p className="mt-1 text-xs text-muted-foreground">{event.actorName || "Staff"} · {new Date(event.createdAt).toLocaleString()}</p></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">No fulfillment notes yet.</p>}</section>
 
-    <PickupHistory detail={detail} selectedTravelerIds={selectedTravelerIds}
+    <PickupHistory key={orderId} onSaveHistoryNote={(handoffId, note) => updateHistoryNote.mutateAsync({ handoffId, note })} detail={detail} selectedTravelerIds={selectedTravelerIds}
       onToggle={(id, selected) => setSelectedTravelerIds(ids => selected ? [...ids, id] : ids.filter(value => value !== id))}
       onReprint={traveler => { setReprintTraveler(traveler); setPickupTravelerOpen(true); }} onReverse={openPickupReversal} />
 

@@ -1,3 +1,4 @@
+import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getApiUrl } from "@/lib/apiConfig";
@@ -50,6 +51,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     canRevertStatus: boolean;
     revertPermission: string;
     canReverseTerminalFulfillment?: boolean;
+    canEditHistoryNotes?: boolean;
   };
   billingAutomation?: {
     status: string;
@@ -162,6 +164,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     handedOffByUserId: string | null;
     handedOffByName: string | null;
     notes: string | null;
+    historyNote?: FulfillmentHistoryNote | null;
     items: Array<{ orderLineItemId: string; quantity: number; productName: string | null; description: string | null }>;
   }>;
   shipments: Array<{
@@ -405,6 +408,17 @@ export function useMarkOrderReadyForPickupMutation(orderId: string) {
       body: JSON.stringify(payload ?? {}),
     }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useUpdatePickupHistoryNoteMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ handoffId, note }: { handoffId: string; note: string }) => apiCall<{ pickupHandoffId: string }>(
+      `/api/fulfillment/orders/${orderId}/pickup-handoffs/${handoffId}/note`,
+      { method: "PUT", body: JSON.stringify({ note }) },
+    ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["fulfillment", "order", orderId] }),
   });
 }
 

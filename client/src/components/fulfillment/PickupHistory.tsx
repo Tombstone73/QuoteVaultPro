@@ -1,7 +1,10 @@
 import type { FulfillmentDetail } from "@/hooks/useFulfillment";
 import type { PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 
+import { PickupHistoryNote } from "./PickupHistoryNote";
+
 type Props = {
+  onSaveHistoryNote?: (handoffId: string, note: string) => Promise<unknown>;
   detail: FulfillmentDetail;
   selectedTravelerIds: string[];
   onToggle: (id: string, selected: boolean) => void;
@@ -9,7 +12,7 @@ type Props = {
   onReverse: (handoff: FulfillmentDetail["pickupHandoffs"][number]) => void;
 };
 
-export function PickupHistory({ detail, selectedTravelerIds, onToggle, onReprint, onReverse }: Props) {
+export function PickupHistory({ detail, selectedTravelerIds, onToggle, onReprint, onReverse, onSaveHistoryNote }: Props) {
   const travelers = detail.pickupTravelers ?? [];
   const prepared = travelers.filter(t => !t.pickupHandoffId);
   const reprint = (t: PickupTravelerHistoryEntry) => <button key={t.id} type="button" className="rounded border px-3 py-2" onClick={() => onReprint(t)}>
@@ -43,6 +46,7 @@ export function PickupHistory({ detail, selectedTravelerIds, onToggle, onReprint
             {reversal.actorName ? ` by ${reversal.actorName}` : reversal.actorUserId ? ` by staff ${reversal.actorUserId}` : ""}
             {reversal.reason ? ` — ${reversal.reason}` : ""}
           </p>)}
+          <PickupHistoryNote handoffId={handoff.id} note={handoff.historyNote} canEdit={detail.permissions?.canEditHistoryNotes === true} onSave={onSaveHistoryNote} />
           {saved.length ? <div className="mt-2 flex flex-wrap gap-2">{saved.map(reprint)}</div>
             : <p className="text-xs text-muted-foreground">No saved Traveler associated with this pickup.</p>}
         </div>;

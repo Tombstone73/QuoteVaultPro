@@ -1,3 +1,4 @@
+import { canEditFulfillmentHistoryNotes, fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
@@ -363,6 +364,7 @@ export class FulfillmentService {
     return {
       ...detail,
       permissions: {
+        canEditHistoryNotes: canEditFulfillmentHistoryNotes(actorOrgRole),
         canRevertStatus: canRevertFulfillmentStatus(actorOrgRole),
         revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION,
         canReverseTerminalFulfillment: ['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase()),
@@ -430,6 +432,16 @@ export class FulfillmentService {
     // Legacy readiness records remain available for compatibility, but changing
     // them is no longer a physical-fulfillment or customer-notification action.
     return this.getOrderDetail(orgId, orderId);
+  }
+
+  async updatePickupHistoryNote(orgId: string, orderId: string, handoffId: string, note: string, actorUserId?: string | null, actorOrgRole?: string | null) {
+    if (!canEditFulfillmentHistoryNotes(actorOrgRole)) {
+      throw new FulfillmentHttpError(403, 'Fulfillment note edit permission is required', 'FULFILLMENT_NOTE_FORBIDDEN');
+    }
+    const parsed = fulfillmentHistoryNoteSchema.parse({ note });
+    const result = await this.dashboardRepo.updatePickupHistoryNote(orgId, orderId, handoffId, parsed.note, actorUserId);
+    if (!result.ok) throw new FulfillmentHttpError(404, result.message, result.code);
+    return { pickupHandoffId: handoffId };
   }
 
   async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {

@@ -1,3 +1,4 @@
+import { currentPickupHistoryNote, fulfillmentHistoryNoteSchema, PICKUP_HISTORY_NOTE_UPDATED } from "@shared/fulfillmentHistoryNote";
 import { bindPickupTravelers, lockPickupTravelers, listPickupTravelers } from '../pickupTravelerLifecycle';
 import { getOrderTravelerSource } from '../orderTravelerSourceService';
 import type { PickupTravelerPrintContext } from '@shared/productionTicket';
@@ -2475,6 +2476,29 @@ export class FulfillmentDashboardRepo {
     });
   }
 
+  async updatePickupHistoryNote(orgId: string, orderId: string, handoffId: string, note: string, actorUserId?: string | null) {
+    const parsed = fulfillmentHistoryNoteSchema.parse({ note });
+    const [handoff] = await this.dbInstance
+      .select({ id: pickupHandoffs.id, pickupTicketId: pickupHandoffs.pickupTicketId })
+      .from(pickupHandoffs)
+      .innerJoin(orders, and(eq(orders.id, pickupHandoffs.orderId), eq(orders.organizationId, orgId)))
+      .where(and(eq(pickupHandoffs.organizationId, orgId), eq(pickupHandoffs.orderId, orderId), eq(pickupHandoffs.id, handoffId)))
+      .limit(1);
+    if (!handoff) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup history record not found' };
+
+    const safeActorUserId = await resolveExistingActorUserId(this.dbInstance, actorUserId);
+    // Annotation only: preserve immutable pickup/Traveler evidence and every prior note version.
+    await this.dbInstance.insert(fulfillmentEvents).values({
+      organizationId: orgId,
+      actorUserId: safeActorUserId,
+      entityType: 'PICKUP_TICKET',
+      entityId: handoff.pickupTicketId,
+      eventType: PICKUP_HISTORY_NOTE_UPDATED,
+      payloadJson: { orderId, pickupHandoffId: handoff.id, note: parsed.note },
+    });
+    return { ok: true as const };
+  }
+
   async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {
     const [order] = await this.dbInstance
       .select({ id: orders.id })
@@ -2727,7 +2751,7 @@ export class FulfillmentDashboardRepo {
       .from(fulfillmentEvents)
       .leftJoin(users, eq(users.id, fulfillmentEvents.actorUserId))
       .where(and(eq(fulfillmentEvents.organizationId, orgId), or(...eventConditions)))
-      .orderBy(desc(fulfillmentEvents.createdAt));
+      .orderBy(desc(fulfillmentEvents.createdAt), desc(fulfillmentEvents.id));
 
     // A line cannot count toward fulfillment verification merely because an
     // old production job completed. The same active-owner resolver powers
@@ -2829,6 +2853,7 @@ export class FulfillmentDashboardRepo {
         handedOffByUserId: handoff.handedOffByUserId ?? null,
         handedOffByName: [handoff.actorFirstName, handoff.actorLastName].filter(Boolean).join(' ') || null,
         notes: handoff.notes ?? null,
+        historyNote: currentPickupHistoryNote(orderId, handoff.id, events),
         items: (handoffItemsByHandoffId.get(handoff.id) ?? []).map((item) => ({
           orderLineItemId: item.orderLineItemId,
           quantity: Number(item.quantity),

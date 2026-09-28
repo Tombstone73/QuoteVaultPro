@@ -1,3 +1,4 @@
+import { fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
 /**
  * fulfillment.routes.ts
  *
@@ -193,6 +194,22 @@ export function registerFulfillmentRoutes(
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       console.error('[fulfillment] billing reconciliation error:', error);
       return res.status(500).json({ success: false, message: 'Failed to reconcile fulfillment billing' });
+    }
+  });
+
+  app.put('/api/fulfillment/orders/:orderId/pickup-handoffs/:handoffId/note', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const orderId = fulfillmentOrderIdSchema.parse(req.params.orderId);
+      const handoffId = fulfillmentOrderIdSchema.parse(req.params.handoffId);
+      const { note } = fulfillmentHistoryNoteSchema.parse(req.body);
+      const data = await canonicalFulfillmentOperations.updatePickupHistoryNote(organizationId, orderId, handoffId, note, getUserId(req.user), req.orgRole);
+      res.json({ success: true, data, message: 'Pickup history note saved' });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Invalid pickup history note', errors: error.errors });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('Failed to save pickup history note:', error);
+      res.status(500).json({ success: false, message: 'Failed to save pickup history note' });
     }
   });
 

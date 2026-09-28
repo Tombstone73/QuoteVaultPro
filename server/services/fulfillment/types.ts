@@ -1,3 +1,4 @@
+import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 export type FulfillmentType = 'SHIP' | 'PICKUP';
 
@@ -52,6 +53,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     canRevertStatus: boolean;
     revertPermission: string;
     canReverseTerminalFulfillment?: boolean;
+    canEditHistoryNotes?: boolean;
   };
   billingAutomation?: {
     status: string;
@@ -165,6 +167,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     handedOffByUserId: string | null;
     handedOffByName: string | null;
     notes: string | null;
+    historyNote?: FulfillmentHistoryNote | null;
     items: Array<{ orderLineItemId: string; quantity: number; productName: string | null; description: string | null }>;
   }>;
   shipments: Array<{

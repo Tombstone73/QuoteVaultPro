@@ -44,6 +44,7 @@ jest.mock("@/hooks/useFulfillment", () => ({
   useCreateShipmentMutation: () => ({ mutateAsync: jest.fn(async () => ({ shipmentId: "shipment-1" })), isPending: false }),
   useCreatePickupTicketMutation: () => ({ mutateAsync: createTicket, isPending: false }),
   useMarkOrderReadyForPickupMutation: () => ({ mutateAsync: markOrderReady, isPending: false }),
+  useUpdatePickupHistoryNoteMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useAddFulfillmentNoteMutation: () => ({ mutateAsync: addNote, isPending: false }),
   useReverseTerminalFulfillmentMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useRecordPickupHandoffMutation: () => ({ mutateAsync: recordHandoff, isPending: false }),
