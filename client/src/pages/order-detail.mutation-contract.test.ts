@@ -7,18 +7,8 @@ async function source(file: string) {
 }
 
 describe("Order mutation UI contract", () => {
-  it("uses the shared Order update mutation for customer and contact changes", async () => {
-    const [orderDetail, orderHooks] = await Promise.all([
-      source("client/src/pages/order-detail.tsx"),
-      source("client/src/hooks/useOrders.ts"),
-    ]);
-
-    expect(orderDetail).toContain("const saveOrderOwner");
-    expect(orderDetail).toContain("updateOrder.mutate(changes");
-    expect(orderDetail).not.toContain("changeCustomerMutation");
-    expect(orderHooks).toContain("orderDetailQueryKey(orderId)");
-    expect(orderHooks).toContain("invalidateOrderOperationalQueries(queryClient, orderId)");
-  });
+  // Ownership save/query behavior is exercised on the real page in
+  // order-detail.cancel-action.render.test.tsx with a real picker QueryClient.
 
   it("keeps customer navigation and inspection separate from changing the customer", async () => {
     const orderDetail = await source("client/src/pages/order-detail.tsx");
@@ -30,34 +20,10 @@ describe("Order mutation UI contract", () => {
     expect(orderDetail).toContain('order.customer.isTaxExempt ? "Exempt" : "Taxable"');
   });
 
-  it("offers direct customer-scoped contact selection without staging an order edit", async () => {
-    const orderDetail = await source("client/src/pages/order-detail.tsx");
-
-    expect(orderDetail).toContain('aria-label="Select order contact"');
-    expect(orderDetail).toContain("disabled={!canEditSafeOrderMetadata || !order?.customerId || updateOrder.isPending}");
-    expect(orderDetail).toContain("onSelect={() => saveOrderOwner({ contactId: contact.id })}");
-    expect(orderDetail).toContain("onSelect={() => saveOrderOwner({ contactId: null })}");
-    expect(orderDetail).toContain("Unable to load contacts. Retry");
-    expect(orderDetail).toContain("to={`/contacts/${order.contact.id}`}");
-    expect(orderDetail).not.toContain("isEditingContact");
-    expect(orderDetail).not.toContain("enterContactEdit");
-  });
-
-  it("allows a contact-only Order to replace its Contact without presenting it as a company", async () => {
-    const orderDetail = await source("client/src/pages/order-detail.tsx");
-    expect(orderDetail).toContain('onClick={() => saveOrderOwner({ customerId: null })}');
-    expect(orderDetail).toContain('aria-label="Clear customer"');
-    expect(orderDetail).toContain("!order.customerId ? (");
-    expect(orderDetail).toContain("<ContactSelect");
-    expect(orderDetail).toContain("saveOrderOwner({ contactId });");
-    expect(orderDetail).toContain("Select a customer or contact for this order.");
-    expect(orderDetail).toContain('contactNameFromContact ? `Contact: ${contactNameFromContact}`');
-  });
-
   it("keeps notes and safe metadata available after completion without unlocking commercial controls", async () => {
     const orderDetail = await source("client/src/pages/order-detail.tsx");
 
-    expect(orderDetail).toContain("const canEditSafeOrderMetadata = Boolean(order && !orderIsCanceled);");
+    expect(orderDetail).toContain("const canEditSafeOrderMetadata = Boolean(order);");
     expect(orderDetail).toContain("const canAppendOrderInternalNote = Boolean(order);");
     expect(orderDetail).toContain("{canAppendOrderInternalNote && !isAddingOrderInternalNote ? (");
     expect(orderDetail).toContain("disabled={!canEditSafeOrderMetadata || updateOrder.isPending}");

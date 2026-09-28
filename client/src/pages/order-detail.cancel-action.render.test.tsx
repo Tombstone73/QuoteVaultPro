@@ -33,6 +33,12 @@ const mockCancelOrder = jest.fn(async () => ({ success: true }));
 const mockInvalidateQueries = jest.fn();
 const mockRefetchQueries = jest.fn();
 const mockUpdateOwner = jest.fn();
+const mockSaveOwner = jest.fn<any>();
+let mockExecutePickerRequests = false;
+const actualQuery = jest.requireActual("@tanstack/react-query") as typeof import("@tanstack/react-query");
+const { QueryClient, QueryClientProvider } = actualQuery;
+const mockRequestUrls: string[] = [];
+const originalFetch = globalThis.fetch;
 const mockOwnerToast = jest.fn();
 const mockPickerQueries: any[] = [];
 const mockPickerContacts = [
@@ -52,15 +58,21 @@ jest.mock("@tanstack/react-query", () => ({
     mutateAsync: jest.fn(async () => ({})),
     isPending: false,
   }),
-  useQuery: (options: any) => ({
+  useQuery: (options: any) => {
+    if (mockExecutePickerRequests && options?.queryKey?.[0] === "/api/contacts") {
+      if (options.queryKey[1] === "picker") mockPickerQueries.push(options);
+      return (jest.requireActual("@tanstack/react-query") as any).useQuery(options);
+    }
+    return ({
     data: options?.queryKey?.[1] === "picker"
       ? (mockPickerQueries.push(options), mockPickerContacts)
-      : String(options?.queryKey?.[0] ?? "").includes("/api/me/orgs") ? mockOrgMemberships : [],
+      : String(options?.queryKey?.[0] ?? "").includes("/api/me/orgs") ? mockOrgMemberships
+      : options?.queryKey?.[0] === "/api/customers" ? [{ id: "customer-2", companyName: "Customer B" }] : [],
     isLoading: false,
     isError: false,
     error: null,
     refetch: jest.fn(async () => ({ data: [] })),
-  }),
+  }); },
 }));
 
 jest.mock("@/hooks/useAuth", () => ({
@@ -83,7 +95,7 @@ jest.mock("@/hooks/useOrders", () => ({
   useOrder: () => ({ data: mockOrder, isLoading: false }),
   useCancelOrder: () => ({ mutateAsync: mockCancelOrder, isPending: false }),
   useDeleteOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useUpdateOrder: () => ({ mutate: mockUpdateOwner, mutateAsync: jest.fn(async () => ({})), isPending: false }),
+  useUpdateOrder: () => ({ mutate: mockUpdateOwner, mutateAsync: mockSaveOwner, isPending: false }),
   useUpdateOrderTaxTreatment: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useBulkUpdateOrderLineItemStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useTransitionOrderStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
@@ -274,12 +286,13 @@ function renderOrderDetail(path = "/orders/order-1/edit") {
   act(() => {
     root = createRoot(container);
     root.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/orders/:id/edit" element={<OrderDetail />} />
           <Route path="/orders/:id" element={<OrderDetail />} />
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter></QueryClientProvider>,
     );
   });
   return { container, root: root! };
@@ -305,78 +318,130 @@ describe("Order canonical payment display", () => {
   });
 });
 
+async function settlePicker() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
+}
+function saveButton(container: HTMLElement) {
+  return Array.from(container.querySelectorAll('button')).find((node) => node.textContent?.trim() === 'Save Order')!;
+}
+function useRealPickerRequests() {
+  mockExecutePickerRequests = true;
+  globalThis.fetch = jest.fn<any>(async (input: string) => {
+    mockRequestUrls.push(input);
+    const url = new URL(input, 'http://localhost');
+    const customerId = url.searchParams.get('customerId');
+    const search = url.searchParams.get('search')?.toLowerCase() ?? '';
+    const contacts = mockPickerContacts.filter(c => (!customerId || c.customerId === customerId)
+      && (c.firstName + ' ' + c.lastName).toLowerCase().includes(search));
+    return { ok: true, json: async () => url.pathname === '/api/contacts'
+      ? { contacts } : { contact: mockPickerContacts.find(c => url.pathname.endsWith(c.id)) } };
+  });
+  mockSaveOwner.mockImplementation(async (changes: any) => {
+    mockOrder = { ...mockOrder, ...changes,
+      customer: changes.customerId === null ? null : mockOrder.customer,
+      contact: mockPickerContacts.find(c => c.id === changes.contactId) ?? mockOrder.contact };
+    return mockOrder;
+  });
+}
+
 describe("Order ownership controls", () => {
-  test("existing Order clears Customer scope, searches Janet, and saves Contact-only across reload", async () => {
-    mockOrder = baseOrder({
-      contactId: "contact-a",
-      contact: { id: "contact-a", firstName: "Alex", lastName: "Able" },
-    });
-    mockUpdateOwner.mockImplementation((changes: any, callbacks: any) => {
-      mockOrder = {
-        ...mockOrder,
-        ...changes,
-        customer: changes.customerId === null ? null : mockOrder.customer,
-        contact: changes.contactId === "contact-janet"
-          ? { id: "contact-janet", firstName: "Janet", lastName: "Smith" }
-          : mockOrder.contact,
-      };
-      callbacks?.onSuccess?.();
-    });
+  test.each([['Janet', 'contact-janet', 'Janet Smith'], ['Sam', 'contact-standalone', 'Sam Solo']])(
+    'existing Customer-only Order searches %s tenant-wide before Save, then reloads Contact-only', async (searchName, id, name) => {
+    useRealPickerRequests();
+    mockOrder = baseOrder({ contactId: null });
     const { container, root } = renderOrderDetail();
-    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBe("customer-1");
-
+    await settlePicker();
+    expect(mockRequestUrls.some(url => new URL(url, 'http://localhost').searchParams.get('customerId') === 'customer-1')).toBe(true);
     act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
-    expect(mockUpdateOwner).toHaveBeenCalledWith({ customerId: null }, expect.any(Object));
+    expect(mockUpdateOwner).not.toHaveBeenCalled();
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockOrder.customerId).toBe('customer-1'); // persistence has not changed
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    await settlePicker();
+    const picker = Array.from(container.querySelectorAll('[role="combobox"]')).find(node => node.textContent?.includes('Search contacts')) as HTMLButtonElement;
+    act(() => picker.click());
+    const input = document.querySelector('input[placeholder="Search by name, email, phone, or customer..."]') as HTMLInputElement;
+    act(() => Simulate.change(input, { target: { value: searchName } } as any));
+    await settlePicker();
+    await settlePicker();
+    const request = mockRequestUrls.find(value => new URL(value, 'http://localhost').searchParams.get('search') === searchName);
+    expect(request).toBeDefined();
+    expect(new URL(request!, 'http://localhost').searchParams.has('customerId')).toBe(false);
+    const option = Array.from(document.querySelectorAll('[cmdk-item]')).find(node => node.textContent?.includes(name)) as HTMLElement;
+    expect(option).toBeTruthy();
+    act(() => option.click());
+    expect(mockSaveOwner).not.toHaveBeenCalled();
     expect(container.querySelector('[aria-label="Clear customer"]')).toBeNull();
-
-    act(() => root.render(
-      <MemoryRouter initialEntries={["/orders/order-1/edit"]}>
-        <Routes><Route path="/orders/:id/edit" element={<OrderDetail />} /></Routes>
-      </MemoryRouter>,
-    ));
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
-    const contactPicker = Array.from(container.querySelectorAll('[role="combobox"]'))
-      .find((node) => node.textContent?.includes("Alex Able")) as HTMLButtonElement;
-    expect(contactPicker).toBeTruthy();
-    act(() => contactPicker.click());
-    const search = document.querySelector('input[placeholder="Search by name, email, phone, or customer..."]') as HTMLInputElement;
-    expect(search).toBeTruthy();
-    act(() => Simulate.change(search, { target: { value: "janet" } } as any));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
-    expect(mockPickerQueries.at(-1)?.queryKey[2]).toEqual({ search: "janet", customerId: null });
-    const janet = Array.from(document.querySelectorAll('[cmdk-item]'))
-      .find((node) => node.textContent?.includes("Janet Smith")) as HTMLElement;
-    expect(janet).toBeTruthy();
-    act(() => janet.click());
-    expect(mockUpdateOwner).toHaveBeenLastCalledWith({ customerId: null, contactId: "contact-janet" }, expect.any(Object));
-    expect(mockOrder).toMatchObject({ customerId: null, contactId: "contact-janet" });
+    await act(async () => saveButton(container).click());
+    expect(mockSaveOwner).toHaveBeenCalledWith({ customerId: null, contactId: id });
+    expect(mockOrder).toMatchObject({ customerId: null, contactId: id });
     act(() => root.unmount());
     const reloaded = renderOrderDetail();
-    expect(reloaded.container.textContent).toContain("Janet Smith");
+    await settlePicker();
+    expect(reloaded.container.textContent).toContain(name);
     expect(reloaded.container.querySelector('[aria-label="Clear customer"]')).toBeNull();
-    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
     act(() => reloaded.root.unmount());
   });
 
-  test("visible Clear customer submits explicit null without clearing the selected Contact", () => {
-    mockOrder = baseOrder({ contactId: "contact-1", contact: { id: "contact-1", firstName: "Logan", lastName: "Payne" } });
+  test('Customer change stages explicit owner IDs, clears the former Contact, and saves', async () => {
+    mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
+    mockSaveOwner.mockResolvedValue({});
     const { container, root } = renderOrderDetail();
-    const clear = container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement;
-    expect(clear).not.toBeNull();
-    expect(container.textContent).toContain("Logan Payne");
-    act(() => clear.click());
-    expect(mockUpdateOwner).toHaveBeenCalledWith({ customerId: null }, expect.any(Object));
-    expect(mockOrder.contactId).toBe("contact-1");
+    act(() => (container.querySelector('[aria-label="Change customer"]') as HTMLButtonElement).click());
+    const customer = Array.from(document.querySelectorAll('[cmdk-item]')).find(node => node.textContent?.includes('Customer B')) as HTMLElement;
+    act(() => customer.click());
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBe('customer-2');
+    expect(container.textContent).not.toContain('Alex Able');
+    await act(async () => saveButton(container).click());
+    expect(mockSaveOwner).toHaveBeenCalledWith({ customerId: 'customer-2', contactId: null });
     act(() => root.unmount());
   });
 
-  test("Customer-only clear explains the missing owner and sends no invalid mutation", () => {
-    mockOrder = baseOrder({ contactId: null });
+  test('Discard restores the persisted Customer and Contact scope', async () => {
+    mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
+    const { container, root } = renderOrderDetail();
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    const discard = Array.from(container.querySelectorAll('button')).find(node => node.textContent?.trim() === 'Discard changes')!;
+    await act(async () => discard.click());
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBe('customer-1');
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test('Clear retains the selected Contact in the draft without submitting', () => {
+    mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     const { container, root } = renderOrderDetail();
     act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
     expect(mockUpdateOwner).not.toHaveBeenCalled();
-    expect(mockOwnerToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Select a customer or contact for this order." }));
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Alex Able');
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    act(() => root.unmount());
+  });
+
+  test('missing owner is validated at Save, not when clearing Customer', async () => {
+    mockOrder = baseOrder({ contactId: null });
+    const { container, root } = renderOrderDetail();
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    expect(mockOwnerToast).not.toHaveBeenCalled();
+    await act(async () => saveButton(container).click());
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockOwnerToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Select a customer or contact for this order.' }));
+    act(() => root.unmount());
+  });
+
+  test('rejected ownership save preserves tenant-wide draft and returns the precise blocker', async () => {
+    mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
+    mockSaveOwner.mockRejectedValue(new Error('Billing owner cannot be changed because this Invoice was synchronized to QuickBooks.'));
+    const { container, root } = renderOrderDetail();
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    await act(async () => saveButton(container).click());
+    expect(mockOrder.customerId).toBe('customer-1');
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    expect(mockOwnerToast).toHaveBeenCalledWith(expect.objectContaining({ description: expect.stringContaining('synchronized to QuickBooks') }));
     act(() => root.unmount());
   });
 });
@@ -384,6 +449,10 @@ describe("Order ownership controls", () => {
 afterEach(() => {
   document.body.innerHTML = "";
   jest.clearAllMocks();
+  mockSaveOwner.mockReset();
+  mockExecutePickerRequests = false;
+  mockRequestUrls.length = 0;
+  globalThis.fetch = originalFetch;
   mockUser = { role: "admin", isAdmin: true };
   mockOrgMemberships = {
     success: true,

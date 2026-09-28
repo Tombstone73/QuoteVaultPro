@@ -279,7 +279,7 @@ export default function OrderDetail() {
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
-  const [clearedCustomerOrderId, setClearedCustomerOrderId] = useState<string | null>(null);
+  const [ownerDisplayDraft, setOwnerDisplayDraft] = useState<Record<string, any>>({});
   const [editingDueDate, setEditingDueDate] = useState(false);
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
   const [tempDueDate, setTempDueDate] = useState("");
@@ -387,16 +387,12 @@ export default function OrderDetail() {
     order = {
       ...order,
       ...pendingOrderPatch,
+      ...(Object.hasOwn(pendingOrderPatch, "customerId") ? { customer: ownerDisplayDraft.customer } : {}),
+      ...(Object.hasOwn(pendingOrderPatch, "contactId") ? { contact: ownerDisplayDraft.contact } : {}),
     } as OrderDetailOrder;
   }
-  // A clear takes effect in the editor immediately, even while the Order PATCH
-  // and its detail-query refresh are still settling.
-  const contactSearchCustomerId = clearedCustomerOrderId === orderId ? null : order?.customerId ?? null;
-  useEffect(() => {
-    if (clearedCustomerOrderId === orderId && orderRaw?.customerId === null) {
-      setClearedCustomerOrderId(null);
-    }
-  }, [clearedCustomerOrderId, orderId, orderRaw?.customerId]);
+  // Explicit null in the unsaved Order draft owns both picker scope and the save payload.
+  const contactSearchCustomerId = order?.customerId ?? null;
   const proofPolicyMutation = useMutation({
     mutationFn: async ({ policy, reason }: { policy: "inherit_default" | "force_required" | "bypass"; reason?: string | null }) => {
       const response = await fetch(`/api/orders/${orderId}/proof-policy`, {
@@ -1146,25 +1142,14 @@ export default function OrderDetail() {
     enabled: isEditingFulfillment,
   });
 
-  const saveOrderOwner = (changes: { customerId?: string | null; contactId?: string | null }) => {
+  const stageOrderOwner = (
+    changes: { customerId?: string | null; contactId?: string | null },
+    display: Record<string, any> = {},
+  ) => {
     if (!canEditSafeOrderMetadata) return;
-    const customerId = changes.customerId !== undefined ? changes.customerId : contactSearchCustomerId;
-    const contactId = changes.contactId !== undefined ? changes.contactId : order?.contactId;
-    if (!customerId && !contactId) {
-      toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
-      return;
-    }
-    if (changes.customerId === null) setClearedCustomerOrderId(orderId ?? null);
-    updateOrder.mutate(changes, {
-      onSuccess: () => {
-        if (changes.customerId) setClearedCustomerOrderId(null);
-        setIsCustomerPickerOpen(false);
-        exitAllEditModes();
-      },
-      onError: () => {
-        if (changes.customerId === null) setClearedCustomerOrderId(null);
-      },
-    });
+    setPendingOrderPatch((previous) => ({ ...previous, ...changes }));
+    setOwnerDisplayDraft((previous) => ({ ...previous, ...display }));
+    setIsCustomerPickerOpen(false);
   };
 
   const formatCurrency = (amount: string | number) => {
@@ -1439,6 +1424,10 @@ export default function OrderDetail() {
   // actual mutations.
   const handleSaveOrder = async (routeEligible = false) => {
     if (!orderId || !order) return;
+    if (!order.customerId && !order.contactId) {
+      toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
+      return;
+    }
     setIsSavingOrder(true);
     try {
       logOrderDirtyAudit("before-save");
@@ -2328,7 +2317,11 @@ export default function OrderDetail() {
                                         key={customer.id}
                                         value={searchValue}
                                         onSelect={() => {
-                                          saveOrderOwner({ customerId: customer.id });
+                                          // A Contact linked only to the old Customer must not resolve the save back to it.
+                                          stageOrderOwner(
+                                            customer.id === order.customerId ? { customerId: customer.id } : { customerId: customer.id, contactId: null },
+                                            customer.id === order.customerId ? { customer } : { customer, contact: null },
+                                          );
                                         }}
                                       >
                                         <Check
@@ -2434,7 +2427,7 @@ export default function OrderDetail() {
                           size="sm"
                           className="h-7 px-2 text-xs"
                           disabled={updateOrder.isPending}
-                          onClick={() => saveOrderOwner({ customerId: null })}
+                          onClick={() => stageOrderOwner({ customerId: null }, { customer: null })}
                           aria-label="Clear customer"
                         >
                           <X className="mr-1 h-3 w-3" />
@@ -2500,14 +2493,14 @@ export default function OrderDetail() {
                         label=""
                         placeholder="Search contacts..."
                         disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
-                        onChange={(contactId) => {
+                        onChange={(contactId, contact) => {
                           if (!contactId && !contactSearchCustomerId) {
                             toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
                             return;
                           }
-                          saveOrderOwner(contactSearchCustomerId
+                          stageOrderOwner(contactSearchCustomerId
                             ? { contactId }
-                            : { customerId: null, contactId });
+                            : { customerId: null, contactId }, { contact: contact ?? null, customer: order.customer });
                         }}
                       />
 

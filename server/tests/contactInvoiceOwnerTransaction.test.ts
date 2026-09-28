@@ -117,7 +117,7 @@ test.each(['failed', 'canceled'])('%s attempt without money does not lock the ow
 });
 test.each(['succeeded', 'captured', 'refunded'])('%s payment preserves financial ownership', async status => {
   rows.payments = [{ id: 'payment', status }];
-  await expect(save({ customerId: null })).rejects.toThrow('payment applied or refunded');
+  await expect(save({ customerId: null })).rejects.toThrow('payment has been applied or refunded');
   expect(writes).toEqual([]);
 });
 test.each(['customer_account_credit_applications', 'customer_account_credits', 'stripe_refund_requests'])('%s locks financial ownership', async table => {
@@ -158,4 +158,25 @@ test('provider identity mismatch fails closed without canceling another billing 
   await expect(save({ customerId: null })).rejects.toThrow('identity does not match');
   expect(cancelIntent).not.toHaveBeenCalled();
   expect(rows.invoices[0].customerId).toBe('company');
+});
+
+// Matches the observed 20491 sequence: approved/exported, then edited/revoked.
+// Versions/reference are representative fixtures, not a claim about raw MAIN fields.
+test('20491 prior successful sync remains immutable after current approval is revoked', async () => {
+  Object.assign(rows.invoices[0], { status: 'finalized', invoiceVersion: 3, amountPaid: '0.00',
+    accountingApprovedAt: null, accountingApprovedVersion: null, accountingApprovalRevokedAt: new Date('2026-09-28'),
+    qbSyncStatus: 'needs_resync', lastQbSyncedVersion: 1, syncedAt: new Date('2026-09-23'), qbInvoiceId: 'fixture-qb-reference' });
+  await expect(save({ customerId: 'different-company' })).rejects.toThrow('this Invoice was synchronized to QuickBooks');
+  expect(writes).toEqual([]);
+  expect(rows.orders[0].customerId).toBe('company');
+});
+
+test.each(['not_synced', 'pending', 'failed'])('internally finalized, unapproved Invoice with %s and no export changes both owners', async qbSyncStatus => {
+  Object.assign(rows.invoices[0], { status: 'finalized', qbSyncStatus, accountingApprovedAt: null,
+    accountingApprovedVersion: null, qbInvoiceId: null, lastQbSyncedVersion: null, syncedAt: null });
+  rows.quickbooks_sync_queue = [{ id: 'attempt', status: qbSyncStatus }];
+  await save({ customerId: 'different-company', contactId: null });
+  expect(rows.orders[0]).toMatchObject({ customerId: 'different-company', contactId: null });
+  expect(rows.invoices[0]).toMatchObject({ customerId: 'different-company', contactId: null });
+  expect(writes).toEqual(['invoices', 'orders']);
 });

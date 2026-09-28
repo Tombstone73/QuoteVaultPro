@@ -1,3 +1,4 @@
+import { hasPreviousQuickBooksSync, quickBooksHistoryLabel } from "@/lib/invoiceQuickBooksHistory";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -948,7 +949,8 @@ export default function InvoiceDetailPage() {
     return 'not_approved';
   })();
   const accountingApprovalLabel = accountingApprovalState === 'approved' ? 'Approved for Accounting' : accountingApprovalState === 'needs_reapproval' ? 'Needs Reapproval' : 'Approval Required';
-  const qbSyncLabel = qbFailed
+  const qbPreviouslySynced = hasPreviousQuickBooksSync(invoice as any);
+  const qbCurrentSyncLabel = qbFailed
     ? 'Failed'
     : (isImportedFromQuickBooks
       ? 'Imported'
@@ -963,6 +965,7 @@ export default function InvoiceDetailPage() {
           : qbSyncStatusRaw === 'needs_resync'
             ? 'Not Synced'
             : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Not Synced'))));
+  const qbSyncLabel = quickBooksHistoryLabel(qbCurrentSyncLabel, qbPreviouslySynced, qbUpToDate);
   const showRetrySync = isAdminOrOwner && !isImportedFromQuickBooks && !['draft', 'void'].includes(invoiceStatus) && qbSyncStatusRaw !== 'pending';
 
   const qbWarningMessage = (() => {
@@ -972,6 +975,7 @@ export default function InvoiceDetailPage() {
     if (sync) return sync;
     if (qbFailed) return 'QuickBooks sync failed';
     if (isImportedFromQuickBooks) return '';
+    if (qbPreviouslySynced && !qbUpToDate) return 'An earlier version was synchronized to QuickBooks. The current version needs an accounting update; prior sync history still protects billing ownership.';
     if ((qbSyncStatusRaw === 'not_synced' || qbSyncStatusRaw === 'needs_resync') && invoiceStatus !== 'draft') return 'Use Sync to QuickBooks when this invoice is ready for accounting.';
     return '';
   })();

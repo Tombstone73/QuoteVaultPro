@@ -10,11 +10,13 @@ export function getInvoiceBillingOwnerTransitionBlocker(invoice: any, evidence: 
   autoCreatedInvoiceEvidence: boolean;
 }): string | null {
   if (invoice.isHistorical || invoice.importedAt || invoice.importSource || invoice.lockedReason) return "This Invoice is historical or imported.";
-  if (invoice.lastSentAt || invoice.lastSentVersion || evidence.successfulEmailExists || evidence.deliveryJobExists) return "This Invoice has been sent or queued for delivery.";
+  if (invoice.lastSentAt || invoice.lastSentVersion || evidence.successfulEmailExists) return "Billing owner cannot be changed because the Invoice has already been sent.";
+  if (evidence.deliveryJobExists) return "Billing owner cannot be changed because the Invoice has been queued for delivery.";
   if (evidence.creditExists) return "This Invoice has an account credit issued or applied.";
   if (evidence.refundExists) return "This Invoice has a payment refund record.";
-  if (evidence.paymentExists || Number(invoice.amountPaid || 0) !== 0 || ["paid", "partially_paid"].includes(String(invoice.status).toLowerCase())) return "This Invoice has a payment applied or refunded.";
-  if (invoice.qbInvoiceId || invoice.externalAccountingId || invoice.lastQbSyncedVersion || invoice.syncedAt || invoice.syncStatus === "synced" || invoice.qbSyncStatus === "synced") return "This Invoice has QuickBooks or external accounting history.";
+  if (evidence.paymentExists || Number(invoice.amountPaid || 0) !== 0 || ["paid", "partially_paid"].includes(String(invoice.status).toLowerCase())) return "Billing owner cannot be changed because a payment has been applied or refunded.";
+  if (invoice.lastQbSyncedVersion || invoice.syncedAt || invoice.syncStatus === "synced" || invoice.qbSyncStatus === "synced") return "Billing owner cannot be changed because this Invoice was synchronized to QuickBooks.";
+  if (invoice.qbInvoiceId || invoice.externalAccountingId) return "This Invoice has an external accounting reference that requires review before changing its billing owner.";
   if (invoice.accountingApprovedAt || invoice.accountingApprovedVersion || invoice.termsStartedAt) return "This Invoice has an accounting approval checkpoint.";
   const status = String(invoice.status || "").toLowerCase();
   if (!["draft", "billed"].includes(status) && !(status === "finalized" && evidence.autoCreatedInvoiceEvidence)) return "This Invoice is not an untouched internal draft.";
