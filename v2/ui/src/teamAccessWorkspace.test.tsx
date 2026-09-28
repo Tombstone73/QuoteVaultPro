@@ -7,7 +7,7 @@ import type { TeamAccessRead } from "./api";
 
 const value: TeamAccessRead = {
   authorityRevision: "authority-revision",
-  staff: [{ memberId: "staff-1", displayName: "QA Operator", email: "qa@example.test", status: "active", permissionSets: ["Operations"], administratorCapable: true, allowedActions: ["membership.manage", "permission-sets.assign"] }],
+  staff: [{ memberId: "staff-1", displayName: "QA Operator", email: "qa@example.test", status: "active", permissionSets: ["Operations"], permissionSetIds: ["system-1"], effectivePermissions: [{ capability: "order.view", sources: ["Operations"] }], administratorCapable: true, allowedActions: ["membership.manage", "permission-sets.assign"] }],
   invitations: [],
   permissionSets: [
     { permissionSetId: "system-1", name: "Operations", description: "Managed template", revision: "revision-1", principalKind: "staff", active: true, systemManaged: true, capabilities: ["orders.view"], assignmentCount: 1 },
@@ -17,7 +17,7 @@ const value: TeamAccessRead = {
   portalAccess: [],
   portalCandidates: [{ customerId: "customer-1", customerName: "QA Customer", contactId: "contact-1", contactName: "QA Contact", email: "qa.contact@example.test", eligibility: "eligible" }],
   readiness: { status: "ready", reasons: [], activeStaffCount: 1, viableAdministratorCount: 1, pendingInvitationCount: 0 },
-  capabilityGroups: [{ key: "orders", label: "Orders", capabilities: ["orders.view"] }],
+  capabilityGroups: [{ key: "orders", label: "Orders", capabilities: [{ id: "order.view", label: "View orders", sensitive: false }] }],
 };
 
 const render = (section: "staff" | "permission-sets" | "portal", permissions = true) => {
@@ -28,13 +28,15 @@ const render = (section: "staff" | "permission-sets" | "portal", permissions = t
 
 const staff = render("staff");
 assert.match(staff, /Invite staff/);
-assert.match(staff, /Edit access/);
+assert.match(staff, /Manage roles/);
+assert.match(staff, /View permissions/);
 assert.match(staff, /Disable/);
 assert.match(staff, /Operations/);
 
 const sets = render("permission-sets");
-assert.match(sets, /System template/);
-assert.match(sets, /Create custom set/);
+assert.match(sets, /Built-in/);
+assert.match(sets, /Create custom role/);
+assert.match(sets, /Clone role/);
 assert.match(sets, /QA custom/);
 
 const portal = render("portal");

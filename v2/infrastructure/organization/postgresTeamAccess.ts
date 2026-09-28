@@ -49,7 +49,8 @@ export class PostgresTeamAccess {
     const [state, staff, invitations, permissionSets, portalAccess, portalCandidates, audit] = await Promise.all([
       this.pool.query<{ authority_revision: string }>("SELECT authority_revision FROM v2_permission_organization_state WHERE organization_id=$1", [organizationId]),
       this.pool.query(`SELECT uo.user_id,COALESCE(NULLIF(trim(concat_ws(' ',u.first_name,u.last_name)),''),u.email) display_name,u.email,uo.is_active,
-        COALESCE(array_agg(DISTINCT ps.name) FILTER (WHERE a.active AND ps.active),'{}') permission_sets,
+        COALESCE(array_agg(DISTINCT ps.name) FILTER (WHERE a.active AND ps.active AND ps.principal_kind='staff'),'{}') permission_sets,
+        COALESCE(array_agg(DISTINCT ps.id) FILTER (WHERE a.active AND ps.active AND ps.principal_kind='staff'),'{}') permission_set_ids,
         bool_or(a.active AND ps.active AND p.capability_id='permissions.manageSets') AND bool_or(a.active AND ps.active AND p.capability_id='permissions.assignStaff') administrator_capable
         FROM user_organizations uo JOIN users u ON u.id=uo.user_id
         LEFT JOIN v2_staff_permission_set_assignments a ON a.organization_id=uo.organization_id AND a.user_id=uo.user_id
@@ -83,7 +84,20 @@ export class PostgresTeamAccess {
     const admins = active.filter((row: any) => row.administrator_capable);
     const pending = invitations.rows.filter((row: any) => !row.accepted_at && new Date(row.expires_at).getTime() >= Date.now());
     const reasons = admins.length ? [] : ["no_viable_administrator"];
-    return { authorityRevision: state.rows[0]?.authority_revision ?? "0", staff: staff.rows.map((row: any) => ({ memberId: row.user_id, displayName: row.display_name, email: row.email, status: row.is_active ? "active" : "disabled", permissionSets: row.permission_sets, administratorCapable: Boolean(row.administrator_capable), allowedActions: row.is_active ? ["disable", "assign_permission_sets"] : ["enable"] })), invitations: invitations.rows.map((row: any) => ({ invitationId: row.id, email: row.email, requestedLegacyRole: row.role, status: row.accepted_at ? "accepted" : new Date(row.expires_at).getTime() < Date.now() ? "expired" : "pending", deliveryState: row.delivery_state ?? "legacy_unknown", expiresAt: row.expires_at, createdAt: row.created_at })), permissionSets, portalAccess: portalAccess.rows.map((row: any) => ({ portalAccessId: row.id, customerId: row.customer_id, contactId: row.contact_id, customerName: row.company_name ?? row.customer_id, contactName: row.contact_name ?? row.email, email: row.email, status: row.status, setupCompleted: Boolean(row.password_set_at), deliveryState: row.delivery_state ?? "legacy_unknown", permissionSets: row.permission_sets })), portalCandidates: portalCandidates.rows.map((row: any) => ({ customerId: row.customer_id, customerName: row.company_name ?? row.customer_id, contactId: row.contact_id, contactName: row.contact_name ?? row.email, email: row.email ?? undefined, eligibility: row.eligibility, portalAccessId: row.portal_access_id ?? undefined, portalStatus: row.portal_status ?? undefined })), audit: audit.rows, readiness: { status: reasons.length ? "needs_attention" : "ready", reasons, activeStaffCount: active.length, viableAdministratorCount: admins.length, pendingInvitationCount: pending.length }, capabilityGroups: teamCapabilityGroups };
+    const setsById = new Map((permissionSets as readonly any[]).map((set) => [set.permissionSetId, set]));
+    const staffProjection = staff.rows.map((row: any) => {
+      const permissionSetIds = [...new Set((row.permission_set_ids ?? []) as string[])];
+      const assignedSets = permissionSetIds.map((id) => setsById.get(id)).filter((set): set is any => Boolean(set));
+      const sources = new Map<string, string[]>();
+      if (row.is_active) for (const set of assignedSets) for (const capability of set.capabilities as readonly string[]) sources.set(capability, [...(sources.get(capability) ?? []), set.name]);
+      return {
+        memberId: row.user_id, displayName: row.display_name, email: row.email, status: row.is_active ? "active" : "disabled",
+        permissionSets: assignedSets.map((set) => set.name), permissionSetIds,
+        effectivePermissions: [...sources.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([capability, roleSources]) => ({ capability, sources: [...new Set(roleSources)].sort() })),
+        administratorCapable: Boolean(row.administrator_capable), allowedActions: row.is_active ? ["disable", "assign_permission_sets"] : ["enable"],
+      };
+    });
+    return { authorityRevision: state.rows[0]?.authority_revision ?? "0", staff: staffProjection, invitations: invitations.rows.map((row: any) => ({ invitationId: row.id, email: row.email, requestedLegacyRole: row.role, status: row.accepted_at ? "accepted" : new Date(row.expires_at).getTime() < Date.now() ? "expired" : "pending", deliveryState: row.delivery_state ?? "legacy_unknown", expiresAt: row.expires_at, createdAt: row.created_at })), permissionSets, portalAccess: portalAccess.rows.map((row: any) => ({ portalAccessId: row.id, customerId: row.customer_id, contactId: row.contact_id, customerName: row.company_name ?? row.customer_id, contactName: row.contact_name ?? row.email, email: row.email, status: row.status, setupCompleted: Boolean(row.password_set_at), deliveryState: row.delivery_state ?? "legacy_unknown", permissionSets: row.permission_sets })), portalCandidates: portalCandidates.rows.map((row: any) => ({ customerId: row.customer_id, customerName: row.company_name ?? row.customer_id, contactId: row.contact_id, contactName: row.contact_name ?? row.email, email: row.email ?? undefined, eligibility: row.eligibility, portalAccessId: row.portal_access_id ?? undefined, portalStatus: row.portal_status ?? undefined })), audit: audit.rows, readiness: { status: reasons.length ? "needs_attention" : "ready", reasons, activeStaffCount: active.length, viableAdministratorCount: admins.length, pendingInvitationCount: pending.length }, capabilityGroups: teamCapabilityGroups };
   }
 
   /** Existing org_invites remains the sole invitation/acceptance authority;
@@ -221,13 +235,35 @@ export class PostgresTeamAccess {
     });
   }
 
+  /** A clone is always a tenant-owned explicit Staff role. It never inherits
+   * future changes to a source template or custom role. */
+  async cloneStaffSet(actor: StaffPrincipal, organizationId: string, sourcePermissionSetId: string, input: { name: string; description?: string }, context: Context): Promise<{ permissionSetId: string }> {
+    const permissionSetId = randomBytes(18).toString("base64url"); const name = input.name.trim();
+    if (!name) throw new V2ApplicationError("VALIDATION_ERROR", "Role name is required.");
+    return this.mutate(actor, organizationId, "permissions.manageSets", "permission_set_cloned", { permissionSetId, sourcePermissionSetId, name }, context, async (client) => {
+      const source = await client.query<{ id: string; principal_kind: "staff" | "portal"; capability_id: Capability | null }>("SELECT s.id,s.principal_kind,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, sourcePermissionSetId]);
+      if (!source.rowCount) throw new V2ApplicationError("NOT_FOUND", "Source Staff role was not found.");
+      if (source.rows.some((row) => row.principal_kind !== "staff")) throw new V2ApplicationError("VALIDATION_ERROR", "Only Staff roles can be cloned here.");
+      const capabilities = parseCapabilities(source.rows.flatMap((row) => row.capability_id ? [row.capability_id] : [])); this.ceiling(actor, capabilities);
+      await client.query("INSERT INTO v2_permission_sets(id,organization_id,name,normalized_name,description,principal_kind) VALUES($1,$2,$3,$4,$5,'staff')", [permissionSetId, organizationId, name, normalized(name), input.description?.trim() || null]);
+      for (const capability of capabilities) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [organizationId, permissionSetId, capability]);
+      return { changed: true, result: { permissionSetId } };
+    });
+  }
+
   async updateCustomSet(actor: StaffPrincipal, organizationId: string, permissionSetId: string, input: { name: string; description?: string; capabilities: readonly Capability[]; active: boolean }, context: Context): Promise<void> {
     const capabilities = parseCapabilities(input.capabilities);
-    await this.mutate(actor, organizationId, "permissions.manageSets", "permission_set_updated", { permissionSetId, name: input.name, capabilities, active: input.active }, context, async (client) => {
+    const detail: Record<string, unknown> = { permissionSetId, name: input.name.trim(), capabilities, active: input.active };
+    await this.mutate(actor, organizationId, "permissions.manageSets", "permission_set_updated", detail, context, async (client) => {
       this.ceiling(actor, capabilities); await this.customSet(client, organizationId, permissionSetId);
+      const current = await client.query<{ name: string; description: string | null; active: boolean; capability_id: Capability | null }>("SELECT s.name,s.description,s.active,c.capability_id FROM v2_permission_sets s LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id WHERE s.organization_id=$1 AND s.id=$2 FOR UPDATE OF s", [organizationId, permissionSetId]);
+      const currentCapabilities = parseCapabilities(current.rows.flatMap((row) => row.capability_id ? [row.capability_id] : [])); const description = input.description?.trim() || null;
+      if (current.rows[0].name === input.name.trim() && current.rows[0].description === description && current.rows[0].active === input.active && currentCapabilities.length === capabilities.length && currentCapabilities.every((capability, index) => capability === capabilities[index])) return { changed: false, result: undefined };
+      detail.previousName = current.rows[0].name; detail.descriptionChanged = current.rows[0].description !== description;
+      detail.addedCapabilities = capabilities.filter((capability) => !currentCapabilities.includes(capability)); detail.removedCapabilities = currentCapabilities.filter((capability) => !capabilities.includes(capability));
       await client.query("DELETE FROM v2_permission_set_capabilities WHERE organization_id=$1 AND permission_set_id=$2", [organizationId, permissionSetId]);
       for (const capability of capabilities) await client.query("INSERT INTO v2_permission_set_capabilities(organization_id,permission_set_id,capability_id) VALUES($1,$2,$3)", [organizationId, permissionSetId, capability]);
-      await client.query("UPDATE v2_permission_sets SET name=$3,normalized_name=$4,description=$5,active=$6,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, permissionSetId, input.name.trim(), normalized(input.name), input.description?.trim() || null, input.active]);
+      await client.query("UPDATE v2_permission_sets SET name=$3,normalized_name=$4,description=$5,active=$6,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [organizationId, permissionSetId, input.name.trim(), normalized(input.name), description, input.active]);
       return { changed: true, result: { permissionSetId } };
     });
   }

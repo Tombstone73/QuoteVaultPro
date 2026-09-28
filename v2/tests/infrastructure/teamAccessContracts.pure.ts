@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { capabilityIds } from "../../src/authorization/capabilities.js";
 import { teamCapabilityGroups, parseCapabilities } from "../../src/modules/organization/teamAccess.js";
 
-assert.ok(teamCapabilityGroups.some((group)=>group.key==="settings"&&group.capabilities.includes("permissions.manageSets")));
+assert.ok(teamCapabilityGroups.some((group)=>group.key==="permissions"&&group.capabilities.some((capability)=>capability.id==="permissions.manageSets"&&capability.sensitive)));
+assert.deepEqual([...teamCapabilityGroups.flatMap((group)=>group.capabilities.map((capability)=>capability.id))].sort(),[...capabilityIds].sort(),"every canonical capability is present in the role editor");
 assert.deepEqual(parseCapabilities(["quote.view","quote.view"]),["quote.view"]);
 assert.throws(()=>parseCapabilities(["not-a-capability"]),/known capability IDs/);
 const migration=readFileSync(resolve("server/db/migrations_v2/0235_v2_team_access_membership_bootstrap.sql"),"utf8");
@@ -20,6 +22,9 @@ assert.match(administration,/assertCustomSet/u);
 assert.match(administration,/System permission sets are managed templates/u);
 const teamAccess=readFileSync(resolve("v2/infrastructure/organization/postgresTeamAccess.ts"),"utf8");
 assert.match(teamAccess,/bootstrapPortalAccess/u);
+assert.match(teamAccess,/cloneStaffSet/u);
+assert.match(teamAccess,/permission_set_cloned/u);
+assert.match(teamAccess,/effectivePermissions/u);
 assert.match(teamAccess,/customer_contact_links/u);
 assert.match(teamAccess,/sendPortalInvitation/u);
 const bootstrap = teamAccess.slice(teamAccess.indexOf("async bootstrapPortalAccess"), teamAccess.indexOf("async setMembershipActive"));
