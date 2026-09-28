@@ -16,7 +16,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, ChevronDown, ChevronRight, Edit, Mail, FileText, Plus, Inbox, PauseCircle, RefreshCw, Search, Trash2, Star } from "lucide-react";
-import { useState, useEffect, type FormEvent, type ReactNode } from "react";
+import { useState, useEffect, useRef, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
+import { emailTemplateVariables, renderEmailTemplate, sampleEmailTemplateValues, unknownEmailTemplateVariables, type EmailTemplateType } from "@shared/emailTemplateVariables";
 import {
   useCreateInboundEmailIgnoreRule,
   useCreateInboundEmailTrustRule,
@@ -49,6 +50,12 @@ const emailTemplatesSchema = z.object({
   quoteEmailBody: z.string().optional(),
   invoiceEmailSubject: z.string().optional(),
   invoiceEmailBody: z.string().optional(),
+}).superRefine((data, ctx) => {
+  for (const [field, type] of [["quoteEmailSubject", "quote"], ["quoteEmailBody", "quote"], ["invoiceEmailSubject", "invoice"], ["invoiceEmailBody", "invoice"]] as const) {
+    for (const token of unknownEmailTemplateVariables(data[field] || "", type)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `Unknown variable: ${token}` });
+    }
+  }
 });
 
 type EmailTemplatesFormData = z.infer<typeof emailTemplatesSchema>;
@@ -1757,23 +1764,13 @@ function EmailPullDiagnosticsPanel() {
   );
 }
 
-// Available template variables
-const QUOTE_VARIABLES = [
-  { label: "Quote Number", value: "{quoteNumber}" },
-  { label: "Company Name", value: "{companyName}" },
-  { label: "Customer Name", value: "{customerName}" },
-];
-
-const INVOICE_VARIABLES = [
-  { label: "Invoice Number", value: "{invoiceNumber}" },
-  { label: "Company Name", value: "{companyName}" },
-  { label: "Customer Name", value: "{customerName}" },
-];
-
-function EmailTemplatesCard() {
+export function EmailTemplatesCard() {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
-  const [activeTab, setActiveTab] = useState("quote");
+  const [activeTab, setActiveTab] = useState<EmailTemplateType>("quote");
+  type TemplateField = "quoteEmailSubject" | "quoteEmailBody" | "invoiceEmailSubject" | "invoiceEmailBody";
+  const lastField = useRef<TemplateField | null>(null);
+  const selection = useRef({ start: 0, end: 0 });
 
   // Fetch organization preferences
   const { data: preferences, isLoading } = useQuery({
@@ -1836,18 +1833,25 @@ function EmailTemplatesCard() {
     saveMutation.mutate(data);
   };
 
-  // Helper to insert variable into field at cursor position
-  const insertVariable = (fieldName: keyof EmailTemplatesFormData, variable: string) => {
+  const rememberSelection = (event: SyntheticEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const element = event.currentTarget;
+    lastField.current = element.name as TemplateField;
+    selection.current = { start: element.selectionStart ?? element.value.length, end: element.selectionEnd ?? element.value.length };
+  };
+  const insertVariable = (type: EmailTemplateType, variable: string) => {
+    const fieldName: TemplateField = lastField.current?.startsWith(type) ? lastField.current : `${type}EmailSubject` as TemplateField;
     const currentValue = form.getValues(fieldName) || "";
     const textarea = document.querySelector(`textarea[name="${fieldName}"]`) as HTMLTextAreaElement;
     const input = document.querySelector(`input[name="${fieldName}"]`) as HTMLInputElement;
     const element = textarea || input;
     
     if (element) {
-      const start = element.selectionStart || currentValue.length;
-      const end = element.selectionEnd || currentValue.length;
+      const start = lastField.current === fieldName ? selection.current.start : currentValue.length;
+      const end = lastField.current === fieldName ? selection.current.end : currentValue.length;
       const newValue = currentValue.substring(0, start) + variable + currentValue.substring(end);
-      form.setValue(fieldName, newValue);
+      form.setValue(fieldName, newValue, { shouldDirty: true, shouldValidate: true });
+      lastField.current = fieldName;
+      selection.current = { start: start + variable.length, end: start + variable.length };
       
       // Set cursor position after inserted variable
       setTimeout(() => {
@@ -1856,9 +1860,26 @@ function EmailTemplatesCard() {
       }, 0);
     } else {
       // Fallback: append to end
-      form.setValue(fieldName, currentValue + variable);
+      form.setValue(fieldName, currentValue + variable, { shouldDirty: true, shouldValidate: true });
     }
   };
+  const variablePanel = (type: EmailTemplateType) => <div className="rounded-lg bg-muted/50 p-3">
+    <p className="mb-2 text-sm font-medium">Available Variables</p>
+    <div className="flex flex-wrap gap-2">{emailTemplateVariables(type).map(variable => <button
+      key={variable.key} type="button" disabled={!isEditing} title={variable.description}
+      className="max-w-full rounded-md border bg-background px-2 py-1.5 text-left text-xs enabled:hover:border-primary disabled:opacity-80"
+      onMouseDown={event => event.preventDefault()} onClick={() => insertVariable(type, `{${variable.key}}`)}>
+      <span className="block font-mono font-semibold">{`{${variable.key}}`}</span>
+      <span className="block text-muted-foreground">{variable.description}</span>
+    </button>)}</div>
+    <p className="mt-2 text-xs text-muted-foreground">Focus Subject or Email Body, then click a variable to insert it at the cursor.</p>
+  </div>;
+  const subjectField = activeTab === "quote" ? "quoteEmailSubject" : "invoiceEmailSubject";
+  const bodyField = activeTab === "quote" ? "quoteEmailBody" : "invoiceEmailBody";
+  const subjectValue = form.watch(subjectField) || "";
+  const bodyValue = form.watch(bodyField) || "";
+  const unknown = Array.from(new Set([...unknownEmailTemplateVariables(subjectValue, activeTab), ...unknownEmailTemplateVariables(bodyValue, activeTab)]));
+  const sampleValues = sampleEmailTemplateValues(activeTab);
 
   if (isLoading) {
     return (
@@ -1913,7 +1934,7 @@ function EmailTemplatesCard() {
 
             {/* Tabbed Templates */}
             <div className="border-t pt-4">
-              <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <Tabs value={activeTab} onValueChange={value => setActiveTab(value as EmailTemplateType)}>
                 <TabsList className="grid w-full grid-cols-2">
                   <TabsTrigger value="quote">Quote Template</TabsTrigger>
                   <TabsTrigger value="invoice">Invoice Template</TabsTrigger>
@@ -1921,36 +1942,7 @@ function EmailTemplatesCard() {
 
                 {/* Quote Template Tab */}
                 <TabsContent value="quote" className="space-y-4 mt-4">
-                  {/* Variable Buttons */}
-                  {isEditing && (
-                    <div className="bg-muted/50 p-3 rounded-lg">
-                      <p className="text-sm font-medium mb-2">Insert Variables:</p>
-                      <div className="flex flex-wrap gap-2">
-                        {QUOTE_VARIABLES.map((variable) => (
-                          <Badge
-                            key={variable.value}
-                            variant="secondary"
-                            className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
-                            onClick={() => {
-                              const focusedElement = document.activeElement;
-                              const fieldName = focusedElement?.getAttribute("name");
-                              if (fieldName === "quoteEmailSubject" || fieldName === "quoteEmailBody") {
-                                insertVariable(fieldName as keyof EmailTemplatesFormData, variable.value);
-                              } else {
-                                insertVariable("quoteEmailBody", variable.value);
-                              }
-                            }}
-                          >
-                            <Plus className="w-3 h-3 mr-1" />
-                            {variable.label}
-                          </Badge>
-                        ))}
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Click a variable to insert it at the cursor position
-                      </p>
-                    </div>
-                  )}
+                  {variablePanel("quote")}
 
                   <FormField
                     control={form.control}
@@ -1962,6 +1954,7 @@ function EmailTemplatesCard() {
                           <Input
                             {...field}
                             name="quoteEmailSubject"
+                            onFocus={rememberSelection} onClick={rememberSelection} onKeyUp={rememberSelection} onSelect={rememberSelection}
                             placeholder="Quote #{quoteNumber} from {companyName}"
                             disabled={!isEditing}
                           />
@@ -1981,6 +1974,7 @@ function EmailTemplatesCard() {
                           <Textarea
                             {...field}
                             name="quoteEmailBody"
+                            onFocus={rememberSelection} onClick={rememberSelection} onKeyUp={rememberSelection} onSelect={rememberSelection}
                             placeholder="Hello,&#10;&#10;Please find your quote #{quoteNumber} attached.&#10;&#10;Thank you for your business!"
                             rows={8}
                             disabled={!isEditing}
@@ -1997,36 +1991,7 @@ function EmailTemplatesCard() {
 
                 {/* Invoice Template Tab */}
                 <TabsContent value="invoice" className="space-y-4 mt-4">
-                  {/* Variable Buttons */}
-                  {isEditing && (
-                    <div className="bg-muted/50 p-3 rounded-lg">
-                      <p className="text-sm font-medium mb-2">Insert Variables:</p>
-                      <div className="flex flex-wrap gap-2">
-                        {INVOICE_VARIABLES.map((variable) => (
-                          <Badge
-                            key={variable.value}
-                            variant="secondary"
-                            className="cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
-                            onClick={() => {
-                              const focusedElement = document.activeElement;
-                              const fieldName = focusedElement?.getAttribute("name");
-                              if (fieldName === "invoiceEmailSubject" || fieldName === "invoiceEmailBody") {
-                                insertVariable(fieldName as keyof EmailTemplatesFormData, variable.value);
-                              } else {
-                                insertVariable("invoiceEmailBody", variable.value);
-                              }
-                            }}
-                          >
-                            <Plus className="w-3 h-3 mr-1" />
-                            {variable.label}
-                          </Badge>
-                        ))}
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Click a variable to insert it at the cursor position
-                      </p>
-                    </div>
-                  )}
+                  {variablePanel("invoice")}
 
                   <FormField
                     control={form.control}
@@ -2038,6 +2003,7 @@ function EmailTemplatesCard() {
                           <Input
                             {...field}
                             name="invoiceEmailSubject"
+                            onFocus={rememberSelection} onClick={rememberSelection} onKeyUp={rememberSelection} onSelect={rememberSelection}
                             placeholder="Invoice #{invoiceNumber} from {companyName}"
                             disabled={!isEditing}
                           />
@@ -2057,6 +2023,7 @@ function EmailTemplatesCard() {
                           <Textarea
                             {...field}
                             name="invoiceEmailBody"
+                            onFocus={rememberSelection} onClick={rememberSelection} onKeyUp={rememberSelection} onSelect={rememberSelection}
                             placeholder="Hello,&#10;&#10;Please find your invoice #{invoiceNumber} attached.&#10;&#10;Thank you for your business!"
                             rows={8}
                             disabled={!isEditing}
@@ -2071,6 +2038,15 @@ function EmailTemplatesCard() {
                   />
                 </TabsContent>
               </Tabs>
+              {unknown.length > 0 && <p role="alert" className="mt-3 text-sm text-destructive">Unknown variable: {unknown.join(", ")}. Use an available variable before saving.</p>}
+              <div className="mt-4 rounded-lg border p-3" aria-label="Sample Preview">
+                <p className="text-sm font-semibold">Sample Preview</p>
+                <p className="text-xs text-muted-foreground">Example values only; no customer record is loaded. Missing optional values render empty.</p>
+                <p className="mt-2 text-xs font-semibold">Subject</p>
+                <p className="break-words text-sm">{renderEmailTemplate(subjectValue, activeTab, sampleValues)}</p>
+                <p className="mt-2 text-xs font-semibold">Email Body</p>
+                <p className="whitespace-pre-wrap break-words text-sm">{renderEmailTemplate(bodyValue, activeTab, sampleValues)}</p>
+              </div>
             </div>
 
             {/* Action Buttons */}
@@ -2100,7 +2076,7 @@ function EmailTemplatesCard() {
                   </Button>
                 </>
               ) : (
-                <Button type="button" onClick={() => setIsEditing(true)}>
+                <Button type="button" onClick={event => { event.preventDefault(); setIsEditing(true); }}>
                   <Edit className="w-4 h-4 mr-2" />
                   Edit Templates
                 </Button>

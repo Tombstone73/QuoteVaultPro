@@ -98,6 +98,11 @@ describe("quote recipient fallback helpers", () => {
       body: "Hello Mike, this is for Eye 4 Group.",
     });
   });
+  test("inserts canonical Quote job label in both composer fields", () => {
+    expect(buildQuoteEmailDraftDefaults({ quoteReference: "QT-20000", companyName: "Titan Graphics", jobLabel: "Lobby Signs",
+      subjectTemplate: "Quote {quoteNumber}: {jobLabel}", bodyTemplate: "Job: {jobLabel}" }))
+      .toEqual({ subject: "Quote QT-20000: Lobby Signs", body: "Job: Lobby Signs" });
+  });
 
   test("prefers selected contact and rejects invalid selected contact email", () => {
     const contacts = [

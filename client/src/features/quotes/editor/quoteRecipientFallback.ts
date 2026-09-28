@@ -1,3 +1,5 @@
+import { renderEmailTemplate } from "@shared/emailTemplateVariables";
+
 export type QuoteRecipientContactLike = {
   id?: string | null;
   firstName?: string | null;
@@ -56,18 +58,12 @@ export function buildQuoteRecipientFallbackPayload(values: QuoteRecipientFallbac
   };
 }
 
-function replaceQuoteEmailVariables(template: string, variables: Record<string, string>): string {
-  return Object.entries(variables).reduce(
-    (result, [key, value]) => result.replace(new RegExp(`\\{${key}\\}`, "g"), value),
-    template,
-  );
-}
-
 export function buildQuoteEmailDraftDefaults(input: {
   quoteReference: string;
   companyName: string;
   recipientName?: string | null;
   customerName?: string | null;
+  jobLabel?: string | null;
   subjectTemplate?: string | null;
   bodyTemplate?: string | null;
 }): { subject: string; body: string } {
@@ -77,6 +73,7 @@ export function buildQuoteEmailDraftDefaults(input: {
     companyName: input.companyName,
     customerName: input.customerName?.trim() || recipientName,
     recipientName,
+    jobLabel: input.jobLabel,
   };
   const subjectTemplate = input.subjectTemplate?.trim()
     || `Quote ${input.quoteReference} from ${input.companyName}`;
@@ -84,8 +81,8 @@ export function buildQuoteEmailDraftDefaults(input: {
     || `Hello ${recipientName},\n\nPlease review quote ${input.quoteReference} below.\n\nThank you for your business!`;
 
   return {
-    subject: replaceQuoteEmailVariables(subjectTemplate, variables),
-    body: replaceQuoteEmailVariables(bodyTemplate, variables),
+    subject: renderEmailTemplate(subjectTemplate, "quote", variables),
+    body: renderEmailTemplate(bodyTemplate, "quote", variables),
   };
 }
 

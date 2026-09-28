@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { quoteEmailPlainTextToHtml, resolveQuoteEmailContent } from "../emailService";
+import { quoteEmailPlainTextToHtml, resolveQuoteEmailContent } from "../services/quoteEmailTemplate";
 
 describe("quote email content", () => {
   const variables = {
@@ -31,6 +31,11 @@ describe("quote email content", () => {
       subject: "Quote #QT-20000 from Titan Graphics",
       bodyText: "Hello Eye 4 Group, quote QT-20000 is ready.",
     });
+  });
+  test("uses the saved Quote job label and preserves recipient alias", () => {
+    expect(resolveQuoteEmailContent({ variables: { ...variables, recipientName: "Mike", jobLabel: "Lobby Signs" },
+      subjectTemplate: "Quote #{quoteNumber}: {jobLabel}", bodyTemplate: "Hello {recipientName} at {customerName}." }))
+      .toEqual({ subject: "Quote #QT-20000: Lobby Signs", bodyText: "Hello Mike at Eye 4 Group." });
   });
 
   test("keeps built-in fallback content when neither custom content nor templates are supplied", () => {

@@ -1,6 +1,8 @@
 import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
+import { quoteEmailPlainTextToHtml, resolveQuoteEmailContent } from "./services/quoteEmailTemplate";
+export { quoteEmailPlainTextToHtml, resolveQuoteEmailContent } from "./services/quoteEmailTemplate";
 import { renderQuoteEmailLineItems } from "./lib/quoteEmailLineItems";
 import { buildRawMessage, normalizeEmailAttachments, type EmailAttachment } from "./lib/emailMime";
 import { markInvoiceEmailDeliveryFailure } from "./services/invoiceEmailDeliveryFailure";
@@ -58,40 +60,6 @@ interface EmailTemplates {
   invoiceEmailSubject?: string;
   invoiceEmailBody?: string;
 }
-
-export function resolveQuoteEmailContent(input: {
-  customSubject?: string | null;
-  customBody?: string | null;
-  subjectTemplate?: string | null;
-  bodyTemplate?: string | null;
-  variables: Record<string, unknown>;
-}): { subject: string; bodyText: string } {
-  const replaceVariables = (template: string) => {
-    let result = template;
-    Object.entries(input.variables).forEach(([key, value]) => {
-      result = result.replace(new RegExp(`\\{${key}\\}`, "g"), String(value ?? ""));
-    });
-    return result;
-  };
-
-  const subjectTemplate = input.subjectTemplate || "Quote #{quoteNumber} from {companyName}";
-  const bodyTemplate = input.bodyTemplate || "Hello,\n\nPlease find your quote #{quoteNumber} below.\n\nThank you for your business!";
-
-  return {
-    subject: input.customSubject?.trim() || replaceVariables(subjectTemplate),
-    bodyText: input.customBody?.trim() || replaceVariables(bodyTemplate),
-  };
-}
-
-export function quoteEmailPlainTextToHtml(bodyText: string): string {
-  return bodyText
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/\r?\n/g, "<br>");
-}
-
 
 class EmailService {
   /**
@@ -409,6 +377,8 @@ class EmailService {
       quoteNumber: quoteDisplayNumber,
       companyName: config.fromName,
       customerName: quote.customerName || 'Customer',
+      recipientName: quote.customerName || 'Customer',
+      jobLabel: quote.label,
     };
 
     // Use custom template or default

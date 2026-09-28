@@ -399,6 +399,8 @@ export async function registerMvpInvoicingRoutes(
     customer: any;
     companyName: string;
     organizationSettings: unknown;
+    orderContext: Awaited<ReturnType<typeof getInvoiceOrderContext>>;
+    useTemplates?: boolean;
     now: Date;
   }) {
     const automation = resolveInvoiceSendAutomationPreferences((input.organizationSettings as any)?.preferences);
@@ -418,6 +420,7 @@ export async function registerMvpInvoicingRoutes(
       ? { ...input.invoice, dueDate: projectedDueDate }
       : input.invoice;
     const invoiceNumber = String(input.invoice.displayNumber || input.invoice.invoiceNumber || input.invoice.id);
+    const templates = input.useTemplates === false ? {} : (input.organizationSettings as any)?.emailTemplates || {};
     const dueDate = projectedDueDate
       ? null
       : invoiceForCustomerDelivery.dueDate
@@ -432,6 +435,11 @@ export async function registerMvpInvoicingRoutes(
         customerName: input.customer.name || input.customer.email || "Valued Customer",
         totalFormatted: (Number(input.invoice.totalCents || 0) / 100).toFixed(2),
         dueDate,
+        orderNumber: input.orderContext?.orderNumber,
+        poNumber: input.orderContext?.poNumber,
+        jobLabel: input.orderContext?.jobLabel,
+        subjectTemplate: templates.invoiceEmailSubject,
+        bodyTemplate: templates.invoiceEmailBody,
       }),
     };
   }
@@ -536,11 +544,14 @@ export async function registerMvpInvoicingRoutes(
     ]);
     const successfulSendCandidateAt = new Date();
     const companyName = orgCompany?.companyName || "QuoteVaultPro";
+    const orderContext = await getInvoiceOrderContext({ organizationId: input.organizationId, orderId: inv.orderId, customerId: inv.customerId });
     const composeContext = buildInvoiceEmailComposeContext({
       invoice: inv,
       customer: cust,
       companyName,
       organizationSettings: organization?.settings,
+      orderContext,
+      useTemplates: !input.deliveryJobId,
       now: successfulSendCandidateAt,
     });
     // This is only a document preview. Durable invoice state is updated by the
@@ -558,10 +569,6 @@ export async function registerMvpInvoicingRoutes(
       .where(eq(invoiceLineItems.invoiceId, inv.id))
       .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
 
-    const orderContext = await getInvoiceOrderContext({
-      organizationId: input.organizationId,
-      orderId: inv.orderId,
-    });
     const job = orderContext
       ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
       : null;
@@ -876,6 +883,16 @@ export async function registerMvpInvoicingRoutes(
     }
 
     const suppliedKey = String(input.idempotencyKey || "").trim();
+    const [[orgCompany], [organization]] = await Promise.all([
+      db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId)),
+      db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1),
+    ]);
+    const defaultDraft = buildInvoiceEmailComposeContext({
+      invoice, customer: resolution.customer, companyName: orgCompany?.companyName || "QuoteVaultPro",
+      organizationSettings: organization?.settings,
+      orderContext: await getInvoiceOrderContext({ organizationId: input.organizationId, orderId: invoice.orderId, customerId: invoice.customerId }),
+      now: new Date(),
+    }).draft;
     // UI requests retain this key across an uncertain HTTP response. External
     // callers without one still get a unique, explicit send attempt.
     const requestKey = suppliedKey || randomUUID();
@@ -892,8 +909,8 @@ export async function registerMvpInvoicingRoutes(
         invoiceVersion: Math.max(1, Number(invoice.invoiceVersion || 1)),
         recipientEmail,
         allowUnapproved: input.allowUnapproved === true,
-        subject: typeof input.subject === "string" ? input.subject : null,
-        message: typeof input.message === "string" ? input.message : null,
+        subject: typeof input.subject === "string" ? input.subject : defaultDraft.subject,
+        message: typeof input.message === "string" ? input.message : defaultDraft.message,
       })),
     });
   }
@@ -3415,6 +3432,7 @@ export async function registerMvpInvoicingRoutes(
         customer: resolution.customer,
         companyName: orgCompany?.companyName || "QuoteVaultPro",
         organizationSettings: organization?.settings,
+        orderContext: await getInvoiceOrderContext({ organizationId, orderId: resolution.invoice.orderId, customerId: resolution.invoice.customerId }),
         now: new Date(),
       });
       return res.json({ success: true, data: composeContext.draft });
@@ -3597,6 +3615,11 @@ export async function registerMvpInvoicingRoutes(
         return res.status(400).json({ success: false, error: "Email is not configured. Please configure email settings in the admin panel before sending invoices." });
       }
 
+      const [[orgCompany], [organization]] = await Promise.all([
+        db.select().from(companySettings).where(eq(companySettings.organizationId, organizationId)),
+        db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, organizationId)).limit(1),
+      ]);
+
       const candidates: BulkInvoiceEmailCandidate[] = [];
       const skipped: BulkInvoiceEmailSkip[] = [];
       let unapprovedCount = 0;
@@ -3618,12 +3641,20 @@ export async function registerMvpInvoicingRoutes(
           } else {
             const allowUnapproved = !isInvoiceApprovedForAccounting(resolution.invoice as any);
             if (allowUnapproved) unapprovedCount += 1;
+            const draft = buildInvoiceEmailComposeContext({
+              invoice: resolution.invoice, customer: resolution.customer,
+              companyName: orgCompany?.companyName || "QuoteVaultPro", organizationSettings: organization?.settings,
+              orderContext: await getInvoiceOrderContext({ organizationId, orderId: resolution.invoice.orderId, customerId: resolution.invoice.customerId }),
+              now: new Date(),
+            }).draft;
             for (const recipientEmail of recipientEmails) {
               candidates.push({
                 invoiceId,
                 invoiceVersion: Math.max(1, Number(resolution.invoice.invoiceVersion || 1)),
                 recipientEmail,
                 allowUnapproved,
+                subject: draft.subject,
+                message: draft.message,
               });
             }
           }

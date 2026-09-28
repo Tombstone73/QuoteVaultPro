@@ -507,6 +507,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             companyName: String((state.organization as any)?.name || "our company"),
             recipientName,
             customerName: state.selectedCustomer?.companyName ?? (state.quote as any)?.customerName ?? null,
+            jobLabel: state.jobLabel,
             subjectTemplate: orgPreferences?.emailTemplates?.quoteEmailSubject,
             bodyTemplate: orgPreferences?.emailTemplates?.quoteEmailBody,
         });

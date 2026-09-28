@@ -1,3 +1,5 @@
+import { renderEmailTemplate } from "@shared/emailTemplateVariables";
+
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -26,20 +28,28 @@ export function buildInvoiceEmailDraft(input: {
   customerName: string;
   totalFormatted: string;
   dueDate?: string | null;
+  orderNumber?: string | null;
+  poNumber?: string | null;
+  jobLabel?: string | null;
+  subjectTemplate?: string | null;
+  bodyTemplate?: string | null;
 }): InvoiceEmailDraft {
   const dueSentence = input.dueDate
     ? `Payment is due ${input.dueDate}.`
     : "Payment is due according to the invoice terms.";
-  return {
-    subject: `Invoice #${input.invoiceNumber} from ${input.companyName}`,
-    message: [
+  const defaultMessage = [
       `Dear ${input.customerName},`,
       "",
       `Please find attached Invoice #${input.invoiceNumber} from ${input.companyName} for $${input.totalFormatted}.`,
       dueSentence,
       "",
       `If you have any questions about this invoice, please contact ${input.companyName}.`,
-    ].join("\n"),
+    ].join("\n");
+  const values = { invoiceNumber: input.invoiceNumber, companyName: input.companyName, customerName: input.customerName,
+    orderNumber: input.orderNumber, poNumber: input.poNumber, jobLabel: input.jobLabel, dueDate: input.dueDate };
+  return {
+    subject: input.subjectTemplate?.trim() ? renderEmailTemplate(input.subjectTemplate, "invoice", values) : `Invoice #${input.invoiceNumber} from ${input.companyName}`,
+    message: input.bodyTemplate?.trim() ? renderEmailTemplate(input.bodyTemplate, "invoice", values) : defaultMessage,
   };
 }
 

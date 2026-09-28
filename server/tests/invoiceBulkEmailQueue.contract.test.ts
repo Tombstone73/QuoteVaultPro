@@ -129,6 +129,15 @@ describe("bulk invoice email delivery queue contract", () => {
     expect(directSendRoute).not.toContain("await sendInvoiceEmailForOperations(");
     expect(queue).toContain("enqueueInteractiveInvoiceEmailCampaign");
     expect(queue).toContain('"interactive_invoice_message"');
+    expect(queue).toContain("subject: candidate.subject?.trim() || null");
+    expect(queue).toContain("message: candidate.message?.trim() || null");
+    expect(queue).toContain("subject: job.metadata?.subject || undefined");
+    expect(queue).toContain("message: job.metadata?.message || undefined");
+    expect(route).toContain("subject: draft.subject");
+    expect(route).toContain("message: draft.message");
+    expect(route).toContain("subject: typeof input.subject === \"string\" ? input.subject : defaultDraft.subject");
+    expect(route).toContain("message: typeof input.message === \"string\" ? input.message : defaultDraft.message");
+    expect(route).toContain("useTemplates: !input.deliveryJobId");
   });
 
   test("starts a healthy worker immediately and exposes durable queue state without treating it as Last Sent", () => {

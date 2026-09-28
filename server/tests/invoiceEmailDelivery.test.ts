@@ -28,6 +28,17 @@ async function generateValidInvoicePdf() {
 }
 
 describe("invoice email delivery", () => {
+  test("renders saved Invoice subject and body from linked Order context", () => {
+    const input = { invoiceNumber: "20552", companyName: "Titan Graphics", customerName: "Acme Signs", totalFormatted: "25.00",
+      orderNumber: "20507", poNumber: "152594", jobLabel: "Yard Signs", dueDate: "October 15, 2026",
+      subjectTemplate: "Invoice #{invoiceNumber} | PO {poNumber} | {jobLabel}",
+      bodyTemplate: "Hello {customerName}, Order {orderNumber} is due {dueDate}. From {companyName}." };
+    expect(buildInvoiceEmailDraft(input)).toEqual({ subject: "Invoice #20552 | PO 152594 | Yard Signs",
+      message: "Hello Acme Signs, Order 20507 is due October 15, 2026. From Titan Graphics." });
+    expect(buildInvoiceEmailDraft({ ...input, poNumber: null, jobLabel: null, dueDate: null })).toEqual({
+      subject: "Invoice #20552 | PO  | ", message: "Hello Acme Signs, Order 20507 is due . From Titan Graphics.",
+    });
+  });
   test("uses the same customized plain-text message in safe HTML while retaining transactional links", () => {
     const message = "Thank you for your payment.\n<script>alert('not executable')</script>";
     const html = buildInvoiceEmailHtml({
