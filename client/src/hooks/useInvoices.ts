@@ -341,8 +341,8 @@ export function useRecordManualInvoicePayment() {
 export function useRecordCustomerInvoicePayment() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (payload: { invoiceIds: string[]; amountCents: number; allocationMode: 'oldest_first' | 'proportional' | 'custom'; customAllocations?: { invoiceId: string; amountCents: number }[]; method: string; appliedAt?: string; notes?: string; reference?: string; expectedRemainingCents: Record<string, number> }) => {
-      const response = await apiFetch('/api/invoices/customer-payment', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, credentials: 'include', body: JSON.stringify(payload) });
+    mutationFn: async (payload: { idempotencyKey: string; expectedCustomerId: string; invoiceIds: string[]; amountCents: number; allocationMode: 'oldest_first' | 'proportional' | 'custom'; customAllocations?: { invoiceId: string; amountCents: number }[]; method: string; appliedAt?: string; notes?: string; reference?: string; expectedRemainingCents: Record<string, number> }) => {
+      const response = await apiFetch('/api/invoices/customer-payment', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': payload.idempotencyKey }, credentials: 'include', body: JSON.stringify(payload) });
       const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error((data as any).error || 'Failed to record customer payment'); return data;
     },
     onSuccess: (_, payload) => {
