@@ -54,6 +54,8 @@ import {
 import { eq, and, or, ilike, gte, lte, asc, desc, sql, isNull, inArray, ne } from "drizzle-orm";
 import { deriveLineItemProofSummary, deriveOrderProofSummary, type LineItemProofSummary, type OrderProofSummary } from "@shared/orderProofStatus";
 import { deriveOrderInvoiceState, type OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
+import { deriveOrderPaymentSummary, type OrderPaymentSummary } from "@shared/orderPaymentSummary";
+import { loadOrderPaymentSummaries } from "../services/orderPaymentSummary";
 import { isCanceledOrder } from "@shared/operationalState";
 import { resolveInvoiceFinancialEligibility } from "../services/orderBillingService";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
@@ -113,6 +115,7 @@ type OrderProductionSummary = {
 };
 
 type OrderWithProofSummary = Order & {
+    paymentSummary?: OrderPaymentSummary;
     proofStatus?: OrderProofSummary["proofStatus"];
     proofStatusLabel?: string;
     proofActionRequired?: boolean;
@@ -1064,6 +1067,10 @@ export class OrdersRepository {
                 amountPaid: invoices.amountPaid,
                 balanceDue: invoices.balanceDue,
                 total: invoices.total,
+                totalCents: invoices.totalCents,
+                importSource: invoices.importSource,
+                isHistorical: invoices.isHistorical,
+                qbImportBalanceDue: invoices.qbImportBalanceDue,
             }).from(invoices).where(and(
                 eq(invoices.organizationId, organizationId),
                 inArray(invoices.orderId, orderIds),
@@ -1133,6 +1140,7 @@ export class OrdersRepository {
             listNotesMap.set(note.orderId, note.listLabel);
         }
 
+        const paymentSummaries = await loadOrderPaymentSummaries(this.dbInstance, organizationId, invoiceRows);
         const items = rows.map(({ order, customer, contact, lineItemsCount }) => {
             const linkedInvoices = invoicesByOrderId.get(order.id) ?? [];
             const financialEligibility = resolveInvoiceFinancialEligibility(invoiceEligibilityLinesByOrderId.get(order.id) ?? []);
@@ -1143,6 +1151,7 @@ export class OrdersRepository {
                     : { canCreate: financialEligibility.canCreateInvoice, reason: financialEligibility.message ?? null };
             return {
             ...order,
+            paymentSummary: paymentSummaries.get(order.id) ?? deriveOrderPaymentSummary([]),
             customer,
             contact,
             lineItemsCount,
@@ -1262,6 +1271,10 @@ export class OrdersRepository {
                     amountPaid: invoices.amountPaid,
                     balanceDue: invoices.balanceDue,
                     total: invoices.total,
+                    totalCents: invoices.totalCents,
+                    importSource: invoices.importSource,
+                    isHistorical: invoices.isHistorical,
+                    qbImportBalanceDue: invoices.qbImportBalanceDue,
                 })
                 .from(invoices)
                 .where(and(eq(invoices.organizationId, organizationId), inArray(invoices.orderId, orderIds)))
@@ -1301,6 +1314,7 @@ export class OrdersRepository {
             rows.map((order: Order) => order.id),
         );
 
+        const paymentSummaries = await loadOrderPaymentSummaries(this.dbInstance, organizationId, invoiceRows);
         // Enrich orders with customer and contact data
         const enrichedOrders = await Promise.all(rows.map(async (order: Order) => {
             const [customer] = order.customerId
@@ -1320,6 +1334,7 @@ export class OrdersRepository {
                     : { canCreate: financialEligibility.canCreateInvoice, reason: financialEligibility.message ?? null };
             return {
                 ...order,
+                paymentSummary: paymentSummaries.get(order.id) ?? deriveOrderPaymentSummary([]),
                 customer,
                 contact,
                 productionSummary: productionSummaries.get(order.id) ?? {
@@ -1504,8 +1519,13 @@ export class OrdersRepository {
         }
         
         const [createdByUser] = await this.dbInstance.select().from(users).where(eq(users.id, order.createdByUserId));
+        const invoiceRows = await this.dbInstance.select().from(invoices).where(and(
+            eq(invoices.organizationId, organizationId), eq(invoices.orderId, id),
+        ));
+        const paymentSummaries = await loadOrderPaymentSummaries(this.dbInstance, organizationId, invoiceRows);
         return {
             ...order,
+            paymentSummary: paymentSummaries.get(id) ?? deriveOrderPaymentSummary([]),
             lineItems: enrichedLineItemsWithProof,
             customer,
             contact,

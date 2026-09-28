@@ -139,6 +139,7 @@ export function useRecordEpsHostedResult() {
     },
     onSuccess: (data) => {
       const invoiceId = data?.payment?.invoiceId || data?.invoice?.id;
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       if (invoiceId) {
         queryClient.invalidateQueries({ queryKey: ["invoices", invoiceId] });

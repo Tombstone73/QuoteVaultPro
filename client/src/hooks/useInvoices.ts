@@ -328,6 +328,7 @@ export function useRecordManualInvoicePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
@@ -344,7 +345,17 @@ export function useRecordCustomerInvoicePayment() {
       const response = await apiFetch('/api/invoices/customer-payment', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, credentials: 'include', body: JSON.stringify(payload) });
       const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error((data as any).error || 'Failed to record customer payment'); return data;
     },
-    onSuccess: (_, payload) => { queryClient.invalidateQueries({ queryKey: ['invoices'] }); payload.invoiceIds.forEach((id) => { queryClient.invalidateQueries({ queryKey: ['invoices', id] }); queryClient.invalidateQueries({ queryKey: ['invoicePayments', id] }); }); queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] }); queryClient.invalidateQueries({ queryKey: ['accounts-receivable-report'] }); queryClient.invalidateQueries({ queryKey: ['customerFinancialExposure'] }); },
+    onSuccess: (_, payload) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      payload.invoiceIds.forEach((id) => {
+        queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+        queryClient.invalidateQueries({ queryKey: ['invoicePayments', id] });
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts-receivable-report'] });
+      queryClient.invalidateQueries({ queryKey: ['customerFinancialExposure'] });
+    },
   });
 }
 
@@ -363,6 +374,7 @@ export function useVoidInvoicePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
@@ -389,6 +401,7 @@ export function useInitiateStripeInvoiceRefund() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
@@ -423,6 +436,7 @@ export function useRecoverStripeInvoiceRefund() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
@@ -450,6 +464,7 @@ export function useCreateInvoice() {
       return res.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
     },
   });
@@ -473,6 +488,7 @@ export function useCreateOrderInvoice() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', { orderId: variables.orderId }] });
     },
@@ -510,6 +526,7 @@ export function useUpdateInvoice() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
     },
@@ -607,6 +624,7 @@ export function useApplyInvoicePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
@@ -630,6 +648,7 @@ export function useDeleteInvoice() {
       return res.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
     },
   });
@@ -965,6 +984,7 @@ export function useRefreshInvoiceStatus() {
       return res.json();
     },
     onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', id] });
     },

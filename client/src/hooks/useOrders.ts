@@ -358,6 +358,7 @@ export type PrepressQueueItem = {
 };
 
 export type OrderWithRelations = Order & {
+  paymentSummary?: import('@shared/orderPaymentSummary').OrderPaymentSummary;
   customer: any;
   contact?: any;
   quote?: any;
@@ -425,7 +426,9 @@ export type OrderRow = Order & {
   statusPillColor?: string | null;
   statusPillAssignedAt?: string | Date | null;
   statusPillAssignedByUserId?: string | null;
+  /** Legacy persisted field; display paymentSummary instead. */
   paymentStatus?: string;
+  paymentSummary?: import('@shared/orderPaymentSummary').OrderPaymentSummary;
   invoiceState?: OrderInvoiceStateSummary;
   invoiceSummary?: {
     invoiceCount: number;
@@ -521,6 +524,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
       return data;
     },
     staleTime: 60_000,
+    refetchOnMount: 'always', // Invoice settlement can change outside this screen.
     placeholderData: (prev) => prev,
   });
 }
@@ -535,6 +539,7 @@ export function useOrder(id: string | undefined) {
       return response.json();
     },
     enabled: !!id,
+    staleTime: 0, // Re-entering an Order must re-read its canonical Invoice balances.
   });
 }
 

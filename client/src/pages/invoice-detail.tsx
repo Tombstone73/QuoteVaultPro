@@ -32,7 +32,7 @@ import { buildDetailReturnPath, useListDetailNavigation } from "@/lib/listDetail
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useApproveInvoicesForAccounting, useInvoice, useQueueInvoiceQbSync, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInitiateStripeInvoiceRefund, useStripeInvoiceRefundRequests, useRecoverStripeInvoiceRefund, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
-import { orderDetailQueryKey, useOrder } from "@/hooks/useOrders";
+import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { useCreateEpsHostedSession, usePaymentSettings, useRecordEpsHostedResult } from "@/hooks/usePaymentSettings";
 import { Page } from "@/components/titan/Page";
@@ -1354,9 +1354,9 @@ export default function InvoiceDetailPage() {
           onSettled={async ({ serverConfirmed, paymentIntentId }) => {
             const refreshAuthoritativePaymentState = async () => {
               await Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['orders'] }),
                 queryClient.invalidateQueries({ queryKey: ['invoices'] }),
                 queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] }),
-                ...(orderId ? [queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) })] : []),
               ]);
 
               const [, paymentResult] = await Promise.all([

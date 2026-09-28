@@ -3777,7 +3777,7 @@ export const orders = pgTable("orders", {
   statusPillAssignedByUserId: varchar("status_pill_assigned_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   statusPillAssignedAt: timestamp("status_pill_assigned_at", { withTimezone: true }),
   statusPillReason: text("status_pill_reason"),
-  paymentStatus: varchar("payment_status", { length: 50 }).default("unpaid"), // unpaid, partial, paid
+  paymentStatus: varchar("payment_status", { length: 50 }).default("unpaid"), // Legacy storage only; Order displays use derived paymentSummary.
   routingTarget: varchar("routing_target", { length: 50 }), // 'fulfillment' or 'invoicing' (set on production_complete)
   // Billing readiness (MVP invoicing)
   billingStatus: varchar("billing_status", { length: 20 }).notNull().default('not_ready'), // not_ready | ready | billed
@@ -6350,6 +6350,7 @@ export type JobWithRelations = Job & {
 
 // Order with relations type
 export type OrderWithRelations = Order & {
+  paymentSummary?: import('./orderPaymentSummary').OrderPaymentSummary;
   customer: Customer;
   contact?: CustomerContact | null;
   quote?: Quote | null;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { OrderPaymentBadge } from '@/components/orders/OrderPaymentBadge';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -2581,20 +2582,7 @@ export default function OrderDetail() {
                           <div>
                             <label className="text-sm font-medium text-muted-foreground">Payment</label>
                             <div className="mt-2">
-                              <Badge
-                                variant="outline"
-                                className={
-                                  order.paymentStatus === "paid"
-                                    ? "bg-green-100 text-green-800 border-green-300"
-                                    : order.paymentStatus === "partial"
-                                      ? "bg-yellow-100 text-yellow-800 border-yellow-300"
-                                      : "bg-gray-100 text-gray-800 border-gray-300"
-                                }
-                              >
-                                {order.paymentStatus === "paid" && "Paid"}
-                                {order.paymentStatus === "partial" && "Partial"}
-                                {order.paymentStatus === "unpaid" && "Unpaid"}
-                              </Badge>
+                              <OrderPaymentBadge summary={order.paymentSummary} />
                             </div>
                             <p className="text-xs text-muted-foreground mt-1">Payment status</p>
                           </div>

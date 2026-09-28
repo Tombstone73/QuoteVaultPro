@@ -3,6 +3,7 @@ import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "util";
+import { deriveOrderPaymentSummary } from "@shared/orderPaymentSummary";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).TextEncoder = TextEncoder;
@@ -283,6 +284,26 @@ function renderOrderDetail(path = "/orders/order-1/edit") {
   });
   return { container, root: root! };
 }
+
+describe("Order canonical payment display", () => {
+  const paidInvoice = (totalCents: number, paidCents: number) => ({
+    totalCents, status: 'billed', payments: [{ id: 'payment', status: 'succeeded', amountCents: paidCents }],
+  });
+  test.each([
+    ['Unpaid', [paidInvoice(13000, 0)]],
+    ['Partially Paid', [paidInvoice(13000, 5000)]],
+    ['Paid', [paidInvoice(13000, 13000)]],
+    ['Partially Paid', [paidInvoice(50000, 50000), paidInvoice(10000, 0)]],
+    ['Not invoiced', []],
+  ])('renders %s from canonical Invoice evidence despite legacy Unpaid', (label, invoices) => {
+    mockOrder = baseOrder({ state: 'closed', paymentStatus: 'unpaid', paymentSummary: deriveOrderPaymentSummary(invoices as any) });
+    const { container, root } = renderOrderDetail();
+    const paymentLabel = Array.from(container.querySelectorAll('label')).find((node) => node.textContent === 'Payment');
+    expect(paymentLabel?.parentElement?.textContent).toContain(label);
+    if (label !== 'Unpaid') expect(paymentLabel?.parentElement?.textContent).not.toContain('Unpaid');
+    act(() => root.unmount());
+  });
+});
 
 describe("Order ownership controls", () => {
   test("existing Order clears Customer scope, searches Janet, and saves Contact-only across reload", async () => {
