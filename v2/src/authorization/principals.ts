@@ -15,6 +15,10 @@ export type StaffAuthority = Readonly<{
   /** Freshly derived from the exact organization membership and existing
    * platform-developer flag. It is limited to Team & Access mutations. */
   teamAccessManagement?: boolean;
+  /** Structural tenant-management rank, freshly derived from the active
+   * membership and platform-developer identity. Permission-set contents never
+   * manufacture this identity. */
+  teamRoleDelegation?: "owner" | "administrator" | "manager" | "platform_developer" | "none";
   replacementMilestone?: "M1.5 — Permission-Set Foundation";
 }>;
 

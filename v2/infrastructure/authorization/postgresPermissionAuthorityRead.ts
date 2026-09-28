@@ -1,6 +1,6 @@
 import type { PermissionAuthorityReader, PermissionAuthoritySnapshot, PermissionSetSummary } from "../../src/authorization/permissionSets.js";
 import type { Capability } from "../../src/authorization/capabilities.js";
-import { teamAccessManagementAuthority } from "../../src/authorization/teamAccessAuthority.js";
+import { teamAccessManagementAuthority, teamRoleDelegationAuthority } from "../../src/authorization/teamAccessAuthority.js";
 import type { TransactionalClient } from "../persistence/types.js";
 
 type OrganizationRow = { authority_revision: number; status: "active" | "suspended" | "trial" | "canceled"; delete_state: string; is_archived: boolean };
@@ -32,7 +32,7 @@ export class PostgresPermissionAuthorityReader implements PermissionAuthorityRea
     for (const row of sets.rows) map.set(row.id, { id: row.id, name: row.name, active: row.active, revision: row.revision });
     return { organizationId, organizationActive: orgActive(organization), authorityRevision: organization.authority_revision,
       staff: { userId, membershipId: `user_organizations:${organizationId}:${userId}`, membershipActive: membership.rows[0].is_active,
-        permissionSets: [...map.values()], capabilities: unique(sets.rows.filter((row) => row.active && row.capability_id !== null).map((row) => row.capability_id!)), teamAccessManagement: teamAccessManagementAuthority({ organizationRole: membership.rows[0].role, isPlatformDeveloper: membership.rows[0].is_platform_developer }) } };
+        permissionSets: [...map.values()], capabilities: unique(sets.rows.filter((row) => row.active && row.capability_id !== null).map((row) => row.capability_id!)), teamAccessManagement: teamAccessManagementAuthority({ organizationRole: membership.rows[0].role, isPlatformDeveloper: membership.rows[0].is_platform_developer }), teamRoleDelegation: teamRoleDelegationAuthority({ organizationRole: membership.rows[0].role, isPlatformDeveloper: membership.rows[0].is_platform_developer }) } };
   }
   async resolvePortal(userId: string, organizationId: string): Promise<PermissionAuthoritySnapshot | null> {
     const organization = await this.organization(organizationId);

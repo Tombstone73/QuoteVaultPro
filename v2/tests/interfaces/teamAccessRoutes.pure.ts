@@ -3,9 +3,10 @@ import express from "express";
 import request from "supertest";
 import { createTeamAccessRouter } from "../../src/interfaces/http/teamAccessRoutes.js";
 
-const actor={kind:"staff" as const,organizationId:"org-a",userId:"staff-a",authority:{membershipId:"membership-a",source:"permission_set" as const,authorityRevision:"7",teamAccessManagement:true,capabilities:["permissions.view","permissions.manageSets","permissions.assignStaff","permissions.assignPortal"] as const}};
+const actor={kind:"staff" as const,organizationId:"org-a",userId:"staff-a",authority:{membershipId:"membership-a",source:"permission_set" as const,authorityRevision:"7",teamAccessManagement:true,teamRoleDelegation:"owner" as const,capabilities:["permissions.view","permissions.manageSets","permissions.assignStaff","permissions.assignPortal"] as const}};
 const elevatedWithoutPayment={...actor,authority:{...actor.authority,capabilities:["order.view"] as const}};
-const snapshot={authorityRevision:"7",staff:[{memberId:"staff-a",status:"active"}],invitations:[],permissionSets:[],portalAccess:[],portalCandidates:[],audit:[],readiness:{status:"ready" as const,reasons:[],activeStaffCount:1,viableAdministratorCount:1,pendingInvitationCount:0},capabilityGroups:[]};
+const manager={...actor,userId:"manager-a",authority:{...actor.authority,teamAccessManagement:false,teamRoleDelegation:"manager" as const,capabilities:["order.view"] as const}};
+const snapshot={authorityRevision:"7",staff:[{memberId:"staff-a",status:"active"}],invitations:[],permissionSets:[],portalAccess:[],portalCandidates:[],audit:[],readiness:{status:"ready" as const,reasons:[],activeStaffCount:1,viableAdministratorCount:1,pendingInvitationCount:0},capabilityGroups:[],roleBuilder:{canBuildRoles:true,canAssignStaffRoles:true,selectableCapabilityIds:["order.view"]}};
 const app=(principal=actor,qaSetupAllowed?: (organizationId:string)=>boolean)=>{const calls:string[]=[];const bootstrapArguments:any[]=[];const team:any={read:async()=>snapshot,createInvitation:async()=>{calls.push("invite");return{invitationId:"invite-a",status:"pending" as const};},bootstrapPortalAccess:async(...arguments_:any[])=>{calls.push("portal-bootstrap");bootstrapArguments.push(arguments_);return arguments_[4]?.captureM77fQaSetupUrl?{portalAccessId:"portal-a",status:"pending",deliveryState:"suppressed",portalSetupUrl:"https://dev.example.test/portal/setup?token=opaque"}:{portalAccessId:"portal-a",status:"pending",deliveryState:"succeeded"};},setMembershipActive:async()=>{calls.push("status");},replaceStaffAssignments:async()=>{calls.push("staff-sets");},replacePortalAssignments:async()=>{calls.push("portal-sets");},createCustomSet:async()=>{calls.push("create-set");return{permissionSetId:"set-a"};},cloneStaffSet:async()=>{calls.push("clone-set");return{permissionSetId:"set-clone"};},updateCustomSet:async()=>{calls.push("update-set");}};const value=express();value.use(express.json());value.use("/v2/organizations/:organizationId/settings/team-access",createTeamAccessRouter({teamAccess:team,principals:{principal:async()=>principal} as any,qaSetupAllowed}));return{value,calls,bootstrapArguments};};
 
 {
@@ -20,26 +21,32 @@ const app=(principal=actor,qaSetupAllowed?: (organizationId:string)=>boolean)=>{
 {
   const {value,calls}=app();await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:"set-create",expectedAuthorityRevision:"7",name:"Dispatch",capabilities:["permissions.view"]}).expect(201);assert.deepEqual(calls,["create-set"]);
 }
-for (const elevated of [actor, elevatedWithoutPayment, {...elevatedWithoutPayment,userId:"platform-developer"}]) {
+for (const elevated of [actor, elevatedWithoutPayment, {...elevatedWithoutPayment,userId:"platform-developer",authority:{...elevatedWithoutPayment.authority,teamRoleDelegation:"platform_developer" as const}}]) {
   const {value,calls}=app(elevated);await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:`payments-${elevated.userId}`,expectedAuthorityRevision:"7",name:"Payments",capabilities:["payment.view","payment.record"]}).expect(201);assert.deepEqual(calls,["create-set"],"canonical elevated Team & Access authority reaches role creation without a self-capability ceiling");
 }
 {
   const {value,calls}=app();await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets/operations/clone").send({businessRequestId:"set-clone",expectedAuthorityRevision:"7",name:"Operations + Payments"}).expect(201);assert.deepEqual(calls,["clone-set"]);
 }
 {
-  const {value,calls}=app(elevatedWithoutPayment);await request(value).put("/v2/organizations/org-a/settings/team-access/staff/staff-b/permission-sets").send({businessRequestId:"staff-sets",expectedAuthorityRevision:"7",permissionSetIds:["operations","payments"]}).expect(200);assert.deepEqual(calls,["staff-sets"],"canonical elevated Team & Access authority may assign active Staff roles without a self-capability ceiling");
+  const {value,calls}=app(elevatedWithoutPayment);await request(value).put("/v2/organizations/org-a/settings/team-access/staff/staff-b/permission-sets").send({businessRequestId:"staff-sets",expectedAuthorityRevision:"7",permissionSetIds:["operations","payments"]}).expect(200);assert.deepEqual(calls,["staff-sets"],"Owner may assign valid Staff roles without a self-capability ceiling");
 }
 {
-  const {value,calls}=app();await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:"protected",expectedAuthorityRevision:"7",name:"Denied",capabilities:["permissions.manageSets"]}).expect(400);assert.deepEqual(calls,[]);
+  const {value,calls}=app();await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:"permission-role",expectedAuthorityRevision:"7",name:"Permission administration",capabilities:["permissions.manageSets"]}).expect(201);assert.deepEqual(calls,["create-set"]);
 }
 {
   const {value,calls}=app();await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:"portal-role",expectedAuthorityRevision:"7",name:"Denied",principalKind:"portal",capabilities:["payment.view"]}).expect(400);assert.deepEqual(calls,[]);
 }
 {
-  const weak={...actor,authority:{...actor.authority,teamAccessManagement:false,capabilities:["permissions.view","permissions.manageSets","permissions.assignStaff","permissions.assignPortal"] as const}};const {value,calls}=app(weak);await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets/operations/clone").send({businessRequestId:"set-clone-denied",expectedAuthorityRevision:"7",name:"Denied"}).expect(403);assert.deepEqual(calls,[]);
+  const {value,calls}=app(manager);await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:"manager-role",expectedAuthorityRevision:"7",name:"Dispatch",capabilities:["order.view"]}).expect(201);assert.deepEqual(calls,["create-set"],"a structural Manager can reach the separate role-definition workflow");
 }
 {
-  const weak={...actor,authority:{...actor.authority,teamAccessManagement:false,capabilities:["permissions.view","permissions.manageSets","permissions.assignStaff","permissions.assignPortal"] as const}};const {value,calls}=app(weak);await request(value).patch("/v2/organizations/org-a/settings/team-access/staff/staff-b/status").send({businessRequestId:"disable",expectedAuthorityRevision:"7",active:false}).expect(403);assert.deepEqual(calls,[]);
+  const {value,calls}=app(manager);await request(value).put("/v2/organizations/org-a/settings/team-access/staff/staff-b/permission-sets").send({businessRequestId:"manager-assignment",expectedAuthorityRevision:"7",permissionSetIds:["operations"]}).expect(200);assert.deepEqual(calls,["staff-sets"],"a structural Manager can reach the separate Staff-role assignment workflow");
+}
+{
+  const weak={...actor,authority:{...actor.authority,teamAccessManagement:false,teamRoleDelegation:"none" as const,capabilities:["permissions.view","permissions.manageSets","permissions.assignStaff","permissions.assignPortal"] as const}};const {value,calls}=app(weak);await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets/operations/clone").send({businessRequestId:"set-clone-denied",expectedAuthorityRevision:"7",name:"Denied"}).expect(403);assert.deepEqual(calls,[]);
+}
+{
+  const weak={...actor,authority:{...actor.authority,teamAccessManagement:false,teamRoleDelegation:"none" as const,capabilities:["permissions.view","permissions.manageSets","permissions.assignStaff","permissions.assignPortal"] as const}};const {value,calls}=app(weak);await request(value).patch("/v2/organizations/org-a/settings/team-access/staff/staff-b/status").send({businessRequestId:"disable",expectedAuthorityRevision:"7",active:false}).expect(403);assert.deepEqual(calls,[]);
 }
 {
   const portal={kind:"portal" as const,organizationId:"org-a",customerId:"customer-a",subjectId:"portal-a",capabilities:["permissions.view"] as const};const {value,calls}=app(portal);await request(value).get("/v2/organizations/org-a/settings/team-access").expect(403);await request(value).post("/v2/organizations/org-a/settings/team-access/permission-sets").send({businessRequestId:"portal-denied",expectedAuthorityRevision:"7",name:"Denied",capabilities:["order.view"]}).expect(403);assert.deepEqual(calls,[]);

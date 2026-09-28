@@ -10,16 +10,6 @@ const sensitiveCapabilities = new Set<Capability>([
   "route.manageTemplates", "workflow.override",
 ]);
 
-/** Team & Access mutation is owned by canonical Owner, Administrator, and
- * Platform Developer authority. These legacy capability IDs neither confer
- * that authority nor belong in tenant-created Staff roles. */
-const tenantStaffNonDelegableCapabilities = new Set<Capability>([
-  "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal",
-]);
-
-export const isTenantStaffDelegableCapability = (capability: Capability): boolean =>
-  !tenantStaffNonDelegableCapabilities.has(capability);
-
 const capabilityLabels: Readonly<Record<Capability, string>> = {
   "quote.view": "View quotes", "quote.create": "Create quotes", "quote.edit": "Edit quotes", "quote.send": "Send quotes", "quote.convert": "Convert quotes", "quote.overridePrice": "Override quote price",
   "order.view": "View orders", "order.create": "Create orders", "order.edit": "Edit orders", "order.cancel": "Cancel orders", "order.overridePrice": "Override order price",
@@ -41,8 +31,8 @@ const capabilityLabels: Readonly<Record<Capability, string>> = {
 const capabilityDescriptions: Partial<Record<Capability, string>> = {
   "payment.record": "Create customer payment records; this does not grant refunds or provider configuration.",
   "refund.issue": "Issue customer refunds through the configured financial workflow.",
-  "permissions.manageSets": "Create, clone, edit, and deactivate organization roles within your authority ceiling.",
-  "permissions.assignStaff": "Assign one or more active Staff roles to organization members.",
+  "permissions.manageSets": "Legacy compatibility permission. Current Team & Access role definition authority is structural and delegation-ceiling controlled.",
+  "permissions.assignStaff": "Legacy compatibility permission. Current Staff-role assignment authority is structural and delegation-ceiling controlled.",
   "organization.configure": "Change broad business and integration settings for this organization.",
   "pricing.publish": "Publish pricing changes that affect future commercial work.",
   "workflow.override": "Bypass a normal workflow transition when operationally justified.",
@@ -70,7 +60,7 @@ export const teamCapabilityGroups: readonly TeamCapabilityGroup[] = Object.freez
   group("inbound", "Inbound", ["inbound.view", "inbound.review"]),
   group("communications", "Communications", ["communications.configure"]),
   group("organization", "Organization", ["organization.configure", "numbering.configure"]),
-  group("permissions", "Permissions & Security", ["permissions.view"]),
+  group("permissions", "Permissions & Security", ["permissions.view", "permissions.manageSets", "permissions.assignStaff", "permissions.assignPortal"]),
   group("assistant", "Assistant", ["assistant.use"]),
 ]);
 
@@ -80,15 +70,9 @@ export const parseCapabilities = (value: unknown): readonly Capability[] => {
   return [...new Set(value)].sort() as Capability[];
 };
 
-/** Validates the static, principal-kind-safe part of a custom Staff role.
- * Database-active status is checked by the transactional Team & Access
- * adapter immediately before a role is persisted. */
-export const parseTenantStaffCapabilities = (value: unknown): readonly Capability[] => {
-  const capabilities = parseCapabilities(value);
-  const protectedCapabilities = capabilities.filter((capability) => !isTenantStaffDelegableCapability(capability));
-  if (protectedCapabilities.length) throw new V2ApplicationError("VALIDATION_ERROR", `These capabilities are system-protected and cannot be granted through a custom Staff role: ${protectedCapabilities.join(", ")}.`);
-  return capabilities;
-};
+/** Validates the syntactic Staff-role input. Active-capability and acting-user
+ * delegation checks are transactional concerns enforced by Team & Access. */
+export const parseTenantStaffCapabilities = parseCapabilities;
 
 export const requiredString = (value: unknown, field: string): string => {
   if (typeof value !== "string" || !value.trim()) throw new V2ApplicationError("VALIDATION_ERROR", `${field} is required.`);
