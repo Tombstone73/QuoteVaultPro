@@ -1,3 +1,4 @@
+import { withBillingOwnershipSyncGuard, assertBillingOwnershipReconciled } from './services/billingOwnershipReview.service';
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
@@ -1320,12 +1321,16 @@ async function ensureQBCustomerIdForLocalCustomer(organizationId: string, custom
  * Push a single local invoice to QuickBooks immediately (fail-fast).
  * Callers should catch errors and persist qb_last_error/qb_sync_status without blocking local transitions.
  */
-export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<{ qbInvoiceId: string }>{
+export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<{ qbInvoiceId: string; invoiceVersion: number }>{
   void invoiceId;
   throw new Error('QuickBooks invoice sync requires organizationId. Use syncSingleInvoiceToQuickBooksForOrganization.');
 }
 
-export async function syncSingleInvoiceToQuickBooksForOrganization(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string }>{
+export async function syncSingleInvoiceToQuickBooksForOrganization(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string; invoiceVersion: number }>{
+  return withBillingOwnershipSyncGuard(organizationId, invoiceId, () => syncInvoiceWithReconciledOwnership(organizationId, invoiceId));
+}
+
+async function syncInvoiceWithReconciledOwnership(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string; invoiceVersion: number }>{
   const [invoice] = await db
     .select()
     .from(invoices)
@@ -1410,7 +1415,7 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     const qb = response?.Invoice;
     if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
     assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
-    return { qbInvoiceId: qb.Id };
+    return { qbInvoiceId: qb.Id, invoiceVersion: Number(invoice.invoiceVersion || 1) };
   }
 
   // Idempotency fallback: look up by DocNumber + CustomerRef if local link missing.
@@ -1432,14 +1437,14 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     const qb = response?.Invoice;
     if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
     assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
-    return { qbInvoiceId: qb.Id };
+    return { qbInvoiceId: qb.Id, invoiceVersion: Number(invoice.invoiceVersion || 1) };
   }
 
   const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
   const qb = response?.Invoice;
   if (!qb?.Id) throw new Error('QuickBooks invoice create returned no Id');
   assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
-  return { qbInvoiceId: qb.Id };
+  return { qbInvoiceId: qb.Id, invoiceVersion: Number(invoice.invoiceVersion || 1) };
 }
 
 export async function syncSinglePaymentToQuickBooksForOrganization(organizationId: string, paymentId: string): Promise<{ qbPaymentId: string }>{
@@ -1459,6 +1464,7 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, (payment as any).invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found for payment');
+  await assertBillingOwnershipReconciled(organizationId, invoice.id);
   if (invoice.contactId && !invoice.customerId) {
     const error: any = new Error('Contact-owned Invoice payments require a QuickBooks customer mapping review.');
     error.code = 'CONTACT_INVOICE_QB_MAPPING_REQUIRED';
@@ -2455,7 +2461,7 @@ export async function processPushInvoices(jobId: string, organizationId: string)
           continue;
         }
 
-        const { qbInvoiceId } = await syncSingleInvoiceToQuickBooksForOrganization(orgId, invoice.id);
+        const { qbInvoiceId, invoiceVersion } = await syncSingleInvoiceToQuickBooksForOrganization(orgId, invoice.id);
 
         await db
           .update(invoices)
@@ -2467,7 +2473,7 @@ export async function processPushInvoices(jobId: string, organizationId: string)
             syncedAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(invoices.id, invoice.id));
+          .where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, orgId), eq(invoices.invoiceVersion, invoiceVersion)));
 
         syncedCount++;
       } catch (error: any) {

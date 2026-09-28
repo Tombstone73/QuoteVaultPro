@@ -1,3 +1,5 @@
+import { getBillingOwnershipReview } from './billingOwnershipReview.service';
+import { BILLING_OWNERSHIP_REVIEW_MESSAGE } from '@shared/billingOwnershipReview';
 import { and, eq, sql } from 'drizzle-orm';
 import { auditLogs, customers, invoices, organizations } from '@shared/schema';
 import { db } from '../db';
@@ -32,6 +34,9 @@ export async function approveInvoicesForAccounting(input: {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice-accounting-approval:${input.organizationId}:${invoiceId}`}))`);
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
       if (!invoice) { results.push({ id: invoiceId, outcome: 'failed', reason: 'Invoice not found.' }); continue; }
+      if (await getBillingOwnershipReview(input.organizationId, invoice.id, tx)) {
+        results.push({ id: invoiceId, outcome: 'skipped', reason: BILLING_OWNERSHIP_REVIEW_MESSAGE, code: 'BILLING_OWNERSHIP_REVIEW_REQUIRED' }); continue;
+      }
       if (String(invoice.importSource || '').toLowerCase() === 'quickbooks' || invoice.isHistorical) {
         results.push({ id: invoiceId, outcome: 'skipped', reason: 'Imported QuickBooks invoices do not require accounting approval.' }); continue;
       }

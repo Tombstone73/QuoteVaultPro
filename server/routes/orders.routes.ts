@@ -1,3 +1,4 @@
+import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
 import { db } from "../db";
 import { parseOrderStatusPillIdsQuery } from "./helpers/orderStatusPillFilter";
@@ -1223,6 +1224,7 @@ export async function registerOrderRoutes(
     }
 ) {
     const { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner } = deps;
+    registerBillingOwnershipRoutes(app, { isAuthenticated, tenantContext });
 
     // This route family always runs after tenantContext. Keep saved-order line
     // mutations bound to the authoritative membership role rather than the
@@ -3162,7 +3164,7 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ message: fromZodError(error).message });
             }
             if ((error as any)?.code?.startsWith("ORDER_")) {
-                return res.status((error as any).statusCode ?? 400).json({ message: (error as Error).message, code: (error as any).code });
+                return res.status((error as any).statusCode ?? 400).json({ message: (error as Error).message, code: (error as any).code, details: (error as any).details });
             }
             const submittedFields = Object.keys(req.body ?? {})
                 .filter((field) => [

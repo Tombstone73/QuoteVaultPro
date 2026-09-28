@@ -690,7 +690,7 @@ export function useUpdateOrder(id: string) {
       });
       if (!response.ok) {
         const error = await response.json().catch(() => null);
-        throw new Error(error?.message || error?.error || "Failed to update order");
+        throw new OrderLineItemApiError(error?.message || error?.error || "Failed to update order", error?.code, error?.details);
       }
       return response.json();
     },

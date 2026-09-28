@@ -2823,8 +2823,8 @@ export async function registerMvpInvoicingRoutes(
         const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
         await db
           .update(invoices)
-          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: Number(inv.invoiceVersion || 1), updatedAt: new Date() } as any)
-          .where(eq(invoices.id, inv.id));
+          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: qb.invoiceVersion, updatedAt: new Date() } as any)
+          .where(and(eq(invoices.id, inv.id), eq(invoices.organizationId, organizationId), eq(invoices.invoiceVersion, qb.invoiceVersion)));
 
         try {
           await db.insert(auditLogs).values({
@@ -2939,8 +2939,8 @@ export async function registerMvpInvoicingRoutes(
         const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
         await db
           .update(invoices)
-          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: Number(inv.invoiceVersion || 1), updatedAt: new Date() } as any)
-          .where(eq(invoices.id, inv.id));
+          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: qb.invoiceVersion, updatedAt: new Date() } as any)
+          .where(and(eq(invoices.id, inv.id), eq(invoices.organizationId, organizationId), eq(invoices.invoiceVersion, qb.invoiceVersion)));
 
         try {
           await db.insert(auditLogs).values({

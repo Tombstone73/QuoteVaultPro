@@ -384,10 +384,10 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
           syncStatus: "synced",
           syncError: null,
           syncedAt: new Date(),
-          lastQbSyncedVersion: sql`${invoices.invoiceVersion}`,
+          lastQbSyncedVersion: qb.invoiceVersion,
           updatedAt: new Date(),
         } as any)
-        .where(and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)));
+        .where(and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId), eq(invoices.invoiceVersion, qb.invoiceVersion)));
 
       try {
         await db.insert(auditLogs).values({
@@ -807,7 +807,7 @@ export async function runSelectedQuickBooksSyncForOrg(params: {
       }
       try {
         const qb = await syncSingleInvoiceToQuickBooksForOrganization(params.organizationId, item.id);
-        await db.update(invoices).set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: 'synced', qbLastError: null, syncStatus: 'synced', syncError: null, syncedAt: new Date(), lastQbSyncedVersion: sql`${invoices.invoiceVersion}`, updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId)));
+        await db.update(invoices).set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: 'synced', qbLastError: null, syncStatus: 'synced', syncError: null, syncedAt: new Date(), lastQbSyncedVersion: qb.invoiceVersion, updatedAt: new Date() } as any).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId), eq(invoices.invoiceVersion, qb.invoiceVersion)));
         result.synced++; result.results.push({ ...item, outcome: 'synced', reason: null }); await auditForce(item, 'synced', null, wasStabilityBlocked);
       } catch (error: any) {
         const reason = toOneLineHumanMessage(error?.message || error);

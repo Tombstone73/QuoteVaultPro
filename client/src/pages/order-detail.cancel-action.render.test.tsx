@@ -411,6 +411,42 @@ describe("Order ownership controls", () => {
     act(() => root.unmount());
   });
 
+  test('QB block offers a deliberate reason-required override and submits only billing identity', async () => {
+    mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
+    const context = { invoiceId: 'invoice', invoiceVersion: 3, orderUpdatedAt: '2026-09-28T17:00:00.000Z' };
+    mockSaveOwner.mockRejectedValue(Object.assign(new Error('This Invoice was synchronized to QuickBooks.'), { details: { billingOwnershipOverride: context } }));
+    const { container, root } = renderOrderDetail();
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    expect(container.textContent).not.toContain('Override Billing Ownership');
+    await act(async () => saveButton(container).click());
+    const override = Array.from(container.querySelectorAll('button')).find(node => node.textContent === 'Override Billing Ownership')!;
+    expect(override).toBeTruthy();
+    act(() => override.click());
+    expect(document.body.textContent).toContain('QuickBooks will NOT be updated');
+    const confirm = Array.from(document.querySelectorAll('button')).find(node => node.textContent === 'Confirm local ownership override')!;
+    expect(confirm.disabled).toBe(true);
+    const reason = document.getElementById('ownership-override-reason') as HTMLTextAreaElement;
+    act(() => Simulate.change(reason, { target: { value: 'Accounting will correct QuickBooks manually.' } } as any));
+    expect(confirm.disabled).toBe(false);
+    await act(async () => confirm.click());
+    const { apiFetch } = require('@/lib/queryClient');
+    expect(apiFetch).toHaveBeenCalledWith('/api/orders/order-1/billing-ownership-override', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ ...context, customerId: null, contactId: 'contact-a', reason: 'Accounting will correct QuickBooks manually.', confirmed: true }),
+    }));
+    expect(mockOwnerToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Billing ownership overridden' }));
+    act(() => root.unmount());
+  });
+
+  test('payment blocker does not offer an override', async () => {
+    mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
+    mockSaveOwner.mockRejectedValue(new Error('A payment has been applied.'));
+    const { container, root } = renderOrderDetail();
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    await act(async () => saveButton(container).click());
+    expect(container.textContent).not.toContain('Override Billing Ownership');
+    act(() => root.unmount());
+  });
+
   test('Clear retains the selected Contact in the draft without submitting', () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     const { container, root } = renderOrderDetail();

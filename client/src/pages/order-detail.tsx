@@ -1,3 +1,5 @@
+import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
+import type { BillingOwnershipOverrideContext } from '@shared/billingOwnershipReview';
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { OrderPaymentBadge } from '@/components/orders/OrderPaymentBadge';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -279,6 +281,12 @@ export default function OrderDetail() {
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
+  const billingOwnershipReview = useBillingOwnershipReview('orders', orderId);
+  const [ownershipOverrideContext, setOwnershipOverrideContext] = useState<BillingOwnershipOverrideContext | null>(null);
+  const [ownershipOverrideOpen, setOwnershipOverrideOpen] = useState(false);
+  const [ownershipOverrideReason, setOwnershipOverrideReason] = useState('');
+  const [ownershipOverridePending, setOwnershipOverridePending] = useState(false);
+  const [ownershipOverrideError, setOwnershipOverrideError] = useState('');
   const [ownerDisplayDraft, setOwnerDisplayDraft] = useState<Record<string, any>>({});
   const [editingDueDate, setEditingDueDate] = useState(false);
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
@@ -1147,6 +1155,7 @@ export default function OrderDetail() {
     display: Record<string, any> = {},
   ) => {
     if (!canEditSafeOrderMetadata) return;
+    setOwnershipOverrideContext(null);
     setPendingOrderPatch((previous) => ({ ...previous, ...changes }));
     setOwnerDisplayDraft((previous) => ({ ...previous, ...display }));
     setIsCustomerPickerOpen(false);
@@ -1463,6 +1472,7 @@ export default function OrderDetail() {
             await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
             return { ok: true };
           } catch (error: any) {
+            setOwnershipOverrideContext(error?.details?.billingOwnershipOverride ?? null);
             return { ok: false, error: error?.message || "Failed to save order" };
           }
         },
@@ -1550,7 +1560,30 @@ export default function OrderDetail() {
     }
   };
 
+  const handleOwnershipOverride = async () => {
+    if (!orderId || !order || !ownershipOverrideContext) return;
+    setOwnershipOverridePending(true); setOwnershipOverrideError('');
+    try {
+      const response = await apiFetch(`/api/orders/${orderId}/billing-ownership-override`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...ownershipOverrideContext, customerId: order.customerId ?? null, contactId: order.contactId ?? null,
+          reason: ownershipOverrideReason.trim(), confirmed: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || 'Unable to override billing ownership.');
+      setPendingOrderPatch(previous => { const { customerId, contactId, ...rest } = previous; return rest; });
+      setOwnershipOverrideContext(null); setOwnershipOverrideOpen(false); setOwnershipOverrideReason('');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['orders', 'detail', orderId] }),
+        queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+        queryClient.invalidateQueries({ queryKey: ['billing-ownership-review'] }),
+      ]);
+      toast({ title: 'Billing ownership overridden', description: 'QuickBooks was not changed. Accounting reconciliation and reapproval are required.' });
+    } catch (error: any) { setOwnershipOverrideError(error.message); } finally { setOwnershipOverridePending(false); }
+  };
+
   const handleCancelOrderEdits = async () => {
+    setOwnershipOverrideContext(null);
     setPendingOrderPatch({});
     setDraftLineItemTotalsCents({});
     setHasDirtyLineItem(false);
@@ -2233,6 +2266,24 @@ export default function OrderDetail() {
             />
           </div>
         </div>
+
+        <BillingOwnershipReviewPanel hold={billingOwnershipReview.data?.hold} canResolve={isAdminOrOwner} />
+        {ownershipOverrideContext && isAdminOrOwner && !billingOwnershipReview.data?.hold && (
+          <div className="my-3 rounded-md border p-3 space-y-2 text-sm">
+            <p>Normal Save is blocked by prior QuickBooks synchronization. An authorized ownership override requires accounting to correct QuickBooks manually.</p>
+            <Button type="button" variant="outline" disabled={isSavingOrder || hasDirtyLineItem} onClick={() => { setOwnershipOverrideError(''); setOwnershipOverrideOpen(true); }}>Override Billing Ownership</Button>
+          </div>
+        )}
+        <Dialog open={ownershipOverrideOpen} onOpenChange={next => { if (!ownershipOverridePending) setOwnershipOverrideOpen(next); }}>
+          <DialogContent><DialogHeader><DialogTitle>Override Billing Ownership</DialogTitle>
+            <DialogDescription>This Invoice was previously synchronized to QuickBooks. Only the staged billing owner will change in PrintersHero; totals and other edits are not changed by this override. QuickBooks will NOT be updated. Accounting must manually correct its customer/billing party. Automatic and manual QuickBooks sync will remain held until that correction is acknowledged, then accounting approval is required.</DialogDescription></DialogHeader>
+            <Label htmlFor="ownership-override-reason">Reason</Label>
+            <Textarea id="ownership-override-reason" value={ownershipOverrideReason} maxLength={2000} disabled={ownershipOverridePending} onChange={event => setOwnershipOverrideReason(event.target.value)} />
+            {ownershipOverrideError && <p role="alert">{ownershipOverrideError}</p>}
+            <DialogFooter><Button type="button" variant="outline" disabled={ownershipOverridePending} onClick={() => setOwnershipOverrideOpen(false)}>Cancel</Button>
+              <Button type="button" disabled={ownershipOverridePending || !ownershipOverrideReason.trim()} onClick={() => void handleOwnershipOverride()}>Confirm local ownership override</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {isOrderEditRoute && orderIsCanceled && (
           <div className="mb-4 rounded-titan-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800">

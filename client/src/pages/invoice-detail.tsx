@@ -1,3 +1,5 @@
+import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
+import { useActiveOrganizationRole } from '@/hooks/useActiveOrganizationRole';
 import { hasPreviousQuickBooksSync, quickBooksHistoryLabel } from "@/lib/invoiceQuickBooksHistory";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -259,6 +261,9 @@ export default function InvoiceDetailPage() {
   const [expandedQBLines, setExpandedQBLines] = useState<Set<number>>(new Set());
   const takePaymentAutoLaunchRef = useRef(false);
 
+  const billingOwnershipReview = useBillingOwnershipReview('invoices', invoiceId);
+  const billingOwnershipReviewer = useActiveOrganizationRole({ enabled: Boolean(user) });
+  const ownershipSyncHeld = Boolean(billingOwnershipReview.data?.hold) || billingOwnershipReview.isLoading || billingOwnershipReview.isError;
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isStaffUser = !!user && user.role !== 'customer';
   const stripeRefundRequests = useStripeInvoiceRefundRequests(invoiceId, Boolean(isAdminOrOwner));
@@ -965,7 +970,7 @@ export default function InvoiceDetailPage() {
           : qbSyncStatusRaw === 'needs_resync'
             ? 'Not Synced'
             : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Not Synced'))));
-  const qbSyncLabel = quickBooksHistoryLabel(qbCurrentSyncLabel, qbPreviouslySynced, qbUpToDate);
+  const qbSyncLabel = billingOwnershipReview.data?.hold ? 'Previously synced · QuickBooks Update Required' : quickBooksHistoryLabel(qbCurrentSyncLabel, qbPreviouslySynced, qbUpToDate);
   const showRetrySync = isAdminOrOwner && !isImportedFromQuickBooks && !['draft', 'void'].includes(invoiceStatus) && qbSyncStatusRaw !== 'pending';
 
   const qbWarningMessage = (() => {
@@ -2107,7 +2112,7 @@ export default function InvoiceDetailPage() {
             label="Accounting Approval"
             value={<Badge variant={accountingApprovalState === 'approved' ? 'default' : accountingApprovalState === 'needs_reapproval' ? 'destructive' : 'secondary'}>{accountingApprovalLabel}</Badge>}
             right={isAdminOrOwner && accountingApprovalState !== 'approved' ? (
-              <Button size="sm" variant="outline" className="h-7 px-3" disabled={approveForAccounting.isPending} onClick={() => invoiceId && approveForAccounting.mutate([invoiceId], { onSuccess: () => toast({ title: 'Approved for Accounting' }), onError: (error: any) => toast({ title: 'Accounting approval failed', description: error.message, variant: 'destructive' }) })}>
+              <Button size="sm" variant="outline" className="h-7 px-3" disabled={approveForAccounting.isPending || ownershipSyncHeld} onClick={() => invoiceId && approveForAccounting.mutate([invoiceId], { onSuccess: () => toast({ title: 'Approved for Accounting' }), onError: (error: any) => toast({ title: 'Accounting approval failed', description: error.message, variant: 'destructive' }) })}>
                 {approveForAccounting.isPending ? 'Approving…' : 'Approve'}
               </Button>
             ) : null}
@@ -2139,7 +2144,7 @@ export default function InvoiceDetailPage() {
                   variant="outline"
                   className="h-7 px-3 rounded-full transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:bg-primary focus-visible:text-primary-foreground"
                   onClick={handleRetryQb}
-                  disabled={queueQbSync.isPending}
+                  disabled={queueQbSync.isPending || ownershipSyncHeld}
                 >
                   {queueQbSync.isPending ? 'Queueing…' : 'Sync to QB'}
                 </Button>
@@ -2152,6 +2157,8 @@ export default function InvoiceDetailPage() {
             valueClassName="mt-1 text-sm font-medium"
           />
         </StatusStrip>
+        <BillingOwnershipReviewPanel hold={billingOwnershipReview.data?.hold} canResolve={billingOwnershipReviewer.isAdminOrOwner} />
+        {billingOwnershipReview.isError && <p role="alert">Unable to load ownership review. QuickBooks sync is disabled. <Button type="button" variant="link" onClick={() => void billingOwnershipReview.refetch()}>Retry</Button></p>}
 
         {(isImportedFromQuickBooks || invoice.customerPoNumber) ? (
           <Card>

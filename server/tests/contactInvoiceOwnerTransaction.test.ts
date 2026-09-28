@@ -1,9 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { getTableName } from "drizzle-orm";
 
 let rows: Record<string, any[]>;
 let writes: string[];
 let failOrderWrite = false;
+const recalculate = jest.fn<any>();
 const retrieveIntent = jest.fn<(...args: any[]) => Promise<any>>();
 const cancelIntent = jest.fn<(...args: any[]) => Promise<any>>();
 jest.unstable_mockModule('../lib/stripe', () => ({ getStripeClient: () => ({ paymentIntents: { retrieve: retrieveIntent, cancel: cancelIntent } }) }));
@@ -12,21 +14,32 @@ const query = () => {
   const q: any = {
     from: (t: any) => { table = getTableName(t); return q; },
     where: () => q,
-    limit: async (n: number) => (rows[table] ?? []).slice(0, n),
-    then: (resolve: any, reject: any) => Promise.resolve(rows[table] ?? []).then(resolve, reject),
+    limit: async (n: number) => structuredClone((rows[table] ?? []).slice(0, n)),
+    for: () => q,
+    then: (resolve: any, reject: any) => Promise.resolve(structuredClone(rows[table] ?? [])).then(resolve, reject),
   };
   return q;
 };
 const tx: any = {
   select: query,
-  execute: jest.fn(async () => ({ rows: [] })),
+  execute: jest.fn(async (statement: any) => {
+    const query = new PgDialect().sqlToQuery(statement);
+    if (!query.sql.includes('from audit_logs a')) return { rows: [] };
+    expect(query.params).toEqual(['org', 'invoice']);
+    const hold = (rows.audit_logs ?? []).find(event => event.actionType === 'invoice_billing_ownership_override'
+      && !(rows.audit_logs ?? []).some(resolved => resolved.actionType === 'invoice_billing_ownership_reconciled' && resolved.newValues.overrideId === event.id));
+    return { rows: hold ? [{ id: hold.id, invoiceId: 'invoice', reason: hold.newValues.reason, createdAt: hold.createdAt }] : [] };
+  }),
   update: (t: any) => ({ set: (patch: any) => ({ where: async () => {
     const table = getTableName(t); if (!rows[table]?.length) return; writes.push(table); Object.assign(rows[table][0], patch);
   } }) }),
-  insert: () => ({ values: async () => {} }),
+  insert: (table: any) => ({ values: async (event: any) => {
+    const name = getTableName(table); (rows[name] ??= []).push({ id: 'event-' + rows[name].length, createdAt: new Date(), ...event });
+  } }),
 };
 const database = {
   select: query,
+  execute: tx.execute,
   transaction: async (fn: (handle: any) => any) => {
     const before = structuredClone(rows);
     try { return await fn(tx); } catch (error) { rows = before; throw error; }
@@ -48,7 +61,7 @@ jest.unstable_mockModule("../storage/orders.repo", () => ({ OrdersRepository: cl
   }
 } }));
 jest.unstable_mockModule("../services/orders/orderTaxCalculationService", () => ({
-  recalculateEditableOrderFinancialsInTransaction: async (handle: any) => { expect(handle).toBe(tx); return rows.orders[0]; },
+  recalculateEditableOrderFinancialsInTransaction: recalculate,
 }));
 let operations: typeof import("../services/orders/canonicalOrderOperations").canonicalOrderOperations;
 beforeAll(async () => { operations = (await import("../services/orders/canonicalOrderOperations")).canonicalOrderOperations; });
@@ -59,6 +72,7 @@ beforeEach(() => {
     audit_logs: [{ id: "automatic-creation" }],
   };
   writes = []; failOrderWrite = false;
+  recalculate.mockReset().mockImplementation(async (handle: any) => { expect(handle).toBe(tx); return rows.orders[0]; });
   retrieveIntent.mockReset().mockResolvedValue({ id: 'pi_unpaid', status: 'requires_payment_method', amount_received: 0, latest_charge: null, metadata: { organizationId: 'org', invoiceId: 'invoice' } });
   cancelIntent.mockReset().mockResolvedValue({ id: 'pi_unpaid', status: 'canceled' });
 });
@@ -179,4 +193,101 @@ test.each(['not_synced', 'pending', 'failed'])('internally finalized, unapproved
   expect(rows.orders[0]).toMatchObject({ customerId: 'different-company', contactId: null });
   expect(rows.invoices[0]).toMatchObject({ customerId: 'different-company', contactId: null });
   expect(writes).toEqual(['invoices', 'orders']);
+});
+
+const regression20491 = () => {
+  Object.assign(rows.orders[0], { orderNumber: '20491', status: 'operationally_complete', fulfillmentStatus: 'delivered',
+    updatedAt: new Date('2026-09-28T17:00:00Z'), total: '350.36', tax: '0.00' });
+  Object.assign(rows.invoices[0], { status: 'finalized', invoiceVersion: 3, invoiceNumber: 20491, total: '350.36', totalCents: 35036,
+    subtotal: '350.36', tax: '0.00', taxCents: 0, balanceDue: '350.36', amountPaid: '0.00', qbInvoiceId: 'qb-existing',
+    externalAccountingId: 'qb-existing', syncedAt: new Date('2026-09-23T15:14:00Z'), lastQbSyncedVersion: 1,
+    accountingApprovedAt: new Date('2026-09-23T15:13:00Z'), accountingApprovedVersion: 1, accountingApprovalRevokedAt: new Date('2026-09-28'), qbSyncStatus: 'needs_resync' });
+};
+const overriddenSave = (changes: any = { customerId: null, contactId: 'janet' }, extras: any = {}) => operations.updateEditableHeader({
+  organizationId: 'org', actorUserId: 'admin-user', actorOrgRole: 'admin', orderId: 'order', allowNonNew: true, changes,
+  billingOwnershipOverride: { invoiceId: 'invoice', invoiceVersion: 3, orderUpdatedAt: '2026-09-28T17:00:00.000Z', confirmed: true, reason: 'Correct locally; accounting will correct QuickBooks.' }, ...extras,
+});
+
+describe('audited unpaid QuickBooks ownership override (mocked persistence)', () => {
+  test('20491 normal save still blocks and offers context only to an authorized reviewer', async () => {
+    regression20491();
+    await expect(operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'admin', actorOrgRole: 'admin', orderId: 'order', allowNonNew: true, changes: { customerId: 'new' } }))
+      .rejects.toMatchObject({ details: { billingOwnershipOverride: { invoiceId: 'invoice', invoiceVersion: 3 } } });
+    expect(writes).toEqual([]);
+  });
+  test.each([{ customerId: null, contactId: 'janet' }, { customerId: 'correct-customer', contactId: null }])('changes both owners while preserving all financial and operational fields: %j', async target => {
+    regression20491();
+    const invoiceBefore = structuredClone(rows.invoices[0]);
+    await overriddenSave(target);
+    expect(rows.orders[0]).toMatchObject({ ...target, status: 'operationally_complete', fulfillmentStatus: 'delivered', total: '350.36', tax: '0.00' });
+    expect(rows.invoices[0]).toMatchObject({ ...target, qbSyncStatus: 'needs_resync', accountingApprovedAt: null, invoiceVersion: 4 });
+    for (const key of ['total', 'totalCents', 'subtotal', 'tax', 'taxCents', 'balanceDue', 'amountPaid', 'qbInvoiceId', 'externalAccountingId', 'syncedAt', 'lastQbSyncedVersion', 'invoiceNumber']) expect(rows.invoices[0][key]).toEqual(invoiceBefore[key]);
+    expect(rows.payments).toBeUndefined(); expect(cancelIntent).not.toHaveBeenCalled();
+    expect(recalculate).not.toHaveBeenCalled();
+    const event = rows.audit_logs.find(row => row.actionType === 'invoice_billing_ownership_override');
+    expect(event).toMatchObject({ userId: 'admin-user', oldValues: { customerId: 'company', contactId: null },
+      newValues: { orderId: 'order', orderNumber: '20491', ...target, accountingState: 'ownership_review_required', reason: expect.any(String), overriddenAt: expect.any(String), priorQuickBooks: { qbInvoiceId: 'qb-existing', lastQbSyncedVersion: 1 } } });
+    expect(event.createdAt).toBeInstanceOf(Date);
+  });
+  test.each(['succeeded', 'captured', 'refunded', 'partially_refunded'])('blocks %s money history without writes', async status => {
+    regression20491(); rows.payments = [{ id: 'paid', status }];
+    await expect(overriddenSave()).rejects.toThrow('Override is unavailable'); expect(writes).toEqual([]);
+  });
+  test.each(['customerPaymentBatchId', 'customerAccountCreditApplicationId'])('blocks payment allocation %s', async key => {
+    regression20491(); rows.payments = [{ status: 'pending', [key]: 'allocated' }];
+    await expect(overriddenSave()).rejects.toThrow('Override is unavailable'); expect(writes).toEqual([]);
+  });
+  test('blocks partial rollup and refund request evidence', async () => {
+    regression20491(); rows.invoices[0].amountPaid = '10';
+    await expect(overriddenSave()).rejects.toThrow('Override is unavailable');
+    rows.invoices[0].amountPaid = '0'; rows.stripe_refund_requests = [{ id: 'refund' }];
+    await expect(overriddenSave()).rejects.toThrow('Override is unavailable'); expect(writes).toEqual([]);
+  });
+  test.each(['stripe_payment_attempts', 'customer_payment_batches'])('unresolved %s must be handled separately; no cancellation performed', async table => {
+    regression20491(); rows[table] = [{ id: 'pending', status: 'pending' }];
+    await expect(overriddenSave()).rejects.toThrow('Override is unavailable'); expect(writes).toEqual([]); expect(cancelIntent).not.toHaveBeenCalled();
+  });
+  test('denies unauthorized roles, missing confirmation/reason, extra financial fields, and stale invoice/order', async () => {
+    regression20491();
+    await expect(overriddenSave(undefined, { actorOrgRole: 'employee' })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(overriddenSave(undefined, { billingOwnershipOverride: { confirmed: false, reason: 'reason' } })).rejects.toThrow('Confirm');
+    await expect(overriddenSave(undefined, { billingOwnershipOverride: { confirmed: true, reason: ' ' } })).rejects.toThrow('Confirm');
+    await expect(overriddenSave({ customerId: 'new', total: '0' })).rejects.toThrow('only Customer and Contact');
+    rows.invoices[0].invoiceVersion = 4;
+    await expect(overriddenSave()).rejects.toThrow('Invoice changed');
+    rows.orders[0].updatedAt = new Date('2026-09-29');
+    await expect(overriddenSave()).rejects.toThrow('Order changed'); expect(writes).toEqual([]);
+  });
+  test('an unsynced Invoice needs ordinary save, not an accounting override', async () => {
+    regression20491(); Object.assign(rows.invoices[0], { qbInvoiceId: null, externalAccountingId: null, syncedAt: null, lastQbSyncedVersion: null, qbSyncStatus: 'not_synced' });
+    await expect(overriddenSave()).rejects.toThrow('Override is unavailable'); expect(writes).toEqual([]);
+  });
+  test('failed Order write rolls back the owner, revoked approval, and audit hold', async () => {
+    regression20491(); failOrderWrite = true;
+    await expect(overriddenSave()).rejects.toThrow('order write failed');
+    expect(rows.invoices[0]).toMatchObject({ customerId: 'company', invoiceVersion: 3 });
+    expect(rows.audit_logs.some(row => row.actionType === 'invoice_billing_ownership_override')).toBe(false);
+  });
+  test('hold blocks automatic/manual provider callbacks and approval, then acknowledgment releases only that hold', async () => {
+    regression20491(); await overriddenSave();
+    const review = await import('../services/billingOwnershipReview.service');
+    const transmit = jest.fn(async () => 'sent');
+    for (const source of ['automatic', 'manual']) {
+      await expect(review.withBillingOwnershipSyncGuard('org', 'invoice', transmit)).rejects.toThrow('Update the customer in QuickBooks');
+    }
+    expect(transmit).not.toHaveBeenCalled();
+    const quickBooks = await import('../quickbooksService');
+    await expect(quickBooks.syncSingleInvoiceToQuickBooksForOrganization('org', 'invoice')).rejects.toMatchObject({ code: 'BILLING_OWNERSHIP_REVIEW_REQUIRED' });
+    const approval = await import('../services/invoiceAccountingApproval.service');
+    const result = await approval.approveInvoicesForAccounting({ organizationId: 'org', invoiceIds: ['invoice'], actorUserId: 'admin' });
+    expect(result.results[0]).toMatchObject({ outcome: 'skipped', code: 'BILLING_OWNERSHIP_REVIEW_REQUIRED' });
+    const hold = await review.getBillingOwnershipReview('org', 'invoice');
+    await expect(review.acknowledgeBillingOwnershipReview({ organizationId: 'org', invoiceId: 'invoice', overrideId: 'stale', actorUserId: 'admin', actorOrgRole: 'admin', reason: 'Corrected QB', confirmed: true })).rejects.toThrow('review changed');
+    await review.acknowledgeBillingOwnershipReview({ organizationId: 'org', invoiceId: 'invoice', overrideId: hold!.id, actorUserId: 'admin', actorOrgRole: 'admin', reason: 'Corrected QB', confirmed: true });
+    expect(await review.getBillingOwnershipReview('org', 'invoice')).toBeNull();
+    expect(rows.invoices[0].accountingApprovedAt).toBeNull();
+    expect(rows.audit_logs.filter(row => row.actionType === 'invoice_billing_ownership_override')).toHaveLength(1);
+    await expect(review.withBillingOwnershipSyncGuard('org', 'invoice', transmit)).resolves.toBe('sent');
+    expect(rows.audit_logs.some(row => row.actionType === 'invoice_billing_ownership_reconciled')).toBe(true);
+  });
 });
