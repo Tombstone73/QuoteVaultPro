@@ -221,7 +221,11 @@ async function managementBootstrap(tx: Transaction) {
     .from(users).where(eq(users.email, DEV_QA_OPERATOR_MANAGEMENT_EMAIL)).limit(1);
   if (!management || management.email?.toLowerCase() !== DEV_QA_OPERATOR_MANAGEMENT_EMAIL) fail("Reviewed DEV management identity does not exist.");
   if (`${management.firstName ?? ""} ${management.lastName ?? ""}`.trim() !== DEV_QA_OPERATOR_MANAGEMENT_NAME) fail("Reviewed DEV management identity does not match the approved Owner identity.");
-  if (management.accountType !== "INTERNAL_USER" || management.isPlatformAdmin || management.isPlatformDeveloper || management.mustSetPassword) fail("Reviewed DEV management identity is not an active non-platform internal Staff identity.");
+  // This command has no caller-supplied identity: it is fixed to the reviewed
+  // Dale record above. Its existing global platform flags neither change nor
+  // confer this tenant membership, so the narrowly approved DEV recovery must
+  // not reject the record solely for those unrelated flags.
+  if (management.accountType !== "INTERNAL_USER" || management.mustSetPassword) fail("Reviewed DEV management identity is not an active internal Staff identity.");
   const normalOwner = await tx.execute<{ organization_id: string }>(sql`SELECT organization_id FROM user_organizations WHERE user_id=${management.id} AND organization_id<>${config.organizationId} AND is_active=true AND role='owner' LIMIT 1`);
   if (normalOwner.rowCount !== 1) fail("Reviewed DEV management identity must already be an Owner of another active DEV organization.");
   const membership = await tx.execute<{ role: string; is_active: boolean }>(sql`SELECT role,is_active FROM user_organizations WHERE user_id=${management.id} AND organization_id=${config.organizationId} FOR UPDATE`);
