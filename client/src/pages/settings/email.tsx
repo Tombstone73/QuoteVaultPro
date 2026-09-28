@@ -17,7 +17,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, ChevronDown, ChevronRight, Edit, Mail, FileText, Plus, Inbox, PauseCircle, RefreshCw, Search, Trash2, Star } from "lucide-react";
 import { useState, useEffect, useRef, type FormEvent, type ReactNode, type SyntheticEvent } from "react";
-import { emailTemplateVariables, renderEmailTemplate, sampleEmailTemplateValues, unknownEmailTemplateVariables, type EmailTemplateType } from "@shared/emailTemplateVariables";
+import { emailTemplateVariables, renderEmailSubject, renderEmailTemplate, sampleEmailTemplateValues, unknownEmailTemplateVariables, type EmailTemplateType } from "@shared/emailTemplateVariables";
 import {
   useCreateInboundEmailIgnoreRule,
   useCreateInboundEmailTrustRule,
@@ -1768,6 +1768,7 @@ export function EmailTemplatesCard() {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [activeTab, setActiveTab] = useState<EmailTemplateType>("quote");
+  const [invoicePreviewCase, setInvoicePreviewCase] = useState<"all" | "no-po" | "no-job" | "neither">("all");
   type TemplateField = "quoteEmailSubject" | "quoteEmailBody" | "invoiceEmailSubject" | "invoiceEmailBody";
   const lastField = useRef<TemplateField | null>(null);
   const selection = useRef({ start: 0, end: 0 });
@@ -1880,6 +1881,10 @@ export function EmailTemplatesCard() {
   const bodyValue = form.watch(bodyField) || "";
   const unknown = Array.from(new Set([...unknownEmailTemplateVariables(subjectValue, activeTab), ...unknownEmailTemplateVariables(bodyValue, activeTab)]));
   const sampleValues = sampleEmailTemplateValues(activeTab);
+  if (activeTab === "invoice") {
+    if (invoicePreviewCase === "no-po" || invoicePreviewCase === "neither") sampleValues.poNumber = null;
+    if (invoicePreviewCase === "no-job" || invoicePreviewCase === "neither") sampleValues.jobLabel = null;
+  }
 
   if (isLoading) {
     return (
@@ -2041,9 +2046,18 @@ export function EmailTemplatesCard() {
               {unknown.length > 0 && <p role="alert" className="mt-3 text-sm text-destructive">Unknown variable: {unknown.join(", ")}. Use an available variable before saving.</p>}
               <div className="mt-4 rounded-lg border p-3" aria-label="Sample Preview">
                 <p className="text-sm font-semibold">Sample Preview</p>
-                <p className="text-xs text-muted-foreground">Example values only; no customer record is loaded. Missing optional values render empty.</p>
+                <p className="text-xs text-muted-foreground">Example values only; no customer record is loaded. Missing optional values omit their subject segment and render empty in the body.</p>
+                {activeTab === "invoice" && <label className="mt-2 block text-xs">Optional values
+                  <select className="mt-1 block max-w-full rounded-md border bg-background p-2 text-sm" value={invoicePreviewCase}
+                    onChange={event => setInvoicePreviewCase(event.target.value as typeof invoicePreviewCase)}>
+                    <option value="all">PO and Job present</option>
+                    <option value="no-po">PO missing</option>
+                    <option value="no-job">Job missing</option>
+                    <option value="neither">PO and Job missing</option>
+                  </select>
+                </label>}
                 <p className="mt-2 text-xs font-semibold">Subject</p>
-                <p className="break-words text-sm">{renderEmailTemplate(subjectValue, activeTab, sampleValues)}</p>
+                <p className="break-words text-sm">{renderEmailSubject(subjectValue, activeTab, sampleValues)}</p>
                 <p className="mt-2 text-xs font-semibold">Email Body</p>
                 <p className="whitespace-pre-wrap break-words text-sm">{renderEmailTemplate(bodyValue, activeTab, sampleValues)}</p>
               </div>

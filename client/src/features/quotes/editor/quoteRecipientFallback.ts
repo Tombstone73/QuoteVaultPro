@@ -1,4 +1,4 @@
-import { renderEmailTemplate } from "@shared/emailTemplateVariables";
+import { renderEmailSubject, renderEmailTemplate } from "@shared/emailTemplateVariables";
 
 export type QuoteRecipientContactLike = {
   id?: string | null;
@@ -81,7 +81,7 @@ export function buildQuoteEmailDraftDefaults(input: {
     || `Hello ${recipientName},\n\nPlease review quote ${input.quoteReference} below.\n\nThank you for your business!`;
 
   return {
-    subject: renderEmailTemplate(subjectTemplate, "quote", variables),
+    subject: renderEmailSubject(subjectTemplate, "quote", variables),
     body: renderEmailTemplate(bodyTemplate, "quote", variables),
   };
 }

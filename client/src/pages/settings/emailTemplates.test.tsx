@@ -60,3 +60,18 @@ test("warns and refuses to save an unsupported variable", async () => {
   await act(async () => Simulate.click(button("Save Templates")));
   expect(mockApiRequest.mock.calls.some(call => call[0] === "PUT")).toBe(false);
 });
+
+test("Invoice preview matches the canonical subject for each optional-value case", async () => {
+  await renderCard();
+  await act(async () => Simulate.mouseDown(button("Invoice Template"), { button: 0, ctrlKey: false }));
+  const subject = container.querySelector('input[name="invoiceEmailSubject"]') as HTMLInputElement;
+  await act(async () => Simulate.change(subject, { target: { value: "Invoice #{invoiceNumber} | PO {poNumber} | {jobLabel}" } } as any));
+  const preview = container.querySelector('[aria-label="Sample Preview"]') as HTMLElement;
+  const select = preview.querySelector("select") as HTMLSelectElement;
+  const previewSubject = () => Array.from(preview.querySelectorAll("p")).find(p => p.textContent === "Subject")?.nextElementSibling?.textContent;
+  expect(previewSubject()).toBe("Invoice #20552 | PO 152594 | Yard Signs");
+  for (const [value, expected] of [["no-po", "Invoice #20552 | Yard Signs"], ["no-job", "Invoice #20552 | PO 152594"], ["neither", "Invoice #20552"]]) {
+    await act(async () => Simulate.change(select, { target: { value } } as any));
+    expect(previewSubject()).toBe(expected);
+  }
+});

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { emailTemplateVariables, renderEmailTemplate, sampleEmailTemplateValues, unknownEmailTemplateVariables } from "../emailTemplateVariables";
+import { emailTemplateVariables, renderEmailSubject, renderEmailTemplate, sampleEmailTemplateValues, unknownEmailTemplateVariables } from "../emailTemplateVariables";
 
 describe("email template variables", () => {
   test("Quote and Invoice expose only their resolvable tokens", () => {
@@ -21,7 +21,28 @@ describe("email template variables", () => {
   });
 
   test("sample preview uses the same substitution as saved templates", () => {
-    expect(renderEmailTemplate("Invoice #{invoiceNumber} | PO {poNumber} | {jobLabel}", "invoice", sampleEmailTemplateValues("invoice")))
+    expect(renderEmailSubject("Invoice #{invoiceNumber} | PO {poNumber} | {jobLabel}", "invoice", sampleEmailTemplateValues("invoice")))
       .toBe("Invoice #20552 | PO 152594 | Yard Signs");
+  });
+
+  test("omits missing optional subject segments and normalizes separators", () => {
+    const subject = "  Invoice #{invoiceNumber}  |  PO {poNumber}  |  {jobLabel}  ";
+    const values = { invoiceNumber: "20552", poNumber: "152594", jobLabel: "Yard Signs" };
+    expect(renderEmailSubject(subject, "invoice", values)).toBe("Invoice #20552 | PO 152594 | Yard Signs");
+    expect(renderEmailSubject(subject, "invoice", { ...values, poNumber: null })).toBe("Invoice #20552 | Yard Signs");
+    expect(renderEmailSubject(subject, "invoice", { ...values, jobLabel: "  " })).toBe("Invoice #20552 | PO 152594");
+    expect(renderEmailSubject(subject, "invoice", { ...values, poNumber: null, jobLabel: null })).toBe("Invoice #20552");
+  });
+
+  test("omits an entire segment when any optional dependency is missing", () => {
+    expect(renderEmailSubject("Invoice #{invoiceNumber} | PO {poNumber} / Job {jobLabel}", "invoice", {
+      invoiceNumber: "20552", poNumber: "152594", jobLabel: null,
+    })).toBe("Invoice #20552");
+  });
+
+  test("leaves non-pipe subjects and body rendering unchanged", () => {
+    const values = { invoiceNumber: "20552", poNumber: null };
+    expect(renderEmailSubject("Invoice #{invoiceNumber}: PO {poNumber}", "invoice", values)).toBe("Invoice #20552: PO ");
+    expect(renderEmailTemplate("Invoice #{invoiceNumber} | PO {poNumber}", "invoice", values)).toBe("Invoice #20552 | PO ");
   });
 });

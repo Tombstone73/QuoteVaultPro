@@ -33,6 +33,18 @@ export function renderEmailTemplate(template: string, type: EmailTemplateType, v
     allowed.has(key) ? String(values[key] ?? "") : token);
 }
 
+/** Pipe-delimited subject segments depend on every optional token they contain. */
+export function renderEmailSubject(template: string, type: EmailTemplateType, values: EmailTemplateValues): string {
+  if (!template.includes("|")) return renderEmailTemplate(template, type, values);
+  const optional = new Set<string>(emailTemplateVariables(type).filter(variable => variable.optional).map(variable => variable.key));
+  return template.split("|")
+    .filter(segment => !Array.from(segment.matchAll(tokenPattern)).some(match =>
+      optional.has(match[1] as EmailTemplateVariableKey) && !String(values[match[1] as EmailTemplateVariableKey] ?? "").trim()))
+    .map(segment => renderEmailTemplate(segment, type, values).trim())
+    .filter(Boolean)
+    .join(" | ");
+}
+
 export function sampleEmailTemplateValues(type: EmailTemplateType): EmailTemplateValues {
   return Object.fromEntries(emailTemplateVariables(type).map(variable => [variable.key, variable.sample])) as EmailTemplateValues;
 }

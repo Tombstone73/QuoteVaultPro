@@ -36,8 +36,10 @@ describe("invoice email delivery", () => {
     expect(buildInvoiceEmailDraft(input)).toEqual({ subject: "Invoice #20552 | PO 152594 | Yard Signs",
       message: "Hello Acme Signs, Order 20507 is due October 15, 2026. From Titan Graphics." });
     expect(buildInvoiceEmailDraft({ ...input, poNumber: null, jobLabel: null, dueDate: null })).toEqual({
-      subject: "Invoice #20552 | PO  | ", message: "Hello Acme Signs, Order 20507 is due . From Titan Graphics.",
+      subject: "Invoice #20552", message: "Hello Acme Signs, Order 20507 is due . From Titan Graphics.",
     });
+    expect(buildInvoiceEmailDraft({ ...input, poNumber: null }).subject).toBe("Invoice #20552 | Yard Signs");
+    expect(buildInvoiceEmailDraft({ ...input, jobLabel: null }).subject).toBe("Invoice #20552 | PO 152594");
   });
   test("uses the same customized plain-text message in safe HTML while retaining transactional links", () => {
     const message = "Thank you for your payment.\n<script>alert('not executable')</script>";

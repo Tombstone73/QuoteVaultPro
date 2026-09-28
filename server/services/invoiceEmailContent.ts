@@ -1,4 +1,4 @@
-import { renderEmailTemplate } from "@shared/emailTemplateVariables";
+import { renderEmailSubject, renderEmailTemplate } from "@shared/emailTemplateVariables";
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -48,7 +48,7 @@ export function buildInvoiceEmailDraft(input: {
   const values = { invoiceNumber: input.invoiceNumber, companyName: input.companyName, customerName: input.customerName,
     orderNumber: input.orderNumber, poNumber: input.poNumber, jobLabel: input.jobLabel, dueDate: input.dueDate };
   return {
-    subject: input.subjectTemplate?.trim() ? renderEmailTemplate(input.subjectTemplate, "invoice", values) : `Invoice #${input.invoiceNumber} from ${input.companyName}`,
+    subject: input.subjectTemplate?.trim() ? renderEmailSubject(input.subjectTemplate, "invoice", values) : `Invoice #${input.invoiceNumber} from ${input.companyName}`,
     message: input.bodyTemplate?.trim() ? renderEmailTemplate(input.bodyTemplate, "invoice", values) : defaultMessage,
   };
 }

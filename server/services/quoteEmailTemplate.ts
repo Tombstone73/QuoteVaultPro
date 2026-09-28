@@ -1,4 +1,4 @@
-import { renderEmailTemplate, type EmailTemplateValues } from "@shared/emailTemplateVariables";
+import { renderEmailSubject, renderEmailTemplate, type EmailTemplateValues } from "@shared/emailTemplateVariables";
 
 export function resolveQuoteEmailContent(input: {
   customSubject?: string | null;
@@ -10,7 +10,7 @@ export function resolveQuoteEmailContent(input: {
   const subjectTemplate = input.subjectTemplate || "Quote #{quoteNumber} from {companyName}";
   const bodyTemplate = input.bodyTemplate || "Hello,\n\nPlease find your quote #{quoteNumber} below.\n\nThank you for your business!";
   return {
-    subject: input.customSubject?.trim() || renderEmailTemplate(subjectTemplate, "quote", input.variables),
+    subject: input.customSubject?.trim() || renderEmailSubject(subjectTemplate, "quote", input.variables),
     bodyText: input.customBody?.trim() || renderEmailTemplate(bodyTemplate, "quote", input.variables),
   };
 }

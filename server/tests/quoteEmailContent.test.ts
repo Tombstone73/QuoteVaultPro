@@ -37,6 +37,11 @@ describe("quote email content", () => {
       subjectTemplate: "Quote #{quoteNumber}: {jobLabel}", bodyTemplate: "Hello {recipientName} at {customerName}." }))
       .toEqual({ subject: "Quote #QT-20000: Lobby Signs", bodyText: "Hello Mike at Eye 4 Group." });
   });
+  test("omits missing optional Quote job segment without changing body text", () => {
+    expect(resolveQuoteEmailContent({ variables,
+      subjectTemplate: "Quote #{quoteNumber} | {jobLabel}", bodyTemplate: "Quote {quoteNumber} | Job {jobLabel}" }))
+      .toEqual({ subject: "Quote #QT-20000", bodyText: "Quote QT-20000 | Job " });
+  });
 
   test("keeps built-in fallback content when neither custom content nor templates are supplied", () => {
     expect(resolveQuoteEmailContent({ variables })).toEqual({
