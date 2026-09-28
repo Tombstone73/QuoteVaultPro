@@ -278,8 +278,7 @@ export default function OrderDetail() {
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
-  const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
-  const [contactSearchQuery, setContactSearchQuery] = useState("");
+  const [clearedCustomerOrderId, setClearedCustomerOrderId] = useState<string | null>(null);
   const [editingDueDate, setEditingDueDate] = useState(false);
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
   const [tempDueDate, setTempDueDate] = useState("");
@@ -389,6 +388,14 @@ export default function OrderDetail() {
       ...pendingOrderPatch,
     } as OrderDetailOrder;
   }
+  // A clear takes effect in the editor immediately, even while the Order PATCH
+  // and its detail-query refresh are still settling.
+  const contactSearchCustomerId = clearedCustomerOrderId === orderId ? null : order?.customerId ?? null;
+  useEffect(() => {
+    if (clearedCustomerOrderId === orderId && orderRaw?.customerId === null) {
+      setClearedCustomerOrderId(null);
+    }
+  }, [clearedCustomerOrderId, orderId, orderRaw?.customerId]);
   const proofPolicyMutation = useMutation({
     mutationFn: async ({ policy, reason }: { policy: "inherit_default" | "force_required" | "bypass"; reason?: string | null }) => {
       const response = await fetch(`/api/orders/${orderId}/proof-policy`, {
@@ -1076,8 +1083,6 @@ export default function OrderDetail() {
   // Fetch contacts for the current customer
   const {
     data: customerContacts = [],
-    isError: isCustomerContactsError,
-    refetch: refetchCustomerContacts,
   } = useQuery({
     queryKey: ["/api/customers", order?.customerId, "contacts"],
     queryFn: async () => {
@@ -1140,31 +1145,23 @@ export default function OrderDetail() {
     enabled: isEditingFulfillment,
   });
 
-  // Filtered contacts based on search
-  const filteredContacts = contactSearchQuery
-    ? customerContacts.filter((contact: any) => {
-        const searchLower = contactSearchQuery.toLowerCase();
-        return (
-          contact.firstName?.toLowerCase().includes(searchLower) ||
-          contact.lastName?.toLowerCase().includes(searchLower) ||
-          contact.email?.toLowerCase().includes(searchLower)
-        );
-      })
-    : customerContacts;
-
   const saveOrderOwner = (changes: { customerId?: string | null; contactId?: string | null }) => {
     if (!canEditSafeOrderMetadata) return;
-    const customerId = changes.customerId !== undefined ? changes.customerId : order?.customerId;
+    const customerId = changes.customerId !== undefined ? changes.customerId : contactSearchCustomerId;
     const contactId = changes.contactId !== undefined ? changes.contactId : order?.contactId;
     if (!customerId && !contactId) {
       toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
       return;
     }
+    if (changes.customerId === null) setClearedCustomerOrderId(orderId ?? null);
     updateOrder.mutate(changes, {
       onSuccess: () => {
+        if (changes.customerId) setClearedCustomerOrderId(null);
         setIsCustomerPickerOpen(false);
-        setIsContactPickerOpen(false);
         exitAllEditModes();
+      },
+      onError: () => {
+        if (changes.customerId === null) setClearedCustomerOrderId(null);
       },
     });
   };
@@ -2087,7 +2084,9 @@ export default function OrderDetail() {
   const normalizePhoneKey = (value: string | null | undefined) =>
     (value || '').replace(/\D+/g, '');
 
-  const customerCompanyName: string | null = order.customer?.companyName || (order.customerId ? order.billToCompany : null) || null;
+  const customerCompanyName: string | null = contactSearchCustomerId
+    ? order.customer?.companyName || order.billToCompany || null
+    : null;
   const defaultCustomerShipTo = resolveCustomerShipTo(order.customer);
   const contactNameFromContact: string | null = (() => {
     const c: any = order.contact;
@@ -2356,7 +2355,7 @@ export default function OrderDetail() {
                           <div className="min-w-0 flex-1">
                             <HoverCard openDelay={150} closeDelay={50}>
                               <HoverCardTrigger asChild>
-                                {order.customer?.id && customerCompanyName ? (
+                                {contactSearchCustomerId && order.customer?.id && customerCompanyName ? (
                                   <Link
                                     to={`/customers/${order.customer.id}`}
                                     state={{ referrer: buildReferrer(location) }}
@@ -2392,7 +2391,7 @@ export default function OrderDetail() {
                                       {metaPhone && <div className="font-mono break-words">{formatPhoneForDisplay(metaPhone)}</div>}
                                     </div>
                                   )}
-                                  {order.customer && (order.customer.paymentTerms || typeof order.customer.isTaxExempt === "boolean") && (
+                                  {contactSearchCustomerId && order.customer && (order.customer.paymentTerms || typeof order.customer.isTaxExempt === "boolean") && (
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-border pt-2 text-xs">
                                       {order.customer.paymentTerms && (
                                         <>
@@ -2427,7 +2426,7 @@ export default function OrderDetail() {
                         </div>
                       )}
 
-                      {order.customerId && canEditSafeOrderMetadata && (
+                      {contactSearchCustomerId && canEditSafeOrderMetadata && (
                         <Button
                           type="button"
                           variant="ghost"
@@ -2494,106 +2493,22 @@ export default function OrderDetail() {
                     <Separator />
 
                     <div className="space-y-2">
-                      {!order.customerId ? (
-                        <ContactSelect
-                          value={order.contactId ?? null}
-                          customerId={null}
-                          label=""
-                          placeholder="Search contacts..."
-                          disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
-                          onChange={(contactId) => {
-                            if (!contactId) {
-                              toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
-                              return;
-                            }
-                            saveOrderOwner({ contactId });
-                          }}
-                        />
-                      ) : (
-                      <Popover
-                        open={isContactPickerOpen}
-                        onOpenChange={(open) => {
-                          setIsContactPickerOpen(open);
-                          if (!open) setContactSearchQuery("");
+                      <ContactSelect
+                        value={order.contactId ?? null}
+                        customerId={contactSearchCustomerId}
+                        label=""
+                        placeholder="Search contacts..."
+                        disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
+                        onChange={(contactId) => {
+                          if (!contactId && !contactSearchCustomerId) {
+                            toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
+                            return;
+                          }
+                          saveOrderOwner(contactSearchCustomerId
+                            ? { contactId }
+                            : { customerId: null, contactId });
                         }}
-                      >
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="outline"
-                            role="combobox"
-                            aria-label="Select order contact"
-                            aria-expanded={isContactPickerOpen}
-                            className="w-full justify-between font-normal h-9"
-                            disabled={!canEditSafeOrderMetadata || !order?.customerId || updateOrder.isPending}
-                          >
-                            <span className="truncate">
-                              {!order?.customerId
-                                ? "Select a customer first"
-                                : contactNameFromContact || "Select contact..."}
-                            </span>
-                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-[350px] p-0" align="start">
-                          <Command shouldFilter={false}>
-                            <CommandInput
-                              placeholder="Search contacts..."
-                              value={contactSearchQuery}
-                              onValueChange={setContactSearchQuery}
-                              autoFocus
-                            />
-                            <CommandList>
-                              {isCustomerContactsError ? (
-                                <CommandItem
-                                  value="retry-contact-load"
-                                  onSelect={() => void refetchCustomerContacts()}
-                                >
-                                  Unable to load contacts. Retry
-                                </CommandItem>
-                              ) : (
-                                <>
-                                  {order?.contactId && (
-                                    <CommandItem
-                                      value="no-contact"
-                                      onSelect={() => saveOrderOwner({ contactId: null })}
-                                    >
-                                      <Check className="mr-2 h-4 w-4 opacity-0" />
-                                      No contact
-                                    </CommandItem>
-                                  )}
-                                  <CommandEmpty>No contacts found.</CommandEmpty>
-                                  {filteredContacts.map((contact: any) => {
-                                    const contactName = [contact.firstName, contact.lastName]
-                                      .filter(Boolean)
-                                      .join(" ");
-                                    return (
-                                      <CommandItem
-                                        key={contact.id}
-                                        value={contactName}
-                                        onSelect={() => saveOrderOwner({ contactId: contact.id })}
-                                      >
-                                        <Check
-                                          className={cn(
-                                            "mr-2 h-4 w-4",
-                                            order?.contact?.id === contact.id ? "opacity-100" : "opacity-0"
-                                          )}
-                                        />
-                                        <div className="flex-1">
-                                          <div className="font-medium">{contactName}</div>
-                                          {contact.email && (
-                                            <div className="text-xs text-muted-foreground">{contact.email}</div>
-                                          )}
-                                        </div>
-                                      </CommandItem>
-                                    );
-                                  })}
-                                </>
-                              )}
-                            </CommandList>
-                          </Command>
-                        </PopoverContent>
-                      </Popover>
-                      )}
+                      />
 
                       {order.contact?.id && contactNameFromContact ? (
                         <div className="space-y-1">

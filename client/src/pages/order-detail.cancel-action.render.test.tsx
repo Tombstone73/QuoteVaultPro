@@ -1,4 +1,5 @@
 import React, { act } from "react";
+import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "util";
@@ -6,6 +7,12 @@ import { TextDecoder, TextEncoder } from "util";
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).TextEncoder = TextEncoder;
 (globalThis as any).TextDecoder = TextDecoder;
+(globalThis as any).ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+Element.prototype.scrollIntoView = jest.fn();
 
 const { MemoryRouter, Route, Routes } = require("react-router-dom") as typeof import("react-router-dom");
 const OrderDetail = require("./order-detail").default as typeof import("./order-detail").default;
@@ -26,6 +33,12 @@ const mockInvalidateQueries = jest.fn();
 const mockRefetchQueries = jest.fn();
 const mockUpdateOwner = jest.fn();
 const mockOwnerToast = jest.fn();
+const mockPickerQueries: any[] = [];
+const mockPickerContacts = [
+  { id: "contact-a", customerId: "customer-1", firstName: "Alex", lastName: "Able", linkedCustomers: [{ id: "customer-1", status: "active" }] },
+  { id: "contact-janet", customerId: "customer-2", firstName: "Janet", lastName: "Smith", linkedCustomers: [{ id: "customer-2", status: "active" }] },
+  { id: "contact-standalone", customerId: null, firstName: "Sam", lastName: "Solo", linkedCustomers: [] },
+];
 
 jest.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({
@@ -39,7 +52,9 @@ jest.mock("@tanstack/react-query", () => ({
     isPending: false,
   }),
   useQuery: (options: any) => ({
-    data: String(options?.queryKey?.[0] ?? "").includes("/api/me/orgs") ? mockOrgMemberships : [],
+    data: options?.queryKey?.[1] === "picker"
+      ? (mockPickerQueries.push(options), mockPickerContacts)
+      : String(options?.queryKey?.[0] ?? "").includes("/api/me/orgs") ? mockOrgMemberships : [],
     isLoading: false,
     isError: false,
     error: null,
@@ -270,6 +285,59 @@ function renderOrderDetail(path = "/orders/order-1/edit") {
 }
 
 describe("Order ownership controls", () => {
+  test("existing Order clears Customer scope, searches Janet, and saves Contact-only across reload", async () => {
+    mockOrder = baseOrder({
+      contactId: "contact-a",
+      contact: { id: "contact-a", firstName: "Alex", lastName: "Able" },
+    });
+    mockUpdateOwner.mockImplementation((changes: any, callbacks: any) => {
+      mockOrder = {
+        ...mockOrder,
+        ...changes,
+        customer: changes.customerId === null ? null : mockOrder.customer,
+        contact: changes.contactId === "contact-janet"
+          ? { id: "contact-janet", firstName: "Janet", lastName: "Smith" }
+          : mockOrder.contact,
+      };
+      callbacks?.onSuccess?.();
+    });
+    const { container, root } = renderOrderDetail();
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBe("customer-1");
+
+    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    expect(mockUpdateOwner).toHaveBeenCalledWith({ customerId: null }, expect.any(Object));
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    expect(container.querySelector('[aria-label="Clear customer"]')).toBeNull();
+
+    act(() => root.render(
+      <MemoryRouter initialEntries={["/orders/order-1/edit"]}>
+        <Routes><Route path="/orders/:id/edit" element={<OrderDetail />} /></Routes>
+      </MemoryRouter>,
+    ));
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    const contactPicker = Array.from(container.querySelectorAll('[role="combobox"]'))
+      .find((node) => node.textContent?.includes("Alex Able")) as HTMLButtonElement;
+    expect(contactPicker).toBeTruthy();
+    act(() => contactPicker.click());
+    const search = document.querySelector('input[placeholder="Search by name, email, phone, or customer..."]') as HTMLInputElement;
+    expect(search).toBeTruthy();
+    act(() => Simulate.change(search, { target: { value: "janet" } } as any));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    expect(mockPickerQueries.at(-1)?.queryKey[2]).toEqual({ search: "janet", customerId: null });
+    const janet = Array.from(document.querySelectorAll('[cmdk-item]'))
+      .find((node) => node.textContent?.includes("Janet Smith")) as HTMLElement;
+    expect(janet).toBeTruthy();
+    act(() => janet.click());
+    expect(mockUpdateOwner).toHaveBeenLastCalledWith({ customerId: null, contactId: "contact-janet" }, expect.any(Object));
+    expect(mockOrder).toMatchObject({ customerId: null, contactId: "contact-janet" });
+    act(() => root.unmount());
+    const reloaded = renderOrderDetail();
+    expect(reloaded.container.textContent).toContain("Janet Smith");
+    expect(reloaded.container.querySelector('[aria-label="Clear customer"]')).toBeNull();
+    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    act(() => reloaded.root.unmount());
+  });
+
   test("visible Clear customer submits explicit null without clearing the selected Contact", () => {
     mockOrder = baseOrder({ contactId: "contact-1", contact: { id: "contact-1", firstName: "Logan", lastName: "Payne" } });
     const { container, root } = renderOrderDetail();
@@ -304,6 +372,7 @@ afterEach(() => {
     },
   };
   latestLineItemsProps = null;
+  mockPickerQueries.length = 0;
   mockEligibility = { canCancel: true, code: null, message: null, details: null };
 });
 

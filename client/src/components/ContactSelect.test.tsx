@@ -90,6 +90,15 @@ const contacts = [
     customer: { id: "customer-2", companyName: "Other Signs", status: "active" },
     linkedCustomers: [{ id: "customer-2", companyName: "Other Signs", status: "active", isPrimary: true }],
   },
+  {
+    id: "janet-contact",
+    customerId: "customer-2",
+    firstName: "Janet",
+    lastName: "Smith",
+    email: "janet@other.example",
+    companyName: "Other Signs",
+    linkedCustomers: [{ id: "customer-2", companyName: "Other Signs", status: "active", isPrimary: false }],
+  },
 ];
 
 beforeEach(() => {
@@ -177,7 +186,7 @@ describe("ContactSelect", () => {
       await pickerOptions.queryFn();
     });
 
-    const url = new URL(String(fetchMock.mock.calls[0][0]), "https://example.test");
+    const url = new URL(String((fetchMock.mock.calls as unknown as Array<[string]>)[0][0]), "https://example.test");
     expect(url.searchParams.get("customerId")).toBe("customer-1");
     expect(url.searchParams.get("pageSize")).toBe("200");
   });
@@ -188,7 +197,37 @@ describe("ContactSelect", () => {
     expect(container.textContent).toContain("Jane Smith");
     expect(container.textContent).not.toContain("John Doe");
     expect(container.textContent).not.toContain("Other Customer");
+    expect(container.textContent).not.toContain("Janet Smith");
     expect(container.textContent).not.toContain("CONTACT_CUSTOMER_CONFLICT");
+  });
+
+  test("switches a mounted picker from Customer A to tenant-wide search after clear", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ contacts: [contacts[3]] }) }));
+    (globalThis as any).fetch = fetchMock;
+    const onChange = jest.fn();
+    renderContactSelect({ customerId: "customer-1", onChange });
+    expect(container.textContent).not.toContain("Janet Smith");
+
+    act(() => root.render(<ContactSelect value={null} customerId={null} onChange={onChange} />));
+    expect(container.textContent).toContain("Janet Smith");
+    const options = useQueryMock.mock.calls.map(([options]) => options as any);
+    const unscoped = options.reverse().find((options) => options.queryKey?.[1] === "picker");
+    expect(unscoped.queryKey[2].customerId).toBeNull();
+    const search = container.querySelector("input") as HTMLInputElement;
+    search.value = "janet";
+    act(() => Simulate.change(search));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    const searched = useQueryMock.mock.calls.map(([options]) => options as any).reverse()
+      .find((options) => options.queryKey?.[1] === "picker");
+    expect(searched.queryKey[2]).toEqual({ search: "janet", customerId: null });
+    await act(async () => { await searched.queryFn(); });
+    const url = new URL(String((fetchMock.mock.calls as unknown as Array<[string]>)[0][0]), "https://example.test");
+    expect(url.searchParams.has("customerId")).toBe(false);
+    expect(url.searchParams.get("search")).toBe("janet");
+
+    const janet = Array.from(container.querySelectorAll('[role="option"]')).find((node) => node.textContent?.includes("Janet Smith"));
+    act(() => Simulate.click(janet as Element));
+    expect(onChange).toHaveBeenCalledWith("janet-contact", expect.objectContaining({ customerId: "customer-2" }));
   });
 
   test("shows loading, empty, and error states", () => {
