@@ -23,6 +23,7 @@ import {
 } from "@/hooks/useProduction";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 import { openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import { useToast } from "@/hooks/use-toast";
 import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 
 function formatFileSize(sizeBytes: number | null | undefined) {
@@ -76,6 +77,8 @@ export function ProductionRunFilesPanel({ run, focusUpload = false, onUploadFocu
   const [replaceFileId, setReplaceFileId] = useState<string | null>(null);
   const [retireTarget, setRetireTarget] = useState<ProductionRunFileSummary | null>(null);
   const [retireReason, setRetireReason] = useState("");
+  const [downloadingAll, setDownloadingAll] = useState(false);
+  const { toast } = useToast();
 
   const fileState = filesQuery.data ?? {
     files: run.files ?? [],
@@ -122,6 +125,18 @@ export function ProductionRunFilesPanel({ run, focusUpload = false, onUploadFocu
     );
   };
 
+  const downloadAll = async () => {
+    if (downloadingAll) return;
+    setDownloadingAll(true);
+    try {
+      await downloadAuthenticatedFile(`/api/production/runs/${encodeURIComponent(run.id)}/files/download-all`, `production-run-${run.id}-files.zip`);
+    } catch (error) {
+      toast({ title: "Download All failed", description: error instanceof Error ? error.message : "Unable to download files", variant: "destructive" });
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
+
   return (
     <div ref={uploadSectionRef} className="rounded-md border border-titan-border-subtle p-3" data-testid="production-run-files-section">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -129,10 +144,15 @@ export function ProductionRunFilesPanel({ run, focusUpload = false, onUploadFocu
           <div className="text-xs font-semibold">Run Production Files</div>
           <div className="text-[11px] text-titan-text-muted">{staffPrepared ? "Upload the nested file stored once on this run; member artwork remains source traceability." : "Optional run-owned output; RIP uses member production artwork as the active input."}</div>
         </div>
-        <Button size="sm" variant="outline" onClick={() => uploadInputRef.current?.click()} disabled={terminalRun || fileMutationPending}>
-          <Upload className="mr-1 h-3.5 w-3.5" />
-          {uploadFile.isPending ? "Uploading..." : "Upload Nested Production File"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={downloadingAll || activeFiles.length === 0} onClick={() => void downloadAll()}>
+            <Download className="mr-1 h-3.5 w-3.5" />{downloadingAll ? "Preparing ZIP..." : "Download All"}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => uploadInputRef.current?.click()} disabled={terminalRun || fileMutationPending}>
+            <Upload className="mr-1 h-3.5 w-3.5" />
+            {uploadFile.isPending ? "Uploading..." : "Upload Nested Production File"}
+          </Button>
+        </div>
         <input ref={uploadInputRef} type="file" className="hidden" onChange={handleUploadSelected} />
         <input ref={replaceInputRef} type="file" className="hidden" onChange={handleReplaceSelected} />
       </div>

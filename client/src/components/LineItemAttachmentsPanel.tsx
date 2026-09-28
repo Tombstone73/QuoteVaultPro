@@ -151,6 +151,7 @@ export function LineItemAttachmentsPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [userClosed, setUserClosed] = useState(false); // Track if user explicitly closed the panel
@@ -823,6 +824,18 @@ export function LineItemAttachmentsPanel({
     }
   };
 
+  const handleDownloadAll = async () => {
+    if (isDownloadingAll || parentType !== "order" || !orderId || !lineItemId) return;
+    setIsDownloadingAll(true);
+    try {
+      await downloadAuthenticatedFile(`/api/orders/${encodeURIComponent(orderId)}/line-items/${encodeURIComponent(lineItemId)}/files/download-all`, `order-line-${lineItemId}-files.zip`);
+    } catch (error) {
+      toast({ title: "Download All failed", description: error instanceof Error ? error.message : "Unable to download files", variant: "destructive" });
+    } finally {
+      setIsDownloadingAll(false);
+    }
+  };
+
   // Handle thumbnail generation (explicit user action, images only)
   const handleGenerateThumbnails = async (fileId: string, fileName: string) => {
     if (!filesApiPath) return;
@@ -936,7 +949,7 @@ export function LineItemAttachmentsPanel({
     >
       {/* Compact header - always visible */}
       <div className="px-3 py-2">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Paperclip className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm font-medium">Artwork</span>
@@ -946,7 +959,13 @@ export function LineItemAttachmentsPanel({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+          {parentType === "order" && orderId && lineItemId && attachments.length > 0 && (
+            <Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={isDownloadingAll} onClick={() => void handleDownloadAll()}>
+              {isDownloadingAll ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1 h-3.5 w-3.5" />}
+              {isDownloadingAll ? "Preparing ZIP..." : "Download All"}
+            </Button>
+          )}
           {canRepairArtworkRelationships && (
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void handleRepairArtworkRelationships()} disabled={isRepairingRelationships}>
               {isRepairingRelationships ? "Repairing…" : "Repair artwork relationships"}

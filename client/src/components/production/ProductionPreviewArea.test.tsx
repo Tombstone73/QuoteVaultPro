@@ -6,7 +6,11 @@ import path from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
+jest.mock("@/lib/authenticatedFileDownload", () => ({ downloadAuthenticatedFile: jest.fn(() => Promise.resolve()) }));
+jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
+
 import { ProductionPreviewArea, type ProductionPreviewSize } from "./ProductionPreviewArea";
+import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -65,6 +69,7 @@ describe("ProductionPreviewArea shared by Roll and Flatbed", () => {
   let root: Root;
 
   beforeEach(() => {
+    jest.mocked(downloadAuthenticatedFile).mockClear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -100,6 +105,28 @@ describe("ProductionPreviewArea shared by Roll and Flatbed", () => {
     expect(onDownload).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-testid="selected-job"]')?.textContent).toBe("roll-1");
     expect(container.querySelector('[data-testid="station-filter"]')?.textContent).toBe("queued");
+  });
+
+  test("Download All follows only the active viewer scope", async () => {
+    act(() => root.render(<Harness />));
+    await act(async () => { findButton(container, "Download All").click(); });
+    expect(downloadAuthenticatedFile).toHaveBeenLastCalledWith("/api/production/jobs/roll-1/files/download-all?scope=artwork", "production-job-roll-1-artwork.zip");
+    act(() => findButton(container, "Production File / Layout").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    await act(async () => { findButton(container, "Download All").click(); });
+    expect(downloadAuthenticatedFile).toHaveBeenLastCalledWith("/api/production/jobs/roll-1/files/download-all?scope=production", "production-job-roll-1-production.zip");
+    expect(container.querySelector('[data-testid="selected-job"]')?.textContent).toBe("roll-1");
+    expect(container.querySelector('[data-testid="station-filter"]')?.textContent).toBe("all");
+  });
+
+  test("Download All disables repeat clicks during fetch and recovers after failure", async () => {
+    let release: ((error: Error) => void) | undefined;
+    jest.mocked(downloadAuthenticatedFile).mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { release = reject; }));
+    act(() => root.render(<Harness />));
+    act(() => findButton(container, "Download All").click());
+    expect(findButton(container, "Preparing ZIP...").disabled).toBe(true);
+    expect(downloadAuthenticatedFile).toHaveBeenCalledTimes(1);
+    await act(async () => { release?.(new Error("Storage unavailable")); });
+    expect(findButton(container, "Download All").disabled).toBe(false);
   });
 
   test("job switches fall back to the available viewer", () => {

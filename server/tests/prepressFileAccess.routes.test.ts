@@ -52,6 +52,14 @@ describe("production and prepress file access routes", () => {
     expect(downloadProductionFileForJob).not.toHaveBeenCalled();
   });
 
+  test("scoped job and run archives reject unauthenticated requests before file lookup", async () => {
+    const app = buildApp(false);
+    const job = await request(app).get("/api/production/jobs/job_1/files/download-all?scope=artwork");
+    const run = await request(app).get("/api/production/runs/run_1/files/download-all");
+    expect(job.status).toBe(401);
+    expect(run.status).toBe(401);
+  });
+
   test("production final-file route passes authenticated job/file/org context to the ownership guard", async () => {
     downloadProductionFileForJob.mockImplementation(async ({ res }: any) => {
       res.type("application/pdf").status(200).send(Buffer.from("%PDF-1.4"));

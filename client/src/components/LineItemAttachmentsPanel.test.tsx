@@ -304,6 +304,30 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     }
   });
 
+  test("Order line Download All uses its own scoped archive and does not request file IDs", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["/api/orders/order-1/line-items/line-1/files"], [{
+      id: "art-1", fileRecordId: "record-1", fileName: "art.pdf", mimeType: "application/pdf", createdAt: "2026-07-20T00:00:00.000Z",
+    }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}>
+        <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+      </QueryClientProvider>));
+      const button = Array.from(host.querySelectorAll("button")).find((item) => item.textContent?.includes("Download All"));
+      expect(button).toBeTruthy();
+      await act(async () => button?.click());
+      expect(downloadAuthenticatedFile).toHaveBeenCalledWith("/api/orders/order-1/line-items/line-1/files/download-all", "order-line-line-1-files.zip");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      jest.mocked(downloadAuthenticatedFile).mockReset();
+    }
+  });
+
   test("canonical image artwork downloads its original filename through the same resolver", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const filesPath = "/api/orders/order-1/line-items/line-1/files";

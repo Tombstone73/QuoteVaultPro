@@ -489,7 +489,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerFulfillmentRoutes(app, { isAuthenticated, tenantContext });
 
   // Order line item file routes extracted to ./routes/orderLineItemFiles.routes.ts (do NOT re-add here)
-  registerOrderLineItemFileRoutes(app, { isAuthenticated, tenantContext });
+  registerOrderLineItemFileRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
 
   // Vendor and purchase order routes extracted to ./routes/procurement.routes.ts (do NOT re-add here)
   registerProcurementRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });

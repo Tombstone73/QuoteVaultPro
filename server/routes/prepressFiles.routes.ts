@@ -16,7 +16,7 @@
 import busboy from "busboy";
 import type { Express } from "express";
 import { and, eq } from "drizzle-orm";
-import { lineItemFiles, localFileCopyJobs, orderAuditLog, orderLineItems, orders, productionJobs } from "@shared/schema";
+import { lineItemFiles, localFileCopyJobs, orderAuditLog, orderLineItems, orders, productionJobs, productionRuns } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { hasAdminOrOwnerOperationalRole, normalizeRole } from "@shared/roleAccess";
@@ -25,6 +25,9 @@ import * as prepressFileService from "../prepressFileService";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 import { normalizeFinalProductionArtworkAllocations } from "../services/canonicalArtworkAllocationService";
+import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
+import { sendScopedFileArchive } from "../services/storage/scopedFileArchive";
+import { resolveLineItemProductionArtwork } from "@shared/productionHydration";
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
@@ -61,6 +64,63 @@ export function registerPrepressFileRoutes(
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const downloadLineItemFile = middleware.downloadLineItemFile ?? prepressFileService.downloadLineItemFile;
   const downloadProductionFileForJob = middleware.downloadProductionFileForJob ?? prepressFileService.downloadProductionFileForJob;
+
+  app.get("/api/production/jobs/:jobId/files/download-all", isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    try {
+      const [job] = await db.select({ orderId: productionJobs.orderId, lineItemId: productionJobs.lineItemId, orderNumber: orders.orderNumber })
+        .from(productionJobs)
+        .innerJoin(orders, and(eq(orders.id, productionJobs.orderId), eq(orders.organizationId, organizationId)))
+        .innerJoin(orderLineItems, and(eq(orderLineItems.id, productionJobs.lineItemId), eq(orderLineItems.orderId, orders.id)))
+        .where(and(eq(productionJobs.id, req.params.jobId), eq(productionJobs.organizationId, organizationId)))
+        .limit(1);
+      if (!job?.lineItemId) return res.status(404).json({ error: "Production job not found" });
+      const scope = req.query.scope;
+      if (scope !== "artwork" && scope !== "production") return res.status(400).json({ error: "Select artwork or production scope" });
+      const finals = await db.select({ fileRecordId: lineItemFiles.fileRecordId, originalFilename: lineItemFiles.originalFilename })
+        .from(lineItemFiles)
+        .where(and(eq(lineItemFiles.organizationId, organizationId), eq(lineItemFiles.orderId, job.orderId),
+          eq(lineItemFiles.lineItemId, job.lineItemId), eq(lineItemFiles.role, "final"), eq(lineItemFiles.status, "active")))
+        .orderBy(lineItemFiles.createdAt, lineItemFiles.id);
+      const files = scope === "production"
+        ? finals.map((file) => ({ fileRecordId: file.fileRecordId, filename: file.originalFilename }))
+        : resolveLineItemProductionArtwork({
+            lineItemArtwork: (await lineItemArtworkReadResolver.resolveForLineItem({ organizationId, lineItemId: job.lineItemId, purpose: "production" })).artwork
+              .filter((artwork) => artwork.orderId === job.orderId),
+            productionFileRecordIds: finals.map((file) => file.fileRecordId),
+          }).map((artwork) => ({ fileRecordId: artwork.fileRecordId, filename: artwork.file.originalFilename || "artwork" }));
+      if (files.some((file) => !file.fileRecordId)) return res.status(409).json({ error: "A production file has no canonical storage record; archive unavailable" });
+      await sendScopedFileArchive({ organizationId, files: files as Array<{ fileRecordId: string; filename: string }>,
+        downloadName: `${job.orderNumber}-${scope === "artwork" ? "artwork" : "production-files"}.zip`, res });
+    } catch (error) {
+      console.error("[Production] Job archive failed", error);
+      if (!res.headersSent) res.status(500).json({ error: "Unable to download production job files" });
+    }
+  });
+
+  app.get("/api/production/runs/:runId/files/download-all", isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    try {
+      const [run] = await db.select({ id: productionRuns.id, runNumber: productionRuns.runNumber }).from(productionRuns)
+        .where(and(eq(productionRuns.id, req.params.runId), eq(productionRuns.organizationId, organizationId))).limit(1);
+      if (!run) return res.status(404).json({ error: "Production run not found" });
+      const files = await db.select({ fileRecordId: lineItemFiles.fileRecordId, filename: lineItemFiles.originalFilename })
+        .from(lineItemFiles)
+        .where(and(eq(lineItemFiles.organizationId, organizationId), eq(lineItemFiles.productionRunId, run.id),
+          eq(lineItemFiles.role, "final"), eq(lineItemFiles.status, "active")))
+        .orderBy(lineItemFiles.createdAt, lineItemFiles.id);
+      if (files.some((file) => !file.fileRecordId)) return res.status(409).json({ error: "A run file has no canonical storage record; archive unavailable" });
+      await sendScopedFileArchive({ organizationId, files: files as Array<{ fileRecordId: string; filename: string }>,
+        downloadName: `PR-${String(run.runNumber).padStart(4, "0")}-production-files.zip`, res });
+    } catch (error) {
+      console.error("[Production] Run archive failed", error);
+      if (!res.headersSent) res.status(500).json({ error: "Unable to download production run files" });
+    }
+  });
 
   app.patch("/api/prepress/files/:fileId/artwork-allocation", isAuthenticated, tenantContext, async (req: any, res) => {
     if (!assertInternalUser(req, res)) return;

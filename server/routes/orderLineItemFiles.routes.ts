@@ -53,6 +53,7 @@ import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } f
 import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
+import { sendScopedFileArchive } from "../services/storage/scopedFileArchive";
 import {
   ArtworkSetOperationError,
   createArtworkSet,
@@ -159,11 +160,42 @@ export function registerOrderLineItemFileRoutes(
   middleware: {
     isAuthenticated: any;
     tenantContext: any;
+    assertInternalUser: (req: any, res: any) => boolean;
   },
 ): void {
   const { isAuthenticated, tenantContext } = middleware;
 
   // ===== ORDER LINE ITEM FILE ROUTES =====
+
+  app.get("/api/orders/:orderId/line-items/:lineItemId/files/download-all", isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!middleware.assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    const { orderId, lineItemId } = req.params;
+    try {
+      const [line] = await db.select({ id: orderLineItems.id, sortOrder: orderLineItems.sortOrder, orderNumber: orders.orderNumber }).from(orderLineItems)
+        .innerJoin(orders, and(eq(orders.id, orderLineItems.orderId), eq(orders.organizationId, organizationId)))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId))).limit(1);
+      if (!line) return res.status(404).json({ error: "Order line item not found" });
+      const resolution = await lineItemArtworkReadResolver.resolveForLineItem({ organizationId, lineItemId, purpose: "order" });
+      const { assetRepository } = await import("../services/assets/AssetRepository");
+      const references = (await assetRepository.listAssetsForParent(organizationId, "order_line_item", lineItemId))
+        .filter((asset: any) => asset.role === "reference")
+        .sort((left: any, right: any) => String(left.id).localeCompare(String(right.id)));
+      if (references.some((asset: any) => !asset.fileRecordId)) {
+        return res.status(409).json({ error: "A reference file has no canonical storage record; archive unavailable" });
+      }
+      const files = [
+        ...resolution.artwork.filter((artwork) => artwork.orderId === orderId)
+          .map((artwork) => ({ fileRecordId: artwork.fileRecordId, filename: artwork.file.originalFilename || "artwork" })),
+        ...references.map((asset: any) => ({ fileRecordId: String(asset.fileRecordId), filename: String(asset.fileName || "reference") })),
+      ];
+      await sendScopedFileArchive({ organizationId, files, downloadName: `${line.orderNumber}-line-${line.sortOrder + 1}-artwork.zip`, res });
+    } catch (error) {
+      console.error("[OrderLineItemFiles] Archive failed", error);
+      if (!res.headersSent) res.status(500).json({ error: "Unable to download line item files" });
+    }
+  });
 
   app.post("/api/orders/:orderId/line-items/:lineItemId/repair-artwork-relationships", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

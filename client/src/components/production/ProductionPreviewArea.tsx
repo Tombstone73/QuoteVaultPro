@@ -2,6 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Download, Loader2 } from "lucide-react";
+import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { useToast } from "@/hooks/use-toast";
 
 export type ProductionPreviewSize = "compact" | "normal" | "large";
 type PreviewTab = "artwork" | "production";
@@ -32,6 +35,23 @@ export function ProductionPreviewArea({
   productionFilePreview: ReactNode;
 }) {
   const [activeTab, setActiveTab] = useState<PreviewTab>(() => availableTab(artworkCount, productionFileCount));
+  const [downloading, setDownloading] = useState(false);
+  const { toast } = useToast();
+
+  const downloadAll = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await downloadAuthenticatedFile(
+        `/api/production/jobs/${encodeURIComponent(jobId)}/files/download-all?scope=${activeTab}`,
+        `production-job-${jobId}-${activeTab}.zip`,
+      );
+    } catch (error) {
+      toast({ title: "Download All failed", description: error instanceof Error ? error.message : "Unable to download files", variant: "destructive" });
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     setActiveTab((current) => {
@@ -54,6 +74,10 @@ export function ProductionPreviewArea({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          <Button type="button" size="sm" variant="outline" disabled={downloading || (activeTab === "artwork" ? artworkCount === 0 : productionFileCount === 0)} onClick={() => void downloadAll()}>
+            {downloading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Download className="mr-1 h-4 w-4" />}
+            {downloading ? "Preparing ZIP..." : "Download All"}
+          </Button>
           <div className="flex rounded-md border border-titan-border-subtle p-0.5" aria-label="Preview area size">
             {(["compact", "normal", "large"] as const).map((option) => (
               <Button
