@@ -228,7 +228,7 @@ describe("assistant tool registry", () => {
     expect(execute).toHaveBeenCalledWith({ query: "OTB" }, expect.objectContaining({
       scope: { organizationId: "org_1", userId: "user_1" },
     }));
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ status: "succeeded" }));
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ status: "succeeded", logicalCapability: "legacy.search.global", compatibilityToolName: "search.global", durationMs: expect.any(Number) }));
   });
 
   test("keeps a validated read result when non-critical audit persistence fails", async () => {

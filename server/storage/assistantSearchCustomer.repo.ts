@@ -11,6 +11,7 @@ import {
   productionJobs,
   quotes,
 } from "@shared/schema";
+import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
 
 export const ASSISTANT_SEARCH_MAX_RESULTS_PER_CATEGORY = 5;
 
@@ -112,6 +113,7 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
 
   async search(organizationId: string, query: string, limit: number): Promise<AssistantSearchRecord[]> {
     const pattern = searchPattern(query);
+    const canonicalOrder = canonicalOrderNumberLookup(query);
     const parsedDocumentNumber = /^\d{1,10}$/.test(query) ? Number(query) : null;
     const exactDocumentNumber = parsedDocumentNumber !== null && Number.isSafeInteger(parsedDocumentNumber)
       ? parsedDocumentNumber
@@ -148,7 +150,7 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
         .select({ id: orders.id, displayNumber: orders.displayNumber, orderNumber: orders.orderNumber, customerName: customers.companyName, status: orders.status, updatedAt: orders.updatedAt })
         .from(orders)
         .innerJoin(customers, eq(orders.customerId, customers.id))
-        .where(and(tenant(orders.organizationId), tenant(customers.organizationId), or(ilike(orders.orderNumber, pattern), ilike(orders.displayNumber, pattern), ilike(orders.poNumber, pattern), ilike(customers.companyName, pattern))))
+        .where(and(tenant(orders.organizationId), tenant(customers.organizationId), or(ilike(orders.orderNumber, pattern), ilike(orders.displayNumber, pattern), ilike(orders.poNumber, pattern), ilike(customers.companyName, pattern), ...(canonicalOrder ? [eq(orders.orderNumber, canonicalOrder.databaseValue)] : []))))
         .orderBy(desc(orders.updatedAt))
         .limit(limit),
       this.dbInstance

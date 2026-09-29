@@ -25,6 +25,7 @@ import type {
   InvestigationSnapshot,
 } from "@shared/investigationContracts";
 import { investigationResourceTypeValues } from "@shared/investigationContracts";
+import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
 import { db } from "../../db";
 
 export type InvestigationScope = { organizationId: string; permissions: readonly string[] };
@@ -86,6 +87,7 @@ const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
 export class DrizzleInvestigationRepository implements InvestigationRepository {
   async search(organizationId: string, query: string, types: readonly InvestigationResourceType[], limit: number): Promise<InvestigationSearchCandidate[]> {
     const pattern = `%${escapeLike(query)}%`;
+    const canonicalOrder = canonicalOrderNumberLookup(query);
     const requested = new Set(types);
     const rows: InvestigationSearchCandidate[] = [];
     const add = (resource: InvestigationResourceReference, summary: string, values: Array<string | number | null | undefined>) => {
@@ -96,7 +98,7 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
     if (requested.has("order")) {
       const records = await db.select({ id: orders.id, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, status: orders.status, customerName: customers.companyName })
         .from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
-        .where(and(eq(orders.organizationId, organizationId), or(ilike(orders.orderNumber, pattern), ilike(orders.displayNumber, pattern), ilike(customers.companyName, pattern)))).orderBy(desc(orders.updatedAt)).limit(limit);
+        .where(and(eq(orders.organizationId, organizationId), or(ilike(orders.orderNumber, pattern), ilike(orders.displayNumber, pattern), ilike(customers.companyName, pattern), ...(canonicalOrder ? [eq(orders.orderNumber, canonicalOrder.databaseValue)] : [])))).orderBy(desc(orders.updatedAt)).limit(limit);
       records.forEach((record) => add(orderRef(record.id, record.displayNumber, record.orderNumber), `${record.customerName ?? "Unassigned customer"} · ${record.status}`, [record.orderNumber, record.displayNumber, record.customerName]));
     }
     if (requested.has("customer") && rows.length < limit) {

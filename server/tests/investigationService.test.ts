@@ -104,7 +104,9 @@ describe("resource-oriented investigation service", () => {
     await new AssistantOrchestrationService(createAssistantInvestigationToolAdapters(new InvestigationService(repository())), audit).executePlan({ intent: "lookup", selectedSkill: "order", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise", toolCalls: [{ toolName: "investigation.related", arguments: { resource: { type: "order", id: "order_20544" }, depth: 1, limit: 12 } }] }, {
       scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: null }, permissions: ["assistant.internal_staff"], context: { contextVersion: "v1", route: "/orders/order_20544", pageTitle: "Order", entityType: "order", entityId: "order_20544", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-09-29T12:00:00.000Z", unsavedChanges: false }, correlationId: "correlation_1",
     });
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ operationalMetadata: { resourceTypes: expect.arrayContaining(["order", "customer"]), resultCount: 3, depth: 1, truncated: false } }));
+    const event = audit.mock.calls[0]?.[0];
+    expect(event).toEqual(expect.objectContaining({ logicalCapability: "investigation.related", operationalMetadata: { resourceTypes: expect.arrayContaining(["order", "customer"]), resultCount: 3, depth: 1, truncated: false } }));
+    expect(event).not.toHaveProperty("compatibilityToolName");
     expect(JSON.stringify(audit.mock.calls)).not.toContain("order_20544");
   });
 

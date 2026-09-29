@@ -67,6 +67,12 @@ export interface AssistantToolExecutionAudit {
   auditCategory: string;
   status: "succeeded" | "not_found" | "permission_denied" | "partial" | "failed" | "rejected" | "timed_out";
   durationMs: number;
+  /** A stable logical read family, separate from an externally retained
+   * compatibility tool name. It contains no model arguments or record IDs. */
+  logicalCapability?: string;
+  /** Present only for an established non-Investigation read tool so telemetry
+   * can show that it entered through a compatibility projection. */
+  compatibilityToolName?: AssistantToolName;
   /** Never raw input or model output. */
   failureCode?: AssistantToolFailureCode;
   failureCategory?: AssistantToolFailureCategory;
@@ -89,6 +95,12 @@ export interface AssistantToolExecutionAudit {
     depth?: number;
     truncated?: boolean;
   };
+}
+
+function readAuditIdentity(toolName: AssistantToolName): Pick<AssistantToolExecutionAudit, "logicalCapability" | "compatibilityToolName"> {
+  return toolName.startsWith("investigation.")
+    ? { logicalCapability: `investigation.${toolName.slice("investigation.".length)}` }
+    : { logicalCapability: `legacy.${toolName}`, compatibilityToolName: toolName };
 }
 
 export interface AssistantToolExecution {
@@ -230,6 +242,7 @@ export class AssistantOrchestrationService {
       await this.audit({
         correlationId: trustedContext.correlationId,
         toolName,
+        ...readAuditIdentity(toolName),
         toolVersion: "v1",
         auditCategory: "assistant_rejected_tool",
         status: "rejected",
@@ -283,6 +296,7 @@ export class AssistantOrchestrationService {
       await this.audit({
         correlationId: trustedContext.correlationId,
         toolName: tool.name,
+        ...readAuditIdentity(tool.name),
         toolVersion: tool.version,
         auditCategory: tool.auditCategory,
         status: result.status,
@@ -325,6 +339,7 @@ export class AssistantOrchestrationService {
     await this.audit({
       correlationId: trustedContext.correlationId,
       toolName: tool.name,
+      ...readAuditIdentity(tool.name),
       toolVersion: tool.version,
       auditCategory: tool.auditCategory,
       status: timedOut ? "timed_out" : "failed",
@@ -357,6 +372,7 @@ export class AssistantOrchestrationService {
     await this.audit({
       correlationId: trustedContext.correlationId,
       toolName: tool.name,
+      ...readAuditIdentity(tool.name),
       toolVersion: tool.version,
       auditCategory: tool.auditCategory,
       status,

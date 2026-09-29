@@ -30,7 +30,6 @@ const entityTypes = new Set(["customer", "contact", "order", "quote", "product",
 
 function sourceLink(record: { recordId: string; route: string; label: string }, entityType?: string, capturedAt?: string): AssistantSourceLink {
   return {
-    ...createAssistantInvestigationToolAdapters(),
     label: record.label,
     href: record.route,
     ...(entityType && entityTypes.has(entityType) ? { entityType: entityType as AssistantSourceLink["entityType"] } : {}),
@@ -98,6 +97,11 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
   const quoteSearch = createQuoteSearchTool();
   const quoteDetail = createQuoteDetailTool();
   return {
+    // Investigation is the preferred cross-domain read vocabulary. Legacy
+    // tools below remain registered where their projections carry semantics
+    // (notably Product, reporting, and customer commercial summaries) the
+    // resource graph intentionally does not expose yet.
+    ...createAssistantInvestigationToolAdapters(),
     ...createStage2OrderProductToolAdapters(),
     ...createAssistantProductionReportingToolAdapters(),
     ...createAssistantOrderDueSummaryToolAdapters(),
