@@ -10,6 +10,7 @@ import { replacementRemainingQuantity, type ReplacementBillingTreatment, type Sh
 import { replacementReasons, validReplacementInput, type CreateReplacementObligationInput, type ReplacementObligation, type ReplacementObligationEvent, type ReplacementObligationProjection, type ReplacementObligationStatus } from "../../src/modules/fulfillment/replacementObligations.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
 import { createOrReadReplacementInvoice, type ReplacementInvoiceProjection } from "../billing/postgresReplacementInvoice.js";
+import { reconcileOrderInTransaction } from "../sales/postgresOrderAutomaticLifecycle.js";
 
 type Actor = Readonly<{ kind: OperationContext["principal"]["kind"]; subject:string; staffActorUserId?:string }>;
 type ObligationRow = { id:string; organization_id:string; order_document_id:string; order_line_id:string; source_fulfillment_handoff_id:string|null; source_shipment_id:string|null; predecessor_replacement_obligation_id:string|null; replacement_quantity:number; reason:string; responsibility:ShippingResponsibility; billing_treatment:ReplacementBillingTreatment; note:string|null; status:ReplacementObligationStatus; created_at:Date; created_principal_kind:ReplacementObligation["createdPrincipalKind"]; created_principal_subject:string };
@@ -32,6 +33,9 @@ export class PostgresReplacementObligationService {
         const org=brandedId<"OrganizationId">(c.organizationId), a=actor(c);
         const request=await this.requests.reserve(client,{organizationId:org,operation:"fulfillment.replacement.create.v1",businessRequestId:input.businessRequestId,payloadFingerprint:fingerprint(input),principalKind:a.kind,principalSubject:a.subject,staffActorUserId:a.staffActorUserId});
         if(request.kind==="replay") { if(!request.request.resultJson) throw new V2ApplicationError("STALE_STATE","The replacement request is still being completed."); return request.request.resultJson as ReplacementObligationProjection; }
+        // Match the lifecycle's Invoice-before-Order locking discipline before
+        // locking the replacement source rows below.
+        await client.query("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2 FOR UPDATE",[org,input.orderId]);
         const line=await client.query<{id:string}>("SELECT l.id FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id JOIN v2_sales_document_lines l ON l.organization_id=o.organization_id AND l.document_id=o.document_id WHERE o.organization_id=$1 AND o.document_id=$2 AND d.document_kind='order' AND o.commercial_state IN ('open','completed') AND l.id=$3 FOR UPDATE OF d,o,l",[org,input.orderId,input.orderLineId]);
         if(!line.rows[0]) throw new V2ApplicationError("NOT_FOUND","The Order line is not available for replacement.");
         const source=await client.query<{id:string}>(`SELECT h.id FROM v2_fulfillment_handoffs h JOIN v2_fulfillment_handoff_lines hl ON hl.organization_id=h.organization_id AND hl.handoff_id=h.id
@@ -44,6 +48,11 @@ export class PostgresReplacementObligationService {
         const id=randomUUID();
         const created=await client.query<ObligationRow>(`INSERT INTO v2_order_replacement_obligations(id,organization_id,order_document_id,order_line_id,source_fulfillment_handoff_id,source_shipment_id,predecessor_replacement_obligation_id,replacement_quantity,reason,responsibility,billing_treatment,note,status,created_principal_kind,created_principal_subject,created_staff_actor_user_id)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'open',$13,$14,$15) RETURNING *`,[id,org,input.orderId,input.orderLineId,source.rows[0].id,input.sourceShipmentId??null,input.predecessorReplacementObligationId??null,input.replacementQuantity,input.reason,input.responsibility,input.billingTreatment,input.note??null,a.kind,a.subject,a.staffActorUserId??null]);
+        // A newly active obligation is canonical evidence that a completed
+        // Order must reopen. Reconcile on this same client before writing the
+        // successor: the Production guard remains authoritative and every
+        // dependent change rolls back as one unit.
+        await reconcileOrderInTransaction(client,org,input.orderId);
         const workIds:string[]=[];
         for(const sourceWork of sources.rows){const workId=randomUUID(); await client.query(`INSERT INTO v2_production_works(id,organization_id,order_document_id,order_line_id,requirement_key,artwork_assignment_id,artwork_file_id,prepress_unit_id,side,source_page_index,layer_key,layer_order,ordered_quantity,replacement_obligation_id,replacement_origin_production_work_id,created_principal_kind,created_principal_subject,created_staff_actor_user_id)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,[workId,org,sourceWork.order_document_id,sourceWork.order_line_id,sourceWork.requirement_key,sourceWork.artwork_assignment_id,sourceWork.artwork_file_id,sourceWork.prepress_unit_id,sourceWork.side,sourceWork.source_page_index,sourceWork.layer_key,sourceWork.layer_order,input.replacementQuantity,id,sourceWork.id,a.kind,a.subject,a.staffActorUserId??null]);workIds.push(workId);}
@@ -56,7 +65,6 @@ export class PostgresReplacementObligationService {
         await this.requests.succeed(client,org,request.request.id,{resourceType:"replacement_obligation",resourceId:id,resultJson:projected});
         return projected;
       });
-      await this.lifecycle?.reconcileOrder(brandedId<"OrganizationId">(c.organizationId),input.orderId);
       return success(result);
     } catch(error) { return failure(this.error(error)); }
   }

@@ -1,31 +1,17 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { brandedId, type InvoiceId, type OrderId, type OrganizationId } from "../../src/modules/shared/commercialValues.js";
 import { reconciledOrderState, type OrderAutomaticLifecycle } from "../../src/modules/sales/orderAutomaticLifecycle.js";
 import { orderCompletionEligibility } from "../../src/modules/sales/orderLifecycle.js";
 
-/**
- * One canonical reconciliation point for Order state.  It reads immutable
- * Production/Fulfillment evidence and the current V2 Invoice settlement; no
- * provider, queue, or browser state participates in the decision.
- */
-export class PostgresOrderAutomaticLifecycle implements OrderAutomaticLifecycle {
-  constructor(private readonly pool: Pool) {}
-
-  async reconcileInvoice(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<void> {
-    const found = await this.pool.query<{ order_id: string }>("SELECT sales_order_document_id order_id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2", [organizationId, invoiceId]);
-    if (found.rows[0]) await this.reconcileOrder(organizationId, brandedId<"OrderId">(found.rows[0].order_id));
-  }
-
-  async reconcileOrder(organizationId: OrganizationId, orderId: OrderId): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
+/** Reconciles using a caller-owned transaction, so dependent operational
+ * writes can observe the canonical state without publishing a partial result. */
+export const reconcileOrderInTransaction = async (client: PoolClient, organizationId: OrganizationId, orderId: OrderId): Promise<void> => {
       // Financial writers lock the Invoice before changing settlements. Keep the
       // same order here so reconciliation cannot observe an interleaved payment.
       await client.query("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2 FOR UPDATE", [organizationId, orderId]);
       const order = await client.query<{ state: "open" | "completed" | "cancelled" }>("SELECT commercial_state state FROM v2_sales_order_details WHERE organization_id=$1 AND document_id=$2 FOR UPDATE", [organizationId, orderId]);
       const current = order.rows[0];
-      if (!current || current.state === "cancelled") { await client.query("COMMIT"); return; }
+      if (!current || current.state === "cancelled") return;
       const lines = await client.query<{ id:string;description:string;quantity:number;workflow_intent:string|null;requires_production:boolean;production_complete:boolean;fulfilled_quantity:string;route_complete:boolean;production_requirement:"required"|"not_required"|"satisfied"|null }>(`SELECT l.id,l.description,l.quantity,
         CASE WHEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') IN ('standard_production','fulfillment_only','service_fee') THEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') ELSE NULL END workflow_intent,
         CASE WHEN e.production_requirement='not_required' THEN false ELSE COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) END requires_production,
@@ -62,6 +48,26 @@ export class PostgresOrderAutomaticLifecycle implements OrderAutomaticLifecycle 
         await client.query("UPDATE v2_sales_order_details SET commercial_state='open',completed_at=NULL,completed_principal_kind=NULL,completed_principal_subject=NULL,completed_staff_actor_user_id=NULL,archived_at=NULL,archived_principal_kind=NULL,archived_principal_subject=NULL,archived_staff_actor_user_id=NULL,updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND commercial_state='completed'", [organizationId, orderId]);
         await client.query("INSERT INTO v2_audit_events(organization_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,changes) VALUES($1,'sales.order.lifecycle.reconcile.v1','order_auto_reopened','sales_order',$2,'service','order-lifecycle-reconciler',$3::jsonb)", [organizationId, orderId, JSON.stringify([{ kind: "order_auto_reopened", summary: "A current operational or settlement obligation is no longer satisfied." }])]);
       }
+};
+
+/**
+ * One canonical reconciliation point for Order state.  It reads immutable
+ * Production/Fulfillment evidence and the current V2 Invoice settlement; no
+ * provider, queue, or browser state participates in the decision.
+ */
+export class PostgresOrderAutomaticLifecycle implements OrderAutomaticLifecycle {
+  constructor(private readonly pool: Pool) {}
+
+  async reconcileInvoice(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<void> {
+    const found = await this.pool.query<{ order_id: string }>("SELECT sales_order_document_id order_id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2", [organizationId, invoiceId]);
+    if (found.rows[0]) await this.reconcileOrder(organizationId, brandedId<"OrderId">(found.rows[0].order_id));
+  }
+
+  async reconcileOrder(organizationId: OrganizationId, orderId: OrderId): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await reconcileOrderInTransaction(client, organizationId, orderId);
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
