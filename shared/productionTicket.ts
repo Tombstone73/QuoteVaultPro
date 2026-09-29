@@ -397,6 +397,7 @@ export interface TravelerLineItemSource {
   quantity: number;
   size?: string | null;
   material?: string | null;
+  selectedOptions?: Array<{ optionLabel: string; selectedLabel: string }>;
   productionNotes?: string | null;
 }
 
@@ -444,6 +445,7 @@ export interface TravelerLineItem {
   quantity: string;
   size: string;
   material: string;
+  selectedOptions: Array<{ optionLabel: string; selectedLabel: string }>;
   productionNotes: string;
 }
 
@@ -538,6 +540,9 @@ export function buildOrderTravelerData(
     quantity: Number.isFinite(li.quantity) ? String(li.quantity) : EM_DASH,
     size: String(li.size || "").trim() || EM_DASH,
     material: String(li.material || "").trim() || EM_DASH,
+    selectedOptions: (li.selectedOptions || []).filter((option) =>
+      Boolean(option.optionLabel?.trim() && option.selectedLabel?.trim()),
+    ),
     productionNotes: String(li.productionNotes || "").trim(),
   }));
 

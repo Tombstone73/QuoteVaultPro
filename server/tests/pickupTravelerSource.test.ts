@@ -7,6 +7,7 @@ const write = jest.fn(() => { throw new Error("Rendering must never write state"
 jest.unstable_mockModule("../db", () => ({ db: { select, insert: write, update: write, delete: write } }));
 jest.unstable_mockModule("../routes/flatStockNesting.shared", () => ({
   collectLineItemProductionMaterialIds: () => [], resolveLineItemMaterialDisplayLabel: () => "Coroplast - 4mm",
+  buildPrepressOptionRows: () => [],
 }));
 const { getOrderTravelerSource } = await import("../services/orderTravelerSourceService");
 

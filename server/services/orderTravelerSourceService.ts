@@ -11,8 +11,8 @@ import {
 } from "@shared/schema";
 import {
   collectLineItemProductionMaterialIds,
-  resolveLineItemMaterialDisplayLabel,
 } from "../routes/flatStockNesting.shared";
+import { resolveTravelerLineConfiguration } from "./orderTravelerLineConfiguration";
 import type { OrderTravelerSource, PickupTravelerPrintContext } from "@shared/productionTicket";
 
 /**
@@ -109,21 +109,19 @@ export async function getOrderTravelerSource(
     : null;
   const travelerLineItems = lineItemRows
     .filter((lineItem) => !requestedPickupQuantityByLine || requestedPickupQuantityByLine.has(lineItem.id))
-    .map((lineItem) => ({
-      orderLineItemId: lineItem.id,
-      pickupProgress: pickupPrintContext?.progressSnapshot?.lines.find(item => item.orderLineItemId === lineItem.id) ?? null,
-      description: lineItem.description ?? "",
-      quantity: requestedPickupQuantityByLine?.get(lineItem.id) ?? (Number(lineItem.quantity) || 0),
-      size: lineItem.width && lineItem.height ? `${lineItem.width} × ${lineItem.height}` : null,
-      material: resolveLineItemMaterialDisplayLabel({
-        lineItem,
-        materialName: lineItem.materialId ? materialNameById.get(lineItem.materialId) ?? null : null,
-        materialById: materialNameById,
-        productPrimaryMaterialId: lineItem.productPrimaryMaterialId ?? null,
-        primaryMaterialName: lineItem.productPrimaryMaterialId ? materialNameById.get(lineItem.productPrimaryMaterialId) ?? null : null,
-      }),
-      productionNotes: lineItem.productionNotes ?? null,
-    }));
+    .map((lineItem) => {
+      const configuration = resolveTravelerLineConfiguration(lineItem, materialNameById);
+      return {
+        orderLineItemId: lineItem.id,
+        pickupProgress: pickupPrintContext?.progressSnapshot?.lines.find(item => item.orderLineItemId === lineItem.id) ?? null,
+        description: lineItem.description ?? "",
+        quantity: requestedPickupQuantityByLine?.get(lineItem.id) ?? (Number(lineItem.quantity) || 0),
+        size: lineItem.width && lineItem.height ? `${lineItem.width} × ${lineItem.height}` : null,
+        material: configuration.material,
+        selectedOptions: configuration.selectedOptions,
+        productionNotes: lineItem.productionNotes ?? null,
+      };
+    });
 
   return {
     pickupStatus,

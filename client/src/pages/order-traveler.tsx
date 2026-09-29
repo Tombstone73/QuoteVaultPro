@@ -230,9 +230,12 @@ function TravelerDocument({ orderId, data, isLoading, error, printNote, feedMm, 
                   {!pickupContext ? <span>Qty: {li.quantity}</span> : null}
                   <span style={{ textAlign: "right" }}>{li.size}</span>
                 </div>
-                <div style={{ fontSize: "15px", fontWeight: 900, lineHeight: 1.15, marginTop: "1mm" }}>
+                {li.material !== "—" || li.selectedOptions.length === 0 ? <div style={{ fontSize: "15px", fontWeight: 900, lineHeight: 1.15, marginTop: "1mm", overflowWrap: "anywhere" }}>
                   Material: {li.material}
-                </div>
+                </div> : null}
+                {li.selectedOptions.map((option, index) => <div key={`${option.optionLabel}-${index}`} style={{ fontSize: "14px", fontWeight: 800, lineHeight: 1.15, marginTop: "0.5mm", overflowWrap: "anywhere" }}>
+                  {option.optionLabel}: {option.selectedLabel}
+                </div>)}
                 {pickupContext ? (
                   <div data-testid="pickup-quantity-progress" style={{ fontSize: "16px", fontWeight: 900, lineHeight: 1.2, marginTop: "1.25mm", overflowWrap: "anywhere" }}>
                     {li.pickupProgress ? <>
