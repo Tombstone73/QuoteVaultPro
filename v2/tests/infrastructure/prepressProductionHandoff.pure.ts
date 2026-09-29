@@ -26,4 +26,7 @@ assert.ok(queries.some(sql=>sql.includes("FOR SHARE OF l")), "handoff locks the 
 assert.ok(queries.some(sql=>sql.includes("NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor")), "only current production artwork is eligible");
 assert.ok(queries.some(sql=>sql.startsWith("UPDATE v2_route_instances")), "route moves only inside the same handoff transaction");
 assert.ok(queries.some(sql=>sql.startsWith("INSERT INTO v2_production_works")), "canonical Production work is created, never a Prepress shadow job");
+const workInsert=queries.find(sql=>sql.startsWith("INSERT INTO v2_production_works"));
+assert.match(workInsert??"",/ON CONFLICT\(organization_id,artwork_assignment_id\) WHERE rework_cycle_id IS NULL AND replacement_obligation_id IS NULL DO NOTHING/,"original work targets the partial unique index, leaving rework and replacements distinct");
+assert.ok(queries.some(sql=>sql.startsWith("SELECT id FROM v2_production_works")&&sql.includes("rework_cycle_id IS NULL AND replacement_obligation_id IS NULL")),"handoff reloads only original work on retry");
 console.log("Prepress-to-Production frozen-route handoff contract passed.");
