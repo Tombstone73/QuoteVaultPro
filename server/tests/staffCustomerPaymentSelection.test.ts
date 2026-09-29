@@ -66,6 +66,27 @@ const input = (overrides: any = {}) => ({ staffSelection: true, organizationId: 
   allocationMode: 'oldest_first' as const, method: 'check', appliedAt: new Date('2026-09-28'), idempotencyKey: 'request-1', expectedCustomerId: 'customer', ...overrides });
 
 describe('staff selected versus payable customer payment (mocked transaction)', () => {
+  test('stored Invoice drift cannot be hidden by current Order ownership during payment', async () => {
+    rows.invoices[1].orderId = 'order'; rows.invoices[1].customerId = 'old-customer';
+    rows.orders.push({ id: 'order', organizationId: 'org', customerId: 'customer' });
+    await expect(record(input())).rejects.toMatchObject({ code: 'BILLING_OWNERSHIP_REVIEW_REQUIRED' });
+    expect(rows.customer_payment_batches).toHaveLength(0);
+  });
+  test('payment after coherent owner change records only the new Customer', async () => {
+    rows.invoices[1].orderId = 'order'; rows.invoices[1].customerId = 'zionsville';
+    rows.orders.push({ id: 'order', organizationId: 'org', customerId: 'zionsville' });
+    const result = await record(input({ invoiceIds: ['b'], expectedCustomerId: 'zionsville', amountCents: 10000 }));
+    expect(result.batch.customerId).toBe('zionsville');
+    expect(rows.audit_logs[0].newValues.customerId).toBe('zionsville');
+    expect(result.payments[0].customerPaymentBatchId).toBe(result.batch.id);
+  });
+  test('pending batch from the prior Customer cannot finalize against newly owned Invoices', async () => {
+    rows.customer_payment_batches.push({ id: 'old-batch', organizationId: 'org', idempotencyKey: 'request-1', status: 'pending', customerId: 'old-customer' });
+    await expect(record(input({ invoiceIds: ['b'], amountCents: 10000, staffSelection: false,
+      existingBatchId: 'old-batch', provider: 'stripe' }))).rejects.toMatchObject({ code: 'CUSTOMER_MISMATCH' });
+    expect(rows.customer_payment_batches[0].status).toBe('pending');
+    expect(paymentInserts).toBe(0);
+  });
   test('paid and stale-status zero balances are excluded using ledger truth, preserving canonical oldest-first order', async () => {
     rows.invoices[0].status = 'billed';
     const result = await preview(input());
@@ -131,6 +152,18 @@ describe('staff selected versus payable customer payment (mocked transaction)', 
     const first = await record(input()); const replay = await record(input());
     expect(replay).toMatchObject({ reused: true, batch: { id: first.batch.id }, appliedAmountCents: 30000 });
     expect(rows.customer_payment_batches).toHaveLength(1); expect(rows.payments).toHaveLength(4); expect(rows.audit_logs).toHaveLength(1);
+  });
+  test.each(['pending', 'canceled', 'failed'])('a %s request cannot masquerade as a completed idempotent payment', async status => {
+    rows.customer_payment_batches.push({ id: 'old-batch', organizationId: 'org', idempotencyKey: 'request-1', customerId: 'customer', status });
+    await expect(record(input())).rejects.toMatchObject({ code: 'CUSTOMER_MISMATCH' });
+    expect(paymentInserts).toBe(0);
+    expect(rows.customer_payment_batches[0].status).toBe(status);
+  });
+  test('a completed idempotent request cannot be replayed for another Customer', async () => {
+    await record(input());
+    const before = structuredClone(rows);
+    await expect(record(input({ expectedCustomerId: 'different-customer' }))).rejects.toMatchObject({ code: 'CUSTOMER_MISMATCH' });
+    expect(rows).toEqual(before);
   });
   test('failure after one allocation rolls back the batch and every child payment', async () => {
     const before = structuredClone(rows); failPaymentNumber = 2;

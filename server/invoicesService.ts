@@ -1339,9 +1339,7 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     Number((invoice as any).subtotalCents ?? 0) !== snapshot.subtotalCents ||
     Number((invoice as any).taxCents ?? 0) !== snapshot.taxCents ||
     Number((invoice as any).shippingCents ?? 0) !== snapshot.shippingCents ||
-    Number((invoice as any).totalCents ?? 0) !== snapshot.totalCents ||
-    String((invoice as any).customerId ?? "") !== String((order as any).customerId ?? "") ||
-    String((invoice as any).contactId ?? "") !== String((order as any).customerId ? "" : (order as any).contactId ?? "");
+    Number((invoice as any).totalCents ?? 0) !== snapshot.totalCents;
   if (!lineSnapshotsChanged && !financialChanged) return { status: "unchanged" as const, invoice };
 
   const paymentRows = await tx.select().from(payments).where(and(
@@ -1378,9 +1376,10 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   }
   const hasQuickBooksLink = Boolean(String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || "").trim());
   const nextInvoiceVersion = Number((invoice as any).invoiceVersion || 1) + 1;
+  // Billing ownership is written only by the guarded, audited owner transition.
+  // A line/price recalculation must not silently retarget a sent or exported
+  // legacy Invoice whose stored owner differs from its Order.
   const [updated] = await tx.update(invoices).set({
-    customerId: order.customerId,
-    contactId: order.customerId ? null : order.contactId,
     subtotal: snapshot.subtotal.toFixed(2),
     tax: snapshot.tax.toFixed(2),
     total: snapshot.total.toFixed(2),

@@ -79,6 +79,29 @@ beforeEach(() => {
 const save = (changes: any) => operations.updateEditableHeader({ organizationId: "org", actorUserId: "staff", orderId: "order", changes });
 
 describe("canonical contact billing owner transaction (mocked persistence)", () => {
+  test('mutable Customer change updates both identities and captures before/after audit', async () => {
+    await save({ customerId: 'zionsville', contactId: null });
+    expect(rows.orders[0].customerId).toBe('zionsville');
+    expect(rows.invoices[0].customerId).toBe('zionsville');
+    expect(rows.audit_logs).toEqual(expect.arrayContaining([expect.objectContaining({ entityType: 'order',
+      oldValues: { customerId: 'company', contactId: 'contact' }, newValues: { customerId: 'zionsville', contactId: null } })]));
+  });
+  test('reselecting current Customer repairs a mutable stale Invoice through the same transaction', async () => {
+    rows.orders[0].customerId = 'zionsville';
+    await save({ customerId: 'zionsville' });
+    expect(rows.invoices[0]).toMatchObject({ customerId: 'zionsville', invoiceVersion: 2 });
+    expect(writes).toEqual(['invoices', 'orders']);
+  });
+  test.each(['amountPaid', 'syncedAt'])('reselecting current Customer cannot silently repair protected %s history', async field => {
+    rows.orders[0].customerId = 'zionsville'; rows.invoices[0][field] = field === 'amountPaid' ? '85.00' : new Date();
+    await expect(save({ customerId: 'zionsville' })).rejects.toThrow(/Invoice|payment/);
+    expect(rows.invoices[0].customerId).toBe('company'); expect(writes).toEqual([]);
+  });
+  test('same-owner stale Invoice repair rolls back when the Order write fails', async () => {
+    rows.orders[0].customerId = 'zionsville'; failOrderWrite = true;
+    await expect(save({ customerId: 'zionsville' })).rejects.toThrow('order write failed');
+    expect(rows.invoices[0].customerId).toBe('company');
+  });
   test("explicit clear retains Contact and retargets the safe automatic Invoice in the same transaction", async () => {
     await save({ customerId: null });
     expect(rows.orders[0]).toMatchObject({ customerId: null, contactId: "contact" });

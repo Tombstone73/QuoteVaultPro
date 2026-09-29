@@ -590,7 +590,7 @@ type InvoicePaymentPortalRow = CustomerPaymentInvoice & Pick<
   | "customTerms"
   | "importSource"
   | "isHistorical"
->;
+> & { storedCustomerId: string | null; billingCustomerId: string | null };
 
 type OrderPortalRow = Pick<
   typeof orders.$inferSelect,
@@ -1759,6 +1759,8 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
   const [row] = await db
     .select({
       id: invoices.id,
+      storedCustomerId: invoices.customerId,
+      billingCustomerId: canonicalInvoiceCustomerId,
       invoiceNumber: invoices.invoiceNumber,
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
@@ -1834,6 +1836,9 @@ function isImportedQuickBooksInvoice(invoice: InvoicePaymentPortalRow): boolean 
 }
 
 function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRows: PaymentPortalRow[]): number {
+  if (invoice.storedCustomerId !== invoice.billingCustomerId) {
+    throw new PortalAccessError(409, "Invoice billing details need staff review before payment. Please contact us.");
+  }
   if (isImportedQuickBooksInvoice(invoice) || Boolean(invoice.isHistorical)) {
     throw new PortalAccessError(409, "Invoice is not payable in the portal");
   }

@@ -54,7 +54,7 @@ class CanonicalOrderOperations {
     if (override && (!billingOwnerChanges || !Number.isFinite(Date.parse(override.orderUpdatedAt)))) throw new BillingOwnershipReviewError('Select a different billing owner and retry normal Save first.', 400);
     // Credit controls forward physical release, never commercial Order capture.
     return db.transaction(async (tx) => {
-      if (billingOwnerChanges) {
+      if (ownerTouched) {
         // Lock the Order before inspecting the Invoice. A simultaneous send,
         // payment, or owner edit must not observe a partially changed owner.
         await tx.execute(sql`select id from ${orders} where ${orders.id} = ${input.orderId} and ${orders.organizationId} = ${input.organizationId} for update`);
@@ -67,7 +67,10 @@ class CanonicalOrderOperations {
         if (linkedInvoices.length > 1) throw new CanonicalOrderOperationError("ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED", "This Order has multiple live Invoices. Resolve billing ownership through a reviewed correction.");
         let invoice = linkedInvoices[0];
         if (override && !invoice) throw new BillingOwnershipReviewError("No linked Invoice requires an override.");
-        if (invoice) {
+        // Reselecting the current Order owner must also inspect a legacy stale
+        // Invoice. Run the same financial-history protections, never a blind repair.
+        if (invoice && (billingOwnerChanges || invoice.customerId !== nextCustomerId
+          || invoice.contactId !== (nextCustomerId ? null : nextContactId))) {
           await lockInvoicePaymentContext(tx, input.organizationId, [invoice.id]);
           await tx.execute(sql`select id from ${invoices} where ${invoices.id} = ${invoice.id} for update`);
           [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).limit(1);
@@ -152,7 +155,8 @@ class CanonicalOrderOperations {
           actorUserId: input.actorUserId,
         }) ?? order;
       }
-      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.` });
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.`,
+        ...(ownerTouched ? { oldValues: { customerId: existing.customerId, contactId: existing.contactId }, newValues: { customerId: nextCustomerId, contactId: nextContactId } } : {}) });
       return order;
     }).catch((error: unknown) => {
       if (error instanceof InvoicePaymentContextError) {

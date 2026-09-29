@@ -565,12 +565,16 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   const sortColumn = sql.raw(sortColumns[filters.sortBy]);
   const sortDirection = sql.raw(filters.sortDir);
   const offset = (page - 1) * pageSize;
+  const invoiceOwnerAligned = sql`(i.contact_id is not null
+    or lower(coalesce(i.import_source, '')) = 'quickbooks'
+    or o.customer_id is null or i.customer_id is not distinct from o.customer_id)`;
 
   const accountingWorkCte = sql`
-    with source_work as (
+    with source_projection as (
       select
         i.id::text as id,
         'invoice'::text as resource_type,
+        ${invoiceOwnerAligned} as ownership_aligned,
         coalesce(i.display_number, i.invoice_number::text) as display_number,
         coalesce(c.company_name, '')::text as customer_name,
         coalesce(i.total_cents, round(coalesce(i.total, 0)::numeric * 100)::int)::int as amount_cents,
@@ -591,6 +595,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
         (lower(i.status) not in ('void', 'canceled', 'cancelled') and i.qb_sync_status in ('pending', 'failed') and i.accounting_approved_at is not null and i.accounting_approval_revoked_at is null and i.accounting_approved_version = i.invoice_version) as can_manual_force,
         case when i.qb_sync_status <> 'synced' and (i.accounting_approved_at is null or i.accounting_approval_revoked_at is not null or i.accounting_approved_version is distinct from i.invoice_version) then 'Awaiting accounting approval.' else null end::text as ineligible_reason
       from invoices i
+      left join orders o on o.id = i.order_id and o.organization_id = i.organization_id
       left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
       where i.organization_id = ${params.organizationId}
         and (i.import_source is null or i.import_source <> 'quickbooks')
@@ -612,8 +617,11 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       select
         p.id::text as id,
         'payment'::text as resource_type,
+        (${invoiceOwnerAligned} and (p.customer_payment_batch_id is null
+          or (b.id is not null and b.customer_id is not distinct from i.customer_id))) as ownership_aligned,
         ('Payment ' || coalesce(nullif(p.quickbooks_payment_reference, ''), left(p.id::text, 8)) || ' for ' || coalesce(i.display_number, i.invoice_number::text))::text as display_number,
-        coalesce(c.company_name, '')::text as customer_name,
+        (case when p.external_accounting_id is null and p.sync_status <> 'synced' and b.id is not null
+          then coalesce(bc.company_name, '') else coalesce(c.company_name, '') end)::text as customer_name,
         coalesce(p.amount_cents, round(coalesce(p.amount, 0)::numeric * 100)::int)::int as amount_cents,
         p.status::text as status,
         p.sync_status::text as sync_status,
@@ -656,6 +664,9 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
         end::text as ineligible_reason
       from payments p
       inner join invoices i on i.id = p.invoice_id and i.organization_id = p.organization_id
+      left join orders o on o.id = i.order_id and o.organization_id = i.organization_id
+      left join customer_payment_batches b on b.id = p.customer_payment_batch_id and b.organization_id = p.organization_id
+      left join customers bc on bc.id = b.customer_id and bc.organization_id = b.organization_id
       left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
       where p.organization_id = ${params.organizationId}
         and (i.import_source is null or i.import_source <> 'quickbooks')
@@ -668,6 +679,16 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
             and lower(p.status) in ('succeeded', 'captured')
           )
         )
+    ), source_work as (
+      select id, resource_type, display_number, customer_name, amount_cents, status, sync_status,
+        case when not ownership_aligned and queue_state = 'queued' then 'unsynced' else queue_state end as queue_state,
+        accounting_updated_at, created_at, last_error, reference,
+        (eligible and ownership_aligned) as eligible,
+        (can_transmit and ownership_aligned) as can_transmit,
+        (can_manual_force and ownership_aligned) as can_manual_force,
+        case when not ownership_aligned then 'Billing ownership mismatch. Accounting reconciliation required.'
+          else ineligible_reason end as ineligible_reason
+      from source_projection
     ), accounting_work as (
       select *, case
         when queue_state = 'unsynced' and eligible then 'queueable'

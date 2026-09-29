@@ -31,6 +31,7 @@ async function load(tx: any, organizationId: string, ids: string[], staffSelecti
     if (invoice.orderId && (!order || (!staffSelection && isCanceledOrder(order)))) throw new CustomerPaymentOperationError(order ? "ORDER_CANCELLED" : "ORDER_NOT_FOUND", order ? "Cancelled orders cannot receive payments." : "The invoice order is unavailable.");
     const owner = resolveCanonicalInvoiceCustomerOwnership({ invoiceCustomerId: invoice.customerId, invoiceContactId: invoice.contactId, invoiceImportSource: invoice.importSource, linkedOrderId: invoice.orderId, linkedOrderCustomerId: order?.customerId, linkedOrderContactId: order?.contactId });
     if (!owner.customerId) throw new CustomerPaymentOperationError("CONTACT_INVOICE_CUSTOMER_PAYMENT_UNSUPPORTED", "Contact-owned Invoices cannot enter a Customer payment batch. Record an invoice-scoped payment instead.");
+    if (owner.customerId !== invoice.customerId) throw new CustomerPaymentOperationError("BILLING_OWNERSHIP_REVIEW_REQUIRED", "Invoice billing ownership differs from its Order. Review billing ownership before accepting payment.");
     const rollup = computeInvoicePaymentRollup({ invoiceTotalCents: Number(invoice.totalCents || 0), payments: (byInvoice.get(invoice.id) || []).map((p: any) => ({ id: p.id, status: p.status, amountCents: Number(p.amountCents || 0) })) });
     const eligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents: rollup.amountDueCents });
     if (!staffSelection && !eligibility.payable) throw new CustomerPaymentOperationError("INVOICE_NOT_PAYABLE", eligibility.blockedReason || "Invoice cannot accept payment.");
@@ -97,7 +98,16 @@ export async function recordCustomerPayment(input: Input) {
       await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.organizationId, input.organizationId), inArray(invoices.id, input.invoiceIds))).orderBy(invoices.id).for("update");
     }
     const [existing] = await tx.select().from(customerPaymentBatches).where(and(eq(customerPaymentBatches.organizationId, input.organizationId), eq(customerPaymentBatches.idempotencyKey, input.idempotencyKey))).limit(1);
+    if (existing && ((input.expectedCustomerId && existing.customerId !== input.expectedCustomerId)
+      || (!input.existingBatchId && existing.status !== 'succeeded'))) {
+      throw new CustomerPaymentOperationError('CUSTOMER_MISMATCH', 'The previous payment request is not reusable for this billing context. Start a new request.');
+    }
     if (existing && (!input.existingBatchId || existing.id !== input.existingBatchId || String(existing.status) === "succeeded")) return { batch: existing, payments: await tx.select().from(payments).where(eq(payments.customerPaymentBatchId, existing.id)), newlyPaid: [], reused: true, appliedAmountCents: Number(existing.amountCents), changeDueCents: Math.max(0, input.amountCents - Number(existing.amountCents)) };
+    if (!staffSelection) {
+      // Webhook finalization also serializes with the ownership writer. Do not
+      // reacquire the advisory lock held by browser confirmation's outer context.
+      await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.organizationId, input.organizationId), inArray(invoices.id, input.invoiceIds))).orderBy(invoices.id).for("update");
+    }
     const selected = await load(tx, input.organizationId, input.invoiceIds, staffSelection);
     const selection = selectPayable(selected, { ...input, staffSelection });
     const rows = selection.rows;
@@ -113,6 +123,7 @@ export async function recordCustomerPayment(input: Input) {
     let batch: any = existing;
     if (input.existingBatchId) {
       if (!existing || existing.id !== input.existingBatchId || String(existing.status) !== "pending") throw new CustomerPaymentOperationError("PAYMENT_BATCH_UNAVAILABLE", "Portal payment batch is unavailable.");
+      if (existing.customerId !== customerId) throw new CustomerPaymentOperationError("CUSTOMER_MISMATCH", "The payment batch billing owner changed. Review the original payment context before allocation.");
       [batch] = await tx.update(customerPaymentBatches).set({ status: "succeeded", confirmedAt: input.appliedAt, providerEvidence: { ...(existing.providerEvidence as any), confirmedAt: input.appliedAt.toISOString() }, updatedAt: new Date() } as any).where(and(eq(customerPaymentBatches.id, input.existingBatchId), eq(customerPaymentBatches.status, "pending"))).returning();
       if (!batch) throw new CustomerPaymentOperationError("PAYMENT_BATCH_RACE", "Portal payment batch was already finalized.");
     } else {

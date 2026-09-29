@@ -169,6 +169,7 @@ export async function finalizeStripeCustomerPaymentBatch(input: ProviderSuccessI
       stripePaymentIntentId: input.paymentIntentId,
       stripeAccountId: input.stripeAccountId || prepared.batch.stripeAccountId || undefined,
       existingBatchId: prepared.batch.id,
+      expectedCustomerId: prepared.batch.customerId,
       reference: input.paymentIntentId,
       notes: "Portal Stripe payment",
     });

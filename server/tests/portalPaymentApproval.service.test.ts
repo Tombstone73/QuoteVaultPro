@@ -33,7 +33,7 @@ jest.unstable_mockModule('../db', () => ({ db: database, pool: {}, hasQuoteAttac
 jest.unstable_mockModule('../lib/stripe', () => ({ assertStripeServerConfig: () => ({}), getStripeWebhookSecret: () => "fixture", getStripeClient: () => ({ paymentIntents: { retrieve: stripeRetrieve, create: stripeCreate } }) }));
 jest.unstable_mockModule('../services/stripeRuntimeConfig.service', () => ({ resolveStripeRuntimeConfig: runtime }));
 const service = await import('../services/portal.service');
-const invoice = (approved = false, id = 'invoice') => ({ id, status: 'billed', totalCents: 25000, currency: 'USD', invoiceVersion: 2, accountingApprovedAt: approved ? new Date() : null, accountingApprovedVersion: approved ? 2 : null });
+const invoice = (approved = false, id = 'invoice') => ({ id, storedCustomerId: 'customer', billingCustomerId: 'customer', status: 'billed', totalCents: 25000, currency: 'USD', invoiceVersion: 2, accountingApprovedAt: approved ? new Date() : null, accountingApprovedVersion: approved ? 2 : null });
 const request = (body: Record<string, unknown> = {}) => ({ organizationId: 'org', user: { id: 'user' }, portalCustomerId: 'customer', portalCustomer: { id: 'customer', organizationId: 'org' }, body } as any);
 beforeEach(() => {
   invoiceRows = []; paymentRows = []; batch = null; writes.length = 0;
@@ -65,6 +65,22 @@ test('all approved grouped invoices retain canonical allocations and create exac
   const result = await service.createPortalGroupedStripePaymentIntent(request({ invoiceIds: ['a', 'b'], idempotencyKey: 'fixture-key' }));
   expect(result).toMatchObject({ amount: 500, allocations: [{ invoiceId: 'a', amountCents: 25000 }, { invoiceId: 'b', amountCents: 25000 }] });
   expect(stripeCreate).toHaveBeenCalledTimes(1);
+});
+
+test('portal Order authorization cannot conceal stale stored Invoice ownership before checkout', async () => {
+  invoiceRows.push({ ...invoice(true), storedCustomerId: 'old-customer' });
+  await expect(service.createPortalGroupedStripePaymentIntent(request({ invoiceIds: ['invoice'], idempotencyKey: 'fixture-key' })))
+    .rejects.toThrow('billing details need staff review');
+  expect(stripeCreate).not.toHaveBeenCalled(); expect(writes).toEqual([]);
+});
+
+test('an old Customer batch cannot be reused by the current authorized Customer', async () => {
+  invoiceRows.push(invoice(true));
+  batch = { id: 'old-batch', status: 'pending', customerId: 'old-customer', amountCents: 25000,
+    stripeAccountId: 'acct_fixture', currency: 'USD', providerEvidence: { allocations: [{ invoiceId: 'invoice', amountCents: 25000 }] } };
+  await expect(service.createPortalGroupedStripePaymentIntent(request({ invoiceIds: ['invoice'], idempotencyKey: 'fixture-key' })))
+    .rejects.toThrow('no longer matches');
+  expect(stripeCreate).not.toHaveBeenCalled(); expect(stripeRetrieve).not.toHaveBeenCalled(); expect(writes).toEqual([]);
 });
 test('an approved invoice can reuse an incomplete intent; new approval is observed on requery', async () => {
   invoiceRows.push(invoice(), invoice(true));

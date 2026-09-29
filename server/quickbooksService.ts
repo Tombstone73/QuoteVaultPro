@@ -2,7 +2,7 @@ import { withBillingOwnershipSyncGuard, assertBillingOwnershipReconciled } from 
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, auditLogs, customers, customerContacts, customerContactLinks, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
+import { oauthConnections, accountingSyncJobs, auditLogs, customers, customerContacts, customerContactLinks, customerPaymentBatches, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
@@ -1355,6 +1355,9 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
   if (status === 'void') throw new Error('Cannot sync a void invoice');
 
   const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId });
+  if (customerContext && customerContext.storedCustomerId !== customerContext.resolvedCustomerId) {
+    throw new Error('Invoice and Order billing ownership differ. Reconcile the stored billing owner before QuickBooks transmission.');
+  }
   const customer = customerContext?.customer ?? null;
   if (!customer) throw new Error('Customer not found');
 
@@ -1489,6 +1492,18 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
   }
 
   const customerContext = await getCanonicalInvoiceCustomerContext({ organizationId, invoiceId: invoice.id });
+  if (customerContext && customerContext.storedCustomerId !== customerContext.resolvedCustomerId) {
+    throw new Error('Invoice and Order billing ownership differ. Reconcile the stored billing owner before QuickBooks transmission.');
+  }
+  if (payment.customerPaymentBatchId) {
+    const [batch] = await db.select().from(customerPaymentBatches).where(and(
+      eq(customerPaymentBatches.id, payment.customerPaymentBatchId),
+      eq(customerPaymentBatches.organizationId, organizationId),
+    )).limit(1);
+    if (!batch || batch.customerId !== customerContext?.resolvedCustomerId) {
+      throw new Error('Payment batch and Invoice billing ownership differ. Accounting reconciliation is required.');
+    }
+  }
   const customer = customerContext?.customer ?? null;
   if (!customer) throw new Error('Customer not found for invoice');
 
