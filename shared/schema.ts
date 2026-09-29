@@ -10290,3 +10290,21 @@ export {
   type PrepressOutputManifest,
   type PrepressError,
 } from "../server/prepress/schema";
+
+// Immutable creation receipts; deliberately no cascading FK to canonical lines.
+export const lineCreateRequests = pgTable("line_create_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  actorUserId: varchar("actor_user_id").notNull(),
+  operationType: varchar("operation_type", { length: 32 }).notNull(),
+  documentType: varchar("document_type", { length: 32 }).notNull(),
+  documentId: varchar("document_id").notNull(),
+  requestKey: varchar("request_key", { length: 160 }).notNull(),
+  requestHash: varchar("request_hash", { length: 64 }).notNull(),
+  resultLineId: varchar("result_line_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  uniqueIndex("line_create_requests_scope_key_uidx").on(table.organizationId, table.actorUserId, table.operationType, table.documentType, table.documentId, table.requestKey),
+  index("line_create_requests_expiry_idx").on(table.expiresAt),
+]);

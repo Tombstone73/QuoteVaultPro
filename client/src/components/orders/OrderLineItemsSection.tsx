@@ -1,3 +1,4 @@
+import { LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -858,6 +859,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const updateLineItemCommercialPricing = useUpdateOrderLineItemCommercialPricing(orderId);
   const updateLineItemTaxability = useUpdateOrderLineItemTaxability(orderId);
   const createLineItem = useCreateOrderLineItem(orderId);
+  const lineCreateGuard = useRef(new LineCreateSubmitGuard());
   const deleteLineItem = useDeleteOrderLineItem(orderId);
 
   const { data: productsResponse } = useQuery<any>({
@@ -2710,7 +2712,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     getDirtyDiagnostics: () => lineItemDirtyDiagnostics,
   }));
 
-  const handleDuplicateItem = async (item: OrderLineItem) => {
+  const handleDuplicateItem = async (item: OrderLineItem) => lineCreateGuard.current.run(async () => {
     try {
       const payload = buildOrderLineItemDuplicatePayload(item);
       await createLineItem.mutateAsync(payload);
@@ -2721,7 +2723,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       // useCreateOrderLineItem owns the error toast so a failed duplicate is
       // reported once with the backend's specific validation message.
     }
-  };
+  });
 
   const handleRemoveItem = async (itemId: string) => {
     let deleted = false;
@@ -4493,7 +4495,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                         <CommandItem
                           key={p.id}
                           value={p.name + " " + ((p as any).sku || "") + " " + ((p as any).category || "")}
-                          onSelect={async () => {
+                          disabled={createLineItem.isPending}
+                          onSelect={() => { void lineCreateGuard.current.run(async () => {
                             try {
                               blurActiveElement();
                               const activeTree = normalizePbv2Tree(getPbv2Tree(p));
@@ -4531,7 +4534,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 variant: "destructive",
                               });
                             }
-                          }}
+                          }); }}
                         >
                           <div className="min-w-0 flex-1">
                             <div className="truncate font-medium">{p.name}</div>

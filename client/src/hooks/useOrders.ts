@@ -1,3 +1,5 @@
+import { useRef } from "react";
+import { LineCreateIntentStore } from "@/lib/lineCreateIntent";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
@@ -1022,6 +1024,7 @@ export function useUpdateOrderLineItemCommercialPricing(orderId: string) {
 
 export function useCreateOrderLineItem(orderId: string) {
   const queryClient = useQueryClient();
+  const intents = useRef(new LineCreateIntentStore());
   const { toast } = useToast();
 
   return useMutation({
@@ -1040,17 +1043,22 @@ export function useCreateOrderLineItem(orderId: string) {
       console.log("useCreateOrderLineItem - Input data:", data);
       console.log("useCreateOrderLineItem - Payload to API:", payload);
 
-      const response = await apiFetch("/api/order-line-items", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        credentials: "include",
+      const slot = `${orderId}:${data.duplicateSourceLineItemId ? `duplicate:${data.duplicateSourceLineItemId}` : `add:${data.productId}:${data.parentLineItemId ?? ""}`}`;
+      return intents.current.run(slot, payload, async (frozen, key) => {
+        const response = await apiFetch("/api/order-line-items", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+          body: JSON.stringify(frozen),
+          credentials: "include",
+        });
+        if (!response.ok) {
+          const error = await response.json().catch(() => null);
+          throw Object.assign(new Error(error?.message || "Failed to create line item"), { status: response.status });
+        }
+        const created = await response.json();
+        if (!(created?.data?.id ?? created?.id)) throw new Error("Server did not confirm the added item. Retry to reconcile the same request.");
+        return created;
       });
-      if (!response.ok) {
-        const error = await response.json().catch(() => null);
-        throw new Error(error?.message || "Failed to create line item");
-      }
-      return response.json();
     },
     onSuccess: (_created: any, variables: any) => {
       invalidateOrderOperationalQueries(queryClient, orderId);

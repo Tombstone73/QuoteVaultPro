@@ -1,3 +1,4 @@
+import { LineCreateIntentStore, LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
@@ -227,6 +228,25 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     const [lineItems, setLineItems] = useState<QuoteLineItemDraft[]>([]);
     const [draftLineItemId, setDraftLineItemId] = useState<string | null>(null);
     const [isCreatingDraft, setIsCreatingDraft] = useState(false);
+    const lineCreateIntents = useRef(new LineCreateIntentStore());
+    const lineCreateGuard = useRef(new LineCreateSubmitGuard());
+    const requestLineCreate = async (slot: string, url: string, payload: unknown, retainResult = false) => {
+        const reconcileEdits = retainResult && !lineCreateIntents.current.payloadMatches(`${url}:${slot}`, payload);
+        const result = await lineCreateIntents.current.run(`${url}:${slot}`, payload, async (frozen, key) => {
+            const response = await apiRequest("POST", url, frozen, { headers: { "Idempotency-Key": key } });
+            const created = await response.json();
+            if (!(created?.data?.id ?? created?.id)) throw new Error("Server did not confirm the added item. Retry to reconcile the same request.");
+            return created;
+        }, retainResult);
+        if (reconcileEdits) {
+            const createdId = result?.data?.id ?? result?.id;
+            if (!createdId) throw new Error("Server did not confirm a line item identity");
+            const { displayOrder: _createOrder, ...currentEdits } = payload as Record<string, unknown>;
+            await apiRequest("PATCH", `${url}/${createdId}`, currentEdits);
+        }
+        return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+    };
+
     const [isDuplicatingQuote, setIsDuplicatingQuote] = useState(false);
 
     // Snapshot of last-saved state to support full discard.
@@ -1382,8 +1402,12 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // HANDLER: Add Line Item
     // ============================================================================
 
-    const handleAddLineItem = async (pendingAttachments?: File[]) => {
+    const handleAddLineItem = async (pendingAttachments?: File[]) => lineCreateGuard.current.run(async () => {
         if (!selectedProductId) return;
+        if (quoteId && !draftLineItemId) {
+            toast({ title: "Item not confirmed", description: "Select the product again to safely confirm the original add request.", variant: "destructive" });
+            return;
+        }
 
         const product = products?.find((p) => p.id === selectedProductId);
         const variant = productVariants?.find((v) => v.id === selectedVariantId);
@@ -1539,7 +1563,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     productOptions: product?.optionsJson as ProductOptionItem[] | undefined,
                     status: "active",
                 };
-                setLineItems([...lineItems, newItem]);
+                setLineItems((prev) => prev.some((line) => line.id === newItem.id) ? prev : [...prev, newItem]);
                 setDraftLineItemId(null);
                 setSelectedProductId("");
                 setSelectedVariantId(null);
@@ -1565,7 +1589,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
         // Fallback to old behavior (no draft present or no quoteId)
         try {
-            const response = await apiRequest("POST", "/api/line-items/temp", {
+            const response = await requestLineCreate("builder-temp", "/api/line-items/temp", {
                 productId: selectedProductId,
                 productName: product?.name || "",
                 variantId: selectedVariantId,
@@ -1661,7 +1685,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 status: (createdLineItem as any).status || "active",
             };
 
-            setLineItems([...lineItems, newItem]);
+            setLineItems((prev) => prev.some((line) => line.id === newItem.id) ? prev : [...prev, newItem]);
 
             setSelectedProductId("");
             setSelectedVariantId(null);
@@ -1681,7 +1705,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 variant: "destructive",
             });
         }
-    };
+    });
 
     // ============================================================================
     // HANDLER: Duplicate Line Item
@@ -1939,7 +1963,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                         delete payloadLi.displayOrder;
                         await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${li.id}`, payloadLi);
                     } else {
-                        await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payloadLi)
+                        await requestLineCreate(`line:${getStableLineItemKey(li)}`, `/api/quotes/${quoteId}/line-items`, payloadLi, true)
                             .then(async (resp) => await resp.json())
                             .then((created) => {
                                 const createdId = created?.id || created?.data?.id;
@@ -2145,7 +2169,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // HANDLER: Product selection (with draft creation)
     // ============================================================================
 
-    const handleProductSelect = async (productId: string) => {
+    const handleProductSelect = async (productId: string) => lineCreateGuard.current.run(async () => {
         setSelectedProductId(productId);
         setProductSearchOpen(false);
         setProductSearchQuery("");
@@ -2158,7 +2182,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             if (!draftLineItemId) {
                 try {
                     setIsCreatingDraft(true);
-                    const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, {
+                    const response = await requestLineCreate(`product:${productId}`, `/api/quotes/${quoteId}/line-items`, {
                         productId: product.id,
                         productName: product.name,
                         status: "draft",
@@ -2196,14 +2220,14 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 setOptionSelectionsJson({ schemaVersion: 2, selected: {} });
             }
         }
-    };
+    });
 
     // ============================================================================
     // HANDLER: Create a new draft line item immediately (for inline "Add Product" flow)
     // ============================================================================
 
     const createDraftLineItem = useCallback(
-        async (productId: string): Promise<QuoteLineItemDraft | null> => {
+        async (productId: string): Promise<QuoteLineItemDraft | null> => lineCreateGuard.current.run(async () => {
             if (!products || !productId) return null;
             const product = products.find((p) => p.id === productId);
             if (!product) return null;
@@ -2240,7 +2264,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             if (quoteId) {
                 try {
                     setIsCreatingDraft(true);
-                    const resp = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, {
+                    const resp = await requestLineCreate(`product:${productId}`, `/api/quotes/${quoteId}/line-items`, {
                         productId: base.productId,
                         productName: base.productName,
                         variantId: base.variantId,
@@ -2263,13 +2287,14 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     const json = await resp.json().catch(() => ({}));
                     const created = json?.data || json;
                     const createdId = created?.id;
-                    const withId: QuoteLineItemDraft = { ...base, id: createdId || undefined, tempId: base.tempId };
-                    setLineItems((prev) => [...prev, withId]);
+                    if (!createdId) throw new Error("Server did not confirm a line item identity");
+                    const withId: QuoteLineItemDraft = { ...base, id: createdId, tempId: base.tempId };
+                    setLineItems((prev) => prev.some((line) => line.id === createdId) ? prev : [...prev, withId]);
                     return withId;
                 } catch (err) {
                     console.error("[createDraftLineItem] failed", err);
-                    setLineItems((prev) => [...prev, base]);
-                    return base;
+                    toast({ title: "Item not confirmed", description: "Select the product again to safely retry the same add request.", variant: "destructive" });
+                    return null;
                 } finally {
                     setIsCreatingDraft(false);
                 }
@@ -2278,7 +2303,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             // New quote route: local-only draft.
             setLineItems((prev) => [...prev, base]);
             return base;
-        },
+        }),
         [products, quoteId, lineItems.length]
     );
 
@@ -2319,7 +2344,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 );
             } else {
                 // Create new line item
-                const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payload);
+                const response = await requestLineCreate(`line:${itemKey}`, `/api/quotes/${quoteId}/line-items`, payload, true);
                 const json = await response.json();
                 const created = json?.data || json;
                 const createdId = created?.id;
@@ -2401,7 +2426,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     status: "active",
                 };
 
-                const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payload);
+                const response = await requestLineCreate(`line:${itemKey}`, `/api/quotes/${quoteId}/line-items`, payload, true);
                 const json = await response.json();
                 const created = json?.data || json;
                 const createdId = created?.id;

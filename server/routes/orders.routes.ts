@@ -1,3 +1,4 @@
+import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
 import { db } from "../db";
@@ -7826,6 +7827,9 @@ export async function registerOrderRoutes(
                 .where(and(eq(orders.id, String(lineItemData.orderId)), eq(orders.organizationId, organizationId)))
                 .limit(1);
             if (!order) return res.status(404).json({ message: "Order not found" });
+            const createScope = prepareLineCreateRequest({ organizationId, actorUserId: getUserId(req.user)!, documentType: "order", documentId: order.id }, req.header("Idempotency-Key"), req.body);
+            const replay = await readLineCreateResult(createScope);
+            if (replay) return res.json(enrichLineItemWithEffectivePricing(replay as any));
             if (isCanceledOrder(order)) {
                 return res.status(409).json({ message: "Cannot add line items to a cancelled order.", code: "ORDER_CANCELLED" });
             }
@@ -7944,7 +7948,7 @@ export async function registerOrderRoutes(
             // Persist the line item, its financial rollup, invoice snapshot, and
             // billing state as one unit. A failed response must never leave a
             // successful add/delete visible only after reopening the Order.
-            const created = await db.transaction(async (tx) => {
+            const result = await runLineCreateRequest(createScope, async (tx) => {
               const createdLineItem = await new OrdersRepository(tx).createOrderLineItem({
                 ...lineItemData,
                 ...(pricingResult.pbv2TreeVersionId
@@ -8010,6 +8014,9 @@ export async function registerOrderRoutes(
               }
               return createdLineItem;
             });
+
+            const created = result.line;
+            if (result.replayed) return res.json(enrichLineItemWithEffectivePricing(created as any));
 
             // Auto-schedule production job if the product type has sendToProductionDefault=true.
             // Fail-soft: scheduling failure does not block the line item create response.

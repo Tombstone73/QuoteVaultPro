@@ -1304,6 +1304,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             products={state.products}
                             expandedKey={expandedKey}
                             onExpandedKeyChange={setExpandedKey}
+                            isCreatingDraft={state.isCreatingDraft}
                             onCreateDraftLineItem={state.handlers.createDraftLineItem}
                             onUpdateLineItem={state.handlers.updateLineItemLocal}
                             onSaveLineItem={state.handlers.saveLineItem}

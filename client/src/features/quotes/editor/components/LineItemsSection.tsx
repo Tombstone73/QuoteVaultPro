@@ -63,6 +63,7 @@ type LineItemsSectionProps = {
   products: Product[];
   expandedKey: string | null;
   onExpandedKeyChange: (next: string | null) => void;
+  isCreatingDraft?: boolean;
   onCreateDraftLineItem: (productId: string) => Promise<QuoteLineItemDraft | null>;
   onUpdateLineItem: (itemKey: string, updates: Partial<QuoteLineItemDraft>) => void;
   onSaveLineItem?: (itemKey: string, overrides?: Partial<QuoteLineItemDraft>) => Promise<boolean>;
@@ -315,6 +316,7 @@ export function LineItemsSection({
   products,
   expandedKey,
   onExpandedKeyChange,
+  isCreatingDraft = false,
   onCreateDraftLineItem,
   onUpdateLineItem,
   onSaveLineItem,
@@ -1632,6 +1634,8 @@ export function LineItemsSection({
               <PopoverTrigger asChild>
                 <Button
                   variant="outline"
+                  type="button"
+                  disabled={isCreatingDraft}
                   role="combobox"
                   aria-expanded={searchOpen}
                   className="w-full justify-between h-9 font-normal"
@@ -1656,6 +1660,7 @@ export function LineItemsSection({
                         <CommandItem
                           key={p.id}
                           value={`${p.name} ${(p as any).sku || ''} ${(p as any).category || ''}`}
+                          disabled={isCreatingDraft}
                           onSelect={async () => {
                             const created = await onCreateDraftLineItem(p.id);
                             const k = created ? getItemKey(created) : null;

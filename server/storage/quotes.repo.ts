@@ -104,7 +104,7 @@ function inboundSourceString(source: unknown, path: string): string | null {
 }
 
 export class QuotesRepository {
-    constructor(private readonly dbInstance = db) { }
+    constructor(private readonly dbInstance: Pick<typeof db, "select" | "insert" | "update" | "delete" | "transaction"> = db) { }
 
     private async getInboundReviewLinksForQuoteIds(organizationId: string, quoteIds: string[]) {
         const links = new Map<string, {

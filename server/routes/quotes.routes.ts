@@ -1,3 +1,5 @@
+import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
+import { QuotesRepository } from "../storage/quotes.repo";
 /**
  * quotes.routes.ts
  *
@@ -86,6 +88,7 @@ import {
   QuoteCreateLineItemValidationError,
 } from "../lib/quoteCreateLineItemNormalizer";
 import {
+  enrichLineItemWithEffectivePricing,
   buildQuoteLineItemPriceOverridePersistencePatch,
   coerceLineItemOverrideAt,
   haveLineItemPricingDriversChanged,
@@ -122,13 +125,14 @@ async function createProofApprovalManualOverrideAuditLog(args: {
   entityType: "quote_line_item" | "order_line_item";
   entityId: string;
   entityName?: string | null;
+  executor?: Pick<typeof db, "insert">;
 }) {
   const auditEvent = buildProofApprovalManualOverrideAuditEvent({
     entityType: args.entityType,
     entityId: args.entityId,
     entityName: args.entityName,
   });
-  await db.insert(auditLogs).values({
+  await (args.executor ?? db).insert(auditLogs).values({
     organizationId: args.organizationId,
     userId: args.userId ?? null,
     userName: args.userName ?? null,
@@ -161,8 +165,8 @@ function hasQuoteLineItemOverridePatch(value: any): boolean {
   );
 }
 
-async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string) {
-  const [quoteRow] = await db
+async function refreshQuoteAggregateTotals(organizationId: string, quoteId: string, executor: Pick<typeof db, "select" | "update"> = db) {
+  const [quoteRow] = await executor
     .select({
       discountAmount: quotes.discountAmount,
       taxRate: quotes.taxRate,
@@ -174,7 +178,7 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
 
   if (!quoteRow) return null;
 
-  const lineRows = await db
+  const lineRows = await executor
     .select({
       status: quoteLineItems.status,
       linePrice: quoteLineItems.linePrice,
@@ -196,7 +200,7 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
     shippingCents: quoteRow.shippingCents,
   });
 
-  const [updated] = await db
+  const [updated] = await executor
     .update(quotes)
     .set({
       subtotal: totals.subtotal.toFixed(2),
@@ -215,12 +219,12 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
   return updated ?? null;
 }
 
-async function recalculateQuoteBundleParent(parentLineItemId: string) {
-  const [parent] = await db.select().from(quoteLineItems).where(eq(quoteLineItems.id, parentLineItemId)).limit(1);
+async function recalculateQuoteBundleParent(parentLineItemId: string, executor: Pick<typeof db, "select" | "update"> = db) {
+  const [parent] = await executor.select().from(quoteLineItems).where(eq(quoteLineItems.id, parentLineItemId)).limit(1);
   if (!parent || parent.lineItemRole !== "parent") return null;
-  const children = await db.select().from(quoteLineItems).where(eq(quoteLineItems.parentLineItemId, parent.id));
+  const children = await executor.select().from(quoteLineItems).where(eq(quoteLineItems.parentLineItemId, parent.id));
   const pricing = parentBundlePricingUpdate(parent as any, children as any);
-  const [updated] = await db.update(quoteLineItems).set({
+  const [updated] = await executor.update(quoteLineItems).set({
     childCalculatedTotalCents: pricing.childCalculatedTotalCents,
     linePrice: pricing.totalPrice.toFixed(2),
     formulaLinePrice: pricing.totalPrice.toFixed(2),
@@ -2168,6 +2172,9 @@ export function registerQuoteRoutes(
         return res.status(404).json({ message: "Quote not found" });
       }
 
+      const createScope = prepareLineCreateRequest({ organizationId, actorUserId: userId!, documentType: "quote", documentId: id }, req.header("Idempotency-Key"), req.body);
+      const replay = await readLineCreateResult(createScope);
+      if (replay) return res.json(enrichLineItemWithEffectivePricing(replay as any));
       if (!assertQuoteEditable(res, quote)) return;
 
       const requestedParentLineItemId = typeof lineItem.parentLineItemId === "string" && lineItem.parentLineItemId.trim()
@@ -2283,26 +2290,31 @@ export function registerQuoteRoutes(
         lineItemRole: requestedParentLineItemId ? "child" as const : "standalone" as const,
       };
 
-      const createdLineItem = await storage.addLineItem(id, validatedLineItem);
-      if (requestedParentLineItemId) {
-        const [parent] = await db.select().from(quoteLineItems).where(eq(quoteLineItems.id, requestedParentLineItemId)).limit(1);
-        if (parent?.lineItemRole === "parent") {
-          await recalculateQuoteBundleParent(requestedParentLineItemId);
+      const result = await runLineCreateRequest(createScope, async (tx) => {
+        const createdLineItem = await new QuotesRepository(tx).addLineItem(id, validatedLineItem);
+        if (requestedParentLineItemId) {
+          const [parent] = await tx.select().from(quoteLineItems).where(eq(quoteLineItems.id, requestedParentLineItemId)).limit(1);
+          if (parent?.lineItemRole === "parent") {
+            await recalculateQuoteBundleParent(requestedParentLineItemId, tx);
+          }
         }
-      }
-      if (proofApproval.manualOverride) {
-        await createProofApprovalManualOverrideAuditLog({
-          organizationId,
-          userId,
-          userName: getAuditUserName(req.user),
-          entityType: "quote_line_item",
-          entityId: String(createdLineItem.id),
-          entityName: (createdLineItem as any).productName ?? null,
-        });
-      }
-      await refreshQuoteAggregateTotals(organizationId, id);
-      res.json(createdLineItem);
+        if (proofApproval.manualOverride) {
+          await createProofApprovalManualOverrideAuditLog({
+            organizationId,
+            userId,
+            userName: getAuditUserName(req.user),
+            executor: tx,
+            entityType: "quote_line_item",
+            entityId: String(createdLineItem.id),
+            entityName: (createdLineItem as any).productName ?? null,
+          });
+        }
+        await refreshQuoteAggregateTotals(organizationId, id, tx);
+        return createdLineItem;
+      });
+      res.json(enrichLineItemWithEffectivePricing(result.line as any));
     } catch (error) {
+      if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
       console.error("Error adding line item:", error);
       if ((error as any)?.code === "PRODUCT_PRICE_NOT_CONFIGURED") {
         return res.status(422).json({ message: (error as any).message, code: "PRODUCT_PRICE_NOT_CONFIGURED" });
@@ -2489,6 +2501,9 @@ export function registerQuoteRoutes(
         return res.status(401).json({ message: "Unauthorized" });
       }
 
+      const createScope = prepareLineCreateRequest({ organizationId, actorUserId: userId, documentType: "quote_draft", documentId: userId }, req.header("Idempotency-Key"), req.body);
+      const replay = await readLineCreateResult(createScope);
+      if (replay) return res.json({ success: true, data: enrichLineItemWithEffectivePricing(replay as any) });
       const {
         productId,
         productName,
@@ -2562,14 +2577,15 @@ export function registerQuoteRoutes(
         displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
       };
 
-      const createdLineItem = await storage.createTemporaryLineItem(
+      const result = await runLineCreateRequest(createScope, (tx) => new QuotesRepository(tx).createTemporaryLineItem(
         organizationId,
         userId,
         validatedLineItem
-      );
+      ));
 
-      res.json({ success: true, data: createdLineItem });
+      res.json({ success: true, data: enrichLineItemWithEffectivePricing(result.line as any) });
     } catch (error) {
+      if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message, code: (error as any).code });
       console.error("Error creating temporary line item:", error);
       if ((error as any)?.code === "PRODUCT_PRICE_NOT_CONFIGURED") {
         return res.status(422).json({ message: (error as any).message, code: "PRODUCT_PRICE_NOT_CONFIGURED" });

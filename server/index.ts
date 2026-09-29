@@ -1,3 +1,4 @@
+import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -405,6 +406,12 @@ process.on('uncaughtException', (error) => {
         // overlapping ticks and only processes durably-claimed jobs.
         void runBulkInvoiceEmailTick();
       }
+
+      // Bounded hourly receipt cleanup never touches canonical line records.
+      const cleanLineReceipts = () => cleanupLineCreateRequests().catch((error) => console.error('[LineCreateReceiptCleanup] Failed', error));
+      const lineReceiptTimer = setInterval(cleanLineReceipts, 60 * 60 * 1000);
+      lineReceiptTimer.unref?.();
+      void cleanLineReceipts();
 
       const paymentReconciliationEnabled = isWorkerEnabled('PAYMENT_RECONCILIATION', true);
       const paymentReconciliationInterval = getWorkerIntervalOverride(

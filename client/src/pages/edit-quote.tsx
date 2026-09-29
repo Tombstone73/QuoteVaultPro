@@ -1,3 +1,4 @@
+import { LineCreateIntentStore } from "@/lib/lineCreateIntent";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -328,12 +329,19 @@ export default function EditQuote() {
 
   // This mutation is now only used when finalizing/creating items directly against an existing quote,
   // but the primary flow for enabling artwork is via temporary line items.
+  const lineCreateIntents = useRef(new LineCreateIntentStore());
+  const lineCreateBusy = useRef(false);
   const addLineItemMutation = useMutation({
+    onSettled: () => { lineCreateBusy.current = false; },
     mutationFn: async (lineItem: any) => {
       console.log("[Add Line Item] Sending to:", `/api/quotes/${quoteId}/line-items`);
       console.log("[Add Line Item] Payload:", JSON.stringify(lineItem, null, 2));
       try {
-        const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, lineItem);
+        const created = await lineCreateIntents.current.run(`add:${quoteId}`, lineItem, async (frozen, key) => {
+          const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, frozen, { headers: { "Idempotency-Key": key } });
+          return response.json();
+        });
+        const response = new Response(JSON.stringify(created));
         console.log("[Add Line Item] Response OK");
         const createdLineItem = await response.json();
         return createdLineItem;
@@ -596,6 +604,8 @@ export default function EditQuote() {
     if (editingLineItem) {
       updateLineItemMutation.mutate({ lineItemId: editingLineItem.id, data: lineItemData });
     } else {
+      if (lineCreateBusy.current) return;
+      lineCreateBusy.current = true;
       addLineItemMutation.mutate(lineItemData);
     }
   };
@@ -1262,11 +1272,13 @@ export default function EditQuote() {
           <DialogFooter>
             <Button 
               variant="outline" 
+              type="button"
               onClick={handleCloseLineItemDialog}
             >
               {editingLineItem && editingLineItem.productId ? "Done" : "Cancel"}
             </Button>
             <Button 
+              type="button"
               onClick={handleSaveLineItem}
               disabled={!selectedProductId || !canSubmit || addLineItemMutation.isPending || updateLineItemMutation.isPending}
             >
