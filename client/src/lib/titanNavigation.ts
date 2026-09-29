@@ -72,7 +72,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
           approverOnly: true,
         },
       },
-      { id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list },
+      { id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list, badge: true },
       {
         id: "inbound-orders",
         name: "Inbound Orders",

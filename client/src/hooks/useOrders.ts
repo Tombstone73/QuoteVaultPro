@@ -663,6 +663,7 @@ export function useCreateOrder() {
     onSuccess: () => {
       // Invalidate all orders list queries (all filter combinations)
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       toast({
         title: "Success",
         description: "Order created successfully",
@@ -746,6 +747,7 @@ export function useCancelOrder(orderId: string) {
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["shipments", orderId] });
       queryClient.invalidateQueries({ queryKey: ["/api/shipments"] });
@@ -1415,6 +1417,7 @@ export function useTransitionOrderStatus(orderId: string) {
       // Invalidate detail and timeline for full refresh
       queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       
       // Invalidate all queue domains — order status transitions (cancel, hold, etc.)
       // remove items from production, prepress, and proofing queues simultaneously.

@@ -180,6 +180,7 @@ function NavSection({ section, isCollapsed, isExpanded, onToggle, badgeCounts }:
 // ============================================================
 
 interface OperationalSummaryData {
+  orders: number;
   inboundOrders: number;
   overview: number;
   design: number;
@@ -202,6 +203,7 @@ function buildBadgeCounts(
   approvalCount: number,
 ): Record<string, number> {
   const emptySummary: OperationalSummaryData = {
+    orders: 0,
     inboundOrders: 0,
     overview: 0,
     design: 0,
@@ -215,6 +217,7 @@ function buildBadgeCounts(
   const safeSummary = summary ?? emptySummary;
   return {
     approvals: approvalCount,
+    orders: safeSummary.orders ?? 0,
     "inbound-orders": safeSummary.inboundOrders,
     "production-overview": safeSummary.overview,
     "production-design": safeSummary.design,

@@ -27,8 +27,10 @@ import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { resolvePrepressQueueEligibility } from "./prepressQueueEligibility";
 import { countDistinctActiveProductionOverviewWork, filterActiveProductionOverviewRows } from "./productionOverviewPopulation";
 import { TERMINAL_PRODUCTION_STATUSES } from "@shared/operationalState";
+import { OPEN_ORDER_BADGE_STATUSES } from "@shared/openOrderBadgePolicy";
 
 export interface OperationalSummary {
+  orders: number;
   inboundOrders: number;
   overview: number;
   design: number;
@@ -92,6 +94,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
   // a live operational summary is actually computed.
   const { listInvoicesPageForOrganization } = await import("../invoicesService");
   const [
+    openOrdersResult,
     inboundResult,
     designResult,
     proofingQueue,
@@ -104,6 +107,12 @@ export async function computeOperationalSummary(organizationId: string): Promise
     invoiceUnpaidResult,
     readyToFinalizeNeverSentPage,
   ] = await Promise.all([
+    // One parent Order contributes one count; no line-item or payment joins.
+    db.select({ count: sql<number>`count(*)::int` }).from(orders).where(and(
+      eq(orders.organizationId, organizationId),
+      inArray(orders.status, [...OPEN_ORDER_BADGE_STATUSES]),
+    )),
+
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(inboundOrderRecords)
@@ -204,6 +213,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
   ]);
 
   return {
+    orders: count(openOrdersResult),
     inboundOrders: count(inboundResult),
     overview: overviewCount,
     design: count(designResult),
