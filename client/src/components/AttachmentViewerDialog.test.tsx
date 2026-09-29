@@ -37,6 +37,21 @@ jest.mock("@/components/ui/dialog", () => ({
 import { AttachmentViewerDialog } from "./AttachmentViewerDialog";
 
 describe('Illustrator derivative viewer', () => {
+  test('EPS shows its original-download fallback immediately for generic MIME', async () => {
+    jest.clearAllMocks();
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host);
+    await act(async () => root.render(<AttachmentViewerDialog open onOpenChange={() => {}} attachment={{ id:'eps', fileName:'logo.eps', mimeType:'application/octet-stream', fileRecordId:'eps-original', thumbStatus:'uploaded' }} />));
+    expect(host.textContent).toContain('EPS Artwork');
+    expect(host.textContent).toContain('Preview unavailable');
+    expect(host.textContent).toContain('Download original');
+    expect(host.textContent).not.toContain('Generating preview');
+    expect(host.querySelector('img[alt="logo.eps"]')).toBeNull();
+    expect(apiFetchBlob).not.toHaveBeenCalled();
+    const download = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.includes('Download original'))!;
+    await act(async () => { download.click(); });
+    expect(downloadFileFromUrl).toHaveBeenCalledWith('/api/artwork/file-records/eps-original/content?variant=original', 'logo.eps');
+    act(() => root.unmount()); host.remove();
+  });
   test('PDF MIME Illustrator uses only its ready image derivative, and downloads original', async () => {
     jest.clearAllMocks();
     URL.createObjectURL = jest.fn(() => 'blob:ai-preview'); URL.revokeObjectURL = jest.fn();

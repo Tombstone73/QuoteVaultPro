@@ -903,6 +903,7 @@ export function registerOrderLineItemFileRoutes(
         message: 'File attached',
       });
     } catch (error: any) {
+      if (error?.code === 'INVALID_ARTWORK_CONTENT') return res.status(400).json({ error: 'Invalid EPS artwork content' });
       console.error("[OrderLineItemFiles:POST] Error:", error);
       res.status(500).json({ error: "Failed to upload line item file" });
     }

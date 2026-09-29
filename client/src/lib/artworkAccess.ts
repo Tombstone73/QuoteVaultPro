@@ -1,5 +1,5 @@
 import { apiFetch } from "@/lib/queryClient";
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 
 export type ArtworkAccessVariant = "original" | "preview" | "thumbnail";
 
@@ -32,6 +32,7 @@ async function fetchArtworkBlob(fileRecordId: string, variant: ArtworkAccessVari
 }
 
 export async function openArtworkPreview(fileRecordId: string, mimeType?: string | null, fileName?: string | null): Promise<void> {
+  if (isEpsArtwork(fileName, mimeType)) throw new Error('EPS preview is unavailable. Download the original file.');
   const blob = await fetchArtworkBlob(fileRecordId, isVectorArtwork(fileName, mimeType) ? "preview" : "original");
   const objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: mimeType || "application/octet-stream" }));
   try {

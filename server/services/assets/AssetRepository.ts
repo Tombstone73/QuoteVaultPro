@@ -1,5 +1,5 @@
 import { db } from '../../db';
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 import { assets, assetVariants, assetLinks } from '../../../shared/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import type { Asset, InsertAsset, AssetVariant, AssetLink } from '../../../shared/schema';
@@ -55,6 +55,7 @@ export class AssetRepository {
     | { previewStatus: 'pending' }
     | { previewStatus: 'failed'; previewError: string } {
     const mt = (mimeType || '').toLowerCase();
+    if (isEpsArtwork(fileName, mimeType)) return { previewStatus: 'failed', previewError: EPS_PREVIEW_UNSUPPORTED };
     const isImage = mt.startsWith('image/') && !mt.includes('svg') && !mt.includes('tiff');
     const isPdf = mt === 'application/pdf';
     if (isImage || isPdf || isVectorArtwork(fileName, mimeType)) return { previewStatus: 'pending' };

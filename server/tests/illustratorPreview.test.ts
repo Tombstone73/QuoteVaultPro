@@ -2,7 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import { PDFDocument, rgb } from 'pdf-lib';
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
-import { detectArtworkFormat, isVectorArtwork, artworkPreviewMessage } from '../../shared/artworkPreview';
+import { detectArtworkFormat, isEpsArtwork, isVectorArtwork, artworkPreviewMessage } from '../../shared/artworkPreview';
 import { ARTWORK_PREVIEW_MAX_BYTES, renderArtworkPdfFirstPage } from '../services/artworkPdfRenderer';
 import { assertArtworkHeaderNotExecutable } from '../services/artworkUploadValidation';
 
@@ -58,6 +58,27 @@ describe('Illustrator derivatives using the installed PDF renderer', () => {
     expect(() => assertArtworkHeaderNotExecutable('logo.ai','application/octet-stream',Buffer.from('MZbinary'))).toThrow('Executable content');
     expect(() => assertArtworkHeaderNotExecutable('logo.ai','application/octet-stream',Buffer.from('%!PS-Adobe-3.0'))).not.toThrow();
     expect(() => assertArtworkHeaderNotExecutable('logo.ai','application/octet-stream',Buffer.from('unknown'))).not.toThrow();
+  });
+  test.each(['application/postscript', 'application/eps', 'image/x-eps', 'application/octet-stream'])(
+    'valid EPS with %s is accepted without changing the source bytes', mimeType => {
+      const original = Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 20\nshowpage\n%%EOF\n');
+      const before = createHash('sha256').update(original).digest('hex');
+      expect(isEpsArtwork('logo.eps', mimeType)).toBe(true);
+      expect(detectArtworkFormat(original)).toBe('postscript');
+      expect(() => assertArtworkHeaderNotExecutable('logo.eps', mimeType, original)).not.toThrow();
+      expect(createHash('sha256').update(original).digest('hex')).toBe(before);
+    },
+  );
+  test('fake EPS is rejected even with an EPS MIME, while PDF and Illustrator classification stays separate', () => {
+    for (const mimeType of ['application/postscript', 'application/octet-stream']) {
+      expect(() => assertArtworkHeaderNotExecutable('logo.eps', mimeType, Buffer.from('not an EPS file'))).toThrow('recognizable PostScript header');
+      expect(() => assertArtworkHeaderNotExecutable('logo.eps', mimeType, Buffer.from('MZbinary'))).toThrow('Executable content');
+    }
+    expect(isEpsArtwork('logo.ai', 'application/postscript')).toBe(false);
+    expect(isEpsArtwork('logo.eps', 'application/pdf')).toBe(true);
+    expect(isEpsArtwork('logo.pdf', 'application/postscript')).toBe(false);
+    expect(isEpsArtwork('photo.png', 'image/png')).toBe(false);
+    expect(() => assertArtworkHeaderNotExecutable('logo.ai', 'application/octet-stream', Buffer.from('unknown'))).not.toThrow();
   });
   test.each(['png','jpeg'] as const)('normal %s images retain their existing sharp derivative path', async format => {
     const original = await sharp({ create: { width:100, height:60, channels:3, background:'#0077ff' } }).toFormat(format).toBuffer();

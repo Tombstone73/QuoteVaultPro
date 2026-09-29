@@ -1,4 +1,4 @@
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 /**
  * quoteLineItemFiles.routes.ts
  *
@@ -204,8 +204,9 @@ export function registerQuoteLineItemFileRoutes(
 
       // Detect if this is a PDF (by mimeType or filename) - will be recalculated after attachment creation
       const resolvedUploadName = (originalFilename || fileName || "") as string;
-      const isPdfEarly = (mimeType && mimeType.toLowerCase().includes('pdf')) ||
-        (resolvedUploadName && resolvedUploadName.toLowerCase().endsWith('.pdf'));
+      const epsUpload = isEpsArtwork(resolvedUploadName, mimeType);
+      const isPdfEarly = !epsUpload && ((mimeType && mimeType.toLowerCase().includes('pdf')) ||
+        (resolvedUploadName && resolvedUploadName.toLowerCase().endsWith('.pdf')));
 
       // Check if PDF processing columns exist (from startup probe)
       const { hasPageCountStatusColumn } = await import('../db');
@@ -227,7 +228,8 @@ export function registerQuoteLineItemFileRoutes(
         productionRole: "artwork" as const,
       } as const;
 
-      const defaultThumbStatus = isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const);
+      const defaultThumbStatus = epsUpload ? ('thumb_failed' as const) : isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const);
+      const defaultThumbError = epsUpload ? EPS_PREVIEW_UNSUPPORTED : null;
       const defaultPageCountStatus = pdfColumnsExist ? (isPdfEarly ? ('detecting' as const) : ('unknown' as const)) : null;
       const isExternalUrl = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
 
@@ -266,6 +268,7 @@ export function registerQuoteLineItemFileRoutes(
               sizeBytes: stored.storedObject.sizeBytes,
               checksum: stored.storedObject.checksum,
               thumbStatus: defaultThumbStatus,
+              thumbError: defaultThumbError,
               pageCountStatus: defaultPageCountStatus,
             }).returning();
 
@@ -306,6 +309,7 @@ export function registerQuoteLineItemFileRoutes(
               sizeBytes: stored.storedObject.sizeBytes,
               checksum: stored.storedObject.checksum,
               thumbStatus: defaultThumbStatus,
+              thumbError: defaultThumbError,
               pageCountStatus: defaultPageCountStatus,
             }).returning();
 
@@ -347,6 +351,7 @@ export function registerQuoteLineItemFileRoutes(
               sizeBytes: stored.storedObject.sizeBytes,
               checksum: stored.storedObject.checksum,
               thumbStatus: defaultThumbStatus,
+              thumbError: defaultThumbError,
               pageCountStatus: defaultPageCountStatus,
             }).returning();
 
@@ -357,6 +362,7 @@ export function registerQuoteLineItemFileRoutes(
       }
 
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
+      if (epsUpload && isExternalUrl) return res.status(400).json({ error: 'EPS artwork must be uploaded through canonical storage for signature validation.' });
       const attachment = canonicalUpload
         ? canonicalUpload.linkedRecord
         : (await db.insert(quoteAttachments).values({
@@ -370,6 +376,7 @@ export function registerQuoteLineItemFileRoutes(
             mimeType: mimeType || null,
             storageProvider: undefined,
             thumbStatus: defaultThumbStatus,
+            thumbError: defaultThumbError,
             pageCountStatus: defaultPageCountStatus,
           }).returning())[0];
 
@@ -430,14 +437,14 @@ export function registerQuoteLineItemFileRoutes(
 
       const isPdfByMime = (attachment.mimeType ?? '').toLowerCase().includes('pdf');
       const isPdfByName = attachmentFileName.toLowerCase().endsWith('.pdf');
-      const isPdf = isPdfByMime || isPdfByName;
+      const isPdf = !isEpsArtwork(attachmentFileName, attachment.mimeType) && (isPdfByMime || isPdfByName);
 
       // Best-effort AI detection for PDF-compatible .ai files.
       // IMPORTANT: Do not treat all postscript as AI (avoid .eps); require .ai extension unless mime is explicitly illustrator.
       const lowerMimeType = (attachment.mimeType ?? '').toLowerCase();
       const isAiByName = attachmentFileName.toLowerCase().endsWith('.ai');
       const isAiByMime = /illustrator/i.test(lowerMimeType) || (/postscript/i.test(lowerMimeType) && isAiByName);
-      const isAi = isAiByName || isAiByMime;
+      const isAi = !isEpsArtwork(attachmentFileName, attachment.mimeType) && (isAiByName || isAiByMime);
 
       const hasStorageProvider = !!canonicalStorageProvider;
       const isNotHttpUrl = !!canonicalStorageKey;
@@ -533,6 +540,7 @@ export function registerQuoteLineItemFileRoutes(
       const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
       res.json({ success: true, data: enrichedAttachment });
     } catch (error: any) {
+      if (error?.code === 'INVALID_ARTWORK_CONTENT') return res.status(400).json({ success: false, message: 'Invalid EPS artwork content' });
       console.error("[LineItemFiles:POST] Error:", error);
       // Provide useful error message without leaking sensitive details
       const errorDetail = error.message?.substring(0, 200) || 'Unknown error';

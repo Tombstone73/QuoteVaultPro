@@ -15,7 +15,7 @@ import { buildArtworkAccessUrl, openArtworkPreview, resolveArtworkDownloadUrl } 
 import { cn } from "@/lib/utils";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
-import { isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
+import { isEpsArtwork, isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
 
 export type AttachmentPage = {
   id: string;
@@ -228,8 +228,9 @@ export function AttachmentViewerDialog({
   const fileName = getAttachmentName(currentAttachment);
   const effectiveMimeType = currentAttachment?.mimeType ?? inferMimeType(fileName);
   const vectorArtwork = isVectorArtwork(fileName, effectiveMimeType);
+  const epsArtwork = isEpsArtwork(fileName, effectiveMimeType);
   const isPdf = !vectorArtwork && isPdfFile(effectiveMimeType, fileName);
-  const vectorReady = vectorArtwork && currentAttachment?.thumbStatus === 'thumb_ready';
+  const vectorReady = vectorArtwork && !epsArtwork && currentAttachment?.thumbStatus === 'thumb_ready';
   const isImage = vectorReady || (!vectorArtwork && typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/"));
   const canonicalOriginalUrl = buildArtworkAccessUrl(currentAttachment?.fileRecordId, "original");
   const canonicalPreviewUrl = buildArtworkAccessUrl(currentAttachment?.fileRecordId, "preview");
@@ -891,13 +892,14 @@ export function AttachmentViewerDialog({
 
     return (
       <div className="flex h-full min-h-[360px] flex-col items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center text-muted-foreground">
-        <FileText className="mb-4 h-16 w-16 opacity-50" />
-        {vectorArtwork && <p className="mb-2 text-sm">{fileName.toLowerCase().endsWith('.eps') ? 'EPS File' : 'Adobe Illustrator File'}</p>}
-        <p className="text-sm">{vectorArtwork ? artworkPreviewMessage(currentAttachment?.thumbStatus, currentAttachment?.thumbError) : 'Preview not available'}</p>
+        <FileText className="mb-3 h-12 w-12 opacity-60" />
+        {epsArtwork && <span className="mb-2 rounded border px-2 py-0.5 text-xs font-semibold">EPS</span>}
+        {vectorArtwork && <p className="mb-2 break-all text-sm">{epsArtwork ? `${fileName} · EPS Artwork` : 'Adobe Illustrator File'}</p>}
+        <p className="text-sm">{epsArtwork ? 'Preview unavailable' : vectorArtwork ? artworkPreviewMessage(currentAttachment?.thumbStatus, currentAttachment?.thumbError) : 'Preview not available'}</p>
         {downloadUrl ? (
           <Button onClick={handleDownloadClick} variant="outline" className="mt-4">
             <Download className="mr-2 h-4 w-4" />
-            Download
+            Download original
           </Button>
         ) : null}
       </div>

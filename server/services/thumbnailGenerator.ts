@@ -13,7 +13,7 @@
 import { db } from "../db";
 import { orderAttachments, quoteAttachments } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 import { renderVectorArtworkPreview } from './readArtworkPreviewSource';
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { fileExists } from "../utils/fileStorage";
@@ -455,6 +455,14 @@ export async function generateImageDerivatives(
 
     // Use fileName from attachment if not provided (for filename-based detection)
     const effectiveFileName = fileName || attachment.originalFilename || attachment.fileName || null;
+
+    if (isEpsArtwork(effectiveFileName, mimeType)) {
+      await db.update(baseTable).set({
+        thumbKey: null, previewKey: null, thumbStatus: 'thumb_failed',
+        thumbError: EPS_PREVIEW_UNSUPPORTED, updatedAt: new Date(),
+      }).where(and(eq(baseTable.id, attachmentId), attachment.fileRecordId ? eq(baseTable.fileRecordId, attachment.fileRecordId) : undefined));
+      return;
+    }
 
     // Check supported type using effective fileName (supports both mimeType and filename-based detection)
     if (!isSupportedImageType(mimeType, effectiveFileName) && !isVectorArtwork(effectiveFileName, mimeType)) {

@@ -62,6 +62,7 @@ import {
 } from "lucide-react";
 import { openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
 import { downloadArtwork, openArtworkPreview } from "@/lib/artworkAccess";
+import { isEpsArtwork } from '@shared/artworkPreview';
 import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { useToast } from "@/hooks/use-toast";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
@@ -1977,14 +1978,14 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                             <Download className="w-3.5 h-3.5" />
                             Download
                           </Button>
-                          <Button
+                          {!isEpsArtwork(currentArtwork.fileName, currentArtwork.mimeType) && <Button
                             size="sm"
                             variant="outline"
                             onClick={() => void openArtworkPreview(currentArtwork.fileRecordId!, currentArtwork.mimeType, currentArtwork.fileName).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}
                             className="gap-1.5"
                           >
                             Open
-                          </Button>
+                          </Button>}
                         </>
                       )}
                     </div>

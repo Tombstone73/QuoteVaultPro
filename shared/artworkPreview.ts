@@ -1,9 +1,17 @@
-/** Illustrator/EPS always use derivatives, even when the browser reports application/pdf. */
+/** Recognize artwork that browsers cannot render as a normal raster image. */
 export function isVectorArtwork(fileName?: string | null, mimeType?: string | null): boolean {
-  return /\.(ai|eps)$/i.test(fileName ?? '') || /illustrator|postscript/i.test(mimeType ?? '');
+  return /\.(ai|eps)$/i.test(fileName ?? '') || /illustrator|postscript|application\/(?:x-)?eps|image\/(?:x-)?eps/i.test(mimeType ?? '');
+}
+
+export function isEpsArtwork(fileName?: string | null, mimeType?: string | null): boolean {
+  if (/\.eps$/i.test(fileName ?? '')) return true;
+  // A known non-EPS filename wins over a misleading MIME value.
+  if (/\.[a-z0-9]+$/i.test(fileName ?? '')) return false;
+  return /^(?:application\/(?:x-)?eps|image\/(?:x-)?eps|application\/(?:x-)?postscript)$/i.test(mimeType ?? '');
 }
 
 export type ArtworkFormat = 'pdf' | 'postscript' | 'unknown';
+export const EPS_PREVIEW_UNSUPPORTED = 'preview_unsupported_eps';
 export function detectArtworkFormat(bytes: Uint8Array): ArtworkFormat {
   // Bounded header inspection only; never interpret source text or execute PostScript.
   const header = Array.from(bytes.subarray(0, 32), byte => String.fromCharCode(byte)).join('');

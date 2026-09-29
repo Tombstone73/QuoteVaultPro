@@ -1,11 +1,14 @@
 import { open } from 'node:fs/promises';
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { detectArtworkFormat, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 
 export function assertArtworkHeaderNotExecutable(fileName: string, mimeType: string, bytes: Uint8Array): void {
   if (!isVectorArtwork(fileName, mimeType)) return;
   const prefix = Buffer.from(bytes.subarray(0, 4)).toString('hex');
   if (prefix.startsWith('4d5a') || prefix === '7f454c46' || prefix.startsWith('2321') || ['feedface','feedfacf','cefaedfe','cffaedfe'].includes(prefix)) {
     throw Object.assign(new Error('Executable content cannot be uploaded as Illustrator/EPS artwork.'), { statusCode: 400, code: 'INVALID_ARTWORK_CONTENT' });
+  }
+  if (isEpsArtwork(fileName, mimeType) && detectArtworkFormat(bytes) !== 'postscript') {
+    throw Object.assign(new Error('EPS artwork must contain a recognizable PostScript header.'), { statusCode: 400, code: 'INVALID_ARTWORK_CONTENT' });
   }
 }
 

@@ -15,6 +15,7 @@
 import type { Express } from "express";
 import path from "path";
 import { Readable } from "stream";
+import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork } from '@shared/artworkPreview';
 import { promises as fsPromises } from "fs";
 import { db, hasQuoteAttachmentPagesTable } from "../db";
 import {
@@ -661,7 +662,8 @@ export async function registerAttachmentRoutes(
           extension: stored.storedObject.extension,
           sizeBytes: stored.storedObject.sizeBytes,
           checksum: stored.storedObject.checksum,
-          thumbStatus: (args.thumbStatus as any) ?? "uploaded",
+          thumbStatus: isEpsArtwork(stored.storedObject.originalFilename, stored.storedObject.mimeType) ? "thumb_failed" : (args.thumbStatus as any) ?? "uploaded",
+          thumbError: isEpsArtwork(stored.storedObject.originalFilename, stored.storedObject.mimeType) ? EPS_PREVIEW_UNSUPPORTED : null,
           pageCountStatus: (args.pageCountStatus as any) ?? undefined,
         }).returning();
 
@@ -1639,7 +1641,8 @@ export async function registerAttachmentRoutes(
       // Detect if this is a PDF (by mimeType or filename)
       const resolvedUploadName = (originalFilename || fileName || "") as string;
       const lowerMime = (mimeType || "").toString().toLowerCase();
-      const isPdfEarly = lowerMime.includes("pdf") || resolvedUploadName.toLowerCase().endsWith(".pdf");
+      const epsUpload = isEpsArtwork(resolvedUploadName, mimeType);
+      const isPdfEarly = !epsUpload && (lowerMime.includes("pdf") || resolvedUploadName.toLowerCase().endsWith(".pdf"));
 
       const thumbStatus = isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const);
       const pageCountStatus = pdfColumnsExist ? (isPdfEarly ? ("detecting" as const) : ("unknown" as const)) : undefined;
@@ -1678,6 +1681,9 @@ export async function registerAttachmentRoutes(
       }
       if (!fileBuffer && !fileUrl) {
         return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
+      }
+      if (epsUpload && typeof fileUrl === 'string' && /^https?:\/\//i.test(fileUrl)) {
+        return res.status(400).json({ error: 'EPS artwork must be uploaded through canonical storage for signature validation.' });
       }
 
       const attachment = fileBuffer && originalFilename
@@ -1796,8 +1802,8 @@ export async function registerAttachmentRoutes(
       const attachmentFileNameForPdf = (
         (attachment.originalFilename ?? attachment.fileName ?? "") as string
       ).toLowerCase();
-      const isPdf =
-        (attachment.mimeType ?? "").toLowerCase().includes("pdf") || attachmentFileNameForPdf.endsWith(".pdf");
+      const isPdf = !isEpsArtwork(attachmentFileNameForPdf, attachment.mimeType) && (
+        (attachment.mimeType ?? "").toLowerCase().includes("pdf") || attachmentFileNameForPdf.endsWith(".pdf"));
       const normalizedStorageProvider = canonicalStorageProvider;
 
       if (
@@ -1831,6 +1837,7 @@ export async function registerAttachmentRoutes(
       const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
       res.json({ success: true, data: enrichedAttachment });
     } catch (error) {
+      if ((error as any)?.code === 'INVALID_ARTWORK_CONTENT') return res.status(400).json({ error: 'Invalid EPS artwork content' });
       console.error("Error attaching file to quote:", error);
       res.status(500).json({ error: "Failed to attach file to quote" });
     }
@@ -2317,7 +2324,7 @@ export async function registerAttachmentRoutes(
 
         const createdFileName = (created.originalFilename ?? created.fileName ?? "").toString();
         const createdMimeType = (created.mimeType ?? "").toString().toLowerCase();
-        const isPdfUpload = createdMimeType.includes("pdf") || createdFileName.toLowerCase().endsWith(".pdf");
+        const isPdfUpload = !isEpsArtwork(createdFileName, createdMimeType) && (createdMimeType.includes("pdf") || createdFileName.toLowerCase().endsWith(".pdf"));
 
         if (isPdfUpload && pdfColumnsExist) {
           const [updated] = await db
@@ -2412,6 +2419,7 @@ export async function registerAttachmentRoutes(
           const enrichedInserted = await Promise.all(inserted.map((file) => enrichAttachmentWithUrls(file)));
           return res.json({ success: true, data: enrichedInserted });
         } catch (error: any) {
+          if (error?.code === 'INVALID_ARTWORK_CONTENT') return res.status(400).json({ error: 'Invalid EPS artwork content' });
           console.error("[QuoteAttachments:POST] Atomic upload failed:", error);
           return res.status(500).json({ error: error?.message || "Failed to upload attachments" });
         }
@@ -2422,6 +2430,7 @@ export async function registerAttachmentRoutes(
       if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
       const isHttp = fileUrl.startsWith('http://') || fileUrl.startsWith('https://');
+      if (isHttp && isEpsArtwork(fileName, mimeType)) return res.status(400).json({ error: 'EPS artwork must be uploaded through canonical storage for signature validation.' });
       const attachment = isHttp
         ? (
             await db.insert(quoteAttachments).values({
@@ -2460,6 +2469,7 @@ export async function registerAttachmentRoutes(
       const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
       return res.json({ success: true, data: enrichedAttachment });
     } catch (error) {
+      if ((error as any)?.code === 'INVALID_ARTWORK_CONTENT') return res.status(400).json({ error: 'Invalid EPS artwork content' });
       console.error("[QuoteAttachments:POST] Error:", error);
       return res.status(500).json({ error: "Failed to attach file to quote" });
     }

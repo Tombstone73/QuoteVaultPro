@@ -1,5 +1,5 @@
 import { assetRepository } from './AssetRepository';
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 import { renderArtworkPdfFirstPage } from '../artworkPdfRenderer';
 import { renderVectorArtworkPreview } from '../readArtworkPreviewSource';
 import path from 'path';
@@ -91,6 +91,14 @@ export class AssetPreviewGenerator {
    */
   async generatePreviews(asset: Asset): Promise<void> {
     console.log(`[AssetPreviewGenerator] Processing asset ${asset.id} (${asset.fileName})`);
+
+    if (isEpsArtwork(asset.fileName, asset.mimeType)) {
+      this.resetSourceRetry(asset.id);
+      await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {
+        previewStatus: 'failed', previewError: EPS_PREVIEW_UNSUPPORTED,
+      });
+      return;
+    }
 
     try {
       const mimeType = asset.mimeType?.toLowerCase() || '';
@@ -260,6 +268,7 @@ export class AssetPreviewGenerator {
     fileName: string;
     mimeType?: string | null;
   }): Promise<"ready" | "unsupported" | "failed"> {
+    if (isEpsArtwork(args.fileName, args.mimeType)) return "unsupported";
     const mimeType = String(args.mimeType || "").toLowerCase();
     const isPdf = mimeType === "application/pdf" || args.fileName.toLowerCase().endsWith(".pdf");
     const isImage = mimeType.startsWith("image/") && !mimeType.includes("svg");

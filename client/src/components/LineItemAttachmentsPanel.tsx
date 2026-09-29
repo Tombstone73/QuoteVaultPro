@@ -1,4 +1,4 @@
-import { isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
+import { isEpsArtwork, isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePageVisible } from "@/hooks/usePageVisible";
@@ -1269,7 +1269,8 @@ export function LineItemAttachmentsPanel({
           ) : attachments.length > 0 ? (
             <div className="space-y-1">
               {attachments.map((file, fileIndex) => {
-                const FileIcon = getFileIcon(file.mimeType);
+                const fileName = getAttachmentDisplayName(file);
+                const FileIcon = isEpsArtwork(file.fileName, file.mimeType) ? FileText : getFileIcon(file.mimeType);
                 const isPdf = isPdfAttachment(file);
                 const isImage = file.mimeType?.startsWith("image/") ?? false;
                 const isTiff =
@@ -1284,11 +1285,10 @@ export function LineItemAttachmentsPanel({
 
                 // Canonical thumbnail resolver. If it returns null, do NOT attempt to render a URL.
                 // This prevents requesting mismatched/non-existent thumbnails (e.g. guessed thumbs/* paths).
-                const thumbnailUrl = getThumbSrc(file);
+                const thumbnailUrl = isEpsArtwork(fileName, file.mimeType) ? null : getThumbSrc(file);
 
                 const hasAnyThumbnail = !!thumbnailUrl;
-                const isPending = !isAttachmentSettled(file as any);
-                const fileName = getAttachmentDisplayName(file);
+                const isPending = !isEpsArtwork(file.fileName, file.mimeType) && !isAttachmentSettled(file as any);
                 const pageCount = getPdfPageCount(file);
                 const showPageCount = isPdf && pageCount !== null && pageCount > 1;
                 const openPreview = () => setPreviewIndex(fileIndex);
@@ -1344,6 +1344,7 @@ export function LineItemAttachmentsPanel({
                         ) : (
                           <>
                             <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                            {isEpsArtwork(fileName, file.mimeType) && <span className="absolute -bottom-1 rounded bg-background px-0.5 text-[8px] font-bold">EPS</span>}
                             {isPending && (
                               <div className="absolute -top-0.5 -right-0.5 rounded-full bg-amber-500/90 p-0.5" title="Generating thumbnail...">
                                 <Loader2 className="h-2.5 w-2.5 animate-spin text-white" />
@@ -1384,7 +1385,7 @@ export function LineItemAttachmentsPanel({
                             {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
                           </span>
                         )}
-                        {isVectorArtwork(fileName, file.mimeType) && !hasAnyThumbnail ? <span className="text-[10px] text-muted-foreground">{artworkPreviewMessage(file.thumbStatus, file.thumbError)}</span> : file.thumbStatus && file.thumbStatus !== 'uploaded' && !hasAnyThumbnail && (() => {
+                        {isEpsArtwork(fileName, file.mimeType) && !hasAnyThumbnail ? <span className="text-[10px] text-muted-foreground">EPS Artwork · Preview unavailable</span> : isVectorArtwork(fileName, file.mimeType) && !hasAnyThumbnail ? <span className="text-[10px] text-muted-foreground">{artworkPreviewMessage(file.thumbStatus, file.thumbError)}</span> : file.thumbStatus && file.thumbStatus !== 'uploaded' && !hasAnyThumbnail && (() => {
                           const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
                           const isLocalMissing = file.thumbStatus === 'thumb_failed' && isLocalPreviewUnavailableError(file.thumbError);
                           return (
@@ -1469,7 +1470,7 @@ export function LineItemAttachmentsPanel({
                           
                           // Supported image types (same as server allowlist)
                           const supportedImageTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/tiff', 'image/tif'];
-                          const isSupportedImage = (file.mimeType && supportedImageTypes.includes(file.mimeType.toLowerCase())) || (isVectorArtwork(fileName, file.mimeType) && file.thumbStatus === 'thumb_failed' && !file.thumbError?.startsWith('preview_unsupported'));
+                          const isSupportedImage = !isEpsArtwork(fileName, file.mimeType) && ((file.mimeType && supportedImageTypes.includes(file.mimeType.toLowerCase())) || (isVectorArtwork(fileName, file.mimeType) && file.thumbStatus === 'thumb_failed' && !file.thumbError?.startsWith('preview_unsupported')));
                           
                           if (!isSupportedImage) return null;
                           

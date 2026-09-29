@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { FileText } from "lucide-react";
 import { getArtworkObjectUrl, type ArtworkAccessVariant } from "@/lib/artworkAccess";
-import { isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
+import { isEpsArtwork, isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
 
 type AuthenticatedArtworkThumbnailProps = {
   fileRecordId: string | null | undefined;
@@ -34,6 +35,7 @@ export function AuthenticatedArtworkThumbnail({
   const [src, setSrc] = useState<string | null>(null);
   const [waitExpired, setWaitExpired] = useState(false);
   const vectorArtwork = isVectorArtwork(fileName, mimeType);
+  const epsArtwork = isEpsArtwork(fileName, mimeType);
 
   useEffect(() => {
     let active = true;
@@ -43,7 +45,7 @@ export function AuthenticatedArtworkThumbnail({
     setSrc(null);
     setWaitExpired(false);
 
-    if (!fileRecordId) return undefined;
+    if (!fileRecordId || epsArtwork) return undefined;
 
     const load = () => { void getArtworkObjectUrl(fileRecordId, variant)
       .then((url) => {
@@ -65,7 +67,13 @@ export function AuthenticatedArtworkThumbnail({
       clearTimeout(retryTimer);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [fileRecordId, variant, vectorArtwork, previewStatus]);
+  }, [fileRecordId, variant, vectorArtwork, epsArtwork, previewStatus]);
+
+  if (epsArtwork) return <div className={`flex flex-col items-center justify-center gap-1 text-center text-muted-foreground ${className || ''}`} data-testid="eps-artwork-fallback">
+    <FileText className={variant === 'preview' ? 'h-9 w-9' : 'h-5 w-5'} />
+    <span className="rounded border px-1.5 py-0.5 text-xs font-semibold">EPS</span>
+    {variant === 'preview' && <><span className="max-w-full break-all text-sm">{fileName}</span><span className="text-xs">Preview unavailable</span></>}
+  </div>;
 
   if (!src) return vectorArtwork ? <div className={`flex items-center justify-center p-3 text-center text-sm text-muted-foreground ${className || ''}`}>{waitExpired ? 'Preview unavailable. Refresh to check again or download the original.' : artworkPreviewMessage(previewStatus, previewError)}</div> : <>{fallback}</>;
 

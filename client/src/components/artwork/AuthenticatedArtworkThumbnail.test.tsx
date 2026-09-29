@@ -28,3 +28,11 @@ test.each([
   await render(status!,error);
   expect(host.textContent).toContain(text); expect(host.querySelector('img')).toBeNull();
 });
+test('shared Roll and Flatbed artwork fallback identifies EPS without requesting a derivative', async () => {
+  await act(async () => root.render(<AuthenticatedArtworkThumbnail fileRecordId="eps-original" fileName="logo.eps" mimeType="application/octet-stream" previewStatus="uploaded" alt="Station artwork" variant="preview" fallback={<div>No preview</div>} />));
+  expect(host.querySelector('[data-testid="eps-artwork-fallback"]')?.textContent).toContain('logo.eps');
+  expect(host.textContent).toContain('EPS');
+  expect(host.textContent).toContain('Preview unavailable');
+  expect(host.querySelector('img')).toBeNull();
+  expect(mockGet).not.toHaveBeenCalled();
+});

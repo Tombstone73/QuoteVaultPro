@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { isVectorArtwork } from '@shared/artworkPreview';
+import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 import { orderAttachments, orders, quoteAttachments } from "@shared/schema";
 import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import { fileExists } from "../utils/fileStorage";
@@ -353,12 +353,20 @@ async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentI
 
     for (const row of rows) {
       try {
+        const fileName = (row.originalFilename ?? row.fileName ?? null) as string | null;
+        if (isEpsArtwork(fileName, row.mimeType)) {
+          const table = row.attachmentType === 'quote' ? quoteAttachments : orderAttachments;
+          await db.update(table).set({
+            thumbStatus: 'thumb_failed', thumbKey: null, previewKey: null,
+            thumbError: EPS_PREVIEW_UNSUPPORTED, updatedAt: new Date(),
+          }).where(eq(table.id, row.id));
+          continue;
+        }
         const originalInput = await getCanonicalOriginalWorkInput(row);
         if (!originalInput) {
           if (debug) console.log(`[Thumbnail Worker] Skipping ${row.id}: canonical original unavailable`);
           continue;
         }
-        const fileName = (row.originalFilename ?? row.fileName ?? null) as string | null;
         const storageProvider = originalInput.storageProvider;
 
         // Defensive guard: thumb_ready rows should only be queued for local self-heal.
