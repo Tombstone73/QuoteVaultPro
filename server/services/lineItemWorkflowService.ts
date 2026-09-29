@@ -1,3 +1,4 @@
+import { assertProductionCredit, getOrderCreditHold } from "./orderCreditHoldService";
 import { and, desc, eq } from "drizzle-orm";
 import { orderLineItems, orders, products, productionEvents, productionJobs, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
@@ -498,6 +499,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
 
   const requiresApprovedProofForTarget = ["ready_for_production", "in_production"].includes(args.toState);
   if (requiresApprovedProofForTarget) {
+    await assertProductionCredit(tx, { organizationId: args.organizationId, orderId: lineItem.orderId });
     const proofGate = await resolveLineItemProofReleaseGate(tx, {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
@@ -790,11 +792,13 @@ export async function completeLineItemDesign(tx: any, args: {
     throw Object.assign(new Error("Line item is not currently in design"), { statusCode: 409 });
   }
 
-  const targetState: LineItemWorkflowState = lineItem.requiresProofApproval
+  let targetState: LineItemWorkflowState = lineItem.requiresProofApproval
     ? "awaiting_proof_approval"
     : lineItem.requiresPrepress
       ? "ready_for_prepress"
       : "ready_for_production";
+
+  if (targetState === "ready_for_production" && (await getOrderCreditHold(tx, { organizationId: args.organizationId, orderId: lineItem.orderId })).creditHold.held) targetState = "ready_for_prepress";
 
   await tx
     .update(orderLineItems)

@@ -1,3 +1,5 @@
+import { getOrderFinancialDisplayStatus } from "@shared/orderCreditHold";
+import { OrderCreditHoldBanner } from "@/components/orders/OrderCreditHoldBanner";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import type { BillingOwnershipOverrideContext } from '@shared/billingOwnershipReview';
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
@@ -2206,6 +2208,7 @@ export default function OrderDetail() {
             <div className="flex flex-1 items-center justify-center px-4">
             {(order.state === 'closed' || order.status === 'operationally_complete') ? <OrderStatusBadge status={order.status} state={order.state} /> : <OrderStatusPillSelector
               orderId={order.id}
+              displayLabel={getOrderFinancialDisplayStatus(order)}
               currentState={order.state as OrderState}
               currentPillId={order.statusPillId}
               currentPillValue={order.statusPillValue}
@@ -2267,6 +2270,7 @@ export default function OrderDetail() {
           </div>
         </div>
 
+        <OrderCreditHoldBanner orderId={order.id} hold={order.creditHold} canOverride={isAdminOrOwner} />
         <BillingOwnershipReviewPanel hold={billingOwnershipReview.data?.hold} canResolve={isAdminOrOwner} />
         {ownershipOverrideContext && isAdminOrOwner && !billingOwnershipReview.data?.hold && (
           <div className="my-3 rounded-md border p-3 space-y-2 text-sm">

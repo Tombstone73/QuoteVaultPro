@@ -1,3 +1,4 @@
+import { assertProductionCredit } from "./orderCreditHoldService";
 /**
  * productionOwnership.ts
  *
@@ -295,6 +296,8 @@ export async function transitionToStation(
   },
 ): Promise<StationTransitionResult> {
   const now = new Date();
+
+  await assertProductionCredit(tx, { organizationId: args.organizationId, orderId: args.orderId, stationKey: args.targetStationKey, stepKey: args.targetStepKey });
 
   // 1. Find active job
   const activeJob = await findActiveJobForLineItem(tx, {

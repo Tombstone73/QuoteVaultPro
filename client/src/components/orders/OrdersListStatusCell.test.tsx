@@ -162,3 +162,22 @@ test.each(['invoiced', 'operationally_complete', 'completed'])('closed lifecycle
   await act(async () => root.unmount());
   delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
 });
+
+const held = { held: true, creditLimitCents: 0, exposureCents: 50000, requiredPaymentCents: 50000, overrideApplied: false };
+test('financial hold replaces the primary New pill and clears to proof, ready, and restored hold', async () => {
+  const props = { id: 'held-order', state: 'open', status: 'new', statusPillValue: 'New', creditHold: held, lineItemsCount: 1 };
+  const { act, container, root } = await renderCell(props);
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Awaiting Payment');
+  await act(async () => root.render(<OrdersListStatusCell row={{ ...props, creditHold: { ...held, held: false }, proofActionRequired: true }} />));
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Awaiting Proof');
+  await act(async () => root.render(<OrdersListStatusCell row={{ ...props, creditHold: { ...held, held: false } }} />));
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Ready for Production');
+  await act(async () => root.render(<OrdersListStatusCell row={props} />));
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Awaiting Payment');
+  await act(async () => root.unmount());
+});
+test('historical completion outranks a stale financial hold', async () => {
+  const { act, container, root } = await renderCell({ ...row, state: 'closed', status: 'operationally_complete', creditHold: held });
+  expect(container.textContent).toBe('Closed');
+  await act(async () => root.unmount());
+});

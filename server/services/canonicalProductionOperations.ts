@@ -1,3 +1,4 @@
+import { assertProductionCredit } from "./orderCreditHoldService";
 import { and, eq } from "drizzle-orm";
 
 import { productionJobs } from "@shared/schema";
@@ -35,6 +36,7 @@ export class CanonicalProductionOperations {
     await assertParentOrderInProductionForJob(tx, { organizationId: input.organizationId, job, action: "start production job" });
     const timerState = await getTimerStateForJob(input.organizationId, input.jobId, tx);
     if (timerState.isRunning) return job;
+    await assertProductionCredit(tx, { organizationId: input.organizationId, orderId: job.orderId, stationKey: job.stationKey, stepKey: job.stepKey });
     const now = new Date();
     await appendEvent({ tx, organizationId: input.organizationId, productionJobId: job.id, type: "timer_started", actorUserId: input.actorUserId ?? null });
     await tx.update(productionJobs).set({

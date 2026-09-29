@@ -12,8 +12,6 @@ import { storage } from "../../storage";
 import { OrdersRepository } from "../../storage/orders.repo";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
 import { orderChangesRequireOrderBackedInvoiceSynchronization } from "./orderHeaderUpdatePolicy";
-import { assertCustomerCreditForOrder, orderPayloadTotalCents } from "../customerCreditPolicyService";
-import { parseMoneyToCents } from "@shared/customerCreditExposure";
 import { getInvoiceBillingOwnerTransitionBlocker } from "./invoiceBillingOwnerTransition";
 
 type CreateOrderPayload = Parameters<typeof storage.createOrder>[1];
@@ -30,10 +28,8 @@ class CanonicalOrderOperations {
 
   async create(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; payload: CreateOrderPayload; auditDescription?: string }) {
     const identity = await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId, preserveExplicitCustomerClear: input.payload.customerId === null });
-    const creditDecision = await assertCustomerCreditForOrder({ organizationId: input.organizationId, customerId: identity.customerId, actorUserId: input.actorUserId, actorOrgRole: input.actorOrgRole, proposedOrderTotalCents: orderPayloadTotalCents(input.payload as any), override: input.creditOverride, overrideReason: input.creditOverrideReason });
     const order = await storage.createOrder(input.organizationId, { ...input.payload, createdByUserId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId });
     await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Created order ${order.displayNumber || order.orderNumber}.` });
-    if ((creditDecision as any)?.overrideApplied) await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_credit_limit_override", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: "Authorized customer credit-limit override.", newValues: { customerId: identity.customerId, reason: (creditDecision as any).overrideReason, creditLimitCents: (creditDecision as any).creditLimitCents, projectedExposureCents: (creditDecision as any).projectedExposureCents, overLimitCents: (creditDecision as any).overLimitCents } as any } as any);
     return order;
   }
 
@@ -56,20 +52,7 @@ class CanonicalOrderOperations {
     if (!nextCustomerId && !nextContactId) throw new CanonicalOrderOperationError("ORDER_IDENTITY_REQUIRED", "Select a customer or contact for this order.");
     const billingOwnerChanges = nextCustomerId !== existing.customerId || (!nextCustomerId && nextContactId !== existing.contactId);
     if (override && (!billingOwnerChanges || !Number.isFinite(Date.parse(override.orderUpdatedAt)))) throw new BillingOwnershipReviewError('Select a different billing owner and retry normal Save first.', 400);
-    const proposedTotalCents = input.changes.total !== undefined ? parseMoneyToCents(input.changes.total) : parseMoneyToCents(existing.total);
-    await assertCustomerCreditForOrder({
-      organizationId: input.organizationId,
-      customerId: nextCustomerId,
-      actorUserId: input.actorUserId,
-      actorOrgRole: input.actorOrgRole,
-      proposedOrderTotalCents: proposedTotalCents,
-      // Moving an order to a different customer adds its full value to that
-      // customer's position; an in-place update applies only the delta.
-      existingOrderTotalCents: nextCustomerId === existing.customerId ? parseMoneyToCents(existing.total) : 0,
-      orderId: existing.id,
-      override: input.creditOverride,
-      overrideReason: input.creditOverrideReason,
-    });
+    // Credit controls forward physical release, never commercial Order capture.
     return db.transaction(async (tx) => {
       if (billingOwnerChanges) {
         // Lock the Order before inspecting the Invoice. A simultaneous send,

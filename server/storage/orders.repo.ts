@@ -1,3 +1,4 @@
+import { getOrderCreditHold } from "../services/orderCreditHoldService";
 import { db } from "../db";
 import {
     orders,
@@ -1523,9 +1524,11 @@ export class OrdersRepository {
             eq(invoices.organizationId, organizationId), eq(invoices.orderId, id),
         ));
         const paymentSummaries = await loadOrderPaymentSummaries(this.dbInstance, organizationId, invoiceRows);
+        const productionSummaries = await this.buildProductionSummaries(organizationId, [id]);
         return {
             ...order,
             paymentSummary: paymentSummaries.get(id) ?? deriveOrderPaymentSummary([]),
+            productionSummary: productionSummaries.get(id),
             lineItems: enrichedLineItemsWithProof,
             customer,
             contact,
@@ -2513,6 +2516,10 @@ export class OrdersRepository {
                     requiresDesign: Boolean(lineItem.requiresDesign),
                     requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : true,
                 })) as any;
+
+                // Conversion captures commercial work even when its optional print intake must wait.
+                if (["ready_for_production", "in_production"].includes(targetWorkflowState) &&
+                    (await getOrderCreditHold(this.dbInstance, { organizationId, orderId: createdOrder.id })).creditHold.held) continue;
 
                 await transitionLineItemWorkflowState(this.dbInstance, {
                     organizationId,

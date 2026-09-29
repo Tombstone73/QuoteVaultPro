@@ -51,8 +51,10 @@ function money(centsValue: number) {
 function isPositiveReceivable(invoice: CustomerExposureInvoice): boolean {
   const workflowStatus = String(invoice.status || "").trim().toLowerCase();
   const displayStatus = String(invoice.displayStatus || "").trim().toLowerCase();
-  if (["void", "voided", "cancelled", "canceled", "paid", "credit"].includes(workflowStatus)) return false;
+  if (["void", "voided", "cancelled", "canceled"].includes(workflowStatus)) return false;
   if (["paid historical", "credit / refund due", "voided", "paid"].includes(displayStatus)) return false;
+  // Explicit canonical balances outrank stale Paid/Credit workflow labels after reversal.
+  if (invoice.remainingCents === undefined && ["paid", "credit"].includes(workflowStatus)) return false;
   if ((invoice.creditCents ?? 0) > 0) return false;
   const remainingCents = invoice.remainingCents ?? parseMoneyToCents(invoice.balanceDue);
   return remainingCents > 0;

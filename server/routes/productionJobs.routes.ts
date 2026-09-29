@@ -1,3 +1,4 @@
+import { assertProductionCredit } from "../services/orderCreditHoldService";
 import { resolveProductionStationWork } from "../services/productionStationPopulation";
 import type { Express } from "express";
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
@@ -357,6 +358,10 @@ export async function completeProductionJobWorkflow(
     throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
   }
 
+  if (!args.historicalTerminalRepair && !job.startedAt) {
+    await assertProductionCredit(tx, { organizationId: args.organizationId, orderId: job.orderId, stationKey: job.stationKey, stepKey: job.stepKey });
+  }
+
   const effectiveSkipProduction = args.skipProduction === "auto" ? job.status === "queued" : args.skipProduction;
   const manualOverride = args.manualOverride ?? null;
 
@@ -668,6 +673,9 @@ async function updateProductionJobStatusWorkflow(
     });
   }
 
+  if (args.status === "in_progress" || (args.status === "done" && !job.startedAt)) {
+    await assertProductionCredit(tx, { organizationId: args.organizationId, orderId: job.orderId, stationKey: job.stationKey, stepKey: args.stepKey ?? job.stepKey });
+  }
   const updateData: any = { status: args.status, updatedAt: now };
   if (args.stepKey !== undefined) updateData.stepKey = args.stepKey;
   if (args.status === "in_progress" && !job.startedAt) updateData.startedAt = now;
@@ -3227,6 +3235,8 @@ export function registerProductionJobsRoutes(
 
           const job = rows[0];
           if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+
+          await assertProductionCredit(tx, { organizationId, orderId: job.orderId, stationKey: nextStationKey, stepKey: nextStepKey });
 
           // If station is changing and line item is linked, use canonical close/create
           const stationChanging = job.stationKey !== nextStationKey;

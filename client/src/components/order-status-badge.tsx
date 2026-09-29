@@ -11,6 +11,8 @@ interface OrderStatusBadgeProps {
 export function OrderStatusBadge({ status, state, className }: OrderStatusBadgeProps) {
   const getStatusConfig = (status: string) => {
     switch (status.toLowerCase()) {
+      case "awaiting payment":
+        return { label: "Awaiting Payment", className: "bg-amber-500/10 text-amber-600 border-amber-500/20" };
       case "new":
         return {
           label: "New",

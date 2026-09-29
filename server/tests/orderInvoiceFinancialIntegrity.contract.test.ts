@@ -90,7 +90,7 @@ describe("forward Order to Invoice financial integrity", () => {
     expect(invoiceService).toContain("amountPaid: centsToDecimalString(financialState.amountPaidCents)");
     expect(invoiceService).toContain('qbSyncStatus: "needs_resync"');
     expect(automation).toContain("ne(invoices.status, \"void\")");
-    expect(canonicalOrderOperations).toContain("synchronizeOrderBackedInvoiceFromOrderInTransaction");
+    expect(canonicalOrderOperations).toContain("recalculateEditableOrderFinancialsInTransaction");
     expect(customerRoutes).toContain("getCustomerCreditExposures");
     expect(customerRoutes).toContain("canManageCustomerCredit(req.actorOrgRole ?? req.orgRole)");
     expect(customerRoutes).toContain("customer_credit_limit_updated");

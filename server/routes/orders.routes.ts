@@ -1,3 +1,4 @@
+import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../services/orderCreditHoldService";
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
@@ -2034,6 +2035,7 @@ export async function registerOrderRoutes(
                     }));
                 }
 
+                result.items = await projectOrderCreditHolds(organizationId, result.items);
                 return res.json(result);
             }
 
@@ -2048,7 +2050,7 @@ export async function registerOrderRoutes(
                 invoice: invoiceFilter,
             };
             const ordersList = await storage.getAllOrders(organizationId, filters);
-            res.json(ordersList);
+            res.json(await projectOrderCreditHolds(organizationId, ordersList));
         } catch (error) {
             console.error("Error fetching orders:", error);
             res.status(500).json({ message: "Failed to fetch orders" });
@@ -2067,10 +2069,23 @@ export async function registerOrderRoutes(
             if (!order) {
                 return res.status(404).json({ message: "Order not found" });
             }
-            res.json(order);
+            res.json((await projectOrderCreditHolds(organizationId, [order]))[0]);
         } catch (error) {
             console.error("Error fetching order:", error);
             res.status(500).json({ message: "Failed to fetch order" });
+        }
+    });
+
+    app.post("/api/orders/:id/credit-override", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const actorUserId = getUserId(req.user);
+            if (!organizationId || !actorUserId) return res.status(401).json({ message: "Staff authorization required." });
+            const creditHold = await overrideOrderProductionCredit({ organizationId, orderId: req.params.id, actorUserId,
+                actorOrgRole: req.actorOrgRole ?? req.orgRole, reason: req.body?.reason, confirmed: req.body?.confirmed === true });
+            return res.json({ creditHold });
+        } catch (error: any) {
+            return res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to override credit hold." });
         }
     });
 

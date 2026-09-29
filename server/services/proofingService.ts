@@ -1,3 +1,4 @@
+import { getOrderCreditHold } from "./orderCreditHoldService";
 import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { PDFDocument } from "pdf-lib";
 
@@ -642,10 +643,15 @@ export async function reconcileLineItemProofGateRelease(tx: any, args: {
     lifecycleStatus: lineItem.lifecycleStatus,
   });
 
+  const physicalTarget = ["ready_for_production", "in_production"].includes(recovery.toState);
+  const financiallyHeld = physicalTarget && (await getOrderCreditHold(tx, { organizationId: args.organizationId, orderId: lineItem.orderId })).creditHold.held;
+  // Approving/reconciling an already queued item must not undo the proof or
+  // restart production. Start/handoff still rechecks the financial gate.
+  if (financiallyHeld && ["ready_for_production", "in_production"].includes(recovery.fromState)) return recovery;
   return transitionLineItemWorkflowState(tx, {
     organizationId: args.organizationId,
     lineItemId: lineItem.lineItemId,
-    toState: recovery.toState,
+    toState: financiallyHeld ? "ready_for_prepress" : recovery.toState,
     actorUserId: args.actorUserId ?? null,
     metadata: { source: args.source, proofGateAllowed: proofGate.allowed },
   });
@@ -3874,7 +3880,8 @@ export async function recordProofResponse(tx: any, args: {
       const transition = await transitionLineItemWorkflowState(tx, {
         organizationId: args.organizationId,
         lineItemId: member.lineItemId,
-        toState: nextWorkflowState,
+        toState: nextWorkflowState === "ready_for_production" && (await getOrderCreditHold(tx, { organizationId: args.organizationId, orderId: member.orderId })).creditHold.held
+          ? "ready_for_prepress" : nextWorkflowState,
         actorUserId: args.actorUserId ?? null,
         metadata: {
           source: "proofing_record_response",

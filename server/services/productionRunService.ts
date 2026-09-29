@@ -1,3 +1,4 @@
+import { assertProductionCredit } from "./orderCreditHoldService";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, productionStationSteps, reprintRequests, users } from "@shared/schema";
@@ -1383,6 +1384,9 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
   if (memberRows.length !== memberIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more production run members were not found.", 404);
   if (idempotencyKey && memberRows.every(({ member }: any) => member.lastOutcomeIdempotencyKey === idempotencyKey)) return run;
 
+  if (!run.startedAt) {
+    for (const { line } of memberRows) await assertProductionCredit(tx, { organizationId: input.organizationId, orderId: line.orderId, stationKey: run.stationKey });
+  }
   const now = new Date();
   for (const { member, line } of memberRows) {
     const outcome = input.members.find((candidate) => candidate.memberId === member.id)!;
@@ -2336,6 +2340,14 @@ export async function transitionProductionRun(input: { organizationId: string; r
     if (run.status === "completed" || run.status === "completed_with_exceptions" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);
     if (input.action === "cancel" && (run.status === "in_production" || run.status === "partially_completed" || run.startedAt)) {
       throw new ProductionRunError("PRODUCTION_RUN_CANCEL_RECOVERY_REQUIRED", "Started production runs must use the partial-recovery workflow; cancellation cannot reset completed or remaining quantities.", 409);
+    }
+    if (input.action === "release" || input.action === "start") {
+      const members = await tx.select({ orderId: productionJobs.orderId }).from(productionRunMembers)
+        .innerJoin(productionJobs, and(eq(productionJobs.id, productionRunMembers.productionJobId), eq(productionJobs.organizationId, input.organizationId)))
+        .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id)));
+      for (const orderId of Array.from(new Set(members.map(member => member.orderId)))) {
+        if (orderId) await assertProductionCredit(tx, { organizationId: input.organizationId, orderId, stationKey: run.stationKey });
+      }
     }
     const now = new Date();
     const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release"

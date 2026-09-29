@@ -1,3 +1,4 @@
+import type { OrderCreditHold } from "@shared/orderCreditHold";
 import { useRef } from "react";
 import { LineCreateIntentStore } from "@/lib/lineCreateIntent";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -360,6 +361,8 @@ export type PrepressQueueItem = {
 };
 
 export type OrderWithRelations = Order & {
+  creditHold?: OrderCreditHold;
+  productionSummary?: OrderRow["productionSummary"];
   paymentSummary?: import('@shared/orderPaymentSummary').OrderPaymentSummary;
   customer: any;
   contact?: any;
@@ -383,6 +386,7 @@ export type OrderWithRelations = Order & {
 
 // Order row for list views (matches Quotes pattern)
 export type OrderRow = Order & {
+  creditHold?: OrderCreditHold;
   customer: any;
   contact?: any;
   lineItemsCount?: number;

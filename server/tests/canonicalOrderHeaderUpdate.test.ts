@@ -1,125 +1,40 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
-
-const existingOrder = {
-  id: "order-1",
-  organizationId: "org-1",
-  customerId: "customer-1",
-  contactId: "contact-1",
-  orderNumber: "ORD-20139",
-  displayNumber: "ORD-20139",
-  status: "in_production",
-  total: "125.50",
-  updatedAt: new Date("2026-08-20T12:00:00.000Z"),
-};
-
-const assertCustomerCreditForOrder = jest.fn<(...args: any[]) => Promise<any>>();
-const resolveOrderCustomerContactIds = jest.fn<(...args: any[]) => Promise<any>>();
-const synchronizeOrderBackedInvoiceFromOrderInTransaction = jest.fn<(...args: any[]) => Promise<any>>();
-const updateOrder = jest.fn<(...args: any[]) => Promise<any>>();
-const auditValues = jest.fn<(...args: any[]) => Promise<any>>();
-const select = jest.fn();
-
-jest.unstable_mockModule("@shared/schema", () => ({ auditLogs: {}, orders: {} }));
-jest.unstable_mockModule("drizzle-orm", () => ({ and: jest.fn(), eq: jest.fn() }));
-jest.unstable_mockModule("../db", () => ({
-  db: {
-    select,
-    insert: jest.fn(() => ({ values: auditValues })),
-  },
-}));
-jest.unstable_mockModule("../storage", () => ({ storage: { updateOrder } }));
-jest.unstable_mockModule("../services/orderCustomerResolutionService", () => ({ resolveOrderCustomerContactIds }));
-jest.unstable_mockModule("../services/customerCreditPolicyService", () => ({
-  assertCustomerCreditForOrder,
-  orderPayloadTotalCents: jest.fn(),
-}));
-jest.unstable_mockModule("../invoicesService", () => ({ synchronizeOrderBackedInvoiceFromOrderInTransaction }));
-jest.unstable_mockModule("@shared/customerCreditExposure", () => ({
-  parseMoneyToCents: (value: unknown) => Math.round(Number(value) * 100),
-}));
-
-let canonicalOrderOperations: typeof import("../services/orders/canonicalOrderOperations").canonicalOrderOperations;
-
-beforeAll(async () => {
-  ({ canonicalOrderOperations } = await import("../services/orders/canonicalOrderOperations"));
-});
-
-beforeEach(() => {
-  jest.clearAllMocks();
-  assertCustomerCreditForOrder.mockResolvedValue(null);
-  resolveOrderCustomerContactIds.mockResolvedValue({ customerId: "customer-2", contactId: "contact-2" });
-  updateOrder.mockImplementation(async (_organizationId, _orderId, changes) => ({ ...existingOrder, ...changes }));
-  auditValues.mockResolvedValue(undefined);
-  select.mockImplementation(() => ({ from: () => ({ where: () => ({ limit: async () => [existingOrder] }) }) }));
-});
-
-describe("canonical editable Order header updates", () => {
-  test.each([
-    ["PO only", { poNumber: "PO-20139" }],
-    ["due date only", { dueDate: "2026-08-21T12:00:00.000Z" }],
-    ["PO and due date", { poNumber: "PO-20139", dueDate: "2026-08-21T12:00:00.000Z" }],
-  ])("updates an in-production Order for %s without invoice synchronization", async (_name, changes) => {
-    await expect(canonicalOrderOperations.updateEditableHeader({
-      organizationId: "org-1",
-      actorUserId: "user-1",
-      orderId: "order-1",
-      allowNonNew: true,
-      changes: changes as any,
-    })).resolves.toMatchObject(changes);
-
-    expect(assertCustomerCreditForOrder).toHaveBeenCalledWith(expect.objectContaining({
-      proposedOrderTotalCents: 12_550,
-      existingOrderTotalCents: 12_550,
-    }));
-    expect(updateOrder).toHaveBeenCalledWith("org-1", "order-1", changes);
-    expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).not.toHaveBeenCalled();
+const existing = { id: "order", organizationId: "org", customerId: "customer", contactId: "contact", status: "new", state: "open", total: "500.00", orderNumber: "20500", updatedAt: new Date() };
+const updateOrder = jest.fn<any>();
+const createOrder = jest.fn<any>();
+const recalculate = jest.fn<any>();
+const audit = jest.fn<any>();
+const oldCreditGuard = jest.fn<any>();
+const select = () => ({ from: () => ({ where: () => ({ limit: async () => [existing] }) }) });
+const tx = { select, insert: () => ({ values: audit }) };
+jest.unstable_mockModule('../db', () => ({ db: { ...tx, transaction: async (fn: any) => fn(tx) } }));
+jest.unstable_mockModule('../storage', () => ({ storage: { createOrder, convertQuoteToOrder: createOrder } }));
+jest.unstable_mockModule('../storage/orders.repo', () => ({ OrdersRepository: class { updateOrder = updateOrder; } }));
+jest.unstable_mockModule('../services/orderCustomerResolutionService', () => ({ resolveOrderCustomerContactIds: async () => ({ customerId: 'customer', contactId: 'contact' }) }));
+jest.unstable_mockModule('../services/customerCreditPolicyService', () => ({ assertCustomerCreditForOrder: oldCreditGuard, orderPayloadTotalCents: () => 50000 }));
+jest.unstable_mockModule('../services/orders/orderTaxCalculationService', () => ({ recalculateEditableOrderFinancialsInTransaction: recalculate }));
+let operations: typeof import('../services/orders/canonicalOrderOperations').canonicalOrderOperations;
+beforeAll(async () => { operations = (await import('../services/orders/canonicalOrderOperations')).canonicalOrderOperations; });
+beforeEach(() => { jest.clearAllMocks(); createOrder.mockResolvedValue(existing); updateOrder.mockImplementation(async (_org: string, _id: string, changes: any) => ({ ...existing, ...changes })); recalculate.mockResolvedValue({ ...existing, total: '700.00' }); audit.mockResolvedValue(undefined); oldCreditGuard.mockImplementation(() => { throw new Error('credit limit exceeded'); }); });
+describe('Order entry remains available without granting production credit', () => {
+  test('creates an over-credit Order and preserves canonical state', async () => {
+    await expect(operations.create({ organizationId: 'org', actorUserId: 'staff', payload: { customerId: 'customer', lineItems: [{ totalPrice: 500 }] } as any })).resolves.toMatchObject({ status: 'new', state: 'open' });
+    expect(createOrder).toHaveBeenCalled(); expect(oldCreditGuard).not.toHaveBeenCalled(); expect(audit).toHaveBeenCalled();
   });
-
-  test("checks credit before writing and preserves the write boundary when credit rejects", async () => {
-    const rejection = new Error("credit limit exceeded");
-    assertCustomerCreditForOrder.mockRejectedValueOnce(rejection);
-
-    await expect(canonicalOrderOperations.updateEditableHeader({
-      organizationId: "org-1",
-      actorUserId: "user-1",
-      orderId: "order-1",
-      allowNonNew: true,
-      changes: { poNumber: "PO-20139" } as any,
-    })).rejects.toThrow("credit limit exceeded");
-
-    expect(updateOrder).not.toHaveBeenCalled();
+  test.each([{ poNumber: 'PO-1' }, { total: '700.00' }, { dueDate: new Date() }])('permits header edits while credit is insufficient: %p', async changes => {
+    await expect(operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', orderId: 'order', changes: changes as any })).resolves.toBeDefined();
+    expect(updateOrder).toHaveBeenCalledWith('org', 'order', changes); expect(oldCreditGuard).not.toHaveBeenCalled();
   });
-
-  test("uses the new financial total and resolved customer for credit enforcement", async () => {
-    await canonicalOrderOperations.updateEditableHeader({
-      organizationId: "org-1",
-      actorUserId: "user-1",
-      orderId: "order-1",
-      allowNonNew: true,
-      changes: { customerId: "customer-2", total: "240.00" } as any,
-    });
-
-    expect(assertCustomerCreditForOrder).toHaveBeenCalledWith(expect.objectContaining({
-      customerId: "customer-2",
-      proposedOrderTotalCents: 24_000,
-      existingOrderTotalCents: 0,
-    }));
-    expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orderId: "order-1" }));
+  test('retains commercial recalculation after a price change', async () => {
+    await operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', orderId: 'order', changes: { total: '700.00' } as any });
+    expect(recalculate).toHaveBeenCalledWith(tx, expect.objectContaining({ orderId: 'order' }));
   });
-
-  test("keeps a completed Order metadata correction outside the invoice synchronization path", async () => {
-    const completed = { ...existingOrder, status: "completed" };
-    select.mockImplementationOnce(() => ({ from: () => ({ where: () => ({ limit: async () => [completed] }) }) }));
-
-    await canonicalOrderOperations.updateEditableHeader({
-      organizationId: "org-1",
-      actorUserId: "user-1",
-      orderId: "order-1",
-      allowNonNew: true,
-      changes: { poNumber: "POST-COMPLETION-PO" } as any,
-    });
-
-    expect(updateOrder).toHaveBeenCalledWith("org-1", "order-1", { poNumber: "POST-COMPLETION-PO" });
-    expect(synchronizeOrderBackedInvoiceFromOrderInTransaction).not.toHaveBeenCalled();
+  test('keeps metadata edits outside financial recalculation', async () => {
+    await operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', orderId: 'order', changes: { poNumber: 'PO-1' } as any });
+    expect(recalculate).not.toHaveBeenCalled();
+  });
+  test('Quote conversion retains its canonical entry path', async () => {
+    await expect(operations.convertQuoteToOrder({ organizationId: 'org', actorUserId: 'staff', quoteId: 'quote' })).resolves.toBe(existing);
+    expect(oldCreditGuard).not.toHaveBeenCalled();
   });
 });

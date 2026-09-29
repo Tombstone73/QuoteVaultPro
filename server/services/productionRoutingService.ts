@@ -1,3 +1,4 @@
+import { assertProductionCredit } from "./orderCreditHoldService";
 /**
  * productionRoutingService.ts
  *
@@ -255,6 +256,8 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         { statusCode: 409, code: "ORDER_CANCELLED", orderId, lineItemId },
       );
     }
+
+    await assertProductionCredit(runner, { organizationId, orderId, stationKey, stepKey });
 
     step = "resolve_station_id";
     let stationId: string;

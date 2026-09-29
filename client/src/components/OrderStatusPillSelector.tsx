@@ -19,6 +19,7 @@ interface OrderStatusPillSelectorProps {
   currentPillId?: string | null;
   currentPillValue?: string | null;
   disabled?: boolean;
+  displayLabel?: string | null;
   className?: string;
 }
 
@@ -28,6 +29,7 @@ export function OrderStatusPillSelector({
   currentPillId,
   currentPillValue,
   disabled = false,
+  displayLabel,
   className = '',
 }: OrderStatusPillSelectorProps) {
   const { data: pills, isLoading } = useOrderStatusPills();
@@ -70,6 +72,8 @@ export function OrderStatusPillSelector({
     );
   }
 
+  if (displayLabel && (isLoading || !pills?.length)) return <OrderStatusBadge status={displayLabel} className={className} />;
+
   if (isLoading) {
     return (
       <div className={`flex items-center gap-2 ${className}`}>
@@ -104,7 +108,7 @@ export function OrderStatusPillSelector({
     >
       <SelectTrigger className={cn('w-[200px]', className)}>
         <SelectValue placeholder="Select status">
-          {displayedPill && (
+          {displayLabel ? <OrderStatusBadge status={displayLabel} /> : displayedPill && (
             <div className="flex items-center gap-2">
               <div
                 className="w-3 h-3 rounded-full"

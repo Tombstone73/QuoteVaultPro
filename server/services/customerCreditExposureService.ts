@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { invoices, orderLineItems, orders, payments, products } from "@shared/schema";
 import { buildCustomerCreditExposure, parseMoneyToCents, type CustomerCreditExposure, type CustomerExposureInvoice } from "@shared/customerCreditExposure";
 import { normalizeInvoiceAccountingDisplay } from "@shared/invoiceAccountingDisplay";
+import { unbilledOrderExposureCents } from "@shared/orderCreditHold";
 import { db } from "../db";
 import { isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
@@ -23,11 +24,11 @@ function emptyExposure(customer: CreditCustomer): CustomerCreditExposure {
   });
 }
 
-async function paymentRowsByInvoice(organizationId: string, invoiceIds: string[]) {
+async function paymentRowsByInvoice(organizationId: string, invoiceIds: string[], runner: typeof db) {
   const result = new Map<string, any[]>();
   for (let index = 0; index < invoiceIds.length; index += 500) {
     const batch = invoiceIds.slice(index, index + 500);
-    const rows = await db.select().from(payments).where(and(
+    const rows = await runner.select().from(payments).where(and(
       eq(payments.organizationId, organizationId),
       inArray(payments.invoiceId, batch),
     ));
@@ -38,12 +39,13 @@ async function paymentRowsByInvoice(organizationId: string, invoiceIds: string[]
 
 /**
  * Tenant-scoped financial position read model. Invoice classification uses the
- * canonical approval state and payment rollup. Active orders without an active
- * invoice are the only legacy pending-billing fallback; Open Work is separate.
+ * canonical approval state and payment rollup. Active Order value not covered by active
+ * invoices contributes pending billing; Open Work is separate.
  */
 export async function getCustomerCreditExposures(
   organizationId: string,
   customers: CreditCustomer[],
+  runner: typeof db = db,
 ): Promise<Map<string, CustomerCreditExposure>> {
   const result = new Map<string, CustomerCreditExposure>();
   if (customers.length === 0) return result;
@@ -52,11 +54,11 @@ export async function getCustomerCreditExposures(
   if (customerIds.length === 0) return result;
 
   const [invoiceRows, activeOrders, physicalOrderRows] = await Promise.all([
-    db.select({ invoice: invoices, canonicalCustomerId: canonicalInvoiceCustomerId })
+    runner.select({ invoice: invoices, canonicalCustomerId: canonicalInvoiceCustomerId })
       .from(invoices)
       .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
       .where(eq(invoices.organizationId, organizationId)),
-    db.select({ id: orders.id, customerId: orders.customerId, total: orders.total })
+    runner.select({ id: orders.id, customerId: orders.customerId, total: orders.total })
       .from(orders).where(and(
         eq(orders.organizationId, organizationId),
         inArray(orders.customerId, customerIds),
@@ -64,7 +66,7 @@ export async function getCustomerCreditExposures(
         isNull(orders.canceledAt),
         notInArray(orders.status, inactiveOrderStatuses as any),
       )),
-    db.select({ orderId: orderLineItems.orderId })
+    runner.select({ orderId: orderLineItems.orderId })
       .from(orderLineItems)
       .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
       .innerJoin(products, eq(products.id, orderLineItems.productId))
@@ -80,16 +82,19 @@ export async function getCustomerCreditExposures(
       )),
   ]);
 
-  const paymentsByInvoice = await paymentRowsByInvoice(organizationId, invoiceRows.map((row) => row.invoice.id));
-  const activeInvoiceOrderIds = new Set<string>();
+  const paymentsByInvoice = await paymentRowsByInvoice(organizationId, invoiceRows.map((row) => row.invoice.id), runner);
+  const activeInvoiceTotals = new Map<string, number>();
   const invoiceRowsByCustomer = new Map<string, CustomerExposureInvoice[]>();
   for (const row of invoiceRows) {
     const invoice = row.invoice;
     const status = String(invoice.status || "").toLowerCase();
-    if (!inactiveInvoiceStatuses.includes(status) && invoice.orderId) activeInvoiceOrderIds.add(invoice.orderId);
+
     const customerId = row.canonicalCustomerId;
     if (!customerId || !customerIds.includes(customerId)) continue;
     const display = normalizeInvoiceAccountingDisplay({ ...invoice, payments: paymentsByInvoice.get(invoice.id) ?? [] });
+    if (!inactiveInvoiceStatuses.includes(status) && invoice.orderId) {
+      activeInvoiceTotals.set(invoice.orderId, (activeInvoiceTotals.get(invoice.orderId) ?? 0) + display.totalCents);
+    }
     const customerInvoices = invoiceRowsByCustomer.get(customerId) ?? [];
     customerInvoices.push({
       status: invoice.status,
@@ -107,9 +112,8 @@ export async function getCustomerCreditExposures(
   for (const order of activeOrders) {
     if (!order.customerId) continue;
     const totalCents = Math.max(0, parseMoneyToCents(order.total));
-    if (!activeInvoiceOrderIds.has(order.id)) {
-      unbilledByCustomer.set(order.customerId, (unbilledByCustomer.get(order.customerId) ?? 0) + totalCents);
-    }
+    const unbilledCents = unbilledOrderExposureCents(totalCents, activeInvoiceTotals.get(order.id) ?? 0);
+    unbilledByCustomer.set(order.customerId, (unbilledByCustomer.get(order.customerId) ?? 0) + unbilledCents);
     if (physicalOrderIds.has(order.id)) {
       openWorkByCustomer.set(order.customerId, (openWorkByCustomer.get(order.customerId) ?? 0) + totalCents);
     }
@@ -125,6 +129,6 @@ export async function getCustomerCreditExposures(
   return result;
 }
 
-export async function getCustomerCreditExposure(organizationId: string, customer: CreditCustomer) {
-  return (await getCustomerCreditExposures(organizationId, [customer])).get(customer.id) ?? emptyExposure(customer);
+export async function getCustomerCreditExposure(organizationId: string, customer: CreditCustomer, runner: typeof db = db) {
+  return (await getCustomerCreditExposures(organizationId, [customer], runner)).get(customer.id) ?? emptyExposure(customer);
 }
