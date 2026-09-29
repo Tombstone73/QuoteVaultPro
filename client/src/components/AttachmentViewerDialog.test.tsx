@@ -36,6 +36,36 @@ jest.mock("@/components/ui/dialog", () => ({
 
 import { AttachmentViewerDialog } from "./AttachmentViewerDialog";
 
+describe('Illustrator derivative viewer', () => {
+  test('PDF MIME Illustrator uses only its ready image derivative, and downloads original', async () => {
+    jest.clearAllMocks();
+    URL.createObjectURL = jest.fn(() => 'blob:ai-preview'); URL.revokeObjectURL = jest.fn();
+    apiFetchBlob.mockImplementation(async () => new Blob(['image'], { type: 'image/png' }));
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host);
+    await act(async () => { root.render(<AttachmentViewerDialog open onOpenChange={() => {}} attachment={{ id:'ai', fileName:'logo.ai', mimeType:'application/pdf', fileRecordId:'source-ai', thumbStatus:'thumb_ready' }} />); await flush(); });
+    expect(apiFetchBlob).toHaveBeenCalledWith('/api/artwork/file-records/source-ai/content?variant=preview', expect.anything());
+    expect(getDocument).not.toHaveBeenCalled();
+    expect(host.querySelector('img[alt="logo.ai"]')?.getAttribute('src')).toBe('blob:ai-preview');
+    const download = Array.from(host.querySelectorAll('button')).find(x => x.textContent?.includes('Download original'))!;
+    await act(async () => { download.click(); });
+    expect(downloadFileFromUrl).toHaveBeenCalledWith('/api/artwork/file-records/source-ai/content?variant=original', 'logo.ai');
+    act(() => root.unmount()); host.remove();
+  });
+  test.each([
+    ['thumb_pending',null,'Generating preview...'],
+    ['thumb_failed','preview_unsupported_postscript','Preview unavailable for this Illustrator/EPS file.'],
+    ['thumb_failed','preview_render_failed','Preview generation failed. Download the original file.'],
+  ])('state %s leaves original available without attempting native source rendering', async (status,error,message) => {
+    jest.clearAllMocks();
+    const host = document.createElement('div'); document.body.appendChild(host); const root=createRoot(host);
+    await act(async () => root.render(<AttachmentViewerDialog open onOpenChange={() => {}} attachment={{ id:'ai', fileName:'logo.ai', mimeType:'application/octet-stream', fileRecordId:'ai', thumbStatus:status as any, thumbError:error }} />));
+    expect(host.textContent).toContain(message);
+    expect(host.textContent).toContain('Download original');
+    expect(apiFetchBlob).not.toHaveBeenCalled(); expect(getDocument).not.toHaveBeenCalled();
+    act(() => root.unmount()); host.remove();
+  });
+});
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).TextEncoder = TextEncoder;
 (globalThis as any).TextDecoder = TextDecoder;

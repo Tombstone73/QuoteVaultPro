@@ -1,4 +1,5 @@
 import { apiFetch } from "@/lib/queryClient";
+import { isVectorArtwork } from '@shared/artworkPreview';
 
 export type ArtworkAccessVariant = "original" | "preview" | "thumbnail";
 
@@ -30,8 +31,8 @@ async function fetchArtworkBlob(fileRecordId: string, variant: ArtworkAccessVari
   return response.blob();
 }
 
-export async function openArtworkPreview(fileRecordId: string, mimeType?: string | null): Promise<void> {
-  const blob = await fetchArtworkBlob(fileRecordId, "original");
+export async function openArtworkPreview(fileRecordId: string, mimeType?: string | null, fileName?: string | null): Promise<void> {
+  const blob = await fetchArtworkBlob(fileRecordId, isVectorArtwork(fileName, mimeType) ? "preview" : "original");
   const objectUrl = URL.createObjectURL(blob.type ? blob : new Blob([blob], { type: mimeType || "application/octet-stream" }));
   try {
     if (!window.open(objectUrl, "_blank", "noopener,noreferrer")) throw new Error("Artwork preview was blocked by the browser.");

@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { isVectorArtwork } from '@shared/artworkPreview';
 import { orderAttachments, orders, quoteAttachments } from "@shared/schema";
 import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import { fileExists } from "../utils/fileStorage";
@@ -417,7 +418,8 @@ async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentI
 
         await claimForProcessing(row);
 
-        const isPdf = isPdfLike(row.mimeType, fileName);
+        const vectorArtwork = isVectorArtwork(fileName, row.mimeType);
+        const isPdf = !vectorArtwork && isPdfLike(row.mimeType, fileName);
         if (isPdf) {
           // Best-effort: PDF -> thumbKey only.
           if (debug) console.log(`[Thumbnail Worker] Processing PDF: ${row.id}`);
@@ -433,7 +435,7 @@ async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentI
           continue;
         }
 
-        const isImage = isSupportedImageType(row.mimeType, fileName);
+        const isImage = vectorArtwork || isSupportedImageType(row.mimeType, fileName);
         if (!isImage) {
           if (debug) console.log(`[Thumbnail Worker] Skipping ${row.id}: unsupported type (not PDF, not supported image)`);
           // Mark as thumb_failed so it doesn't keep reprocessing

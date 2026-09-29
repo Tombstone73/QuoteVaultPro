@@ -115,6 +115,7 @@ export type ProductionOrderArtworkSummary = {
   side: string;
   isPrimary: boolean;
   thumbStatus: string | null;
+  thumbError?: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
   fileRecordId?: string | null;

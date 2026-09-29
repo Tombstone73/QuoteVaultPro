@@ -1,4 +1,5 @@
 import { db } from '../../db';
+import { isVectorArtwork } from '@shared/artworkPreview';
 import { assets, assetVariants, assetLinks } from '../../../shared/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import type { Asset, InsertAsset, AssetVariant, AssetLink } from '../../../shared/schema';
@@ -50,13 +51,13 @@ export class AssetRepository {
     return key;
   }
 
-  private getInitialPreviewState(mimeType: string | undefined | null):
+  private getInitialPreviewState(mimeType: string | undefined | null, fileName?: string | null):
     | { previewStatus: 'pending' }
     | { previewStatus: 'failed'; previewError: string } {
     const mt = (mimeType || '').toLowerCase();
     const isImage = mt.startsWith('image/') && !mt.includes('svg') && !mt.includes('tiff');
     const isPdf = mt === 'application/pdf';
-    if (isImage || isPdf) return { previewStatus: 'pending' };
+    if (isImage || isPdf || isVectorArtwork(fileName, mimeType)) return { previewStatus: 'pending' };
     return { previewStatus: 'failed', previewError: `Unsupported file type: ${mt || 'unknown'}` };
   }
 
@@ -74,7 +75,7 @@ export class AssetRepository {
         ...data,
         fileRecordId: (data as any).fileRecordId ?? null,
         fileKey: this.normalizeAssetFileKey((data as any).fileKey),
-        ...this.getInitialPreviewState((data as any).mimeType),
+        ...this.getInitialPreviewState(data.mimeType, data.fileName),
         organizationId,
       })
       .returning();

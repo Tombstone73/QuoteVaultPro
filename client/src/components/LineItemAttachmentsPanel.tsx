@@ -1,3 +1,4 @@
+import { isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePageVisible } from "@/hooks/usePageVisible";
@@ -1383,7 +1384,7 @@ export function LineItemAttachmentsPanel({
                             {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
                           </span>
                         )}
-                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !hasAnyThumbnail && (() => {
+                        {isVectorArtwork(fileName, file.mimeType) && !hasAnyThumbnail ? <span className="text-[10px] text-muted-foreground">{artworkPreviewMessage(file.thumbStatus, file.thumbError)}</span> : file.thumbStatus && file.thumbStatus !== 'uploaded' && !hasAnyThumbnail && (() => {
                           const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
                           const isLocalMissing = file.thumbStatus === 'thumb_failed' && isLocalPreviewUnavailableError(file.thumbError);
                           return (
@@ -1468,7 +1469,7 @@ export function LineItemAttachmentsPanel({
                           
                           // Supported image types (same as server allowlist)
                           const supportedImageTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/tiff', 'image/tif'];
-                          const isSupportedImage = file.mimeType && supportedImageTypes.includes(file.mimeType.toLowerCase());
+                          const isSupportedImage = (file.mimeType && supportedImageTypes.includes(file.mimeType.toLowerCase())) || (isVectorArtwork(fileName, file.mimeType) && file.thumbStatus === 'thumb_failed' && !file.thumbError?.startsWith('preview_unsupported'));
                           
                           if (!isSupportedImage) return null;
                           
@@ -1507,7 +1508,7 @@ export function LineItemAttachmentsPanel({
                                 e.stopPropagation();
                                 handleGenerateThumbnails(file.id, file.originalFilename || file.fileName);
                               }}
-                              title="Regenerate thumbnails"
+                              title={isVectorArtwork(fileName, file.mimeType) ? 'Retry Preview' : 'Regenerate thumbnails'}
                             >
                               <Sparkles className="w-3 h-3" />
                             </Button>

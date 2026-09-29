@@ -1,4 +1,7 @@
 import { assetRepository } from './AssetRepository';
+import { isVectorArtwork } from '@shared/artworkPreview';
+import { renderArtworkPdfFirstPage } from '../artworkPdfRenderer';
+import { renderVectorArtworkPreview } from '../readArtworkPreviewSource';
 import path from 'path';
 import fs from 'fs/promises';
 import sharp from 'sharp';
@@ -99,7 +102,8 @@ export class AssetPreviewGenerator {
         !mimeType.includes('tiff');
       const isPdf = mimeType === 'application/pdf';
 
-      if (!isImage && !isPdf) {
+      const vectorArtwork = isVectorArtwork(asset.fileName, mimeType);
+      if (!isImage && !isPdf && !vectorArtwork) {
         this.resetSourceRetry(asset.id);
         console.log(
           `[AssetPreviewGenerator] Unsupported type ${mimeType}, marking as failed`
@@ -130,7 +134,7 @@ export class AssetPreviewGenerator {
 
       console.log(`[AssetPreviewGenerator] Reading source bytes asset=${asset.id} fileRecordId=${asset.fileRecordId ?? 'none'} key=${sourceDescriptor.objectKey ?? sourceDescriptor.localPathRef ?? 'none'}`);
 
-      const sourceBytes = await this.readSourceBytes({
+      const sourceBytes = vectorArtwork ? await renderVectorArtworkPreview(asset.fileRecordId, asset.organizationId) : await this.readSourceBytes({
         assetId: asset.id,
         organizationId: asset.organizationId,
         fileRecordId: asset.fileRecordId ?? null,
@@ -138,7 +142,7 @@ export class AssetPreviewGenerator {
         localPathRef: sourceDescriptor.localPathRef,
       });
 
-      const imageBuffer = isPdf
+      const imageBuffer = (isPdf && !vectorArtwork)
         ? await this.renderPdfFirstPageFromBuffer(sourceBytes)
         : sourceBytes;
 
@@ -148,8 +152,9 @@ export class AssetPreviewGenerator {
         .jpeg({ quality: this.JPEG_QUALITY })
         .toBuffer();
 
-      const thumbKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/thumb.jpg`);
-      await this.uploadBuffer(thumbKey, thumbBuffer, 'image/jpeg');
+      let thumbKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/${vectorArtwork ? `${asset.fileRecordId}/` : ''}thumb.jpg`);
+      if (vectorArtwork) thumbKey = await this.uploadVectorDerivative(asset, thumbKey, thumbBuffer);
+      else await this.uploadBuffer(thumbKey, thumbBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded thumbnail to ${thumbKey}`);
 
       // Generate preview (1600px)
@@ -158,8 +163,9 @@ export class AssetPreviewGenerator {
         .jpeg({ quality: this.JPEG_QUALITY })
         .toBuffer();
 
-      const previewKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/preview.jpg`);
-      await this.uploadBuffer(previewKey, previewBuffer, 'image/jpeg');
+      let previewKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/${vectorArtwork ? `${asset.fileRecordId}/` : ''}preview.jpg`);
+      if (vectorArtwork) previewKey = await this.uploadVectorDerivative(asset, previewKey, previewBuffer);
+      else await this.uploadBuffer(previewKey, previewBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded preview to ${previewKey}`);
 
       await Promise.all([
@@ -182,6 +188,7 @@ export class AssetPreviewGenerator {
       // Update asset record
       await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {
         previewStatus: 'ready',
+        previewError: null,
       });
 
       // Create variant records
@@ -237,7 +244,7 @@ export class AssetPreviewGenerator {
 
       await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {
         previewStatus: 'failed',
-        previewError: error instanceof Error ? error.message : 'Unknown error',
+        previewError: isVectorArtwork(asset.fileName, asset.mimeType) ? (error instanceof Error && /^preview_[a-z_]+$/.test(error.message) ? error.message : 'preview_generation_failed') : error instanceof Error ? error.message : 'Unknown error',
       });
 
     }
@@ -674,30 +681,24 @@ export class AssetPreviewGenerator {
     return abs;
   }
 
-  /**
-   * Render first page of PDF to image buffer
-   * Uses pdfjs-dist + @napi-rs/canvas
-   */
+  /** Store vector derivatives beside the canonical source, never in a separate default provider. */
+  private async uploadVectorDerivative(asset: Asset, key: string, buffer: Buffer): Promise<string> {
+    if (!asset.fileRecordId) throw new Error('preview_source_unavailable');
+    const source = await canonicalFileReadResolver.resolveOriginal(asset.fileRecordId);
+    if (source.status !== 'available' || !source.providerConfigId) throw new Error('preview_source_unavailable');
+    const providerConfig = await storageProviderConfigRepository.getById(source.providerConfigId);
+    if (!providerConfig) throw new Error('preview_source_unavailable');
+    const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+    const stored = await adapter.putObject({ buffer, originalFilename: key.split('/').pop()!, mimeType: 'image/jpeg',
+      requestedTarget: key, providerConfig, resource: { organizationId: asset.organizationId, resourceType: 'order', resourceId: asset.id } });
+    const verified = await adapter.verifyObject({ providerConfig, objectKey: stored.objectKey, localPathRef: stored.localPathRef });
+    const storedKey = stored.objectKey ?? stored.localPathRef;
+    if (!verified.exists || !storedKey) throw new Error('preview_storage_failed');
+    return storedKey;
+  }
+
   private async renderPdfFirstPageFromBuffer(pdfBytes: Buffer): Promise<Buffer> {
-    // Dynamic import to avoid loading heavy PDF.js if not needed
-    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const { createCanvas } = await import('@napi-rs/canvas');
-
-    const data = new Uint8Array(pdfBytes);
-    const pdf = await getDocument({ data }).promise;
-    const page = await pdf.getPage(1);
-
-    // Render at 2x scale for better quality
-    const viewport = page.getViewport({ scale: 2.0 });
-    const canvas = createCanvas(viewport.width, viewport.height);
-    const context = canvas.getContext('2d');
-
-    await page.render({
-      canvasContext: context as any,
-      viewport,
-    }).promise;
-
-    return canvas.toBuffer('image/png');
+    return renderArtworkPdfFirstPage(pdfBytes);
   }
 
   /**

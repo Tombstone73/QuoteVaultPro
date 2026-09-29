@@ -17,6 +17,7 @@
  */
 
 import { db, hasQuoteAttachmentPagesTable } from "../db";
+import { isVectorArtwork } from '@shared/artworkPreview';
 import { orderAttachments, quoteAttachmentPages, quoteAttachments } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
@@ -690,6 +691,16 @@ export async function processPdfAttachmentDerivedData(args: {
 }): Promise<void> {
   const { orgId, attachmentId, storageKey, storageProvider, mimeType } = args;
   const attachmentType = args.attachmentType ?? 'quote';
+
+  // Illustrator/EPS always use the bounded derivative path, including PDF MIME uploads.
+  const sourceTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
+  const [sourceAttachment] = await db.select().from(sourceTable).where(eq(sourceTable.id, attachmentId)).limit(1);
+  const sourceName = sourceAttachment?.originalFilename || sourceAttachment?.fileName;
+  if (isVectorArtwork(sourceName, mimeType)) {
+    const { generateImageDerivatives } = await import('./thumbnailGenerator');
+    await generateImageDerivatives(attachmentId, attachmentType, storageKey, mimeType ?? null, storageProvider, orgId, sourceName);
+    return;
+  }
 
   const lowerMimeType = (mimeType ?? '').toLowerCase();
   const isPdfMime = lowerMimeType.includes('pdf');

@@ -3,6 +3,8 @@
  * Fail-soft: missing/undefined statuses treated as terminal to prevent runaway polling
  */
 
+import { isVectorArtwork } from '@shared/artworkPreview';
+
 type ThumbStatus = 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
 type PageCountStatus = 'unknown' | 'detecting' | 'known' | 'failed' | 'failed_soft';
 
@@ -28,6 +30,7 @@ export function isThumbTerminal(att: AttachmentWithStatus | null | undefined): b
   
   // Non-terminal: actively processing
   if (status === 'thumb_pending') return false;
+  if (status === 'uploaded' && isVectorArtwork(att.fileName, att.mimeType)) return false;
   
   // Terminal: completed, failed, or initial uploaded state
   // (uploaded = non-PDF images that don't need thumb generation)

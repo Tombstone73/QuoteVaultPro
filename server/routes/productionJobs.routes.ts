@@ -1459,6 +1459,7 @@ export function registerProductionJobsRoutes(
           side: orderAttachments.side,
           isPrimary: orderAttachments.isPrimary,
           thumbStatus: orderAttachments.thumbStatus,
+          thumbError: orderAttachments.thumbError,
           createdAt: orderAttachments.createdAt,
         })
         .from(orderAttachments)
@@ -1486,6 +1487,7 @@ export function registerProductionJobsRoutes(
           thumbKey: assets.thumbKey,
           previewKey: assets.previewKey,
           previewStatus: assets.previewStatus,
+          previewError: assets.previewError,
           createdAt: assetLinks.createdAt,
         })
         .from(assetLinks)
@@ -1531,6 +1533,7 @@ export function registerProductionJobsRoutes(
           productionQuantity: number | null;
           productionGroupId: string | null;
           thumbStatus: string | null;
+          thumbError?: string | null;
         }>
       >();
 
@@ -1554,6 +1557,7 @@ export function registerProductionJobsRoutes(
           productionQuantity: number | null;
           productionGroupId: string | null;
           thumbStatus: string | null;
+          thumbError?: string | null;
         }>
       >();
 
@@ -1584,6 +1588,7 @@ export function registerProductionJobsRoutes(
           productionQuantity: finalAllocation?.productionQuantity ?? null,
           productionGroupId: finalAllocation?.productionGroupId ?? null,
           thumbStatus: a.thumbStatus ?? null,
+          thumbError: a.thumbError?.startsWith('preview_') ? a.thumbError : null,
         };
 
         // By order (fallback)
@@ -1636,6 +1641,7 @@ export function registerProductionJobsRoutes(
           productionQuantity: finalAllocation?.productionQuantity ?? null,
           productionGroupId: finalAllocation?.productionGroupId ?? null,
           thumbStatus: link.previewStatus ?? null,
+          thumbError: link.previewError?.startsWith('preview_') ? link.previewError : null,
         };
 
         // Add to appropriate map based on parentType
@@ -2611,6 +2617,7 @@ export function registerProductionJobsRoutes(
           side: orderAttachments.side,
           isPrimary: orderAttachments.isPrimary,
           thumbStatus: orderAttachments.thumbStatus,
+          thumbError: orderAttachments.thumbError,
           createdAt: orderAttachments.createdAt,
         })
         .from(orderAttachments)
@@ -2649,6 +2656,7 @@ export function registerProductionJobsRoutes(
           side: a.side ?? "unassigned",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
+          thumbError: a.thumbError?.startsWith('preview_') ? a.thumbError : null,
         };
         if (byOrder.length < 12) byOrder.push(mapped);
         if (a.orderLineItemId) {
@@ -2673,6 +2681,7 @@ export function registerProductionJobsRoutes(
             thumbKey: assets.thumbKey,
             previewKey: assets.previewKey,
             previewStatus: assets.previewStatus,
+          previewError: assets.previewError,
             mimeType: assets.mimeType,
             sizeBytes: assets.sizeBytes,
             createdAt: assetLinks.createdAt,
@@ -2716,6 +2725,7 @@ export function registerProductionJobsRoutes(
             side: "unassigned",
             isPrimary: false,
             thumbStatus: link.previewStatus ?? null,
+          thumbError: link.previewError?.startsWith('preview_') ? link.previewError : null,
             mimeType: link.mimeType ?? null,
             sizeBytes: link.sizeBytes ?? null,
           };

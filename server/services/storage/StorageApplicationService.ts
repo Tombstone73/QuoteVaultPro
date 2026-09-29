@@ -1,3 +1,5 @@
+import { isVectorArtwork } from '@shared/artworkPreview';
+import { assertArtworkHeaderNotExecutable, readArtworkUploadHeader } from '../artworkUploadValidation';
 import { db } from "../../db";
 import type { FileRecord, StoragePlacement, StorageProviderConfig, StorageJob } from "@shared/schema";
 import { deleteUploadSession, loadUploadSessionMeta, saveUploadSessionMeta } from "../chunkedUploads";
@@ -172,6 +174,7 @@ export class StorageApplicationService {
 
     try {
       if (input.source.kind === "buffer") {
+        assertArtworkHeaderNotExecutable(input.source.originalFilename, input.source.mimeType, input.source.buffer);
         stage = "put_object";
         storedObject = await adapter.putObject({
           buffer: input.source.buffer,
@@ -429,6 +432,12 @@ export class StorageApplicationService {
       }
 
       const persistedObject = storedObject;
+
+      if (isVectorArtwork(persistedObject.originalFilename, persistedObject.mimeType)) {
+        const handle = await adapter.getDownloadHandle({ providerConfig, objectKey: persistedObject.objectKey, localPathRef: persistedObject.localPathRef });
+        const header = await readArtworkUploadHeader(handle.kind, handle.value);
+        assertArtworkHeaderNotExecutable(persistedObject.originalFilename, persistedObject.mimeType, header);
+      }
 
   stage = "persist_canonical_records";
       const finalized = await db.transaction(async (tx) => {

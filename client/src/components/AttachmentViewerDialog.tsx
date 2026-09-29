@@ -15,6 +15,7 @@ import { buildArtworkAccessUrl, openArtworkPreview, resolveArtworkDownloadUrl } 
 import { cn } from "@/lib/utils";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
 
 export type AttachmentPage = {
   id: string;
@@ -226,13 +227,15 @@ export function AttachmentViewerDialog({
 
   const fileName = getAttachmentName(currentAttachment);
   const effectiveMimeType = currentAttachment?.mimeType ?? inferMimeType(fileName);
-  const isPdf = isPdfFile(effectiveMimeType, fileName);
-  const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
+  const vectorArtwork = isVectorArtwork(fileName, effectiveMimeType);
+  const isPdf = !vectorArtwork && isPdfFile(effectiveMimeType, fileName);
+  const vectorReady = vectorArtwork && currentAttachment?.thumbStatus === 'thumb_ready';
+  const isImage = vectorReady || (!vectorArtwork && typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/"));
   const canonicalOriginalUrl = buildArtworkAccessUrl(currentAttachment?.fileRecordId, "original");
   const canonicalPreviewUrl = buildArtworkAccessUrl(currentAttachment?.fileRecordId, "preview");
   const imageOriginalUrl = canonicalOriginalUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null;
-  const imageViewUrl = isImage ? canonicalPreviewUrl ?? currentAttachment?.previewUrl ?? imageOriginalUrl : null;
-  const imageFallbackUrl = isImage && imageViewUrl !== imageOriginalUrl ? imageOriginalUrl : null;
+  const imageViewUrl = isImage ? canonicalPreviewUrl ?? currentAttachment?.previewUrl ?? (vectorArtwork ? null : imageOriginalUrl) : null;
+  const imageFallbackUrl = !vectorArtwork && isImage && imageViewUrl !== imageOriginalUrl ? imageOriginalUrl : null;
   const objectPath = currentAttachment?.objectPath ?? null;
   const pdfViewUrl = isPdf ? canonicalOriginalUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
@@ -637,7 +640,7 @@ export function AttachmentViewerDialog({
 
   const handleOpenPdf = () => {
     if (currentAttachment?.fileRecordId) {
-      void openArtworkPreview(currentAttachment.fileRecordId, effectiveMimeType);
+      void openArtworkPreview(currentAttachment.fileRecordId, effectiveMimeType, fileName);
       return;
     }
     const url = pdfViewUrl ?? pdfSourceUrl;
@@ -833,6 +836,7 @@ export function AttachmentViewerDialog({
             <img
               src={imageBlobUrl}
               alt={fileName}
+              onError={() => { setImageBlobUrl(null); setImagePreviewError('Preview unavailable. Download the original file.'); }}
               className={cn(
                 "block max-h-full max-w-full object-contain transition-transform duration-150 ease-out select-none",
                 canPanImage ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-default"
@@ -888,7 +892,8 @@ export function AttachmentViewerDialog({
     return (
       <div className="flex h-full min-h-[360px] flex-col items-center justify-center rounded-lg bg-muted/30 px-6 py-12 text-center text-muted-foreground">
         <FileText className="mb-4 h-16 w-16 opacity-50" />
-        <p className="text-sm">Preview not available</p>
+        {vectorArtwork && <p className="mb-2 text-sm">{fileName.toLowerCase().endsWith('.eps') ? 'EPS File' : 'Adobe Illustrator File'}</p>}
+        <p className="text-sm">{vectorArtwork ? artworkPreviewMessage(currentAttachment?.thumbStatus, currentAttachment?.thumbError) : 'Preview not available'}</p>
         {downloadUrl ? (
           <Button onClick={handleDownloadClick} variant="outline" className="mt-4">
             <Download className="mr-2 h-4 w-4" />

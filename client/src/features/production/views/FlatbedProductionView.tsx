@@ -106,7 +106,7 @@ function ArtworkFallback({ artwork, className, assignedLabel = "No Preview" }: {
 }
 
 function ArtworkImage({ artwork, alt, className, onClick }: { artwork: ProductionOrderArtworkSummary | null; alt: string; className?: string; onClick?: () => void }) {
-  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} assignedLabel="File assigned" />} />;
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} fileName={artwork?.fileName} mimeType={artwork?.mimeType} previewStatus={artwork?.thumbStatus} previewError={artwork?.thumbError} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} assignedLabel="File assigned" />} />;
 }
 
 function ProductionThumbnail({
@@ -120,7 +120,7 @@ function ProductionThumbnail({
   className?: string;
   onClick?: () => void;
 }) {
-  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} />} />;
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} fileName={artwork?.fileName} mimeType={artwork?.mimeType} previewStatus={artwork?.thumbStatus} previewError={artwork?.thumbError} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} />} />;
 }
 
 function formatSeconds(totalSeconds: number) {
@@ -1922,7 +1922,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                   </div>
                 ) : (
                   <AuthenticatedArtworkThumbnail
-                    fileRecordId={currentArtwork?.fileRecordId}
+                    fileRecordId={currentArtwork?.fileRecordId} fileName={currentArtwork?.fileName} mimeType={currentArtwork?.mimeType} previewStatus={currentArtwork?.thumbStatus} previewError={currentArtwork?.thumbError}
                     variant="preview"
                     alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
                     className="flex-1 min-h-0 w-full object-contain rounded-lg border-2 border-titan-border-subtle"
@@ -1960,7 +1960,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => void openArtworkPreview(currentArtwork.fileRecordId!, currentArtwork.mimeType).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}
+                            onClick={() => void openArtworkPreview(currentArtwork.fileRecordId!, currentArtwork.mimeType, currentArtwork.fileName).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}
                             className="gap-1.5"
                           >
                             Open

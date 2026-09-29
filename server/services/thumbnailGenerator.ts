@@ -12,7 +12,9 @@
 
 import { db } from "../db";
 import { orderAttachments, quoteAttachments } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { isVectorArtwork } from '@shared/artworkPreview';
+import { renderVectorArtworkPreview } from './readArtworkPreviewSource';
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { fileExists } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
@@ -423,8 +425,9 @@ export async function generateImageDerivatives(
   fileName?: string | null
 ): Promise<void> {
   // Early exit if sharp is unavailable
-  if (!sharpAvailable) return;
+  if (!sharpAvailable && !isVectorArtwork(fileName, mimeType)) return;
 
+  let sourceFileRecordId: string | null | undefined;
   try {
     // Load attachment row to check idempotency and get fileName if needed
     const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
@@ -448,12 +451,13 @@ export async function generateImageDerivatives(
       console.log(`[ThumbnailGenerator] Attachment ${attachmentId} not found, skipping`);
       return;
     }
+    sourceFileRecordId = attachment.fileRecordId;
 
     // Use fileName from attachment if not provided (for filename-based detection)
     const effectiveFileName = fileName || attachment.originalFilename || attachment.fileName || null;
 
     // Check supported type using effective fileName (supports both mimeType and filename-based detection)
-    if (!isSupportedImageType(mimeType, effectiveFileName)) {
+    if (!isSupportedImageType(mimeType, effectiveFileName) && !isVectorArtwork(effectiveFileName, mimeType)) {
       console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: unsupported type ${mimeType}${effectiveFileName ? ` (filename: ${effectiveFileName})` : ''}`);
       return;
     }
@@ -480,7 +484,13 @@ export async function generateImageDerivatives(
       return;
     }
     // Download original file
-    const originalBuffer = await downloadOriginalFileFromCanonical({
+    const vectorArtwork = isVectorArtwork(effectiveFileName, mimeType);
+    if (vectorArtwork && attachmentType === 'quote') {
+      // This preview represents only the first artboard, not a PDF page extraction job.
+      await db.update(quoteAttachments).set({ pageCountStatus: 'unknown', pageCount: null }).where(eq(quoteAttachments.id, attachmentId));
+    }
+    if (!sharpAvailable) throw new Error('preview_renderer_unavailable');
+    const originalBuffer = vectorArtwork ? await renderVectorArtworkPreview(attachment.fileRecordId, organizationId) : await downloadOriginalFileFromCanonical({
       fileRecordId: attachment.fileRecordId,
       fallbackStorageKey: fileKey,
       storageProvider,
@@ -507,10 +517,11 @@ export async function generateImageDerivatives(
       return;
     }
 
-    // Generate thumbnail (320px width, maintain aspect ratio)
+    const renderBuffer = originalBuffer;
+    // Generate both derivatives from one render; never mutate the original.
     const sharp = sharpModule;
-    const thumbBuffer = await sharp(originalBuffer)
-      .resize(320, undefined, {
+    const thumbBuffer = await sharp(renderBuffer)
+      .resize(320, vectorArtwork ? 320 : undefined, {
         fit: 'inside',
         withoutEnlargement: true,
       })
@@ -518,8 +529,8 @@ export async function generateImageDerivatives(
       .toBuffer();
 
     // Generate preview (1600px width, maintain aspect ratio)
-    const previewBuffer = await sharp(originalBuffer)
-      .resize(1600, undefined, {
+    const previewBuffer = await sharp(renderBuffer)
+      .resize(1600, vectorArtwork ? 1600 : undefined, {
         fit: 'inside',
         withoutEnlargement: true,
       })
@@ -530,13 +541,13 @@ export async function generateImageDerivatives(
     const thumbKey = generateDerivativeKey({
       organizationId,
       attachmentType,
-      attachmentId,
+      attachmentId: vectorArtwork && attachment.fileRecordId ? `${attachmentId}/${attachment.fileRecordId}` : attachmentId,
       variant: 'thumb',
     });
     const previewKey = generateDerivativeKey({
       organizationId,
       attachmentType,
-      attachmentId,
+      attachmentId: vectorArtwork && attachment.fileRecordId ? `${attachmentId}/${attachment.fileRecordId}` : attachmentId,
       variant: 'preview',
     });
 
@@ -563,7 +574,7 @@ export async function generateImageDerivatives(
       if (previewUploaded) {
         // Could delete previewKey here, but skip for now
       }
-      return;
+      throw new Error('preview_storage_failed');
     }
 
     // Enforce invariant: do not claim thumb_ready unless derivatives actually exist.
@@ -603,14 +614,14 @@ export async function generateImageDerivatives(
       persistReadyFileDerivative({
         fileRecordId: attachment.fileRecordId,
         derivativeType: 'thumbnail',
-        objectKey: thumbKey,
+        objectKey: thumbUploaded.storageKey,
         mimeType: 'image/jpeg',
         sizeBytes: thumbBuffer.length,
       }),
       persistReadyFileDerivative({
         fileRecordId: attachment.fileRecordId,
         derivativeType: 'preview',
-        objectKey: previewKey,
+        objectKey: previewUploaded.storageKey,
         mimeType: 'image/jpeg',
         sizeBytes: previewBuffer.length,
       }),
@@ -627,7 +638,7 @@ export async function generateImageDerivatives(
         thumbnailGeneratedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(baseTable.id, attachmentId));
+      .where(and(eq(baseTable.id, attachmentId), attachment.fileRecordId ? eq(baseTable.fileRecordId, attachment.fileRecordId) : undefined));
 
     // Defensive invariant: Verify all success conditions are met
     const verification = await db
@@ -670,10 +681,10 @@ export async function generateImageDerivatives(
         .update(baseTable)
         .set({
           thumbStatus: 'thumb_failed',
-          thumbError: error.message?.substring(0, 500) || 'Thumbnail generation failed',
+          thumbError: isVectorArtwork(fileName, mimeType) ? (/^preview_[a-z_]+$/.test(error.message ?? '') ? error.message : 'preview_generation_failed') : error.message?.substring(0, 500) || 'Thumbnail generation failed',
           updatedAt: new Date(),
         })
-        .where(eq(baseTable.id, attachmentId));
+        .where(and(eq(baseTable.id, attachmentId), sourceFileRecordId ? eq(baseTable.fileRecordId, sourceFileRecordId) : undefined));
     } catch (dbError) {
       console.error(`[ThumbnailGenerator] Failed to update error status for ${attachmentId}:`, dbError);
     }

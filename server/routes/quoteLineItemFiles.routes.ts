@@ -1,3 +1,4 @@
+import { isVectorArtwork } from '@shared/artworkPreview';
 /**
  * quoteLineItemFiles.routes.ts
  *
@@ -764,7 +765,7 @@ export function registerQuoteLineItemFileRoutes(
       }
 
       // Handle PDFs - disabled (no pdfjs/canvas deps)
-      if (attachment.mimeType === 'application/pdf') {
+      if (attachment.mimeType === 'application/pdf' && !isVectorArtwork(attachment.originalFilename || attachment.fileName, attachment.mimeType)) {
         console.log(`[LineItemFiles:GENERATE_THUMBS] PDF thumbnail generation disabled (no pdf deps)`);
         return res.status(501).json({
           success: false,
@@ -774,7 +775,7 @@ export function registerQuoteLineItemFileRoutes(
 
       // Check if it's a supported image type (uses mimeType and fileName fallback)
       const fileName = attachment.originalFilename || attachment.fileName || null;
-      const isSupportedImage = isSupportedImageType(attachment.mimeType, fileName);
+      const isSupportedImage = isSupportedImageType(attachment.mimeType, fileName) || (isVectorArtwork(fileName, attachment.mimeType) && !attachment.thumbError?.startsWith('preview_unsupported'));
 
       if (!isSupportedImage) {
         console.log(`[LineItemFiles:GENERATE_THUMBS] Unsupported file type: mimeType=${attachment.mimeType}, fileName=${fileName}`);
