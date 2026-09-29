@@ -894,6 +894,7 @@ export type FulfillmentWorkspaceOrder = Readonly<{
       method: FulfillmentMethod;
       completedAt: string;
       completedPrincipalSubject: string;
+      replacementObligationId?: string;
     }>;
     allocations: readonly Readonly<{ orderLineId: string; quantity: number }>[];
     /** Only immutable handoffs created after document snapshots were introduced can be previewed. */
@@ -3341,6 +3342,7 @@ const fulfillmentMutation = (
   method: FulfillmentMethod,
   businessRequestId: string,
   allocations: readonly { orderLineId: string; quantity: number }[],
+  replacementObligationId?: string,
 ) =>
   request<FulfillmentTerminalResult>(
     fulfillmentEndpoint(
@@ -3350,7 +3352,11 @@ const fulfillmentMutation = (
     {
       method: "POST",
       headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
-      body: JSON.stringify({ businessRequestId, allocations }),
+      body: JSON.stringify({
+        businessRequestId,
+        allocations,
+        ...(replacementObligationId ? { replacementObligationId } : {}),
+      }),
     },
   );
 export const fulfillmentApi = {
@@ -3373,6 +3379,24 @@ export const fulfillmentApi = {
     allocations: readonly { orderLineId: string; quantity: number }[],
   ) =>
     fulfillmentMutation(org, orderId, method, businessRequestId, allocations),
+  pickupReplacement: (
+    org: string,
+    orderId: string,
+    businessRequestId: string,
+    input: Readonly<{
+      replacementObligationId: string;
+      orderLineId: string;
+      quantity: number;
+    }>,
+  ) =>
+    fulfillmentMutation(
+      org,
+      orderId,
+      "pickup",
+      businessRequestId,
+      [{ orderLineId: input.orderLineId, quantity: input.quantity }],
+      input.replacementObligationId,
+    ),
   replacements: (org: string, orderId: string) => request<readonly ReplacementObligationProjection[]>(fulfillmentEndpoint(org, `/orders/${encodeURIComponent(orderId)}/replacements`)),
   createReplacement: (org: string, orderId: string, businessRequestId: string, input: Readonly<{ orderLineId: string; replacementQuantity: number; reason: string; responsibility: "titan" | "customer" | "carrier" | "pending"; billingTreatment: "no_charge" | "billable"; note?: string }>) => request<ReplacementObligationProjection>(fulfillmentEndpoint(org, `/orders/${encodeURIComponent(orderId)}/replacements`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org)) ?? ""}, body:JSON.stringify({businessRequestId,...input}) }),
   cancelReplacement: (org: string, replacementObligationId: string, businessRequestId: string) => request<ReplacementObligationProjection>(fulfillmentEndpoint(org, `/replacements/${encodeURIComponent(replacementObligationId)}/cancel`), { method:"POST", headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(org)) ?? ""}, body:JSON.stringify({businessRequestId}) }),
