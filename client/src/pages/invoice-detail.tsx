@@ -55,7 +55,7 @@ import { getInvoiceFinancialPaymentEligibility } from "@shared/paymentOrchestrat
 import { getStripeRefundSummary } from "@/lib/stripeRefundUi";
 import { resolveInvoiceDetailJobContext } from "@/lib/invoiceDetailJobContext";
 import { hasReconciledStripePayment } from "@shared/stripePaymentSettlement";
-import { isNestedInvoiceLineItem, resolveInvoiceLinePresentation } from "@shared/invoiceLinePresentation";
+import { StaffInvoiceLineItemsTable } from "@/components/invoices/StaffInvoiceLineItemsTable";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -271,7 +271,6 @@ export default function InvoiceDetailPage() {
 
   const invoice = data?.invoice;
   const lineItems = data?.lineItems ?? [];
-  const invoiceLineItems = useMemo(() => lineItems as Array<{ id?: string | null; parentLineItemId?: string | null }>, [lineItems]);
   const payments = data?.payments ?? [];
   const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
   const pendingRefundRequestByPaymentId = useMemo(() => new Map(
@@ -2344,44 +2343,7 @@ export default function InvoiceDetailPage() {
 
             <Card>
               <CardContent className="p-0">
-                <div className="w-full overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Description</TableHead>
-                        <TableHead>Quantity</TableHead>
-                        <TableHead>Unit Price</TableHead>
-                        <TableHead className="text-right">Total</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {lineItems.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
-                            {isImportedFromQuickBooks ? 'No Printers Hero production line items for this imported invoice.' : 'No line items recorded.'}
-                          </TableCell>
-                        </TableRow>
-                      ) : lineItems.map((item) => {
-                        const isNestedChild = isNestedInvoiceLineItem(item, invoiceLineItems);
-                        const presentation = resolveInvoiceLinePresentation(item);
-                        return (
-                        <TableRow key={item.id} className={isNestedChild ? "bg-muted/20" : undefined}>
-                          <TableCell className={isNestedChild ? "pl-8" : undefined}>
-                            <div className="font-medium">{presentation.primaryLabel}</div>
-                            {presentation.secondaryLabel && <div className="text-sm text-muted-foreground">{presentation.secondaryLabel}</div>}
-                            {presentation.dimensionsLabel && <div className="text-sm text-muted-foreground">{presentation.dimensionsLabel}</div>}
-                          </TableCell>
-                          <TableCell>{item.quantity}</TableCell>
-                          <TableCell>{formatCurrency(item.unitPrice)}</TableCell>
-                          <TableCell className="text-right font-medium">
-                            {formatCurrency(item.totalPrice)}
-                          </TableCell>
-                        </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
+                <StaffInvoiceLineItemsTable lineItems={lineItems} isImportedFromQuickBooks={isImportedFromQuickBooks} formatCurrency={formatCurrency} />
               </CardContent>
             </Card>
 

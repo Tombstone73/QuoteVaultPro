@@ -61,3 +61,56 @@ export function isNestedInvoiceLineItem(
   const parentId = String(lineItem.parentLineItemId || '').trim();
   return Boolean(parentId && lineItems.some((candidate) => String(candidate.id || '').trim() === parentId));
 }
+
+export type StaffInvoiceHierarchyLine = InvoiceLineHierarchyItem & {
+  orderLineItemId?: string | null;
+  sortOrder?: number | null;
+};
+
+/** Staff view of immutable Invoice rows. Parent links reference source Order IDs. */
+export function projectStaffInvoiceLineHierarchy<T extends StaffInvoiceHierarchyLine>(lines: readonly T[]) {
+  const ordered = lines.map((line, index) => ({ line, index })).sort((a, b) =>
+    (a.line.sortOrder ?? a.index) - (b.line.sortOrder ?? b.index) || a.index - b.index,
+  ).map(({ line }) => line);
+  const byOrderLineId = new Map<string, T | null>();
+  for (const line of ordered) {
+    const id = String(line.orderLineItemId ?? '').trim();
+    if (id) byOrderLineId.set(id, byOrderLineId.has(id) ? null : line);
+  }
+  const parentOf = (line: T): T | null => {
+    const id = String(line.parentLineItemId ?? '').trim();
+    const parent = id ? byOrderLineId.get(id) : null;
+    if (!parent || parent === line) return null;
+    // Historical cycles and ambiguous identities are displayed as ordinary rows.
+    const visited = new Set<T>([line]);
+    let cursor: T | null = parent;
+    while (cursor) {
+      if (visited.has(cursor)) return null;
+      visited.add(cursor);
+      const nextId: string = String(cursor.parentLineItemId ?? '').trim();
+      cursor = nextId ? byOrderLineId.get(nextId) ?? null : null;
+    }
+    return parent;
+  };
+  const children = new Map<T, T[]>();
+  for (const line of ordered) {
+    const parent = parentOf(line);
+    if (parent) children.set(parent, [...(children.get(parent) ?? []), line]);
+  }
+  const visible: T[] = [];
+  const append = (line: T) => {
+    visible.push(line);
+    for (const child of children.get(line) ?? []) append(child);
+  };
+  for (const line of ordered) if (!parentOf(line)) append(line);
+  const lineNumberByLine = new Map(visible.map((line, index) => [line, index + 1]));
+  return visible.map((line) => {
+    const parent = parentOf(line);
+    return {
+      line,
+      lineNumber: lineNumberByLine.get(line)!,
+      parentLineNumber: parent ? lineNumberByLine.get(parent) ?? null : null,
+      childCount: children.get(line)?.length ?? 0,
+    };
+  });
+}
