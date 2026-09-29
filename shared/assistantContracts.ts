@@ -9,6 +9,23 @@ export {
   analyticsResolveCustomerInputSchema,
   analyticsResolveCustomerResultSchema,
 } from "./aiReportingContracts";
+export {
+  investigationGetInputSchema,
+  investigationGetResultSchema,
+  investigationHistoryInputSchema,
+  investigationHistoryResultSchema,
+  investigationRelatedInputSchema,
+  investigationRelatedResultSchema,
+  investigationResourceInputSchema,
+  investigationResourceReferenceSchema,
+  investigationResourceTypeValues,
+  investigationSearchInputSchema,
+  investigationSearchResultSchema,
+  type InvestigationResourceInput,
+  type InvestigationResourceReference,
+  type InvestigationResourceType,
+  type InvestigationSnapshot,
+} from "./investigationContracts";
 
 /**
  * Versioned, presentation-safe contracts for the internal PrintersHero
@@ -37,6 +54,10 @@ export const assistantMessageRoleValues = ["user", "assistant", "system"] as con
 export const assistantToolExecutionStatusValues = ["not_run", "succeeded", "failed", "disabled"] as const;
 export const assistantToolNameValues = [
   "search.global",
+  "investigation.search",
+  "investigation.get",
+  "investigation.related",
+  "investigation.history",
   "quotes.search",
   "quotes.get_detail",
   "customers.get_summary",

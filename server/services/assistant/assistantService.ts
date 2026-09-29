@@ -157,6 +157,7 @@ export interface AssistantRepository {
       toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled";
       errorCode?: string; auditStatus: string; durationMs: number;
       failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean;
+      operationalMetadata?: { resourceTypes: readonly string[]; resultCount: number; depth?: number; truncated?: boolean };
     }>;
   }): Promise<AssistantTurnResult | null>;
   /** A continuation writes only the resumed assistant output. It must not add
@@ -176,6 +177,7 @@ export interface AssistantRepository {
       toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled";
       errorCode?: string; auditStatus: string; durationMs: number;
       failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean;
+      operationalMetadata?: { resourceTypes: readonly string[]; resultCount: number; depth?: number; truncated?: boolean };
     }>;
   }): Promise<AssistantTurnResult | null>;
 }
@@ -762,6 +764,7 @@ export class AssistantService {
         failureCategory: audit.failureCategory,
         failingStep: audit.failingStep,
         coreResultSucceeded: audit.coreResultSucceeded,
+        operationalMetadata: audit.operationalMetadata,
       })),
     });
     if (!result) throw this.notFound();
@@ -1287,6 +1290,7 @@ export class AssistantService {
         status: audit.status === "succeeded" || audit.status === "not_found" || audit.status === "partial" ? "succeeded" : audit.status === "rejected" ? "disabled" : "failed",
         errorCode: audit.failureCode, auditStatus: audit.status, durationMs: audit.durationMs,
         failureCategory: audit.failureCategory, failingStep: audit.failingStep, coreResultSucceeded: audit.coreResultSucceeded,
+        operationalMetadata: audit.operationalMetadata,
       })),
     });
     if (!persisted) throw this.notFound();

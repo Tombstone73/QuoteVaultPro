@@ -40,6 +40,10 @@ describe("assistant tool registry", () => {
     const registry = createAssistantToolRegistry();
     expect([...registry.keys()]).toEqual([
       "search.global",
+      "investigation.search",
+      "investigation.get",
+      "investigation.related",
+      "investigation.history",
       "quotes.search",
       "quotes.get_detail",
       "customers.get_summary",

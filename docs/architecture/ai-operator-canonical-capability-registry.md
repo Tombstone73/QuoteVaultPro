@@ -4,10 +4,10 @@
 
 ## Counts
 
-- Registered: 67
-- Read: 18
+- Registered: 71
+- Read: 22
 - Mutation: 39
-- Eligible: 56
+- Eligible: 60
 - Ineligible: 4
 - Hard denied: 7
 
@@ -16,6 +16,10 @@
 | Capability ID | Domain | Mode | Source | Existing ID | Required grant | AI eligibility | Hard-deny reason | Operator skill | Migration status |
 |---|---|---|---|---|---|---|---|---|---|
 | capability.read.search.global | settings_permissions | read | read_tool | search.global | assistant.internal_staff | eligible | — | settings.permissions | wrapped_existing |
+| capability.read.investigation.search | orders | read | read_tool | investigation.search | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
+| capability.read.investigation.get | orders | read | read_tool | investigation.get | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
+| capability.read.investigation.related | orders | read | read_tool | investigation.related | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
+| capability.read.investigation.history | orders | read | read_tool | investigation.history | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
 | capability.read.quotes.search | quotes | read | read_tool | quotes.search | assistant.internal_staff | eligible | — | quotes.operations | wrapped_existing |
 | capability.read.quotes.get_detail | quotes | read | read_tool | quotes.get_detail | assistant.internal_staff | eligible | — | quotes.operations | wrapped_existing |
 | capability.read.customers.get_summary | customers_contacts | read | read_tool | customers.get_summary | assistant.internal_staff | eligible | — | customers.contacts | wrapped_existing |

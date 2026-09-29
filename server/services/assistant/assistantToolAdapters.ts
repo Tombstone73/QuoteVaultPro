@@ -22,6 +22,7 @@ import { createAssistantInvoiceActivityToolAdapters } from "./invoiceActivityToo
 import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryTools";
 import { createAssistantOrderSearchToolAdapters } from "./orderSearchTools";
 import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
+import { createAssistantInvestigationToolAdapters } from "./investigationTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 import { customerPaymentTermsLabel } from "@shared/customerCommercialConfiguration";
 
@@ -29,6 +30,7 @@ const entityTypes = new Set(["customer", "contact", "order", "quote", "product",
 
 function sourceLink(record: { recordId: string; route: string; label: string }, entityType?: string, capturedAt?: string): AssistantSourceLink {
   return {
+    ...createAssistantInvestigationToolAdapters(),
     label: record.label,
     href: record.route,
     ...(entityType && entityTypes.has(entityType) ? { entityType: entityType as AssistantSourceLink["entityType"] } : {}),

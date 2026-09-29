@@ -130,6 +130,7 @@ function allowedRolesForTool(policy: string): readonly OrganizationRole[] {
 const readCapabilities: readonly CanonicalCapabilityDescriptor[] = Array.from(assistantToolRegistry.values()).map((tool) => {
   const domain: OperatorDomain = tool.name.startsWith("products.") ? (tool.name.includes("pricing") ? "pricing" : "products")
     : tool.name.startsWith("quotes.") ? "quotes" : tool.name.startsWith("orders.") ? "orders"
+    : tool.name.startsWith("investigation.") ? "orders"
     : tool.name.startsWith("customers.") || tool.name.startsWith("analytics.") ? "customers_contacts"
     : tool.name.startsWith("production.") ? "production" : "settings_permissions";
   return {
@@ -139,8 +140,8 @@ const readCapabilities: readonly CanonicalCapabilityDescriptor[] = Array.from(as
     allowedOrganizationRoles: allowedRolesForTool(tool.requiredPermission), tenantScope: "organization", confirmation: "not_required",
     idempotency: "not_required", risk: tool.dataClassification === "restricted_finance" ? "moderate" : "low",
     lifecycleValidationReference: "not_applicable", handlerReference: "server/services/assistant/assistantToolAdapters.ts",
-    auditReference: tool.auditCategory, uiSurfaceReference: tool.name === "orders.search" ? "Orders list; GET /api/orders" : "unknown", aiExposure: "existing", migrationStatus: tool.name === "orders.search" ? "shared_canonical" : "wrapped_existing",
-    canonicalOperationReference: tool.name === "orders.search" ? "OrdersRepository.getAllOrdersPaginated" : "not_applicable", parityStatus: tool.name === "orders.search" ? "shared_canonical" : "ui_only_not_migrated",
+    auditReference: tool.auditCategory, uiSurfaceReference: tool.name === "orders.search" ? "Orders list; GET /api/orders" : tool.name.startsWith("investigation.") ? "Order, Customer, Production, Fulfillment, and Invoice detail surfaces" : "unknown", aiExposure: "existing", migrationStatus: tool.name === "orders.search" || tool.name.startsWith("investigation.") ? "shared_canonical" : "wrapped_existing",
+    canonicalOperationReference: tool.name === "orders.search" ? "OrdersRepository.getAllOrdersPaginated" : tool.name.startsWith("investigation.") ? "InvestigationService / explicit tenant-scoped resource descriptors" : "not_applicable", parityStatus: tool.name === "orders.search" || tool.name.startsWith("investigation.") ? "shared_canonical" : "ui_only_not_migrated",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });

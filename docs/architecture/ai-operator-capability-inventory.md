@@ -186,6 +186,10 @@ None.
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
 | ai.read.search.global | read | unknown | read_tool | search.global | internal_staff | partial_or_indirect |
+| ai.read.investigation.search | read | unknown | read_tool | investigation.search | internal_staff | partial_or_indirect |
+| ai.read.investigation.get | read | unknown | read_tool | investigation.get | internal_staff | partial_or_indirect |
+| ai.read.investigation.related | read | unknown | read_tool | investigation.related | internal_staff | partial_or_indirect |
+| ai.read.investigation.history | read | unknown | read_tool | investigation.history | internal_staff | partial_or_indirect |
 | ai.read.reports.operational_summary | read | unknown | read_tool | reports.operational_summary | internal_staff | partial_or_indirect |
 | ai.read.navigation.get_current_context | read | unknown | read_tool | navigation.get_current_context | internal_staff | partial_or_indirect |
 | ai.read.operations.get_attention_summary | read | unknown | read_tool | operations.get_attention_summary | internal_staff | partial_or_indirect |

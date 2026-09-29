@@ -184,6 +184,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       failureCategory?: string;
       failingStep?: string;
       coreResultSucceeded?: boolean;
+      operationalMetadata?: { resourceTypes: readonly string[]; resultCount: number; depth?: number; truncated?: boolean };
     }>;
   }): Promise<AssistantTurnResult | null> {
     const created = await db.transaction(async (tx) => {
@@ -316,6 +317,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
             failureCategory: execution.failureCategory ?? null,
             failingStep: execution.failingStep ?? null,
             coreResultSucceeded: execution.coreResultSucceeded ?? false,
+            operationalMetadata: execution.operationalMetadata ?? null,
           },
         });
       }
@@ -362,7 +364,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     actor: { userId: string; email: string | null; ipAddress: string | null; userAgent: string | null };
     plan: unknown; context: AssistantContextEnvelope; response: string; structuredCards: AssistantStructuredCard[];
     correlationId: string; provider: string | null; model: string | null;
-    toolExecutions: Array<{ toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled"; errorCode?: string; auditStatus: string; durationMs: number; failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean }>;
+    toolExecutions: Array<{ toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled"; errorCode?: string; auditStatus: string; durationMs: number; failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean; operationalMetadata?: { resourceTypes: readonly string[]; resultCount: number; depth?: number; truncated?: boolean } }>;
   }): Promise<AssistantTurnResult | null> {
     const created = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.resolutionId}))`);
