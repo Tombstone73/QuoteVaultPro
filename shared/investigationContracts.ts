@@ -12,6 +12,9 @@ export const investigationResourceTypeValues = [
   "production_job",
   "shipment",
   "invoice",
+  "contact",
+  "quote",
+  "artwork",
 ] as const;
 export type InvestigationResourceType = (typeof investigationResourceTypeValues)[number];
 
@@ -39,6 +42,10 @@ const relationshipValues = [
   "has_production_job",
   "fulfills_order",
   "invoices_order",
+  "has_contact",
+  "originated_from_quote",
+  "has_artwork",
+  "supersedes_artwork",
 ] as const;
 export type InvestigationRelationship = (typeof relationshipValues)[number];
 
@@ -73,7 +80,15 @@ export const investigationSnapshotSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("order_line"), resource: investigationResourceReferenceSchema, current: currentSchema, description: shortText, quantity: z.number().int().nonnegative(), order: investigationResourceReferenceSchema, workflowState: shortText }).strict(),
   z.object({ type: z.literal("production_job"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, line: investigationResourceReferenceSchema.nullable(), station: shortText, step: shortText, status: shortText }).strict(),
   z.object({ type: z.literal("shipment"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, status: shortText, trackingNumber: shortText.nullable(), carrier: shortText.nullable() }).strict(),
-  z.object({ type: z.literal("invoice"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema.nullable(), customer: investigationResourceReferenceSchema.nullable(), invoiceNumber: shortText, status: shortText, total: z.number().finite().nonnegative() }).strict(),
+  z.object({ type: z.literal("invoice"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema.nullable(), customer: investigationResourceReferenceSchema.nullable(), invoiceNumber: shortText, status: shortText, total: z.number().finite().nonnegative(), quickbooksSyncStatus: shortText.nullable(), emailStatus: shortText.nullable() }).strict(),
+  // Deliberately excludes email, phone, CRM notes, and link notes. The
+  // investigation graph establishes identity and membership, not a contact
+  // record export.
+  z.object({ type: z.literal("contact"), resource: investigationResourceReferenceSchema, current: currentSchema, fullName: shortText, title: shortText.nullable(), customer: investigationResourceReferenceSchema.nullable() }).strict(),
+  z.object({ type: z.literal("quote"), resource: investigationResourceReferenceSchema, current: currentSchema, quoteNumber: shortText, customer: investigationResourceReferenceSchema.nullable(), relatedOrder: investigationResourceReferenceSchema.nullable(), status: shortText }).strict(),
+  // File identity and availability only. Object keys, signed URLs, previews,
+  // binary contents, and checksums remain outside the model boundary.
+  z.object({ type: z.literal("artwork"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, line: investigationResourceReferenceSchema, fileRecordId: identifier, filename: shortText, mimeType: shortText, storageState: shortText, originalAvailable: z.boolean(), previewAvailable: z.boolean(), role: shortText, artworkStatus: shortText, side: shortText, supersedesArtwork: investigationResourceReferenceSchema.nullable() }).strict(),
 ]);
 export type InvestigationSnapshot = z.infer<typeof investigationSnapshotSchema>;
 
@@ -105,7 +120,7 @@ export const investigationHistoryResultSchema = z.object({
     kind: z.enum(["recorded_event", "current_snapshot"]),
     summary: z.string().trim().min(1).max(500),
     resource: investigationResourceReferenceSchema,
-    provenance: z.object({ source: z.enum(["order_audit_log", "production_events", "shipments", "invoices", "current_record"]), recorded: z.boolean() }).strict(),
+    provenance: z.object({ source: z.enum(["order_audit_log", "production_events", "shipments", "fulfillment_events", "invoices", "invoice_email_logs", "invoice_email_delivery_jobs", "line_item_artwork", "current_record"]), recorded: z.boolean() }).strict(),
   }).strict()).max(20),
   limit: z.number().int().min(1).max(20),
 }).strict();

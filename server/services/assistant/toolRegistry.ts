@@ -118,22 +118,22 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "investigation.search": {
-    description: "Resolve a tenant-scoped Order, Customer, Order Line, Production Job, Shipment, or Invoice reference. Returns every bounded plausible match and never guesses when more than one record matches.",
+    description: "Resolve a tenant-scoped Order, Customer, Contact, Quote, Order Line, Artwork, Production Job, Shipment, or Invoice reference. Artwork results contain safe metadata only, never a file, preview, or storage location. Returns every bounded plausible match and never guesses when more than one record matches.",
     requiredPermission: "internal_staff", requiredContext: ["trusted_actor"] as const,
     inputSchema: investigationSearchInputSchema,
-    providerInputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 1, maxLength: 160 }, resourceTypes: { type: "array", items: { enum: ["order", "customer", "order_line", "production_job", "shipment", "invoice"] }, minItems: 1, maxItems: 6 }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 1, maxLength: 160 }, resourceTypes: { type: "array", items: { enum: ["order", "customer", "contact", "quote", "order_line", "artwork", "production_job", "shipment", "invoice"] }, minItems: 1, maxItems: 6 }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
     resultSchema: investigationSearchResultSchema, maxResults: 20, timeoutMs: 5_000, dataClassification: "internal", sourceLinkBehavior: "optional", auditCategory: "assistant_investigation_search", modelSummarizationAllowed: true,
   },
   "investigation.get": {
     description: "Return one compact current snapshot for a previously resolved tenant-scoped investigation resource. It does not infer missing state.",
     requiredPermission: "internal_staff", requiredContext: ["trusted_actor"] as const, inputSchema: investigationGetInputSchema,
-    providerInputSchema: { type: "object", additionalProperties: false, required: ["resource"], properties: { resource: { type: "object", additionalProperties: false, required: ["type", "id"], properties: { type: { enum: ["order", "customer", "order_line", "production_job", "shipment", "invoice"] }, id: { type: "string" } } } } },
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["resource"], properties: { resource: { type: "object", additionalProperties: false, required: ["type", "id"], properties: { type: { enum: ["order", "customer", "contact", "quote", "order_line", "artwork", "production_job", "shipment", "invoice"] }, id: { type: "string" } } } } },
     resultSchema: investigationGetResultSchema, maxResults: 1, timeoutMs: 5_000, dataClassification: "internal", sourceLinkBehavior: "required", auditCategory: "assistant_investigation_get", modelSummarizationAllowed: true,
   },
   "investigation.related": {
     description: "Traverse explicitly permitted tenant-scoped investigation relationships from a resolved resource. Depth is limited to two, results are bounded, and cycles are suppressed.",
     requiredPermission: "internal_staff", requiredContext: ["trusted_actor"] as const, inputSchema: investigationRelatedInputSchema,
-    providerInputSchema: { type: "object", additionalProperties: false, required: ["resource"], properties: { resource: { type: "object" }, relationships: { type: "array", items: { enum: ["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order"] } }, depth: { type: "integer", minimum: 1, maximum: 2 }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["resource"], properties: { resource: { type: "object" }, relationships: { type: "array", items: { enum: ["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order", "has_contact", "originated_from_quote", "has_artwork", "supersedes_artwork"] } }, depth: { type: "integer", minimum: 1, maximum: 2 }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
     resultSchema: investigationRelatedResultSchema, maxResults: 20, timeoutMs: 5_000, dataClassification: "internal", sourceLinkBehavior: "required", auditCategory: "assistant_investigation_related", modelSummarizationAllowed: true,
   },
   "investigation.history": {

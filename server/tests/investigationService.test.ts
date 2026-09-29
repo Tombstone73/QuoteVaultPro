@@ -9,6 +9,7 @@ jest.unstable_mockModule("../db", () => ({ db: {} }));
 const { InvestigationAccessError, InvestigationService, investigationResourceDescriptors } = await import("../services/investigation/investigationService");
 const { createAssistantInvestigationToolAdapters } = await import("../services/assistant/investigationTools");
 const { AssistantOrchestrationService } = await import("../services/assistant/orchestration");
+const { investigationGetInputSchema, investigationSnapshotSchema } = await import("@shared/investigationContracts");
 
 const order = { type: "order" as const, id: "order_20544", label: "20544", href: "/orders/order_20544" };
 const customer = { type: "customer" as const, id: "customer_1", label: "Acme", href: "/customers/customer_1" };
@@ -42,9 +43,22 @@ function repository(): InvestigationRepository {
 const authorized = { organizationId: "org_1", permissions: ["assistant.internal_staff"] };
 
 describe("resource-oriented investigation service", () => {
-  test("defines the approved Order investigation graph without a generic resource type", () => {
-    expect(Object.keys(investigationResourceDescriptors)).toEqual(["order", "customer", "order_line", "production_job", "shipment", "invoice"]);
-    expect(investigationResourceDescriptors.order.relations).toEqual(expect.arrayContaining(["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order"]));
+  test("defines the approved investigation graph without a generic resource type", () => {
+    expect(Object.keys(investigationResourceDescriptors)).toEqual(["order", "customer", "order_line", "production_job", "shipment", "invoice", "contact", "quote", "artwork"]);
+    expect(investigationResourceDescriptors.order.relations).toEqual(expect.arrayContaining(["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order", "originated_from_quote", "has_artwork"]));
+    expect(investigationResourceDescriptors.customer.relations).toContain("has_contact");
+    expect(investigationResourceDescriptors.artwork.relations).toContain("supersedes_artwork");
+  });
+
+  test("accepts new safe resource references while rejecting artwork storage details", () => {
+    expect(investigationGetInputSchema.parse({ resource: { type: "artwork", id: "art_1" } })).toEqual({ resource: { type: "artwork", id: "art_1" } });
+    const safeArtwork = {
+      type: "artwork", resource: { type: "artwork", id: "art_1", label: "logo.pdf", href: "/orders/order_1" }, current: { status: "current" },
+      order: { type: "order", id: "order_1", label: "1001", href: "/orders/order_1" }, line: { type: "order_line", id: "line_1", label: "Banner", href: "/orders/order_1" },
+      fileRecordId: "file_1", filename: "logo.pdf", mimeType: "application/pdf", storageState: "stored_hot", originalAvailable: true, previewAvailable: false, role: "production", artworkStatus: "current", side: "front", supersedesArtwork: null,
+    };
+    expect(investigationSnapshotSchema.parse(safeArtwork)).toMatchObject({ type: "artwork", fileRecordId: "file_1" });
+    expect(() => investigationSnapshotSchema.parse({ ...safeArtwork, storageKey: "private/bucket/logo.pdf" })).toThrow();
   });
 
   test("returns ambiguous matches instead of selecting an order from a query", async () => {

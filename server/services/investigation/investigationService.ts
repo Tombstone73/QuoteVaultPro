@@ -1,12 +1,21 @@
 import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
 import {
   customers,
+  customerContactLinks,
+  customerContacts,
+  fileRecords,
+  fulfillmentEvents,
   invoices,
+  invoiceEmailDeliveryJobs,
+  invoiceEmailLogs,
+  lineItemArtwork,
   orderAuditLog,
+  orderAttachments,
   orderLineItems,
   orders,
   productionEvents,
   productionJobs,
+  quotes,
   shipments,
 } from "@shared/schema";
 import type {
@@ -19,7 +28,7 @@ import { investigationResourceTypeValues } from "@shared/investigationContracts"
 import { db } from "../../db";
 
 export type InvestigationScope = { organizationId: string; permissions: readonly string[] };
-export type InvestigationRelationship = "belongs_to_customer" | "contains_line" | "has_production_job" | "fulfills_order" | "invoices_order";
+export type InvestigationRelationship = "belongs_to_customer" | "contains_line" | "has_production_job" | "fulfills_order" | "invoices_order" | "has_contact" | "originated_from_quote" | "has_artwork" | "supersedes_artwork";
 export type InvestigationEdge = { from: InvestigationResourceReference; to: InvestigationResourceReference; relationship: InvestigationRelationship };
 export type InvestigationHistoryEvent = {
   eventId: string;
@@ -27,19 +36,22 @@ export type InvestigationHistoryEvent = {
   kind: "recorded_event";
   summary: string;
   resource: InvestigationResourceReference;
-  provenance: { source: "order_audit_log" | "production_events" | "shipments" | "invoices"; recorded: true };
+  provenance: { source: "order_audit_log" | "production_events" | "shipments" | "fulfillment_events" | "invoices" | "invoice_email_logs" | "invoice_email_delivery_jobs" | "line_item_artwork"; recorded: true };
 };
 export type InvestigationSearchCandidate = { resource: InvestigationResourceReference; summary: string; match: "exact" | "partial" };
 
 /** Explicit, directed graph policy. A future V2 authority resolver can replace
  * the service's grant check without changing descriptors, callers, or SQL. */
 export const investigationResourceDescriptors: Readonly<Record<InvestigationResourceType, { relations: readonly InvestigationRelationship[] }>> = Object.freeze({
-  order: { relations: ["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order"] },
-  customer: { relations: ["belongs_to_customer"] },
+  order: { relations: ["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order", "originated_from_quote", "has_artwork"] },
+  customer: { relations: ["belongs_to_customer", "has_contact"] },
   order_line: { relations: ["contains_line", "has_production_job"] },
   production_job: { relations: ["has_production_job", "contains_line"] },
   shipment: { relations: ["fulfills_order"] },
   invoice: { relations: ["invoices_order", "belongs_to_customer"] },
+  contact: { relations: ["belongs_to_customer"] },
+  quote: { relations: ["belongs_to_customer", "originated_from_quote"] },
+  artwork: { relations: ["contains_line", "has_artwork", "supersedes_artwork"] },
 });
 
 export interface InvestigationRepository {
@@ -66,6 +78,9 @@ const lineRef = (id: string, description: string, orderId: string) => ref("order
 const jobRef = (id: string, orderId: string) => ref("production_job", id, `Production job ${id.slice(0, 8)}`, `/production?jobId=${id}`);
 const shipmentRef = (id: string, orderId: string, label: string | null) => ref("shipment", id, label || `Shipment ${id.slice(0, 8)}`, `/fulfillment?shipmentId=${id}`);
 const invoiceRef = (id: string, displayNumber: string | number | null, invoiceNumber: number) => ref("invoice", id, String(displayNumber ?? `Invoice #${invoiceNumber}`), `/invoices/${id}`);
+const contactRef = (id: string, fullName: string) => ref("contact", id, fullName, `/customers/contacts/${id}`);
+const quoteRef = (id: string, displayNumber: string | number | null, quoteNumber: number | null) => ref("quote", id, String(displayNumber ?? (quoteNumber ? `Quote #${quoteNumber}` : id)), `/quotes/${id}`);
+const artworkRef = (id: string, orderId: string, filename: string) => ref("artwork", id, filename, `/orders/${orderId}`);
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
 
 export class DrizzleInvestigationRepository implements InvestigationRepository {
@@ -111,6 +126,25 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
         .where(and(eq(orders.organizationId, organizationId), or(ilike(orderLineItems.id, pattern), ilike(orderLineItems.description, pattern)))).orderBy(asc(orderLineItems.sortOrder)).limit(limit - rows.length);
       records.forEach((record) => add(lineRef(record.id, record.description, record.orderId), record.status, [record.id, record.description]));
     }
+    if (requested.has("contact") && rows.length < limit) {
+      const records = await db.select({ id: customerContacts.id, firstName: customerContacts.firstName, lastName: customerContacts.lastName, title: customerContacts.title, status: customerContacts.status })
+        .from(customerContacts).where(and(eq(customerContacts.organizationId, organizationId), or(ilike(customerContacts.firstName, pattern), ilike(customerContacts.lastName, pattern))))
+        .orderBy(asc(customerContacts.lastName), asc(customerContacts.firstName)).limit(limit - rows.length);
+      records.forEach((record) => { const fullName = `${record.firstName} ${record.lastName}`.trim(); add(contactRef(record.id, fullName), `${record.status}${record.title ? ` · ${record.title}` : ""}`, [record.id, fullName]); });
+    }
+    if (requested.has("quote") && rows.length < limit) {
+      const records = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber, displayNumber: quotes.displayNumber, status: quotes.status, customerName: quotes.customerName })
+        .from(quotes).where(and(eq(quotes.organizationId, organizationId), or(ilike(quotes.id, pattern), ilike(quotes.displayNumber, pattern), ilike(quotes.customerName, pattern), sql`cast(${quotes.quoteNumber} as text) ilike ${pattern}`)))
+        .orderBy(desc(quotes.updatedAt)).limit(limit - rows.length);
+      records.forEach((record) => add(quoteRef(record.id, record.displayNumber, record.quoteNumber), `${record.status}${record.customerName ? ` · ${record.customerName}` : ""}`, [record.id, record.quoteNumber, record.displayNumber, record.customerName]));
+    }
+    if (requested.has("artwork") && rows.length < limit) {
+      const records = await db.select({ id: lineItemArtwork.id, orderId: lineItemArtwork.orderId, filename: fileRecords.originalFilename, role: lineItemArtwork.role, status: lineItemArtwork.status })
+        .from(lineItemArtwork).innerJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, organizationId)))
+        .where(and(eq(lineItemArtwork.organizationId, organizationId), or(ilike(lineItemArtwork.id, pattern), ilike(fileRecords.originalFilename, pattern))))
+        .orderBy(desc(lineItemArtwork.createdAt)).limit(limit - rows.length);
+      records.forEach((record) => add(artworkRef(record.id, record.orderId, record.filename), `${record.role} · ${record.status}`, [record.id, record.filename]));
+    }
     return rows;
   }
 
@@ -136,8 +170,31 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       const orderId = record?.orderId ?? record?.primaryOrderId;
       return record && orderId ? { type: "shipment", resource: shipmentRef(record.id, orderId, record.shipmentReference), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, order: orderRef(orderId, record.displayNumber, record.orderNumber), status: record.status, trackingNumber: record.trackingNumber, carrier: record.carrier } : null;
     }
-    const [record] = await db.select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, displayNumber: invoices.displayNumber, status: invoices.status, total: invoices.total, updatedAt: invoices.updatedAt, orderId: invoices.orderId, customerId: invoices.customerId, customerName: customers.companyName, orderNumber: orders.orderNumber, orderDisplayNumber: orders.displayNumber }).from(invoices).leftJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.organizationId, organizationId))).leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId))).where(and(eq(invoices.organizationId, organizationId), eq(invoices.id, resource.id))).limit(1);
-    return record ? { type: "invoice", resource: invoiceRef(record.id, record.displayNumber, record.invoiceNumber), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, order: record.orderId ? orderRef(record.orderId, record.orderDisplayNumber, record.orderNumber) : null, customer: record.customerId && record.customerName ? customerRef(record.customerId, record.customerName) : null, invoiceNumber: String(record.displayNumber ?? `Invoice #${record.invoiceNumber}`), status: record.status, total: number(record.total) } : null;
+    if (resource.type === "contact") {
+      const [record] = await db.select({ id: customerContacts.id, firstName: customerContacts.firstName, lastName: customerContacts.lastName, title: customerContacts.title, status: customerContacts.status, updatedAt: customerContacts.updatedAt })
+        .from(customerContacts)
+        .where(and(eq(customerContacts.organizationId, organizationId), eq(customerContacts.id, resource.id))).limit(1);
+      const fullName = record ? `${record.firstName} ${record.lastName}`.trim() : "";
+      return record ? { type: "contact", resource: contactRef(record.id, fullName), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, fullName, title: record.title, customer: null } : null;
+    }
+    if (resource.type === "quote") {
+      const [record] = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber, displayNumber: quotes.displayNumber, status: quotes.status, customerId: quotes.customerId, customerName: customers.companyName, updatedAt: quotes.updatedAt, orderId: orders.id, orderNumber: orders.orderNumber, orderDisplayNumber: orders.displayNumber })
+        .from(quotes).leftJoin(customers, and(eq(customers.id, quotes.customerId), eq(customers.organizationId, organizationId)))
+        .leftJoin(orders, and(eq(orders.quoteId, quotes.id), eq(orders.organizationId, organizationId)))
+        .where(and(eq(quotes.organizationId, organizationId), eq(quotes.id, resource.id))).limit(1);
+      return record ? { type: "quote", resource: quoteRef(record.id, record.displayNumber, record.quoteNumber), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, quoteNumber: String(record.displayNumber ?? (record.quoteNumber ? `Quote #${record.quoteNumber}` : record.id)), customer: record.customerId && record.customerName ? customerRef(record.customerId, record.customerName) : null, relatedOrder: record.orderId ? orderRef(record.orderId, record.orderDisplayNumber, record.orderNumber) : null, status: record.status } : null;
+    }
+    if (resource.type === "artwork") {
+      const [record] = await db.select({ id: lineItemArtwork.id, orderId: lineItemArtwork.orderId, lineItemId: lineItemArtwork.lineItemId, fileRecordId: lineItemArtwork.fileRecordId, role: lineItemArtwork.role, status: lineItemArtwork.status, side: lineItemArtwork.side, supersedesArtworkId: lineItemArtwork.supersedesArtworkId, createdAt: lineItemArtwork.createdAt, filename: fileRecords.originalFilename, mimeType: fileRecords.mimeType, lifecycleState: fileRecords.lifecycleState, orderNumber: orders.orderNumber, orderDisplayNumber: orders.displayNumber, lineDescription: orderLineItems.description, thumbStatus: orderAttachments.thumbStatus })
+        .from(lineItemArtwork).innerJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, organizationId)))
+        .innerJoin(orders, and(eq(orders.id, lineItemArtwork.orderId), eq(orders.organizationId, organizationId)))
+        .innerJoin(orderLineItems, and(eq(orderLineItems.id, lineItemArtwork.lineItemId), eq(orderLineItems.orderId, lineItemArtwork.orderId)))
+        .leftJoin(orderAttachments, and(eq(orderAttachments.fileRecordId, lineItemArtwork.fileRecordId), eq(orderAttachments.orderId, lineItemArtwork.orderId), eq(orderAttachments.orderLineItemId, lineItemArtwork.lineItemId)))
+        .where(and(eq(lineItemArtwork.organizationId, organizationId), eq(lineItemArtwork.id, resource.id))).limit(1);
+      return record ? { type: "artwork", resource: artworkRef(record.id, record.orderId, record.filename), current: { status: record.status, ...(iso(record.createdAt) ? { updatedAt: iso(record.createdAt)! } : {}) }, order: orderRef(record.orderId, record.orderDisplayNumber, record.orderNumber), line: lineRef(record.lineItemId, record.lineDescription, record.orderId), fileRecordId: record.fileRecordId, filename: record.filename, mimeType: record.mimeType, storageState: record.lifecycleState, originalAvailable: ["stored_hot", "stored_warm", "stored_cold"].includes(record.lifecycleState), previewAvailable: record.thumbStatus === "thumb_ready", role: record.role, artworkStatus: record.status, side: record.side, supersedesArtwork: record.supersedesArtworkId ? artworkRef(record.supersedesArtworkId, record.orderId, "Superseded artwork") : null } : null;
+    }
+    const [record] = await db.select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, displayNumber: invoices.displayNumber, status: invoices.status, total: invoices.total, updatedAt: invoices.updatedAt, orderId: invoices.orderId, customerId: invoices.customerId, customerName: customers.companyName, orderNumber: orders.orderNumber, orderDisplayNumber: orders.displayNumber, qbSyncStatus: invoices.qbSyncStatus, lastSentAt: invoices.lastSentAt }).from(invoices).leftJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.organizationId, organizationId))).leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId))).where(and(eq(invoices.organizationId, organizationId), eq(invoices.id, resource.id))).limit(1);
+    return record ? { type: "invoice", resource: invoiceRef(record.id, record.displayNumber, record.invoiceNumber), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, order: record.orderId ? orderRef(record.orderId, record.orderDisplayNumber, record.orderNumber) : null, customer: record.customerId && record.customerName ? customerRef(record.customerId, record.customerName) : null, invoiceNumber: String(record.displayNumber ?? `Invoice #${record.invoiceNumber}`), status: record.status, total: number(record.total), quickbooksSyncStatus: record.qbSyncStatus ?? null, emailStatus: record.lastSentAt ? "sent" : null } : null;
   }
 
   async related(organizationId: string, resource: InvestigationResourceInput, selected?: readonly InvestigationRelationship[]): Promise<InvestigationEdge[]> {
@@ -147,28 +204,49 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
     const snapshot = await this.get(organizationId, resource); if (!snapshot) return [];
     const root = snapshot.resource;
     if (resource.type === "order") {
-      const [lines, jobs, shipmentRows, invoiceRows] = await Promise.all([
+      const [lines, jobs, shipmentRows, invoiceRows, artworkRows, quoteRows] = await Promise.all([
         db.select({ id: orderLineItems.id, description: orderLineItems.description }).from(orderLineItems).where(eq(orderLineItems.orderId, resource.id)).orderBy(asc(orderLineItems.sortOrder)).limit(20),
         db.select({ id: productionJobs.id }).from(productionJobs).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, resource.id))).limit(20),
         db.select({ id: shipments.id, shipmentReference: shipments.shipmentReference }).from(shipments).where(and(eq(shipments.organizationId, organizationId), or(eq(shipments.orderId, resource.id), eq(shipments.primaryOrderId, resource.id)))).limit(20),
         db.select({ id: invoices.id, displayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber }).from(invoices).where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, resource.id))).limit(20),
+        db.select({ id: lineItemArtwork.id, filename: fileRecords.originalFilename }).from(lineItemArtwork).innerJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, organizationId))).where(and(eq(lineItemArtwork.organizationId, organizationId), eq(lineItemArtwork.orderId, resource.id))).limit(20),
+        db.select({ id: quotes.id, displayNumber: quotes.displayNumber, quoteNumber: quotes.quoteNumber }).from(quotes).innerJoin(orders, and(eq(orders.quoteId, quotes.id), eq(orders.organizationId, organizationId))).where(and(eq(quotes.organizationId, organizationId), eq(orders.id, resource.id))).limit(1),
       ]);
       if (snapshot.type === "order" && snapshot.customer) add(root, snapshot.customer, "belongs_to_customer");
       lines.forEach((line) => add(root, lineRef(line.id, line.description, resource.id), "contains_line"));
       jobs.forEach((job) => add(root, jobRef(job.id, resource.id), "has_production_job"));
       shipmentRows.forEach((shipment) => add(root, shipmentRef(shipment.id, resource.id, shipment.shipmentReference), "fulfills_order"));
       invoiceRows.forEach((invoice) => add(root, invoiceRef(invoice.id, invoice.displayNumber, invoice.invoiceNumber), "invoices_order"));
+      artworkRows.forEach((artwork) => add(root, artworkRef(artwork.id, resource.id, artwork.filename), "has_artwork"));
+      quoteRows.forEach((quote) => add(root, quoteRef(quote.id, quote.displayNumber, quote.quoteNumber), "originated_from_quote"));
     } else if (resource.type === "customer") {
-      const records = await db.select({ id: orders.id, displayNumber: orders.displayNumber, orderNumber: orders.orderNumber }).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.customerId, resource.id))).orderBy(desc(orders.updatedAt)).limit(20);
+      const [records, contacts] = await Promise.all([
+        db.select({ id: orders.id, displayNumber: orders.displayNumber, orderNumber: orders.orderNumber }).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.customerId, resource.id))).orderBy(desc(orders.updatedAt)).limit(20),
+        db.select({ id: customerContacts.id, firstName: customerContacts.firstName, lastName: customerContacts.lastName }).from(customerContactLinks).innerJoin(customerContacts, and(eq(customerContacts.id, customerContactLinks.contactId), eq(customerContacts.organizationId, organizationId))).where(and(eq(customerContactLinks.organizationId, organizationId), eq(customerContactLinks.customerId, resource.id), eq(customerContactLinks.status, "active"))).limit(20),
+      ]);
       records.forEach((order) => add(root, orderRef(order.id, order.displayNumber, order.orderNumber), "belongs_to_customer"));
+      contacts.forEach((contact) => add(root, contactRef(contact.id, `${contact.firstName} ${contact.lastName}`.trim()), "has_contact"));
     } else if (resource.type === "order_line" && snapshot.type === "order_line") {
       add(root, snapshot.order, "contains_line");
-      const records = await db.select({ id: productionJobs.id, orderId: productionJobs.orderId }).from(productionJobs).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, resource.id))).limit(20);
+      const [records, artworkRows] = await Promise.all([
+        db.select({ id: productionJobs.id, orderId: productionJobs.orderId }).from(productionJobs).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, resource.id))).limit(20),
+        db.select({ id: lineItemArtwork.id, filename: fileRecords.originalFilename }).from(lineItemArtwork).innerJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, organizationId))).where(and(eq(lineItemArtwork.organizationId, organizationId), eq(lineItemArtwork.lineItemId, resource.id))).limit(20),
+      ]);
       records.forEach((job) => add(root, jobRef(job.id, job.orderId), "has_production_job"));
+      artworkRows.forEach((artwork) => add(root, artworkRef(artwork.id, snapshot.order.id, artwork.filename), "has_artwork"));
     } else if (resource.type === "production_job" && snapshot.type === "production_job") {
       add(root, snapshot.order, "has_production_job"); if (snapshot.line) add(root, snapshot.line, "contains_line");
     } else if (resource.type === "shipment" && snapshot.type === "shipment") add(root, snapshot.order, "fulfills_order");
     else if (resource.type === "invoice" && snapshot.type === "invoice") { if (snapshot.order) add(root, snapshot.order, "invoices_order"); if (snapshot.customer) add(root, snapshot.customer, "belongs_to_customer"); }
+    else if (resource.type === "contact" && snapshot.type === "contact") {
+      const records = await db.select({ id: customers.id, companyName: customers.companyName }).from(customerContactLinks).innerJoin(customers, and(eq(customers.id, customerContactLinks.customerId), eq(customers.organizationId, organizationId))).where(and(eq(customerContactLinks.organizationId, organizationId), eq(customerContactLinks.contactId, resource.id), eq(customerContactLinks.status, "active"))).limit(20);
+      records.forEach((customer) => add(root, customerRef(customer.id, customer.companyName), "belongs_to_customer"));
+    }
+    else if (resource.type === "quote" && snapshot.type === "quote") { if (snapshot.customer) add(root, snapshot.customer, "belongs_to_customer"); if (snapshot.relatedOrder) add(root, snapshot.relatedOrder, "originated_from_quote"); }
+    else if (resource.type === "artwork" && snapshot.type === "artwork") {
+      add(root, snapshot.line, "contains_line");
+      if (snapshot.supersedesArtwork) add(root, snapshot.supersedesArtwork, "supersedes_artwork");
+    }
     return edges;
   }
 
@@ -176,7 +254,7 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
     const snapshot = await this.get(organizationId, resource); if (!snapshot) return [];
     const output: InvestigationHistoryEvent[] = [];
     const add = (event: InvestigationHistoryEvent) => { if (output.length < limit) output.push(event); };
-    const orderId = snapshot.type === "order" ? resource.id : snapshot.type === "order_line" || snapshot.type === "production_job" || snapshot.type === "shipment" ? snapshot.order.id : snapshot.type === "invoice" ? snapshot.order?.id : undefined;
+    const orderId = snapshot.type === "order" ? resource.id : snapshot.type === "order_line" || snapshot.type === "production_job" || snapshot.type === "shipment" || snapshot.type === "artwork" ? snapshot.order.id : snapshot.type === "invoice" ? snapshot.order?.id : snapshot.type === "quote" ? snapshot.relatedOrder?.id : undefined;
     if (orderId) {
       const auditRows = await db.select({ id: orderAuditLog.id, createdAt: orderAuditLog.createdAt, actionType: orderAuditLog.actionType, note: orderAuditLog.note, toStatus: orderAuditLog.toStatus }).from(orderAuditLog).where(eq(orderAuditLog.orderId, orderId)).orderBy(desc(orderAuditLog.createdAt)).limit(limit);
       auditRows.forEach((row) => add({ eventId: `order_audit:${row.id}`, occurredAt: iso(row.createdAt)!, kind: "recorded_event", summary: row.note || (row.toStatus ? `${row.actionType}: ${row.toStatus}` : row.actionType), resource: snapshot.resource, provenance: { source: "order_audit_log", recorded: true } }));
@@ -186,6 +264,19 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       shipmentRows.forEach((row) => add({ eventId: `shipment:${row.id}`, occurredAt: iso(row.updatedAt)!, kind: "recorded_event", summary: `Shipment recorded: ${row.status}`, resource: snapshot.resource, provenance: { source: "shipments", recorded: true } }));
       const invoiceRows = await db.select({ id: invoices.id, updatedAt: invoices.updatedAt, status: invoices.status }).from(invoices).where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, orderId))).orderBy(desc(invoices.updatedAt)).limit(limit);
       invoiceRows.forEach((row) => add({ eventId: `invoice:${row.id}`, occurredAt: iso(row.updatedAt)!, kind: "recorded_event", summary: `Invoice recorded: ${row.status}`, resource: snapshot.resource, provenance: { source: "invoices", recorded: true } }));
+      const fulfillmentRows = await db.select({ id: fulfillmentEvents.id, createdAt: fulfillmentEvents.createdAt, eventType: fulfillmentEvents.eventType }).from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, organizationId), eq(fulfillmentEvents.entityId, orderId))).orderBy(desc(fulfillmentEvents.createdAt)).limit(limit);
+      fulfillmentRows.forEach((row) => add({ eventId: `fulfillment_event:${row.id}`, occurredAt: iso(row.createdAt)!, kind: "recorded_event", summary: `Fulfillment event: ${row.eventType}`, resource: snapshot.resource, provenance: { source: "fulfillment_events", recorded: true } }));
+      const emailRows = await db.select({ id: invoiceEmailLogs.id, sentAt: invoiceEmailLogs.sentAt, status: invoiceEmailLogs.status, type: invoiceEmailLogs.type }).from(invoiceEmailLogs).innerJoin(invoices, and(eq(invoices.id, invoiceEmailLogs.invoiceId), eq(invoices.organizationId, organizationId))).where(and(eq(invoiceEmailLogs.organizationId, organizationId), eq(invoices.orderId, orderId))).orderBy(desc(invoiceEmailLogs.sentAt)).limit(limit);
+      emailRows.forEach((row) => add({ eventId: `invoice_email:${row.id}`, occurredAt: iso(row.sentAt)!, kind: "recorded_event", summary: `Invoice email ${row.type}: ${row.status}`, resource: snapshot.resource, provenance: { source: "invoice_email_logs", recorded: true } }));
+      const deliveryRows = await db.select({ id: invoiceEmailDeliveryJobs.id, updatedAt: invoiceEmailDeliveryJobs.updatedAt, status: invoiceEmailDeliveryJobs.status, deliveryType: invoiceEmailDeliveryJobs.deliveryType }).from(invoiceEmailDeliveryJobs).innerJoin(invoices, and(eq(invoices.id, invoiceEmailDeliveryJobs.invoiceId), eq(invoices.organizationId, organizationId))).where(and(eq(invoiceEmailDeliveryJobs.organizationId, organizationId), eq(invoices.orderId, orderId))).orderBy(desc(invoiceEmailDeliveryJobs.updatedAt)).limit(limit);
+      deliveryRows.forEach((row) => add({ eventId: `invoice_delivery:${row.id}`, occurredAt: iso(row.updatedAt)!, kind: "recorded_event", summary: `Document delivery ${row.deliveryType}: ${row.status}`, resource: snapshot.resource, provenance: { source: "invoice_email_delivery_jobs", recorded: true } }));
+    }
+    if (snapshot.type === "artwork") {
+      const rows = await db.select({ id: lineItemArtwork.id, createdAt: lineItemArtwork.createdAt, supersededAt: lineItemArtwork.supersededAt, status: lineItemArtwork.status, role: lineItemArtwork.role }).from(lineItemArtwork).where(and(eq(lineItemArtwork.organizationId, organizationId), eq(lineItemArtwork.id, resource.id))).limit(1);
+      rows.forEach((row) => {
+        add({ eventId: `artwork_created:${row.id}`, occurredAt: iso(row.createdAt)!, kind: "recorded_event", summary: `Artwork recorded: ${row.role}`, resource: snapshot.resource, provenance: { source: "line_item_artwork", recorded: true } });
+        if (row.supersededAt) add({ eventId: `artwork_superseded:${row.id}`, occurredAt: iso(row.supersededAt)!, kind: "recorded_event", summary: `Artwork marked ${row.status}`, resource: snapshot.resource, provenance: { source: "line_item_artwork", recorded: true } });
+      });
     }
     return output.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, limit);
   }
