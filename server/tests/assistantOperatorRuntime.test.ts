@@ -59,6 +59,35 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "awaiting_input", missingInformation: ["product category"] });
   });
 
+  test("reduces a compound clarification to one focused unresolved field without discarding task context", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: async () => ({ kind: "ask_user", question: "Is Order 9001 correct, should this use Coroplast, and is it completed now?", missingInformation: ["order confirmation", "line", "pickup timing"] }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({
+      goal: "Add another pickup of 500 today.", taskId: "task_focused_clarification",
+      trustedContext: { ...trustedContext, task: { id: "task_focused_clarification", domain: "fulfillment", canonicalProductIntentProposalId: null, entityReferences: [{ type: "order", id: "order_9001" }, { type: "order_line", id: "line_coroplast" }], trustedObservations: [], missingInformation: [] } },
+    });
+    expect(result).toMatchObject({ status: "awaiting_input", response: "Please provide the order confirmation.", missingInformation: ["order confirmation"], clarification: "single_field" });
+  });
+
+  test("keeps a binary pickup confirmation distinct so a later yes can reuse its prepared context", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: async () => ({ kind: "ask_user", question: "Record another 500-piece pickup today on Order 9001?", missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" } }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({
+      goal: "Add another pickup of 500 today.", taskId: "task_binary_confirmation",
+      trustedContext: { ...trustedContext, task: { id: "task_binary_confirmation", domain: "fulfillment", canonicalProductIntentProposalId: null, entityReferences: [{ type: "order", id: "order_9001" }, { type: "order_line", id: "line_coroplast" }, { type: "fulfillment", id: "order_9001" }], trustedObservations: [], missingInformation: [] } },
+    });
+    expect(result).toMatchObject({ status: "awaiting_input", missingInformation: ["confirmation"], clarification: "binary_confirmation" });
+  });
+
+  test("does not turn a confirmed binary pickup reply into the repeated-clarification failure", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: async () => ({ kind: "ask_user", question: "Record another 500-piece pickup today on Order 9001?", missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" } }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({
+      goal: "yes", taskId: "task_confirmed_pickup",
+      trustedContext: { ...trustedContext, task: { id: "task_confirmed_pickup", domain: "fulfillment", canonicalProductIntentProposalId: null, entityReferences: [{ type: "order", id: "order_9001" }], trustedObservations: [], missingInformation: ["confirmation"], pendingAction: { action: "fulfillment_pickup", order: { type: "order", id: "order_9001" }, orderLine: null, fulfillment: { type: "fulfillment", id: "order_9001" }, quantity: 500, timing: "today", confirmation: "confirmed" } } },
+    });
+    expect(result).toMatchObject({ status: "completed", missingInformation: [] });
+    expect(result.response).toContain("No pickup has been recorded");
+    expect(result.response).not.toContain("couldn't reconcile");
+  });
+
   test("describes an unavailable read tool as a capability limitation rather than a safety block", async () => {
     const provider: AssistantOperatorDecisionProvider = {
       decide: async ({ observations }) => {

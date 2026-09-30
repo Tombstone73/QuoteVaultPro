@@ -52,6 +52,45 @@ function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
+  test("hands Investigation resources into a later pickup preparation and preserves a binary yes without an Order re-question", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = continuingTaskStore();
+    const order = { type: "order", id: "order_fixture", label: "Order 9001", href: "/orders/order_fixture" };
+    const line = { type: "order_line", id: "line_coroplast", label: "Coroplast", href: "/orders/order_fixture" };
+    const fulfillment = { type: "fulfillment", id: "order_fixture", label: "Fulfillment for 9001", href: "/fulfillment/orders/order_fixture" };
+    const provider = { decide: jest.fn(async ({ goal, observations, task }: any) => {
+      if (goal.startsWith("Find the fixture job")) {
+        if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "investigation.get", arguments: { resource: order } }] };
+        return { kind: "complete", response: "Order 9001 has the Coroplast line and fulfillment workspace." };
+      }
+      if (goal.startsWith("Add another pickup")) {
+        expect(task.activeResourceContext.resources).toEqual(expect.arrayContaining([expect.objectContaining({ type: order.type, id: order.id }), expect.objectContaining({ type: line.type, id: line.id }), expect.objectContaining({ type: fulfillment.type, id: fulfillment.id })]));
+        expect(task.pendingAction).toMatchObject({ action: "fulfillment_pickup", order: expect.objectContaining({ type: order.type, id: order.id }), orderLine: expect.objectContaining({ type: line.type, id: line.id }), fulfillment: expect.objectContaining({ type: fulfillment.type, id: fulfillment.id }), quantity: 500, timing: "today" });
+        return { kind: "ask_user", question: "Record another 500-piece pickup today on Order 9001?", missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" } };
+      }
+      expect(goal).toBe("yes");
+      expect(task.pendingAction).toMatchObject({ order: expect.objectContaining({ type: order.type, id: order.id }), orderLine: expect.objectContaining({ type: line.type, id: line.id }), quantity: 500, timing: "today", confirmation: "confirmed" });
+      return { kind: "complete", response: "The 500-piece pickup is prepared for Order 9001; recording it remains unavailable until that protected capability exists." };
+    }) };
+    const contextExecutor = (_audit: unknown, semanticTools: readonly any[]) => {
+      const semantic = semanticOnlyExecutor(_audit, semanticTools);
+      return {
+        catalog: () => [{ name: "investigation.get", description: "Read one resolved resource." }, ...semantic.catalog()],
+        execute: async ({ toolName, arguments: args, context: trusted }: any) => toolName === "investigation.get"
+          ? { toolName, status: "succeeded", result: { status: "succeeded", data: { snapshot: { resource: order, line, fulfillment } }, provenance: { sourceLinks: [order, line, fulfillment], freshness: { capturedAt: "2026-09-30T12:00:00.000Z" } } } }
+          : semantic.execute({ toolName, arguments: args, context: trusted }),
+      };
+    };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, contextExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Find the fixture job for the 5000 signs.", context });
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Add another pickup of 500 pieces today.", context });
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "yes", context });
+
+    expect(provider.decide).toHaveBeenCalledTimes(4);
+    expect(tasks.updates.at(-1)?.patch.semanticChanges.pendingActionContext).toMatchObject({ confirmation: "confirmed", quantity: 500, timing: "today" });
+  });
+
   test("the exact complex Translucent Vinyl request begins one populated direct draft with all supplied business operations", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore();

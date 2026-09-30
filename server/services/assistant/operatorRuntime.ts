@@ -3,6 +3,7 @@ import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, type AssistantContextEnvelope, typ
 import type { ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { currentTurnProductResolution, isProductResolutionObservation, taskForCurrentProductEvidence } from "./trustedProductState";
 import { existingProductEditOperationsSchema } from "./existingProductEditContract";
+import type { OperatorConversationResourceContext, PendingOperatorActionContext } from "./operatorConversationContext";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -57,7 +58,7 @@ export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
   /** A provider-native capability made progress but needs another Responses
    * request before it can produce a user-visible decision. */
   z.object({ kind: z.literal("continue"), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
-  z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
+  z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), clarification: z.object({ kind: z.enum(["binary_confirmation", "single_field"]) }).strict().optional(), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("complete"), response: z.string().trim().min(1).max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("fail"), response: z.string().trim().min(1).max(1_000), recoverySummary: z.string().trim().min(1).max(2_000).optional(), providerDecisionShape: providerDecisionShapeSchema.optional() }).strict(),
 ]);
@@ -161,6 +162,12 @@ export interface AssistantOperatorTrustedContext {
     /** Reduced, server-derived references from prior observations in this
      * conversation. They support unambiguous follow-ups, never authorization. */
     entityReferences: Array<{ type: string; id: string; label?: string }>;
+    /** Current typed conversation subject, derived only from validated tool
+     * observations and scoped by the durable Operator task. */
+    activeResourceContext?: OperatorConversationResourceContext | null;
+    /** Non-executable action preparation. It cannot authorize or invoke a
+     * mutation and is retained only while its canonical target remains active. */
+    pendingAction?: PendingOperatorActionContext | null;
     /** Validated read data from recent turns. It lets the provider answer a
      * harmless transformation directly without refetching changing state. */
     trustedObservations?: AssistantOperatorTrustedObservation[];
@@ -195,6 +202,7 @@ export type AssistantOperatorRunResult = {
   observations: AssistantOperatorObservation[];
   safeWorkingSummary: string | null;
   missingInformation: string[];
+  clarification?: "binary_confirmation" | "single_field" | null;
   diagnostics: {
     configuredMaxSteps: number;
     stepsConsumed: number;
@@ -352,7 +360,32 @@ export class AssistantOperatorRuntime {
         return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
       if (decision.kind === "ask_user") {
+        // A multi-field question makes a plain-language answer such as "yes"
+        // impossible to interpret safely. Keep known task state and request
+        // only the first genuinely unresolved field instead.
+        if (decision.missingInformation.length > 1) {
+          const item = decision.missingInformation[0]!;
+          return {
+            status: "awaiting_input",
+            response: `Please provide the ${item}.`,
+            observations,
+            safeWorkingSummary,
+            missingInformation: [item],
+            clarification: "single_field",
+            diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
+          };
+        }
         if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
+          if (input.trustedContext.task?.pendingAction?.confirmation === "confirmed") {
+            return {
+              status: "completed",
+              response: "Your confirmation applies to the prepared fulfillment pickup. No pickup has been recorded because fulfillment mutation is not available through this Assistant capability.",
+              observations,
+              safeWorkingSummary,
+              missingInformation: [],
+              diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
+            };
+          }
           if (input.trustedContext.task?.activeSemanticProductDraft) {
             return {
               status: "awaiting_input",
@@ -360,6 +393,7 @@ export class AssistantOperatorRuntime {
               observations,
               safeWorkingSummary,
               missingInformation: decision.missingInformation,
+              clarification: decision.clarification?.kind ?? null,
               diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
             };
           }
@@ -371,7 +405,7 @@ export class AssistantOperatorRuntime {
             missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
           };
         }
-        return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation, diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+        return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation, clarification: decision.clarification?.kind ?? null, diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
       if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, ...(decision.providerDecisionShape ? { providerDecisionShape: decision.providerDecisionShape } : {}) }) };
 

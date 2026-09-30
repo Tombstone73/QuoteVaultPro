@@ -31,6 +31,14 @@ import { productManagementSkillService, type ActiveSemanticProductDraftContext }
 import { ExistingProductEditError, existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
 import { existingProductEditProviderInputSchema, existingProductEditValidationDetails } from "./existingProductEditContract";
 import { currentTurnProductResolution, existingProductIdForMutation, isProductResolutionObservation } from "./trustedProductState";
+import {
+  derivePendingOperatorActionContext,
+  mergeOperatorConversationResourceContext,
+  pendingActionForCurrentResources,
+  pendingActionWithClarification,
+  type OperatorConversationResourceContext,
+  type PendingOperatorActionContext,
+} from "./operatorConversationContext";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
@@ -253,7 +261,7 @@ function mergeOperatorEntityReferences(
 ): Array<{ type: string; id: string; label?: string }> {
   const references = new Map<string, { type: string; id: string; label?: string }>();
   const add = (type: unknown, id: unknown, label?: unknown) => {
-    if (typeof type !== "string" || !/^(?:quote|customer|order|product|invoice)$/.test(type)) return;
+    if (typeof type !== "string" || !/^(?:quote|customer|contact|order|order_line|production_job|fulfillment|pickup_activity|shipment|product|invoice)$/.test(type)) return;
     if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(id)) return;
     references.set(`${type}:${id}`, { type, id, ...(typeof label === "string" && label.trim() ? { label: label.trim().slice(0, 240) } : {}) });
   };
@@ -289,6 +297,41 @@ const recentOperationStorageKey = "recentOperatorOperations";
 const MAX_RECENT_OPERATOR_OPERATIONS = 12;
 const completedTurnStorageKey = "recentCompletedOperatorTurn";
 const MAX_RETAINED_COMPLETED_TURN_CHARS = 6_000;
+const activeResourceContextStorageKey = "activeResourceContext";
+const pendingActionContextStorageKey = "pendingActionContext";
+
+function persistedActiveResourceContext(semanticChanges: Record<string, unknown>): OperatorConversationResourceContext | null {
+  const candidate = semanticChanges[activeResourceContextStorageKey];
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (typeof value.capturedAt !== "string" || !Array.isArray(value.resources)) return null;
+  const resources = value.resources.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const resource = item as Record<string, unknown>;
+    return typeof resource.type === "string" && /^(?:customer|contact|order|order_line|production_job|fulfillment|pickup_activity|shipment|quote|product|invoice)$/.test(resource.type)
+      && typeof resource.id === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(resource.id)
+      ? [{ type: resource.type as OperatorConversationResourceContext["resources"][number]["type"], id: resource.id, ...(typeof resource.label === "string" && resource.label.trim() ? { label: resource.label.trim().slice(0, 240) } : {}) }]
+      : [];
+  }).slice(-20);
+  return { resources, capturedAt: value.capturedAt };
+}
+
+function persistedPendingActionContext(semanticChanges: Record<string, unknown>): PendingOperatorActionContext | null {
+  const candidate = semanticChanges[pendingActionContextStorageKey];
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (value.action !== "fulfillment_pickup" || !["none", "awaiting_binary_confirmation", "confirmed"].includes(String(value.confirmation))) return null;
+  const reference = (raw: unknown) => raw && typeof raw === "object" && !Array.isArray(raw)
+    && typeof (raw as Record<string, unknown>).type === "string" && typeof (raw as Record<string, unknown>).id === "string"
+    ? raw as PendingOperatorActionContext["order"]
+    : null;
+  return {
+    action: "fulfillment_pickup", order: reference(value.order), orderLine: reference(value.orderLine), fulfillment: reference(value.fulfillment),
+    quantity: typeof value.quantity === "number" && Number.isSafeInteger(value.quantity) && value.quantity > 0 ? value.quantity : null,
+    timing: value.timing === "today" ? "today" : null,
+    confirmation: value.confirmation as PendingOperatorActionContext["confirmation"],
+  };
+}
 
 /** The only Product planning structure exposed to an Operator function call.
  * It deliberately contains business labels and values, never patch paths,
@@ -808,6 +851,12 @@ export class AssistantService {
     if (!conversation) throw this.notFound();
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
+    const activeResourceContext = persistedActiveResourceContext(task.semanticChanges);
+    const pendingAction = derivePendingOperatorActionContext({
+      message: request.message,
+      resources: activeResourceContext,
+      prior: pendingActionForCurrentResources(persistedPendingActionContext(task.semanticChanges), activeResourceContext),
+    });
     const audits: AssistantToolExecutionAudit[] = [];
     const providerConfig = await this.operatorProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
     const providerCapabilities = resolveAiProviderCapabilities(providerConfig);
@@ -1015,7 +1064,7 @@ export class AssistantService {
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: existingProduct ? null : task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, activeResourceContext, pendingAction, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
@@ -1031,6 +1080,11 @@ export class AssistantService {
     // product task. The task record merely remembers that active intent; it
     // never duplicates its canonical Product Intent state.
     const entityReferences = mergeOperatorEntityReferences(task.entityReferences, run.observations);
+    const updatedResourceContext = mergeOperatorConversationResourceContext(activeResourceContext, run.observations, new Date().toISOString());
+    const updatedPendingAction = pendingActionForCurrentResources(
+      pendingActionWithClarification(pendingAction, run.status === "awaiting_input" ? run.clarification : null),
+      updatedResourceContext,
+    );
     const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
@@ -1044,7 +1098,11 @@ export class AssistantService {
       ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: hasPendingProtectedProductProposal ? null : run.safeWorkingSummary,
       entityReferences,
-      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn, hasPendingProtectedProductProposal),
+      semanticChanges: {
+        ...mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn, hasPendingProtectedProductProposal),
+        [activeResourceContextStorageKey]: updatedResourceContext,
+        [pendingActionContextStorageKey]: updatedPendingAction,
+      },
       missingInformation: run.missingInformation,
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,

@@ -212,6 +212,10 @@ export const assistantEntityTypeValues = [
   "product",
   "invoice",
   "production_job",
+  "order_line",
+  "fulfillment",
+  "pickup_activity",
+  "shipment",
   "unknown",
 ] as const;
 

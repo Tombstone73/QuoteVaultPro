@@ -14,7 +14,7 @@ import {
 import { InvestigationAccessError, InvestigationService } from "../investigation/investigationService";
 import type { AssistantToolAdapters } from "./toolRegistry";
 
-const entityTypes = new Set(["customer", "order", "invoice", "production_job"]);
+const entityTypes = new Set(["customer", "contact", "order", "order_line", "production_job", "fulfillment", "pickup_activity", "shipment", "quote", "product", "invoice"]);
 const source = (resource: InvestigationResourceReference, capturedAt: string): AssistantSourceLink => ({
   label: resource.label,
   href: resource.href,
