@@ -32,7 +32,7 @@ export function legacyExecutionSyntheticPermissionsForOrganizationRole(role: unk
     "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress",
     "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment",
     "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped",
-    "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice",
+    "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.record_pickup", "assistant.fulfillment.add_note", "assistant.billing.create_invoice",
     "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note",
     "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note",
     ...(normalized === "owner" || normalized === "admin" ? [

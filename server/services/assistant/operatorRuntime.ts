@@ -379,7 +379,7 @@ export class AssistantOperatorRuntime {
           if (input.trustedContext.task?.pendingAction?.confirmation === "confirmed") {
             return {
               status: "completed",
-              response: "Your confirmation applies to the prepared fulfillment pickup. No pickup has been recorded because fulfillment mutation is not available through this Assistant capability.",
+              response: "Your confirmation applies to the prepared fulfillment pickup. Review and use the protected GO control for that exact preview.",
               observations,
               safeWorkingSummary,
               missingInformation: [],

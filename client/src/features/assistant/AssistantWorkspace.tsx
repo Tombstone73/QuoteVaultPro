@@ -60,6 +60,22 @@ function actionErrorMessage(error: unknown, fallback: string) {
   }
 }
 
+/** A typed "yes" can only consume the one server-issued confirmation token
+ * for the exact pending pickup plan. It never creates or selects a command. */
+export function pendingPickupConfirmationForReply(message: string, executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>) {
+  if (!/^\s*(?:yes|yep|yeah|confirm|confirmed|correct)\b[\s.!]*$/i.test(message)) return null;
+  const candidates = Object.values(executionPlans).flatMap((entry) => {
+    const plan = isRecord(entry.plan) ? entry.plan : null;
+    const planId = text(plan?.id);
+    const action = text(plan?.action);
+    const expectedPlanVersion = typeof plan?.planVersion === "number" ? plan.planVersion : null;
+    return planId && action === "fulfillment.record_pickup" && plan?.status === "awaiting_confirmation" && expectedPlanVersion !== null && entry.confirmationToken
+      ? [{ planId, expectedPlanVersion, confirmationToken: entry.confirmationToken }]
+      : [];
+  });
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
 export function responsePresentationForCards(presentation: AssistantResponsePresentation | undefined): AssistantResponsePresentation {
   return presentation === "collection" || presentation === "record_summary" || presentation === "analytical" || presentation === "proposed_action" || presentation === "execution_result" || presentation === "diagnostic"
     ? presentation
@@ -717,6 +733,17 @@ function ConversationContent() {
   const submitCurrentDraft = async () => {
     const message = draft.trim();
     if (!message || sendTurn.isPending || !toolsEnabled) return;
+    const pickupConfirmation = pendingPickupConfirmationForReply(message, executionPlans);
+    if (pickupConfirmation) {
+      try {
+        await confirmQuoteNotePlan({ ...pickupConfirmation, context });
+        setDraft("");
+      } catch {
+        // The server result preserves the plan state and reports stale,
+        // expired, or authorization failures through the normal plan card.
+      }
+      return;
+    }
     setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
     let conversationId = activeConversationId;
     if (!conversationId) {

@@ -7,7 +7,7 @@ jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
 jest.mock("@/hooks/useAssistantApi", () => ({ useSubmitAssistantOrderOptionSelections: () => ({ mutate: jest.fn(), isPending: false, isError: false }) }));
 
-import { AssistantMessageContent, ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
+import { AssistantMessageContent, pendingPickupConfirmationForReply, ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +23,13 @@ function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlati
   act(() => root.render(<ResultCards cards={cards as any} context={context as any} onCancelPlan={() => Promise.resolve()} onConfirmPlan={() => Promise.resolve()} onCreatePlan={() => Promise.resolve()} executionPlans={{}} {...options} />));
   return { container, root };
 }
+
+test("a plain yes binds only one awaiting governed pickup plan", () => {
+  const plans = { turn_pickup: { turnId: "turn_pickup", confirmationToken: "token", plan: { id: "plan_pickup", action: "fulfillment.record_pickup", status: "awaiting_confirmation", planVersion: 1 } } };
+  expect(pendingPickupConfirmationForReply("yes", plans)).toEqual({ planId: "plan_pickup", expectedPlanVersion: 1, confirmationToken: "token" });
+  expect(pendingPickupConfirmationForReply("yes", { ...plans, second: { turnId: "second", confirmationToken: "token2", plan: { id: "plan_second", action: "fulfillment.record_pickup", status: "awaiting_confirmation", planVersion: 1 } } })).toBeNull();
+  expect(pendingPickupConfirmationForReply("yes", { turn_quote: { turnId: "turn_quote", confirmationToken: "token", plan: { id: "plan_quote", action: "quotes.add_internal_note", status: "awaiting_confirmation", planVersion: 1 } } })).toBeNull();
+});
 
 describe("Assistant workspace presentation", () => {
   afterEach(() => document.body.innerHTML = "");

@@ -9,12 +9,15 @@ import {
 import { db } from "../../db";
 import { canonicalFulfillmentOperations } from "../fulfillment/canonicalFulfillmentOperations";
 import { isFulfillmentQueueEligibleOrder } from "../fulfillment/eligibility";
+import type { FulfillmentDetailDto } from "../fulfillment/types";
+import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
 
 export const fulfillmentOperationCommandNames = [
   "fulfillment.create_shipment",
   "fulfillment.update_shipment_details",
   "fulfillment.mark_shipped",
   "fulfillment.create_pickup_ticket",
+  "fulfillment.record_pickup",
   "fulfillment.add_note",
 ] as const;
 export type FulfillmentOperationCommandName =
@@ -23,11 +26,82 @@ type Intake = {
   command: FulfillmentOperationCommandName;
   orderIds?: string[];
   shipmentId?: string;
+  orderId?: string;
+  orderLineItemId?: string;
+  fulfillmentOrderId?: string;
+  quantity?: number;
+  timing?: "today" | null;
   details?: Record<string, unknown>;
   note?: string;
 };
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+export type PendingFulfillmentPickup = {
+  orderId: string | null;
+  orderLineItemId: string | null;
+  fulfillmentOrderId: string | null;
+  quantity: number | null;
+  timing: "today" | null;
+};
+
+type CanonicalPickupPreview = {
+  orderId: string;
+  orderNumber: string;
+  orderLineItemId: string;
+  productLabel: string;
+  orderedQuantity: number;
+  currentPickedUpQuantity: number;
+  requestedQuantity: number;
+  projectedPickedUpQuantity: number;
+  projectedRemainingQuantity: number;
+  pickupTicketId: string | null;
+};
+
+/**
+ * Presentation-only projection of the authoritative fulfillment detail. The
+ * canonical Fulfillment service still decides whether a handoff is allowed
+ * and recomputes quantities under its line lock at execution time.
+ */
+export function previewPendingFulfillmentPickup(
+  detail: FulfillmentDetailDto,
+  intake: Pick<Intake, "orderId" | "orderLineItemId" | "fulfillmentOrderId" | "quantity">,
+): CanonicalPickupPreview {
+  if (!intake.orderId || !intake.orderLineItemId || !intake.fulfillmentOrderId || !Number.isSafeInteger(intake.quantity) || intake.quantity <= 0) {
+    throw new FulfillmentOperationError("PICKUP_DETAILS_REQUIRED", "A resolved order, order line, fulfillment workspace, and positive pickup quantity are required.");
+  }
+  if (detail.orderId !== intake.orderId || intake.fulfillmentOrderId !== detail.orderId) {
+    throw new FulfillmentOperationError("PICKUP_TARGET_MISMATCH", "The fulfillment workspace does not belong to the resolved order.");
+  }
+  if (detail.fulfillmentType !== "PICKUP") {
+    throw new FulfillmentOperationError("PICKUP_NOT_ELIGIBLE", "This order is not currently configured for pickup fulfillment.");
+  }
+  const line = detail.lineItems.find((candidate) => candidate.id === intake.orderLineItemId);
+  if (!line) throw new FulfillmentOperationError("ORDER_LINE_NOT_FOUND", "The resolved order line is no longer part of this order.");
+  const currentPickedUpQuantity = line.production.pickedUpQuantity;
+  const remainingQuantity = line.production.remainingQuantity;
+  if (intake.quantity > remainingQuantity) {
+    throw new FulfillmentOperationError("QTY_EXCEEDS_ORDER", "Pickup quantity exceeds the remaining order quantity for this line item.");
+  }
+  // Reuse the shared canonical pre-handoff projection used by the Fulfillment
+  // workflow instead of making the Assistant its own quantity calculator.
+  const projected = buildPickupTravelerProgressSnapshot([
+    { id: line.id, production: line.production },
+  ], [{ orderLineItemId: line.id, quantity: intake.quantity }], new Date().toISOString()).lines[0];
+  if (!projected) throw new FulfillmentOperationError("PICKUP_PREVIEW_UNAVAILABLE", "The canonical pickup projection could not be prepared.");
+  return {
+    orderId: detail.orderId,
+    orderNumber: detail.orderNumber,
+    orderLineItemId: line.id,
+    productLabel: line.productName || line.description || "Order line",
+    orderedQuantity: line.production.orderedQuantity,
+    currentPickedUpQuantity,
+    requestedQuantity: intake.quantity,
+    projectedPickedUpQuantity: projected.afterPickupQuantity,
+    projectedRemainingQuantity: projected.remainingAfterPickupQuantity,
+    pickupTicketId: detail.pickupTicket?.id ?? null,
+  };
+}
 export class FulfillmentOperationError extends Error {
   constructor(
     readonly code: string,
@@ -37,6 +111,29 @@ export class FulfillmentOperationError extends Error {
   }
 }
 export class FulfillmentOperationsService {
+  /** Turn a previously resolved, non-executable Operator intent into the
+   * existing durable fulfillment intake/proposal boundary. */
+  async prepareRecordPickup(input: {
+    organizationId: string;
+    userId: string;
+    conversationId: string;
+    pending: PendingFulfillmentPickup;
+  }) {
+    return this.createProposal({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      conversationId: input.conversationId,
+      intake: {
+        command: "fulfillment.record_pickup",
+        orderId: input.pending.orderId ?? undefined,
+        orderLineItemId: input.pending.orderLineItemId ?? undefined,
+        fulfillmentOrderId: input.pending.fulfillmentOrderId ?? undefined,
+        quantity: input.pending.quantity ?? undefined,
+        timing: input.pending.timing,
+      },
+    });
+  }
+
   async respond(input: {
     organizationId: string;
     userId: string;
@@ -184,8 +281,28 @@ export class FulfillmentOperationsService {
     const intake = session.intakeJson as Intake;
     let source: unknown;
     let summary = "";
+    let pickupPreview: CanonicalPickupPreview | null = null;
     const sourceLinks: { label: string; href: string }[] = [];
-    if (
+    if (intake.command === "fulfillment.record_pickup") {
+      const detail = await canonicalFulfillmentOperations.getOrderDetail(org, intake.orderId!);
+      const preview = previewPendingFulfillmentPickup(detail, intake);
+      pickupPreview = preview;
+      source = {
+        orderId: preview.orderId,
+        orderLineItemId: preview.orderLineItemId,
+        fulfillmentOrderId: intake.fulfillmentOrderId,
+        quantity: preview.requestedQuantity,
+        pickupTicketId: preview.pickupTicketId,
+        currentPickedUpQuantity: preview.currentPickedUpQuantity,
+        remainingQuantity: preview.projectedRemainingQuantity + preview.requestedQuantity,
+        pickupStatus: detail.pickupTicket?.status ?? null,
+      };
+      sourceLinks.push(
+        { label: `Open Order ${preview.orderNumber}`, href: `/orders/${preview.orderId}` },
+        { label: "Open fulfillment workspace", href: `/fulfillment/orders/${preview.orderId}` },
+      );
+      summary = `Record a ${preview.requestedQuantity}-piece pickup${intake.timing === "today" ? " today" : ""} for ${preview.productLabel} on Order ${preview.orderNumber}. Current picked up: ${preview.currentPickedUpQuantity} of ${preview.orderedQuantity}; after pickup: ${preview.projectedPickedUpQuantity}; remaining: ${preview.projectedRemainingQuantity}.`;
+    } else if (
       intake.command === "fulfillment.create_shipment" ||
       intake.command === "fulfillment.create_pickup_ticket" ||
       intake.command === "fulfillment.add_note"
@@ -279,6 +396,7 @@ export class FulfillmentOperationsService {
       proposalFingerprint,
       summary,
       sourceLinks,
+      ...(pickupPreview ? { pickupPreview } : {}),
     };
   }
   async revalidateProposal(input: {
@@ -311,6 +429,9 @@ export class FulfillmentOperationsService {
     actorUserId: string;
     fulfillmentIntakeSessionId: string;
     proposalFingerprint: string;
+    clientRequestId?: string;
+    correlationId?: string;
+    planId?: string;
   }) {
     const session = await this.load(
       input.organizationId,
@@ -329,7 +450,26 @@ export class FulfillmentOperationsService {
     if (!validation.valid)
       throw new FulfillmentOperationError(validation.code, validation.summary);
     const intake = session.intakeJson as Intake;
-    if (intake.command === "fulfillment.create_shipment")
+    let pickupExecutionReference: { handoffId: string; planId: string | null; correlationId: string | null } | null = null;
+    if (intake.command === "fulfillment.record_pickup") {
+      // Creating a missing ticket is the canonical UI prerequisite; the
+      // handoff itself remains the single authoritative pickup mutation.
+      const ticket = await canonicalFulfillmentOperations.createOrGetPickupTicket(
+        input.organizationId,
+        intake.orderId!,
+        input.actorUserId,
+      );
+      const result = await canonicalFulfillmentOperations.recordPickupHandoff(
+        input.organizationId,
+        ticket.id,
+        {
+          items: [{ orderLineItemId: intake.orderLineItemId!, quantity: intake.quantity! }],
+          clientRequestId: input.clientRequestId,
+        },
+        input.actorUserId,
+      );
+      pickupExecutionReference = { handoffId: result.handoff.id, planId: input.planId ?? null, correlationId: input.correlationId ?? null };
+    } else if (intake.command === "fulfillment.create_shipment")
       await canonicalFulfillmentOperations.createShipment(input.organizationId, {
         scope: intake.orderIds!.length === 1 ? "SINGLE_ORDER" : "MULTI_ORDER",
         orderIds: intake.orderIds!,
@@ -364,12 +504,24 @@ export class FulfillmentOperationsService {
       );
     await db
       .update(assistantFulfillmentIntakeSessions)
-      .set({ status: "created", updatedAt: new Date() })
+      .set({
+        status: "created",
+        // This is Assistant telemetry only. The immutable handoff and its
+        // fulfillment event remain the canonical business history.
+        ...(pickupExecutionReference ? { intakeJson: { ...intake, assistantExecution: pickupExecutionReference } } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(assistantFulfillmentIntakeSessions.id, session.id));
-    return {
-      sourceLinks: validation.proposal.sourceLinks,
-      summary: validation.proposal.summary,
-    };
+    if (intake.command === "fulfillment.record_pickup") {
+      const detail = await canonicalFulfillmentOperations.getOrderDetail(input.organizationId, intake.orderId!);
+      const line = detail.lineItems.find((candidate) => candidate.id === intake.orderLineItemId!);
+      if (!line) throw new FulfillmentOperationError("ORDER_LINE_NOT_FOUND", "The pickup succeeded but its order line could not be reloaded.");
+      return {
+        sourceLinks: validation.proposal.sourceLinks,
+        summary: `Recorded ${intake.quantity}-piece pickup. Authoritative state: ${line.production.pickedUpQuantity} picked up of ${line.production.orderedQuantity}; ${line.production.remainingQuantity} remaining.`,
+      };
+    }
+    return { sourceLinks: validation.proposal.sourceLinks, summary: validation.proposal.summary };
   }
 }
 export const fulfillmentOperationsService = new FulfillmentOperationsService();

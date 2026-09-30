@@ -84,7 +84,7 @@ describe("AssistantOperatorRuntime", () => {
       trustedContext: { ...trustedContext, task: { id: "task_confirmed_pickup", domain: "fulfillment", canonicalProductIntentProposalId: null, entityReferences: [{ type: "order", id: "order_9001" }], trustedObservations: [], missingInformation: ["confirmation"], pendingAction: { action: "fulfillment_pickup", order: { type: "order", id: "order_9001" }, orderLine: null, fulfillment: { type: "fulfillment", id: "order_9001" }, quantity: 500, timing: "today", confirmation: "confirmed" } } },
     });
     expect(result).toMatchObject({ status: "completed", missingInformation: [] });
-    expect(result.response).toContain("No pickup has been recorded");
+    expect(result.response).toContain("protected GO control");
     expect(result.response).not.toContain("couldn't reconcile");
   });
 

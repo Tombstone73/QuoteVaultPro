@@ -62,6 +62,7 @@ export const assistantProductionCommandAllowlist = [
   "fulfillment.update_shipment_details",
   "fulfillment.mark_shipped",
   "fulfillment.create_pickup_ticket",
+  "fulfillment.record_pickup",
   "fulfillment.add_note",
   "billing.create_invoice",
   "billing.update_invoice_draft",

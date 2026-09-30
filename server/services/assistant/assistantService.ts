@@ -1047,7 +1047,49 @@ export class AssistantService {
       },
     }] : [];
     const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools, ...existingProductEditTools];
-    const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, {
+    const prepareFulfillmentPickupTools: AssistantOperatorSemanticTool[] = hasPermission(actor, "assistant.fulfillment.record_pickup") ? [{
+      name: "fulfillment.prepare_pickup",
+      description: "Turn the current complete pending fulfillment pickup intent into one protected canonical pickup preview. Use only when activeTask.pendingAction is fulfillment_pickup and already has one Order, Order line, Fulfillment workspace, and positive quantity. It never records a pickup: it returns the existing action-plan card for GO confirmation. Do not ask for known targets or quantities again.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      execute: async ({ context }) => {
+        const pending = context.task?.pendingAction;
+        if (!pending || pending.action !== "fulfillment_pickup") {
+          return { status: "rejected" as const, failureCategory: "entity_resolution", failureCode: "pickup_intent_missing", warning: "Resolve one pickup order, line, fulfillment workspace, and quantity before preparing a pickup." };
+        }
+        try {
+          const proposal = await fulfillmentOperationsService.prepareRecordPickup({
+            organizationId: context.scope.organizationId,
+            userId: context.actor.userId,
+            conversationId: context.conversationId,
+            pending: {
+              orderId: pending.order?.id ?? null,
+              orderLineItemId: pending.orderLine?.id ?? null,
+              fulfillmentOrderId: pending.fulfillment?.id ?? null,
+              quantity: pending.quantity,
+              timing: pending.timing,
+            },
+          });
+          return {
+            status: "succeeded" as const,
+            result: { status: "succeeded", data: { response: "I prepared the protected pickup preview. Review the exact quantities, then use GO to record it.", taskDomain: "fulfillment" }, provenance: { sourceLinks: proposal.sourceLinks, freshness: { capturedAt: new Date().toISOString() } } } as any,
+            presentation: { cards: [
+              { kind: "fulfillment_operation_proposal", title: "Fulfillment pickup preview", summary: proposal.summary, sourceLinks: proposal.sourceLinks, details: { commandName: proposal.commandName, summary: proposal.summary, riskLevel: "high", parameters: proposal.pickupPreview ? [
+                { label: "Ordered", value: proposal.pickupPreview.orderedQuantity },
+                { label: "Currently picked up", value: proposal.pickupPreview.currentPickedUpQuantity },
+                { label: "New pickup", value: proposal.pickupPreview.requestedQuantity },
+                { label: "After pickup", value: proposal.pickupPreview.projectedPickedUpQuantity },
+                { label: "Remaining", value: proposal.pickupPreview.projectedRemainingQuantity },
+                ...(pending.timing ? [{ label: "Date", value: pending.timing }] : []),
+              ] : [] } } as any,
+              { kind: "action_proposal", title: "Confirm fulfillment pickup", summary: proposal.summary, sourceLinks: proposal.sourceLinks, plan: { action: proposal.commandName, fulfillmentIntakeSessionId: proposal.fulfillmentIntakeSessionId, proposalFingerprint: proposal.proposalFingerprint } } as any,
+            ] },
+          };
+        } catch (error) {
+          return { status: "rejected" as const, failureCategory: "business_validation", failureCode: error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "pickup_preview_failed", warning: error instanceof Error ? error.message : "The pickup preview could not be prepared." };
+        }
+      },
+    }] : [];
+    const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {

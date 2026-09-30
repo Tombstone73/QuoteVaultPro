@@ -10,7 +10,7 @@ const genericActionCommands = new Set([
   "customers.create", "customers.update_profile", "customers.update_commercial_terms", "contacts.create", "contacts.update",
   "orders.create", "orders.update_editable", "quotes.convert_to_order",
   "production.intake_line_items", "production.send_to_prepress", "production.update_job_status", "production.add_job_note",
-  "fulfillment.create_shipment", "fulfillment.update_shipment_details", "fulfillment.mark_shipped", "fulfillment.create_pickup_ticket", "fulfillment.add_note",
+  "fulfillment.create_shipment", "fulfillment.update_shipment_details", "fulfillment.mark_shipped", "fulfillment.create_pickup_ticket", "fulfillment.record_pickup", "fulfillment.add_note",
   "billing.create_invoice", "billing.update_invoice_draft", "billing.send_invoice", "billing.add_invoice_note",
   "payments.record_manual_payment", "payments.add_payment_note",
   "products.update_existing_product",
