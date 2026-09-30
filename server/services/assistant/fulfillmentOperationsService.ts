@@ -9,7 +9,7 @@ import {
 import { db } from "../../db";
 import { canonicalFulfillmentOperations } from "../fulfillment/canonicalFulfillmentOperations";
 import { isFulfillmentQueueEligibleOrder } from "../fulfillment/eligibility";
-import type { FulfillmentDetailDto } from "../fulfillment/types";
+import { FulfillmentHttpError, type FulfillmentDetailDto } from "../fulfillment/types";
 import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
 
 export const fulfillmentOperationCommandNames = [
@@ -40,6 +40,10 @@ const hash = (value: unknown) =>
 export type PendingFulfillmentPickup = {
   orderId: string | null;
   orderLineItemId: string | null;
+  /**
+   * Investigation's Fulfillment resource is an Order-owned workspace. Its id
+   * is therefore the canonical Order id, not a persisted fulfillment row id.
+   */
   fulfillmentOrderId: string | null;
   quantity: number | null;
   timing: "today" | null;
@@ -58,6 +62,43 @@ type CanonicalPickupPreview = {
   pickupTicketId: string | null;
 };
 
+type CanonicalPickupTarget = {
+  orderId: string;
+  orderLineItemId: string;
+  fulfillmentWorkspaceOrderId: string | null;
+};
+
+const nonEmptyId = (value: string | null | undefined) =>
+  typeof value === "string" && value.trim() ? value : null;
+
+/**
+ * Binds a pickup proposal to the same Order-keyed target used by the
+ * fulfillment workspace UI. A workspace reference is an order key only; it
+ * is never used as a synthetic fulfillment-record identifier.
+ */
+export function resolveCanonicalPickupTarget(input: Pick<Intake, "orderId" | "orderLineItemId" | "fulfillmentOrderId">): CanonicalPickupTarget {
+  const explicitOrderId = nonEmptyId(input.orderId);
+  const fulfillmentWorkspaceOrderId = nonEmptyId(input.fulfillmentOrderId);
+  const orderLineItemId = nonEmptyId(input.orderLineItemId);
+  if (!orderLineItemId || (!explicitOrderId && !fulfillmentWorkspaceOrderId)) {
+    throw new FulfillmentOperationError(
+      "FULFILLMENT_TARGET_NOT_RESOLVABLE",
+      "The pickup action could not resolve one canonical order and order line. Nothing was changed.",
+    );
+  }
+  if (explicitOrderId && fulfillmentWorkspaceOrderId && explicitOrderId !== fulfillmentWorkspaceOrderId) {
+    throw new FulfillmentOperationError(
+      "PICKUP_TARGET_MISMATCH",
+      "The resolved fulfillment workspace belongs to a different order. Nothing was changed.",
+    );
+  }
+  return {
+    orderId: explicitOrderId ?? fulfillmentWorkspaceOrderId!,
+    orderLineItemId,
+    fulfillmentWorkspaceOrderId,
+  };
+}
+
 /**
  * Presentation-only projection of the authoritative fulfillment detail. The
  * canonical Fulfillment service still decides whether a handoff is allowed
@@ -67,16 +108,17 @@ export function previewPendingFulfillmentPickup(
   detail: FulfillmentDetailDto,
   intake: Pick<Intake, "orderId" | "orderLineItemId" | "fulfillmentOrderId" | "quantity">,
 ): CanonicalPickupPreview {
-  if (!intake.orderId || !intake.orderLineItemId || !intake.fulfillmentOrderId || !Number.isSafeInteger(intake.quantity) || intake.quantity <= 0) {
-    throw new FulfillmentOperationError("PICKUP_DETAILS_REQUIRED", "A resolved order, order line, fulfillment workspace, and positive pickup quantity are required.");
+  const target = resolveCanonicalPickupTarget(intake);
+  if (!Number.isSafeInteger(intake.quantity) || intake.quantity <= 0) {
+    throw new FulfillmentOperationError("PICKUP_DETAILS_REQUIRED", "A positive pickup quantity is required.");
   }
-  if (detail.orderId !== intake.orderId || intake.fulfillmentOrderId !== detail.orderId) {
-    throw new FulfillmentOperationError("PICKUP_TARGET_MISMATCH", "The fulfillment workspace does not belong to the resolved order.");
+  if (detail.orderId !== target.orderId) {
+    throw new FulfillmentOperationError("PICKUP_TARGET_MISMATCH", "The fulfillment workspace does not belong to the resolved order. Nothing was changed.");
   }
   if (detail.fulfillmentType !== "PICKUP") {
     throw new FulfillmentOperationError("PICKUP_NOT_ELIGIBLE", "This order is not currently configured for pickup fulfillment.");
   }
-  const line = detail.lineItems.find((candidate) => candidate.id === intake.orderLineItemId);
+  const line = detail.lineItems.find((candidate) => candidate.id === target.orderLineItemId);
   if (!line) throw new FulfillmentOperationError("ORDER_LINE_NOT_FOUND", "The resolved order line is no longer part of this order.");
   const currentPickedUpQuantity = line.production.pickedUpQuantity;
   const remainingQuantity = line.production.remainingQuantity;
@@ -119,15 +161,16 @@ export class FulfillmentOperationsService {
     conversationId: string;
     pending: PendingFulfillmentPickup;
   }) {
+    const target = resolveCanonicalPickupTarget(input.pending);
     return this.createProposal({
       organizationId: input.organizationId,
       userId: input.userId,
       conversationId: input.conversationId,
       intake: {
         command: "fulfillment.record_pickup",
-        orderId: input.pending.orderId ?? undefined,
-        orderLineItemId: input.pending.orderLineItemId ?? undefined,
-        fulfillmentOrderId: input.pending.fulfillmentOrderId ?? undefined,
+        orderId: target.orderId,
+        orderLineItemId: target.orderLineItemId,
+        fulfillmentOrderId: target.fulfillmentWorkspaceOrderId ?? undefined,
         quantity: input.pending.quantity ?? undefined,
         timing: input.pending.timing,
       },
@@ -284,7 +327,16 @@ export class FulfillmentOperationsService {
     let pickupPreview: CanonicalPickupPreview | null = null;
     const sourceLinks: { label: string; href: string }[] = [];
     if (intake.command === "fulfillment.record_pickup") {
-      const detail = await canonicalFulfillmentOperations.getOrderDetail(org, intake.orderId!);
+      const target = resolveCanonicalPickupTarget(intake);
+      let detail: FulfillmentDetailDto;
+      try {
+        detail = await canonicalFulfillmentOperations.getOrderDetail(org, target.orderId);
+      } catch (error) {
+        if (error instanceof FulfillmentHttpError && error.code === "NOT_FOUND") {
+          throw new FulfillmentOperationError("ORDER_NOT_FOUND", "The resolved order is no longer available for fulfillment. Nothing was changed.");
+        }
+        throw error;
+      }
       const preview = previewPendingFulfillmentPickup(detail, intake);
       pickupPreview = preview;
       source = {

@@ -1049,7 +1049,7 @@ export class AssistantService {
     const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools, ...existingProductEditTools];
     const prepareFulfillmentPickupTools: AssistantOperatorSemanticTool[] = hasPermission(actor, "assistant.fulfillment.record_pickup") ? [{
       name: "fulfillment.prepare_pickup",
-      description: "Turn the current complete pending fulfillment pickup intent into one protected canonical pickup preview. Use only when activeTask.pendingAction is fulfillment_pickup and already has one Order, Order line, Fulfillment workspace, and positive quantity. It never records a pickup: it returns the existing action-plan card for GO confirmation. Do not ask for known targets or quantities again.",
+      description: "Turn the current complete pending fulfillment pickup intent into one protected canonical pickup preview. Use only when activeTask.pendingAction has one resolved order-keyed fulfillment workspace, order line, and positive quantity. The workspace key resolves to its canonical Order target; it is not a persisted fulfillment-record id. It never records a pickup: it returns the existing action-plan card for GO confirmation. Do not ask for known targets or quantities again.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
       execute: async ({ context }) => {
         const pending = context.task?.pendingAction;
@@ -1085,7 +1085,11 @@ export class AssistantService {
             ] },
           };
         } catch (error) {
-          return { status: "rejected" as const, failureCategory: "business_validation", failureCode: error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "pickup_preview_failed", warning: error instanceof Error ? error.message : "The pickup preview could not be prepared." };
+          const failureCode = error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "pickup_preview_failed";
+          const warning = failureCode === "FULFILLMENT_TARGET_NOT_RESOLVABLE" || failureCode === "PICKUP_TARGET_MISMATCH"
+            ? "The pickup action could not safely bind its canonical target. Nothing was changed; this does not indicate a fulfillment-data problem."
+            : error instanceof Error ? error.message : "The pickup preview could not be prepared.";
+          return { status: "rejected" as const, failureCategory: "business_validation", failureCode, warning };
         }
       },
     }] : [];
