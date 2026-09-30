@@ -2539,28 +2539,35 @@ async function ensureProofAttachmentForSource(tx: any, args: {
   lineItemId: string;
   source: ArtworkProofSource;
 }): Promise<string> {
-  if (args.source.sourceType === "attachment") {
-    return args.source.sourceId;
+  // Artwork and proof are separate attachment roles even when they reference
+  // the same canonical file. The caller holds the line workflow lock so the
+  // lookup/create pair cannot produce duplicate bridges on repeated syncs.
+  // Match the canonical-original identity precedence; never treat an empty URL
+  // as file identity. Legacy attachments can have only a checksum/storage path.
+  const fileIdentity = args.source.fileRecordId
+    ? eq(orderAttachments.fileRecordId, args.source.fileRecordId)
+    : args.source.checksum
+      ? eq(orderAttachments.checksum, args.source.checksum)
+      : args.source.relativePath
+        ? eq(orderAttachments.relativePath, args.source.relativePath)
+        : args.source.fileUrl
+          ? eq(orderAttachments.fileUrl, args.source.fileUrl)
+          : null;
+  if (!fileIdentity) {
+    throwProofingConflict("Selected file has no canonical file or storage identity for a proof draft.");
   }
-
-  const matchingWhere = args.source.fileRecordId
-    ? and(
-        eq(orderAttachments.orderId, args.source.orderId),
-        eq(orderAttachments.orderLineItemId, args.lineItemId),
-        eq(orderAttachments.role, "proof"),
-        eq(orderAttachments.fileRecordId, args.source.fileRecordId),
-      )
-    : and(
-        eq(orderAttachments.orderId, args.source.orderId),
-        eq(orderAttachments.orderLineItemId, args.lineItemId),
-        eq(orderAttachments.role, "proof"),
-        eq(orderAttachments.fileUrl, args.source.fileUrl ?? ""),
-      );
 
   const [existing] = await tx
     .select({ id: orderAttachments.id })
     .from(orderAttachments)
-    .where(matchingWhere)
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(and(
+      eq(orders.organizationId, args.organizationId),
+      eq(orderAttachments.orderId, args.source.orderId),
+      eq(orderAttachments.orderLineItemId, args.lineItemId),
+      eq(orderAttachments.role, "proof"),
+      fileIdentity,
+    ))
     .orderBy(desc(orderAttachments.updatedAt), desc(orderAttachments.createdAt))
     .limit(1);
 
@@ -2668,7 +2675,11 @@ async function ensureProofAttachmentForExistingAttachment(tx: any, args: {
     throwProofingConflict("Selected file is not eligible for proof draft creation");
   }
 
-  return attachment.sourceId;
+  return ensureProofAttachmentForSource(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    source: { ...attachment, sourceType: "attachment", orderLineItemId: lineItem.lineItemId },
+  });
 }
 
 export async function createLineItemProofVersionFromExistingAttachment(tx: any, args: {
@@ -2678,6 +2689,7 @@ export async function createLineItemProofVersionFromExistingAttachment(tx: any, 
   createdByUserId: string;
   internalNotes?: string | null;
 }) {
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const proofFileId = await ensureProofAttachmentForExistingAttachment(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
