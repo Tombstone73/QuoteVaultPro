@@ -22,6 +22,82 @@ export type PickupReversalHistory = {
   remainingByLine: Record<string, number>;
   reversals: Array<{ id: string; createdAt: string | null; actorName: string | null; actorUserId: string | null; reason: string | null }>;
 };
+
+/**
+ * Bounded, read-only pickup evidence derived from the same handoff and
+ * reversal ledger consumed by the Fulfillment workspace. This is intentionally
+ * domain-level rather than Assistant-specific so every read surface can keep
+ * the append-only reversal semantics aligned.
+ */
+export type PickupActivityProjection = {
+  handoffId: string;
+  occurredAt: string;
+  status: PickupReversalHistory["status"];
+  actorUserId: string | null;
+  actorName: string | null;
+  recordedQuantity: number;
+  reversedQuantity: number;
+  effectiveQuantity: number;
+  allocations: Array<{ orderLineItemId: string; recordedQuantity: number; reversedQuantity: number; effectiveQuantity: number }>;
+  reversals: Array<{ id: string; occurredAt: string | null; reason: string | null; quantity: number; allocations: Array<{ orderLineItemId: string; quantity: number }> }>;
+};
+
+type PickupActivityHandoff = {
+  id: string;
+  handedOffAt: string;
+  handedOffByUserId?: string | null;
+  handedOffByName?: string | null;
+  items: Array<{ orderLineItemId: string; quantity: number }>;
+};
+
+type PickupActivityEvent = {
+  id: string;
+  eventType: string;
+  payloadJson: unknown;
+  createdAt?: Date | string | null;
+  actorUserId?: string | null;
+  actorFirstName?: string | null;
+  actorLastName?: string | null;
+};
+
+/** Project one immutable pickup handoff and its append-only corrections. */
+export function projectPickupActivity(handoff: PickupActivityHandoff, events: PickupActivityEvent[]): PickupActivityProjection {
+  const reversalHistory = pickupReversalHistory(handoff.id, handoff.items, events);
+  const lineItemIds = handoff.items.map((item) => item.orderLineItemId);
+  const matchingReversals = events.filter((event) => event.eventType === "PICKUP_HANDOFF_REVERSED" && (event.payloadJson as any)?.sourceId === handoff.id);
+  const allocations = handoff.items.map((item) => {
+    const effectiveQuantity = reversalHistory.remainingByLine[item.orderLineItemId] ?? item.quantity;
+    return {
+      orderLineItemId: item.orderLineItemId,
+      recordedQuantity: item.quantity,
+      reversedQuantity: Math.max(0, item.quantity - effectiveQuantity),
+      effectiveQuantity,
+    };
+  });
+  return {
+    handoffId: handoff.id,
+    occurredAt: handoff.handedOffAt,
+    status: reversalHistory.status,
+    actorUserId: handoff.handedOffByUserId ?? null,
+    actorName: handoff.handedOffByName ?? null,
+    recordedQuantity: allocations.reduce((total, item) => total + item.recordedQuantity, 0),
+    reversedQuantity: allocations.reduce((total, item) => total + item.reversedQuantity, 0),
+    effectiveQuantity: allocations.reduce((total, item) => total + item.effectiveQuantity, 0),
+    allocations,
+    reversals: matchingReversals.map((event) => {
+      const reversedByLine = terminalReversalQuantitiesByLine([event], lineItemIds).pickup;
+      const reversalAllocations = Array.from(reversedByLine, ([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
+      return {
+        id: event.id,
+        occurredAt: event.createdAt ? new Date(event.createdAt).toISOString() : null,
+        reason: typeof (event.payloadJson as any)?.reason === "string" ? (event.payloadJson as any).reason : null,
+        quantity: reversalAllocations.reduce((total, item) => total + item.quantity, 0),
+        allocations: reversalAllocations,
+      };
+    }),
+  };
+}
+
 export function pickupReversalHistory(handoffId: string, items: Array<{ orderLineItemId: string; quantity: number }>,
   events: Array<{ id: string; eventType: string; payloadJson: unknown; createdAt?: Date | string | null; actorUserId?: string | null; actorFirstName?: string | null; actorLastName?: string | null }>): PickupReversalHistory {
   const matching = events.filter(e => e.eventType === "PICKUP_HANDOFF_REVERSED" && (e.payloadJson as any)?.sourceId === handoffId);

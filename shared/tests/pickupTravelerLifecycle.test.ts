@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { buildPickupTravelerProgressSnapshot, pickupReversalHistory, pickupTravelerBoxSchema, pickupTravelerContext } from "../pickupTravelerProgress";
+import { buildPickupTravelerProgressSnapshot, pickupReversalHistory, pickupTravelerBoxSchema, pickupTravelerContext, projectPickupActivity } from "../pickupTravelerProgress";
 import { resolveFulfillmentLineQuantity } from "../fulfillmentReadiness";
 import { netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from "../fulfillmentTerminalReversal";
 
@@ -47,5 +47,18 @@ describe("canonical pickup reversal presentation", () => {
     const history = pickupReversalHistory("pickup-1", [{ orderLineItemId: "signs", quantity: 250 }], [{ id: "r", eventType: "PICKUP_HANDOFF_REVERSED", payloadJson: { sourceId: "pickup-1", items: [{ orderLineItemId: "signs", quantity: 250 }] } }]);
     expect(history.reversals[0]).toEqual({ id: "r", createdAt: null, actorName: null, actorUserId: null, reason: null });
     expect(resolveFulfillmentLineQuantity({ orderedQuantity: 500, pickedUpQuantity: history.remainingByLine.signs })).toMatchObject({ pickedUpQuantity: 0, remainingQuantity: 500 });
+  });
+  test("retains the 5,000-piece pickup ledger while reversals produce the canonical current quantity", () => {
+    const handoffs = [
+      { id: "pickup-250", handedOffAt: "2026-09-25T10:00:00Z", handedOffByUserId: "staff", handedOffByName: "Dale", items: [{ orderLineItemId: "signs", quantity: 250 }] },
+      { id: "pickup-1", handedOffAt: "2026-09-25T11:00:00Z", handedOffByUserId: "staff", handedOffByName: "Dale", items: [{ orderLineItemId: "signs", quantity: 1 }] },
+      { id: "pickup-300", handedOffAt: "2026-09-25T12:00:00Z", handedOffByUserId: "staff", handedOffByName: "Dale", items: [{ orderLineItemId: "signs", quantity: 300 }] },
+    ];
+    const events = [{ id: "reversal-1", eventType: "PICKUP_HANDOFF_REVERSED", createdAt: "2026-09-25T11:30:00Z", payloadJson: { sourceId: "pickup-1", reason: "Entered in error", items: [{ orderLineItemId: "signs", quantity: 1 }] } }];
+    const activity = handoffs.map((handoff) => projectPickupActivity(handoff, events));
+    expect(activity.map((entry) => [entry.recordedQuantity, entry.reversedQuantity, entry.effectiveQuantity])).toEqual([[250, 0, 250], [1, 1, 0], [300, 0, 300]]);
+    expect(activity[1]).toMatchObject({ status: "REVERSED", reversals: [{ id: "reversal-1", quantity: 1, reason: "Entered in error" }] });
+    const current = resolveFulfillmentLineQuantity({ orderedQuantity: 5000, workflowState: "in_production", pickedUpQuantity: activity.reduce((total, entry) => total + entry.effectiveQuantity, 0) });
+    expect(current).toMatchObject({ pickedUpQuantity: 550, fulfilledQuantity: 550, remainingQuantity: 4450 });
   });
 });

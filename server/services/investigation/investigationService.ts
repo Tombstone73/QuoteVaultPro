@@ -13,6 +13,7 @@ import {
   orderAttachments,
   orderLineItems,
   orders,
+  pickupHandoffs,
   productionEvents,
   productionJobs,
   quotes,
@@ -27,11 +28,12 @@ import type {
 import { investigationResourceTypeValues } from "@shared/investigationContracts";
 import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
 import { fulfillmentShipmentDetailHref, fulfillmentWorkspaceHref } from "@shared/fulfillmentNavigation";
+import { projectPickupActivity, type PickupActivityProjection } from "@shared/pickupTravelerProgress";
 import type { FulfillmentDetailDto } from "../fulfillment/types";
 import { db } from "../../db";
 
 export type InvestigationScope = { organizationId: string; permissions: readonly string[] };
-export type InvestigationRelationship = "belongs_to_customer" | "contains_line" | "has_production_job" | "has_fulfillment_workspace" | "fulfills_order" | "invoices_order" | "has_contact" | "originated_from_quote" | "has_artwork" | "supersedes_artwork";
+export type InvestigationRelationship = "belongs_to_customer" | "contains_line" | "has_production_job" | "has_fulfillment_workspace" | "has_pickup_activity" | "fulfills_order" | "invoices_order" | "has_contact" | "originated_from_quote" | "has_artwork" | "supersedes_artwork";
 export type InvestigationEdge = { from: InvestigationResourceReference; to: InvestigationResourceReference; relationship: InvestigationRelationship };
 export type InvestigationHistoryEvent = {
   eventId: string;
@@ -39,7 +41,7 @@ export type InvestigationHistoryEvent = {
   kind: "recorded_event";
   summary: string;
   resource: InvestigationResourceReference;
-  provenance: { source: "order_audit_log" | "production_events" | "shipments" | "fulfillment_events" | "invoices" | "invoice_email_logs" | "invoice_email_delivery_jobs" | "line_item_artwork"; recorded: true };
+  provenance: { source: "order_audit_log" | "production_events" | "shipments" | "pickup_handoffs" | "fulfillment_events" | "invoices" | "invoice_email_logs" | "invoice_email_delivery_jobs" | "line_item_artwork"; recorded: true };
 };
 export type InvestigationSearchCandidate = { resource: InvestigationResourceReference; summary: string; match: "exact" | "partial" };
 
@@ -50,7 +52,8 @@ export const investigationResourceDescriptors: Readonly<Record<InvestigationReso
   customer: { relations: ["belongs_to_customer", "has_contact"] },
   order_line: { relations: ["contains_line", "has_production_job"] },
   production_job: { relations: ["has_production_job", "contains_line"] },
-  fulfillment: { relations: ["has_fulfillment_workspace", "fulfills_order"] },
+  fulfillment: { relations: ["has_fulfillment_workspace", "has_pickup_activity", "fulfills_order"] },
+  pickup_activity: { relations: ["has_pickup_activity"] },
   shipment: { relations: ["fulfills_order"] },
   invoice: { relations: ["invoices_order", "belongs_to_customer"] },
   contact: { relations: ["belongs_to_customer"] },
@@ -81,6 +84,7 @@ const customerRef = (id: string, name: string) => ref("customer", id, name, `/cu
 const lineRef = (id: string, description: string, orderId: string) => ref("order_line", id, description, `/orders/${orderId}`);
 const jobRef = (id: string, orderId: string) => ref("production_job", id, `Production job ${id.slice(0, 8)}`, `/production?jobId=${id}`);
 const fulfillmentRef = (orderId: string, orderNumber: string) => ref("fulfillment", orderId, `Fulfillment for ${orderNumber}`, fulfillmentWorkspaceHref(orderId));
+const pickupActivityRef = (handoffId: string, orderId: string) => ref("pickup_activity", handoffId, `Pickup activity ${handoffId.slice(0, 8)}`, fulfillmentWorkspaceHref(orderId));
 const shipmentRef = (id: string, orderId: string, label: string | null) => ref("shipment", id, label || `Shipment ${id.slice(0, 8)}`, fulfillmentShipmentDetailHref(id));
 const invoiceRef = (id: string, displayNumber: string | number | null, invoiceNumber: number) => ref("invoice", id, String(displayNumber ?? `Invoice #${invoiceNumber}`), `/invoices/${id}`);
 const contactRef = (id: string, fullName: string) => ref("contact", id, fullName, `/customers/contacts/${id}`);
@@ -90,6 +94,7 @@ const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
 
 export function toFulfillmentInvestigationSnapshot(detail: FulfillmentDetailDto): InvestigationSnapshot {
   const order = orderRef(detail.orderId, detail.orderNumber, detail.orderNumber);
+  const pickupActivities = detail.pickupHandoffs.map((handoff) => projectPickupActivity(handoff, detail.events));
   return {
     type: "fulfillment",
     resource: fulfillmentRef(detail.orderId, detail.orderNumber),
@@ -102,6 +107,8 @@ export function toFulfillmentInvestigationSnapshot(detail: FulfillmentDetailDto)
       orderedQuantity: detail.orderedQuantity,
       fulfilledQuantity: detail.fulfilledQuantity,
       shippedQuantity: detail.shippedQuantity,
+      recordedPickupQuantity: pickupActivities.reduce((total, activity) => total + activity.recordedQuantity, 0),
+      reversedPickupQuantity: pickupActivities.reduce((total, activity) => total + activity.reversedQuantity, 0),
       pickedUpQuantity: detail.pickedUpQuantity,
       readyWaitingQuantity: detail.readyWaitingQuantity,
       notReadyQuantity: detail.notReadyQuantity,
@@ -113,7 +120,36 @@ export function toFulfillmentInvestigationSnapshot(detail: FulfillmentDetailDto)
       pickedUpAt: detail.pickupTicket.pickedUpAt,
       handoffCount: detail.pickupHandoffs.length,
     } : null,
+    pickupActivities: pickupActivities.slice(0, 20).map((activity) => pickupActivityRef(activity.handoffId, detail.orderId)),
     shipments: detail.shipments.slice(0, 20).map((shipment) => shipmentRef(shipment.id, detail.orderId, shipment.shipmentReference)),
+  };
+}
+
+export function toPickupActivityInvestigationSnapshot(detail: FulfillmentDetailDto, activity: PickupActivityProjection): InvestigationSnapshot {
+  const order = orderRef(detail.orderId, detail.orderNumber, detail.orderNumber);
+  const fulfillment = fulfillmentRef(detail.orderId, detail.orderNumber);
+  return {
+    type: "pickup_activity",
+    resource: pickupActivityRef(activity.handoffId, detail.orderId),
+    current: { status: activity.status, updatedAt: activity.occurredAt },
+    order,
+    fulfillment,
+    occurredAt: activity.occurredAt,
+    status: activity.status,
+    actor: { userId: activity.actorUserId, displayName: activity.actorName },
+    quantities: {
+      recordedQuantity: activity.recordedQuantity,
+      reversedQuantity: activity.reversedQuantity,
+      effectiveQuantity: activity.effectiveQuantity,
+    },
+    allocations: activity.allocations,
+    reversals: activity.reversals.map((reversal) => ({
+      eventId: reversal.id,
+      occurredAt: reversal.occurredAt,
+      reason: reversal.reason,
+      quantity: reversal.quantity,
+      allocations: reversal.allocations,
+    })),
   };
 }
 
@@ -123,6 +159,18 @@ export function toFulfillmentInvestigationSnapshot(detail: FulfillmentDetailDto)
 async function getCanonicalFulfillmentDetail(organizationId: string, orderId: string): Promise<FulfillmentDetailDto | null> {
   const { canonicalFulfillmentOperations } = await import("../fulfillment/canonicalFulfillmentOperations");
   return canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId);
+}
+
+/** Locate a handoff only to find its Order owner; all activity contents and
+ * totals still come from the canonical fulfillment workspace read. */
+async function getCanonicalPickupActivity(organizationId: string, handoffId: string): Promise<{ detail: FulfillmentDetailDto; activity: PickupActivityProjection } | null> {
+  const [handoff] = await db.select({ orderId: pickupHandoffs.orderId }).from(pickupHandoffs)
+    .where(and(eq(pickupHandoffs.organizationId, organizationId), eq(pickupHandoffs.id, handoffId))).limit(1);
+  if (!handoff) return null;
+  const detail = await getCanonicalFulfillmentDetail(organizationId, handoff.orderId);
+  if (!detail) return null;
+  const activity = detail.pickupHandoffs.map((entry) => projectPickupActivity(entry, detail.events)).find((entry) => entry.handoffId === handoffId);
+  return activity ? { detail, activity } : null;
 }
 
 export class DrizzleInvestigationRepository implements InvestigationRepository {
@@ -212,6 +260,10 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       const detail = await getCanonicalFulfillmentDetail(organizationId, resource.id);
       return detail ? toFulfillmentInvestigationSnapshot(detail) : null;
     }
+    if (resource.type === "pickup_activity") {
+      const resolved = await getCanonicalPickupActivity(organizationId, resource.id);
+      return resolved ? toPickupActivityInvestigationSnapshot(resolved.detail, resolved.activity) : null;
+    }
     if (resource.type === "shipment") {
       const [record] = await db.select({ id: shipments.id, orderId: shipments.orderId, primaryOrderId: shipments.primaryOrderId, shipmentReference: shipments.shipmentReference, status: shipments.status, carrier: shipments.carrier, trackingNumber: shipments.trackingNumber, updatedAt: shipments.updatedAt, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber }).from(shipments).innerJoin(orders, and(eq(orders.id, sql`coalesce(${shipments.orderId}, ${shipments.primaryOrderId})`), eq(orders.organizationId, organizationId))).where(and(eq(shipments.organizationId, organizationId), eq(shipments.id, resource.id))).limit(1);
       const orderId = record?.orderId ?? record?.primaryOrderId;
@@ -286,7 +338,10 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       add(root, snapshot.order, "has_production_job"); if (snapshot.line) add(root, snapshot.line, "contains_line");
     } else if (resource.type === "fulfillment" && snapshot.type === "fulfillment") {
       add(root, snapshot.order, "has_fulfillment_workspace");
+      snapshot.pickupActivities.forEach((activity) => add(root, activity, "has_pickup_activity"));
       snapshot.shipments.forEach((shipment) => add(root, shipment, "fulfills_order"));
+    } else if (resource.type === "pickup_activity" && snapshot.type === "pickup_activity") {
+      add(root, snapshot.fulfillment, "has_pickup_activity");
     } else if (resource.type === "shipment" && snapshot.type === "shipment") add(root, snapshot.order, "fulfills_order");
     else if (resource.type === "invoice" && snapshot.type === "invoice") { if (snapshot.order) add(root, snapshot.order, "invoices_order"); if (snapshot.customer) add(root, snapshot.customer, "belongs_to_customer"); }
     else if (resource.type === "contact" && snapshot.type === "contact") {
@@ -302,6 +357,15 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
   }
 
   async history(organizationId: string, resource: InvestigationResourceInput, limit: number): Promise<InvestigationHistoryEvent[]> {
+    if (resource.type === "pickup_activity") {
+      const resolved = await getCanonicalPickupActivity(organizationId, resource.id);
+      if (!resolved) return [];
+      const snapshot = toPickupActivityInvestigationSnapshot(resolved.detail, resolved.activity);
+      return [
+        { eventId: `pickup_handoff:${resolved.activity.handoffId}`, occurredAt: resolved.activity.occurredAt, kind: "recorded_event" as const, summary: `Pickup recorded: ${resolved.activity.recordedQuantity}`, resource: snapshot.resource, provenance: { source: "pickup_handoffs" as const, recorded: true } },
+        ...resolved.activity.reversals.map((reversal) => ({ eventId: `fulfillment_event:${reversal.id}`, occurredAt: reversal.occurredAt ?? resolved.activity.occurredAt, kind: "recorded_event" as const, summary: `Pickup reversal: ${reversal.quantity}`, resource: snapshot.resource, provenance: { source: "fulfillment_events" as const, recorded: true } })),
+      ].sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)).slice(0, limit);
+    }
     if (resource.type === "fulfillment") {
       const detail = await getCanonicalFulfillmentDetail(organizationId, resource.id);
       if (!detail) return [];

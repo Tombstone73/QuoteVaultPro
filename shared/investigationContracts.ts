@@ -11,6 +11,7 @@ export const investigationResourceTypeValues = [
   "order_line",
   "production_job",
   "fulfillment",
+  "pickup_activity",
   "shipment",
   "invoice",
   "contact",
@@ -42,6 +43,7 @@ const relationshipValues = [
   "contains_line",
   "has_production_job",
   "has_fulfillment_workspace",
+  "has_pickup_activity",
   "fulfills_order",
   "invoices_order",
   "has_contact",
@@ -84,7 +86,8 @@ export const investigationSnapshotSchema = z.discriminatedUnion("type", [
   // Fulfillment is an Order-owned workspace, not a separate mutable record.
   // Its quantities and pickup evidence are a bounded projection of the
   // canonical fulfillment detail read model.
-  z.object({ type: z.literal("fulfillment"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, status: shortText, fulfillmentType: z.enum(["SHIP", "PICKUP"]), quantities: z.object({ physicalLineCount: z.number().int().nonnegative(), orderedQuantity: z.number().finite().nonnegative(), fulfilledQuantity: z.number().finite().nonnegative(), shippedQuantity: z.number().finite().nonnegative(), pickedUpQuantity: z.number().finite().nonnegative(), readyWaitingQuantity: z.number().finite().nonnegative(), notReadyQuantity: z.number().finite().nonnegative(), remainingQuantity: z.number().finite().nonnegative() }).strict(), pickup: z.object({ status: shortText, readyAt: isoDateTime.nullable(), pickedUpAt: isoDateTime.nullable(), handoffCount: z.number().int().nonnegative() }).strict().nullable(), shipments: z.array(investigationResourceReferenceSchema).max(20) }).strict(),
+  z.object({ type: z.literal("fulfillment"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, status: shortText, fulfillmentType: z.enum(["SHIP", "PICKUP"]), quantities: z.object({ physicalLineCount: z.number().int().nonnegative(), orderedQuantity: z.number().finite().nonnegative(), fulfilledQuantity: z.number().finite().nonnegative(), shippedQuantity: z.number().finite().nonnegative(), recordedPickupQuantity: z.number().finite().nonnegative(), reversedPickupQuantity: z.number().finite().nonnegative(), pickedUpQuantity: z.number().finite().nonnegative(), readyWaitingQuantity: z.number().finite().nonnegative(), notReadyQuantity: z.number().finite().nonnegative(), remainingQuantity: z.number().finite().nonnegative() }).strict(), pickup: z.object({ status: shortText, readyAt: isoDateTime.nullable(), pickedUpAt: isoDateTime.nullable(), handoffCount: z.number().int().nonnegative() }).strict().nullable(), pickupActivities: z.array(investigationResourceReferenceSchema).max(20), shipments: z.array(investigationResourceReferenceSchema).max(20) }).strict(),
+  z.object({ type: z.literal("pickup_activity"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, fulfillment: investigationResourceReferenceSchema, occurredAt: isoDateTime, status: z.enum(["COMPLETED", "PARTIALLY_REVERSED", "REVERSED"]), actor: z.object({ userId: identifier.nullable(), displayName: shortText.nullable() }).strict(), quantities: z.object({ recordedQuantity: z.number().int().nonnegative(), reversedQuantity: z.number().int().nonnegative(), effectiveQuantity: z.number().int().nonnegative() }).strict(), allocations: z.array(z.object({ orderLineItemId: identifier, recordedQuantity: z.number().int().nonnegative(), reversedQuantity: z.number().int().nonnegative(), effectiveQuantity: z.number().int().nonnegative() }).strict()).min(1).max(50), reversals: z.array(z.object({ eventId: identifier, occurredAt: isoDateTime.nullable(), reason: z.string().trim().max(500).nullable(), quantity: z.number().int().nonnegative(), allocations: z.array(z.object({ orderLineItemId: identifier, quantity: z.number().int().nonnegative() }).strict()).max(50) }).strict()).max(20) }).strict(),
   z.object({ type: z.literal("shipment"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, status: shortText, trackingNumber: shortText.nullable(), carrier: shortText.nullable() }).strict(),
   z.object({ type: z.literal("invoice"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema.nullable(), customer: investigationResourceReferenceSchema.nullable(), invoiceNumber: shortText, status: shortText, total: z.number().finite().nonnegative(), quickbooksSyncStatus: shortText.nullable(), emailStatus: shortText.nullable() }).strict(),
   // Deliberately excludes email, phone, CRM notes, and link notes. The
@@ -126,7 +129,7 @@ export const investigationHistoryResultSchema = z.object({
     kind: z.enum(["recorded_event", "current_snapshot"]),
     summary: z.string().trim().min(1).max(500),
     resource: investigationResourceReferenceSchema,
-    provenance: z.object({ source: z.enum(["order_audit_log", "production_events", "shipments", "fulfillment_events", "invoices", "invoice_email_logs", "invoice_email_delivery_jobs", "line_item_artwork", "current_record"]), recorded: z.boolean() }).strict(),
+    provenance: z.object({ source: z.enum(["order_audit_log", "production_events", "shipments", "pickup_handoffs", "fulfillment_events", "invoices", "invoice_email_logs", "invoice_email_delivery_jobs", "line_item_artwork", "current_record"]), recorded: z.boolean() }).strict(),
   }).strict()).max(20),
   limit: z.number().int().min(1).max(20),
 }).strict();
