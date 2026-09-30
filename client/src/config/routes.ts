@@ -1,3 +1,5 @@
+import { fulfillmentShipmentDetailHref, fulfillmentWorkspaceHref } from "@shared/fulfillmentNavigation";
+
 /**
  * Central Route Configuration for TitanOS
  * 
@@ -251,8 +253,8 @@ export const ROUTES = {
   // TODO: These routes are referenced in nav but not implemented
   fulfillment: {
     list: "/fulfillment",
-    order: (orderId: string) => `/fulfillment/orders/${orderId}`,
-    shipmentDetail: (shipmentId: string) => `/fulfillment/shipments/${shipmentId}`,
+    order: fulfillmentWorkspaceHref,
+    shipmentDetail: fulfillmentShipmentDetailHref,
   },
   labels: "/shipping",
   reports: "/reports",

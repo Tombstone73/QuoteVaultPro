@@ -10,6 +10,7 @@ export const investigationResourceTypeValues = [
   "customer",
   "order_line",
   "production_job",
+  "fulfillment",
   "shipment",
   "invoice",
   "contact",
@@ -40,6 +41,7 @@ const relationshipValues = [
   "belongs_to_customer",
   "contains_line",
   "has_production_job",
+  "has_fulfillment_workspace",
   "fulfills_order",
   "invoices_order",
   "has_contact",
@@ -79,6 +81,10 @@ export const investigationSnapshotSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("customer"), resource: investigationResourceReferenceSchema, current: currentSchema, companyName: shortText, active: z.boolean().nullable() }).strict(),
   z.object({ type: z.literal("order_line"), resource: investigationResourceReferenceSchema, current: currentSchema, description: shortText, quantity: z.number().int().nonnegative(), order: investigationResourceReferenceSchema, workflowState: shortText }).strict(),
   z.object({ type: z.literal("production_job"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, line: investigationResourceReferenceSchema.nullable(), station: shortText, step: shortText, status: shortText }).strict(),
+  // Fulfillment is an Order-owned workspace, not a separate mutable record.
+  // Its quantities and pickup evidence are a bounded projection of the
+  // canonical fulfillment detail read model.
+  z.object({ type: z.literal("fulfillment"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, status: shortText, fulfillmentType: z.enum(["SHIP", "PICKUP"]), quantities: z.object({ physicalLineCount: z.number().int().nonnegative(), orderedQuantity: z.number().finite().nonnegative(), fulfilledQuantity: z.number().finite().nonnegative(), shippedQuantity: z.number().finite().nonnegative(), pickedUpQuantity: z.number().finite().nonnegative(), readyWaitingQuantity: z.number().finite().nonnegative(), notReadyQuantity: z.number().finite().nonnegative(), remainingQuantity: z.number().finite().nonnegative() }).strict(), pickup: z.object({ status: shortText, readyAt: isoDateTime.nullable(), pickedUpAt: isoDateTime.nullable(), handoffCount: z.number().int().nonnegative() }).strict().nullable(), shipments: z.array(investigationResourceReferenceSchema).max(20) }).strict(),
   z.object({ type: z.literal("shipment"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, status: shortText, trackingNumber: shortText.nullable(), carrier: shortText.nullable() }).strict(),
   z.object({ type: z.literal("invoice"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema.nullable(), customer: investigationResourceReferenceSchema.nullable(), invoiceNumber: shortText, status: shortText, total: z.number().finite().nonnegative(), quickbooksSyncStatus: shortText.nullable(), emailStatus: shortText.nullable() }).strict(),
   // Deliberately excludes email, phone, CRM notes, and link notes. The

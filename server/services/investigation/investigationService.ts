@@ -26,10 +26,12 @@ import type {
 } from "@shared/investigationContracts";
 import { investigationResourceTypeValues } from "@shared/investigationContracts";
 import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
+import { fulfillmentShipmentDetailHref, fulfillmentWorkspaceHref } from "@shared/fulfillmentNavigation";
+import type { FulfillmentDetailDto } from "../fulfillment/types";
 import { db } from "../../db";
 
 export type InvestigationScope = { organizationId: string; permissions: readonly string[] };
-export type InvestigationRelationship = "belongs_to_customer" | "contains_line" | "has_production_job" | "fulfills_order" | "invoices_order" | "has_contact" | "originated_from_quote" | "has_artwork" | "supersedes_artwork";
+export type InvestigationRelationship = "belongs_to_customer" | "contains_line" | "has_production_job" | "has_fulfillment_workspace" | "fulfills_order" | "invoices_order" | "has_contact" | "originated_from_quote" | "has_artwork" | "supersedes_artwork";
 export type InvestigationEdge = { from: InvestigationResourceReference; to: InvestigationResourceReference; relationship: InvestigationRelationship };
 export type InvestigationHistoryEvent = {
   eventId: string;
@@ -44,10 +46,11 @@ export type InvestigationSearchCandidate = { resource: InvestigationResourceRefe
 /** Explicit, directed graph policy. A future V2 authority resolver can replace
  * the service's grant check without changing descriptors, callers, or SQL. */
 export const investigationResourceDescriptors: Readonly<Record<InvestigationResourceType, { relations: readonly InvestigationRelationship[] }>> = Object.freeze({
-  order: { relations: ["belongs_to_customer", "contains_line", "has_production_job", "fulfills_order", "invoices_order", "originated_from_quote", "has_artwork"] },
+  order: { relations: ["belongs_to_customer", "contains_line", "has_production_job", "has_fulfillment_workspace", "fulfills_order", "invoices_order", "originated_from_quote", "has_artwork"] },
   customer: { relations: ["belongs_to_customer", "has_contact"] },
   order_line: { relations: ["contains_line", "has_production_job"] },
   production_job: { relations: ["has_production_job", "contains_line"] },
+  fulfillment: { relations: ["has_fulfillment_workspace", "fulfills_order"] },
   shipment: { relations: ["fulfills_order"] },
   invoice: { relations: ["invoices_order", "belongs_to_customer"] },
   contact: { relations: ["belongs_to_customer"] },
@@ -77,12 +80,50 @@ const orderRef = (id: string, displayNumber: string | number | null, orderNumber
 const customerRef = (id: string, name: string) => ref("customer", id, name, `/customers/${id}`);
 const lineRef = (id: string, description: string, orderId: string) => ref("order_line", id, description, `/orders/${orderId}`);
 const jobRef = (id: string, orderId: string) => ref("production_job", id, `Production job ${id.slice(0, 8)}`, `/production?jobId=${id}`);
-const shipmentRef = (id: string, orderId: string, label: string | null) => ref("shipment", id, label || `Shipment ${id.slice(0, 8)}`, `/fulfillment?shipmentId=${id}`);
+const fulfillmentRef = (orderId: string, orderNumber: string) => ref("fulfillment", orderId, `Fulfillment for ${orderNumber}`, fulfillmentWorkspaceHref(orderId));
+const shipmentRef = (id: string, orderId: string, label: string | null) => ref("shipment", id, label || `Shipment ${id.slice(0, 8)}`, fulfillmentShipmentDetailHref(id));
 const invoiceRef = (id: string, displayNumber: string | number | null, invoiceNumber: number) => ref("invoice", id, String(displayNumber ?? `Invoice #${invoiceNumber}`), `/invoices/${id}`);
 const contactRef = (id: string, fullName: string) => ref("contact", id, fullName, `/customers/contacts/${id}`);
 const quoteRef = (id: string, displayNumber: string | number | null, quoteNumber: number | null) => ref("quote", id, String(displayNumber ?? (quoteNumber ? `Quote #${quoteNumber}` : id)), `/quotes/${id}`);
 const artworkRef = (id: string, orderId: string, filename: string) => ref("artwork", id, filename, `/orders/${orderId}`);
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, "\\$&");
+
+export function toFulfillmentInvestigationSnapshot(detail: FulfillmentDetailDto): InvestigationSnapshot {
+  const order = orderRef(detail.orderId, detail.orderNumber, detail.orderNumber);
+  return {
+    type: "fulfillment",
+    resource: fulfillmentRef(detail.orderId, detail.orderNumber),
+    current: { status: detail.status },
+    order,
+    status: detail.status,
+    fulfillmentType: detail.fulfillmentType,
+    quantities: {
+      physicalLineCount: detail.physicalLineCount,
+      orderedQuantity: detail.orderedQuantity,
+      fulfilledQuantity: detail.fulfilledQuantity,
+      shippedQuantity: detail.shippedQuantity,
+      pickedUpQuantity: detail.pickedUpQuantity,
+      readyWaitingQuantity: detail.readyWaitingQuantity,
+      notReadyQuantity: detail.notReadyQuantity,
+      remainingQuantity: detail.remainingQuantity,
+    },
+    pickup: detail.pickupTicket ? {
+      status: detail.pickupTicket.status,
+      readyAt: detail.pickupTicket.readyAt,
+      pickedUpAt: detail.pickupTicket.pickedUpAt,
+      handoffCount: detail.pickupHandoffs.length,
+    } : null,
+    shipments: detail.shipments.slice(0, 20).map((shipment) => shipmentRef(shipment.id, detail.orderId, shipment.shipmentReference)),
+  };
+}
+
+// Keep the fulfillment read boundary lazy. Investigation's lightweight
+// contracts remain usable without eagerly constructing the full fulfillment
+// mutation service, while real requests still use that canonical facade.
+async function getCanonicalFulfillmentDetail(organizationId: string, orderId: string): Promise<FulfillmentDetailDto | null> {
+  const { canonicalFulfillmentOperations } = await import("../fulfillment/canonicalFulfillmentOperations");
+  return canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId);
+}
 
 export class DrizzleInvestigationRepository implements InvestigationRepository {
   async search(organizationId: string, query: string, types: readonly InvestigationResourceType[], limit: number): Promise<InvestigationSearchCandidate[]> {
@@ -167,6 +208,10 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       const [record] = await db.select({ id: productionJobs.id, orderId: productionJobs.orderId, lineItemId: productionJobs.lineItemId, stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey, status: productionJobs.status, updatedAt: productionJobs.updatedAt, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, lineDescription: orderLineItems.description }).from(productionJobs).innerJoin(orders, and(eq(orders.id, productionJobs.orderId), eq(orders.organizationId, organizationId))).leftJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId)).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, resource.id))).limit(1);
       return record ? { type: "production_job", resource: jobRef(record.id, record.orderId), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, order: orderRef(record.orderId, record.displayNumber, record.orderNumber), line: record.lineItemId && record.lineDescription ? lineRef(record.lineItemId, record.lineDescription, record.orderId) : null, station: record.stationKey, step: record.stepKey, status: record.status } : null;
     }
+    if (resource.type === "fulfillment") {
+      const detail = await getCanonicalFulfillmentDetail(organizationId, resource.id);
+      return detail ? toFulfillmentInvestigationSnapshot(detail) : null;
+    }
     if (resource.type === "shipment") {
       const [record] = await db.select({ id: shipments.id, orderId: shipments.orderId, primaryOrderId: shipments.primaryOrderId, shipmentReference: shipments.shipmentReference, status: shipments.status, carrier: shipments.carrier, trackingNumber: shipments.trackingNumber, updatedAt: shipments.updatedAt, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber }).from(shipments).innerJoin(orders, and(eq(orders.id, sql`coalesce(${shipments.orderId}, ${shipments.primaryOrderId})`), eq(orders.organizationId, organizationId))).where(and(eq(shipments.organizationId, organizationId), eq(shipments.id, resource.id))).limit(1);
       const orderId = record?.orderId ?? record?.primaryOrderId;
@@ -215,6 +260,7 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
         db.select({ id: quotes.id, displayNumber: quotes.displayNumber, quoteNumber: quotes.quoteNumber }).from(quotes).innerJoin(orders, and(eq(orders.quoteId, quotes.id), eq(orders.organizationId, organizationId))).where(and(eq(quotes.organizationId, organizationId), eq(orders.id, resource.id))).limit(1),
       ]);
       if (snapshot.type === "order" && snapshot.customer) add(root, snapshot.customer, "belongs_to_customer");
+      if (snapshot.type === "order") add(root, fulfillmentRef(resource.id, snapshot.orderNumber), "has_fulfillment_workspace");
       lines.forEach((line) => add(root, lineRef(line.id, line.description, resource.id), "contains_line"));
       jobs.forEach((job) => add(root, jobRef(job.id, resource.id), "has_production_job"));
       shipmentRows.forEach((shipment) => add(root, shipmentRef(shipment.id, resource.id, shipment.shipmentReference), "fulfills_order"));
@@ -238,6 +284,9 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       artworkRows.forEach((artwork) => add(root, artworkRef(artwork.id, snapshot.order.id, artwork.filename), "has_artwork"));
     } else if (resource.type === "production_job" && snapshot.type === "production_job") {
       add(root, snapshot.order, "has_production_job"); if (snapshot.line) add(root, snapshot.line, "contains_line");
+    } else if (resource.type === "fulfillment" && snapshot.type === "fulfillment") {
+      add(root, snapshot.order, "has_fulfillment_workspace");
+      snapshot.shipments.forEach((shipment) => add(root, shipment, "fulfills_order"));
     } else if (resource.type === "shipment" && snapshot.type === "shipment") add(root, snapshot.order, "fulfills_order");
     else if (resource.type === "invoice" && snapshot.type === "invoice") { if (snapshot.order) add(root, snapshot.order, "invoices_order"); if (snapshot.customer) add(root, snapshot.customer, "belongs_to_customer"); }
     else if (resource.type === "contact" && snapshot.type === "contact") {
@@ -253,6 +302,19 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
   }
 
   async history(organizationId: string, resource: InvestigationResourceInput, limit: number): Promise<InvestigationHistoryEvent[]> {
+    if (resource.type === "fulfillment") {
+      const detail = await getCanonicalFulfillmentDetail(organizationId, resource.id);
+      if (!detail) return [];
+      const snapshot = toFulfillmentInvestigationSnapshot(detail);
+      return (detail?.events ?? []).slice(0, limit).map((event) => ({
+        eventId: `fulfillment_event:${event.id}`,
+        occurredAt: event.createdAt,
+        kind: "recorded_event" as const,
+        summary: `Fulfillment ${event.entityType.toLowerCase()}: ${event.eventType}`,
+        resource: snapshot.resource,
+        provenance: { source: "fulfillment_events" as const, recorded: true },
+      }));
+    }
     const snapshot = await this.get(organizationId, resource); if (!snapshot) return [];
     const output: InvestigationHistoryEvent[] = [];
     const add = (event: InvestigationHistoryEvent) => { if (output.length < limit) output.push(event); };
