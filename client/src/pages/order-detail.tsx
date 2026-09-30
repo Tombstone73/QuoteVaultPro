@@ -1,4 +1,3 @@
-import { getOrderFinancialDisplayStatus } from "@shared/orderCreditHold";
 import { OrderCreditHoldBanner } from "@/components/orders/OrderCreditHoldBanner";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import type { BillingOwnershipOverrideContext } from '@shared/billingOwnershipReview';
@@ -2221,7 +2220,6 @@ export default function OrderDetail() {
             <div className="flex flex-1 items-center justify-center px-4">
             {(order.state === 'closed' || order.status === 'operationally_complete') ? <OrderStatusBadge status={order.status} state={order.state} /> : <OrderStatusPillSelector
               orderId={order.id}
-              displayLabel={getOrderFinancialDisplayStatus(order)}
               currentState={order.state as OrderState}
               currentPillId={order.statusPillId}
               currentPillValue={order.statusPillValue}

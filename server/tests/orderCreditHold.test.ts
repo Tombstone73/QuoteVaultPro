@@ -1,8 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { getTableName } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { deriveOrderCreditHold, getOrderFinancialDisplayStatus, unbilledOrderExposureCents } from '../../shared/orderCreditHold';
-import { buildCustomerCreditExposure } from '../../shared/customerCreditExposure';
+import { deriveOrderCreditHold, unbilledOrderExposureCents } from '../../shared/orderCreditHold';
 
 let rows: Record<string, any[]>;
 let writes: any[];
@@ -121,26 +120,7 @@ describe('authoritative production boundaries', () => {
     rows.orders[0].total = '700.00'; expect((await hold()).held).toBe(true);
   });
 });
-describe('effective staff status without lifecycle writes', () => {
-  const base = { state: 'open', status: 'new', lineItemsCount: 1 };
-  const held = deriveOrderCreditHold(base, buildCustomerCreditExposure('0', [], { unbilledOpenOrdersCents: 50000 }));
-  test('hold outranks New/proof while operational state stays New', () => {
-    expect(getOrderFinancialDisplayStatus({ ...base, creditHold: held, proofActionRequired: true })).toBe('Awaiting Payment'); expect(base.status).toBe('new');
-  });
-  test('payment clears label to proof or ready state, never fake New', () => {
-    const creditHold = { ...held, held: false, requiredPaymentCents: 0 };
-    expect(getOrderFinancialDisplayStatus({ ...base, creditHold, proofActionRequired: true })).toBe('Awaiting Proof');
-    expect(getOrderFinancialDisplayStatus({ ...base, creditHold })).toBe('Ready for Production');
-    expect(getOrderFinancialDisplayStatus({ ...base, creditHold, lineItems: [{ workflowState: 'in_production' }] })).toBe('In Production');
-  });
-  test.each([{ state: 'closed' }, { status: 'operationally_complete' }, { state: 'production_complete' }])('historical state %p outranks financial data', terminal => {
-    expect(getOrderFinancialDisplayStatus({ ...base, ...terminal, creditHold: held })).toBeNull();
-  });
-  test('nonfinancial exception holds and service-only Orders retain their canonical display', () => {
-    const creditHold = { ...held, held: false };
-    expect(getOrderFinancialDisplayStatus({ ...base, creditHold, statusPillValue: 'On Hold' })).toBeNull();
-    expect(getOrderFinancialDisplayStatus({ ...base, creditHold, productionSummary: { requiredCount: 0 } })).toBeNull();
-  });
+describe('unbilled commercial exposure', () => {
   test('unbilled delta never double counts the full invoiced Order', () => {
     expect(unbilledOrderExposureCents(50000, 50000)).toBe(0); expect(unbilledOrderExposureCents(70000, 50000)).toBe(20000);
   });

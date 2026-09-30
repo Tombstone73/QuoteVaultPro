@@ -164,16 +164,19 @@ test.each(['invoiced', 'operationally_complete', 'completed'])('closed lifecycle
 });
 
 const held = { held: true, creditLimitCents: 0, exposureCents: 50000, requiredPaymentCents: 50000, overrideApplied: false };
-test('financial hold replaces the primary New pill and clears to proof, ready, and restored hold', async () => {
+test('financial hold remains a supplemental badge while the primary pill stays assigned', async () => {
   const props = { id: 'held-order', state: 'open', status: 'new', statusPillValue: 'New', creditHold: held, lineItemsCount: 1 };
   const { act, container, root } = await renderCell(props);
-  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Awaiting Payment');
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('New');
+  expect(container.querySelector('[data-testid="awaiting-payment-badge"]')?.textContent).toBe('Awaiting Payment');
   await act(async () => root.render(<OrdersListStatusCell row={{ ...props, creditHold: { ...held, held: false }, proofActionRequired: true }} />));
-  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Awaiting Proof');
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('New');
+  expect(container.querySelector('[data-testid="awaiting-payment-badge"]')).toBeNull();
   await act(async () => root.render(<OrdersListStatusCell row={{ ...props, creditHold: { ...held, held: false } }} />));
-  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Ready for Production');
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('New');
   await act(async () => root.render(<OrdersListStatusCell row={props} />));
-  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Awaiting Payment');
+  expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('New');
+  expect(container.querySelector('[data-testid="awaiting-payment-badge"]')?.textContent).toBe('Awaiting Payment');
   await act(async () => root.unmount());
 });
 test('historical completion outranks a stale financial hold', async () => {
