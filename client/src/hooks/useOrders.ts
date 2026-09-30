@@ -247,6 +247,7 @@ export type DesignQueueItem = {
 
 export type PrepressQueueItem = {
   lineItemId: string;
+  lineItemUpdatedAt: string;
   lineNumber?: number | null;
   orderId: string;
   jobNumber: string;

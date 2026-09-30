@@ -21,6 +21,10 @@ import {
 } from "@/lib/prepressActions";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
+import { ReturnUpstreamDialog } from "@/components/production/ReturnUpstreamDialog";
+import { canReturnUpstream, type ReturnUpstreamDestination, type ReturnUpstreamTarget } from "@/lib/returnUpstream";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNow } from "date-fns";
 import { PrepressFileThumbnail as FileThumbnail } from "@/components/prepress/PrepressFileThumbnail";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
@@ -580,6 +584,7 @@ function filterPrepressCombinedRuns(
 export default function PrepressProductionPageV2() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -591,6 +596,7 @@ export default function PrepressProductionPageV2() {
   
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
+  const [returnUpstreamSelection, setReturnUpstreamSelection] = useState<{ target: ReturnUpstreamTarget; destination: ReturnUpstreamDestination } | null>(null);
   const [selectedQueueLineItemIds, setSelectedQueueLineItemIds] = useState<Set<string>>(() => new Set());
   const [workspaceTab, setWorkspaceTab] = useState<PrepressWorkspaceTab>("queue");
   const [leftPanePercent, setLeftPanePercent] = useState(() => readPersistedPrepressPanePercent());
@@ -4178,6 +4184,20 @@ export default function PrepressProductionPageV2() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {canReturnUpstream(selectedItem, isAdminOrOwner) && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button type="button" variant="outline" size="sm">Actions</Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>Return upstream</DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem onSelect={() => setReturnUpstreamSelection({ target: selectedItem, destination: "proofing" })}>Return to Proofing</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setReturnUpstreamSelection({ target: selectedItem, destination: "design" })}>Return to Design</DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <button
               className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
               onClick={handleOpenHistory}
@@ -5074,6 +5094,11 @@ export default function PrepressProductionPageV2() {
                 </div>
       )}
 
+      <ReturnUpstreamDialog
+        target={returnUpstreamSelection?.target ?? null}
+        destination={returnUpstreamSelection?.destination ?? null}
+        onClose={() => setReturnUpstreamSelection(null)}
+      />
       <Dialog open={!!filePendingRemoval} onOpenChange={(open) => { if (!open && !removeFinalFileMutation.isPending) setFilePendingRemoval(null); }}>
         <DialogContent>
           <DialogHeader>

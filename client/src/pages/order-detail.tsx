@@ -302,6 +302,11 @@ export default function OrderDetail() {
   const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
   // True when the line items section has an expanded line item with unsaved edits.
   const [hasDirtyLineItem, setHasDirtyLineItem] = useState(false);
+  const newlyRequiredProofLineIdsRef = useRef<string[]>([]);
+  const newlyRequiredProofLineIds = [
+    ...((location.state as { newlyRequiredProofLineIds?: string[] } | null)?.newlyRequiredProofLineIds ?? []),
+    ...newlyRequiredProofLineIdsRef.current,
+  ];
 
   // Order flags (stored in order_list_notes.listLabel as comma-separated values)
   const [flags, setFlags] = useState<string[]>([]);
@@ -1550,7 +1555,15 @@ export default function OrderDetail() {
       setPendingOrderPatch({});
       logOrderDirtyAudit("after-clear-before-navigate");
       const postSavePath = isOrderEditRoute ? orderDetailPath : ROUTES.orders.list;
-      navigate(postSavePath, { state: location.state });
+      navigate(postSavePath, {
+        state: {
+          ...((location.state && typeof location.state === "object") ? location.state : {}),
+          newlyRequiredProofLineIds: [
+            ...((location.state as { newlyRequiredProofLineIds?: string[] } | null)?.newlyRequiredProofLineIds ?? []),
+            ...newlyRequiredProofLineIdsRef.current,
+          ],
+        },
+      });
       notifyBrowserRouterOfCurrentUrlSoon();
       recoverBrowserRouterMismatchSoon({
         targetPath: postSavePath,
@@ -2975,6 +2988,10 @@ export default function OrderDetail() {
                 showHistoricalCanceledLineItems={orderIsCanceled}
                 productionFocusLineItemIds={productionFocus.highlightedIds}
                 productionPriorityLineItemIds={productionFocus.prioritizedIds}
+                newProofRequirementLineItemIds={newlyRequiredProofLineIds}
+                onProofRequirementAdded={(lineItemId) => {
+                  if (!newlyRequiredProofLineIdsRef.current.includes(lineItemId)) newlyRequiredProofLineIdsRef.current.push(lineItemId);
+                }}
                 onAfterLineItemsChange={recalculateOrderTotals}
                 onDirtyStateChange={setHasDirtyLineItem}
                 onDraftLineItemPricingChange={handleDraftLineItemPricingChange}

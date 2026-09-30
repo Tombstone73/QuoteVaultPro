@@ -42,7 +42,12 @@ import { validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 import { getPbv2Tree, isPbv2Product, isPbv2QuestionNode, normalizePbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
 import { cn } from "@/lib/utils";
-import { apiRequest } from "@/lib/queryClient";
+import { apiFetch, apiRequest } from "@/lib/queryClient";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
+import { ReturnUpstreamDialog } from "@/components/production/ReturnUpstreamDialog";
+import { canReturnUpstream, type ReturnUpstreamTarget } from "@/lib/returnUpstream";
+import { requiresExplicitProofReturn, shouldWarnAfterProofRequirementSave } from "@/lib/proofRequirementWarning";
+import type { PrepressQueueItem } from "@/hooks/useOrders";
 import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
@@ -592,6 +597,8 @@ type OrderLineItemsSectionProps = {
   showHistoricalCanceledLineItems?: boolean;
   productionFocusLineItemIds?: string[];
   productionPriorityLineItemIds?: string[];
+  newProofRequirementLineItemIds?: string[];
+  onProofRequirementAdded?: (lineItemId: string) => void;
   onAfterLineItemsChange?: () => Promise<void>;
   /** Reports whether the expanded line item has unsaved edits. */
   onDirtyStateChange?: (hasUnsavedLineItem: boolean) => void;
@@ -609,6 +616,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   showHistoricalCanceledLineItems = false,
   productionFocusLineItemIds = [],
   productionPriorityLineItemIds = [],
+  newProofRequirementLineItemIds = [],
+  onProofRequirementAdded,
   onAfterLineItemsChange,
   onDirtyStateChange,
   onDraftLineItemPricingChange,
@@ -616,6 +625,20 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user, isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
+  const { isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
+  const [localProofWarningIds, setLocalProofWarningIds] = useState<string[]>([]);
+  const [proofReturnTarget, setProofReturnTarget] = useState<ReturnUpstreamTarget | null>(null);
+  const proofWarningIds = [...newProofRequirementLineItemIds, ...localProofWarningIds];
+  const prepressReturnQueue = useQuery({
+    queryKey: ["/api/prepress/queue", "order-proof-return"],
+    enabled: isAdminOrOwner && proofWarningIds.length > 0,
+    queryFn: async () => {
+      const response = await apiFetch("/api/prepress/queue");
+      if (!response.ok) throw new Error("Could not load current Prepress state.");
+      const payload = await response.json();
+      return (Array.isArray(payload.data) ? payload.data : []) as PrepressQueueItem[];
+    },
+  });
   const { preferences: orgPreferences } = useOrgPreferences();
   const canSeeDebug = isAdmin || isPlatformAdmin || isPlatformDeveloper;
   const [showLineItemDebug, setShowLineItemDebug] = useState(false);
@@ -2556,6 +2579,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           ...(v2Patch as any),
       };
       const savedLineItem = await lineItemMutation.mutateAsync({ id: itemId, data: correctionPayload });
+      if (savedForCommercialSave && requiresProofApprovalInput && shouldWarnAfterProofRequirementSave({
+        previousRequiresProof: savedForCommercialSave.requiresProofApproval,
+        savedRequiresProof: (savedLineItem as any)?.requiresProofApproval,
+        workflowState: (savedLineItem as any)?.workflowState ?? expandedItem.workflowState,
+      })) {
+        setLocalProofWarningIds((current) => current.includes(itemId) ? current : [...current, itemId]);
+        onProofRequirementAdded?.(itemId);
+      }
 
       // Server reprices authoritatively — adopt its result as the new baseline
       // so the displayed preview matches the persisted price after save.
@@ -3176,6 +3207,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const ownerOverride = productionOwnerOverrides[String(item.id)] ?? null;
                   const operationalItem = ownerOverride ? { ...(item as any), ...ownerOverride } : (item as any);
                   const workflowState = String(operationalItem.workflowState || "new");
+                  const showProofReturnWarning = proofWarningIds.includes(String(item.id)) &&
+                    Boolean((item as any).requiresProofApproval) && requiresExplicitProofReturn(workflowState);
+                  const currentReturnTarget = prepressReturnQueue.data?.find((queued) => queued.lineItemId === String(item.id));
                   const lineItemProofSummary = (item as any).proofSummary ?? null;
                   const showOpenProofingAction = shouldOfferProofingNavigation({
                     lineItemId: item.id,
@@ -3352,6 +3386,20 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   </Badge>
                                 </div>
                               ) : null}
+                              {showProofReturnWarning && (
+                                <div role="alert" className="mx-2 mb-2 rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-950">
+                                  <span className="font-semibold">Line {lineNumber}: Proofing is now required.</span>{" "}
+                                  {workflowState === "ready_for_prepress" || workflowState === "in_prepress"
+                                    ? "The work is already downstream. Return this line to Proofing before continuing production."
+                                    : "The work is already in Production. Return it to Prepress first, then an Owner or Admin can return this line to Proofing."}
+                                  {!isAdminOrOwner && <span> An Owner or Admin must perform the return.</span>}
+                                  {canReturnUpstream(currentReturnTarget, isAdminOrOwner) && (
+                                    <Button type="button" variant="outline" size="sm" className="ml-2" onClick={() => setProofReturnTarget(currentReturnTarget)}>
+                                      Return to Proofing
+                                    </Button>
+                                  )}
+                                </div>
+                              )}
                               <LineItemCard
                                 id={String(item.id)}
                                 itemKey={itemKey}
@@ -4727,6 +4775,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ReturnUpstreamDialog target={proofReturnTarget} destination={proofReturnTarget ? "proofing" : null} onClose={() => setProofReturnTarget(null)} />
     </Card>
     </Popover>
   );
