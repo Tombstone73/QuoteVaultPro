@@ -1,8 +1,9 @@
 import { describe, expect, test } from "@jest/globals";
 import type { OperationContext } from "../../src/application/operation";
-import { QuoteConversionApplicationService } from "../../src/modules/sales/quoteConversionApplication";
+import { QuoteConversionApplicationService, type QuoteArtworkConversionPort, type QuoteConversionTransactionRunner } from "../../src/modules/sales/quoteConversionApplication";
 import { OrderApplicationService, summarizeOrderTotals, type OrderReadModel } from "../../src/modules/sales/orderApplication";
 import { QuoteApplicationService, type QuoteReadModel } from "../../src/modules/sales/quoteApplication";
+import { composeSalesTax } from "../../src/modules/sales/taxComposition";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
 import { brandedId, currencyCode, decimalText, type OrganizationId } from "../../src/modules/shared/commercialValues";
 import type { QuoteCheckpoint, QuoteCurrentState, SalesLineSnapshot } from "../../src/modules/sales/contracts";
@@ -48,11 +49,18 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
   const checkpoints = new Map<string, QuoteCheckpoint>();
   const audits: string[] = [];
   let createdOrder: { orderId: string; lines: readonly SalesLineSnapshot[]; terms: { taxContextReference?: string } } | undefined;
-  let invoiceInput: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } } | undefined;
+  let invoiceInput: { termsCode?: string; salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } } | undefined;
   const routes: string[] = [];
   const conversionOperations = new Map<string, { id: string; resultJson: unknown | null }>();
   let productionRouteConfigured = !options.unroutable;
+  let currentTaxable = true;
+  let currentPaymentTerms = "net_30";
+  let taxabilityReads = 0;
+  let commercialPolicyReads = 0;
+  const acceptedArtwork = new Set<string>();
+  const artworkCarries: Parameters<QuoteArtworkConversionPort["carryAcceptedToOrder"]>[0][] = [];
   const products = {
+    resolveCurrentTaxability: async (org: OrganizationId) => { expect(org).toBe(organizationId); taxabilityReads++; return { taxable: currentTaxable }; },
     resolveActivePricingInput: async (input: { productId: string; quantity: number; selections?: Record<string, unknown>; dimensions?: { width: string; height: string; unit: "in" } }) => ({ ok: true as const, value: productInput(input.productId, input.quantity, input.selections, input.dimensions) }),
     resolveCurrentRoutingProduct: async (_org: OrganizationId, productId: string) => ({ productTypeId: brandedId<"ProductTypeId">(productId === "banner" ? "print-route" : "stock-no-route") }),
     resolveProductType: async (_org: OrganizationId, productTypeId: string) => ({ id: brandedId<"ProductTypeId">(productTypeId), routePolicy: productTypeId === "print-route" ? { kind: "route_required" as const, defaultRouteTemplateId: brandedId<"RouteTemplateId">("print-template") } : options.yardRouting === "unconfigured" ? { kind: "unconfigured" as const } : { kind: "no_route" as const } }),
@@ -76,6 +84,7 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
     },
   };
   const customers = {
+    getCommercialPolicy: async (org: OrganizationId, customerId: string) => { expect(org).toBe(organizationId); expect(customerId).toBe(customerContact.customerId); commercialPolicyReads++; return { paymentTerms: currentPaymentTerms }; },
     validateContactReference: async () => true,
     getPresentationIdentity: async () => ({ customerDisplayName: "Acme Signs", contactDisplayName: "Alex" }),
   };
@@ -89,7 +98,10 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
     audit: async (input: { event: { eventType: string } }) => { audits.push(input.event.eventType); },
     allocateNumber: async () => ({ kind: "quote" as const, core: 501n, display: "Q-501" }),
     create: async (input: { quoteId: QuoteCurrentState["quoteId"]; number: QuoteReadModel["number"]; customerContact: typeof customerContact; purchaseOrderNumber?: string; terms: { taxContextReference?: string }; lines: readonly SalesLineSnapshot[] }) => {
-      quoteRead = { quote: { quoteId: input.quoteId, organizationId, customerContact: input.customerContact, purchaseOrderNumber: input.purchaseOrderNumber, currency: usd, terms: input.terms, lines: input.lines, deliveryState: "not_sent", acceptanceState: "not_accepted", lifecycleState: "open" }, number: input.number, revision: "1", checkpoints: [] };
+      // The captured fixture uses a configured zero-rate receipt jurisdiction,
+      // not missing tax policy. Use the owner's calculator for document evidence.
+      const taxComposition = composeSalesTax({ lines: input.lines.map((line) => ({ lineId: line.lineId, amountCents: line.sellingLineAmount.cents, taxable: line.taxability!.taxable })), exemption: { exempt: false }, resolution: { status: "resolved", receiptLocation: { country: "US", region: "OR" }, jurisdiction: { jurisdictionId: "m5-zero-rate", name: "Fixture zero-rate jurisdiction", receiptLocation: { country: "US", region: "OR" }, rateBasisPoints: 0, active: true, homeBusiness: true } } });
+      quoteRead = { quote: { quoteId: input.quoteId, organizationId, customerContact: input.customerContact, purchaseOrderNumber: input.purchaseOrderNumber, currency: usd, terms: input.terms, lines: input.lines, taxComposition, deliveryState: "not_sent", acceptanceState: "not_accepted", lifecycleState: "open" }, number: input.number, revision: "1", checkpoints: [] };
     },
     read: async () => quoteRead ?? null,
     update: async () => false,
@@ -109,7 +121,7 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
     // inventing a physical requirement during commercial conversion.
     materialRequirements: { freeze: async () => undefined, hasFrozen: async () => false },
     billing: {
-      createDraftInvoice: async (input: { salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } }) => { invoiceInput = input; return { invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "created" as const, synchronizationVersion: "1" }; },
+      createDraftInvoice: async (input: { termsCode?: string; salesLines: readonly { productId: string; quantity: number; sellingLineAmount: { cents: number } }[]; taxInput: { taxContextReference?: string } }) => { invoiceInput = input; return { invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "created" as const, synchronizationVersion: "1" }; },
       synchronizeDraftInvoice: async () => ({ invoiceId: brandedId<"InvoiceId">("draft-invoice"), status: "unchanged" as const, synchronizationVersion: "1" }),
       readDraftForOrder: async () => null,
     },
@@ -147,7 +159,36 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
       if (operation) operation.resultJson = result;
     },
   };
-  return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService({ transaction: async (work) => work({ quote: conversionQuote as never, order: orderTx as never }) }, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), setProductionRouteConfigured(value: boolean) { productionRouteConfigured = value; }, get quoteRead() { return quoteRead; }, get createdOrder() { return createdOrder; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, audits };
+  // This captured fixture has no Artwork. Retain the empty acceptance checkpoint
+  // and validate the complete Sales line map at the Artwork operation boundary.
+  const artwork: QuoteArtworkConversionPort = {
+    snapshotAccepted: async (org, quoteId, checkpointId) => {
+      expect(org).toBe(organizationId);
+      expect(checkpoints.get(checkpointId)).toMatchObject({ kind: "quote_accepted", sourceDocument: { quoteId } });
+      acceptedArtwork.add(checkpointId);
+    },
+    carryAcceptedToOrder: async (input) => {
+      expect(acceptedArtwork.has(input.acceptanceCheckpointId)).toBe(true);
+      expect([...input.lineMap.keys()]).toEqual(quoteRead!.quote.lines.map((line) => line.lineId));
+      expect([...input.lineMap.values()]).toEqual(createdOrder!.lines.map((line) => line.lineId));
+      artworkCarries.push(input);
+    },
+  };
+  const conversionRunner: QuoteConversionTransactionRunner = {
+    transaction: async (action) => {
+      const before = { quoteRead, createdOrder, invoiceInput, checkpoints: new Map(checkpoints), operations: new Map([...conversionOperations].map(([key, value]) => [key, { ...value }])), acceptedArtwork: new Set(acceptedArtwork), routes: routes.length, audits: audits.length, artworkCarries: artworkCarries.length };
+      try { return await action({ quote: conversionQuote as never, order: orderTx as never, artwork }); }
+      catch (error) {
+        quoteRead = before.quoteRead; createdOrder = before.createdOrder; invoiceInput = before.invoiceInput;
+        checkpoints.clear(); before.checkpoints.forEach((value, key) => checkpoints.set(key, value));
+        conversionOperations.clear(); before.operations.forEach((value, key) => conversionOperations.set(key, value));
+        acceptedArtwork.clear(); before.acceptedArtwork.forEach((value) => acceptedArtwork.add(value));
+        routes.length = before.routes; audits.length = before.audits; artworkCarries.length = before.artworkCarries;
+        throw error;
+      }
+    },
+  };
+  return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService(conversionRunner, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), setCurrentPolicies() { currentTaxable = false; currentPaymentTerms = "due_on_receipt"; }, setProductionRouteConfigured(value: boolean) { productionRouteConfigured = value; }, get quoteRead() { return quoteRead; }, get createdOrder() { return createdOrder; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, get policyReads() { return { taxabilityReads, commercialPolicyReads }; }, audits, acceptedArtwork, artworkCarries };
 };
 
 describe("M5 commercial spine parity baseline", () => {
@@ -194,6 +235,7 @@ describe("M5 commercial spine parity baseline", () => {
     const sent = await runtime.quote.recordDelivered(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-1", providerMessageId: "fixture-message-1" });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
+    runtime.setCurrentPolicies();
     const accepted = await runtime.conversion.accept(context("quote-accept"), { businessRequestId: "quote-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw accepted.error;
@@ -201,6 +243,14 @@ describe("M5 commercial spine parity baseline", () => {
     expect(replay.ok).toBe(true);
     if (!replay.ok) throw replay.error;
     expect(replay.value.orderId).toBe(accepted.value.orderId);
+    expect(runtime.policyReads).toEqual({ taxabilityReads: 2, commercialPolicyReads: 1 });
+    expect(runtime.createdOrder?.terms).toEqual({ taxContextReference: "tax-context-m5", termsCode: "net_30" });
+    expect(runtime.invoiceInput?.termsCode).toBe("net_30");
+    expect(accepted.value.quote.quote.taxComposition).toMatchObject({ status: "resolved", taxableLineCents: 2438, taxCents: 0, finalTotalCents: 2438 });
+    expect(runtime.createdOrder?.lines.map((line) => line.taxability)).toEqual([{ taxable: true, source: "product" }, { taxable: true, source: "product" }]);
+    expect(runtime.artworkCarries).toHaveLength(1);
+    expect(runtime.artworkCarries[0]).toMatchObject({ organizationId, orderId: accepted.value.orderId });
+    expect(runtime.acceptedArtwork.size).toBe(1);
     const quote = accepted.value.quote.quote;
     const invoiceSubtotal = runtime.invoiceInput!.salesLines.reduce((total, line) => total + line.sellingLineAmount.cents, 0);
     const v2 = {
@@ -225,7 +275,7 @@ describe("M5 commercial spine parity baseline", () => {
     const parity = compareParity({ domain: "Commercial spine", fixture: "banner-and-yard-sign-conversion", v1: v1Captured, v2, normalization: { unorderedArrayPaths: ["$.productLines"] } });
     requireParity(parity);
     expect(parity.classification).toBe("PARITY");
-    expect(runtime.audits).toEqual(expect.arrayContaining(["quote_created", "quote_sent", "quote_accepted"]));
+    expect(runtime.audits).toEqual(["quote_created", "quote_sent", "quote_converted"]);
     expect(normalizeParityValue(v2)).toEqual(normalizeParityValue(v1Captured));
   });
 
@@ -275,6 +325,11 @@ describe("M5 commercial spine parity baseline", () => {
     expect(runtime.invoiceInput).toBeUndefined();
     expect(runtime.routes).toEqual([]);
     expect(runtime.quoteRead?.quote.acceptanceState).toBe("not_accepted");
+    expect(runtime.quoteRead?.revision).toBe(sent.value.quote.revision);
+    expect(runtime.quoteRead?.checkpoints.map((item) => item.kind)).toEqual(["quote_sent"]);
+    expect(runtime.acceptedArtwork.size).toBe(0);
+    expect(runtime.artworkCarries).toEqual([]);
+    expect(runtime.audits).toEqual(["quote_created", "quote_sent"]);
 
     // A sent Quote is not rewritten. Once a legitimate canonical route is
     // supplied, the same frozen Product Version can pass conversion.

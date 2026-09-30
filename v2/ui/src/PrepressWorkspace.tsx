@@ -38,8 +38,6 @@ export const PrepressWorkspace=({organizationId,sessionScope,canView,canArtworkA
   const complete=useMutation({mutationFn:(id:string)=>prepressApi.complete(organizationId,id,newBusinessRequestId()),onSuccess:refresh});
   const sendToProduction=useMutation({mutationFn:(id:string)=>prepressApi.sendToProduction(organizationId,id,newBusinessRequestId()),onSuccess:refresh});
   const sendManyToProduction=useMutation({mutationFn:(ids:readonly string[])=>prepressApi.sendManyToProduction(organizationId,ids,newBusinessRequestId()),onSuccess:async()=>{setSelectedUnitIds(new Set());await refresh();}});
-  if(!organizationId)return <section className="v2-prepress"><div className="v2-proof-empty">Enter an authenticated organization in Sales before opening Prepress.</div></section>;
-  if(!canView)return <section className="v2-prepress"><div className="v2-proof-empty">You do not have permission to view Prepress.</div></section>;
   const groups=new Map<string,PrepressQueueItem[]>();for(const entry of filtered)groups.set(entry.orderId,[...(groups.get(entry.orderId)??[]),entry]);
   const productionArtwork=item?.operational?.productionArtwork??[]; const suppliedArtwork=item?.operational?.sourceArtwork??[];
   const selectedUnit=requirement?.prepressUnits.find((unit)=>unit.reworkCycleId)||requirement?.prepressUnits[0]; const candidates=requirement?.artworkAssignmentIds??[];
@@ -52,6 +50,8 @@ export const PrepressWorkspace=({organizationId,sessionScope,canView,canArtworkA
   const selectableUnits=filtered.map(bulkUnit).filter((value):value is NonNullable<ReturnType<typeof bulkUnit>>=>Boolean(value)).slice(0,PREPRESS_BULK_HANDOFF_MAX);
   const allVisibleSelected=selectableUnits.length>0&&selectableUnits.every((entry)=>selectedUnitIds.has(entry.prepressUnitId));
   useEffect(()=>{if(selectVisibleRef.current)selectVisibleRef.current.indeterminate=selectedUnitIds.size>0&&!allVisibleSelected;},[selectedUnitIds,allVisibleSelected]);
+  if(!organizationId)return <section className="v2-prepress"><div className="v2-proof-empty">Enter an authenticated organization in Sales before opening Prepress.</div></section>;
+  if(!canView)return <section className="v2-prepress"><div className="v2-proof-empty">You do not have permission to view Prepress.</div></section>;
   const unavailable=Boolean((selectedLineId&&queue.isSuccess&&!item)||(prepressUnitId&&unit.isError)); const selectLine=(next:string)=>{setSelectedLineId(next);onSelectLine?.(next);};
   const clearSelection=()=>setSelectedUnitIds(new Set());
   const selectView=(next:PrepressQueueRequirementState)=>{setRequirementState(next);setPage(1);setSelectedLineId("");setSelectedRequirement("");clearSelection();};

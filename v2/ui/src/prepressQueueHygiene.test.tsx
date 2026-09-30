@@ -54,6 +54,9 @@ const search = async (value: string) => {
   });
 };
 try {
+  await render({ organizationId: "" });
+  assert.match(text(), /Enter an authenticated organization/);
+  assert.equal(reads.length, 0, "no queue requests without an organization");
   await render({ canView: false });
   assert.match(text(), /do not have permission/);
   assert.equal(reads.length, 0, "no queue requests without prepress.view");
@@ -63,6 +66,21 @@ try {
   assert.doesNotMatch(text(), /Historical unconfigured sign/);
   assert.ok(reads.some(url => url.searchParams.get("requirementState") === "configured"));
   assert.ok(reads.some(url => url.searchParams.get("requirementState") === "unconfigured"));
+
+  const authorizedReads = reads.length;
+  await render({ canView: false });
+  assert.match(text(), /do not have permission/);
+  assert.doesNotMatch(text(), /Configured sign|ORD-ACTIVE|Upload production Artwork/);
+  assert.equal(reads.length, authorizedReads, "permission revocation does not read or write");
+  await render();
+  assert.match(text(), /Configured sign/);
+  await render({ organizationId: "" });
+  assert.match(text(), /Enter an authenticated organization/);
+  assert.doesNotMatch(text(), /Configured sign|ORD-ACTIVE/);
+  assert.equal(reads.length, authorizedReads, "organization removal keeps queries disabled");
+  await render();
+  assert.match(text(), /Configured sign/);
+  assert.equal(reads.length, authorizedReads, "restoring authority consumes fresh cached data only");
 
   await search("unrelated");
   await settle(() => text().includes("No Prepress work matches this search."));

@@ -117,6 +117,7 @@ const sections: readonly NavigationSection[] = [
 ];
 
 const canSee = (item: NavigationItem, capabilities?: ShellCapabilities): boolean =>
+  item.page === "assistant" ? capabilities?.assistantUse === true :
   !item.requiresAny?.length ||
   !capabilities ||
   item.requiresAny.some((capability) => capabilities[capability] === true);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decryptEmailCredential, encryptEmailCredential } from "../../infrastructure/communications/emailCredentialCrypto.js";
+import { createEmailIntegrationCallback } from "../../src/interfaces/http/emailIntegrationRoutes.js";
 
 const root = new URL("../../..", import.meta.url);
 const source = (path: string) => readFileSync(new URL(path, root), "utf8");
@@ -32,10 +33,35 @@ const routes = source("v2/src/interfaces/http/emailIntegrationRoutes.ts");
 assert.match(routes, /capability:"communications\.configure"/u);
 assert.match(routes, /returnToSettings/u);
 assert.ok(!routes.includes("refreshToken"));
-const vercel = source("v2/ui/vercel.json");
-assert.ok(vercel.includes('"source": "/api/email/google/callback"'));
-assert.ok(vercel.includes('"destination": "https://api-dev.printershero.com/api/email/google/callback"'));
-assert.ok(vercel.indexOf("/api/email/google/callback") < vercel.indexOf("/:path*"));
+const vercel = JSON.parse(source("v2/ui/vercel.json"));
+const callback = "/api/email/google/callback";
+const rewrites = (vercel.routes ?? vercel.rewrites).filter((route: { src?: string; source?: string }) => route.src || route.source);
+const rewrite = rewrites.find((route: { src?: string; source?: string }) => new RegExp(route.src ?? `^${route.source!.replace(":path*", "(.*)")}$`).test(callback));
+assert.ok(rewrite, "Gmail callback must be routed before the SPA fallback");
+const origin = "https://callback-owner.example";
+const destination = callback.replace(new RegExp(rewrite.src ?? `^${rewrite.source.replace(":path*", "(.*)")}$`), rewrite.dest ?? rewrite.destination).replace("${V2_UI_API_ORIGIN}", origin);
+assert.equal(destination, `${origin}${callback}`, "callback must preserve its path at the configured API owner, not serve index.html");
+const state = `${Buffer.from(JSON.stringify({ organizationId: "org-a" })).toString("base64url")}.signed-state`;
+const principal = { kind: "staff", organizationId: "org-a", userId: "staff-a", authority: { membershipId: "member-a", capabilities: ["communications.configure"] } };
+const finishes: unknown[] = [];
+const redirects: unknown[] = [];
+let authenticated = true;
+const callbackOwner = createEmailIntegrationCallback({
+  integrations: { finishConnect: async (input: unknown) => { finishes.push(input); } },
+  identities: { authenticatedIdentity: async () => authenticated ? { sessionId: "session-a" } : null },
+  principals: { principal: async (_request: unknown, organizationId: string) => { assert.equal(organizationId, "org-a"); return principal; } },
+  publicWebOrigin: "https://workspace.example",
+} as any);
+await callbackOwner({ query: { state, code: "authorization-code" } } as any, { redirect: (status: number, location: string) => redirects.push({ status, location }) } as any);
+assert.deepEqual(finishes, [{ state, code: "authorization-code", principal, sessionId: "session-a" }]);
+assert.deepEqual(redirects, [{ status: 302, location: "https://workspace.example/settings?email=connected" }]);
+authenticated = false;
+await callbackOwner({ query: { state, code: "authorization-code" } } as any, { redirect: (status: number, location: string) => redirects.push({ status, location }) } as any);
+authenticated = true;
+principal.authority.capabilities = [];
+await callbackOwner({ query: { state, code: "authorization-code" } } as any, { redirect: (status: number, location: string) => redirects.push({ status, location }) } as any);
+assert.equal(finishes.length, 1, "an authenticated session and communications.configure are both required before binding Gmail");
+assert.deepEqual(redirects.slice(1), Array.from({ length: 2 }, () => ({ status: 302, location: "https://workspace.example/settings?email=error" })));
 const delivery = source("v2/infrastructure/sales/postgresQuoteDelivery.ts");
 assert.match(delivery, /this\.integrations\.requireReady\(context\.organizationId\)/u);
 assert.match(delivery, /const prepared = await this\.prepare\(context, input, integration\)/u);

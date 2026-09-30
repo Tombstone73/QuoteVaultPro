@@ -2,6 +2,57 @@ import { describe, expect, test } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { capabilityIds } from "../../src/authorization/capabilities";
+import { QuoteConversionApplicationService, createQuoteConversionTrace } from "../../src/modules/sales/quoteConversionApplication";
+import { OrderApplicationService } from "../../src/modules/sales/orderApplication";
+import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
+import { composeSalesTax } from "../../src/modules/sales/taxComposition";
+
+const conversionFixture = async (failAt?: string) => {
+  const organizationId = "contract-org";
+  const customerContact = { organizationId, customerId: "customer-a", contactId: "contact-a" };
+  const context: any = { organizationId, operationId: "operation-a", businessRequest: { id: "business-request-a", payloadFingerprint: "request-fingerprint" }, principal: { kind: "staff", organizationId, userId: "staff-a", authority: { membershipId: "member-a", capabilities: ["quote.edit", "quote.convert"] } } };
+  const resolvedConfiguration: any = { schemaVersion: 1, organizationId, productId: "product-a", pricingConfigurationId: "version-a", pricingConfigurationVersion: "1", pricingConfigurationContentHash: "sha256:version-a", quantity: 2, selections: {}, derivedFacts: {}, productFacts: { measurementMode: "quantity_only" } };
+  const pricingResult = await new V2PricingParityAdapter().calculate({ organizationId, resolvedConfiguration, sellableProduct: { organizationId, productId: "product-a", displayName: "Product", lifecycle: "active", requiresDimensions: false, pricingCurrency: "USD", pricingConfiguration: { id: "version-a", version: "1", contentHash: "sha256:version-a" } }, pricingContext: { channel: "staff", effectiveAt: "2026-09-01T00:00:00.000Z" }, rules: { base: { perPieceCents: 100 } } } as any);
+  const line: any = { lineId: "quote-line-a", productId: "product-a", description: "Product", quantity: 2, resolvedConfiguration, pricingResult, sellingPriceDecision: { kind: "calculated", pricingResultId: pricingResult.id, calculatedUnitAmount: pricingResult.calculatedUnitAmount, calculatedLineAmount: pricingResult.calculatedLineAmount, resultingUnitAmount: pricingResult.calculatedUnitAmount, resultingLineAmount: pricingResult.calculatedLineAmount, decidedAt: "2026-09-01T00:00:00.000Z" }, calculatedLineAmount: pricingResult.calculatedLineAmount, sellingLineAmount: pricingResult.calculatedLineAmount, taxability: { taxable: true, source: "product" } };
+  const taxComposition = composeSalesTax({ lines: [{ lineId: line.lineId, amountCents: line.sellingLineAmount.cents, taxable: true }], exemption: { exempt: false }, resolution: { status: "resolved", receiptLocation: { country: "US", region: "OR" }, jurisdiction: { jurisdictionId: "jurisdiction-a", name: "Zero rate", receiptLocation: { country: "US", region: "OR" }, rateBasisPoints: 0, active: true, homeBusiness: true } } });
+  const initial = { quote: { quoteId: "quote-a", organizationId, customerContact, currency: "USD", terms: {}, lines: [line], taxComposition, deliveryState: "sent", acceptanceState: "not_accepted", lifecycleState: "open" }, revision: "1", checkpoints: [] };
+  let state: any = { quoteRead: initial, checkpoints: [], orderRead: null, invoice: null, lineage: null, artwork: [] };
+  const calls: string[] = [], messages: string[] = [];
+  const step = (name: string) => { calls.push(name); if (name === failAt) throw Object.assign(new Error("secret customer email token SQL must not be logged"), { code: "23505", constraint: "contract_constraint" }); };
+  const customers = { validateContactReference: async () => true, getPresentationIdentity: async () => ({ customerDisplayName: "Customer", contactDisplayName: "Contact" }) };
+  const forbidden = async () => { throw new Error("Frozen conversion must not reprice or resolve mutable configuration"); };
+  const orderTx: any = {
+    customers, pricing: { calculate: forbidden }, products: { resolveActivePricingInput: forbidden, resolveOrderRoutability: async () => { step("routing_resolution"); return { kind: "routable", productName: "Product", routing: { kind: "no_route" } }; } },
+    allocateNumber: async () => ({ kind: "order", core: 1000n, display: "ORD-1000" }),
+    create: async (input: any) => { step("order_persistence"); state.orderRead = { order: { ...input, commercialState: "open" }, number: input.number, revision: "1" }; },
+    materialRequirements: { freeze: async () => { step("material_freeze"); } },
+    billing: { createDraftInvoice: async (input: any) => { step("draft_invoice"); state.invoice = input; return { status: "created", invoiceId: "invoice-a" }; } },
+    read: async () => state.orderRead, audit: async () => undefined, attribute: async () => undefined,
+  };
+  const quoteTx: any = {
+    customers,
+    reserve: async () => ({ kind: "new", request: { id: "request-a" } }), read: async () => state.quoteRead,
+    transition: async (input: any) => { step("acceptance_checkpoint"); state.checkpoints.push(input.checkpoint); state.quoteRead = { ...state.quoteRead, quote: { ...state.quoteRead.quote, acceptanceState: "accepted" }, revision: "2" }; return true; },
+    readCheckpoint: async (_org: string, _quote: string, id: string) => state.checkpoints.find((item: any) => item.checkpointId === id),
+    appendConvertedCheckpoint: async (input: any) => { step("conversion_link"); state.checkpoints.push(input.checkpoint); },
+    createConversionLineage: async (input: any) => { state.lineage = input; state.quoteRead = { ...state.quoteRead, quote: { ...state.quoteRead.quote, convertedOrderId: input.orderId } }; },
+    succeedConversion: async () => { step("durable_request_completed"); }, audit: async () => undefined, attribute: async () => undefined,
+  };
+  const artwork: any = { snapshotAccepted: async (...args: unknown[]) => { step("accepted_artwork_snapshot"); state.artwork.push(args); }, carryAcceptedToOrder: async (input: unknown) => { step("artwork_lineage"); state.artwork.push(input); } };
+  let transactions = 0;
+  const runner: any = { transaction: async (action: any) => {
+    transactions++; calls.push("begin"); const before = structuredClone(state);
+    try { const result = await action({ quote: quoteTx, order: orderTx, artwork }); calls.push("commit"); return result; }
+    catch (error) { state = before; calls.push("rollback"); throw error; }
+  } };
+  const orders = new OrderApplicationService({ transaction: async () => { throw new Error("Order core must reuse the conversion transaction"); } });
+  const service = new QuoteConversionApplicationService(runner, orders);
+  return { accept: () => service.accept(context, { quoteId: "quote-a", expectedRevision: "1", businessRequestId: "business-request-a" } as any, createQuoteConversionTrace({ requestId: "trace-a", sink: message => messages.push(message) })),
+    corruptAcceptedCheckpoint: (kind?: "quote_sent") => {
+      state.quoteRead = { ...initial, quote: { ...initial.quote, acceptanceState: "accepted" }, checkpoints: [{ kind: "quote_accepted", checkpointId: "missing-or-invalid" }] };
+      state.checkpoints = kind ? [{ kind, checkpointId: "missing-or-invalid" }] : [];
+    }, state: () => state, transactions: () => transactions, initial, line, calls, messages };
+};
 
 describe("M1.10 Quote to Order conversion contract", () => {
   test("uses the explicit conversion capability rather than order-create authority", () => {
@@ -9,27 +60,51 @@ describe("M1.10 Quote to Order conversion contract", () => {
   });
 
   test("acceptance creates the accepted checkpoint and canonical Order in one transaction without recalculating pricing", async () => {
-    const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
-    expect(source).toMatch(/async accept\(context: OperationContext, input: QuoteLifecycleInput\)/);
-    expect(source).toMatch(/createQuoteLifecycleCheckpoint\(current\.quote, "accept"/);
-    expect(source).toMatch(/snapshotAccepted\(context\.organizationId, input\.quoteId, checkpoint\.checkpointId\)/);
-    expect(source).toMatch(/convertAccepted\(\{ quote, order, artwork \}, context, reservation\.request\.id, accepted, checkpoint/);
-    expect(source).toMatch(/succeedConversion\(context\.organizationId, reservation\.request\.id/);
-    expect(source).toMatch(/source\.kind !== "quote_accepted"/);
-    expect(source).toMatch(/sourceToOrderLine\.set\(line\.lineId, orderLine\.lineId\)/);
-    expect(source).toMatch(/carryAcceptedToOrder/);
-    expect(source).toMatch(/createFromCommercialSnapshot/);
-    expect(source).not.toMatch(/\.pricing\.calculate\(/);
-    expect(source).not.toMatch(/resolveActivePricingInput/);
+    const fixture = await conversionFixture();
+    const result = await fixture.accept();
+    expect(result).toMatchObject({ ok: true });
+    expect(fixture.transactions()).toBe(1);
+    const state = fixture.state();
+    const [accepted, converted] = state.checkpoints;
+    expect(accepted).toMatchObject({ kind: "quote_accepted", sourceDocument: { quoteId: "quote-a" }, commercial: { lines: [fixture.line], taxComposition: fixture.initial.quote.taxComposition } });
+    expect(converted).toMatchObject({ kind: "quote_converted", sourceCheckpointId: accepted.checkpointId, commercial: accepted.commercial });
+    const orderLine = state.orderRead.order.lines[0];
+    expect(orderLine.lineId).not.toBe(fixture.line.lineId);
+    expect(orderLine.pricingResult).toEqual(fixture.line.pricingResult);
+    expect(orderLine.resolvedConfiguration).toEqual(fixture.line.resolvedConfiguration);
+    expect(state.orderRead.order.taxComposition).toEqual(accepted.commercial.taxComposition);
+    expect(state.invoice.salesLines[0].sellingLineAmount).toEqual(fixture.line.sellingLineAmount);
+    expect(state.artwork[0]).toEqual(["contract-org", "quote-a", accepted.checkpointId]);
+    expect(state.artwork[1].lineMap.get(fixture.line.lineId)).toBe(orderLine.lineId);
+    expect(state.lineage).toMatchObject({ sourceCheckpointId: accepted.checkpointId, convertedCheckpointId: converted.checkpointId, orderId: state.orderRead.order.orderId });
+    expect(result).toMatchObject({ ok: true, value: { quoteId: "quote-a", sourceCheckpointId: accepted.checkpointId, conversionCheckpointId: converted.checkpointId, orderId: state.orderRead.order.orderId, draftInvoiceId: "invoice-a", orderNumber: "ORD-1000", quote: state.quoteRead } });
+    if (result.ok) expect(Object.keys(result.value).sort()).toEqual(["conversionCheckpointId", "draftInvoiceId", "orderId", "orderNumber", "quote", "quoteId", "sourceCheckpointId"]);
+    expect(fixture.calls.indexOf("material_freeze")).toBeLessThan(fixture.calls.indexOf("draft_invoice"));
+    expect(fixture.calls.at(-1)).toBe("commit");
+    expect(fixture.messages).toContain("V2_QUOTE_CONVERSION_TRACE request=trace-a stage=transaction result=committed");
   });
 
   test("acceptance uses an opaque plaintext trace without changing its response contract", async () => {
-    const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "quoteConversionApplication.ts"), "utf8");
-    expect(source).toMatch(/V2_QUOTE_CONVERSION_TRACE request=\$\{requestId\} stage=\$\{stage\} result=\$\{result\}/);
-    expect(source).toMatch(/durableRequestClassification/);
-    expect(source).toMatch(/trace\?\.event\("transaction", "committed"\)/);
-    expect(source).toMatch(/trace\?\.event\("transaction", "rolled_back"\)/);
-    expect(source).not.toMatch(/V2_QUOTE_CONVERSION_TRACE[\s\S]{0,300}(customer|email|token|cookie|sql)/i);
+    const messages: string[] = [];
+    const trace = createQuoteConversionTrace({ requestId: "trace-a", sink: message => messages.push(message) });
+    trace.durableRequest("secret-business-request", "new");
+    trace.failure("draft_invoice", { code: "23505", constraint: "unsafe customer token SQL", message: "secret email cookie" });
+    expect(messages[0]).toMatch(/^V2_QUOTE_CONVERSION_TRACE request=trace-a stage=durable_request result=ok durable=[a-f0-9]{16}$/);
+    expect(messages[1]).toBe("V2_QUOTE_CONVERSION_TRACE request=trace-a stage=draft_invoice result=failed class=DATABASE_CONSTRAINT");
+    expect(messages.join("\n")).not.toMatch(/secret|customer|email|token|cookie|sql/i);
+    const brokenSink = createQuoteConversionTrace({ sink: () => { throw new Error("unavailable"); } });
+    expect(() => brokenSink.event("transaction", "rolled_back")).not.toThrow();
+  });
+
+  test("an already accepted Quote requires an accepted checkpoint, not missing or sent evidence", async () => {
+    for (const kind of [undefined, "quote_sent"] as const) {
+      const fixture = await conversionFixture();
+      fixture.corruptAcceptedCheckpoint(kind);
+      const before = structuredClone(fixture.state());
+      await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+      expect(fixture.state()).toEqual(before);
+      expect(fixture.calls).toEqual(["begin", "rollback"]);
+    }
   });
 
   test("accepted and converted commercial evidence remains pinned to the sent tax composition", async () => {
@@ -77,10 +152,18 @@ describe("M1.10 Quote to Order conversion contract", () => {
   });
 
   test("Order construction retains bounded persistence-stage diagnostics", async () => {
-    const source = await readFile(path.join(process.cwd(), "v2", "src", "modules", "sales", "orderApplication.ts"), "utf8");
-    expect(source).toMatch(/trace\?\.event\("routing_resolution", "started"\)/);
-    expect(source).toMatch(/trace\?\.event\("draft_invoice", "started"\)/);
-    expect(source).toMatch(/trace\?\.failure\(stage, cause\)/);
+    for (const stage of ["acceptance_checkpoint", "accepted_artwork_snapshot", "routing_resolution", "order_persistence", "material_freeze", "draft_invoice", "artwork_lineage", "conversion_link", "durable_request_completed"]) {
+      const fixture = await conversionFixture(stage);
+      await expect(fixture.accept()).resolves.toMatchObject({ ok: false });
+      expect(fixture.transactions()).toBe(1);
+      expect(fixture.state()).toMatchObject({ quoteRead: fixture.initial, checkpoints: [], orderRead: null, invoice: null, lineage: null, artwork: [] });
+      expect(fixture.calls.at(-1)).toBe("rollback");
+      expect(fixture.messages).toContain(`V2_QUOTE_CONVERSION_TRACE request=trace-a stage=${stage} result=failed class=DATABASE_CONSTRAINT constraint=contract_constraint detail=error_without_database_code`);
+      expect(fixture.messages).toContain("V2_QUOTE_CONVERSION_TRACE request=trace-a stage=transaction result=rolled_back");
+      expect(fixture.messages.some(message => /secret customer email token SQL/.test(message))).toBe(false);
+      expect(fixture.messages.some(message => /result=committed/.test(message))).toBe(false);
+      if (["routing_resolution", "draft_invoice"].includes(stage)) expect(fixture.messages).toContain(`V2_QUOTE_CONVERSION_TRACE request=trace-a stage=${stage} result=started`);
+    }
   });
 
   test("Quote send readiness and send both reject unroutable production lines before a document freeze or provider preparation", async () => {

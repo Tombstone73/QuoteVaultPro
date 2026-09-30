@@ -4,13 +4,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CustomerWorkspace } from "./CustomerWorkspace";
+import type { CustomerCatalogPage, CustomerWorkspaceRead } from "./api";
 
-const listClient = new QueryClient();
+const listClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
 listClient.setQueryData(["v2", "scope-a", "org-a", "customers", "catalog", "", ""], {
   items: [{ customerId: "customer-a", displayName: "Acme", companyName: "Acme Printing", email: "billing@acme.test", phone: "555-0100", primaryContact: { contactId: "contact-a", displayName: "Ada Lovelace", email: "ada@acme.test", phone: "555-0111", primary: true } }],
   totalMatching: 259,
   nextCursor: "next-page",
-});
+} satisfies CustomerCatalogPage);
 const list = renderToStaticMarkup(<QueryClientProvider client={listClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 assert.match(list, /Customers/);
 assert.match(list, /Acme/);
@@ -18,17 +19,22 @@ assert.match(list, /Ada Lovelace/);
 assert.match(list, /259 customer accounts/);
 assert.match(list, /1 shown · 259 matching/);
 assert.match(list, /Next/);
+assert.match(list, /<button type="button">Next<\/button>/, "a next cursor enables pagination");
 assert.match(list, /New Customer/);
 assert.doesNotMatch(list, /customer-a/);
 assert.doesNotMatch(list, /contact-a/);
 
 const detailClient = new QueryClient();
-detailClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-a"], {
+const customerDetail = {
   customerId: "customer-a", displayName: "Acme", presentation: {
     customerDisplayName: "Acme", companyName: "Acme Printing", contactDisplayName: "Ada Lovelace", email: "billing@acme.test", phone: "555-0100",
     billingAddress: { lines: ["1 Main Street"], city: "Boston", region: "MA", postalCode: "02110" },
-  }, contacts: [{ contactId: "contact-a", displayName: "Ada Lovelace", email: "ada@acme.test", phone: "555-0111", primary: true }],
-});
+  }, contacts: [{ contactId: "contact-a", displayName: "Ada Lovelace", email: "ada@acme.test", phone: "555-0111", primary: true, billing: true, status: "active", revision: "1" }],
+  revision: "1", editable: { companyName: "Acme Printing" },
+  commercial: { paymentTerms: "net_30", creditLimitCents: 100000, taxExempt: false, openReceivableCents: 25000, availableCreditCents: 75000 },
+  internalNotes: [], contactReadiness: { status: "ready", reasons: [] },
+} satisfies CustomerWorkspaceRead;
+detailClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-a"], customerDetail);
 detailClient.setQueryData(["v2", "scope-a", "org-a", "customers", "activity", "customer-a", ""], {
   items: [{ kind: "order", entityId: "order-a", occurredAt: "2026-09-07T12:00:00.000Z", title: "Order O-100", detail: "open" }], totalMatching: 1,
 });
@@ -38,16 +44,22 @@ assert.match(detail, /href="\/orders\/order-a"/, "Activity must link to the owni
 assert.doesNotMatch(detail, /customer-a/);
 assert.doesNotMatch(detail, /contact-a/);
 assert.match(detail, /Add Contact/);
-assert.doesNotMatch(detail, /Available Credit|Log Activity|Account note|customer-keyed read projection is not available yet/);
+for (const text of ["Commercial account", "net 30", "$1,000.00", "$250.00", "$750.00", "Taxable"]) assert.ok(detail.includes(text), `commercial projection must render ${text}`);
+assert.doesNotMatch(detail, /Log Activity|Account note|customer-keyed read projection is not available yet/);
 
 const unlinkedPrimaryClient = new QueryClient();
 unlinkedPrimaryClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-b"], {
   customerId: "customer-b", displayName: "No Primary", presentation: { customerDisplayName: "No Primary", companyName: "No Primary" },
-  contacts: [{ contactId: "contact-b", displayName: "Unmarked Contact", primary: false }],
-});
+  contacts: [{ contactId: "contact-b", displayName: "Unmarked Contact", primary: false, billing: false, status: "active", revision: "1" }],
+  revision: "1", editable: { companyName: "No Primary" },
+  commercial: { paymentTerms: "due_on_receipt", taxExempt: true, taxExemptReason: "Resale certificate", openReceivableCents: 0 },
+  internalNotes: [], contactReadiness: { status: "needs_attention", reasons: ["no_primary_contact"] },
+} satisfies CustomerWorkspaceRead);
 const unlinkedPrimary = renderToStaticMarkup(<QueryClientProvider client={unlinkedPrimaryClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-b" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 assert.match(unlinkedPrimary, /<dt>Primary Contact<\/dt><dd>—<\/dd>/);
 assert.doesNotMatch(unlinkedPrimary, /<em>Primary<\/em>/);
+assert.match(unlinkedPrimary, /Not configured/);
+assert.match(unlinkedPrimary, /Exempt · Resale certificate/);
 
 const commercialClient = new QueryClient();
 commercialClient.setQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-a"], detailClient.getQueryData(["v2", "scope-a", "org-a", "customers", "detail", "customer-a"]));
@@ -57,6 +69,23 @@ commercialClient.setQueryData(["v2", "scope-a", "org-a", "customer-commercial", 
 commercialClient.setQueryData(["v2", "scope-a", "org-a", "customer-commercial", "products", ""], { items: [{ productId: "product-a", displayName: "Rigid Sign", lifecycle: "active", measurementMode: "quantity_only", pricingSummary: "Per piece", hasDraft: false }], page: 1, pageSize: 50, total: 1, hasMore: false });
 const commercial = renderToStaticMarkup(<QueryClientProvider client={commercialClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-a" canView canCreate canManageCommercial openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
 for (const text of ["Portal catalog", "Portal enabled", "Save pricing agreement", "$1.25 per unit"]) assert.match(commercial, new RegExp(text.replace(/[$]/g, "\\$")));
+
+const emptyClient = new QueryClient();
+emptyClient.setQueryData(["v2", "scope-a", "org-a", "customers", "catalog", "", ""], { items: [], totalMatching: 0 } satisfies CustomerCatalogPage);
+const empty = renderToStaticMarkup(<QueryClientProvider client={emptyClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="" canView canCreate={false} openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+assert.match(empty, /0 shown · 0 matching/);
+assert.match(empty, /No Customers are available/);
+assert.match(empty, /<button type="button" disabled="">Next<\/button>/);
+assert.doesNotMatch(empty, /New Customer/);
+const denied = renderToStaticMarkup(<QueryClientProvider client={detailClient}><CustomerWorkspace organizationId="org-a" sessionScope="scope-a" customerId="customer-a" canView={false} canCreate canManageCommercial openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+assert.match(denied, /do not have permission to view Customers/);
+assert.doesNotMatch(denied, /Acme|Ada Lovelace|Commercial account|Portal catalog/);
+for (const [organizationId, sessionScope] of [["org-b", "scope-a"], ["org-a", "scope-b"]]) {
+  const isolated = renderToStaticMarkup(<QueryClientProvider client={detailClient}><CustomerWorkspace organizationId={organizationId} sessionScope={sessionScope} customerId="customer-a" canView canCreate openCustomer={() => {}} openContact={() => {}} backToCatalog={() => {}} /></QueryClientProvider>);
+  assert.match(isolated, /Loading Customer/);
+  assert.doesNotMatch(isolated, /Acme|Ada Lovelace|Commercial account/);
+}
+for (const client of [listClient, detailClient, unlinkedPrimaryClient, commercialClient, emptyClient]) client.clear();
 
 const workspaceSource = readFileSync(new URL("./CustomerWorkspace.tsx", import.meta.url), "utf8");
 assert.match(workspaceSource, /"catalog", search, cursor/, "Customer page/search cursors must have distinct React Query cache keys");

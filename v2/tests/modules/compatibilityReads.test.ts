@@ -52,13 +52,16 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(JSON.stringify(identity)).not.toMatch(/quickbooks|credit|notes/i);
   });
 
-  test("PBV2 resolution applies defaults, rejects hidden/unknown selections, and preserves only resolved facts", () => {
+  test("PBV2 resolution applies defaults, clears hidden selections, and preserves only resolved facts", () => {
     const normal = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: tree, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 10 });
     expect(normal.ok && normal.value.resolvedConfiguration.selections).toEqual({ sides: "single" });
     expect(normal.ok && normal.value.resolvedConfiguration.dimensions).toMatchObject({ width: "24", height: "18" });
-    expect(normal.ok && normal.value.rules.tiers?.[0]).toMatchObject({ id: "q10", minQuantity: 10, perSquareFootCents: "90" });
+    expect(normal.ok && normal.value.rules.tierFamilies).toEqual([{ basis: "quantity", tiers: [{ id: "q10", minQuantity: 10, perSquareFootCents: "90" }] }]);
+    expect(normal.ok && normal.value.rules.tiers).toBeUndefined();
     const injected = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: null, treeJson: tree, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 1, selections: { hidden: "x" } });
-    expect(injected).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(injected.ok).toBe(true);
+    expect(injected.ok && injected.value.resolvedConfiguration.selections).toEqual({ sides: "single" });
+    expect(injected.ok && injected.value.rules.optionImpacts).toBeUndefined();
     expect(JSON.stringify(normal)).not.toContain("treeJson");
   });
 
@@ -73,7 +76,7 @@ describe("M1.3 customer/product compatibility reads", () => {
     };
     const resolved = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: "2026-08-15T00:00:00.000Z", treeJson: pricedTree, productMeasurementMode: "dimensions_required", productPricingProfileKey: "qty", formula: null }, { organizationId: org, productId, quantity: 10 });
     expect(resolved.ok && resolved.value.rules.optionImpacts).toMatchObject([{ selectionKey: "sides", whenValue: "single", kind: "fixed", amount: 25 }]);
-    expect(resolved.ok && resolved.value.rules.tiers?.[0]).toMatchObject({ minimumChargeCents: 1000 });
+    expect(resolved.ok && resolved.value.rules.tierFamilies).toEqual([{ basis: "quantity", tiers: [{ id: "q10", minQuantity: 10, perPieceCents: 90, minimumChargeCents: 1000 }] }]);
     if (!resolved.ok) return;
     const price = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
     expect(price.calculatedLineAmount.cents).toBe(1000);
@@ -81,7 +84,7 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(JSON.stringify(resolved.value)).not.toContain("treeJson");
   });
 
-  test("PBV2 option pricing skips absent optional values but preserves defaults, required validation, explicit impacts, and invalid-value rejection", () => {
+  test("PBV2 option pricing skips absent or invalid optional values but preserves defaults, required validation, and explicit impacts", () => {
     const optionalTree = {
       ...tree,
       rootNodeIds: ["optional", "multi", "required", "computed"],
@@ -94,13 +97,56 @@ describe("M1.3 customer/product compatibility reads", () => {
     };
     const source = { id: "tree-optional", schemaVersion: 2, publishedAt: null, treeJson: optionalTree, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: null };
     const missingRequired = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1 });
-    expect(missingRequired).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR", publicMessage: "Required selection 'required' is missing." } });
+    expect(missingRequired).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR", publicMessage: "required is required for the current selections." } });
     const absentOptional = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: "ok", multi: [] } });
     expect(absentOptional.ok && absentOptional.value.rules.optionImpacts).toBeUndefined();
     const explicit = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: "ok", optional: "yes" } });
     expect(explicit.ok && explicit.value.rules.optionImpacts).toMatchObject([{ selectionKey: "optional", kind: "fixed", amount: 10 }, { selectionKey: "optional", whenValue: "yes", kind: "fixed", amount: 25 }]);
     const invalid = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: "ok", optional: { invalid: true } as any } });
-    expect(invalid).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(invalid.ok).toBe(true);
+    expect(invalid.ok && invalid.value.resolvedConfiguration.selections).toEqual({ required: "ok" });
+    expect(invalid.ok && invalid.value.rules.optionImpacts).toBeUndefined();
+    const invalidRequired = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { required: { invalid: true } as any } });
+    expect(invalidRequired).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR", publicMessage: "required is required for the current selections." } });
+  });
+
+  test("required selections follow visibility and clear hidden or unknown answers instead of pricing them", () => {
+    const conditionalTree = {
+      ...tree,
+      nodes: { ...tree.nodes, hidden: { ...tree.nodes.hidden, input: { ...tree.nodes.hidden.input, required: true }, choices: [{ value: "x", label: "X", priceDeltaCents: 25 }] } },
+    };
+    const source = { id: "tree-a", schemaVersion: 2, publishedAt: null, treeJson: conditionalTree, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: null };
+    const hidden = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1 });
+    expect(hidden.ok).toBe(true);
+    expect(hidden.ok && hidden.value.resolvedConfiguration.selections).toEqual({ sides: "single" });
+    expect(hidden.ok && hidden.value.rules.optionImpacts).toBeUndefined();
+    const missing = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { sides: "double" } });
+    expect(missing).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR", publicMessage: "hidden is required for the current selections." } });
+    const selected = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections: { sides: "double", hidden: "x" } });
+    expect(selected.ok).toBe(true);
+    expect(selected.ok && selected.value.resolvedConfiguration.selections).toEqual({ sides: "double", hidden: "x" });
+    expect(selected.ok && selected.value.rules.optionImpacts).toEqual([{ id: "hidden:x:delta", selectionKey: "hidden", whenValue: "x", kind: "fixed", amount: 25 }]);
+    for (const selections of [{ sides: "single", hidden: "x" }, { sides: "single", unknown: "x" }]) {
+      const cleared = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 1, selections });
+      expect(cleared.ok).toBe(true);
+      expect(cleared.ok && cleared.value.resolvedConfiguration.selections).toEqual({ sides: "single" });
+      expect(cleared.ok && cleared.value.rules.optionImpacts).toBeUndefined();
+    }
+  });
+
+  test("quantity and square-foot tier families retain independent schedules through Pricing", async () => {
+    const source = { id: "tree-a", schemaVersion: 2, publishedAt: product.pricingConfiguration.version, treeJson: { ...tree, meta: { ...tree.meta, pricingV2: { ...tree.meta.pricingV2, sqftTiers: [{ id: "area-30", minSqft: 30, perSqftCents: 80 }] } } }, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: null };
+    const resolved = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 10 });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.value.rules.tierFamilies).toEqual([
+      { basis: "quantity", tiers: [{ id: "q10", minQuantity: 10, perSquareFootCents: "90" }] },
+      { basis: "square_foot", tiers: [{ id: "area-30", minQuantity: 30, perSquareFootCents: "80" }] },
+    ]);
+    expect(resolved.value.rules.tiers).toBeUndefined();
+    const price = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
+    expect(price.calculatedLineAmount.cents).toBe(2400);
+    expect(price.tier).toEqual({ source: "square_foot", basisValue: "30", selectedTierId: "area-30", selectedRate: "80", fallbackApplied: false });
   });
 
   test("compatible Product read resolves to the M1.2 Pricing contract without any commercial write", async () => {
@@ -166,8 +212,7 @@ describe("M1.3 customer/product compatibility reads", () => {
       treeJson: {
         ...tree,
         meta: {
-          ...tree.meta,
-          ...(allowRotation === undefined ? {} : { pricingV2: { ...tree.meta.pricingV2, allowRotation } }),
+          pricingV2: { base: { perSqftCents: 137.5 }, ...(allowRotation === undefined ? {} : { allowRotation }) },
           ...(legacy === undefined ? {} : { formulaVariables: { allow_rotation: legacy } }),
           pricingFormula: undefined,
         },
@@ -190,13 +235,15 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(legacyOn.ok).toBe(true);
     expect(productLegacyOn.ok).toBe(true);
     if (!canonicalOff.ok || !canonicalOn.ok || !legacyOn.ok || !productLegacyOn.ok) return;
+    expect(canonicalOff.value.resolvedConfiguration.dimensions).toEqual({ width: "24", height: "36", unit: "in" });
+    expect(canonicalOn.value.resolvedConfiguration.dimensions).toEqual({ width: "24", height: "36", unit: "in" });
     expect(canonicalOff.value.nestingEstimate?.facts).toMatchObject({ allowRotation: false, allowRotationSource: "product_version.pricingV2.allowRotation", totalSheetCount: 2 });
     expect(canonicalOn.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, allowRotationSource: "product_version.pricingV2.allowRotation", totalSheetCount: 1 });
     expect(legacyOn.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, allowRotationSource: "legacy.formulaVariables.allow_rotation", totalSheetCount: 1 });
     expect(productLegacyOn.value.nestingEstimate?.facts).toMatchObject({ allowRotation: true, allowRotationSource: "legacy.product.pricing_profile_config.allowRotation", totalSheetCount: 1 });
     const calculate = (resolved: ResolvedPricingInput) => new V2PricingParityAdapter().calculate({
       organizationId: org,
-      sellableProduct: { ...resolved.sellableProduct, pricingConfiguration: { ...resolved.sellableProduct.pricingConfiguration, contentHash: resolved.resolvedConfiguration.pricingConfigurationContentHash } },
+      sellableProduct: { ...resolved.sellableProduct, pricingConfiguration: { ...resolved.sellableProduct.pricingConfiguration, version: resolved.resolvedConfiguration.pricingConfigurationVersion, contentHash: resolved.resolvedConfiguration.pricingConfigurationContentHash } },
       resolvedConfiguration: resolved.resolvedConfiguration,
       rules: resolved.rules,
       nestingEstimate: resolved.nestingEstimate,
@@ -205,6 +252,17 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect((await calculate(canonicalOff.value)).calculatedLineAmount.cents).toBe(8800);
     expect((await calculate(canonicalOn.value)).calculatedLineAmount.cents).toBe(4400);
     expect((await calculate(legacyOn.value)).calculatedLineAmount.cents).toBe(4400);
+    expect((await calculate(productLegacyOn.value)).calculatedLineAmount.cents).toBe(4400);
+    const fixedSource = sourceFor(false, true);
+    const fixedTreeSource = { ...fixedSource, treeJson: { ...fixedSource.treeJson, meta: { ...fixedSource.treeJson.meta, fixedDimensions: tree.meta.fixedDimensions } } };
+    const fixed = resolve(fixedTreeSource);
+    expect(fixed.ok).toBe(true);
+    if (!fixed.ok) return;
+    expect(fixed.value.resolvedConfiguration.dimensions).toEqual({ width: "24", height: "18", unit: "in" });
+    expect(fixed.value.nestingEstimate?.facts).toMatchObject({ allowRotation: false, totalSheetCount: 1 });
+    const fixedPrice = await calculate(fixed.value);
+    expect(fixedPrice.calculatedLineAmount.cents).toBe(4400);
+    expect(fixedPrice.calculationDimensions).toEqual({ source: { width: "24", height: "18", unit: "in" }, widthIn: "24", heightIn: "18" });
   });
 
   test("published computed-sheet matrix pricing supplies one canonical sheet estimate to Pricing", async () => {
@@ -249,8 +307,24 @@ describe("M1.3 customer/product compatibility reads", () => {
     expect(blankFormula).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
     const arbitraryFunction = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: null, treeJson: { ...tree, meta: { ...tree.meta, pricingFormula: "sqrt(sqft)" } }, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 1 });
     expect(arbitraryFunction).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
-    const unsupportedImpact = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: null, treeJson: { ...tree, nodes: { ...tree.nodes, sides: { ...tree.nodes.sides, choices: [{ value: "single", label: "Single", pricingImpact: [{ mode: "addFormula", formula: "1" }] }] } } }, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 1 });
+    const unsupportedImpact = resolveActivePbv2PricingInput(product, { id: "tree-a", schemaVersion: 2, publishedAt: null, treeJson: { ...tree, nodes: { ...tree.nodes, sides: { ...tree.nodes.sides, choices: [{ value: "single", label: "Single", pricingImpact: [{ mode: "addPerUnit", unit: "perUnsupportedUnit", centsPerUnit: 100 }] }] } } }, productMeasurementMode: "dimensions_required", productPricingProfileKey: "default", formula: null }, { organizationId: org, productId, quantity: 1 });
     expect(unsupportedImpact).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+  });
+
+  test("selected addFormula impacts map to dollar-valued Pricing output and empty expressions fail closed", async () => {
+    const source = { id: "tree-a", schemaVersion: 2, publishedAt: product.pricingConfiguration.version, treeJson: { ...tree, nodes: { ...tree.nodes, sides: { ...tree.nodes.sides, choices: [{ value: "single", label: "Single", pricingImpact: [{ mode: "addFormula" as const, formula: "max(q, 3) * 1.25" }] }] } } }, productMeasurementMode: "dimensions_required" as const, productPricingProfileKey: "default", formula: null };
+    const resolved = resolveActivePbv2PricingInput(product, source, { organizationId: org, productId, quantity: 2 });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.value.rules.optionImpacts).toEqual([{ id: "sides:single:0", selectionKey: "sides", whenValue: "single", kind: "formula", formula: "max(q, 3) * 1.25" }]);
+    const price = await new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...resolved.value.sellableProduct, pricingConfiguration: { ...resolved.value.sellableProduct.pricingConfiguration, contentHash: resolved.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: resolved.value.resolvedConfiguration, rules: resolved.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } });
+    expect(price.calculatedLineAmount.cents).toBe(975);
+    expect(price.optionImpacts).toEqual([{ selectionKey: "sides", effectId: "sides:single:0", kind: "formula", amount: { currency: "USD", cents: 375 }, basis: { formula: "max(q, 3) * 1.25" } }]);
+    const emptySource = { ...source, treeJson: { ...source.treeJson, nodes: { ...source.treeJson.nodes, sides: { ...source.treeJson.nodes.sides, choices: [{ value: "single", label: "Single", pricingImpact: [{ mode: "addFormula", formula: " " }] }] } } } };
+    const empty = resolveActivePbv2PricingInput(product, emptySource, { organizationId: org, productId, quantity: 2 });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) return;
+    await expect(new V2PricingParityAdapter().calculate({ organizationId: org, sellableProduct: { ...empty.value.sellableProduct, pricingConfiguration: { ...empty.value.sellableProduct.pricingConfiguration, contentHash: empty.value.resolvedConfiguration.pricingConfigurationContentHash } }, resolvedConfiguration: empty.value.resolvedConfiguration, rules: empty.value.rules, pricingContext: { channel: "staff", effectiveAt: "2026-08-15T00:00:00.000Z" } })).rejects.toThrow("Option pricing formula is empty.");
   });
 
   test("normal Product query binds pointer, tenant, Product, ACTIVE tree, and active formula", async () => {

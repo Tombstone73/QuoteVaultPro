@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import type { OperationContext } from "../../src/application/operation";
-import { FulfillmentApplicationService } from "../../src/modules/fulfillment/fulfillmentApplication";
+import { FulfillmentApplicationService, type FulfillmentTransaction } from "../../src/modules/fulfillment/fulfillmentApplication";
 import type { FulfillmentAvailability, FulfillmentHandoff, FulfillmentHandoffLine } from "../../src/modules/fulfillment/contracts";
 import { ProductionApplicationService } from "../../src/modules/production/productionApplication";
 import type { ProductionAttempt, ProductionWork, ProductionWorkProjection } from "../../src/modules/production/contracts";
@@ -30,7 +30,9 @@ const productionRuntime = () => {
     if (!work) throw new Error("Work is not open.");
     const completedGoodQuantity = attempts.filter((attempt) => attempt.completedAt).reduce((total, attempt) => total + attempt.goodQuantity, 0);
     const recordedGoodQuantity = attempts.reduce((total, attempt) => total + attempt.goodQuantity, 0);
-    return { work, attempts: [...attempts], completedGoodQuantity, recordedGoodQuantity, remainingGoodQuantity: Math.max(0, work.orderedQuantity - recordedGoodQuantity), activeAttempt: attempts.find((attempt) => !attempt.completedAt), unitQuantitySatisfied: completedGoodQuantity >= work.orderedQuantity };
+    const activeAttempt = attempts.find((attempt) => !attempt.completedAt);
+    const unitQuantitySatisfied = completedGoodQuantity >= work.orderedQuantity;
+    return { work, attempts: [...attempts], completedGoodQuantity, recordedGoodQuantity, rejectedGoodQuantity: 0, usableGoodQuantity: completedGoodQuantity, remainingGoodQuantity: Math.max(0, work.orderedQuantity - recordedGoodQuantity), activeAttempt, unitQuantitySatisfied, state: unitQuantitySatisfied ? "complete" : activeAttempt ? "active" : "ready", exceptionEvents: [], outputDispositions: [] };
   };
   const tx = {
     reserve: async () => ({ kind: "new" as const, request: { id: "operation", resultJson: null } }),
@@ -80,6 +82,8 @@ const fulfillmentRuntime = () => {
     ["line-produced-context", { ordered: 100, pickup: 20, shipment: 0, produced: 40 }],
   ]);
   const handoffs = new Map<string, FulfillmentHandoff>();
+  const allocations = new Map<string, readonly FulfillmentHandoffLine[]>();
+  const snapshots = new Map<string, Readonly<{ method: "pickup" | "shipment"; lines: readonly Readonly<{ orderLineId: string; quantity: number }>[] }>>();
   const availability = (): readonly FulfillmentAvailability[] => [...quantities.entries()].map(([id, value]) => ({ orderId, orderLineId: brandedId<"OrderLineId">(id), orderedQuantity: value.ordered, completedPickupQuantity: value.pickup, completedShipmentQuantity: value.shipment, completedFulfillmentQuantity: value.pickup + value.shipment, completedProductionQuantity: value.produced, availableFulfillmentQuantity: value.produced - value.pickup - value.shipment, remainingProductionQuantity: value.ordered - value.produced, remainingFulfillmentQuantity: value.ordered - value.pickup - value.shipment }));
   const scoped = (lineIds?: readonly string[]) => ({ customerId: "customer-operational", contactId: "contact-operational", availability: lineIds ? availability().filter((item) => lineIds.includes(item.orderLineId)) : availability() });
   const tx = {
@@ -96,14 +100,22 @@ const fulfillmentRuntime = () => {
     },
     createAllocations: async (input: { handoffId: string; allocations: readonly { id: FulfillmentHandoffLine["handoffLineId"]; orderLineId: string; quantity: number }[] }) => {
       const handoff = handoffs.get(input.handoffId)!;
-      return input.allocations.map((allocation) => {
+      const lines = input.allocations.map((allocation) => {
         const current = quantities.get(allocation.orderLineId)!;
         if (handoff.method === "pickup") current.pickup += allocation.quantity; else current.shipment += allocation.quantity;
         return { handoffLineId: allocation.id, organizationId, handoffId: handoff.handoffId, orderId, orderLineId: brandedId<"OrderLineId">(allocation.orderLineId), quantity: allocation.quantity };
       });
+      allocations.set(input.handoffId, lines);
+      return lines;
+    },
+    writeDocumentSnapshot: async (input: Parameters<FulfillmentTransaction["writeDocumentSnapshot"]>[0]) => {
+      const handoff = handoffs.get(input.handoffId);
+      const lines = allocations.get(input.handoffId);
+      if (input.organizationId !== organizationId || !handoff || !lines?.length || snapshots.has(input.handoffId)) throw new Error("A unique scoped handoff with allocations is required for its document snapshot.");
+      snapshots.set(input.handoffId, { method: handoff.method, lines: lines.map(({ orderLineId, quantity }) => ({ orderLineId, quantity })) });
     },
   };
-  return { service: new FulfillmentApplicationService({ transaction: async (work) => work(tx as never) }), availability };
+  return { service: new FulfillmentApplicationService({ transaction: async (work) => work(tx as never) }), availability, handoffs, snapshots };
 };
 
 describe("M5 operational spine parity baseline", () => {
@@ -135,12 +147,27 @@ describe("M5 operational spine parity baseline", () => {
     expect(nextUp.every((result) => result.ok && result.value[0]?.attempts.length === 0)).toBe(true);
     const first = await runtime.service.start(context("start-flatbed"), { businessRequestId: "start-flatbed", productionWorkId: opened.value.work.productionWorkId, stationKey: "flatbed", kind: "initial" });
     expect(first.ok).toBe(true); if (!first.ok || !first.value.attempt) throw new Error("Initial attempt was not created.");
-    await runtime.service.recordOutput(context("output-40"), { businessRequestId: "output-40", productionAttemptId: first.value.attempt.productionAttemptId, goodQuantityDelta: 40 });
-    await runtime.service.complete(context("complete-flatbed"), { businessRequestId: "complete-flatbed", productionAttemptId: first.value.attempt.productionAttemptId });
+    expect(runtime.projection().state).toBe("active");
+    const excess = await runtime.service.recordOutput(context("output-excess"), { businessRequestId: "output-excess", productionAttemptId: first.value.attempt.productionAttemptId, goodQuantityDelta: 101 });
+    expect(excess).toMatchObject({ ok: false, error: { code: "CONFLICT", message: "Good output exceeds the remaining required Production quantity." } });
+    expect(runtime.projection()).toMatchObject({ recordedGoodQuantity: 0, remainingGoodQuantity: 100 });
+    const output40 = await runtime.service.recordOutput(context("output-40"), { businessRequestId: "output-40", productionAttemptId: first.value.attempt.productionAttemptId, goodQuantityDelta: 40 });
+    expect(output40.ok).toBe(true); if (!output40.ok) throw output40.error;
+    expect(runtime.projection()).toMatchObject({ recordedGoodQuantity: 40, completedGoodQuantity: 0, remainingGoodQuantity: 60, unitQuantitySatisfied: false });
+    const complete40 = await runtime.service.complete(context("complete-flatbed"), { businessRequestId: "complete-flatbed", productionAttemptId: first.value.attempt.productionAttemptId });
+    expect(complete40.ok).toBe(true); if (!complete40.ok) throw complete40.error;
+    const originalAttempt = { ...runtime.attempts[0]! };
+    const immutable = await runtime.service.recordOutput(context("completed-output"), { businessRequestId: "completed-output", productionAttemptId: first.value.attempt.productionAttemptId, goodQuantityDelta: 1 });
+    expect(immutable).toMatchObject({ ok: false, error: { code: "CONFLICT", message: "Completed Production attempts are immutable." } });
+    expect(runtime.projection()).toMatchObject({ state: "ready", completedGoodQuantity: 40, remainingGoodQuantity: 60, unitQuantitySatisfied: false });
     const reprint = await runtime.service.start(context("start-roll-reprint"), { businessRequestId: "start-roll-reprint", productionWorkId: opened.value.work.productionWorkId, stationKey: "roll", kind: "reprint" });
     expect(reprint.ok).toBe(true); if (!reprint.ok || !reprint.value.attempt) throw new Error("Reprint was not created.");
-    await runtime.service.recordOutput(context("output-60"), { businessRequestId: "output-60", productionAttemptId: reprint.value.attempt.productionAttemptId, goodQuantityDelta: 60 });
-    await runtime.service.complete(context("complete-roll"), { businessRequestId: "complete-roll", productionAttemptId: reprint.value.attempt.productionAttemptId });
+    const output60 = await runtime.service.recordOutput(context("output-60"), { businessRequestId: "output-60", productionAttemptId: reprint.value.attempt.productionAttemptId, goodQuantityDelta: 60 });
+    expect(output60.ok).toBe(true); if (!output60.ok) throw output60.error;
+    const complete60 = await runtime.service.complete(context("complete-roll"), { businessRequestId: "complete-roll", productionAttemptId: reprint.value.attempt.productionAttemptId });
+    expect(complete60.ok).toBe(true); if (!complete60.ok) throw complete60.error;
+    expect(runtime.attempts[0]).toEqual(originalAttempt);
+    expect(runtime.projection().state).toBe("complete");
     const projection = runtime.projection();
     const v2 = { nextUpStations: ["flatbed", "roll"], artworkFile: projection.work.artworkFileId, attempts: projection.attempts.map((attempt) => ({ kind: attempt.kind, station: attempt.stationKey, good: attempt.goodQuantity, completed: Boolean(attempt.completedAt) })), completedGoodQuantity: projection.completedGoodQuantity, satisfied: projection.unitQuantitySatisfied };
     const v1 = { nextUpStations: ["flatbed", "roll"], artworkFile: "artwork-canonical", attempts: [{ kind: "initial", station: "flatbed", good: 40, completed: true }, { kind: "reprint", station: "roll", good: 60, completed: true }], completedGoodQuantity: 100, satisfied: true };
@@ -173,11 +200,24 @@ describe("M5 operational spine parity baseline", () => {
     const producedLessThanHandoff = await runtime.service.recordShipment(context("produced-less-than-handoff"), { businessRequestId: "produced-less-than-handoff", orderId, allocations: [{ orderLineId: producedContext, quantity: 50 }] });
     const over = await runtime.service.recordPickup(context("over"), { businessRequestId: "over", orderId, allocations: [{ orderLineId: lineA, quantity: 1 }] });
     expect([pickup20, pickup30, shipment25, shipment25Again, mixed, mixedShipment].every((result) => result.ok)).toBe(true);
-    expect(producedLessThanHandoff.ok).toBe(false);
-    expect(over.ok).toBe(false);
+    expect(producedLessThanHandoff).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(over).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(runtime.handoffs.size).toBe(6);
+    expect([...runtime.snapshots.values()]).toEqual([
+      { method: "pickup", lines: [{ orderLineId: lineA, quantity: 20 }] },
+      { method: "pickup", lines: [{ orderLineId: lineA, quantity: 30 }] },
+      { method: "shipment", lines: [{ orderLineId: lineA, quantity: 25 }] },
+      { method: "shipment", lines: [{ orderLineId: lineA, quantity: 25 }] },
+      { method: "pickup", lines: [{ orderLineId: lineB, quantity: 15 }] },
+      { method: "shipment", lines: [{ orderLineId: lineB, quantity: 10 }] },
+    ]);
     const values = runtime.availability();
     const v2 = { lineA: values.find((line) => line.orderLineId === lineA), lineB: values.find((line) => line.orderLineId === lineB), producedContext: { producedQuantity: 40, requestedHandoffQuantity: 50, allowed: false, availability: values.find((line) => line.orderLineId === producedContext) } };
-    const requiredPhysicalGuard = { lineA: v2.lineA, lineB: v2.lineB, producedContext: v2.producedContext };
+    const requiredPhysicalGuard = {
+      lineA: { orderId, orderLineId: lineA, orderedQuantity: 100, completedPickupQuantity: 50, completedShipmentQuantity: 50, completedFulfillmentQuantity: 100, completedProductionQuantity: 100, availableFulfillmentQuantity: 0, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 0 },
+      lineB: { orderId, orderLineId: lineB, orderedQuantity: 50, completedPickupQuantity: 15, completedShipmentQuantity: 10, completedFulfillmentQuantity: 25, completedProductionQuantity: 50, availableFulfillmentQuantity: 25, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 25 },
+      producedContext: { producedQuantity: 40, requestedHandoffQuantity: 50, allowed: false, availability: { orderId, orderLineId: producedContext, orderedQuantity: 100, completedPickupQuantity: 20, completedShipmentQuantity: 0, completedFulfillmentQuantity: 20, completedProductionQuantity: 40, availableFulfillmentQuantity: 20, remainingProductionQuantity: 60, remainingFulfillmentQuantity: 80 } },
+    };
     expect(compare("Fulfillment", "mixed-handoffs-and-produced-context", requiredPhysicalGuard, v2, "SEMANTICALLY_EQUIVALENT").classification).toBe("SEMANTICALLY_EQUIVALENT");
     expect(v2.producedContext.allowed).toBe(false);
   });

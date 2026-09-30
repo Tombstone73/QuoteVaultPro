@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import express from "express";
 import session from "express-session";
 import request from "supertest";
+import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets";
 import {
   createStandaloneStaffAuthentication,
   loadV2StandaloneAuthConfig,
@@ -105,7 +106,7 @@ describe("standalone V2 Staff authentication", () => {
 });
 
 describe("standalone V2 Customer Portal authentication", () => {
-  const portal = { id: "portal-user", email: "customer@example.test", displayName: "Customer", organizationId: "org-a", customerId: "customer-a" };
+  const portal = { id: "portal-user", email: "customer@example.test", displayName: "Customer", organizationId: "org-a", customerId: "customer-a", credentialVersion: "2026-01-01T00:00:00.000Z" };
   const portalVerifier: V2PortalCredentialVerifier = {
     authenticatePortal: async (email, password) => email === portal.email && password === "correct-password" ? portal : null,
     currentPortal: async (userId, organizationId) => userId === portal.id && organizationId === portal.organizationId ? portal : null,
@@ -116,9 +117,36 @@ describe("standalone V2 Customer Portal authentication", () => {
     async requestPasswordReset(email) { this.requested.push(email); },
     async resetPassword(token, password) { if (token !== "reset-token" || password.length < 12) throw new Error("This password reset link is invalid or expired."); this.reset.push(token); },
   };
-  const app = () => {
+  const app = (state: { credentialVersion?: string; accessActive?: boolean; issuer?: boolean } = {}) => {
     const value = express(); value.use(express.json());
-    createStandaloneStaffAuthentication({ verifier: createVerifier(), portalVerifier, portalLifecycle: lifecycle, config: loadV2StandaloneAuthConfig({ SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" }), sessionMiddleware: session({ name: "v2.sid", secret: "x".repeat(32), resave: false, saveUninitialized: false }) }).install(value);
+    const portalIssuer = new PermissionSetPrincipalIssuer({
+      resolveStaff: async () => null,
+      resolvePortal: async (userId, organizationId) => userId === portal.id && organizationId === portal.organizationId ? {
+        organizationId: portal.organizationId,
+        organizationActive: true,
+        authorityRevision: "1",
+        portal: {
+          userId: portal.id, portalAccessId: "portal-access-a", customerId: portal.customerId,
+          accessActive: state.accessActive ?? true,
+          permissionSets: [{ id: "portal-set-a", name: "Portal", active: true, revision: 1 }],
+          assignedCapabilities: ["invoice.view"], ceilingCapabilities: ["invoice.view"],
+        },
+      } : null,
+    });
+    createStandaloneStaffAuthentication({
+      verifier: createVerifier(),
+      portalVerifier: {
+        ...portalVerifier,
+        currentPortal: async (userId, organizationId) => {
+          const current = await portalVerifier.currentPortal(userId, organizationId);
+          return current && { ...current, credentialVersion: state.credentialVersion ?? current.credentialVersion };
+        },
+      },
+      portalIssuer: state.issuer === false ? undefined : portalIssuer,
+      portalLifecycle: lifecycle,
+      config: loadV2StandaloneAuthConfig({ SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" }),
+      sessionMiddleware: session({ name: "v2.sid", secret: "x".repeat(32), resave: false, saveUninitialized: false }),
+    }).install(value);
     return value;
   };
   test("uses one-time lifecycle endpoints without account enumeration and preserves safe deep links", async () => {
@@ -130,6 +158,29 @@ describe("standalone V2 Customer Portal authentication", () => {
     const agent = request.agent(app());
     const login = await agent.post("/v2/portal/auth/login").send({ email: portal.email, password: "correct-password", returnTo: "//attacker.invalid" }).expect(200);
     expect(login.body.data.returnTo).toBe("/portal");
+    const restored = await agent.get("/v2/portal/auth/session").expect(200);
+    expect(restored.body.data.portal).toEqual({ displayName: portal.id, customerId: portal.customerId });
+    expect(restored.body.data.returnTo).toBe("/portal");
+  });
+  test("rejects an existing Portal session after the credential version changes", async () => {
+    const state = { credentialVersion: portal.credentialVersion };
+    const agent = request.agent(app(state));
+    await agent.post("/v2/portal/auth/login").send({ email: portal.email, password: "correct-password" }).expect(200);
     await agent.get("/v2/portal/auth/session").expect(200);
+    state.credentialVersion = "2026-01-02T00:00:00.000Z";
+    await agent.get("/v2/portal/auth/session").expect(401, { ok: false, error: { code: "UNAUTHENTICATED", message: "Portal authentication is required." } });
+  });
+  test("revalidates Portal authority after login", async () => {
+    const state = { accessActive: true };
+    const agent = request.agent(app(state));
+    await agent.post("/v2/portal/auth/login").send({ email: portal.email, password: "correct-password" }).expect(200);
+    await agent.get("/v2/portal/auth/session").expect(200);
+    state.accessActive = false;
+    await agent.get("/v2/portal/auth/session").expect(401, { ok: false, error: { code: "UNAUTHENTICATED", message: "Portal authentication is required." } });
+  });
+  test("cannot restore a Portal session without an authority issuer", async () => {
+    const agent = request.agent(app({ issuer: false }));
+    await agent.post("/v2/portal/auth/login").send({ email: portal.email, password: "correct-password" }).expect(200);
+    await agent.get("/v2/portal/auth/session").expect(401, { ok: false, error: { code: "UNAUTHENTICATED", message: "Portal authentication is required." } });
   });
 });
