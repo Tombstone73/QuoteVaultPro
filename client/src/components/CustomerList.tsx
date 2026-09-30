@@ -35,7 +35,12 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
-import type { CustomerCreditLimitFilter, CustomerTermsFilter } from "@shared/customerListCommercialFilters";
+import {
+  CUSTOMER_CREDIT_LIMIT_FILTER_OPTIONS,
+  CUSTOMER_TERMS_FILTER_OPTIONS,
+  type CustomerCreditLimitFilter,
+  type CustomerTermsFilter,
+} from "@shared/customerListCommercialFilters";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -173,6 +178,10 @@ interface CustomerListProps {
   onStatusFilterChange?: (value: string) => void;
   typeFilter?: string;
   onTypeFilterChange?: (value: string) => void;
+  termsFilter?: CustomerTermsFilter;
+  onTermsFilterChange?: (value: CustomerTermsFilter) => void;
+  creditLimitFilter?: CustomerCreditLimitFilter;
+  onCreditLimitFilterChange?: (value: CustomerCreditLimitFilter) => void;
   showFilterControls?: boolean;
   canManageCommercialConfiguration?: boolean;
   /** Kept separate so a future tenant-setup capability can gate tax status without changing table logic. */
@@ -192,6 +201,10 @@ export default function CustomerList({
   onStatusFilterChange,
   typeFilter: controlledTypeFilter,
   onTypeFilterChange,
+  termsFilter: controlledTermsFilter,
+  onTermsFilterChange,
+  creditLimitFilter: controlledCreditLimitFilter,
+  onCreditLimitFilterChange,
   showFilterControls = true,
   canManageCommercialConfiguration = false,
   canBulkSetCustomerTaxStatus,
@@ -203,12 +216,16 @@ export default function CustomerList({
   const selectionEnabled = Boolean(onMergeCustomers || canManageCommercialConfiguration || canSetCustomerTaxStatus);
   const [localStatusFilter, setLocalStatusFilter] = useState<string>("all");
   const [localTypeFilter, setLocalTypeFilter] = useState<string>("all");
-  const [termsFilter, setTermsFilter] = useState<CustomerTermsFilter>("all");
-  const [creditLimitFilter, setCreditLimitFilter] = useState<CustomerCreditLimitFilter>("all");
+  const [localTermsFilter, setLocalTermsFilter] = useState<CustomerTermsFilter>("all");
+  const [localCreditLimitFilter, setLocalCreditLimitFilter] = useState<CustomerCreditLimitFilter>("all");
   const statusFilter = controlledStatusFilter ?? localStatusFilter;
   const typeFilter = controlledTypeFilter ?? localTypeFilter;
   const setStatusFilter = onStatusFilterChange ?? setLocalStatusFilter;
   const setTypeFilter = onTypeFilterChange ?? setLocalTypeFilter;
+  const termsFilter = controlledTermsFilter ?? localTermsFilter;
+  const creditLimitFilter = controlledCreditLimitFilter ?? localCreditLimitFilter;
+  const setTermsFilter = onTermsFilterChange ?? setLocalTermsFilter;
+  const setCreditLimitFilter = onCreditLimitFilterChange ?? setLocalCreditLimitFilter;
   const [sortBy, setSortBy] = useState<CustomerListSortBy>("name");
   const [sortDir, setSortDir] = useState<CustomerListSortDir>("asc");
   const [page, setPage] = useState(1);
@@ -345,8 +362,8 @@ export default function CustomerList({
     search,
     status: statusFilter,
     customerType: typeFilter,
-    terms: canManageCommercialConfiguration && viewMode === "enhanced" ? termsFilter : "all" as const,
-    creditLimit: canManageCommercialConfiguration && viewMode === "enhanced" ? creditLimitFilter : "all" as const,
+    terms: canManageCommercialConfiguration ? termsFilter : "all" as const,
+    creditLimit: canManageCommercialConfiguration ? creditLimitFilter : "all" as const,
     sortBy,
     sortDir,
     page,
@@ -536,25 +553,13 @@ export default function CustomerList({
           <Select value={termsFilter} onValueChange={(value) => setTermsFilter(value as CustomerTermsFilter)}>
             <SelectTrigger aria-label="Terms filter" className="h-8 text-xs"><SelectValue placeholder="Terms" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Terms</SelectItem>
-              <SelectItem value="any_credit_terms">Any Credit Terms</SelectItem>
-              <SelectItem value="no_credit_terms">No Credit Terms</SelectItem>
-              <SelectItem value="not_set">Not Set</SelectItem>
-              <SelectItem value="due_on_receipt">Due on Receipt</SelectItem>
-              <SelectItem value="net_15">Net 15</SelectItem>
-              <SelectItem value="net_30">Net 30</SelectItem>
-              <SelectItem value="net_45">Net 45</SelectItem>
-              <SelectItem value="custom">Custom</SelectItem>
+              {CUSTOMER_TERMS_FILTER_OPTIONS.map(({ value, label }) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={creditLimitFilter} onValueChange={(value) => setCreditLimitFilter(value as CustomerCreditLimitFilter)}>
             <SelectTrigger aria-label="Credit Limit filter" className="h-8 text-xs"><SelectValue placeholder="Credit Limit" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Credit Limits</SelectItem>
-              <SelectItem value="not_set">Not Set</SelectItem>
-              <SelectItem value="zero">$0</SelectItem>
-              <SelectItem value="not_set_or_zero">Not Set or $0</SelectItem>
-              <SelectItem value="greater_than_zero">Greater than $0</SelectItem>
+              {CUSTOMER_CREDIT_LIMIT_FILTER_OPTIONS.map(({ value, label }) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
             </SelectContent>
           </Select>
         </>}

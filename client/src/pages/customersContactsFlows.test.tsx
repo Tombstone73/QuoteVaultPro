@@ -9,6 +9,8 @@ import CustomersPage from "./customers";
 import CustomerList from "@/components/CustomerList";
 import { useContactDetail, useContacts, useCreateContact, useDeleteContact, useUpdateContact, type ContactDetailResponse, type ContactsResponse } from "@/hooks/useContacts";
 import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/useAuth";
+import { apiFetch } from "@/lib/queryClient";
 
 jest.mock("@/lib/queryClient", () => ({
   apiFetch: jest.fn(),
@@ -22,7 +24,7 @@ jest.mock("react-router-dom", () => ({
 }));
 
 jest.mock("@/hooks/useAuth", () => ({
-  useAuth: () => ({ user: { role: "admin" } }),
+  useAuth: jest.fn(() => ({ user: { role: "admin" } })),
 }));
 
 jest.mock("@/hooks/useSmartBack", () => ({
@@ -196,6 +198,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   window.localStorage.clear();
+  jest.mocked(useAuth).mockReturnValue({ user: { role: "admin" } } as any);
 
   useContactsMock.mockReturnValue({
     data: {
@@ -461,6 +464,91 @@ function mockCustomerListQuery() {
     refetch: jest.fn(),
   } as any);
 }
+
+function customerToolbarSelect(optionValue: string): HTMLSelectElement | undefined {
+  return Array.from(container.querySelectorAll("select")).find((select) =>
+    Array.from(select.options).some((option) => option.value === optionValue),
+  );
+}
+
+function lastCustomerListQuery(): any {
+  return (useQueryMock.mock.calls as any[]).map(([options]) => options)
+    .filter((options) => options?.queryKey?.[0] === "/api/customers").at(-1);
+}
+
+test.each(["enhanced", "split"] as const)("Customers %s toolbar exposes one controlled set of filters", (mode) => {
+  mockCustomerListQuery();
+  window.localStorage.setItem("titanos.customers.viewMode", mode);
+  act(() => root.render(<CustomersPage />));
+
+  for (const option of ["on_hold", "corporate", "any_credit_terms", "not_set_or_zero"]) {
+    expect(Array.from(container.querySelectorAll("select")).filter((select) =>
+      Array.from(select.options).some((item) => item.value === option),
+    )).toHaveLength(1);
+  }
+  expect(customerToolbarSelect("any_credit_terms")?.closest("[data-testid='customer-list-body']")).toBeNull();
+  expect(container.querySelector('input[placeholder="Search companies..."]')).toBeTruthy();
+});
+
+test("Customers toolbar hides commercial filters from lower-permission users", () => {
+  mockCustomerListQuery();
+  jest.mocked(useAuth).mockReturnValue({ user: { role: "staff", isAdmin: false } } as any);
+  act(() => root.render(<CustomersPage />));
+  expect(customerToolbarSelect("on_hold")).toBeTruthy();
+  expect(customerToolbarSelect("corporate")).toBeTruthy();
+  expect(customerToolbarSelect("any_credit_terms")).toBeUndefined();
+  expect(customerToolbarSelect("not_set_or_zero")).toBeUndefined();
+  expect(lastCustomerListQuery().queryKey[1]).toMatchObject({ terms: undefined, creditLimit: undefined });
+});
+
+test("Customers toolbar combines commercial filters, resets the page, and sends both API parameters", async () => {
+  mockCustomerListQuery();
+  window.localStorage.setItem("titanos.customers.viewMode", "enhanced");
+  act(() => root.render(<CustomersPage />));
+
+  const next = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Next"));
+  act(() => next?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(lastCustomerListQuery().queryKey[1].page).toBe(2);
+
+  const terms = customerToolbarSelect("any_credit_terms")!;
+  act(() => { terms.value = "any_credit_terms"; terms.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(lastCustomerListQuery().queryKey[1]).toMatchObject({ terms: "any_credit_terms", page: 1 });
+
+  const credit = customerToolbarSelect("not_set_or_zero")!;
+  act(() => { credit.value = "not_set_or_zero"; credit.dispatchEvent(new Event("change", { bubbles: true })); });
+  const query = lastCustomerListQuery();
+  expect(query.queryKey[1]).toMatchObject({ terms: "any_credit_terms", creditLimit: "not_set_or_zero", page: 1 });
+  jest.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { customers: [], pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 } } }) } as any);
+  await query.queryFn();
+  const url = String(jest.mocked(apiFetch).mock.calls.at(-1)?.[0]);
+  expect(url).toContain("terms=any_credit_terms");
+  expect(url).toContain("creditLimit=not_set_or_zero");
+  expect(url).toContain("page=1");
+});
+
+test("Customers split toolbar passes commercial values to its list", () => {
+  mockCustomerListQuery();
+  window.localStorage.setItem("titanos.customers.viewMode", "split");
+  act(() => root.render(<CustomersPage />));
+  const terms = customerToolbarSelect("any_credit_terms")!;
+  const credit = customerToolbarSelect("not_set_or_zero")!;
+  act(() => { terms.value = "any_credit_terms"; terms.dispatchEvent(new Event("change", { bubbles: true })); });
+  act(() => { credit.value = "not_set_or_zero"; credit.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(lastCustomerListQuery().queryKey[1]).toMatchObject({ viewMode: "split", terms: "any_credit_terms", creditLimit: "not_set_or_zero" });
+});
+
+test("Customers toolbar retains Search, Status, and Type filtering", () => {
+  mockCustomerListQuery();
+  window.localStorage.setItem("titanos.customers.viewMode", "enhanced");
+  act(() => root.render(<CustomersPage />));
+  const search = container.querySelector('input[placeholder="Search companies..."]') as HTMLInputElement;
+  act(() => Simulate.change(search, { target: { value: "Acme" } } as any));
+  const status = customerToolbarSelect("on_hold")!;
+  const type = customerToolbarSelect("corporate")!;
+  act(() => { status.value = "active"; status.dispatchEvent(new Event("change", { bubbles: true })); });
+  act(() => { type.value = "business"; type.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(lastCustomerListQuery().queryKey[1]).toMatchObject({ search: "Acme", status: "active", customerType: "business", page: 1 });
+});
 
 test("Customer list shows a retryable load error instead of the empty state when its query fails", () => {
   const refetch = jest.fn();

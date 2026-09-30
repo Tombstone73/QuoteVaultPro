@@ -15,6 +15,12 @@ import { cn } from "@/lib/utils";
 import { ROUTES } from "@/config/routes";
 import { useSmartBack } from "@/hooks/useSmartBack";
 import BackNavControls from "@/components/BackNavControls";
+import {
+  CUSTOMER_CREDIT_LIMIT_FILTER_OPTIONS,
+  CUSTOMER_TERMS_FILTER_OPTIONS,
+  type CustomerCreditLimitFilter,
+  type CustomerTermsFilter,
+} from "@shared/customerListCommercialFilters";
 
 // ============================================================
 // VIEW MODE TYPES AND STORAGE
@@ -131,6 +137,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [termsFilter, setTermsFilter] = useState<CustomerTermsFilter>("all");
+  const [creditLimitFilter, setCreditLimitFilter] = useState<CustomerCreditLimitFilter>("all");
   const [mergeCustomerIds, setMergeCustomerIds] = useState<string[]>([]);
   const canManageCommercialConfiguration = Boolean(
     user?.isAdmin || ["owner", "admin"].includes(String(user?.role || "").toLowerCase()),
@@ -278,6 +286,20 @@ export default function Customers({ embedded = false }: CustomersProps) {
             <SelectTrigger aria-label="Customer type" className="h-9 w-[132px] text-sm"><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value="all">All Types</SelectItem><SelectItem value="business">Business</SelectItem><SelectItem value="individual">Individual</SelectItem><SelectItem value="retail">Retail</SelectItem><SelectItem value="wholesale">Wholesale</SelectItem><SelectItem value="corporate">Corporate</SelectItem></SelectContent>
           </Select>
+          {canManageCommercialConfiguration && <>
+            <Select value={termsFilter} onValueChange={(value) => setTermsFilter(value as CustomerTermsFilter)}>
+              <SelectTrigger aria-label="Customer terms" className="h-9 w-[160px] text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CUSTOMER_TERMS_FILTER_OPTIONS.map(({ value, label }) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={creditLimitFilter} onValueChange={(value) => setCreditLimitFilter(value as CustomerCreditLimitFilter)}>
+              <SelectTrigger aria-label="Customer credit limit" className="h-9 w-[174px] text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CUSTOMER_CREDIT_LIMIT_FILTER_OPTIONS.map(({ value, label }) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </>}
         </div>
 
         {/* Customer List/Detail View */}
@@ -297,6 +319,10 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 onStatusFilterChange={setStatusFilter}
                 typeFilter={typeFilter}
                 onTypeFilterChange={setTypeFilter}
+                termsFilter={termsFilter}
+                onTermsFilterChange={setTermsFilter}
+                creditLimitFilter={creditLimitFilter}
+                onCreditLimitFilterChange={setCreditLimitFilter}
                 showFilterControls={false}
                 canManageCommercialConfiguration={canManageCommercialConfiguration}
                 canBulkSetCustomerTaxStatus={canManageCommercialConfiguration}
@@ -331,6 +357,10 @@ export default function Customers({ embedded = false }: CustomersProps) {
               onStatusFilterChange={setStatusFilter}
               typeFilter={typeFilter}
               onTypeFilterChange={setTypeFilter}
+              termsFilter={termsFilter}
+              onTermsFilterChange={setTermsFilter}
+              creditLimitFilter={creditLimitFilter}
+              onCreditLimitFilterChange={setCreditLimitFilter}
               showFilterControls={false}
               canManageCommercialConfiguration={canManageCommercialConfiguration}
               canBulkSetCustomerTaxStatus={canManageCommercialConfiguration}
