@@ -1,3 +1,4 @@
+import { lockWorkflowLines } from "./workflowMutationLock";
 import { assertProductionCredit, getOrderCreditHold } from "./orderCreditHoldService";
 import { and, desc, eq } from "drizzle-orm";
 import { orderLineItems, orders, products, productionEvents, productionJobs, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
@@ -479,6 +480,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
   metadata?: Record<string, unknown>;
   allowTerminalRecovery?: boolean;
 }): Promise<WorkflowTransitionResult> {
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const lineItem = await loadLineItemForWorkflow(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
@@ -774,6 +776,7 @@ export async function completeLineItemDesign(tx: any, args: {
   note?: string | null;
   metadata?: Record<string, unknown>;
 }): Promise<WorkflowTransitionResult> {
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const lineItem = await loadLineItemForWorkflow(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,

@@ -1,3 +1,4 @@
+import { lockWorkflowLines, lockProofWorkflowLines } from "./workflowMutationLock";
 import { getOrderCreditHold } from "./orderCreditHoldService";
 import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { PDFDocument } from "pdf-lib";
@@ -22,6 +23,7 @@ import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassifi
 import {
   assetLinks,
   assets,
+  auditLogs,
   customerContacts,
   customers,
   lineItemProofApprovals,
@@ -67,7 +69,7 @@ import { lineItemArtworkReadResolver } from "./artwork/LineItemArtworkReadResolv
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
-type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "artwork_deleted" | "design_completed";
+type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "artwork_deleted" | "design_completed" | "upstream_return";
 type ProofSendMode = "generated" | "uploaded";
 
 const GENERATED_PROOF_PREVIEW_READY_MARKER = "[proof-preview:ready]";
@@ -1462,6 +1464,8 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
     throwProofingBadRequest("Select at least two line items for a combined proof");
   }
 
+  await lockWorkflowLines(tx, args.organizationId, lineItemIds);
+
   const members: Array<{ snapshot: ProofInputSnapshot; sources: ArtworkProofSource[]; sortOrder: number }> = [];
   const missingArtworkLineItemIds: string[] = [];
   for (const lineItemId of lineItemIds) {
@@ -1704,6 +1708,7 @@ export async function resendProofVersion(tx: any, args: {
   customerMessage?: string | null;
   customerVisibleDisclaimer?: string | null;
 }) {
+  await lockProofWorkflowLines(tx, args.organizationId, args.proofVersionId);
   const proofVersion = await loadProofVersion(tx, {
     organizationId: args.organizationId,
     proofVersionId: args.proofVersionId,
@@ -2689,6 +2694,44 @@ export async function createLineItemProofVersionFromExistingAttachment(tx: any, 
   });
 }
 
+/** Caller holds the workflow lock. Historical approved versions and approvals are never edited. */
+export async function retireProofAuthorityForUpstream(tx: any, args: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  actorUserId: string;
+  reason: string;
+  destination: "design" | "proofing";
+}) {
+  const line = await loadProofLineItem(tx, args);
+  if (line.orderId !== args.orderId) throw Object.assign(new Error("Proof order context changed"), { statusCode: 409 });
+  const versions = await tx.select({ version: lineItemProofVersions }).from(lineItemProofVersions)
+    .where(and(eq(lineItemProofVersions.organizationId, args.organizationId), eq(lineItemProofVersions.orderId, args.orderId)));
+  const memberships = await tx.select().from(proofVersionLineItems)
+    .where(and(eq(proofVersionLineItems.organizationId, args.organizationId), eq(proofVersionLineItems.orderId, args.orderId)));
+  const related = versions.map((row: any) => row.version).filter((version: any) =>
+    version.lineItemId === args.lineItemId || memberships.some((member: any) => member.proofVersionId === version.id && member.lineItemId === args.lineItemId));
+  const actionable = related.filter((version: any) => ["draft", "awaiting_response"].includes(version.status));
+  if (actionable.length > 1) {
+    throw Object.assign(new Error("Resolve conflicting active proof versions before returning upstream."), { statusCode: 409, code: "UPSTREAM_PROOF_CONFLICT" });
+  }
+  // A single-line return must not invalidate a different line's pending customer decision.
+  if (actionable.some((version: any) => version.lineItemId !== args.lineItemId || memberships.some((member: any) => member.proofVersionId === version.id && member.lineItemId !== args.lineItemId))) {
+    throw Object.assign(new Error("This line belongs to an active combined proof. Resolve the combined proof before returning an individual line upstream."), { statusCode: 409, code: "UPSTREAM_SHARED_PROOF" });
+  }
+  const superseded = args.destination === "design"
+    ? await supersedeActionableProofVersions(tx, args)
+    : [];
+  await tx.update(orderLineItems).set({ approvedProofVersionId: null, updatedAt: new Date() })
+    .where(and(eq(orderLineItems.id, args.lineItemId), eq(orderLineItems.orderId, args.orderId)));
+  return {
+    priorApprovedProofVersionId: line.approvedProofVersionId,
+    priorProofs: related.map((version: any) => ({ id: version.id, status: version.status, versionNumber: version.versionNumber })),
+    supersededProofVersionIds: superseded.map((version: any) => version.id),
+    resumedProofVersionId: args.destination === "proofing" ? actionable[0]?.id ?? null : null,
+  };
+}
+
 async function invalidateApprovedProofContext(tx: any, args: {
   organizationId: string;
   orderId: string;
@@ -2714,12 +2757,18 @@ async function invalidateApprovedProofContext(tx: any, args: {
 
 }
 
+export function hasCurrentProofForFile(truth: Pick<ProofingReadModel, "currentActionableProofVersionId" | "approvedProofVersionId" | "proofVersionHistory">, proofFileId: string): boolean {
+  const currentId = truth.currentActionableProofVersionId || truth.approvedProofVersionId;
+  return Boolean(currentId && truth.proofVersionHistory.find((version) => version.id === currentId)?.proofFileId === proofFileId);
+}
+
 export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
   organizationId: string;
   lineItemId: string;
   actorUserId: string;
   reason: ProofSyncReason;
 }): Promise<AutoSyncProofResult> {
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const lineItem = await loadProofLineItem(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
@@ -2802,7 +2851,7 @@ export async function autoSyncCanonicalProofForLineItem(tx: any, args: {
     ? truth.proofVersionHistory.find((version) => version.id === currentRelevantVersionId) ?? null
     : null;
 
-  if (currentRelevantVersion?.proofFileId === proofFileId) {
+  if (hasCurrentProofForFile(truth, proofFileId)) {
     return { status: "already_current" };
   }
 
@@ -2904,6 +2953,7 @@ export async function cancelProofVersion(tx: any, args: {
   actorUserId: string;
   reason?: string | null;
 }) {
+  await lockProofWorkflowLines(tx, args.organizationId, args.proofVersionId);
   try {
     const proofVersion = await loadProofVersion(tx, {
       organizationId: args.organizationId,
@@ -3523,6 +3573,7 @@ export async function createLineItemProofVersion(tx: any, args: {
   sourceAction?: "proof_file_uploaded" | "proof_file_generated" | null;
 }) {
   try {
+    await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
     const lineItem = await loadProofLineItem(tx, {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
@@ -3674,6 +3725,7 @@ export async function markProofVersionSent(tx: any, args: {
   customerMessage?: string | null;
   customerVisibleDisclaimer?: string | null;
 }) {
+  await lockProofWorkflowLines(tx, args.organizationId, args.proofVersionId);
   try {
     const proofVersion = await loadProofVersion(tx, {
       organizationId: args.organizationId,
@@ -3798,6 +3850,7 @@ export async function recordProofResponse(tx: any, args: {
   decision: ProofDecision;
   responseNotes?: string | null;
 }) {
+  await lockProofWorkflowLines(tx, args.organizationId, args.proofVersionId);
   try {
     const proofVersion = await loadProofVersion(tx, {
       organizationId: args.organizationId,
@@ -3936,6 +3989,7 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
   internalNote?: string | null;
 }) {
   try {
+    await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
     const overrideReason = trimNullable(args.overrideReason);
     if (!overrideReason) {
       throwProofingBadRequest("Manual approval override reason is required");
@@ -4020,6 +4074,17 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
     if (proofVersion.status === "approved") {
       throwProofingConflict("This proof version is already approved");
     }
+
+    // A deliberate upstream return retires these versions, including old drafts. An override
+    // must approve a successor, not restore obsolete authority through a historical version.
+    const [retiredByReturn] = await tx.select({ id: auditLogs.id }).from(auditLogs).where(and(
+      eq(auditLogs.organizationId, args.organizationId), eq(auditLogs.entityType, "order_line_item"),
+      eq(auditLogs.entityId, lineItem.lineItemId),
+      sql`${auditLogs.newValues}->>'source' = 'return_upstream'`,
+      sql`${auditLogs.newValues}->>'resumedProofVersionId' is distinct from ${proofVersion.id}`,
+      sql`${auditLogs.oldValues}->'priorProofs' @> ${JSON.stringify([{ id: proofVersion.id }])}::jsonb`,
+    )).limit(1);
+    if (retiredByReturn) throwProofingConflict("This proof was retired by Return Upstream. Approve a current successor proof instead.");
 
     const [existingResponse] = await tx
       .select({ id: lineItemProofApprovals.id })
@@ -4154,6 +4219,7 @@ export async function markLineItemProofNotRequired(tx: any, args: {
   reason: string;
   internalNote?: string | null;
 }) {
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const reason = trimNullable(args.reason);
   if (!reason) {
     throwProofingBadRequest("Reason is required to mark proof not required");

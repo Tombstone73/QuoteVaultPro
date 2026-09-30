@@ -3,7 +3,7 @@ const transition = jest.fn<any>();
 const credit = jest.fn<any>();
 jest.unstable_mockModule('../services/lineItemWorkflowService', () => ({ transitionLineItemWorkflowState: transition, getInitialWorkflowState: jest.fn(), completeLineItemDesign: jest.fn(), returnLineItemToPrepressForProductionRecovery: jest.fn(), workflowStateRequiresActiveOwner: jest.fn(), workflowStateIsIntentionallyOwnerless: jest.fn(), NON_TERMINAL_WORKFLOW_STATES: [], TERMINAL_WORKFLOW_STATES: [], OWNERSHIP_REQUIRED_WORKFLOW_STATES: [], OWNERLESS_WORKFLOW_STATES: [] }));
 jest.unstable_mockModule('../services/orderCreditHoldService', () => ({ getOrderCreditHold: credit, assertProductionCredit: jest.fn() }));
-jest.unstable_mockModule('../services/proofGateService', () => ({ resolveLineItemProofReleaseGate: async () => ({ allowed: true }) }));
+jest.unstable_mockModule('../services/proofGateService', () => ({ assertPhysicalProductionProofGate: jest.fn(), resolveLineItemProofReleaseGate: async () => ({ allowed: true }) }));
 let reconcile: typeof import('../services/proofingService').reconcileLineItemProofGateRelease;
 const line = { lineItemId: 'line', orderId: 'order', workflowState: 'awaiting_proof_approval', lifecycleStatus: 'new', requiresPrepress: false };
 const q: any = { from: () => q, innerJoin: () => q, where: () => q, limit: async () => [line] };

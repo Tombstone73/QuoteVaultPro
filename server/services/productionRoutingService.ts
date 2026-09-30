@@ -1,4 +1,5 @@
 import { assertProductionCredit } from "./orderCreditHoldService";
+import { assertPhysicalProductionProofGate } from "./proofGateService";
 /**
  * productionRoutingService.ts
  *
@@ -213,6 +214,7 @@ async function reuseExistingStationJob(runner: any, args: {
 }
 
 export async function routeLineItemToProduction(args: RouteLineItemArgs): Promise<RouteLineItemResult> {
+  if (!args.tx) return db.transaction((tx) => routeLineItemToProduction({ ...args, tx }));
   const {
     tx: passedTx,
     organizationId,
@@ -239,6 +241,8 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         { statusCode: 400, stationKey, lineItemId },
       );
     }
+
+    await assertPhysicalProductionProofGate(runner, { organizationId, lineItemId, stationKey, stepKey });
 
     const [order] = await runner
       .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })

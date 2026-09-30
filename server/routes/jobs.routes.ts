@@ -30,6 +30,7 @@ import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { orderLineItems, orders, auditLogs } from "@shared/schema";
+import { returnUpstream, returnUpstreamRequestSchema } from "../services/returnUpstreamService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -45,6 +46,23 @@ export function registerJobsRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin, assertInternalUser } = middleware;
+
+  app.post("/api/line-items/:lineItemId/return-upstream", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const parsed = returnUpstreamRequestSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: fromZodError(parsed.error).message });
+    const actorUserId = getUserId(req.user);
+    if (!actorUserId) return res.status(401).json({ message: "Authentication required" });
+    try {
+      const data = await returnUpstream({ ...parsed.data, organizationId: getRequestOrganizationId(req), lineItemId: req.params.lineItemId, actorUserId });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error.statusCode && error.statusCode < 500) return res.status(error.statusCode).json({ message: error.message, code: error.code });
+      if (["40001", "40P01"].includes(error.code)) return res.status(409).json({ message: "Work changed concurrently. Refresh and try again.", code: "UPSTREAM_CONCURRENT_CHANGE" });
+      console.error("Return upstream failed", error);
+      return res.status(500).json({ message: "Unable to return work upstream" });
+    }
+  });
 
   // ============================================================
   // JOB STATUS CONFIGURATION (Admin Only)

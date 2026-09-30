@@ -1,4 +1,6 @@
 import { assertProductionCredit } from "./orderCreditHoldService";
+import { lockWorkflowLines } from "./workflowMutationLock";
+import { assertPhysicalProductionProofGate } from "./proofGateService";
 /**
  * productionOwnership.ts
  *
@@ -296,6 +298,9 @@ export async function transitionToStation(
   },
 ): Promise<StationTransitionResult> {
   const now = new Date();
+
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
+  await assertPhysicalProductionProofGate(tx, { organizationId: args.organizationId, lineItemId: args.lineItemId, stationKey: args.targetStationKey, stepKey: args.targetStepKey });
 
   await assertProductionCredit(tx, { organizationId: args.organizationId, orderId: args.orderId, stationKey: args.targetStationKey, stepKey: args.targetStepKey });
 

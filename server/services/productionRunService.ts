@@ -1,3 +1,4 @@
+import { lockWorkflowLines } from "./workflowMutationLock";
 import { assertProductionCredit } from "./orderCreditHoldService";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
@@ -496,7 +497,7 @@ async function createProductionRunInTransaction(tx: any, input: {
   const jobs = await tx.select({ job: productionJobs, line: orderLineItems }).from(productionJobs)
     .innerJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
     .innerJoin(orders, and(eq(orderLineItems.orderId, orders.id), eq(orders.organizationId, input.organizationId)))
-    .where(and(eq(productionJobs.organizationId, input.organizationId), inArray(productionJobs.id, uniqueIds)));
+    .where(and(eq(productionJobs.organizationId, input.organizationId), inArray(productionJobs.id, uniqueIds))).orderBy(orderLineItems.id).for("update");
   if (jobs.length !== uniqueIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected production jobs are unavailable.", 404);
   if (input.orderId && jobs.some(({ job }: any) => job.orderId !== input.orderId)) {
     throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected production jobs are unavailable for this order.", 404);
@@ -579,6 +580,8 @@ export async function createPrepressProductionRun(input: {
 
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`production-run:${input.organizationId}:${uniqueLineItemIds.slice().sort().join(",")}`}))`);
+
+    await lockWorkflowLines(tx, input.organizationId, uniqueLineItemIds);
 
     const selectedRows = await tx
       .select({ line: orderLineItems })
