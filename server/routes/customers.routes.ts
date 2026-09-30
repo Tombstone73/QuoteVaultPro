@@ -53,6 +53,7 @@ import {
   updateCustomersCommercialConfiguration,
 } from "../services/customerBulkCommercialConfiguration.service";
 import { bulkCustomerCommercialConfigurationSchema } from "@shared/customerCommercialConfiguration";
+import { parseCustomerListCommercialFilters } from "./customerListCommercialFilters";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -161,13 +162,17 @@ export function registerCustomerRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
+      const canViewCommercialConfiguration = canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole);
+      const commercialFilters = parseCustomerListCommercialFilters(req.actorOrgRole ?? req.orgRole, req.query);
+      if (!commercialFilters.ok) return res.status(commercialFilters.status).json({ message: commercialFilters.message });
+
       const filters = {
         search: req.query.search as string | undefined,
         status: req.query.status as string | undefined,
         customerType: (req.query.customerType || req.query.type) as string | undefined,
         assignedTo: req.query.assignedTo as string | undefined,
+        ...commercialFilters.filters,
       };
-      const canViewCommercialConfiguration = canManageCustomerCommercialConfiguration(req.actorOrgRole ?? req.orgRole);
 
       // Paginated path: when page/pageSize are explicitly provided the caller expects
       // a paginated envelope { items, total, page, pageSize, totalPages, … }.

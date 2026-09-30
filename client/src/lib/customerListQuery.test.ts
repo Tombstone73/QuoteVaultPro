@@ -16,6 +16,8 @@ const baseState: CustomerListQueryState = {
   search: "acme",
   status: "active",
   customerType: "business",
+  terms: "all",
+  creditLimit: "all",
   sortBy: "name",
   sortDir: "asc",
   page: 3,
@@ -35,6 +37,8 @@ describe("customerListQuery helpers", () => {
         search: "acme",
         status: "active",
         customerType: "business",
+        terms: undefined,
+        creditLimit: undefined,
         sortBy: "name",
         sortDir: "asc",
       },
@@ -72,8 +76,19 @@ describe("customerListQuery helpers", () => {
     expect(shouldResetCustomerListPage(baseState, { ...baseState, search: "beta" })).toBe(true);
     expect(shouldResetCustomerListPage(baseState, { ...baseState, status: "inactive" })).toBe(true);
     expect(shouldResetCustomerListPage(baseState, { ...baseState, customerType: "individual" })).toBe(true);
+    expect(shouldResetCustomerListPage(baseState, { ...baseState, terms: "any_credit_terms" })).toBe(true);
+    expect(shouldResetCustomerListPage(baseState, { ...baseState, creditLimit: "not_set_or_zero" })).toBe(true);
     expect(shouldResetCustomerListPage(baseState, { ...baseState, sortBy: "createdAt" })).toBe(true);
     expect(shouldResetCustomerListPage(baseState, baseState)).toBe(false);
+  });
+
+  test("commercial filters enter the cache key and API query only when active", () => {
+    const active = { ...baseState, terms: "any_credit_terms" as const, creditLimit: "not_set_or_zero" as const };
+    expect(buildCustomerListQueryKey(active)[1]).toMatchObject({ terms: "any_credit_terms", creditLimit: "not_set_or_zero" });
+    expect(buildCustomerListSearchParams(active).get("terms")).toBe("any_credit_terms");
+    expect(buildCustomerListSearchParams(active).get("creditLimit")).toBe("not_set_or_zero");
+    expect(buildCustomerListSearchParams(baseState).has("terms")).toBe(false);
+    expect(buildCustomerListSearchParams(baseState).has("creditLimit")).toBe(false);
   });
 
   test("empty customer list envelope normalizes without crashing", () => {

@@ -1,3 +1,5 @@
+import type { CustomerCreditLimitFilter, CustomerTermsFilter } from "@shared/customerListCommercialFilters";
+
 export type CustomerListViewMode = "split" | "enhanced";
 export type CustomerListSortBy =
   | "name"
@@ -15,6 +17,8 @@ export type CustomerListQueryState = {
   search: string;
   status: string;
   customerType: string;
+  terms: CustomerTermsFilter;
+  creditLimit: CustomerCreditLimitFilter;
   sortBy: CustomerListSortBy;
   sortDir: CustomerListSortDir;
   page: number;
@@ -64,6 +68,8 @@ export function buildCustomerListQueryKey(state: CustomerListQueryState) {
       search: state.search,
       status: state.status === "all" ? undefined : state.status,
       customerType: state.customerType === "all" ? undefined : state.customerType,
+      terms: state.terms === "all" ? undefined : state.terms,
+      creditLimit: state.creditLimit === "all" ? undefined : state.creditLimit,
       sortBy: state.sortBy,
       sortDir: state.sortDir,
     },
@@ -77,6 +83,8 @@ export function buildCustomerListSearchParams(state: CustomerListQueryState): UR
   if (trimmedSearch) params.set("search", trimmedSearch);
   if (state.status !== "all") params.set("status", state.status);
   if (state.customerType !== "all") params.set("customerType", state.customerType);
+  if (state.terms !== "all") params.set("terms", state.terms);
+  if (state.creditLimit !== "all") params.set("creditLimit", state.creditLimit);
   params.set("sortBy", state.sortBy);
   params.set("sortDir", state.sortDir);
   params.set("page", String(state.page));
@@ -128,13 +136,15 @@ export function normalizeCustomerListResponse<TCustomer>(
 }
 
 export function shouldResetCustomerListPage(
-  previous: Pick<CustomerListQueryState, "search" | "status" | "customerType" | "sortBy" | "sortDir">,
-  next: Pick<CustomerListQueryState, "search" | "status" | "customerType" | "sortBy" | "sortDir">,
+  previous: Pick<CustomerListQueryState, "search" | "status" | "customerType" | "terms" | "creditLimit" | "sortBy" | "sortDir">,
+  next: Pick<CustomerListQueryState, "search" | "status" | "customerType" | "terms" | "creditLimit" | "sortBy" | "sortDir">,
 ): boolean {
   return (
     previous.search !== next.search ||
     previous.status !== next.status ||
     previous.customerType !== next.customerType ||
+    previous.terms !== next.terms ||
+    previous.creditLimit !== next.creditLimit ||
     previous.sortBy !== next.sortBy ||
     previous.sortDir !== next.sortDir
   );

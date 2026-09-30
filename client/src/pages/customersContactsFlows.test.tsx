@@ -635,6 +635,36 @@ test("Customer list does not expose financial columns to lower-permission list u
   expect(container.textContent).not.toContain("Credit");
 });
 
+test("authorized enhanced list applies commercial filters and keeps bulk credit editing available", () => {
+  mockCustomerListQuery();
+  act(() => root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" canManageCommercialConfiguration />));
+  const terms = Array.from(container.querySelectorAll("select")).find((select) =>
+    Array.from(select.options).some((option) => option.value === "any_credit_terms"),
+  ) as HTMLSelectElement;
+  const credit = Array.from(container.querySelectorAll("select")).find((select) =>
+    Array.from(select.options).some((option) => option.value === "not_set_or_zero"),
+  ) as HTMLSelectElement;
+  expect(terms).toBeTruthy();
+  expect(credit).toBeTruthy();
+  act(() => { terms.value = "any_credit_terms"; terms.dispatchEvent(new Event("change", { bubbles: true })); });
+  act(() => { credit.value = "not_set_or_zero"; credit.dispatchEvent(new Event("change", { bubbles: true })); });
+  const lastQuery = useQueryMock.mock.calls.at(-1)?.[0] as any;
+  expect(lastQuery.queryKey[1]).toMatchObject({ terms: "any_credit_terms", creditLimit: "not_set_or_zero", page: 1 });
+  const firstCheckbox = container.querySelector("input[aria-label='Select Customer 1']") as HTMLInputElement;
+  act(() => Simulate.change(firstCheckbox, { target: { checked: true } } as any));
+  expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Set Credit Limit")).toBe(true);
+});
+
+test("commercial filters are absent for unauthorized customer list users", () => {
+  mockCustomerListQuery();
+  act(() => root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" />));
+  expect(container.querySelector('select option[value="any_credit_terms"]')).toBeNull();
+  expect(container.querySelector('select option[value="not_set_or_zero"]')).toBeNull();
+  const query = useQueryMock.mock.calls.at(-1)?.[0] as any;
+  expect(query.queryKey[1].terms).toBeUndefined();
+  expect(query.queryKey[1].creditLimit).toBeUndefined();
+});
+
 test("Customer list exposes Tax Status as a persisted configurable column", () => {
   mockCustomerListQuery();
   act(() => {

@@ -35,6 +35,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
+import type { CustomerCreditLimitFilter, CustomerTermsFilter } from "@shared/customerListCommercialFilters";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -202,6 +203,8 @@ export default function CustomerList({
   const selectionEnabled = Boolean(onMergeCustomers || canManageCommercialConfiguration || canSetCustomerTaxStatus);
   const [localStatusFilter, setLocalStatusFilter] = useState<string>("all");
   const [localTypeFilter, setLocalTypeFilter] = useState<string>("all");
+  const [termsFilter, setTermsFilter] = useState<CustomerTermsFilter>("all");
+  const [creditLimitFilter, setCreditLimitFilter] = useState<CustomerCreditLimitFilter>("all");
   const statusFilter = controlledStatusFilter ?? localStatusFilter;
   const typeFilter = controlledTypeFilter ?? localTypeFilter;
   const setStatusFilter = onStatusFilterChange ?? setLocalStatusFilter;
@@ -335,13 +338,15 @@ export default function CustomerList({
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter, typeFilter, sortBy, sortDir, pageSize]);
+  }, [search, statusFilter, typeFilter, termsFilter, creditLimitFilter, sortBy, sortDir, pageSize]);
 
   const queryState = {
     viewMode,
     search,
     status: statusFilter,
     customerType: typeFilter,
+    terms: canManageCommercialConfiguration && viewMode === "enhanced" ? termsFilter : "all" as const,
+    creditLimit: canManageCommercialConfiguration && viewMode === "enhanced" ? creditLimitFilter : "all" as const,
     sortBy,
     sortDir,
     page,
@@ -464,11 +469,11 @@ export default function CustomerList({
       <Building2 className="w-12 h-12 mb-3 text-muted-foreground" />
       <h3 className="font-medium mb-1 text-foreground">No customers found</h3>
       <p className="text-sm mb-4 text-muted-foreground">
-        {search || statusFilter !== "all" || typeFilter !== "all"
+        {search || statusFilter !== "all" || typeFilter !== "all" || termsFilter !== "all" || creditLimitFilter !== "all"
           ? "Try adjusting your filters"
           : "Get started by adding your first customer"}
       </p>
-      {!search && statusFilter === "all" && typeFilter === "all" && (
+      {!search && statusFilter === "all" && typeFilter === "all" && termsFilter === "all" && creditLimitFilter === "all" && (
         <Button onClick={onNewCustomer} size="sm">
           <Plus className="w-4 h-4 mr-2" />
           Add Customer
@@ -499,7 +504,7 @@ export default function CustomerList({
     <>
       {showFilterControls && (
     <div className="p-2 border-b border-border/40">
-      <div className={viewMode === "enhanced" ? "grid grid-cols-2 md:grid-cols-3 gap-2" : "grid grid-cols-2 gap-2"}>
+      <div className={viewMode === "enhanced" ? "grid grid-cols-2 md:grid-cols-4 gap-2" : "grid grid-cols-2 gap-2"}>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="h-8 text-xs">
             <SelectValue placeholder="Status" />
@@ -526,6 +531,33 @@ export default function CustomerList({
             <SelectItem value="corporate">Corporate</SelectItem>
           </SelectContent>
         </Select>
+
+        {viewMode === "enhanced" && canManageCommercialConfiguration && <>
+          <Select value={termsFilter} onValueChange={(value) => setTermsFilter(value as CustomerTermsFilter)}>
+            <SelectTrigger aria-label="Terms filter" className="h-8 text-xs"><SelectValue placeholder="Terms" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Terms</SelectItem>
+              <SelectItem value="any_credit_terms">Any Credit Terms</SelectItem>
+              <SelectItem value="no_credit_terms">No Credit Terms</SelectItem>
+              <SelectItem value="not_set">Not Set</SelectItem>
+              <SelectItem value="due_on_receipt">Due on Receipt</SelectItem>
+              <SelectItem value="net_15">Net 15</SelectItem>
+              <SelectItem value="net_30">Net 30</SelectItem>
+              <SelectItem value="net_45">Net 45</SelectItem>
+              <SelectItem value="custom">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={creditLimitFilter} onValueChange={(value) => setCreditLimitFilter(value as CustomerCreditLimitFilter)}>
+            <SelectTrigger aria-label="Credit Limit filter" className="h-8 text-xs"><SelectValue placeholder="Credit Limit" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Credit Limits</SelectItem>
+              <SelectItem value="not_set">Not Set</SelectItem>
+              <SelectItem value="zero">$0</SelectItem>
+              <SelectItem value="not_set_or_zero">Not Set or $0</SelectItem>
+              <SelectItem value="greater_than_zero">Greater than $0</SelectItem>
+            </SelectContent>
+          </Select>
+        </>}
 
         {viewMode === "split" && (
           <Select value={`${sortBy}:${sortDir}`} onValueChange={handleSplitSort}>

@@ -23,6 +23,8 @@ import {
     type User,
 } from "@shared/schema";
 import { eq, and, or, ilike, desc, asc, sql, inArray } from "drizzle-orm";
+import { buildCustomerCommercialListConditions } from "./customerCommercialListFilters";
+import type { CustomerCreditLimitFilter, CustomerTermsFilter } from "@shared/customerListCommercialFilters";
 
 type CustomerSortBy =
     | "name"
@@ -201,6 +203,8 @@ export class CustomersRepository {
         status?: string;
         customerType?: string;
         assignedTo?: string;
+        terms?: CustomerTermsFilter;
+        creditLimit?: CustomerCreditLimitFilter;
     }): Promise<(Customer & { contacts?: CustomerContact[] })[]> {
         const activeCustomerStatusCondition = filters?.status
             ? eq(customers.status, filters.status)
@@ -228,6 +232,7 @@ export class CustomersRepository {
             if (filters.assignedTo) {
                 customerConditions.push(eq(customers.assignedTo, filters.assignedTo));
             }
+            customerConditions.push(...buildCustomerCommercialListConditions(filters));
 
             const matchedCustomers = await this.dbInstance
                 .select()
@@ -275,6 +280,7 @@ export class CustomersRepository {
                 if (filters.assignedTo) {
                     additionalConditions.push(eq(customers.assignedTo, filters.assignedTo));
                 }
+                additionalConditions.push(...buildCustomerCommercialListConditions(filters));
 
                 additionalCustomers = await this.dbInstance
                     .select()
@@ -333,6 +339,7 @@ export class CustomersRepository {
         if (filters?.assignedTo) {
             conditions.push(eq(customers.assignedTo, filters.assignedTo));
         }
+        conditions.push(...buildCustomerCommercialListConditions(filters ?? {}));
 
         let query = this.dbInstance.select().from(customers);
         query = query.where(and(...conditions)) as any;
@@ -1221,6 +1228,8 @@ export class CustomersRepository {
             status?: string;
             customerType?: string;
             assignedTo?: string;
+            terms?: CustomerTermsFilter;
+            creditLimit?: CustomerCreditLimitFilter;
             page?: number;
             pageSize?: number;
             sortBy?: string;
@@ -1248,6 +1257,7 @@ export class CustomersRepository {
             }
             if (opts.customerType) conds.push(eq(customers.customerType, opts.customerType as any));
             if (opts.assignedTo) conds.push(eq(customers.assignedTo, opts.assignedTo));
+            conds.push(...buildCustomerCommercialListConditions(opts));
             return conds;
         };
 
