@@ -1,0 +1,97 @@
+name: V2 Validation
+
+on:
+  pull_request:
+    paths:
+      - 'v2/**'
+      - 'shared/**'
+      - 'server/**'
+      - 'scripts/check-journal-monotonic.mjs'
+      - 'scripts/check-migration-history-integrity.mjs'
+      - 'scripts/migration-history-integrity.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - 'railway.json'
+      - 'vercel.json'
+      - 'docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md'
+      - '.github/workflows/v2-validation.yml'
+  push:
+    paths:
+      - 'v2/**'
+      - 'shared/**'
+      - 'server/**'
+      - 'scripts/check-journal-monotonic.mjs'
+      - 'scripts/check-migration-history-integrity.mjs'
+      - 'scripts/migration-history-integrity.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - 'railway.json'
+      - 'vercel.json'
+      - 'docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md'
+      - '.github/workflows/v2-validation.yml'
+  workflow_dispatch:
+    inputs:
+      guarded_qa:
+        description: Run separate QA against an ephemeral dedicated CI PostgreSQL database
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --include=dev --include=optional
+      # No secrets, database services, dotenv, or deployment credentials here.
+      - run: npm run v2:validate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v2-validation-evidence
+          path: .cache/v2-validation/*.json
+          if-no-files-found: ignore
+  guarded-qa:
+    if: github.event_name == 'workflow_dispatch' && inputs.guarded_qa
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: v2_ci_test
+          POSTGRES_USER: v2_test
+          POSTGRES_PASSWORD: ephemeral-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U v2_test -d v2_ci_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://v2_test:ephemeral-ci-only@127.0.0.1:5432/v2_ci_test
+      V2_M0_POSTGRES_INTEGRATION: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --include=dev --include=optional
+      - run: npm run v2:test:db
+      - run: npm run v2:test:qa
+        if: always()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v2-guarded-qa-evidence
+          path: .cache/v2-validation/*.json
+          if-no-files-found: ignore
