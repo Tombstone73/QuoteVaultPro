@@ -64,7 +64,7 @@ type CanonicalPickupPreview = {
 
 type CanonicalPickupTarget = {
   orderId: string;
-  orderLineItemId: string;
+  orderLineItemId: string | null;
   fulfillmentWorkspaceOrderId: string | null;
 };
 
@@ -80,10 +80,10 @@ export function resolveCanonicalPickupTarget(input: Pick<Intake, "orderId" | "or
   const explicitOrderId = nonEmptyId(input.orderId);
   const fulfillmentWorkspaceOrderId = nonEmptyId(input.fulfillmentOrderId);
   const orderLineItemId = nonEmptyId(input.orderLineItemId);
-  if (!orderLineItemId || (!explicitOrderId && !fulfillmentWorkspaceOrderId)) {
+  if (!explicitOrderId && !fulfillmentWorkspaceOrderId) {
     throw new FulfillmentOperationError(
       "FULFILLMENT_TARGET_NOT_RESOLVABLE",
-      "The pickup action could not resolve one canonical order and order line. Nothing was changed.",
+      "The pickup action could not resolve one canonical order. Nothing was changed.",
     );
   }
   if (explicitOrderId && fulfillmentWorkspaceOrderId && explicitOrderId !== fulfillmentWorkspaceOrderId) {
@@ -97,6 +97,34 @@ export function resolveCanonicalPickupTarget(input: Pick<Intake, "orderId" | "or
     orderLineItemId,
     fulfillmentWorkspaceOrderId,
   };
+}
+
+function resolveCanonicalPickupLine(
+  detail: FulfillmentDetailDto,
+  requestedOrderLineItemId: string | null,
+) {
+  if (requestedOrderLineItemId) {
+    const line = detail.lineItems.find((candidate) => candidate.id === requestedOrderLineItemId);
+    if (!line) throw new FulfillmentOperationError("ORDER_LINE_NOT_FOUND", "The resolved order line is no longer part of this order.");
+    return line;
+  }
+  // The UI sends a selected line id. When the action handoff has not yet
+  // persisted a line discovered during this same Operator run, the server can
+  // make the same unambiguous selection only for one eligible, remaining line.
+  const eligibleLines = detail.lineItems.filter((candidate) =>
+    candidate.production.eligible && candidate.production.remainingQuantity > 0,
+  );
+  if (eligibleLines.length === 1) return eligibleLines[0]!;
+  if (eligibleLines.length > 1) {
+    throw new FulfillmentOperationError(
+      "FULFILLMENT_TARGET_NOT_RESOLVABLE",
+      "More than one eligible fulfillment line remains. Select the line for this pickup. Nothing was changed.",
+    );
+  }
+  throw new FulfillmentOperationError(
+    "FULFILLMENT_TARGET_NOT_RESOLVABLE",
+    "The pickup action could not resolve an eligible fulfillment line. Nothing was changed.",
+  );
 }
 
 /**
@@ -118,8 +146,7 @@ export function previewPendingFulfillmentPickup(
   if (detail.fulfillmentType !== "PICKUP") {
     throw new FulfillmentOperationError("PICKUP_NOT_ELIGIBLE", "This order is not currently configured for pickup fulfillment.");
   }
-  const line = detail.lineItems.find((candidate) => candidate.id === target.orderLineItemId);
-  if (!line) throw new FulfillmentOperationError("ORDER_LINE_NOT_FOUND", "The resolved order line is no longer part of this order.");
+  const line = resolveCanonicalPickupLine(detail, target.orderLineItemId);
   const currentPickedUpQuantity = line.production.pickedUpQuantity;
   const remainingQuantity = line.production.remainingQuantity;
   if (intake.quantity > remainingQuantity) {
@@ -169,7 +196,7 @@ export class FulfillmentOperationsService {
       intake: {
         command: "fulfillment.record_pickup",
         orderId: target.orderId,
-        orderLineItemId: target.orderLineItemId,
+        orderLineItemId: target.orderLineItemId ?? undefined,
         fulfillmentOrderId: target.fulfillmentWorkspaceOrderId ?? undefined,
         quantity: input.pending.quantity ?? undefined,
         timing: input.pending.timing,
@@ -294,6 +321,7 @@ export class FulfillmentOperationsService {
       .update(assistantFulfillmentIntakeSessions)
       .set({
         proposalFingerprint: proposal.proposalFingerprint,
+        intakeJson: proposal.resolvedIntake,
         updatedAt: new Date(),
       })
       .where(eq(assistantFulfillmentIntakeSessions.id, session.id));
@@ -322,6 +350,7 @@ export class FulfillmentOperationsService {
     session: AssistantFulfillmentIntakeSessionRow,
   ) {
     const intake = session.intakeJson as Intake;
+    let resolvedIntake = intake;
     let source: unknown;
     let summary = "";
     let pickupPreview: CanonicalPickupPreview | null = null;
@@ -339,6 +368,11 @@ export class FulfillmentOperationsService {
       }
       const preview = previewPendingFulfillmentPickup(detail, intake);
       pickupPreview = preview;
+      resolvedIntake = {
+        ...intake,
+        orderId: preview.orderId,
+        orderLineItemId: preview.orderLineItemId,
+      };
       source = {
         orderId: preview.orderId,
         orderLineItemId: preview.orderLineItemId,
@@ -441,11 +475,12 @@ export class FulfillmentOperationsService {
           ? "Mark this eligible draft shipment shipped without billing automation."
           : "Update safe draft shipment details only.";
     }
-    const proposalFingerprint = hash({ sessionId: session.id, intake, source });
+    const proposalFingerprint = hash({ sessionId: session.id, intake: resolvedIntake, source });
     return {
       fulfillmentIntakeSessionId: session.id,
       commandName: intake.command,
       proposalFingerprint,
+      resolvedIntake,
       summary,
       sourceLinks,
       ...(pickupPreview ? { pickupPreview } : {}),

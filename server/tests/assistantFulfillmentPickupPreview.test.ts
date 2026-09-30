@@ -60,7 +60,6 @@ describe("Assistant governed fulfillment pickup preview", () => {
 
   it.each([
     ["missing order target", { orderId: null, fulfillmentOrderId: null, orderLineItemId: "line_coroplast_synthetic" }, "FULFILLMENT_TARGET_NOT_RESOLVABLE"],
-    ["missing line target", { orderId: "order_brainstorm_synthetic", fulfillmentOrderId: null, orderLineItemId: null }, "FULFILLMENT_TARGET_NOT_RESOLVABLE"],
     ["conflicting workspace owner", { orderId: "order_brainstorm_synthetic", fulfillmentOrderId: "replacement_order", orderLineItemId: "line_coroplast_synthetic" }, "PICKUP_TARGET_MISMATCH"],
   ])("rejects %s before any fulfillment read or mutation", (_label, input, code) => {
     try {
@@ -80,6 +79,37 @@ describe("Assistant governed fulfillment pickup preview", () => {
       orderId: "order_brainstorm_synthetic", fulfillmentOrderId: "order_brainstorm_synthetic", orderLineItemId: "line_coroplast_synthetic", quantity: 500,
     });
     expect(preview.projectedPickedUpQuantity).toBe(1100);
+  });
+
+  it("uses the one eligible canonical fulfillment line when the action handoff has not yet persisted it", () => {
+    const preview = previewPendingFulfillmentPickup(detail({ lineItems: [{
+      id: "line_coroplast_synthetic", productName: "Coroplast signs", description: "Peterman Yard Signs",
+      production: { orderedQuantity: 5000, pickedUpQuantity: 600, remainingQuantity: 4400, eligible: true },
+    }] }), {
+      orderId: "order_brainstorm_synthetic",
+      fulfillmentOrderId: "order_brainstorm_synthetic",
+      orderLineItemId: undefined,
+      quantity: 500,
+    });
+    expect(preview).toMatchObject({
+      orderLineItemId: "line_coroplast_synthetic",
+      currentPickedUpQuantity: 600,
+      projectedPickedUpQuantity: 1100,
+      projectedRemainingQuantity: 3900,
+    });
+  });
+
+  it("does not choose among multiple eligible fulfillment lines without an established line", () => {
+    const multiLineDetail = detail({ lineItems: [
+      { id: "line_coroplast_synthetic", productName: "Coroplast", description: "Peterman", production: { orderedQuantity: 5000, pickedUpQuantity: 600, remainingQuantity: 4400, eligible: true } },
+      { id: "line_foam_synthetic", productName: "Foam Board", description: "Alternate", production: { orderedQuantity: 100, pickedUpQuantity: 0, remainingQuantity: 100, eligible: true } },
+    ] });
+    expect(() => previewPendingFulfillmentPickup(multiLineDetail, {
+      orderId: "order_brainstorm_synthetic", fulfillmentOrderId: "order_brainstorm_synthetic", orderLineItemId: undefined, quantity: 500,
+    })).toThrow(expect.objectContaining({ code: "FULFILLMENT_TARGET_NOT_RESOLVABLE" }));
+    expect(previewPendingFulfillmentPickup(multiLineDetail, {
+      orderId: "order_brainstorm_synthetic", fulfillmentOrderId: "order_brainstorm_synthetic", orderLineItemId: "line_coroplast_synthetic", quantity: 500,
+    }).orderLineItemId).toBe("line_coroplast_synthetic");
   });
 
   it("keeps a missing canonical line distinct from an unresolvable target", () => {

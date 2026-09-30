@@ -61,6 +61,7 @@ describe("AssistantService Operator Runtime integration", () => {
     const provider = { decide: jest.fn(async ({ goal, observations, task }: any) => {
       if (goal.startsWith("Find the fixture job")) {
         if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "investigation.get", arguments: { resource: order } }] };
+        if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "investigation.related", arguments: { resource: order, relationships: ["contains_line", "has_fulfillment_workspace"], depth: 1, limit: 10 } }] };
         return { kind: "complete", response: "Order 9001 has the Coroplast line and fulfillment workspace." };
       }
       if (goal.startsWith("Add another pickup")) {
@@ -75,10 +76,12 @@ describe("AssistantService Operator Runtime integration", () => {
     const contextExecutor = (_audit: unknown, semanticTools: readonly any[]) => {
       const semantic = semanticOnlyExecutor(_audit, semanticTools);
       return {
-        catalog: () => [{ name: "investigation.get", description: "Read one resolved resource." }, ...semantic.catalog()],
+        catalog: () => [{ name: "investigation.get", description: "Read one resolved resource." }, { name: "investigation.related", description: "Read canonical relationships." }, ...semantic.catalog()],
         execute: async ({ toolName, arguments: args, context: trusted }: any) => toolName === "investigation.get"
-          ? { toolName, status: "succeeded", result: { status: "succeeded", data: { snapshot: { resource: order, line, fulfillment } }, provenance: { sourceLinks: [order, line, fulfillment], freshness: { capturedAt: "2026-09-30T12:00:00.000Z" } } } }
-          : semantic.execute({ toolName, arguments: args, context: trusted }),
+          ? { toolName, status: "succeeded", result: { status: "succeeded", data: { snapshot: { resource: order } }, provenance: { sourceLinks: [order], freshness: { capturedAt: "2026-09-30T12:00:00.000Z" } } } }
+          : toolName === "investigation.related"
+            ? { toolName, status: "succeeded", result: { status: "succeeded", data: { root: order, edges: [{ from: order, to: line, relationship: "contains_line" }, { from: order, to: fulfillment, relationship: "has_fulfillment_workspace" }], returnedDepth: 1, truncated: false }, provenance: { sourceLinks: [order, line, fulfillment], freshness: { capturedAt: "2026-09-30T12:00:00.000Z" } } } }
+            : semantic.execute({ toolName, arguments: args, context: trusted }),
       };
     };
     const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, contextExecutor as any, operatorProviderResolver as any);
@@ -87,7 +90,7 @@ describe("AssistantService Operator Runtime integration", () => {
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Add another pickup of 500 pieces today.", context });
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "yes", context });
 
-    expect(provider.decide).toHaveBeenCalledTimes(4);
+    expect(provider.decide).toHaveBeenCalledTimes(5);
     expect(tasks.updates.at(-1)?.patch.semanticChanges.pendingActionContext).toMatchObject({ confirmation: "confirmed", quantity: 500, timing: "today" });
   });
 
