@@ -1,3 +1,4 @@
+import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import type { QueueRowDto } from './types';
 import { isCanceledOrder } from '@shared/operationalState';
 
@@ -49,7 +50,7 @@ export function buildFulfillmentWorkspaceQueueRow(input: {
   const { order, orderedQty, shippedQty, pickupTicket, shipmentId, deriveShipStatus } = input;
   const fulfilledQty = input.fulfilledQty ?? shippedQty;
   const pickedUpQty = input.pickedUpQty ?? 0;
-  const isPickup = order.shippingMethod === 'pickup';
+  const isPickup = effectiveOrderFulfillmentMethod(order.shippingMethod) === 'pickup';
   const isEligible = !isCanceledOrder(order);
   const remaining = Math.max(orderedQty - fulfilledQty, 0);
   const pickupStatus = cleanText(pickupTicket?.status).toUpperCase();

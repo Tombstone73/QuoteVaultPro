@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { administrativeCorrectionPreview, administrativeReopenedByLine, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
+import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { currentPickupHistoryNote, fulfillmentHistoryNoteSchema, PICKUP_HISTORY_NOTE_UPDATED } from "@shared/fulfillmentHistoryNote";
 import { bindPickupTravelers, lockPickupTravelers, listPickupTravelers } from '../pickupTravelerLifecycle';
 import { getOrderTravelerSource } from '../orderTravelerSourceService';
@@ -85,14 +88,14 @@ function cleanText(value: unknown): string {
 }
 
 async function readTerminalReversalQuantities(runner: any, orgId: string, lineItemIds: string[]) {
-  if (!lineItemIds.length) return { shipment: new Map<string, number>(), pickup: new Map<string, number>() };
+  if (!lineItemIds.length) return { shipment: new Map<string, number>(), pickup: new Map<string, number>(), administrative: new Map<string, number>() };
   const events = await runner.select({ eventType: fulfillmentEvents.eventType, payloadJson: fulfillmentEvents.payloadJson })
     .from(fulfillmentEvents)
     .where(and(
       eq(fulfillmentEvents.organizationId, orgId),
-      inArray(fulfillmentEvents.eventType, ['SHIPMENT_REVERSED', 'PICKUP_HANDOFF_REVERSED']),
+      inArray(fulfillmentEvents.eventType, ['SHIPMENT_REVERSED', 'PICKUP_HANDOFF_REVERSED', ADMINISTRATIVE_FULFILLMENT_REOPENED]),
     ));
-  return terminalReversalQuantitiesByLine(events, lineItemIds);
+  return { ...terminalReversalQuantitiesByLine(events, lineItemIds), administrative: administrativeReopenedByLine(events) };
 }
 
 function uniqueNonEmpty(values: unknown[]): string[] {
@@ -1112,7 +1115,7 @@ export class PickupRepo {
       const reversedPickup = reversalQuantities.pickup;
       const shipped = new Map(shippedRows.map((row) => [row.id, Math.max(0, Number(row.quantity || 0) - (reversedShipment.get(row.id) ?? 0))]));
       const picked = new Map(pickedRows.map((row) => [row.id, Math.max(0, Number(row.quantity || 0) - (reversedPickup.get(row.id) ?? 0))]));
-      const administrativelyReconciled = new Map(administrativeRows.map((row) => [row.id, Number(row.quantity || 0)]));
+      const administrativelyReconciled = new Map(administrativeRows.map((row) => [row.id, netTerminalFulfillmentQuantity(row.quantity, reversalQuantities.administrative.get(row.id) ?? 0)]));
       const projections = lines.map((line) => resolveFulfillmentLineQuantity({
         ...line, orderedQuantity: Number(line.quantity || 0),
         shippedQuantity: shipped.get(line.id) ?? 0, pickedUpQuantity: picked.get(line.id) ?? 0,
@@ -1252,6 +1255,22 @@ export class PickupRepo {
 
 export class FulfillmentDashboardRepo {
   constructor(private readonly dbInstance: DbExecutor = db) {}
+
+  async getAdministrativeCorrectionPreview(orgId: string, orderId: string) {
+    const [order] = await this.dbInstance.select().from(orders)
+      .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
+    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+    const lines = await this.listLineEligibility(orgId, { orderIds: [orderId] });
+    const resolutions = await this.dbInstance.select().from(fulfillmentAdministrativeReconciliations)
+      .where(and(eq(fulfillmentAdministrativeReconciliations.organizationId, orgId), eq(fulfillmentAdministrativeReconciliations.orderId, orderId)))
+      .orderBy(fulfillmentAdministrativeReconciliations.id);
+    const corrections = await this.dbInstance.select({ id: fulfillmentEvents.id }).from(fulfillmentEvents)
+      .where(and(eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, orderId), eq(fulfillmentEvents.eventType, ADMINISTRATIVE_FULFILLMENT_REOPENED)))
+      .orderBy(fulfillmentEvents.id);
+    const preview = administrativeCorrectionPreview(order, lines.sort((a, b) => a.id.localeCompare(b.id)));
+    const expectedState = createHash('sha256').update(JSON.stringify({ preview, state: order.state, status: order.status, updatedAt: order.updatedAt, resolutions, corrections })).digest('hex');
+    return { ...preview, expectedState };
+  }
 
   private deriveShipStatus(ordered: number, shipped: number): DerivedOrderFulfillmentStatus {
     if (shipped <= 0) return 'READY';
@@ -1399,7 +1418,7 @@ export class FulfillmentDashboardRepo {
     const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversedShipmentByLine.get(row.lineItemId) ?? 0)]));
     const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversedPickupByLine.get(row.lineItemId) ?? 0)]));
     const readyByLine = new Map(readyRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
-    const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+    const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversalQuantities.administrative.get(row.lineItemId) ?? 0)]));
 
     return lines.map((line) => {
       const owner = owners.get(line.id);
@@ -1456,7 +1475,7 @@ export class FulfillmentDashboardRepo {
       .filter((allocation) => allocation.quantity > 0);
     const safeActorUserId = await resolveExistingActorUserId(executor, input.actorUserId);
     if (allocations.length > 0) {
-      await executor.insert(fulfillmentAdministrativeReconciliations).values(allocations.map((allocation) => ({
+      const resolutions = await executor.insert(fulfillmentAdministrativeReconciliations).values(allocations.map((allocation) => ({
         organizationId: orgId,
         orderId: input.orderId,
         lineItemId: allocation.lineItemId,
@@ -1466,7 +1485,20 @@ export class FulfillmentDashboardRepo {
         note: input.note?.trim() || null,
         sourceInvoiceId: input.sourceInvoiceId ?? null,
         actorUserId: safeActorUserId,
-      })));
+      }))).returning();
+      const [order] = await executor.select({ shippingMethod: orders.shippingMethod }).from(orders)
+        .where(and(eq(orders.organizationId, orgId), eq(orders.id, input.orderId))).limit(1);
+      await executor.insert(fulfillmentEvents).values({
+        organizationId: orgId, entityType: 'ORDER', entityId: input.orderId,
+        actorUserId: safeActorUserId, eventType: 'FULFILLMENT_ADMINISTRATIVELY_RESOLVED',
+        payloadJson: { source: 'close_job_override', reason: input.reason, note: input.note ?? null,
+          intendedFulfillmentMethod: effectiveOrderFulfillmentMethod(order?.shippingMethod),
+          items: resolutions.map(resolution => ({ resolutionId: resolution.id, orderLineItemId: resolution.lineItemId,
+            quantity: resolution.reconciledQuantity,
+            orderedQuantity: before.find(line => line.id === resolution.lineItemId)?.projection.orderedQuantity,
+            physicallyFulfilledQuantity: before.find(line => line.id === resolution.lineItemId)?.projection.fulfilledQuantity })),
+        },
+      });
     }
 
     const after = (await this.listLineEligibility(orgId, { orderIds: [input.orderId] }, executor))
@@ -1624,7 +1656,7 @@ export class FulfillmentDashboardRepo {
       const reversedPickupByLine = reversalQuantities.pickup;
       const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedShipmentByLine.get(row.lineItemId) ?? 0))]));
       const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedPickupByLine.get(row.lineItemId) ?? 0))]));
-      const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
+      const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversalQuantities.administrative.get(row.lineItemId) ?? 0)]));
       const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number }> = [];
       for (const [lineItemId, quantityDelta] of requested) {
         const line = lineById.get(lineItemId)!;
@@ -1878,10 +1910,11 @@ export class FulfillmentDashboardRepo {
       const visibility = fulfillmentQueueVisibility(order, quantitySummary, filters.showArchived);
       if (!visibility) continue;
       const isHistorical = visibility === 'historical';
+      const isLegacyCompletion = isHistorical && quantitySummary.administrativelyReconciledQuantity === 0 && quantitySummary.remainingQuantity > 0;
       if (isHistorical && filters.overdueOnly) continue;
       const remaining = quantitySummary.remainingQuantity;
 
-      const isPickup = order.shippingMethod === 'pickup';
+      const isPickup = effectiveOrderFulfillmentMethod(order.shippingMethod) === 'pickup';
       if (filters.type === 'ship' && isPickup) continue;
       if (filters.type === 'pickup' && !isPickup) continue;
       const productionContext = productionContextByOrder.get(order.id);
@@ -1895,8 +1928,8 @@ export class FulfillmentDashboardRepo {
         // The ticket is a notification envelope, not the physical readiness
         // authority. Its READY_FOR_PICKUP state can exist after a partial
         // adjustment, so derive the operator-facing status from quantities.
-        const status = isHistorical && quantitySummary.administrativelyReconciledQuantity > 0
-          ? 'COMPLETED'
+        const status = isLegacyCompletion ? "LEGACY_COMPLETION" : isHistorical && quantitySummary.administrativelyReconciledQuantity > 0
+          ? 'ADMINISTRATIVELY_RESOLVED'
           : quantitySummary.remainingQuantity === 0
           ? 'PICKED_UP'
           : quantitySummary.pickedUpQuantity > 0
@@ -1933,8 +1966,8 @@ export class FulfillmentDashboardRepo {
         continue;
       }
 
-      const shipStatus = isHistorical && quantitySummary.administrativelyReconciledQuantity > 0
-        ? 'COMPLETED'
+      const shipStatus = isLegacyCompletion ? "LEGACY_COMPLETION" : isHistorical && quantitySummary.administrativelyReconciledQuantity > 0
+        ? 'ADMINISTRATIVELY_RESOLVED'
         : isHistorical && quantitySummary.shippedQuantity > 0 && order.fulfillmentStatus === 'delivered'
           ? 'DELIVERED'
           : quantitySummary.status;
@@ -2425,7 +2458,7 @@ export class FulfillmentDashboardRepo {
         return { ok: false as const, code: 'TERMINAL_STATUS_REVERT_BLOCKED', message: 'Picked-up fulfillment cannot be reverted from this action' };
       }
 
-      const previousStatus = order.shippingMethod === 'pickup'
+      const previousStatus = effectiveOrderFulfillmentMethod(order.shippingMethod) === 'pickup'
         ? this.derivePickupQueueStatus(order.fulfillmentStatus, ticket)
         : (cleanText(order.fulfillmentStatus).toLowerCase() === 'packed' ? 'READY' : 'DRAFT');
 
@@ -2715,7 +2748,7 @@ export class FulfillmentDashboardRepo {
       shipmentId: uniqueShipmentRows[0]?.id ?? null,
       deriveShipStatus: (fulfillmentStatus, ordered, shipped) => this.deriveShipQueueStatus(fulfillmentStatus, ordered, shipped),
     });
-    const detailIsPickup = orderRow.shippingMethod === 'pickup';
+    const detailIsPickup = effectiveOrderFulfillmentMethod(orderRow.shippingMethod) === 'pickup';
     const row: QueueRowDto = {
       ...baseRow,
       ...quantitySummary,
@@ -2767,8 +2800,12 @@ export class FulfillmentDashboardRepo {
         return { checked: Number(checklistByLineItemId.get(item.id)?.fulfilledQuantity || 0) >= projection.productionCompleteQuantity };
       }));
 
+    const administrativeCorrection = await this.getAdministrativeCorrectionPreview(orgId, orderId);
     return {
       ...row,
+      status: administrativeCorrection.mode === "administrative" ? "ADMINISTRATIVELY_RESOLVED" : administrativeCorrection.mode === "legacy" ? "LEGACY_COMPLETION" : row.status,
+      fulfillmentMethod: effectiveOrderFulfillmentMethod(orderRow.shippingMethod),
+      administrativeCorrection,
       customer: {
         name: orderRow?.customerName || row.customerName,
         email: orderRow?.customerEmail ?? null,
@@ -2802,6 +2839,7 @@ export class FulfillmentDashboardRepo {
           eligible: readiness.eligibleQuantity > 0,
           label: readiness.label,
           productionRequired: readiness.productionRequired,
+          administrativelyReconciledQuantity: readiness.administrativelyReconciledQuantity,
           orderedQuantity: readiness.orderedQuantity,
           productionCompleteQuantity: readiness.productionCompleteQuantity,
           fulfilledQuantity: readiness.fulfilledQuantity,

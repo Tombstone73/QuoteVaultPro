@@ -1,3 +1,4 @@
+import type { AdministrativeCorrectionPreview } from '@shared/administrativeFulfillment';
 import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 export type FulfillmentType = 'SHIP' | 'PICKUP';
@@ -50,6 +51,8 @@ export interface QueueRowDto {
 }
 
 export interface FulfillmentDetailDto extends QueueRowDto {
+  fulfillmentMethod?: "pickup" | "ship" | "deliver";
+  administrativeCorrection?: AdministrativeCorrectionPreview;
   permissions?: {
     canRevertStatus: boolean;
     revertPermission: string;
@@ -99,6 +102,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       orderedQuantity: number;
       productionCompleteQuantity: number;
       fulfilledQuantity: number;
+      administrativelyReconciledQuantity?: number;
       eligibleQuantity: number;
       blockedQuantity: number;
       shippedQuantity: number;

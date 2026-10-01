@@ -37,19 +37,19 @@ describe('historical fulfillment search (Order 20306)', () => {
     expect((await fixture().repo.listFulfillmentQueue('org-1', { ...filters, overdueOnly: true })).rows).toEqual([]);
   });
 
-  test('history respects type/status filters and does not admit canceled or status-only records', async () => {
+  test('history respects type/status filters, excludes canceled, and identifies legacy completion', async () => {
     for (const changed of [{ type: 'pickup' as const }, { status: 'ready' }]) {
       expect((await fixture().repo.listFulfillmentQueue('org-1', { ...filters, ...changed })).rows).toEqual([]);
     }
     expect((await fixture({ status: 'canceled' }).repo.listFulfillmentQueue('org-1', filters)).rows).toEqual([]);
-    expect((await fixture({}, { shippedQuantity: 0 }).repo.listFulfillmentQueue('org-1', filters)).rows).toEqual([]);
+    expect((await fixture({}, { shippedQuantity: 0 }).repo.listFulfillmentQueue('org-1', filters)).rows[0]).toMatchObject({ status: 'LEGACY_COMPLETION', isHistorical: true, remainingQuantity: 10, shippedQuantity: 0 });
   });
 
   test('picked-up and administratively reconciled history are labeled truthfully', async () => {
     const pickup = fixture({ shippingMethod: 'pickup' }, { shippedQuantity: 0, pickedUpQuantity: 10 });
     expect((await pickup.repo.listFulfillmentQueue('org-1', filters)).rows[0]).toMatchObject({ status: 'PICKED_UP', isHistorical: true });
     const administrative = fixture({}, { shippedQuantity: 0, administrativelyReconciledQuantity: 10 });
-    expect((await administrative.repo.listFulfillmentQueue('org-1', filters)).rows[0]).toMatchObject({ status: 'COMPLETED', isHistorical: true, shippedQuantity: 0 });
+    expect((await administrative.repo.listFulfillmentQueue('org-1', filters)).rows[0]).toMatchObject({ status: 'ADMINISTRATIVELY_RESOLVED', isHistorical: true, shippedQuantity: 0 });
   });
 
   test('reopened quantities remain active with either history setting', async () => {

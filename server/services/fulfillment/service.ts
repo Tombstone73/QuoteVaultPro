@@ -1,4 +1,5 @@
 import { canEditFulfillmentHistoryNotes, fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
+import { administrativeReopenSchema, validateAdministrativeReopen, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
@@ -450,7 +451,46 @@ export class FulfillmentService {
       if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
-    return this.getOrderDetail(orgId, orderId);
+    // The append is successful even if unrelated artwork/workspace hydration
+    // is unavailable. Clients refresh the workspace independently.
+    return { orderId };
+  }
+
+  async reopenAdministrativeFulfillment(orgId: string, orderId: string, rawInput: unknown, actorUserId?: string | null, actorOrgRole?: string | null) {
+    if (!['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase())) {
+      throw new FulfillmentHttpError(403, 'Owner or Admin authority is required.', 'FULFILLMENT_TERMINAL_REVERSAL_FORBIDDEN');
+    }
+    const input = administrativeReopenSchema.parse(rawInput);
+    return this.dbInstance.transaction(async tx => {
+      const [order] = await tx.select().from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).for('update').limit(1);
+      if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+      await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} INNER JOIN ${orders} ON ${orders.id} = ${orderLineItems.orderId} WHERE ${orders.organizationId} = ${orgId} AND ${orderLineItems.orderId} = ${orderId} ORDER BY ${orderLineItems.id} FOR UPDATE OF ${orderLineItems}`);
+      const events = await tx.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'ORDER'), eq(fulfillmentEvents.entityId, orderId), eq(fulfillmentEvents.eventType, ADMINISTRATIVE_FULFILLMENT_REOPENED)));
+      const replay = events.find(event => (event.payloadJson as any)?.clientRequestId === input.clientRequestId);
+      if (replay) {
+        if (JSON.stringify((replay.payloadJson as any)?.request) !== JSON.stringify(input)) throw new FulfillmentHttpError(409, 'Correction request identity was already used.', 'STALE_FULFILLMENT_CORRECTION');
+        return { orderId, replayed: true };
+      }
+      const repository = new FulfillmentDashboardRepo(tx as any);
+      await repository.assertNoActiveProduction(orgId, orderId, tx as any);
+      const preview = await repository.getAdministrativeCorrectionPreview(orgId, orderId);
+      try { validateAdministrativeReopen(preview, input); }
+      catch (error) { throw new FulfillmentHttpError(409, (error as Error).message, 'STALE_FULFILLMENT_CORRECTION'); }
+      const safeActor = await resolveExistingActorUserId(tx, actorUserId);
+      await tx.insert(fulfillmentEvents).values({ organizationId: orgId, entityType: 'ORDER', entityId: orderId,
+        actorUserId: safeActor, eventType: ADMINISTRATIVE_FULFILLMENT_REOPENED,
+        payloadJson: { mode: preview.mode, reason: input.reason, clientRequestId: input.clientRequestId, request: input,
+          intendedFulfillmentMethod: preview.method, before: preview.lines, items: input.items, source: 'staff_correction' },
+      });
+      const [ticket] = await tx.select({ id: pickupTickets.id }).from(pickupTickets)
+        .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId))).limit(1);
+      // Reuse the canonical reopening policy inside the same transaction as
+      // the event, so quantities and parent state cannot commit separately.
+      const service = new FulfillmentService({ dbInstance: tx as any, dashboardRepo: repository });
+      await service.reconcileOrderAfterTerminalReversal(orgId, orderId, safeActor, input.reason,
+        preview.method === 'pickup' ? 'PICKUP_HANDOFF' : 'SHIPMENT', ticket?.id ?? null, true);
+      return { orderId, replayed: false };
+    });
   }
 
   private async requireChecklistComplete(orgId: string, orderId: string, target: 'ready_for_pickup' | 'shipped') {

@@ -1,3 +1,4 @@
+import { AdministrativeCorrection } from "@/components/fulfillment/AdministrativeCorrection";
 import { PickupHistory } from "@/components/fulfillment/PickupHistory";
 import type { PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useState } from "react";
@@ -59,7 +60,7 @@ export default function FulfillmentWorkspacePage() {
 
   const workspaceMode = resolveFulfillmentWorkspaceMode(detail);
   const isPickup = workspaceMode.mode === "pickup";
-  const methodLabel = isPickup ? "Pickup" : "Shipping";
+  const methodLabel = detail.fulfillmentMethod === "deliver" ? "Delivery" : isPickup ? "Pickup" : "Shipping";
   const shipmentId = createdShipmentId || workspaceMode.singleDraftShipmentId;
   const shipmentHistory = detail.shipments.filter((shipment) => shipment.status !== "DRAFT");
   const pickupPending = recordPickupHandoff.isPending || createPickupTicket.isPending;
@@ -164,16 +165,18 @@ export default function FulfillmentWorkspacePage() {
       <div className="divide-y">{detail.lineItems.map((item) => {
         const itemName = item.productName || item.description || "Line item";
         const { orderedQuantity, pickedUpQuantity, shippedQuantity, remainingQuantity, productionCompleteQuantity } = item.production;
-        const fulfilledQuantity = isPickup ? pickedUpQuantity : shippedQuantity;
+        const fulfilledQuantity = pickedUpQuantity + shippedQuantity;
         const isComplete = remainingQuantity <= 0;
         const pickupQuantity = pickupQuantityByLine[item.id] ?? "";
         return <article key={item.id} data-testid={`fulfillment-line-${item.id}`} className="space-y-3 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{itemName}</h3><p className="mt-1 text-sm text-muted-foreground">Ordered {orderedQuantity} · {isPickup ? "Picked up" : "Shipped"} {fulfilledQuantity} · Remaining {remainingQuantity}</p><p className="mt-1 text-xs text-muted-foreground">Production reports: {productionCompleteQuantity}</p></div><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{isComplete ? "Completed" : `${remainingQuantity} remaining`}</span></div>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{itemName}</h3><p className="mt-1 text-sm text-muted-foreground">Ordered {orderedQuantity} · Physically fulfilled {fulfilledQuantity} · Administratively resolved {item.production.administrativelyReconciledQuantity ?? 0} · Remaining {remainingQuantity}</p><p className="mt-1 text-xs text-muted-foreground">Production reports: {productionCompleteQuantity}</p></div><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{(item.production.administrativelyReconciledQuantity ?? 0) > 0 ? "Administratively Resolved" : detail.administrativeCorrection?.mode === "legacy" ? "Legacy Completion" : isComplete ? "Physically Fulfilled" : `${remainingQuantity} remaining`}</span></div>
           {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
       {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => { setReprintTraveler(null); setPickupTravelerOpen(true); }}>Print Pickup Travelers</button><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
     </section>
+
+    <AdministrativeCorrection key={orderId} detail={detail} />
 
     <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} reprint={reprintTraveler} onQueued={(id) => { setSelectedTravelerIds(ids => [...ids, id]); void detailQuery.refetch(); }} />
 

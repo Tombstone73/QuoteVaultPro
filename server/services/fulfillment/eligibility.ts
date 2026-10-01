@@ -36,6 +36,7 @@ export function fulfillmentQueueVisibility(
   if (isCanceledOrder(order) || quantities.physicalLineCount === 0) return null;
   if (isFulfillmentQueueEligibleOrder(order) && quantities.remainingQuantity > 0) return "active";
   if (showArchived && quantities.operationallyFulfilledQuantity > 0) return "historical";
+  if (showArchived && quantities.remainingQuantity > 0 && (order.state === 'closed' || order.status === 'operationally_complete' || ['shipped', 'delivered'].includes(String(order.fulfillmentStatus).toLowerCase()))) return "historical";
   return null;
 }
 

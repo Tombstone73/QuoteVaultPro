@@ -10,6 +10,7 @@ import { TextDecoder, TextEncoder } from "util";
 Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "pickup-request-1" } });
 
 let detail: any;
+const reopenAdministrative = jest.fn(async (_input: any) => ({ orderId: 'order-1' }));
 const createTicket = jest.fn(async () => ({ id: "ticket-1", status: "DRAFT" }));
 const markOrderReady = jest.fn(async () => {
   detail = { ...detail, pickupTicket: { ...detail.pickupTicket, id: "ticket-1", status: "READY_FOR_PICKUP" } };
@@ -39,6 +40,7 @@ const addNote = jest.fn(async (note: string) => {
 });
 
 jest.mock("@/hooks/useFulfillment", () => ({
+  useReopenAdministrativeFulfillmentMutation: () => ({ mutateAsync: reopenAdministrative, isPending: false }),
   toFulfillmentError: (error: any) => ({ message: error?.message || "Unexpected error" }),
   useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: jest.fn() }),
   useCreateShipmentMutation: () => ({ mutateAsync: jest.fn(async () => ({ shipmentId: "shipment-1" })), isPending: false }),
@@ -69,6 +71,33 @@ function button(container: HTMLElement, label: string) { return Array.from(conta
 afterEach(() => { document.body.innerHTML = ""; jest.clearAllMocks(); });
 
 describe("FulfillmentWorkspacePage direct fulfillment route", () => {
+  test("administrative completion displays separate quantities and requires reason/preview before reopening", async () => {
+    detail = makeDetail({ production: 1000 });
+    detail.remainingQuantity = 0;
+    Object.assign(detail.lineItems[0].production, { remainingQuantity: 0, administrativelyReconciledQuantity: 1000 });
+    detail.permissions = { canReverseTerminalFulfillment: true };
+    detail.administrativeCorrection = { mode: 'administrative', method: 'pickup', blockedReason: null, expectedState: 'snapshot', lines: [{ orderLineItemId: 'line-1', orderedQuantity: 1000, physicallyFulfilledQuantity: 0, administrativelyResolvedQuantity: 1000, legacyClosedQuantity: 0, reopenableQuantity: 1000 }] };
+    const { container, root } = render();
+    expect(container.textContent).toContain('Physically fulfilled 0 · Administratively resolved 1000 · Remaining 0');
+    act(() => Simulate.click(button(container, 'Reopen administrative resolution')));
+    expect(button(container, 'Confirm reopen fulfillment').disabled).toBe(true);
+    act(() => change(container.querySelector('textarea[aria-label="Administrative correction reason"]') as HTMLTextAreaElement, 'Wrong administrative closure'));
+    await act(async () => { Simulate.click(button(container, 'Confirm reopen fulfillment')); });
+    expect(reopenAdministrative).toHaveBeenCalledWith(expect.objectContaining({ expectedState: 'snapshot', reason: 'Wrong administrative closure', items: [{ orderLineItemId: 'line-1', quantity: 1000 }] }));
+    act(() => root.unmount());
+  });
+
+  test("legacy completion explains missing authority instead of hiding correction capability", () => {
+    detail = makeDetail({ production: 1000 });
+    detail.administrativeCorrection = { mode: 'legacy', blockedReason: null, method: 'pickup', expectedState: 'snapshot', lines: [] };
+    detail.permissions = { canReverseTerminalFulfillment: false };
+    const { container, root } = render();
+    expect(container.textContent).toContain('Legacy Completion');
+    expect(container.textContent).toContain('Owner or Admin authority is required');
+    expect(button(container, 'Reconcile legacy completion')).toBeUndefined();
+    act(() => root.unmount());
+  });
+
   test("completed single and combined shipments expose the canonical correction detail", () => {
     detail = makeDetail({ fulfillmentType: "SHIP" });
     detail.remainingQuantity = 0;

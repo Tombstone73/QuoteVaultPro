@@ -1,5 +1,5 @@
 import { beforeAll, expect, jest, test } from '@jest/globals';
-import { fulfillmentAdministrativeReconciliations, productionJobs } from '@shared/schema';
+import { fulfillmentAdministrativeReconciliations, fulfillmentEvents, productionJobs } from '@shared/schema';
 import { resolveFulfillmentLineQuantity } from '@shared/fulfillmentReadiness';
 jest.unstable_mockModule('../db', () => ({ db: {} }));
 let FulfillmentDashboardRepo: typeof import('../services/fulfillment/repository').FulfillmentDashboardRepo;
@@ -15,12 +15,15 @@ test('real administrative ledger writes only remaining quantities and retires fu
   let activeOwner = true;
   const inserts: any[] = [];
   const updates: any[] = [];
+  const events: any[] = [];
   const tx: any = {
     execute: jest.fn(async () => []),
     select: () => chain([]),
-    insert: (table: any) => ({ values: async (rows: any[]) => {
+    insert: (table: any) => ({ values: (rows: any) => {
+      if (table === fulfillmentEvents) { events.push(rows); return Promise.resolve(); }
       expect(table).toBe(fulfillmentAdministrativeReconciliations);
       inserts.push(...rows); allocated += rows.reduce((sum, row) => sum + row.reconciledQuantity, 0);
+      return { returning: async () => rows.map((row, i) => ({ ...row, id: `resolution-${i}` })) };
     } }),
     update: (table: any) => ({ set: (values: any) => ({ where: () => ({ returning: async () => {
       expect(table).toBe(productionJobs);
@@ -39,6 +42,8 @@ test('real administrative ledger writes only remaining quantities and retires fu
   expect(inserts[0]).toMatchObject({ source: 'close_job_override', reconciledQuantity: 5 });
   expect(updates).toHaveLength(1);
   expect(updates[0].status).toBe('done');
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ eventType: 'FULFILLMENT_ADMINISTRATIVELY_RESOLVED', payloadJson: { source: 'close_job_override', intendedFulfillmentMethod: 'ship', items: [{ resolutionId: 'resolution-0', orderedQuantity: 8, physicallyFulfilledQuantity: 3, quantity: 5 }] } });
 });
 
 test.each(['owner', 'run'])('real administrative ledger blocks active production %s', async conflict => {

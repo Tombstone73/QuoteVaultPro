@@ -1,3 +1,4 @@
+import type { AdministrativeCorrectionPreview } from '@shared/administrativeFulfillment';
 import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -48,6 +49,8 @@ export interface FulfillmentQueueRow {
 }
 
 export interface FulfillmentDetail extends FulfillmentQueueRow {
+  fulfillmentMethod?: "pickup" | "ship" | "deliver";
+  administrativeCorrection?: AdministrativeCorrectionPreview;
   permissions?: {
     canRevertStatus: boolean;
     revertPermission: string;
@@ -97,6 +100,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       orderedQuantity: number;
       productionCompleteQuantity: number;
       fulfilledQuantity: number;
+      administrativelyReconciledQuantity?: number;
       eligibleQuantity: number;
       blockedQuantity: number;
       shippedQuantity: number;
@@ -426,10 +430,19 @@ export function useUpdatePickupHistoryNoteMutation(orderId: string) {
 export function useAddFulfillmentNoteMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (note: string) => apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/note`, {
+    mutationFn: (note: string) => apiCall<{ orderId: string }>(`/api/fulfillment/orders/${orderId}/note`, {
       method: "POST",
       body: JSON.stringify({ note }),
     }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useReopenAdministrativeFulfillmentMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { expectedState: string; clientRequestId: string; reason: string; items: Array<{ orderLineItemId: string; quantity: number }> }) =>
+      apiCall(`/api/fulfillment/orders/${orderId}/reopen-administrative`, { method: 'POST', body: JSON.stringify(payload) }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }

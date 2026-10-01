@@ -54,7 +54,8 @@ const statusOptions = [
   { value: "partially_shipped", label: "Partially Shipped" },
   { value: "shipped", label: "Shipped" },
   { value: "delivered", label: "Delivered" },
-  { value: "completed", label: "Completed" },
+  { value: "administratively_resolved", label: "Administratively Resolved" },
+  { value: "legacy_completion", label: "Legacy Completion" },
   { value: "ready_for_pickup", label: "Ready for Pickup" },
   { value: "picked_up", label: "Picked Up" },
 ];

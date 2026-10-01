@@ -80,6 +80,21 @@ export function registerFulfillmentRoutes(
 
   // ===== SHIPMENT & FULFILLMENT ROUTES =====
 
+  app.post('/api/fulfillment/orders/:orderId/reopen-administrative', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      requireTerminalFulfillmentReversalAuthority(req);
+      const data = await canonicalFulfillmentOperations.reopenAdministrativeFulfillment(
+        getRequestOrganizationId(req), fulfillmentOrderIdSchema.parse(req.params.orderId), req.body,
+        getUserId(req.user), req.actorOrgRole ?? req.orgRole ?? req.user?.orgRole ?? req.user?.role);
+      return res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'A reason and valid correction quantities are required.' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] administrative reopen failed', error);
+      return res.status(500).json({ success: false, message: 'Could not reopen fulfillment. Refresh before retrying.' });
+    }
+  });
+
   // Fulfillment Queue Dashboard (backend-only; UI wiring follows separately)
   app.get('/api/fulfillment/queue', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
