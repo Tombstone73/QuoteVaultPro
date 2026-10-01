@@ -2520,6 +2520,7 @@ export function registerQuoteRoutes(
         specsJson,
         optionSelectionsJson,
         displayOrder,
+        description,
       } = req.body;
 
       if (!productId || typeof productId !== "string") {
@@ -2554,6 +2555,7 @@ export function registerQuoteRoutes(
       const validatedLineItem = {
         productId,
         productName: productName || "New Item (Select Product)",
+        description: description ?? null,
         variantId: variantId || null,
         variantName: variantName || null,
         productType: productType || "wide_roll",

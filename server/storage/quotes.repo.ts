@@ -1253,6 +1253,7 @@ export class QuotesRepository {
         const allowedStatus = ["draft", "active", "canceled"];
         if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
         if (lineItem.productName !== undefined) updateData.productName = lineItem.productName;
+        if (lineItem.description !== undefined) updateData.description = lineItem.description;
         if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
         if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
         if (lineItem.status !== undefined && allowedStatus.includes(lineItem.status as any)) updateData.status = lineItem.status;
@@ -1396,6 +1397,7 @@ export class QuotesRepository {
             isTemporary: true,
             productId: lineItem.productId,
             productName: lineItem.productName,
+            description: lineItem.description ?? null,
             variantId: lineItem.variantId ?? null,
             variantName: lineItem.variantName ?? null,
             productType: (lineItem as any).productType ?? "wide_roll",
