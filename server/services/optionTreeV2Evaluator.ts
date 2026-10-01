@@ -10,6 +10,7 @@ import {
 import { evaluateCondition, resolveRuntimeVisibility, validateOptionTreeV2 } from "../../shared/optionTreeV2Runtime";
 import { buildFormulaEvaluationScope, buildFormulaScope } from "../../shared/pbv2/formulaScope";
 import { buildNumericSelectionFormulaVariables } from "../../shared/pbv2/numericSelectionFormulaVariables";
+import type { RollMediaLayoutResult } from "../../shared/pbv2/rollMediaLayout";
 
 type SelectedOptionsSnapshotEntry = {
   optionId: string;
@@ -36,6 +37,8 @@ export type OptionTreeV2EvaluateInput = {
   quantity: number;
   basePrice: number;
   formulaVariables?: Record<string, number>;
+  /** Trusted canonical layout supplied by PricingService, never option input. */
+  rollLayout?: RollMediaLayoutResult | null;
 };
 
 export type OptionTreeV2EvaluateResult = {
@@ -207,6 +210,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       sqftPerItem,
       totalSqft: sqftPerItem * quantity,
       linearFeet: linearFootPerItem,
+      rollLayout: input.rollLayout,
     }),
     formulaVariables: {
       ...treeFormulaVariables,

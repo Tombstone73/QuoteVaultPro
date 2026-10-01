@@ -1,5 +1,6 @@
 import { errorFinding, type Finding } from "../findings";
 import type { ValidationResult } from "./types";
+import { hasCanonicalRollBasePrice, mergeRollPricingFormulaVariables } from "../../rollPricingConfiguration";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -197,6 +198,13 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   if (meta.pricingProfileKey === "hourly" && hasHourlyFormula(meta)) {
     return toResult([]);
   }
+  if (hasCanonicalRollBasePrice({
+    formula: meta.pricingFormula,
+    formulaVariables: mergeRollPricingFormulaVariables({
+      treeFormulaVariables: meta.formulaVariables,
+      treePricingFormulaVariables: meta.pricingFormulaVariables,
+    }),
+  })) return toResult([]);
 
   const pricingV2 = asRecord((meta as any).pricingV2);
   if (!pricingV2) {

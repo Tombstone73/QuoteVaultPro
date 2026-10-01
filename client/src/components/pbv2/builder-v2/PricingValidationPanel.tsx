@@ -57,6 +57,8 @@ type PricingPreviewResponse = {
     sqft?: number;
     totalSqft?: number;
     linearFeet?: number;
+    consumedLinearFeet?: number;
+    billedLinearFeet?: number;
     orderedWidth?: number;
     orderedHeight?: number;
     trimAllowanceX?: number;
@@ -606,10 +608,6 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   });
   const [result, setResult] = useState<PricingPreviewResponse | null>(null);
   const [formulaDebug, setFormulaDebug] = useState<PricingPreviewResponse["debug"] | null>(null);
-  const effectiveRuntimeSelectionValues = useMemo(
-    () => formulaDebug?.runtimeSelectionContext?.selectedChoices ?? {},
-    [formulaDebug?.runtimeSelectionContext?.selectedChoices],
-  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [responseErrors, setResponseErrors] = useState<string[]>([]);
@@ -673,6 +671,15 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
     });
   }, [fixedDimensions?.widthIn, fixedDimensions?.heightIn, nonDimensionalPricing]);
 
+  // Defaults and visibility must resolve even before pricing succeeds (for
+  // example while fixing a missing rate), not depend on a debug response.
+  const effectiveRuntimeSelectionValues = useMemo(() => {
+    try {
+      return resolveRuntimeVisibility(treeForPreview as any, previewState.selectedOptionValues).effectiveSelections;
+    } catch {
+      return {};
+    }
+  }, [treeForPreview, previewState.selectedOptionValues]);
   const previewGroups = useMemo(
     () => buildPreviewGroups(treeForPreview, { ...effectiveRuntimeSelectionValues, ...previewState.selectedOptionValues }),
     [treeForPreview, effectiveRuntimeSelectionValues, previewState.selectedOptionValues],
@@ -1363,6 +1370,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div className="flex items-center justify-between"><span>linear_feet (legacy)</span><span className="font-mono">{typeof result.derived?.linearFeet === "number" ? result.derived.linearFeet.toFixed(2) : "—"}</span></div>
                       <div className="flex items-center justify-between"><span>consumed_linear_feet</span><span className="font-mono">{typeof result.derived?.consumedLinearFeet === "number" ? result.derived.consumedLinearFeet.toFixed(3) : "—"}</span></div>
                       <div className="flex items-center justify-between"><span>billed_linear_feet</span><span className="font-mono">{typeof result.derived?.billedLinearFeet === "number" ? result.derived.billedLinearFeet.toFixed(3) : "—"}</span></div>
+                      {typeof result.derived?.billedLinearFeet === "number" && <div className="flex items-center justify-between"><span>linear_foot_rate</span><span className="font-mono">{typeof formulaDebug?.variables?.linear_foot_rate === "number" ? currencyFormatter.format(formulaDebug.variables.linear_foot_rate) : "—"}</span></div>}
                     </div>
                   ) : null}
                   {result.breakdown ? (

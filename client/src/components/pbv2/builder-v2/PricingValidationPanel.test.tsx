@@ -58,6 +58,36 @@ async function changeInput(input: HTMLInputElement, value: string) {
 }
 
 describe("PricingValidationPanel fixed-size preview", () => {
+  it("shows canonical roll defaults before pricing succeeds, then displays roll units and charges", async () => {
+    jest.useFakeTimers();
+    const document = require('../../../../../3m-680cr-reflective-vinyl-draft.json');
+    const source = document.products[0].optionTreeJson;
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true, data: {
+        unitPrice: 7.35, totalPrice: 735,
+        breakdown: { basePrice: 735, optionsPrice: 0, total: 735 },
+        derived: { sqft: 100 / 144, linearFeet: 10 / 12, consumedLinearFeet: 250 / 12, billedLinearFeet: 21 },
+        debug: { variables: { linear_foot_rate: 35 } },
+      } }),
+    }));
+    (globalThis as any).fetch = fetchMock;
+    const { container, cleanup } = await renderPanel(source);
+    try {
+      const selectedLabels = () => Array.from(container.querySelectorAll('button[role="combobox"]')).map(button => button.textContent);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(selectedLabels()).toContain('Unprinted');
+      expect(selectedLabels()).toContain('No');
+      expect(container.textContent).not.toContain('Weeding & Transfer Tape');
+      await settlePricingPreview();
+      expect(container.textContent).toContain('consumed_linear_feet');
+      expect(container.textContent).toContain('20.833');
+      expect(container.textContent).toContain('21.000');
+      expect(container.textContent).toContain('linear_foot_rate');
+      expect(container.textContent).toContain('$35.00');
+      expect(container.textContent).toContain('$735.00');
+    } finally { await cleanup(); jest.useRealTimers(); }
+  });
   it("shows consumed, billable, and reusable-drop facts in formula debug", async () => {
     jest.useFakeTimers();
     const fetchMock = jest.fn(async () => ({

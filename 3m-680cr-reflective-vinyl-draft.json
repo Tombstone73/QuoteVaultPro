@@ -1,0 +1,352 @@
+{
+  "schemaVersion": "products-export/v2",
+  "exportedAt": "2026-10-01T00:00:00.000Z",
+  "orgId": "portable-product-template",
+  "products": [
+    {
+      "name": "3M 680CR Reflective Vinyl",
+      "slug": "3m-680cr-reflective-vinyl",
+      "description": "48-inch reflective vinyl roll. Priced by canonical billed roll consumption.",
+      "productTypeName": "Roll",
+      "pricingMode": "area",
+      "pricingEngine": "pricingFormula",
+      "pricingFormula": "billed_linear_feet * linear_foot_rate",
+      "pricingProfileKey": "default",
+      "pricingProfileConfig": {
+        "allowRotation": true,
+        "formulaVariables": {
+          "physical_roll_width": 48,
+          "printable_width": 48,
+          "piece_allowance_x": 0,
+          "piece_allowance_y": 0,
+          "registration_waste": 0,
+          "billing_width_increment": 12,
+          "billing_length_increment": 12,
+          "allow_rotation": true,
+          "linear_foot_rate": 35
+        }
+      },
+      "materialType": "roll",
+      "isActive": false,
+      "isService": false,
+      "requiresProductionJob": true,
+      "isTaxable": true,
+      "optionTreeJson": {
+        "schemaVersion": 2,
+        "status": "DRAFT",
+        "rootNodeIds": [
+          "opt_printing",
+          "opt_lamination",
+          "opt_contour_cutting",
+          "opt_weed_tape"
+        ],
+        "nodes": {
+          "group_printing": {
+            "id": "group_printing",
+            "type": "GROUP",
+            "kind": "group",
+            "label": "Printing",
+            "status": "ENABLED",
+            "displayOrder": 0,
+            "ui": {
+              "sortOrder": 0
+            }
+          },
+          "opt_printing": {
+            "id": "opt_printing",
+            "type": "INPUT",
+            "kind": "question",
+            "key": "printing",
+            "label": "Printing",
+            "status": "ENABLED",
+            "displayOrder": 0,
+            "ui": {
+              "sortOrder": 0
+            },
+            "input": {
+              "type": "select",
+              "valueType": "ENUM",
+              "selectionKey": "printing",
+              "required": true,
+              "defaultValue": "unprinted"
+            },
+            "choices": [
+              {
+                "value": "unprinted",
+                "label": "Unprinted"
+              },
+              {
+                "value": "printed",
+                "label": "Printed",
+                "pricingImpact": [
+                  {
+                    "mode": "addFormula",
+                    "formula": "billed_linear_feet * 10"
+                  }
+                ]
+              }
+            ]
+          },
+          "group_lamination": {
+            "id": "group_lamination",
+            "type": "GROUP",
+            "kind": "group",
+            "label": "Lamination",
+            "status": "ENABLED",
+            "displayOrder": 1,
+            "ui": {
+              "sortOrder": 1
+            },
+            "visibility": {
+              "rules": [
+                {
+                  "type": "equals",
+                  "selectionKey": "printing",
+                  "value": "printed"
+                }
+              ]
+            }
+          },
+          "opt_lamination": {
+            "id": "opt_lamination",
+            "type": "INPUT",
+            "kind": "question",
+            "key": "lamination",
+            "label": "Lamination",
+            "status": "ENABLED",
+            "displayOrder": 1,
+            "ui": {
+              "sortOrder": 1
+            },
+            "input": {
+              "type": "select",
+              "valueType": "ENUM",
+              "selectionKey": "lamination",
+              "required": true,
+              "defaultValue": "none"
+            },
+            "choices": [
+              {
+                "value": "none",
+                "label": "None"
+              },
+              {
+                "value": "laminated",
+                "label": "Laminated",
+                "pricingImpact": [
+                  {
+                    "mode": "addFormula",
+                    "formula": "billed_linear_feet * 5"
+                  }
+                ]
+              }
+            ],
+            "visibility": {
+              "rules": [
+                {
+                  "type": "equals",
+                  "selectionKey": "printing",
+                  "value": "printed"
+                }
+              ]
+            }
+          },
+          "group_contour_cutting": {
+            "id": "group_contour_cutting",
+            "type": "GROUP",
+            "kind": "group",
+            "label": "Contour Cutting",
+            "status": "ENABLED",
+            "displayOrder": 2,
+            "ui": {
+              "sortOrder": 2
+            }
+          },
+          "opt_contour_cutting": {
+            "id": "opt_contour_cutting",
+            "type": "INPUT",
+            "kind": "question",
+            "key": "contour_cutting",
+            "label": "Contour Cutting",
+            "status": "ENABLED",
+            "displayOrder": 2,
+            "ui": {
+              "sortOrder": 2
+            },
+            "input": {
+              "type": "select",
+              "valueType": "ENUM",
+              "selectionKey": "contour_cutting",
+              "required": true,
+              "defaultValue": "no"
+            },
+            "choices": [
+              {
+                "value": "no",
+                "label": "No"
+              },
+              {
+                "value": "yes",
+                "label": "Yes",
+                "pricingImpact": [
+                  {
+                    "mode": "addFormula",
+                    "formula": "billed_linear_feet * 5"
+                  }
+                ]
+              }
+            ]
+          },
+          "group_weed_tape": {
+            "id": "group_weed_tape",
+            "type": "GROUP",
+            "kind": "group",
+            "label": "Weeding & Transfer Tape",
+            "status": "ENABLED",
+            "displayOrder": 3,
+            "ui": {
+              "sortOrder": 3
+            },
+            "visibility": {
+              "rules": [
+                {
+                  "type": "equals",
+                  "selectionKey": "contour_cutting",
+                  "value": "yes"
+                }
+              ]
+            }
+          },
+          "opt_weed_tape": {
+            "id": "opt_weed_tape",
+            "type": "INPUT",
+            "kind": "question",
+            "key": "weed_tape",
+            "label": "Weeding & Transfer Tape",
+            "status": "ENABLED",
+            "displayOrder": 3,
+            "ui": {
+              "sortOrder": 3
+            },
+            "input": {
+              "type": "select",
+              "valueType": "ENUM",
+              "selectionKey": "weed_tape",
+              "required": true,
+              "defaultValue": "no"
+            },
+            "choices": [
+              {
+                "value": "no",
+                "label": "No"
+              },
+              {
+                "value": "yes",
+                "label": "Yes",
+                "pricingImpact": [
+                  {
+                    "mode": "addFormula",
+                    "formula": "billed_linear_feet * 5"
+                  }
+                ],
+                "description": "Removes excess vinyl and applies transfer tape so cut graphics are ready for installation. Small or intricate designs may require additional labor charges."
+              }
+            ],
+            "visibility": {
+              "rules": [
+                {
+                  "type": "equals",
+                  "selectionKey": "contour_cutting",
+                  "value": "yes"
+                }
+              ]
+            }
+          }
+        },
+        "edges": [
+          {
+            "id": "edge_printing",
+            "status": "DISABLED",
+            "fromNodeId": "group_printing",
+            "toNodeId": "opt_printing",
+            "priority": 0,
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          },
+          {
+            "id": "edge_lamination",
+            "status": "DISABLED",
+            "fromNodeId": "group_lamination",
+            "toNodeId": "opt_lamination",
+            "priority": 1,
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          },
+          {
+            "id": "edge_contour_cutting",
+            "status": "DISABLED",
+            "fromNodeId": "group_contour_cutting",
+            "toNodeId": "opt_contour_cutting",
+            "priority": 2,
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          },
+          {
+            "id": "edge_weed_tape",
+            "status": "DISABLED",
+            "fromNodeId": "group_weed_tape",
+            "toNodeId": "opt_weed_tape",
+            "priority": 3,
+            "condition": {
+              "op": "EXISTS",
+              "value": {
+                "op": "literal",
+                "value": true
+              }
+            }
+          }
+        ],
+        "meta": {
+          "requiresDimensions": true,
+          "pricingProfileKey": "default",
+          "pricingFormula": "billed_linear_feet * linear_foot_rate",
+          "formulaVariables": {
+            "physical_roll_width": 48,
+            "printable_width": 48,
+            "piece_allowance_x": 0,
+            "piece_allowance_y": 0,
+            "registration_waste": 0,
+            "billing_width_increment": 12,
+            "billing_length_increment": 12,
+            "allow_rotation": true,
+            "linear_foot_rate": 35
+          },
+          "pricingV2": {
+            "unitSystem": "imperial",
+            "tierBasis": "line_item_quantity",
+            "base": {
+              "perSqftCents": 0,
+              "perPieceCents": 0,
+              "minimumChargeCents": 0
+            }
+          }
+        }
+      }
+    }
+  ]
+}

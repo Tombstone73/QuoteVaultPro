@@ -26,6 +26,7 @@ import {
 } from '../../../shared/productOptionRules';
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from '../../../shared/pbv2/validator';
 import { validateQuantityOnlyPerPieceTierFamily } from '../../../shared/pbv2/validator/validateBasePrice';
+import { hasCanonicalRollBasePrice, mergeRollPricingFormulaVariables } from '../../../shared/rollPricingConfiguration';
 import type { Finding } from '../../../shared/pbv2/findings';
 import {
   extractProductOptionPricingMatrix,
@@ -995,6 +996,12 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     quantity,
     basePrice: basePriceCents / 100, // Convert cents to dollars for evaluator
     formulaVariables: formulaVariablesForPricing,
+    rollLayout: buildRollLayoutFromFormulaScope({
+      formulaScope: formulaBasePrice.formulaDebug.variables,
+      orderedWidthIn: baseDetails.orderedWidthIn,
+      orderedHeightIn: baseDetails.orderedHeightIn,
+      quantity,
+    }),
   });
 
   // PBV2_DEBUG: Log evaluator return values
@@ -1274,6 +1281,12 @@ export function evaluatePricingPreviewFromTree(input: {
   const formulaToUse = formulaBasePrice.formulaToUse;
   const formulaDebug = formulaBasePrice.formulaDebug;
 
+  const previewRollLayout = buildRollLayoutFromFormulaScope({
+    formulaScope: formulaDebug.variables,
+    orderedWidthIn: baseDetails.orderedWidthIn,
+    orderedHeightIn: baseDetails.orderedHeightIn,
+    quantity,
+  });
   const evalResult = evaluateOptionTreeV2({
     tree: input.treeJson,
     selections: {
@@ -1285,6 +1298,7 @@ export function evaluatePricingPreviewFromTree(input: {
     quantity,
     basePrice: basePriceCents / 100,
     formulaVariables: formulaVariablesForPricing,
+    rollLayout: previewRollLayout,
   });
 
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
@@ -1292,12 +1306,6 @@ export function evaluatePricingPreviewFromTree(input: {
   const sqft = baseDetails.sqftPerItem;
   const totalSqft = baseDetails.totalSqft;
   const linearFeet = baseDetails.linearFeet;
-  const previewRollLayout = buildRollLayoutFromFormulaScope({
-    formulaScope: formulaDebug.variables,
-    orderedWidthIn: baseDetails.orderedWidthIn,
-    orderedHeightIn: baseDetails.orderedHeightIn,
-    quantity,
-  });
   const pricingDebug = {
     basePrice: basePriceCents / 100,
     optionsPrice: optionsCents / 100,
@@ -2878,11 +2886,19 @@ function calculateBasePriceDetails(
   const isHourlyCommercialFormula = requestedPricingProfileKey === "hourly"
     && (meta as any)?.billingUnit?.kind === "hour"
     && typeof (meta as any)?.billingUnit?.selectionKey === "string";
+  const isRollCommercialFormula = hasCanonicalRollBasePrice({
+    formula: pricingContext?.pricingFormulaExpression ?? (meta as any)?.pricingFormula,
+    formulaVariables: pricingContext?.formulaVariables ?? mergeRollPricingFormulaVariables({
+      treeFormulaVariables: (meta as any)?.formulaVariables,
+      treePricingFormulaVariables: (meta as any)?.pricingFormulaVariables,
+      pricingProfileConfig: pricingContext?.pricingProfileConfig,
+    }),
+  });
   if (quantityOnlyTierValidation && !quantityOnlyTierValidation.ok) {
     const finding = quantityOnlyTierValidation.errors[0]!;
     throw Object.assign(new Error(finding.message), { code: finding.code, details: quantityOnlyTierValidation.errors });
   }
-  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !isHourlyCommercialFormula && !quantityOnlyTierValidation?.ok) {
+  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !isHourlyCommercialFormula && !isRollCommercialFormula && !quantityOnlyTierValidation?.ok) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -3346,7 +3362,7 @@ function calculateBasePriceDetails(
     };
   }
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only" && !isHourlyCommercialFormula) {
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only" && !isHourlyCommercialFormula && !isRollCommercialFormula) {
     throw new Error(
       'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
     );
