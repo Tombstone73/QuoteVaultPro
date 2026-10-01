@@ -149,7 +149,7 @@ export default function PortalQuoteDetailPage() {
             </Link>
           </Button>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-normal">Quote {quote.displayNumber ?? quote.quoteNumber ?? quote.id.slice(0, 8)}</h1>
+            <h1 className="text-2xl font-semibold tracking-normal">Quote {quote.displayNumber ?? quote.quoteNumber ?? "—"}</h1>
             <Badge variant={statusVariant(quote.displayStatus)}>{quote.displayStatus}</Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">

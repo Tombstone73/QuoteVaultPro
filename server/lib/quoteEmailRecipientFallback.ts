@@ -125,7 +125,7 @@ function splitRecipientName(name: string | undefined, email: string): { firstNam
 }
 
 function quotePdfFilename(quote: QuoteLike): string {
-  const display = quote.displayNumber || (quote.quoteNumber ? `QT-${quote.quoteNumber}` : quote.id);
+  const display = quote.displayNumber || (quote.quoteNumber ? `QT-${quote.quoteNumber}` : "document");
   const safe = String(display).replace(/[^a-z0-9._-]+/gi, "-");
   return `Quote_${safe}.pdf`;
 }

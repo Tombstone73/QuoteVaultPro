@@ -3516,14 +3516,19 @@ function invoiceDashboardActivity(invoice: InvoicePortalDto): PortalDashboardAct
   };
 }
 
+function customerQuoteReference(quote: { displayNumber?: string | null; quoteNumber?: string | number | null }): string {
+  const number = quote.displayNumber?.trim() || (quote.quoteNumber == null ? "" : String(quote.quoteNumber));
+  return number ? `Quote #${number}` : "Quote";
+}
+
 function quoteDashboardActivity(quote: QuotePortalListDto): PortalDashboardActivityDto {
   return {
     id: `quote-${quote.id}`,
     type: "quote",
     label:
       quote.displayStatus === "Ready for Review"
-        ? `Quote #${quote.quoteNumber ?? quote.id.slice(0, 8)} is ready for review`
-        : `Quote #${quote.quoteNumber ?? quote.id.slice(0, 8)} ${quote.displayStatus.toLowerCase()}`,
+        ? `${customerQuoteReference(quote)} is ready for review`
+        : `${customerQuoteReference(quote)} ${quote.displayStatus.toLowerCase()}`,
     occurredAt: quote.createdAt,
     targetType: "quote",
     targetId: quote.id,
@@ -3621,7 +3626,7 @@ export async function getPortalDashboard(req: Request): Promise<PortalDashboardD
         ...file,
         entityType: "quote" as const,
         entityId: quote.id,
-        sourceLabel: `Quote #${quote.quoteNumber ?? quote.id.slice(0, 8)}`,
+        sourceLabel: customerQuoteReference(quote),
       }));
     }),
   );
@@ -4594,12 +4599,12 @@ async function recordPortalQuoteFollowUp(
     note?: string | null;
   },
 ): Promise<void> {
-  const quoteLabel = args.quote.quoteNumber != null ? `#${args.quote.quoteNumber}` : args.quote.id.slice(0, 8);
+  const quoteLabel = customerQuoteReference(args.quote);
   const orderLabel = args.order?.orderNumber ? ` as order #${args.order.orderNumber}` : "";
   const titles = {
-    QUOTE_APPROVED: `Quote ${quoteLabel} approved${orderLabel}`,
-    QUOTE_DECLINED: `Quote ${quoteLabel} declined`,
-    QUOTE_REVISION_REQUESTED: `Revision requested for quote ${quoteLabel}`,
+    QUOTE_APPROVED: `${quoteLabel} approved${orderLabel}`,
+    QUOTE_DECLINED: `${quoteLabel} declined`,
+    QUOTE_REVISION_REQUESTED: `Revision requested for ${quoteLabel.replace(/^Quote/, "quote")}`,
   } as const;
 
   await recordPortalFollowUpItem(tx, {

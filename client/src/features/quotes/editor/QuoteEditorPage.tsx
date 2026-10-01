@@ -535,7 +535,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     const handleDownloadQuote = async () => {
         if (!state.quoteId) return;
-        const displayNumber = (state.quote as any)?.displayNumber || (state.quote as any)?.quoteNumber || state.quoteId;
+        const displayNumber = (state.quote as any)?.displayNumber || (state.quote as any)?.quoteNumber || "document";
         const safeNumber = String(displayNumber).replace(/[^a-z0-9._-]+/gi, "-");
         try {
             await downloadAuthenticatedPdf(

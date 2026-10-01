@@ -36,7 +36,7 @@ export function QuoteRow({ quote }: { quote: PortalQuoteListDto }) {
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/quotes/${quote.id}`} className="font-medium text-foreground hover:underline">
-            Quote {quote.displayNumber ?? quote.quoteNumber ?? quote.id.slice(0, 8)}
+            Quote {quote.displayNumber ?? quote.quoteNumber ?? "—"}
           </Link>
           <Badge variant={statusVariant(quote.displayStatus)}>{quote.displayStatus}</Badge>
         </div>

@@ -268,7 +268,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const currency = String(input.organization?.settings?.currency || "USD").toUpperCase();
-  const quoteNumber = input.quote.displayNumber || (input.quote.quoteNumber ? String(input.quote.quoteNumber) : input.quote.id || "quote");
+  const quoteNumber = input.quote.displayNumber || (input.quote.quoteNumber ? String(input.quote.quoteNumber) : "");
   const companyBranding = await resolveQuotePdfCompanyBranding(input);
 
   const drawCompanyLogo = async (x: number, topY: number): Promise<{ width: number; height: number }> => {
@@ -294,7 +294,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   let y = PAGE_HEIGHT - MARGIN;
   const logo = await drawCompanyLogo(MARGIN, y + 2);
   const companyTextX = MARGIN + (logo.width > 0 ? logo.width + 14 : 0);
-  drawRight(page, `Quote ${quoteNumber}`, PAGE_WIDTH - MARGIN, y, bold, 18);
+  drawRight(page, quoteNumber ? `Quote ${quoteNumber}` : "Quote", PAGE_WIDTH - MARGIN, y, bold, 18);
 
   const companyLines = [
     companyBranding.companyDisplayName || null,
@@ -320,7 +320,6 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   }
 
   y = Math.min(y - companyBlockHeight - 16, companyY - 12);
-  drawText(page, `Status: ${String(input.quote.status || "draft")}`, MARGIN, y, regular, 10);
   const validUntil = formatDate(input.quote.validUntil);
   if (validUntil) drawRight(page, `Valid until ${validUntil}`, PAGE_WIDTH - MARGIN, y, regular, 10);
 

@@ -1410,7 +1410,7 @@ export function registerQuoteRoutes(
 
       const companySettings = await storage.getCompanySettings(organizationId);
       const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any });
-      const quoteNumber = (quote as any).displayNumber || (quote as any).quoteNumber || id;
+      const quoteNumber = (quote as any).displayNumber || (quote as any).quoteNumber || "document";
       const safeQuoteNumber = String(quoteNumber).replace(/[^a-z0-9._-]+/gi, "-");
 
       res.setHeader("Content-Type", "application/pdf");

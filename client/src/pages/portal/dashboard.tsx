@@ -123,7 +123,7 @@ function QuoteItem({ quote }: { quote: PortalQuoteListDto }) {
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/portal/quotes/${quote.id}`} className="font-medium hover:underline">
-            Quote {quote.displayNumber ?? quote.quoteNumber ?? quote.id.slice(0, 8)}
+            Quote {quote.displayNumber ?? quote.quoteNumber ?? "—"}
           </Link>
           <Badge variant={quoteVariant(quote)}>{quote.displayStatus}</Badge>
         </div>

@@ -229,9 +229,26 @@ describe("quote PDF generation", () => {
     expect(text).toContain("555-0100 | hello@header.test");
   });
 
-  test("does not require quote status to be sent", () => {
+  test("keeps workflow status and fallback internal ID off customer Quote PDFs", async () => {
     expect(getQuotePdfEligibility({ ...validDraftQuote, status: "draft" }).eligible).toBe(true);
     expect(getQuotePdfEligibility({ ...validDraftQuote, status: "pending" }).eligible).toBe(true);
+    for (const status of ["draft", "pending_approval", "active"]) {
+      const text = extractDecodedPdfContent(await generateQuotePdfBytes({
+        quote: {
+          ...validDraftQuote,
+          id: "private-quote-id",
+          quoteNumber: null,
+          status,
+          label: "Fall Campaign Coroplast Signs",
+          validUntil: "2026-12-01T00:00:00.000Z",
+        },
+      }));
+      expect(text).toContain("Job Description: Fall Campaign Coroplast Signs");
+      expect(text).toContain("Valid until Dec 01, 2026");
+      expect(text).not.toContain("Status:");
+      expect(text).not.toContain(status);
+      expect(text).not.toContain("private-quote-id");
+    }
   });
 
   test("customer quote PDF keeps the formal product name", async () => {
