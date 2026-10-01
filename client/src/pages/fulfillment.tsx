@@ -7,7 +7,6 @@ import {
   Check,
   ClipboardList,
   Factory,
-  Filter,
   Loader2,
   PackageCheck,
   Search,
@@ -54,6 +53,8 @@ const statusOptions = [
   { value: "ready", label: "Ready" },
   { value: "partially_shipped", label: "Partially Shipped" },
   { value: "shipped", label: "Shipped" },
+  { value: "delivered", label: "Delivered" },
+  { value: "completed", label: "Completed" },
   { value: "ready_for_pickup", label: "Ready for Pickup" },
   { value: "picked_up", label: "Picked Up" },
 ];
@@ -533,7 +534,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [allRows]);
   const rows = allRows;
-  const selectedRows = rows.filter((row) => selectedOrderIds.has(row.orderId));
+  const selectableRows = rows.filter((row) => !row.isHistorical);
+  const selectedRows = selectableRows.filter((row) => selectedOrderIds.has(row.orderId));
 
   const disableCombinedReason = useMemo(() => {
     if (selectedRows.length === 0) return "Select at least one order";
@@ -760,7 +762,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                 onChange={(event) => setShowArchived(event.target.checked)}
                 className="h-4 w-4 rounded border-input text-primary focus:ring-primary"
               />
-              <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Show Archived</span>
+              <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Show Archived / Completed</span>
             </label>
             <label className="group flex cursor-pointer items-center gap-2">
               <input
@@ -771,10 +773,6 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
               />
               <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">Overdue Only</span>
             </label>
-            <button className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium transition-colors hover:bg-accent" type="button">
-              <Filter className="h-3.5 w-3.5" />
-              More Filters
-            </button>
           </div>
         </div>
       </header>
@@ -796,10 +794,11 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                   <input
                     type="checkbox"
                     className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
-                    checked={rows.length > 0 && selectedOrderIds.size === rows.length}
+                    disabled={selectableRows.length === 0}
+                    checked={selectableRows.length > 0 && selectedRows.length === selectableRows.length}
                     onChange={(event) => {
                       if (event.target.checked) {
-                        setSelectedOrderIds(new Set(rows.map((row) => row.orderId)));
+                        setSelectedOrderIds(new Set(selectableRows.map((row) => row.orderId)));
                       } else {
                         setSelectedOrderIds(new Set());
                       }
@@ -827,14 +826,14 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                     <div className="mx-auto mb-4 w-fit rounded-full bg-muted p-4">
                       <Box className="h-8 w-8 text-muted-foreground" />
                     </div>
-                    <h3 className="mb-1 text-lg font-bold">No active fulfillment work</h3>
+                    <h3 className="mb-1 text-lg font-bold">{showArchived ? "No matching fulfillment records" : "No active fulfillment work"}</h3>
                     <p className="text-sm text-muted-foreground">Try adjusting your filters to find what you're looking for.</p>
                   </td>
                 </tr>
               )}
 
               {rows.map((row) => {
-                const isChecked = selectedOrderIds.has(row.orderId);
+                const isChecked = !row.isHistorical && selectedOrderIds.has(row.orderId);
                 const readySince = row.readySince ? `${formatDistanceToNowStrict(new Date(row.readySince), { addSuffix: true })}` : "--";
 
                 return (
@@ -848,6 +847,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                         type="checkbox"
                         className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
                         checked={isChecked}
+                        disabled={row.isHistorical}
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) => handleToggleRow(row.orderId, event.target.checked)}
                       />
@@ -893,8 +893,9 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                       <span className={`inline-flex items-center rounded px-2 py-1 text-[11px] font-bold ${statusBadgeClass(row.status)}`}>
                         {statusLabel(row.status)}
                       </span>
+                      {row.isHistorical && <div className="mt-1 text-xs text-muted-foreground">Historical · <button type="button" className="text-primary underline" onClick={(event) => { event.stopPropagation(); handleOpenOrder(row.orderId); }}>View history / corrections</button></div>}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted-foreground">{readySince}</td>
+                    <td className="px-4 py-4 text-sm text-muted-foreground">{row.isHistorical ? "—" : readySince}</td>
                     <td className="px-4 py-4 text-sm"><span className="font-medium">Remaining {row.remainingQuantity}</span><p className="text-xs text-muted-foreground">{row.fulfillmentType === "PICKUP" ? `${row.pickedUpQuantity} picked up` : `${row.shippedQuantity} shipped`}</p></td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
                   </tr>

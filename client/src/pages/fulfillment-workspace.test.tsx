@@ -69,6 +69,22 @@ function button(container: HTMLElement, label: string) { return Array.from(conta
 afterEach(() => { document.body.innerHTML = ""; jest.clearAllMocks(); });
 
 describe("FulfillmentWorkspacePage direct fulfillment route", () => {
+  test("completed single and combined shipments expose the canonical correction detail", () => {
+    detail = makeDetail({ fulfillmentType: "SHIP" });
+    detail.remainingQuantity = 0;
+    detail.shipments = [
+      { id: "shipped-1", status: "SHIPPED", scope: "SINGLE_ORDER", orderCount: 1, shipmentReference: "20306-S1", shippedAt: "2026-09-01T12:00:00Z" },
+      { id: "shipped-2", status: "SHIPPED", scope: "MULTI_ORDER", orderCount: 2 },
+    ];
+    const { container, root } = render();
+    expect(container.textContent).toContain("Shipment History");
+    expect(container.textContent).toContain("20306-S1");
+    const actions = Array.from(container.querySelectorAll("button")).filter(item => item.textContent === "View shipment / corrections");
+    expect(actions).toHaveLength(2);
+    expect(button(container, "Start shipment").disabled).toBe(true);
+    act(() => root.unmount());
+  });
+
   test("allows pickup without ready status or production quantity", async () => {
     detail = makeDetail({ production: 0, ready: 0 }); const { container, root, rerender } = render();
     const pickup = container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement;

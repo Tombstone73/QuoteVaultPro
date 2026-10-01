@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { orders } from "@shared/schema";
 import { isCanceledOrder } from "@shared/operationalState";
+import type { FulfillmentOrderQuantitySummary } from "@shared/fulfillmentReadiness";
 
 export type FulfillmentEligibilityOrder = {
   state?: string | null;
@@ -23,6 +24,19 @@ export function isFulfillmentQueueEligibleOrder(order: FulfillmentEligibilityOrd
   // audit and repaired only through the explicit backfill workflow.
   if (["shipped", "delivered"].includes(String(order.fulfillmentStatus || "").toLowerCase())) return false;
   return ["open", "production_complete"].includes(String(order.state || "").toLowerCase());
+}
+
+/** History is opt-in and must have canonical quantity evidence, not just a
+ * terminal parent label. This does not change active operational eligibility. */
+export function fulfillmentQueueVisibility(
+  order: FulfillmentEligibilityOrder,
+  quantities: FulfillmentOrderQuantitySummary,
+  showArchived: boolean,
+): "active" | "historical" | null {
+  if (isCanceledOrder(order) || quantities.physicalLineCount === 0) return null;
+  if (isFulfillmentQueueEligibleOrder(order) && quantities.remainingQuantity > 0) return "active";
+  if (showArchived && quantities.operationallyFulfilledQuantity > 0) return "historical";
+  return null;
 }
 
 export function fulfillmentQueueEligibleOrderCondition(organizationId: string) {

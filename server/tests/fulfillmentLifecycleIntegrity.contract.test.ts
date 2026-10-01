@@ -18,8 +18,8 @@ test("administrative fulfillment is durable and never reuses physical evidence",
 test("the active fulfillment projection excludes zero-remaining and terminal orders once", () => {
   const repository = source("server/services/fulfillment/repository.ts");
   const eligibility = source("server/services/fulfillment/eligibility.ts");
-  expect(repository).toContain("if (!isFulfillmentQueueEligibleOrder(order)) continue;");
-  expect(repository).toContain("if (remaining <= 0) continue;");
+  expect(repository).toContain("fulfillmentQueueVisibility(order, quantitySummary, filters.showArchived)");
+  expect(eligibility).toContain('isFulfillmentQueueEligibleOrder(order) && quantities.remainingQuantity > 0');
   expect(repository).toContain("distinctActiveFulfillmentOrders: activeOrders.length");
   expect(eligibility).toContain("fulfillmentStatus}, '')) not in ('shipped', 'delivered')");
 });

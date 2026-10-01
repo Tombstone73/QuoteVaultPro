@@ -29,6 +29,7 @@ export interface FulfillmentQueueRow {
   pickupTicketId?: string | null;
   shipmentId?: string | null;
   isArchived: boolean;
+  isHistorical?: boolean;
   archivedReason?: string | null;
   productionJobs?: Array<{
     id: string;

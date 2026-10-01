@@ -34,7 +34,7 @@ import { FulfillmentHttpError, type DerivedOrderFulfillmentStatus, type Fulfillm
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { isCanceledOrder } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
-import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
+import { fulfillmentQueueEligibleOrderCondition, fulfillmentQueueVisibility, isFulfillmentQueueEligibleOrder } from './eligibility';
 import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 import { resolveActiveProductionOwners } from '../productionOwnership';
@@ -1874,16 +1874,12 @@ export class FulfillmentDashboardRepo {
     const rows: QueueRowDto[] = [];
 
     for (const order of orderRows) {
-      if (!isFulfillmentQueueEligibleOrder(order)) continue;
       const quantitySummary = quantitySummaryByOrder.get(order.id) ?? summarizeFulfillmentOrderQuantities([]);
-      if (quantitySummary.physicalLineCount === 0) continue;
-      const orderedQty = quantitySummary.orderedQuantity;
-      const shippedQty = quantitySummary.shippedQuantity;
+      const visibility = fulfillmentQueueVisibility(order, quantitySummary, filters.showArchived);
+      if (!visibility) continue;
+      const isHistorical = visibility === 'historical';
+      if (isHistorical && filters.overdueOnly) continue;
       const remaining = quantitySummary.remainingQuantity;
-      // This is the active operational queue. Fully physical and explicitly
-      // administratively reconciled obligations belong in their audit records,
-      // not in Fulfillment as open jobs.
-      if (remaining <= 0) continue;
 
       const isPickup = order.shippingMethod === 'pickup';
       if (filters.type === 'ship' && isPickup) continue;
@@ -1899,7 +1895,9 @@ export class FulfillmentDashboardRepo {
         // The ticket is a notification envelope, not the physical readiness
         // authority. Its READY_FOR_PICKUP state can exist after a partial
         // adjustment, so derive the operator-facing status from quantities.
-        const status = quantitySummary.remainingQuantity === 0
+        const status = isHistorical && quantitySummary.administrativelyReconciledQuantity > 0
+          ? 'COMPLETED'
+          : quantitySummary.remainingQuantity === 0
           ? 'PICKED_UP'
           : quantitySummary.pickedUpQuantity > 0
             ? 'PARTIALLY_PICKED_UP'
@@ -1924,6 +1922,7 @@ export class FulfillmentDashboardRepo {
           pickupTicketId: ticket?.id ?? null,
           shipmentId: null,
           isArchived: isArchivedPickup,
+          isHistorical,
           archivedReason: isArchivedPickup ? `Picked up more than ${pickupRetentionDays} day(s) ago` : null,
           productionJobs: productionJobsByOrder.get(order.id) ?? [],
           productionContext,
@@ -1934,7 +1933,11 @@ export class FulfillmentDashboardRepo {
         continue;
       }
 
-      const shipStatus = quantitySummary.status;
+      const shipStatus = isHistorical && quantitySummary.administrativelyReconciledQuantity > 0
+        ? 'COMPLETED'
+        : isHistorical && quantitySummary.shippedQuantity > 0 && order.fulfillmentStatus === 'delivered'
+          ? 'DELIVERED'
+          : quantitySummary.status;
       const shippedAtMs = Date.parse(String(shippedAtMap.get(order.id) || ''));
       const isArchivedShip = shipStatus === 'SHIPPED' &&
         Number.isFinite(shippedAtMs) &&
@@ -1945,7 +1948,7 @@ export class FulfillmentDashboardRepo {
         : new Date(order.updatedAt).toISOString();
 
       const readySinceMs = Date.parse(readySinceIso);
-      const overdue = Number.isFinite(readySinceMs)
+      const overdue = !isHistorical && Number.isFinite(readySinceMs)
         ? (nowMs - readySinceMs) > (SHIP_READY_OVERDUE_HOURS * 60 * 60 * 1000)
         : false;
 
@@ -1968,6 +1971,7 @@ export class FulfillmentDashboardRepo {
         pickupTicketId: null,
         shipmentId: shipmentMap.get(order.id)?.id ?? null,
         isArchived: isArchivedShip,
+        isHistorical,
         archivedReason: isArchivedShip ? `Shipped more than ${pickupRetentionDays} day(s) ago` : null,
         productionJobs: productionJobsByOrder.get(order.id) ?? [],
         productionContext,
