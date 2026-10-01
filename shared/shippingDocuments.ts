@@ -22,6 +22,8 @@ export const shipmentShippingContextSchema = z.object({
   destination: shippingPartySchema,
   blindShipping: z.boolean(),
   blindSender: shippingPartySchema.nullable(),
+  // Absent on existing drafts: their saved alternate sender remains custom.
+  blindSenderSource: z.enum(["ordering_customer", "custom"]).optional(),
 }).strict();
 export type ShipmentShippingContext = z.infer<typeof shipmentShippingContextSchema>;
 

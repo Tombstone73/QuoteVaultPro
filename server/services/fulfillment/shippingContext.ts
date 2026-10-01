@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { customers, orders } from '@shared/schema';
-import { shipmentShippingContextSchema, shippingPartyValidationErrors, type ShipmentShippingContext, type ShippingParty } from '@shared/shippingDocuments';
+import { shipmentShippingContextSchema, shippingPartySchema, shippingPartyValidationErrors, type ShipmentShippingContext, type ShippingParty } from '@shared/shippingDocuments';
 import { db } from '../../db';
 import { FulfillmentHttpError } from './types';
 
@@ -39,6 +39,46 @@ export function commonShipmentShippingContext(contexts: ShipmentShippingContext[
   return first;
 }
 
+type CustomerSenderRow = {
+  customerId: string | null; companyName: string | null; email: string | null; phone: string | null;
+  billingStreet1: string | null; billingStreet2: string | null; billingCity: string | null;
+  billingState: string | null; billingPostalCode: string | null; billingCountry: string | null;
+};
+
+/** The account billing address is the return identity; never use the Order's Ship To or mix addresses. */
+export function orderingCustomerSender(rows: CustomerSenderRow[]): { sender: ShippingParty | null; issue: string | null } {
+  if (!rows.length || rows.some(row => !row.customerId) || new Set(rows.map(row => row.customerId)).size !== 1) {
+    return { sender: null, issue: 'Linked Orders do not have one shared ordering customer.' };
+  }
+  const customer = rows[0];
+  const sender: ShippingParty = {
+    name: null, company: text(customer.companyName), address1: text(customer.billingStreet1),
+    address2: text(customer.billingStreet2), city: text(customer.billingCity), state: text(customer.billingState),
+    postalCode: text(customer.billingPostalCode), country: text(customer.billingCountry),
+    phone: text(customer.phone), email: text(customer.email),
+  };
+  const missing = shippingPartyValidationErrors(sender);
+  const tooLong = !shippingPartySchema.safeParse(sender).success;
+  return { sender, issue: missing.length ? `Ordering customer billing address is incomplete: ${missing.join(', ')}.`
+    : tooLong ? 'Ordering customer sender exceeds shipment field limits. Use Custom Sender.' : null };
+}
+
+const customerSenderSelection = {
+  customerId: orders.customerId, companyName: customers.companyName, email: customers.email, phone: customers.phone,
+  billingStreet1: customers.billingStreet1, billingStreet2: customers.billingStreet2, billingCity: customers.billingCity,
+  billingState: customers.billingState, billingPostalCode: customers.billingPostalCode, billingCountry: customers.billingCountry,
+};
+
+export async function resolveOrderingCustomerSender(orgId: string, orderIds: string[], executor: typeof db = db) {
+  const ids = Array.from(new Set(orderIds));
+  if (!ids.length) return orderingCustomerSender([]);
+  const rows = await executor.select(customerSenderSelection).from(orders)
+    .leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, orgId)))
+    .where(and(eq(orders.organizationId, orgId), inArray(orders.id, ids)));
+  if (rows.length !== ids.length) throw new FulfillmentHttpError(404, 'One or more linked Orders were not found.', 'ORDER_NOT_FOUND');
+  return orderingCustomerSender(rows);
+}
+
 export async function resolveShipmentShippingContext(orgId: string, orderIds: string[], executor: typeof db = db): Promise<ShipmentShippingContext> {
   const ids = Array.from(new Set(orderIds));
   if (!ids.length) return commonShipmentShippingContext([]);
@@ -48,11 +88,16 @@ export async function resolveShipmentShippingContext(orgId: string, orderIds: st
     shipToState: orders.shipToState, shipToPostalCode: orders.shipToPostalCode, shipToCountry: orders.shipToCountry,
     shipToPhone: orders.shipToPhone, shipToEmail: orders.shipToEmail, shippingAddress: orders.shippingAddress,
     blindShipping: customers.blindShipping,
+    ...customerSenderSelection,
   }).from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, orgId)))
     .where(and(eq(orders.organizationId, orgId), inArray(orders.id, ids)));
   if (rows.length !== ids.length) throw new FulfillmentHttpError(404, 'One or more linked Orders were not found.', 'ORDER_NOT_FOUND');
   const byId = new Map(rows.map(row => [row.id, row]));
-  return commonShipmentShippingContext(ids.map(id => orderShippingContext(byId.get(id)!)));
+  const context = commonShipmentShippingContext(ids.map(id => orderShippingContext(byId.get(id)!)));
+  const { sender, issue } = orderingCustomerSender(ids.map(id => byId.get(id)!));
+  return context.blindShipping && sender && !issue
+    ? { ...context, blindSender: sender, blindSenderSource: 'ordering_customer' }
+    : context;
 }
 
 export function validateShipmentShippingContext(value: unknown, orderIds: string[], complete = false): ShipmentShippingContext {

@@ -233,6 +233,22 @@ describe("shipping document sources with mocked database", () => {
     expect(html).toContain("Alternate blind sender"); expect(html).not.toContain("Internal customer"); expect(html).not.toContain("Private operational note");
   });
 
+  test("ordering-customer sender snapshot prints on packing slip while internal manifest retains Order identity", async () => {
+    const blindContext = { ...context, blindShipping: true, blindSenderSource: "ordering_customer", blindSender: party("Ordering Company") };
+    const results = draftResults({ shipment: { ...draft, shippingContext: blindContext } });
+    results.splice(3, 2);
+    mockReads(results);
+    const document = await getShippingDocumentSource("org", "shipment", undefined, { captureForShipping: true });
+    expect(document.sender).toEqual(blindContext.blindSender);
+    const packingSlip = renderShippingDocumentHtml(document, "packing_slip");
+    expect(packingSlip).toContain("Ordering Company");
+    expect(packingSlip).not.toContain("Internal customer");
+    const manifest = renderShippingDocumentHtml(document, "shipment_manifest");
+    expect(manifest).toContain("Internal customer");
+    expect(document.orders[0].customerId).toBe("customer");
+    expect(write).not.toHaveBeenCalled();
+  });
+
   test("blind shipping without alternate identity blocks documents, never falls back to actual organization", async () => {
     mockReads(draftResults({ shipment: { ...draft, shippingContext: { ...context, blindShipping: true } } }));
     await expect(getShippingDocumentSource("org", "shipment")).rejects.toMatchObject({ status: 409, code: "BLIND_SENDER_REQUIRED" });

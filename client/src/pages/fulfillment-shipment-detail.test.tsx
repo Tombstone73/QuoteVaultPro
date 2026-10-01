@@ -188,6 +188,67 @@ test('blind shipments never guess normal sender and alternate sender edits use t
   } finally { act(() => root.unmount()); shipment.shippingContext = originalContext; }
 });
 
+test('enabling blind shipping defaults to the ordering customer snapshot and can switch to a custom sender', async () => {
+  const originalOrderingCustomer = shipment.orderingCustomer;
+  shipment.orderingCustomer = { sender: { ...destination, name: null, company: 'Ordering Company', address1: '100 Billing Street', city: 'Indianapolis', state: 'IN', postalCode: '46250' }, issue: null };
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    act(() => Simulate.click(button(container, 'Edit destination / sender')));
+    const blind = Array.from(container.querySelectorAll('input[type="checkbox"]')).find(input => input.parentElement?.textContent?.includes('Blind shipping'))!;
+    act(() => Simulate.change(blind, { target: { checked: true } } as any));
+    expect((container.querySelector('input[type="radio"][name="blind-sender-source"]') as HTMLInputElement).checked).toBe(true);
+    expect(container.textContent).toContain('Ordering Company');
+    expect(container.textContent).toContain('100 Billing Street');
+    expect(container.textContent).toContain('123 Saved Street'); // Ship To remains distinct.
+    expect(container.querySelector('input[aria-label="Alternate sender Street address"]')).toBeNull();
+    await act(async () => Simulate.click(button(container, 'SAVE DRAFT')));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ shippingContext: expect.objectContaining({
+      blindShipping: true, blindSenderSource: 'ordering_customer', blindSender: expect.objectContaining({ company: 'Ordering Company', address1: '100 Billing Street' }),
+      destination: expect.objectContaining({ address1: '123 Saved Street' }),
+    }) }));
+    act(() => Simulate.change(container.querySelectorAll('input[type="radio"][name="blind-sender-source"]')[1]));
+    expect(container.querySelector('input[aria-label="Alternate sender Street address"]')).toBeTruthy();
+    act(() => Simulate.change(container.querySelector('input[aria-label="Alternate sender Street address"]')!, { target: { value: '45 Custom Street' } } as any));
+    await act(async () => Simulate.click(button(container, 'SAVE DRAFT')));
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ shippingContext: expect.objectContaining({
+      blindSenderSource: 'custom', blindSender: expect.objectContaining({ address1: '45 Custom Street' }),
+    }) }));
+  } finally { act(() => root.unmount()); shipment.orderingCustomer = originalOrderingCustomer; }
+});
+
+test('existing custom blind sender stays custom even when the ordering customer is available', async () => {
+  const originalContext = shipment.shippingContext;
+  const originalOrderingCustomer = shipment.orderingCustomer;
+  shipment.shippingContext = { ...originalContext, blindShipping: true, blindSender: { ...destination, company: 'Saved Custom Sender', address1: '45 Existing Street' } };
+  shipment.orderingCustomer = { sender: { ...destination, company: 'Ordering Company', address1: '100 Billing Street' }, issue: null };
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    act(() => Simulate.click(button(container, 'Edit destination / sender')));
+    expect((container.querySelectorAll('input[type="radio"][name="blind-sender-source"]')[1] as HTMLInputElement).checked).toBe(true);
+    expect((container.querySelector('input[aria-label="Alternate sender Street address"]') as HTMLInputElement).value).toBe('45 Existing Street');
+    await act(async () => Simulate.click(button(container, 'SAVE DRAFT')));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ shippingContext: expect.objectContaining({ blindSender: expect.objectContaining({ address1: '45 Existing Street' }) }) }));
+  } finally { act(() => root.unmount()); shipment.shippingContext = originalContext; shipment.orderingCustomer = originalOrderingCustomer; }
+});
+
+test('incomplete ordering customer falls back to custom entry without inventing an address', async () => {
+  const originalOrderingCustomer = shipment.orderingCustomer;
+  shipment.orderingCustomer = { sender: { ...destination, company: 'Ordering Company', address1: null }, issue: 'Ordering customer billing address is incomplete: street address.' };
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    act(() => Simulate.click(button(container, 'Edit destination / sender')));
+    const blind = Array.from(container.querySelectorAll('input[type="checkbox"]')).find(input => input.parentElement?.textContent?.includes('Blind shipping'))!;
+    act(() => Simulate.change(blind, { target: { checked: true } } as any));
+    expect((container.querySelectorAll('input[type="radio"][name="blind-sender-source"]')[1] as HTMLInputElement).checked).toBe(true);
+    expect(container.textContent).toContain('Ordering customer billing address is incomplete');
+    expect((container.querySelector('input[aria-label="Alternate sender Street address"]') as HTMLInputElement).value).toBe('');
+    expect(button(container, 'MARK AS SHIPPED').disabled).toBe(true);
+  } finally { act(() => root.unmount()); shipment.orderingCustomer = originalOrderingCustomer; }
+});
+
 test('historical contexts are read-only and use frozen destination/sender rather than live fields', async () => {
   const originalStatus = shipment.status;
   shipment.status = 'SHIPPED';

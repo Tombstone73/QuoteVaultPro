@@ -1,6 +1,6 @@
 import type { AdministrativeCorrectionPreview } from '@shared/administrativeFulfillment';
 import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
-import type { ShipmentShippingContext, ShippingDocumentSource, ShippingDocumentType } from "@shared/shippingDocuments";
+import type { ShipmentShippingContext, ShippingDocumentSource, ShippingDocumentType, ShippingParty } from "@shared/shippingDocuments";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getApiUrl } from "@/lib/apiConfig";
@@ -233,6 +233,7 @@ export interface ShipmentDetail {
   dimHeightIn: string | null;
   internalNotes: string | null;
   shippingContext?: ShipmentShippingContext | null;
+  orderingCustomer?: { sender: ShippingParty | null; issue: string | null } | null;
   documentSnapshot?: ShippingDocumentSource | null;
   shippedAt: string | null;
   createdAt: string;

@@ -16,7 +16,7 @@ import { projectCanonicalProductionObligations } from '../orderProductionComplet
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
 import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
 import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
-import { resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
+import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
@@ -586,7 +586,9 @@ export class FulfillmentService {
     if (!shipment) return null;
     const shippingContext = shipment.shippingContext ?? (shipment.status === 'DRAFT'
       ? await resolveShipmentShippingContext(orgId, shipment.orders.map(order => order.orderId), this.dbInstance) : null);
-    return { ...shipment, shippingContext, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
+    const orderingCustomer = shipment.status === 'DRAFT'
+      ? await resolveOrderingCustomerSender(orgId, shipment.orders.map(order => order.orderId), this.dbInstance) : null;
+    return { ...shipment, shippingContext, orderingCustomer, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
   }
 
   async getShipmentDocument(orgId: string, shipmentId: string, documentType: ShippingDocumentType, packageId?: string) {

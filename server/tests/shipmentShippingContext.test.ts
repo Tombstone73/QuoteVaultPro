@@ -1,10 +1,12 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { orderShippingContext, commonShipmentShippingContext, resolveShipmentShippingContext, validateShipmentShippingContext } from '../services/fulfillment/shippingContext';
+import { orderShippingContext, commonShipmentShippingContext, orderingCustomerSender, resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from '../services/fulfillment/shippingContext';
 import { patchShipmentSchema } from '../services/fulfillment/schemas';
 
 const flatOrder = { id: 'order-a', shipToName: ' Recipient ', shipToAddress1: '12 Main', shipToCity: 'Phoenix', shipToState: 'AZ', shipToPostalCode: '85001', shipToPhone: '111' };
 const legacy = { name: 'Legacy recipient', address1: '34 Other', city: 'Austin', state: 'TX', zip: '78701', phone: '222' };
+const account = { customerId: 'customer-a', companyName: 'Ordering Company', email: 'orders@example.test', phone: '317-555-0100',
+  billingStreet1: '100 Billing Street', billingStreet2: null, billingCity: 'Indianapolis', billingState: 'IN', billingPostalCode: '46250', billingCountry: 'US' };
 
 describe('shipment-owned shipping context', () => {
   test('flat address is authoritative as a whole, including intentionally absent fields', () => {
@@ -26,6 +28,16 @@ describe('shipment-owned shipping context', () => {
     expect(commonShipmentShippingContext([first, second])).toMatchObject({ blindShipping: true, blindSender: null });
     expect(() => validateShipmentShippingContext(first, ['order-a'], true)).toThrow('explicit confirmation');
     expect(validateShipmentShippingContext({ ...first, source: 'staff', blindSender: { ...first.destination, company: 'Confirmed alternate' } }, ['order-a'], true).blindSender?.company).toBe('Confirmed alternate');
+  });
+
+  test('ordering customer uses one account billing address, not Ship To or another linked customer', () => {
+    expect(orderingCustomerSender([{ ...account, ...flatOrder }]).sender).toMatchObject({
+      company: 'Ordering Company', address1: '100 Billing Street', city: 'Indianapolis', phone: '317-555-0100',
+    });
+    expect(orderingCustomerSender([account, { ...account, customerId: 'other' }])).toMatchObject({ sender: null });
+    expect(orderingCustomerSender([{ ...account, billingStreet1: null }]).issue).toContain('street address');
+    expect(orderingCustomerSender([{ ...account, billingStreet1: null }]).sender?.address1).toBeNull();
+    expect(orderingCustomerSender([{ ...account, companyName: 'A'.repeat(255) }]).issue).toContain('field limits');
   });
 
   test('combined destination and blind preference conflicts are actionable instead of primary-order guesses', () => {
@@ -58,5 +70,25 @@ describe('shipment-owned shipping context', () => {
     expect(queries[1].params).toEqual(['org-a', 'order-a']);
     expect(write).not.toHaveBeenCalled();
     await expect(resolveShipmentShippingContext('org-a', ['order-a', 'missing'], executor)).rejects.toMatchObject({ status: 404, code: 'ORDER_NOT_FOUND' });
+  });
+
+  test('new blind draft snapshots the ordering customer; later account changes cannot alter saved context', async () => {
+    const dialect = new PgDialect();
+    const predicates: any[] = [];
+    const write = jest.fn(() => { throw new Error('Customer must not be mutated'); });
+    let accountAddress = account.billingStreet1;
+    const executor: any = { insert: write, update: write, delete: write, select: () => {
+      const chain: any = { from: () => chain, leftJoin: (_table: unknown, predicate: any) => { predicates.push(dialect.sqlToQuery(predicate)); return chain; },
+        where: (predicate: any) => { predicates.push(dialect.sqlToQuery(predicate)); return Promise.resolve([{ ...flatOrder, ...account, billingStreet1: accountAddress, blindShipping: true }]); } };
+      return chain;
+    } };
+    const saved = await resolveShipmentShippingContext('org-a', ['order-a'], executor);
+    expect(saved).toMatchObject({ blindShipping: true, blindSenderSource: 'ordering_customer', blindSender: { company: 'Ordering Company', address1: '100 Billing Street' }, destination: { address1: '12 Main' } });
+    expect(validateShipmentShippingContext(saved, ['order-a'], true)).toEqual(saved);
+    accountAddress = '200 Later Street';
+    expect((await resolveOrderingCustomerSender('org-a', ['order-a'], executor)).sender?.address1).toBe('200 Later Street');
+    expect(saved.blindSender?.address1).toBe('100 Billing Street');
+    expect(predicates.every(predicate => predicate.params.includes('org-a'))).toBe(true);
+    expect(write).not.toHaveBeenCalled();
   });
 });
