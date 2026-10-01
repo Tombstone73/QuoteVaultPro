@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { shipmentDateValue } from '@shared/fulfillmentVerification';
 import { administrativeCorrectionPreview, administrativeReopenedByLine, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { currentPickupHistoryNote, fulfillmentHistoryNoteSchema, PICKUP_HISTORY_NOTE_UPDATED } from "@shared/fulfillmentHistoryNote";
@@ -410,7 +411,7 @@ export class ShipmentRepo {
     return this.dbInstance.transaction(async (tx) => {
       const [shipment] = await tx.select({ id: shipments.id }).from(shipments).where(and(
         eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
-      )).limit(1);
+      )).for('update').limit(1);
       if (!shipment) return { ok: false as const, code: 'INVALID_STATE', message: 'Only DRAFT shipments are editable' };
       const orderLinks = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
         eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
@@ -544,6 +545,13 @@ export class ShipmentRepo {
         return { ok: false as const, code: 'EMPTY_SHIPMENT', message: 'Shipment must include at least one item before shipping' };
       }
 
+      const packages = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages)
+        .where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId)));
+      const packageIds = new Set(packages.map(pkg => pkg.id));
+      if (draftItems.some(item => !Number.isInteger(item.quantity) || item.quantity <= 0 || !item.packageId || !packageIds.has(item.packageId))) {
+        return { ok: false as const, code: 'INVALID_PACKAGE_ALLOCATION', message: 'Every shipped quantity must be allocated to a package in this shipment.' };
+      }
+
       const draftByLineItem = new Map<string, number>();
       for (const item of draftItems) {
         const prev = draftByLineItem.get(item.orderLineItemId) || 0;
@@ -552,67 +560,17 @@ export class ShipmentRepo {
 
       const lineItemIds = Array.from(draftByLineItem.keys());
       if (lineItemIds.length > 0) await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineItemIds)} FOR UPDATE`);
-      const lineRows = lineItemIds.length > 0
-        ? await tx
-          .select({
-            id: orderLineItems.id,
-            quantity: orderLineItems.quantity,
-            workflowState: orderLineItems.workflowState,
-            lifecycleStatus: orderLineItems.status,
-            productionBypassed: orderLineItems.productionBypassed,
-            lineItemRole: orderLineItems.lineItemRole,
-            workflowIntent: products.workflowIntent,
-            requiresProductionJob: products.requiresProductionJob,
-          })
-          .from(orderLineItems).innerJoin(products, eq(products.id, orderLineItems.productId))
-          .where(and(eq(products.organizationId, orgId), inArray(orderLineItems.id, lineItemIds)))
-        : [];
-
-      const orderedQtyByLineItem = new Map(lineRows.map((row) => [row.id, row.quantity]));
-
-      const shippedAggRows = lineItemIds.length > 0
-        ? await tx
-          .select({
-            orderLineItemId: shipmentItems.orderLineItemId,
-            shippedQty: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int`,
-          })
-          .from(shipmentItems)
-          .innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
-          .where(and(
-            eq(shipments.organizationId, orgId),
-            eq(shipments.status, 'SHIPPED'),
-            inArray(shipmentItems.orderLineItemId, lineItemIds),
-            ne(shipmentItems.shipmentId, shipmentId),
-          ))
-          .groupBy(shipmentItems.orderLineItemId)
-        : [];
-
-      const alreadyShippedByLineItem = new Map(shippedAggRows.map((row) => [row.orderLineItemId, row.shippedQty]));
-      const pickedUpRows = lineItemIds.length > 0
-        ? await tx.select({ id: pickupHandoffItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${pickupHandoffItems.quantity}), 0)::int` })
-          .from(pickupHandoffItems).innerJoin(pickupHandoffs, eq(pickupHandoffs.id, pickupHandoffItems.pickupHandoffId))
-          .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffs.organizationId, orgId), inArray(pickupHandoffItems.orderLineItemId, lineItemIds))).groupBy(pickupHandoffItems.orderLineItemId)
-        : [];
-      const pickedUpByLine = new Map(pickedUpRows.map((row) => [row.id, Number(row.quantity || 0)]));
-      const reversals = await readTerminalReversalQuantities(tx, orgId, lineItemIds);
-      const reversedShipmentByLine = reversals.shipment;
-      const reversedPickupByLine = reversals.pickup;
-
+      // Re-read canonical net quantities under the same line locks used by
+      // pickup and administrative corrections; draft data is not authority.
+      const eligibleLines = await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { lineItemIds });
+      const byId = new Map(eligibleLines.map(line => [line.id, line]));
       for (const [lineItemId, draftQty] of Array.from(draftByLineItem.entries())) {
-        const line = lineRows.find((row) => row.id === lineItemId);
-        const orderedQty = orderedQtyByLineItem.get(lineItemId);
-        if (!orderedQty || !line) {
-          return { ok: false as const, code: 'LINE_ITEM_NOT_FOUND', message: `Line item ${lineItemId} was not found` };
+        const line = byId.get(lineItemId);
+        if (!line || !line.projection.requiresFulfillment || draftItems.some(item => item.orderLineItemId === lineItemId && item.orderId !== line.orderId)) {
+          return { ok: false as const, code: 'LINE_ITEM_NOT_FOUND', message: 'A shipment line does not belong to its Order.' };
         }
-        const projection = resolveFulfillmentLineQuantity({ ...line, orderedQuantity: Number(orderedQty),
-          shippedQuantity: Math.max(0, Number(alreadyShippedByLineItem.get(lineItemId) ?? 0) - (reversedShipmentByLine.get(lineItemId) ?? 0)),
-          pickedUpQuantity: Math.max(0, Number(pickedUpByLine.get(lineItemId) ?? 0) - (reversedPickupByLine.get(lineItemId) ?? 0)) });
-        if (!projection.requiresFulfillment || draftQty > projection.remainingQuantity) {
-          return {
-            ok: false as const,
-            code: 'QTY_EXCEEDS_ORDER',
-            message: `Quantity exceeds the remaining order quantity for line item ${lineItemId}`,
-          };
+        if (draftQty > line.projection.remainingQuantity) {
+          return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Shipment quantity exceeds the remaining order quantity.' };
         }
       }
 
@@ -622,9 +580,7 @@ export class ShipmentRepo {
         .set({
           status: 'SHIPPED',
           shippedAt: now,
-          // DATE columns are calendar strings. Never pass a timestamp/invalid
-          // Date through the DATE serializer during the terminal transition.
-          shipDate: shipment.shipDate || now.toISOString().slice(0, 10),
+          shipDate: shipmentDateValue(shipment.shipDate ?? now),
           updatedAt: now,
         })
         .where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')))

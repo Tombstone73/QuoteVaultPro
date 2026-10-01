@@ -12,6 +12,14 @@ export function parseShipmentDate(value: string | null | undefined): string | nu
   return value;
 }
 
+/** Drizzle's shipment DATE column uses mode: 'date', so writes require Date,
+ * while API calendar dates remain YYYY-MM-DD strings. */
+export function shipmentDateValue(value: string | Date | null | undefined): Date | null {
+  if (value instanceof Date && !Number.isFinite(value.getTime())) throw new Error('Ship date is not a valid calendar date');
+  const dateOnly = parseShipmentDate(value instanceof Date ? value.toISOString().slice(0, 10) : value);
+  return dateOnly == null ? null : new Date(`${dateOnly}T00:00:00.000Z`);
+}
+
 export function fulfillmentVerificationPolicyFromSettings(settings: any): FulfillmentVerificationPolicy {
   return settings?.preferences?.fulfillment?.verificationPolicy === 'packing_completes_fulfillment'
     ? 'packing_completes_fulfillment'

@@ -119,6 +119,7 @@ export function FulfillmentShipmentEditor({
   const location = useLocation();
 
   const [form, setForm] = useState<ShipmentFormState>(defaultForm);
+  const [splitQuantities, setSplitQuantities] = useState<Record<string, number>>({});
   const [allocatedByLineItemId, setAllocatedByLineItemId] = useState<Record<string, number>>({});
   const [packageByLineItemId, setPackageByLineItemId] = useState<Record<string, string>>({});
   const [packageFieldsById, setPackageFieldsById] = useState<Record<string, { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string }>>({});
@@ -167,9 +168,10 @@ export function FulfillmentShipmentEditor({
 
     const allocatedMap: Record<string, number> = {};
     for (const item of shipment.items) {
-      allocatedMap[item.orderLineItemId] = item.quantity;
+      allocatedMap[item.orderLineItemId] = (allocatedMap[item.orderLineItemId] ?? 0) + item.quantity;
     }
     setAllocatedByLineItemId(allocatedMap);
+    setSplitQuantities({});
     const packageMap: Record<string, string> = {};
     for (const item of shipment.items) if (item.packageId) packageMap[item.orderLineItemId] = item.packageId;
     setPackageByLineItemId(packageMap);
@@ -264,18 +266,34 @@ export function FulfillmentShipmentEditor({
     return addresses.size > 1;
   }, [ordersById, shipment?.orders]);
 
+  const draftShipmentItems = useMemo(() => lineItemsByOrder.flatMap(group =>
+    group.lineItems.flatMap(item => {
+      const existing = shipment?.items.filter(allocation => allocation.orderLineItemId === item.id) ?? [];
+      return existing.length > 1
+        ? existing.map(allocation => ({
+          orderId: group.orderId, orderLineItemId: item.id,
+          quantity: splitQuantities[allocation.id] ?? allocation.quantity, packageId: allocation.packageId,
+        }))
+        : [{ orderId: group.orderId, orderLineItemId: item.id,
+          quantity: Number(allocatedByLineItemId[item.id] || 0), packageId: packageByLineItemId[item.id] || null }];
+    }),
+  ), [lineItemsByOrder, shipment?.items, splitQuantities, allocatedByLineItemId, packageByLineItemId]);
+
   const validationErrors = useMemo(() => {
     const errors = new Set<string>();
+    for (const allocation of draftShipmentItems) {
+      if (!Number.isInteger(allocation.quantity) || allocation.quantity < 0) errors.add(allocation.orderLineItemId);
+    }
     for (const group of lineItemsByOrder) {
       for (const item of group.lineItems) {
         const allocated = Number(allocatedByLineItemId[item.id] || 0);
-        if (allocated > item.remainingQty) {
+        if (!Number.isInteger(allocated) || allocated < 0 || allocated > item.remainingQty) {
           errors.add(item.id);
         }
       }
     }
     return errors;
-  }, [allocatedByLineItemId, lineItemsByOrder]);
+  }, [allocatedByLineItemId, lineItemsByOrder, draftShipmentItems]);
 
   const allocatedCount = useMemo(
     () => Object.values(allocatedByLineItemId).reduce((acc, value) => acc + (Number(value) > 0 ? Number(value) : 0), 0),
@@ -283,7 +301,7 @@ export function FulfillmentShipmentEditor({
   );
 
   const markShippedDisabled =
-    !shipment ||
+    loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
     validationErrors.size > 0 ||
     allocatedCount <= 0 ||
@@ -291,20 +309,11 @@ export function FulfillmentShipmentEditor({
     updateShipment.isPending;
 
   const saveDraft = async (silent = false) => {
-    if (!shipmentId) return;
+    if (!shipmentId || loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || validationErrors.size > 0) return;
     try {
       setLastError(null);
 
-      const shipmentItems = lineItemsByOrder.flatMap((group) =>
-        group.lineItems
-          .map((item) => ({
-            orderId: group.orderId,
-            orderLineItemId: item.id,
-            quantity: Number(allocatedByLineItemId[item.id] || 0),
-            packageId: packageByLineItemId[item.id] || null,
-          }))
-          .filter((item) => item.quantity > 0),
-      );
+      const shipmentItems = draftShipmentItems.filter(item => item.quantity > 0);
 
       const payload = {
         carrier: form.carrier || null,
@@ -323,11 +332,12 @@ export function FulfillmentShipmentEditor({
           notes: fields.notes || null,
           });
         }),
-        ...(advancedPacking ? { shipmentItems } : {}),
+        shipmentItems,
       };
 
       const response = await updateShipment.mutateAsync(payload);
       setLastResponse(response);
+      setPackageByLineItemId(Object.fromEntries(shipmentItems.filter(item => item.packageId).map(item => [item.orderLineItemId, item.packageId!])));
 
       if (!silent) {
         toast({ title: "Draft saved", description: "Shipment draft updated" });
@@ -432,7 +442,7 @@ export function FulfillmentShipmentEditor({
   const isDraft = shipment.status === "DRAFT";
   const isSingleOrderShipment = shipment.orders.length === 1;
   const advancedPacking = shipment.packingMode === "advanced_separate_packing" || splitMode;
-  const packedCount = shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const packedCount = isDraft ? allocatedCount : shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
 
   const resolveCustomerId = (orderId: string): string | null => {
@@ -649,8 +659,8 @@ export function FulfillmentShipmentEditor({
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
                 <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
               </div>
-              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Verified, production-complete quantities are automatically allocated to {shipment.packages[0]?.packageReference || "the default package"}.</p></div>{isDraft && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
-              <div className={advancedPacking ? "overflow-x-auto" : "hidden"}>
+              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Choose how many units are leaving now. Reduce Qty in this shipment for a partial shipment; set zero to leave a line out.</p></div>{isDraft && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
+              <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-left">
                   <thead>
                     <tr className="border-b border-border bg-muted/30">
@@ -658,7 +668,7 @@ export function FulfillmentShipmentEditor({
                       <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Product SKU / Name</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ordered</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Remaining</th>
-                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">In Shipment</th>
+                      <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Qty in this shipment</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package</th>
                     </tr>
                   </thead>
@@ -688,6 +698,7 @@ export function FulfillmentShipmentEditor({
                         {group.lineItems.map((item) => {
                           const value = Number(allocatedByLineItemId[item.id] || 0);
                           const hasError = validationErrors.has(item.id);
+                          const splits = shipment.items.filter(allocation => allocation.orderLineItemId === item.id);
                           return (
                             <tr key={item.id}>
                               {lineItemsByOrder.length > 1 && <td className="px-6 py-4 text-xs font-mono text-muted-foreground">#{group.orderNumber}</td>}
@@ -699,8 +710,12 @@ export function FulfillmentShipmentEditor({
                               <td className={`px-6 py-4 text-center text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-amber-500"}`}>{item.remainingQty}</td>
                               <td className="px-6 py-4 text-center">
                                 <div className="inline-flex items-center gap-2">
-                                  <input
+                                  {splits.length <= 1 ? <input
                                     type="number"
+                                    aria-label={`Qty in this shipment: ${item.label}`}
+                                    min={0}
+                                    max={item.remainingQty}
+                                    step={1}
                                     value={value}
                                     disabled={!isDraft}
                                     className={`h-8 w-16 rounded border-2 bg-background text-center text-sm font-bold focus:border-primary focus:ring-0 ${hasError ? "border-red-500" : "border-primary/20"}`}
@@ -708,14 +723,25 @@ export function FulfillmentShipmentEditor({
                                       const next = Math.max(0, Number(event.target.value || 0));
                                       setAllocatedByLineItemId((prev) => ({ ...prev, [item.id]: next }));
                                     }}
-                                  />
+                                  /> : <div className="space-y-2">{splits.map(allocation => <label key={allocation.id} className="flex items-center gap-2 text-xs">
+                                    {shipment.packages.find(pkg => pkg.id === allocation.packageId)?.packageReference || "Unpacked"}
+                                    <input type="number" aria-label={`Qty in package ${allocation.packageId}: ${item.label}`} min={0} max={item.remainingQty} step={1} disabled={!isDraft}
+                                      className="h-8 w-16 rounded border bg-background text-center" value={splitQuantities[allocation.id] ?? allocation.quantity}
+                                      onChange={event => {
+                                        const next = Math.max(0, Number(event.target.value || 0));
+                                        setSplitQuantities(values => ({ ...values, [allocation.id]: next }));
+                                        setAllocatedByLineItemId(values => ({ ...values, [item.id]: splits.reduce(
+                                          (sum, part) => sum + (part.id === allocation.id ? next : splitQuantities[part.id] ?? part.quantity), 0,
+                                        ) }));
+                                      }} />
+                                  </label>)}</div>}
                                 </div>
-                                {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Exceeds remaining quantity</p>}
+                                {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Enter a whole quantity from 0 to {item.remainingQty}</p>}
                               </td>
                               <td className="px-6 py-4 text-center">
                                 <select
                                   className="h-8 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
-                                  disabled={!isDraft || shipment.packages.length === 0}
+                                  disabled={!isDraft || shipment.packages.length === 0 || splits.length > 1}
                                   value={packageByLineItemId[item.id] || ""}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
@@ -745,7 +771,7 @@ export function FulfillmentShipmentEditor({
                   const fields = packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
                   const updateFields = (key: keyof typeof fields, value: string) => setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
                   return <div key={pkg.id} className="px-6 py-4">
-                    <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{shipment.items.filter((item) => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
+                    <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
                     {advancedPacking && index > 0 && <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
                       {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="number" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft} /></label>)}
                       <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package Notes<textarea rows={1} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft} /></label>
@@ -792,7 +818,7 @@ export function FulfillmentShipmentEditor({
               <button
                 type="button"
                 className="w-full rounded-lg border border-border bg-background py-3 text-sm font-bold transition-colors hover:bg-muted/50"
-                disabled={!isDraft || updateShipment.isPending}
+                disabled={!isDraft || updateShipment.isPending || loadingOrders || validationErrors.size > 0 || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId])}
                 onClick={() => void saveDraft()}
               >
                 {updateShipment.isPending ? "SAVING..." : "SAVE DRAFT"}

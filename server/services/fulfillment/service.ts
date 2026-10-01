@@ -10,7 +10,7 @@ import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
 import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
-import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
+import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, shipmentDateValue, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
@@ -630,14 +630,7 @@ export class FulfillmentService {
 
     let parsedShipDate: Date | null | undefined;
     try {
-      const dateOnly = payload.shipDate === undefined ? undefined : parseShipmentDate(payload.shipDate);
-      // `shipments.shipDate` uses Drizzle's `date({ mode: 'date' })` mapping,
-      // which serializes a JavaScript Date. Passing the validated date-only
-      // string through causes Drizzle to call `.toISOString()` on a string at
-      // update time. Construct midnight UTC only after validating the calendar
-      // date so this remains a date-only operational value, not a local-time
-      // timestamp conversion.
-      parsedShipDate = dateOnly == null ? dateOnly : new Date(`${dateOnly}T00:00:00.000Z`);
+      parsedShipDate = payload.shipDate === undefined ? undefined : shipmentDateValue(payload.shipDate);
     }
     catch (error: any) { throw new FulfillmentHttpError(400, error.message, 'SHIP_DATE_INVALID'); }
 
@@ -823,15 +816,12 @@ export class FulfillmentService {
   }
 
   async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {
-    let existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
     }
-    if (await this.getPackingMode(orgId) === 'simple_verified_packing' && !hasExplicitSplitAllocations(existing)) {
-      await this.syncSimpleShipmentAllocations(orgId, shipmentId, actorUserId);
-      existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
-      if (!existing) throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
-    }
+    // Auto-allocation is an initial draft convenience. Shipping must consume
+    // the saved package allocations, never replace an operator's partial qty.
     const linkedOrders = await this.dashboardRepo.getOrdersForCombinedShipmentValidation(orgId, (existing.orders || []).map((order: any) => order.orderId));
     if (linkedOrders.some((order: any) => order.shippingMethod === 'pickup')) {
       throw new FulfillmentHttpError(409, 'This Order is currently Pickup. A draft shipment cannot be marked shipped.', 'FULFILLMENT_METHOD_MISMATCH');

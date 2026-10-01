@@ -1,6 +1,16 @@
-import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate } from '@shared/fulfillmentVerification';
+import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, shipmentDateValue } from '@shared/fulfillmentVerification';
+import { shipments } from '@shared/schema';
 
 describe('fulfillment shipment date contract', () => {
+  it('reproduces and fixes the actual Drizzle DATE serializer failure', () => {
+    expect(() => shipments.shipDate.mapToDriverValue('2026-10-01' as any)).toThrow('toISOString');
+    for (const input of ['2026-10-01', new Date('2026-10-01T19:00:00Z')]) {
+      expect(shipments.shipDate.mapToDriverValue(shipmentDateValue(input)!)).toContain('2026-10-01');
+    }
+    expect(shipmentDateValue(null)).toBeNull();
+    expect(() => shipmentDateValue(new Date('invalid'))).toThrow();
+    expect(() => shipmentDateValue('2026-02-30')).toThrow();
+  });
   it('accepts only real ISO calendar dates without locale parsing', () => {
     expect(parseShipmentDate('2026-08-13')).toBe('2026-08-13');
     expect(() => parseShipmentDate('08/13/2026')).toThrow('YYYY-MM-DD');
