@@ -1,4 +1,4 @@
-PrintersHero Traveler Print Agent 1.0.24
+PrintersHero Traveler Print Agent 1.0.25
 
 1. Extract this complete folder to a stable local location.
 2. Create a Local Bridge / Print Agent pairing token in PrintersHero Settings.
@@ -22,3 +22,9 @@ For diagnostics run: setup-agent.ps1 -Check
 For removal run:     setup-agent.ps1 -Uninstall
 
 See README.md for troubleshooting and release-build details.
+
+Shipping documents use the same paired agent and configured Windows queue.
+Enable Packing Slip, Shipment Manifest, or Package Ticket on the printer profile
+only if its paper is suitable. Agents older than 1.0.25 cannot receive these jobs.
+Submitted means accepted by Windows, not confirmed physical printing.
+Source milestone: rebuild the installer/release ZIP before distributing 1.0.25.

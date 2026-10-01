@@ -1,8 +1,9 @@
 # PrintersHero Windows Traveler Print Agent
 
-Version 1.0.24
+Version 1.0.25
 
-This is the shop-side, outbound-only agent for **Traveler** tickets. It runs
+This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
+Note, Packing Slip, Shipment Manifest, and Package Ticket jobs. It runs
 in the logged-in Windows session because Edge WebView2 and Windows printer
 drivers must use that session. It never listens on the LAN and the cloud never
 opens a connection to the workstation.
@@ -16,12 +17,24 @@ the Epson.
 The agent keeps a direct, outbound Supabase Realtime subscription using its
 paired capability topic. When PrintersHero durably queues a Traveler, it sends
 a data-free `queue_changed` wake signal. The agent then checks its authenticated
-queue once, claims, renders, and prints serially. It makes no recurring HTTP
+queue, claims, renders, and prints serially until the active queue is empty. It makes no recurring HTTP
 queue poll or heartbeat request to PrintersHero while idle. A reconnect performs
 one catch-up queue check only after Supabase Realtime automatically rejoins the
 wake channel, so the durable PostgreSQL queue remains authoritative if a wake is
 missed. If the initial Realtime connection is unavailable, the agent retries it
 locally with capped backoff and does not call PrintersHero until subscribed.
+
+Shipping documents require agent 1.0.25 or newer and an explicitly enabled
+document capability on the printer profile. They use the same durable queue,
+paired agent, and configured Windows printer, not a separate service. The source
+is frozen at enqueue; only the assigned agent can read it after claiming the job.
+The opaque shipping shell waits for pages, fonts, and images and binds readiness
+to both the job id and document type. Unsupported types fail instead of printing
+a Traveler. A full Package Ticket set is one spool job with multiple pages.
+
+Source milestone: the installer/package must be rebuilt from these sources
+before distributing 1.0.25. An existing downloadable ZIP is not updated by a
+source-only change. Verify the rebuilt executable reports 1.0.25 before release.
 
 ## Shop workstation setup
 

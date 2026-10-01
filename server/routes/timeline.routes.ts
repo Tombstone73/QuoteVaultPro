@@ -23,6 +23,9 @@ import {
   orderAuditLog,
   quoteWorkflowStates,
   shipments,
+  shipmentOrders,
+  pickupTickets,
+  fulfillmentEvents,
   invoices,
   payments,
   jobs,
@@ -599,29 +602,75 @@ export function registerTimelineRoutes(
         console.warn('[Timeline] quoteWorkflowStates unavailable:', err);
       }
 
-      // 5) Shipments (shipped/delivered)
+      // 5) Canonical fulfillment ledger, including secondary combined Orders.
       try {
         const oIds = Array.from(orderIds);
         if (oIds.length) {
+          const links = await db.select({ shipmentId: shipmentOrders.shipmentId })
+            .from(shipmentOrders).where(and(
+              eq(shipmentOrders.organizationId, organizationId), inArray(shipmentOrders.orderId, oIds),
+            ));
+          const linkedShipmentIds = Array.from(new Set(links.map((link) => link.shipmentId)));
           const rows = await db
             .select()
             .from(shipments)
-            .where(inArray(shipments.orderId, oIds))
+            .where(and(eq(shipments.organizationId, organizationId), or(
+              inArray(shipments.orderId, oIds),
+              ...(linkedShipmentIds.length ? [inArray(shipments.id, linkedShipmentIds)] : []),
+            )))
             .orderBy(desc(shipments.createdAt))
             .limit(Math.min(limit * 2, 200));
-
+          const shipmentIds = Array.from(new Set([...linkedShipmentIds, ...rows.map((row) => row.id)]));
+          const tickets = await db.select({ id: pickupTickets.id }).from(pickupTickets).where(and(
+            eq(pickupTickets.organizationId, organizationId), inArray(pickupTickets.orderId, oIds),
+          ));
+          const ticketIds = tickets.map((ticket) => ticket.id);
+          const ledger = await db.select().from(fulfillmentEvents).where(and(
+            eq(fulfillmentEvents.organizationId, organizationId),
+            or(
+              and(eq(fulfillmentEvents.entityType, 'ORDER'), inArray(fulfillmentEvents.entityId, oIds)),
+              ...(shipmentIds.length ? [and(eq(fulfillmentEvents.entityType, 'SHIPMENT'), inArray(fulfillmentEvents.entityId, shipmentIds))] : []),
+              ...(ticketIds.length ? [and(eq(fulfillmentEvents.entityType, 'PICKUP_TICKET'), inArray(fulfillmentEvents.entityId, ticketIds))] : []),
+            ),
+          )).orderBy(desc(fulfillmentEvents.createdAt)).limit(Math.min(limit * 4, 400));
+          const shippedLedgerIds = new Set(ledger.filter((event) => event.eventType === 'SHIPMENT_SHIPPED').map((event) => event.entityId));
+          const fulfillmentLabels: Record<string, string> = {
+            SHIPMENT_CREATED: 'Shipment draft created', SHIPMENT_UPDATED: 'Shipment draft updated',
+            SHIPMENT_SHIPPED: 'Shipment shipped', SHIPMENT_VOIDED: 'Shipment draft voided',
+            SHIPMENT_REVERSED: 'Shipment quantities reversed', PICKUP_HANDOFF_REVERSED: 'Pickup quantities reversed',
+            PICKUP_HANDOFF_RECORDED: 'Pickup handoff recorded', PICKUP_PICKED_UP: 'Pickup completed',
+            PICKUP_READY: 'Pickup marked ready', FULFILLMENT_ADMINISTRATIVELY_RESOLVED: 'Fulfillment administratively resolved',
+            ADMINISTRATIVE_FULFILLMENT_REOPENED: 'Administrative fulfillment resolution reopened',
+            FULFILLMENT_HISTORICAL_RECONCILED: 'Historical fulfillment reconciled',
+            FULFILLMENT_TERMINAL_REOPENED: 'Order fulfillment reopened', FULFILLMENT_NOTE: 'Fulfillment note added',
+          };
+          for (const event of ledger) {
+            const payload = (event.payloadJson ?? {}) as Record<string, any>;
+            // A correction to one Order in a combined shipment is not a
+            // correction to every linked Order's allocations.
+            if (typeof payload.orderId === 'string' && !orderIds.has(payload.orderId)) continue;
+            events.push({
+              id: `fulfillment_event:${event.id}`, occurredAt: toIso(event.createdAt),
+              actorName: await getActorName(event.actorUserId, null), actorUserId: event.actorUserId,
+              entityType: 'fulfillment', eventType: event.eventType,
+              message: fulfillmentLabels[event.eventType] ?? event.eventType.toLowerCase().replace(/_/g, ' '),
+              metadata: { fulfillmentEntityType: event.entityType, fulfillmentEntityId: event.entityId, payload },
+            });
+          }
           for (const s of rows) {
             const actorName = await getActorName(s.createdByUserId, null);
             const tracking = s.trackingNumber ? ` (${s.trackingNumber})` : '';
 
-            events.push({
+            // Legacy shipped rows may predate ledger events; draft and void
+            // rows must never be synthesized as physical shipment history.
+            if (s.shippedAt && !shippedLedgerIds.has(s.id)) events.push({
               id: `shipment_shipped:${s.id}`,
               occurredAt: toIso(s.shippedAt),
               actorName,
               actorUserId: s.createdByUserId,
               entityType: 'shipment',
               eventType: 'shipped',
-              message: `Shipped via ${s.carrier}${tracking}`,
+              message: `Shipment shipped${s.carrier ? ` via ${s.carrier}` : ''}${tracking}`,
               metadata: { shipmentId: s.id, orderId: s.orderId, carrier: s.carrier, trackingNumber: s.trackingNumber },
             });
 
@@ -633,7 +682,7 @@ export function registerTimelineRoutes(
                 actorUserId: s.createdByUserId,
                 entityType: 'shipment',
                 eventType: 'delivered',
-                message: `Delivered via ${s.carrier}${tracking}`,
+                message: `Shipment delivered${s.carrier ? ` via ${s.carrier}` : ''}${tracking}`,
                 metadata: { shipmentId: s.id, orderId: s.orderId, carrier: s.carrier, trackingNumber: s.trackingNumber },
               });
             }

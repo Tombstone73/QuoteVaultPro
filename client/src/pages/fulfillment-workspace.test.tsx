@@ -10,6 +10,12 @@ import { TextDecoder, TextEncoder } from "util";
 Object.defineProperty(globalThis, "crypto", { configurable: true, value: { randomUUID: () => "pickup-request-1" } });
 
 let detail: any;
+const guardedNavigate = jest.fn();
+const createShipment = jest.fn(async () => {
+  const shipmentId = `shipment-${detail.shipments.length + 1}`;
+  detail = { ...detail, shipments: [...detail.shipments, { id: shipmentId, shipmentReference: shipmentId, status: 'DRAFT', scope: 'SINGLE_ORDER', orderCount: 1 }] };
+  return { shipmentId };
+});
 const reopenAdministrative = jest.fn(async (_input: any) => ({ orderId: 'order-1' }));
 const createTicket = jest.fn(async () => ({ id: "ticket-1", status: "DRAFT" }));
 const markOrderReady = jest.fn(async () => {
@@ -28,7 +34,7 @@ const recordHandoff = jest.fn(async ({ items }: any) => {
     fulfilledQuantity: detail.fulfilledQuantity + total,
     remainingQuantity: detail.remainingQuantity - total,
     lineItems: detail.lineItems.map((line: any) => {
-      const quantity = byLine.get(line.id) || 0;
+      const quantity = Number(byLine.get(line.id) || 0);
       return { ...line, production: { ...line.production, pickedUpQuantity: line.production.pickedUpQuantity + quantity, fulfilledQuantity: line.production.fulfilledQuantity + quantity, remainingQuantity: line.production.remainingQuantity - quantity } };
     }),
     pickupHandoffs: [...detail.pickupHandoffs, { id: `handoff-${detail.pickupHandoffs.length + 1}`, handedOffAt: "2026-08-14T12:00:00Z", handedOffByUserId: "user-1", handedOffByName: "Dale", notes: null, items: handoffItems }],
@@ -43,7 +49,7 @@ jest.mock("@/hooks/useFulfillment", () => ({
   useReopenAdministrativeFulfillmentMutation: () => ({ mutateAsync: reopenAdministrative, isPending: false }),
   toFulfillmentError: (error: any) => ({ message: error?.message || "Unexpected error" }),
   useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: jest.fn() }),
-  useCreateShipmentMutation: () => ({ mutateAsync: jest.fn(async () => ({ shipmentId: "shipment-1" })), isPending: false }),
+  useCreateShipmentMutation: () => ({ mutateAsync: createShipment, isPending: false }),
   useCreatePickupTicketMutation: () => ({ mutateAsync: createTicket, isPending: false }),
   useMarkOrderReadyForPickupMutation: () => ({ mutateAsync: markOrderReady, isPending: false }),
   useUpdatePickupHistoryNoteMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
@@ -52,7 +58,8 @@ jest.mock("@/hooks/useFulfillment", () => ({
   useRecordPickupHandoffMutation: () => ({ mutateAsync: recordHandoff, isPending: false }),
 }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
-jest.mock("@/pages/fulfillment-shipment-detail", () => ({ FulfillmentShipmentEditor: () => <div /> }));
+jest.mock("@/contexts/NavigationGuardContext", () => ({ useNavigationGuard: () => ({ guardedNavigate }) }));
+jest.mock("@/pages/fulfillment-shipment-detail", () => ({ FulfillmentShipmentEditor: ({ shipmentId, onMutationComplete }: any) => <div data-testid="shipment-editor" data-shipment-id={shipmentId}><button onClick={async () => { detail = { ...detail, shipments: detail.shipments.map((shipment: any) => shipment.id === shipmentId ? { ...shipment, status: 'SHIPPED' } : shipment) }; await onMutationComplete(); }}>Mock saved partial shipment</button><button onClick={async () => { detail = { ...detail, shipments: detail.shipments.map((shipment: any) => shipment.id === shipmentId ? { ...shipment, status: 'VOIDED' } : shipment) }; await onMutationComplete(); }}>Mock void draft</button></div> }));
 jest.mock("@/components/fulfillment/PickupTravelerPrintDialog", () => ({ PickupTravelerPrintDialog: ({ lines, open }: any) => open ? <div data-testid="pickup-traveler-dialog">{JSON.stringify(lines)}</div> : null }));
 
 const { MemoryRouter, Route, Routes } = require("react-router-dom") as typeof import("react-router-dom");
@@ -64,8 +71,8 @@ function makeDetail({ fulfillmentType = "PICKUP", production = 0, ready = 0 }: {
   return { orderId: "order-1", orderNumber: "1129", customerName: "Titan Graphics", fulfillmentType, status: "NOT_READY", itemsRemaining: "1000 item(s)", physicalLineCount: 1, orderedQuantity: 1000, productionCompleteQuantity: production, fulfilledQuantity: 0, eligibleQuantity: ready, blockedQuantity: 1000 - ready, shippedQuantity: 0, pickedUpQuantity: 0, readyWaitingQuantity: ready, notReadyQuantity: 1000 - ready, remainingQuantity: 1000, readySince: null, shipTo: fulfillmentType === "PICKUP" ? "In-Store" : "123 Main Street", overdue: false, isArchived: false, productionJobs: [], customer: { name: "Titan Graphics", email: null, phone: null }, lineItems, checklistComplete: false, checklistSummary: { total: 0, checked: 0, unchecked: 0 }, productionSummary: [], pickupTicket: fulfillmentType === "PICKUP" ? { id: "ticket-1", status: "DRAFT", readyAt: null, pickedUpAt: null, stagingLocation: null, pickupNotes: null, contactName: null, contactEmail: null, contactPhone: null } : null, pickupHandoffs: [], shipments: [], events: [] };
 }
 
-function render() { const container = document.createElement("div"); document.body.appendChild(container); const root = createRoot(container); const rerender = () => root.render(<MemoryRouter initialEntries={["/fulfillment/orders/order-1"]}><Routes><Route path="/fulfillment/orders/:orderId" element={<Page />} /></Routes></MemoryRouter>); act(rerender); return { container, root, rerender }; }
-function change(input: HTMLInputElement | HTMLTextAreaElement, value: string) { const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set; setter?.call(input, value); Simulate.change(input, { target: { value } }); }
+function render(state: any = null) { const container = document.createElement("div"); document.body.appendChild(container); const root = createRoot(container); const rerender = () => root.render(<MemoryRouter initialEntries={[{ pathname: "/fulfillment/orders/order-1", search: '?debug=1', hash: '#packing', state }]}><Routes><Route path="/fulfillment/orders/:orderId" element={<Page />} /></Routes></MemoryRouter>); act(rerender); return { container, root, rerender }; }
+function change(input: HTMLInputElement | HTMLTextAreaElement, value: string) { const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set; setter?.call(input, value); Simulate.change(input, { target: { value } } as any); }
 function button(container: HTMLElement, label: string) { return Array.from(container.querySelectorAll("button")).find((item) => item.textContent === label) as HTMLButtonElement; }
 
 afterEach(() => { document.body.innerHTML = ""; jest.clearAllMocks(); });
@@ -79,6 +86,7 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     detail.administrativeCorrection = { mode: 'administrative', method: 'pickup', blockedReason: null, expectedState: 'snapshot', lines: [{ orderLineItemId: 'line-1', orderedQuantity: 1000, physicallyFulfilledQuantity: 0, administrativelyResolvedQuantity: 1000, legacyClosedQuantity: 0, reopenableQuantity: 1000 }] };
     const { container, root } = render();
     expect(container.textContent).toContain('Physically fulfilled 0 · Administratively resolved 1000 · Remaining 0');
+    expect(button(container, 'Reopen administrative resolution').closest('details')?.open).toBe(false);
     act(() => Simulate.click(button(container, 'Reopen administrative resolution')));
     expect(button(container, 'Confirm reopen fulfillment').disabled).toBe(true);
     act(() => change(container.querySelector('textarea[aria-label="Administrative correction reason"]') as HTMLTextAreaElement, 'Wrong administrative closure'));
@@ -210,6 +218,81 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     detail = makeDetail({ fulfillmentType: "SHIP", production: 0, ready: 0 }); const { container, root } = render();
     expect(button(container, "Start shipment").disabled).toBe(false);
     expect(container.textContent).not.toContain("marked ready before shipping");
+    act(() => root.unmount());
+  });
+
+  test('navigation reuses a saved single draft and never creates another', () => {
+    detail = makeDetail({ fulfillmentType: 'SHIP' });
+    detail.shipments = [{ id: 'existing', status: 'DRAFT', scope: 'SINGLE_ORDER', orderCount: 1 }];
+    const { container, root } = render();
+    expect(container.querySelector('[data-testid="shipment-editor"]')?.getAttribute('data-shipment-id')).toBe('existing');
+    expect(button(container, 'Start shipment')).toBeUndefined();
+    expect(createShipment).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test('all multiple saved drafts are selectable without creating or silently picking one', () => {
+    detail = makeDetail({ fulfillmentType: 'SHIP' });
+    detail.shipments = ['draft-one', 'draft-two'].map(id => ({ id, shipmentReference: id, status: 'DRAFT', scope: 'SINGLE_ORDER', orderCount: 1 }));
+    const { container, root } = render();
+    expect(container.textContent).toContain('Choose a saved draft shipment');
+    expect(container.querySelector('[data-testid="shipment-editor"]')).toBeNull();
+    expect(button(container, 'Start shipment')).toBeUndefined();
+    act(() => Simulate.click(button(container, 'draft-two')));
+    expect(container.querySelector('[data-testid="shipment-editor"]')?.getAttribute('data-shipment-id')).toBe('draft-two');
+    act(() => Simulate.click(button(container, 'draft-one')));
+    expect(container.querySelector('[data-testid="shipment-editor"]')?.getAttribute('data-shipment-id')).toBe('draft-one');
+    expect(createShipment).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test.each(['Mock saved partial shipment', 'Mock void draft'])('newly created draft stops overriding current detail after %s', async terminalAction => {
+    detail = makeDetail({ fulfillmentType: 'SHIP' });
+    const { container, root, rerender } = render();
+    await act(async () => Simulate.click(button(container, 'Start shipment')));
+    expect(container.querySelector('[data-testid="shipment-editor"]')?.getAttribute('data-shipment-id')).toBe('shipment-1');
+    await act(async () => Simulate.click(button(container, terminalAction)));
+    act(rerender);
+    expect(container.querySelector('[data-testid="shipment-editor"]')).toBeNull();
+    expect(button(container, 'Start shipment').disabled).toBe(false);
+    await act(async () => Simulate.click(button(container, 'Start shipment')));
+    expect(container.querySelector('[data-testid="shipment-editor"]')?.getAttribute('data-shipment-id')).toBe('shipment-2');
+    expect(createShipment).toHaveBeenCalledTimes(2);
+    act(() => root.unmount());
+  });
+
+  test.each(['/orders/order-1', '/orders/order-1/edit'])('Back and Open Order restore exact %s query/hash and original state', pathname => {
+    detail = makeDetail({ fulfillmentType: 'SHIP' });
+    const originalState = { referrer: { pathname: '/orders', search: '?page=4' }, listContext: 'original' };
+    const { container, root } = render({ referrer: { pathname, search: '?returnTo=%2Forders%3Fpage%3D4&search=two%20words', hash: '#line-items' }, orderReturnState: originalState });
+    act(() => Simulate.click(container.querySelector('button[aria-label="Back to fulfillment"]')!));
+    expect(guardedNavigate).toHaveBeenLastCalledWith(`${pathname}?returnTo=%2Forders%3Fpage%3D4&search=two%20words#line-items`, { state: originalState });
+    act(() => Simulate.click(button(container, 'Open Order')));
+    expect(guardedNavigate).toHaveBeenLastCalledWith(`${pathname}?returnTo=%2Forders%3Fpage%3D4&search=two%20words#line-items`, { state: originalState });
+    act(() => Simulate.click(button(container, 'View Order Timeline')));
+    expect(guardedNavigate).toHaveBeenLastCalledWith(expect.stringContaining('panel=timeline'), { state: originalState });
+    expect(createShipment).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test.each(['//evil.example/orders/order-1', 'https://evil.example', '/orders/foreign-order'])('Back rejects unsafe/unbound return %s', pathname => {
+    detail = makeDetail({ fulfillmentType: 'SHIP' });
+    const { container, root } = render({ referrer: { pathname }, orderReturnState: { unsafe: true } });
+    act(() => Simulate.click(container.querySelector('button[aria-label="Back to fulfillment"]')!));
+    expect(guardedNavigate).toHaveBeenLastCalledWith('/fulfillment', { state: undefined });
+    act(() => root.unmount());
+  });
+
+  test('combined/history child referrer keeps workspace and original Order context', () => {
+    detail = makeDetail({ fulfillmentType: 'SHIP' });
+    detail.shipments = [{ id: 'combined', status: 'DRAFT', scope: 'MULTI_ORDER', orderCount: 2 }, { id: 'shipped', status: 'SHIPPED', scope: 'SINGLE_ORDER', orderCount: 1 }];
+    const original = { referrer: { pathname: '/orders/order-1', search: '?page=4', hash: '#notes' }, orderReturnState: { listContext: 'kept' } };
+    const { container, root } = render(original);
+    act(() => Simulate.click(button(container, 'Open Combined Shipment')));
+    expect(guardedNavigate).toHaveBeenLastCalledWith('/fulfillment/shipments/combined', { state: { referrer: { pathname: '/fulfillment/orders/order-1', search: '?debug=1', hash: '#packing' }, referrerState: original } });
+    act(() => Simulate.click(button(container, 'View shipment / corrections')));
+    expect(guardedNavigate).toHaveBeenLastCalledWith('/fulfillment/shipments/shipped', { state: { referrer: { pathname: '/fulfillment/orders/order-1', search: '?debug=1', hash: '#packing' }, referrerState: original } });
+    expect(createShipment).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 });

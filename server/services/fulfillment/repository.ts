@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import { shipmentDateValue } from '@shared/fulfillmentVerification';
+import type { ShipmentShippingContext } from '@shared/shippingDocuments';
+import { resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
+import { getShippingDocumentSource } from '../shippingDocumentService';
 import { administrativeCorrectionPreview, administrativeReopenedByLine, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { currentPickupHistoryNote, fulfillmentHistoryNoteSchema, PICKUP_HISTORY_NOTE_UPDATED } from "@shared/fulfillmentHistoryNote";
@@ -40,6 +43,7 @@ import { isCanceledOrder } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, fulfillmentQueueVisibility, isFulfillmentQueueEligibleOrder } from './eligibility';
 import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
+import { buildFulfillmentArtworkProjection } from '../artwork/FulfillmentArtworkProjection';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 import { resolveActiveProductionOwners } from '../productionOwnership';
 import { resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
@@ -299,7 +303,8 @@ export class ShipmentRepo {
     primaryOrderId?: string;
     createdByUserId?: string | null;
   }) {
-    const primaryOrderId = payload.primaryOrderId || payload.orderIds[0] || null;
+    const primaryOrderId = payload.primaryOrderId || payload.orderIds[0];
+    if (!primaryOrderId || !payload.orderIds.includes(primaryOrderId)) throw new FulfillmentHttpError(400, 'A linked primary Order is required.', 'INVALID_PRIMARY_ORDER');
     return this.dbInstance.transaction(async (tx) => {
       // Serialize references for a primary order without making the UUID an
       // operator-facing identifier.
@@ -313,6 +318,7 @@ export class ShipmentRepo {
       const [shipment] = await tx.insert(shipments).values({
         organizationId: orgId, status: 'DRAFT', scope: payload.scope, orderId: primaryOrderId,
         primaryOrderId, shipmentReference: reference, createdByUserId: safeCreatedByUserId,
+        shippingContext: await resolveShipmentShippingContext(orgId, payload.orderIds, tx as any),
       }).returning();
       if (payload.orderIds.length > 0) {
         await tx.insert(shipmentOrders).values(payload.orderIds.map((orderId) => ({
@@ -374,7 +380,8 @@ export class ShipmentRepo {
     dimWidthIn?: number | null;
     dimHeightIn?: number | null;
     internalNotes?: string | null;
-  }) {
+    shippingContext?: ShipmentShippingContext;
+  }, executor: DbExecutor = this.dbInstance) {
     const setPayload: any = {
       updatedAt: new Date(),
     };
@@ -389,8 +396,9 @@ export class ShipmentRepo {
     if (patch.dimWidthIn !== undefined) setPayload.dimWidthIn = patch.dimWidthIn == null ? null : String(patch.dimWidthIn);
     if (patch.dimHeightIn !== undefined) setPayload.dimHeightIn = patch.dimHeightIn == null ? null : String(patch.dimHeightIn);
     if (patch.internalNotes !== undefined) setPayload.internalNotes = patch.internalNotes;
+    if (patch.shippingContext !== undefined) setPayload.shippingContext = patch.shippingContext;
 
-    const [updated] = await this.dbInstance
+    const [updated] = await executor
       .update(shipments)
       .set(setPayload)
       .where(and(
@@ -403,12 +411,48 @@ export class ShipmentRepo {
     return updated || null;
   }
 
+  async lockDraftShipment(orgId: string, shipmentId: string, executor: DbExecutor = this.dbInstance) {
+    const [shipment] = await executor.select().from(shipments).where(and(
+      eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId),
+    )).for('update').limit(1);
+    if (!shipment) throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
+    if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only DRAFT shipments are editable. Completed shipment evidence is immutable.', 'INVALID_STATE');
+    return shipment;
+  }
+
+  async saveDraftShipment(orgId: string, shipmentId: string, input: {
+    patch: Parameters<ShipmentRepo['patchDraftShipment']>[2];
+    packages?: Parameters<ShipmentRepo['patchDraftShipmentPackages']>[2];
+    items?: Parameters<ShipmentRepo['replaceDraftShipmentItems']>[2];
+    actorUserId?: string | null;
+  }) {
+    await this.dbInstance.transaction(async tx => {
+      const shipment = await this.lockDraftShipment(orgId, shipmentId, tx as any);
+      const links = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
+        eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
+      ));
+      const ids = links.map(link => link.orderId);
+      const shippingContext = validateShipmentShippingContext(input.patch.shippingContext ?? shipment.shippingContext
+        ?? await resolveShipmentShippingContext(orgId, ids, tx as any), ids);
+      await this.patchDraftShipment(orgId, shipmentId, { ...input.patch, shippingContext }, tx as any);
+      if (input.packages) await this.patchDraftShipmentPackages(orgId, shipmentId, input.packages, tx as any);
+      if (input.items) {
+        const replacement = await this.replaceDraftShipmentItems(orgId, shipmentId, input.items, tx as any);
+        if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
+      }
+      await this.insertEvent(orgId, input.actorUserId ?? null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
+        hasItemsUpdate: input.items !== undefined, hasShippingContextUpdate: input.patch.shippingContext !== undefined,
+      }, tx);
+    });
+    return this.getShipmentById(orgId, shipmentId);
+  }
+
   /** Replace draft allocations atomically, after proving every submitted line
    * belongs to the tenant, shipment order set, and (when provided) package. */
   async replaceDraftShipmentItems(orgId: string, shipmentId: string, items: Array<{
     orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null;
-  }>) {
-    return this.dbInstance.transaction(async (tx) => {
+  }>, executor?: DbExecutor) {
+    const replace = async (tx: DbExecutor) => {
       const [shipment] = await tx.select({ id: shipments.id }).from(shipments).where(and(
         eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
       )).for('update').limit(1);
@@ -418,6 +462,7 @@ export class ShipmentRepo {
       ));
       const allowedOrderIds = new Set(orderLinks.map((row) => row.orderId));
       const ids = Array.from(new Set(items.map((item) => item.orderLineItemId)));
+      if (ids.length) await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, ids)} ORDER BY ${orderLineItems.id} FOR UPDATE`);
       const lineRows = ids.length ? await tx.select({ id: orderLineItems.id, orderId: orderLineItems.orderId, quantity: orderLineItems.quantity })
         .from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
         .where(and(eq(orders.organizationId, orgId), inArray(orderLineItems.id, ids))) : [];
@@ -435,6 +480,17 @@ export class ShipmentRepo {
         if (item.packageId && !validPackageIds.has(item.packageId)) {
           return { ok: false as const, code: 'INVALID_PACKAGE', message: 'A shipment item references a package outside this shipment' };
         }
+        if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+          return { ok: false as const, code: 'INVALID_QUANTITY', message: 'Shipment quantities must be positive whole numbers; remove an allocation to save zero.' };
+        }
+      }
+      const eligible = ids.length ? await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { lineItemIds: ids }) : [];
+      const totals = new Map<string, number>();
+      for (const item of items) totals.set(item.orderLineItemId, (totals.get(item.orderLineItemId) ?? 0) + item.quantity);
+      for (const [id, quantity] of Array.from(totals.entries())) {
+        const line = eligible.find(entry => entry.id === id);
+        if (!line?.projection.requiresFulfillment) return { ok: false as const, code: 'LINE_NOT_FULFILLABLE', message: 'Shipment quantities require a physical fulfillment line item.' };
+        if (quantity > line.projection.remainingQuantity) return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Shipment quantity exceeds the remaining order quantity.' };
       }
       await tx.delete(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId)));
       if (items.length) await tx.insert(shipmentItems).values(items.map((item) => ({
@@ -442,7 +498,8 @@ export class ShipmentRepo {
         quantity: item.quantity, packageId: item.packageId ?? null,
       })));
       return { ok: true as const };
-    });
+    };
+    return executor ? replace(executor) : this.dbInstance.transaction(tx => replace(tx as any));
   }
 
   async listShipmentPackages(orgId: string, shipmentId: string) {
@@ -453,33 +510,32 @@ export class ShipmentRepo {
 
   async createShipmentPackage(orgId: string, shipmentId: string, payload: {
     weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
-  }) {
-    return this.dbInstance.transaction(async (tx) => {
-      const [shipment] = await tx.select({ id: shipments.id, shipmentReference: shipments.shipmentReference }).from(shipments).where(and(
-        eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
-      )).limit(1);
-      if (!shipment) return null;
-      const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipmentPackages).where(and(
+  }, executor?: DbExecutor) {
+    const create = async (tx: DbExecutor) => {
+      const shipment = await this.lockDraftShipment(orgId, shipmentId, tx);
+      const [{ count, maxOrdinal }] = await tx.select({ count: sql<number>`COUNT(*)::int`, maxOrdinal: sql<number>`COALESCE(MAX(${shipmentPackages.ordinal}), 0)::int` }).from(shipmentPackages).where(and(
         eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
       ));
-      const ordinal = Number(count || 0) + 1;
+      const ordinal = Number(maxOrdinal || 0) + 1;
       const [created] = await tx.insert(shipmentPackages).values({
         organizationId: orgId, shipmentId, ordinal, packageReference: `${shipment.shipmentReference || `SH-${shipmentId.slice(0, 8)}`}-P${ordinal}`,
         weightLbs: payload.weightLbs == null ? null : String(payload.weightLbs), dimLengthIn: payload.dimLengthIn == null ? null : String(payload.dimLengthIn),
         dimWidthIn: payload.dimWidthIn == null ? null : String(payload.dimWidthIn), dimHeightIn: payload.dimHeightIn == null ? null : String(payload.dimHeightIn), notes: payload.notes ?? null,
       }).returning();
-      await tx.update(shipments).set({ boxCount: ordinal, updatedAt: new Date() }).where(and(
+      await tx.update(shipments).set({ boxCount: Number(count || 0) + 1, updatedAt: new Date() }).where(and(
         eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
       ));
       return created;
-    });
+    };
+    return executor ? create(executor) : this.dbInstance.transaction(tx => create(tx as any));
   }
 
   async patchDraftShipmentPackages(orgId: string, shipmentId: string, packages: Array<{
     id: string; weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
-  }>) {
+  }>, executor?: DbExecutor) {
     if (!packages.length) return;
-    await this.dbInstance.transaction(async (tx) => {
+    const patch = async (tx: DbExecutor) => {
+      await this.lockDraftShipment(orgId, shipmentId, tx);
       const existing = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
         eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
       ));
@@ -488,23 +544,24 @@ export class ShipmentRepo {
         throw new FulfillmentHttpError(400, 'A package does not belong to this draft shipment', 'INVALID_PACKAGE');
       }
       for (const item of packages) {
-        await tx.update(shipmentPackages).set({
-          weightLbs: item.weightLbs == null ? null : String(item.weightLbs),
-          dimLengthIn: item.dimLengthIn == null ? null : String(item.dimLengthIn),
-          dimWidthIn: item.dimWidthIn == null ? null : String(item.dimWidthIn),
-          dimHeightIn: item.dimHeightIn == null ? null : String(item.dimHeightIn),
-          notes: item.notes ?? null,
-          updatedAt: new Date(),
-        }).where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.id, item.id)));
+        const values: Record<string, unknown> = { updatedAt: new Date() };
+        for (const key of ['weightLbs', 'dimLengthIn', 'dimWidthIn', 'dimHeightIn'] as const) {
+          if (item[key] !== undefined) values[key] = item[key] == null ? null : String(item[key]);
+        }
+        if (item.notes !== undefined) values.notes = item.notes;
+        await tx.update(shipmentPackages).set(values).where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.id, item.id)));
       }
       await tx.update(shipments).set({ boxCount: existing.length, updatedAt: new Date() }).where(and(
         eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
       ));
-    });
+    };
+    if (executor) await patch(executor);
+    else await this.dbInstance.transaction(tx => patch(tx as any));
   }
 
-  async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string) {
-    return this.dbInstance.transaction(async (tx) => {
+  async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string, executor?: DbExecutor) {
+    const remove = async (tx: DbExecutor) => {
+      await this.lockDraftShipment(orgId, shipmentId, tx);
       const [deleted] = await tx.delete(shipmentPackages).where(and(eq(shipmentPackages.id, packageId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.organizationId, orgId))).returning();
       if (!deleted) return null;
       const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipmentPackages).where(and(
@@ -514,11 +571,12 @@ export class ShipmentRepo {
         eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
       ));
       return deleted;
-    });
+    };
+    return executor ? remove(executor) : this.dbInstance.transaction(tx => remove(tx as any));
   }
 
   async markShipped(orgId: string, shipmentId: string, actorUserId?: string | null) {
-    return this.dbInstance.transaction(async (tx) => {
+    const ship = () => this.dbInstance.transaction(async (tx) => {
       await tx.execute(sql`
         SELECT ${shipments.id}
         FROM ${shipments}
@@ -552,6 +610,16 @@ export class ShipmentRepo {
         return { ok: false as const, code: 'INVALID_PACKAGE_ALLOCATION', message: 'Every shipped quantity must be allocated to a package in this shipment.' };
       }
 
+      const links = await tx.select({ orderId: shipmentOrders.orderId, shippingMethod: orders.shippingMethod,
+        state: orders.state, status: orders.status, canceledAt: orders.canceledAt }).from(shipmentOrders)
+        .innerJoin(orders, eq(orders.id, shipmentOrders.orderId)).where(and(
+          eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId), eq(orders.organizationId, orgId),
+        )).orderBy(orders.id).for('no key update', { of: orders });
+      const linkedOrderIds = links.map(link => link.orderId);
+      if (links.some(link => isCanceledOrder(link))) throw new FulfillmentHttpError(409, 'Cancelled Orders cannot be marked shipped.', 'ORDER_CANCELLED');
+      if (links.some(link => link.shippingMethod === 'pickup')) throw new FulfillmentHttpError(409, 'An Order is currently Pickup. Correct its fulfillment method before shipping.', 'FULFILLMENT_METHOD_MISMATCH');
+      if (draftItems.some(item => !linkedOrderIds.includes(item.orderId))) throw new FulfillmentHttpError(409, 'A shipment allocation is not linked to this shipment.', 'INVALID_SHIPMENT_ITEM');
+
       const draftByLineItem = new Map<string, number>();
       for (const item of draftItems) {
         const prev = draftByLineItem.get(item.orderLineItemId) || 0;
@@ -559,7 +627,7 @@ export class ShipmentRepo {
       }
 
       const lineItemIds = Array.from(draftByLineItem.keys());
-      if (lineItemIds.length > 0) await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineItemIds)} FOR UPDATE`);
+      if (lineItemIds.length > 0) await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineItemIds)} ORDER BY ${orderLineItems.id} FOR UPDATE`);
       // Re-read canonical net quantities under the same line locks used by
       // pickup and administrative corrections; draft data is not authority.
       const eligibleLines = await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { lineItemIds });
@@ -574,20 +642,31 @@ export class ShipmentRepo {
         }
       }
 
+      const shippingContext = validateShipmentShippingContext(shipment.shippingContext
+        ?? await resolveShipmentShippingContext(orgId, linkedOrderIds, tx as any), linkedOrderIds, true);
       const now = new Date();
+      const finalShipDate = shipmentDateValue(shipment.shipDate ?? now);
+      // The source reads the final date/context and exact saved allocations in
+      // this transaction; failed capture rolls back every shipping write.
+      await tx.update(shipments).set({ shippingContext, shipDate: finalShipDate }).where(and(
+        eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
+      ));
+      const documentSnapshot = await getShippingDocumentSource(orgId, shipmentId, tx as any, { captureForShipping: true });
       const [updated] = await tx
         .update(shipments)
         .set({
           status: 'SHIPPED',
           shippedAt: now,
-          shipDate: shipmentDateValue(shipment.shipDate ?? now),
+          shipDate: finalShipDate,
+          shippingContext,
+          documentSnapshot,
           updatedAt: now,
         })
         .where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')))
         .returning();
 
       if (!updated) {
-        return { ok: false as const, code: 'CONFLICT', message: 'Shipment state changed during update' };
+        throw new FulfillmentHttpError(409, 'Shipment state changed during update', 'CONFLICT');
       }
 
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
@@ -609,6 +688,21 @@ export class ShipmentRepo {
 
       return { ok: true as const, shipment: updated };
     });
+    // PostgreSQL rolls back a deadlock victim's entire transaction. Retry only
+    // that confirmed failure, never validation or an ambiguous commit error.
+    for (let attempt = 1; ; attempt += 1) {
+      try { return await ship(); }
+      catch (error) {
+        let databaseError: any = error;
+        const seen = new Set<unknown>();
+        while (databaseError && typeof databaseError === 'object' && !seen.has(databaseError)) {
+          if (databaseError instanceof FulfillmentHttpError || databaseError.code != null) break;
+          seen.add(databaseError);
+          databaseError = databaseError.cause;
+        }
+        if (databaseError instanceof FulfillmentHttpError || databaseError?.code !== '40P01' || attempt === 3) throw error;
+      }
+    }
   }
 
   async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null) {
@@ -2602,27 +2696,13 @@ export class FulfillmentDashboardRepo {
 
     const artworkByLineItemId = new Map<string, FulfillmentArtworkDto[]>();
     const artworkSeen = new Set<string>();
+    const projectedArtwork = await buildFulfillmentArtworkProjection(orgId,
+      Array.from(artworkResolutions.values()).flatMap(resolution => resolution.artwork), this.dbInstance);
+    const projectedArtworkByRelationshipId = new Map(projectedArtwork.map(artwork => [artwork.relationshipId, artwork]));
     for (const [lineItemId, resolution] of Array.from(artworkResolutions.entries())) {
       for (const artwork of resolution.artwork) {
-        const originalUrl = artwork.file.contentPath;
-        pushArtwork(artworkByLineItemId, lineItemId, {
-          id: artwork.relationshipId,
-          fileRecordId: artwork.fileRecordId,
-          fileName: artwork.file.originalFilename ?? artwork.relationshipId,
-          fileUrl: originalUrl,
-          originalUrl,
-          downloadUrl: `${originalUrl}?download=1`,
-          previewUrl: `${originalUrl}?variant=preview`,
-          thumbUrl: `${originalUrl}?variant=thumbnail`,
-          thumbnailUrl: `${originalUrl}?variant=thumbnail`,
-          thumbKey: null,
-          previewKey: null,
-          objectPath: null,
-          mimeType: artwork.file.mimeType,
-          side: artwork.side,
-          role: artwork.role,
-          source: 'canonical',
-        }, artworkSeen);
+        const projected = projectedArtworkByRelationshipId.get(artwork.relationshipId);
+        if (projected) pushArtwork(artworkByLineItemId, lineItemId, projected, artworkSeen);
       }
     }
 

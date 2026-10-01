@@ -13,7 +13,10 @@ import { TRAVELER_PRINTER_PREFERENCE_LIST_KEY, travelerPrinterPreferenceSchema }
 import { publishPrintAgentWake } from "../services/printAgentWake";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import type { PickupTravelerPrintContext } from "@shared/productionTicket";
-import { supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
+import { supportsQuickNoteAgent, supportsShippingDocumentAgent } from "../lib/directPrintAgentCapabilities";
+import { shippingDocumentTypeSchema } from "@shared/shippingDocuments";
+import { matchesShippingPrintRequest, shippingDirectPrintRequestSchema } from "@shared/directPrintDocuments";
+import { getShippingDocumentSource } from "../services/shippingDocumentService";
 
 const pickupTravelerPrintSchema = z.union([
   z.object({ destinationId: z.string().min(1), reprintJobId: z.string().min(1), requestKey: z.string().min(1).max(160).optional() }).strict(),
@@ -104,6 +107,65 @@ export function registerPrinterProfileRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdminOrOwner } = middleware;
+
+  app.get("/api/fulfillment/shipping-print-destinations", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(401).json({ error: "Organization required" });
+      const documentType = shippingDocumentTypeSchema.parse(req.query.documentType);
+      const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location,
+        defaultCopies: printerProfiles.defaultCopies, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId,
+        queueName: printerProfiles.windowsQueueName, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName,
+        agentVersion: localBridgeAgents.agentVersion, agentStatus: localBridgeAgents.status }).from(printerProfiles)
+        .leftJoin(localBridgeAgents, and(eq(printerProfiles.printAgentId, localBridgeAgents.id), eq(localBridgeAgents.organizationId, organizationId)))
+        .where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? ${documentType}`));
+      return res.json({ success: true, data: destinations.map((item) => {
+        const unavailableReason = !item.agentId || item.agentStatus !== "active" ? "DIRECT_PRINT_UNAVAILABLE"
+          : !supportsShippingDocumentAgent(item.agentVersion) ? "PRINT_AGENT_UPDATE_REQUIRED"
+          : !item.queueName || item.queueName !== item.configuredQueueName ? "PRINT_AGENT_CONFIGURATION_MISMATCH" : null;
+        return { id: item.id, displayName: item.displayName, location: item.location, defaultCopies: item.defaultCopies,
+          isDefault: item.isDefault, agentVersion: item.agentVersion, available: !unavailableReason, unavailableReason };
+      }) });
+    } catch (error) { return sendError(res, error, "Could not load shipping print destinations"); }
+  });
+
+  app.post("/api/fulfillment/shipments/:shipmentId/direct-print", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const shipmentId = String(req.params.shipmentId || "");
+      const parsed = shippingDirectPrintRequestSchema.parse(req.body);
+      if (!organizationId || !shipmentId) return res.status(401).json({ error: "Organization and shipment required" });
+      const headerKey = req.header("Idempotency-Key");
+      if (headerKey && headerKey !== parsed.requestKey) return res.status(400).json({ error: "Print request keys must match" });
+      const findExisting = async () => (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.requestKey, parsed.requestKey))).limit(1))[0];
+      const respond = async (job: typeof directPrintJobs.$inferSelect, duplicate: boolean) => {
+        if (!matchesShippingPrintRequest(job, shipmentId, parsed)) return res.status(409).json({ success: false, code: "SHIPPING_PRINT_IDEMPOTENCY_CONFLICT", error: "This request key was used for a different print request." });
+        const [assignedAgent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, job.agentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
+        const wake = assignedAgent && job.status === "queued" ? await publishPrintAgentWake(assignedAgent.tokenHash) : null;
+        return res.status(duplicate ? 200 : 202).json({ success: true, data: { id: job.id, status: job.status, duplicate, durablyQueued: true,
+          wake: { status: wake?.published ? "published" : "not_published", attempts: wake?.attempts ?? 0 } } });
+      };
+      // Replay the saved semantic request before resolving a potentially edited draft.
+      const existing = await findExisting();
+      if (existing) return respond(existing, true);
+      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, parsed.printerProfileId), eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? ${parsed.documentType}`)).limit(1);
+      if (!destination?.printAgentId || !destination.windowsQueueName || !destination.supportedDocuments.includes(parsed.documentType)) return res.status(409).json({ code: "DIRECT_PRINT_UNAVAILABLE", error: "Select a printer configured for this shipping document." });
+      const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).limit(1);
+      if (!agent || !supportsShippingDocumentAgent(agent.agentVersion)) return res.status(409).json({ code: "PRINT_AGENT_UPDATE_REQUIRED", error: "Shipping documents require Windows Print Agent 1.0.25 or newer." });
+      if (agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The agent's selected printer does not match this destination." });
+      const source = await getShippingDocumentSource(organizationId, shipmentId);
+      if (!source || source.organizationId !== organizationId || source.shipmentId !== shipmentId) return res.status(404).json({ error: "Shipment document not found" });
+      if (parsed.packageId && !source.packages.some((item) => item.id === parsed.packageId)) return res.status(404).json({ error: "Shipment package not found" });
+      if (parsed.documentType === "package_ticket" && !source.packages.length) return res.status(409).json({ error: "Save at least one shipment package before printing Package Tickets." });
+      const created = await db.insert(directPrintJobs).values({ organizationId, orderId: null, destinationId: destination.id, agentId: agent.id,
+        documentType: parsed.documentType, copies: parsed.copies, requestKey: parsed.requestKey,
+        printContext: { shipmentId, packageId: parsed.packageId ?? null, source }, trailingFeedMm: destination.trailingFeedMm, createdByUserId: getUserId(req.user) ?? null })
+        .onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
+      const job = created[0] ?? await findExisting();
+      if (!job) return res.status(500).json({ error: "Could not queue shipping print job" });
+      return respond(job, !created[0]);
+    } catch (error) { return sendError(res, error, "Could not queue shipping document"); }
+  });
 
   app.get("/api/printer-profiles", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

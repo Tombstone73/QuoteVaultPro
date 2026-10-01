@@ -19,6 +19,7 @@ export class CanonicalFulfillmentOperations {
   addOrderNote(...args: Parameters<typeof fulfillmentServiceV2.addOrderNote>) { return fulfillmentServiceV2.addOrderNote(...args); }
   createShipment(...args: Parameters<typeof fulfillmentServiceV2.createShipment>) { return fulfillmentServiceV2.createShipment(...args); }
   getShipment(...args: Parameters<typeof fulfillmentServiceV2.getShipment>) { return fulfillmentServiceV2.getShipment(...args); }
+  getShipmentDocument(...args: Parameters<typeof fulfillmentServiceV2.getShipmentDocument>) { return fulfillmentServiceV2.getShipmentDocument(...args); }
   patchShipment(...args: Parameters<typeof fulfillmentServiceV2.patchShipment>) { return fulfillmentServiceV2.patchShipment(...args); }
   createShipmentPackage(...args: Parameters<typeof fulfillmentServiceV2.createShipmentPackage>) { return fulfillmentServiceV2.createShipmentPackage(...args); }
   deleteShipmentPackage(...args: Parameters<typeof fulfillmentServiceV2.deleteShipmentPackage>) { return fulfillmentServiceV2.deleteShipmentPackage(...args); }

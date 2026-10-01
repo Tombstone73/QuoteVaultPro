@@ -22,6 +22,7 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { normalizeOptionalWebsite } from "./vendorWebsite";
+import type { ShipmentShippingContext, ShippingDocumentSource } from "./shippingDocuments";
 
 // Drizzle 0.39 does not provide a native bytea column helper. Keep the
 // database type explicit without introducing a runtime reference to a helper
@@ -2399,7 +2400,7 @@ export const insertPrinterProfileSchema = createInsertSchema(printerProfiles).om
   location: z.string().trim().max(160).optional().nullable(),
   windowsQueueName: z.string().trim().max(255).optional().nullable(),
   printAgentId: z.string().trim().min(1).optional().nullable(),
-  supportedDocuments: z.array(z.enum(["traveler", "quick_note"])).min(1).default(["traveler"]),
+  supportedDocuments: z.array(z.enum(["traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket"])).min(1).default(["traveler"]),
   defaultCopies: z.number().int().min(1).max(99).default(1),
   trailingFeedMm: z.coerce.number().min(0).max(100).default(0),
   receiptWidthMm: z.coerce.number().min(40).max(120).default(80),
@@ -5759,6 +5760,8 @@ export const shipments = pgTable("shipments", {
   // Migration 0055 creates this as Postgres DATE, not timestamp.
   shipDate: date("ship_date", { mode: "date" }),
   shipmentReference: varchar("shipment_reference", { length: 80 }),
+  shippingContext: jsonb("shipping_context").$type<ShipmentShippingContext>(),
+  documentSnapshot: jsonb("document_snapshot").$type<ShippingDocumentSource>(),
   shippedAt: timestamp("shipped_at", { withTimezone: true }), // legacy timestamp
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
   boxCount: integer("box_count"),

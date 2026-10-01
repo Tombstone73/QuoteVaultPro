@@ -1,5 +1,6 @@
 import type { AdministrativeCorrectionPreview } from '@shared/administrativeFulfillment';
 import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
+import type { ShipmentShippingContext, ShippingDocumentSource, ShippingDocumentType } from "@shared/shippingDocuments";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getApiUrl } from "@/lib/apiConfig";
@@ -126,6 +127,10 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       side: string | null;
       role: string | null;
       source: "canonical" | "order_attachment" | "line_item_file" | "asset";
+      previewStatus?: string | null;
+      previewError?: string | null;
+      thumbnailStatus?: "ready" | "pending" | "failed" | null;
+      sizeBytes?: number | null;
     }>;
     checklist: {
       id: string;
@@ -227,6 +232,8 @@ export interface ShipmentDetail {
   dimWidthIn: string | null;
   dimHeightIn: string | null;
   internalNotes: string | null;
+  shippingContext?: ShipmentShippingContext | null;
+  documentSnapshot?: ShippingDocumentSource | null;
   shippedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -366,7 +373,11 @@ export function useFulfillmentQueueQuery(filters: FulfillmentQueueFilters) {
 
 function invalidateFulfillment(queryClient: ReturnType<typeof useQueryClient>, orderId?: string) {
   queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
-  if (orderId) queryClient.invalidateQueries({ queryKey: ["fulfillment", "order", orderId] });
+  queryClient.invalidateQueries({ queryKey: orderId ? ["fulfillment", "order", orderId] : ["fulfillment", "order"] });
+  queryClient.invalidateQueries({ queryKey: orderId ? ["orders", "detail", orderId] : ["orders", "detail"] });
+  queryClient.invalidateQueries({ queryKey: orderId ? ["orders", "timeline", orderId] : ["orders", "timeline"] });
+  queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+  queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipping-document"] });
   queryClient.invalidateQueries({ queryKey: ["dashboardSummary"] });
   queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
 }
@@ -423,7 +434,7 @@ export function useUpdatePickupHistoryNoteMutation(orderId: string) {
       `/api/fulfillment/orders/${orderId}/pickup-handoffs/${handoffId}/note`,
       { method: "PUT", body: JSON.stringify({ note }) },
     ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["fulfillment", "order", orderId] }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
 }
 
@@ -495,6 +506,15 @@ export function useShipmentDetailQuery(shipmentId: string | undefined) {
   });
 }
 
+export function useShippingDocumentSourceQuery(shipmentId: string | undefined, documentType: ShippingDocumentType = "packing_slip") {
+  return useQuery({
+    queryKey: ["fulfillment", "shipping-document", shipmentId, documentType],
+    queryFn: () => apiCall<ShippingDocumentSource>(`/api/fulfillment/shipments/${shipmentId}/documents/${documentType}`),
+    enabled: !!shipmentId,
+    retry: false,
+  });
+}
+
 export function useUpdateShipmentMutation(shipmentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -507,6 +527,7 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       weight?: number | null;
       dims?: { length?: number | null; width?: number | null; height?: number | null };
       internalNotes?: string | null;
+      shippingContext?: ShipmentShippingContext;
       shipmentItems?: Array<{ orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null }>;
       packages?: Array<{ id: string; weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }>;
     }) => apiCall<ShipmentDetail>(`/api/fulfillment/shipments/${shipmentId}`, {
@@ -529,7 +550,10 @@ export function useCreateShipmentPackageMutation(shipmentId: string) {
   return useMutation({
     mutationFn: (payload?: { weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }) =>
       apiCall<any>(`/api/fulfillment/shipments/${shipmentId}/packages`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
+      invalidateFulfillment(queryClient);
+    },
   });
 }
 

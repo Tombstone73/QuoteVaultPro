@@ -1485,6 +1485,13 @@
       "when": 1788048000063,
       "tag": "0218_invoice_customer_release",
       "breakpoints": true
+    },
+    {
+      "idx": 218,
+      "version": "7",
+      "when": 1788048000064,
+      "tag": "0219_shipment_shipping_documents",
+      "breakpoints": true
     }
   ]
 }

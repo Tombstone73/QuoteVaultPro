@@ -238,6 +238,8 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // migration 0173 - the order-centric fulfillment workspace reads these on
   // every detail request. Fail startup clearly rather than returning a 500.
   { type: "column_exists", table: "shipments", column: "shipment_reference", label: "shipments.shipment_reference" },
+  { type: "column_exists", table: "shipments", column: "shipping_context", label: "shipments.shipping_context" },
+  { type: "column_exists", table: "shipments", column: "document_snapshot", label: "shipments.document_snapshot" },
   { type: "table_exists", table: "shipment_packages", label: "shipment_packages table" },
   { type: "column_exists", table: "shipment_items", column: "package_id", label: "shipment_items.package_id" },
   { type: "column_exists", table: "fulfillment_checklist_items", column: "fulfilled_quantity", label: "fulfillment_checklist_items.fulfilled_quantity" },

@@ -1,4 +1,5 @@
 export const MINIMUM_QUICK_NOTE_AGENT_VERSION = "1.0.24";
+export const MINIMUM_SHIPPING_DOCUMENT_AGENT_VERSION = "1.0.25";
 
 function parseNumericVersion(version: string | null | undefined): number[] | null {
   const normalized = version?.trim().replace(/^v/i, "");
@@ -27,4 +28,13 @@ export function isAgentVersionAtLeast(version: string | null | undefined, minimu
 
 export function supportsQuickNoteAgent(version: string | null | undefined): boolean {
   return isAgentVersionAtLeast(version, MINIMUM_QUICK_NOTE_AGENT_VERSION);
+}
+
+export function supportsShippingDocumentAgent(version: string | null | undefined): boolean {
+  return isAgentVersionAtLeast(version, MINIMUM_SHIPPING_DOCUMENT_AGENT_VERSION);
+}
+
+export function supportedAgentDocumentTypes(version: string | null | undefined): string[] {
+  return ["traveler", "pickup_traveler", ...(supportsQuickNoteAgent(version) ? ["quick_note"] : []),
+    ...(supportsShippingDocumentAgent(version) ? ["packing_slip", "shipment_manifest", "package_ticket"] : [])];
 }

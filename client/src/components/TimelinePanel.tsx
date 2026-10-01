@@ -286,6 +286,14 @@ export function TimelinePanel({
                       Open inbound source
                     </Link>
                   ) : null}
+                  {evt.entityType === "fulfillment" && isRecord(evt.metadata?.payload) ? (
+                    <details className="mt-1 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer">Fulfillment details</summary>
+                      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border p-2">
+                        {JSON.stringify(evt.metadata.payload, null, 2)}
+                      </pre>
+                    </details>
+                  ) : null}
                 </div>
               );
             })}

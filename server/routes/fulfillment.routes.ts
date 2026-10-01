@@ -47,6 +47,7 @@ import {
 } from "../services/fulfillment/schemas";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
+import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
@@ -323,7 +324,26 @@ export function registerFulfillmentRoutes(
       return res.json({ success: true, data: shipment });
     } catch (error) {
       console.error('[fulfillment] get shipment error:', error);
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       return res.status(500).json({ success: false, message: 'Failed to fetch shipment' });
+    }
+  });
+
+  app.get('/api/fulfillment/shipments/:shipmentId/documents/:documentType', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(400).json({ success: false, message: 'Organization context is required' });
+      const documentType = shippingDocumentTypeSchema.parse(req.params.documentType);
+      const { packageId } = z.object({ packageId: z.string().trim().min(1).optional() }).strict().parse(req.query || {});
+      const data = await canonicalFulfillmentOperations.getShipmentDocument(organizationId, req.params.shipmentId, documentType, packageId);
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Invalid shipping document type or package selection', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError || (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500)) {
+        return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      }
+      console.error('[fulfillment] shipping document error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch shipping document' });
     }
   });
 
@@ -335,6 +355,7 @@ export function registerFulfillmentRoutes(
 
       const shipment = await canonicalFulfillmentOperations.patchShipment(organizationId, req.params.shipmentId, {
         carrier: parsed.carrier,
+        shippingContext: parsed.shippingContext,
         serviceLevel: parsed.serviceLevel,
         trackingNumber: parsed.trackingNumber,
         shipDate: parsed.shipDate,

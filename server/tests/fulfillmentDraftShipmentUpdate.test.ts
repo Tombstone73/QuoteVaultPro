@@ -25,13 +25,8 @@ function serviceForDraftUpdate() {
     packages: [{ id: 'package-a', ordinal: 1, weightLbs: '4', dimLengthIn: '10', dimWidthIn: '6', dimHeightIn: '5' }],
   });
   const shipmentRepo = {
-    getShipmentById: jest.fn()
-      .mockResolvedValueOnce(draftShipment())
-      .mockResolvedValueOnce(persisted),
-    patchDraftShipment: jest.fn(async () => draftShipment()),
-    patchDraftShipmentPackages: jest.fn(async () => undefined),
-    replaceDraftShipmentItems: jest.fn(async () => ({ ok: true })),
-    insertEvent: jest.fn(async () => undefined),
+    getShipmentById: jest.fn(async () => draftShipment()),
+    saveDraftShipment: jest.fn(async () => persisted),
     markShipped: jest.fn(),
   };
   const dashboardRepo = {
@@ -61,15 +56,15 @@ test('an existing DRAFT shipment persists the representative logistics and packa
     actorUserId: 'user-a',
   });
 
-  expect(shipmentRepo.patchDraftShipment).toHaveBeenCalledWith(orgId, shipmentId, expect.objectContaining({
+  expect(shipmentRepo.saveDraftShipment).toHaveBeenCalledWith(orgId, shipmentId, expect.objectContaining({ patch: expect.objectContaining({
     carrier: 'UPS',
     serviceLevel: 'Ground',
     trackingNumber: '1Z-TRACKING',
     shipDate: expect.any(Date),
-  }));
-  const patch = shipmentRepo.patchDraftShipment.mock.calls[0][2];
+  }) }));
+  const patch = shipmentRepo.saveDraftShipment.mock.calls[0][2].patch;
   expect(patch.shipDate.toISOString()).toBe('2026-08-26T00:00:00.000Z');
-  expect(shipmentRepo.patchDraftShipmentPackages).toHaveBeenCalledWith(orgId, shipmentId, [{
+  expect(shipmentRepo.saveDraftShipment.mock.calls[0][2].packages).toEqual([{
     id: 'package-a', weightLbs: 4, dimLengthIn: 10, dimWidthIn: 6, dimHeightIn: 5, notes: null,
   }]);
   expect(result).toMatchObject({ status: 'DRAFT', carrier: 'UPS', serviceLevel: 'Ground', trackingNumber: '1Z-TRACKING' });
@@ -89,10 +84,10 @@ test('draft metadata saves accept optional fields and do not create or hand off 
     packages: [{ id: 'package-a', weightLbs: null, dims: { length: null, width: null, height: null }, notes: null }],
   });
 
-  expect(shipmentRepo.replaceDraftShipmentItems).not.toHaveBeenCalled();
+  expect(shipmentRepo.saveDraftShipment.mock.calls[0][2].items).toBeUndefined();
   expect(shipmentRepo.markShipped).not.toHaveBeenCalled();
   expect(dashboardRepo.listLineEligibility).not.toHaveBeenCalled();
-  expect(shipmentRepo.patchDraftShipment).toHaveBeenCalledWith(orgId, shipmentId, expect.objectContaining({ shipDate: null }));
+  expect(shipmentRepo.saveDraftShipment).toHaveBeenCalledWith(orgId, shipmentId, expect.objectContaining({ patch: expect.objectContaining({ shipDate: null }) }));
 });
 
 test('draft updates reject missing, cross-tenant, non-draft, and invalid-date requests without bypassing shipment ownership', async () => {

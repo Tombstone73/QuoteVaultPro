@@ -1,16 +1,18 @@
 import { AdministrativeCorrection } from "@/components/fulfillment/AdministrativeCorrection";
 import { PickupHistory } from "@/components/fulfillment/PickupHistory";
 import type { PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, ExternalLink, PackagePlus, RefreshCw, Truck } from "lucide-react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { FulfillmentShipmentEditor } from "@/pages/fulfillment-shipment-detail";
 import { getFulfillmentWorkspaceLoadState } from "@/lib/fulfillmentWorkspaceState";
-import { resolveFulfillmentWorkspaceMode } from "@/lib/fulfillmentWorkspaceMode";
+import { fulfillmentReturnRoute, resolveFulfillmentWorkspaceMode } from "@/lib/fulfillmentWorkspaceMode";
+import { buildReferrer, toHref } from "@/lib/nav/smartBack";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import {
   toFulfillmentError,
   useAddFulfillmentNoteMutation,
@@ -27,15 +29,16 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 
 /** The order is the operator workspace. Shipment and pickup rows are execution evidence. */
 export default function FulfillmentWorkspacePage() {
-  const navigate = useNavigate();
+  const { guardedNavigate: navigate } = useNavigationGuard();
+  const location = useLocation();
   const { toast } = useToast();
   const { orderId } = useParams<{ orderId: string }>();
   const detailQuery = useFulfillmentOrderDetailQuery(orderId);
   const updateHistoryNote = useUpdatePickupHistoryNoteMutation(orderId || "");
   const createShipment = useCreateShipmentMutation();
   const createPickupTicket = useCreatePickupTicketMutation();
-  const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId);
-  const addNote = useAddFulfillmentNoteMutation(orderId);
+  const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId || "");
+  const addNote = useAddFulfillmentNoteMutation(orderId || "");
   const recordPickupHandoff = useRecordPickupHandoffMutation(orderId);
   const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation(orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
@@ -52,6 +55,7 @@ export default function FulfillmentWorkspacePage() {
   const detail = detailQuery.data;
   const queryError = detailQuery.isError ? toFulfillmentError(detailQuery.error) : null;
   const loadState = getFulfillmentWorkspaceLoadState({ orderId, isLoading: detailQuery.isLoading, isError: detailQuery.isError, errorStatus: queryError?.status, hasDetail: !!detail });
+  useEffect(() => { setCreatedShipmentId(null); }, [orderId]);
 
   if (detailQuery.isLoading) return <main className="p-8 text-sm text-muted-foreground">Loading fulfillment workspace…</main>;
   if (loadState === "not_found") return <main className="p-8 text-sm text-muted-foreground">Fulfillment workspace not found.</main>;
@@ -61,7 +65,8 @@ export default function FulfillmentWorkspacePage() {
   const workspaceMode = resolveFulfillmentWorkspaceMode(detail);
   const isPickup = workspaceMode.mode === "pickup";
   const methodLabel = detail.fulfillmentMethod === "deliver" ? "Delivery" : isPickup ? "Pickup" : "Shipping";
-  const shipmentId = createdShipmentId || workspaceMode.singleDraftShipmentId;
+  const singleDrafts = workspaceMode.historicalDrafts.filter(shipment => shipment.scope === "SINGLE_ORDER" && shipment.orderCount === 1);
+  const shipmentId = singleDrafts.find(shipment => shipment.id === createdShipmentId)?.id ?? workspaceMode.singleDraftShipmentId;
   const shipmentHistory = detail.shipments.filter((shipment) => shipment.status !== "DRAFT");
   const pickupPending = recordPickupHandoff.isPending || createPickupTicket.isPending;
   const pickupTravelerLines = detail.lineItems.flatMap((item) => {
@@ -69,6 +74,15 @@ export default function FulfillmentWorkspacePage() {
     return quantity > 0 ? [{ orderLineItemId: item.id, description: item.productName || item.description || "Line item", quantity }] : [];
   });
   const fulfillmentNotes = detail.events.filter((event) => event.eventType === "FULFILLMENT_NOTE");
+  const orderRoute = fulfillmentReturnRoute(location.state?.referrer, [ROUTES.orders.detail(orderId), ROUTES.orders.edit(orderId)]);
+  const returnRoute = orderRoute ?? fulfillmentReturnRoute(location.state?.referrer, [ROUTES.fulfillment.list]);
+  const openOrder = (timeline = false) => {
+    const target = orderRoute ?? { pathname: ROUTES.orders.detail(orderId), search: "", hash: "" };
+    const search = new URLSearchParams(target.search);
+    if (timeline) search.set("panel", "timeline");
+    navigate(timeline ? toHref({ ...target, search: `?${search.toString()}` }) : toHref(target), { state: orderRoute ? location.state?.orderReturnState : { referrer: buildReferrer(location), referrerState: location.state } });
+  };
+  const openShipment = (id: string) => navigate(ROUTES.fulfillment.shipmentDetail(id), { state: { referrer: buildReferrer(location), referrerState: location.state } });
 
   const showError = (title: string, error: unknown) => toast({ title, description: toFulfillmentError(error).message, variant: "destructive" });
   const bounded = (value: string, max: number) => {
@@ -76,7 +90,7 @@ export default function FulfillmentWorkspacePage() {
     return Number.isFinite(parsed) ? Math.max(0, Math.min(max, parsed)) : 0;
   };
   const startShipment = async () => {
-    if (isPickup) return;
+    if (isPickup || singleDrafts.length) return;
     try {
       const created = await createShipment.mutateAsync({ scope: "SINGLE_ORDER", orderIds: [orderId], primaryOrderId: orderId });
       setCreatedShipmentId(created.shipmentId);
@@ -149,18 +163,18 @@ export default function FulfillmentWorkspacePage() {
 
   return <main className="mx-auto w-full max-w-5xl space-y-4 p-4 md:p-6 lg:p-8">
     <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
-      <div className="flex gap-3"><button aria-label="Back to fulfillment" className="rounded p-2 hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.list)}><ArrowLeft className="h-5 w-5" /></button><div>
+      <div className="flex gap-3"><button aria-label="Back to fulfillment" className="rounded p-2 hover:bg-muted" onClick={() => navigate(returnRoute ? toHref(returnRoute) : ROUTES.fulfillment.list, { state: orderRoute ? location.state?.orderReturnState : returnRoute ? location.state?.referrerState : undefined })}><ArrowLeft className="h-5 w-5" /></button><div>
         <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Fulfillment</p>
         <h1 className="text-2xl font-bold">Order #{detail.orderNumber}</h1>
         <p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{methodLabel}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>
-      <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.orders.detail(orderId))}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button>
+      <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>
         {isPickup && detail.pickupTicket?.status !== "READY_FOR_PICKUP" && detail.remainingQuantity > 0 && <button disabled={markOrderReadyForPickup.isPending} className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void markOrderReady()}>{markOrderReadyForPickup.isPending ? "Marking…" : "Mark Order Ready for Pickup"}</button>}
-        {!isPickup && !shipmentId && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
+        {!isPickup && !singleDrafts.length && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
       </div>
     </header>
 
-    <section className="rounded-xl border bg-card" data-testid="fulfillment-line-items">
+    {(!shipmentId || isPickup) && <section className="rounded-xl border bg-card" data-testid="fulfillment-line-items">
       <div className="border-b px-4 py-3"><h2 className="font-bold">Fulfillment line items</h2><p className="text-sm text-muted-foreground">Record what physically left. Production reports are informational only.</p></div>
       <div className="divide-y">{detail.lineItems.map((item) => {
         const itemName = item.productName || item.description || "Line item";
@@ -174,28 +188,28 @@ export default function FulfillmentWorkspacePage() {
         </article>;
       })}</div>
       {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => { setReprintTraveler(null); setPickupTravelerOpen(true); }}>Print Pickup Travelers</button><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
-    </section>
-
-    <AdministrativeCorrection key={orderId} detail={detail} />
+    </section>}
 
     <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} reprint={reprintTraveler} onQueued={(id) => { setSelectedTravelerIds(ids => [...ids, id]); void detailQuery.refetch(); }} />
 
-    {!isPickup && <section className="space-y-3"><div className="rounded-xl border bg-card p-4"><h2 className="font-bold"><Truck className="mr-2 inline h-4 w-4" />Shipping</h2><p className="mt-1 text-sm text-muted-foreground">{shipmentId ? "Allocate what is leaving in the shipment package." : "Start a shipment to record what physically leaves the shop."}</p></div>{shipmentId && <FulfillmentShipmentEditor shipmentId={shipmentId} embedded onMutationComplete={() => detailQuery.refetch()} />}{workspaceMode.combinedShipments.filter((shipment) => shipment.status === "DRAFT").map((shipment) => <div key={shipment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div><p className="font-semibold">Included in combined shipment {shipment.shipmentReference || shipment.id} · {shipment.status}</p><p className="text-sm text-muted-foreground">Shared by {shipment.orderCount} orders.</p></div><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.shipmentDetail(shipment.id))}>Open Combined Shipment</button></div>)}</section>}
+    {!isPickup && <section className="space-y-3">{singleDrafts.length > 1 && <div className="rounded-xl border bg-card p-4"><h2 className="font-bold">Choose a saved draft shipment</h2><div className="mt-3 flex flex-wrap gap-2">{singleDrafts.map(shipment => <button key={shipment.id} type="button" aria-pressed={shipmentId === shipment.id} className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted aria-pressed:border-primary" onClick={() => setCreatedShipmentId(shipment.id)}>{shipment.shipmentReference || shipment.id}</button>)}</div></div>}{!shipmentId && !singleDrafts.length && <div className="rounded-xl border bg-card p-4"><h2 className="font-bold"><Truck className="mr-2 inline h-4 w-4" />Shipping</h2><p className="mt-1 text-sm text-muted-foreground">Start a shipment to record what physically leaves the shop.</p></div>}{shipmentId && <FulfillmentShipmentEditor key={shipmentId} shipmentId={shipmentId} embedded onMutationComplete={async () => { await detailQuery.refetch(); }} />}{workspaceMode.combinedShipments.filter((shipment) => shipment.status === "DRAFT").map((shipment) => <div key={shipment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div><p className="font-semibold">Included in combined shipment {shipment.shipmentReference || shipment.id} · {shipment.status}</p><p className="text-sm text-muted-foreground">Shared by {shipment.orderCount} orders.</p></div><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openShipment(shipment.id)}>Open Combined Shipment</button></div>)}</section>}
 
-    <section className="rounded-xl border bg-card p-4" data-testid="fulfillment-order-notes"><h2 className="font-bold">Order Notes</h2><p className="mt-1 text-sm text-muted-foreground">Internal fulfillment notes. They do not change fulfillment quantities or status.</p><div className="mt-3 flex gap-2"><Textarea aria-label="Order note" value={note} maxLength={2000} className="min-h-20 flex-1" placeholder="Add a note for the fulfillment team" onChange={(event) => setNote(event.target.value)} /><button type="button" disabled={!note.trim() || addNote.isPending} className="h-fit rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitNote()}>{addNote.isPending ? "Adding…" : "Add note"}</button></div>{fulfillmentNotes.length > 0 ? <div className="mt-3 divide-y">{fulfillmentNotes.map((event) => <div key={event.id} className="py-3 text-sm"><p>{String(event.payloadJson?.note || "")}</p><p className="mt-1 text-xs text-muted-foreground">{event.actorName || "Staff"} · {new Date(event.createdAt).toLocaleString()}</p></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">No fulfillment notes yet.</p>}</section>
+    <details className="rounded-xl border bg-card p-4" data-testid="fulfillment-order-notes" open={fulfillmentNotes.length > 0 || !!note || undefined}><summary className="cursor-pointer font-bold">Order Notes{fulfillmentNotes.length ? ` (${fulfillmentNotes.length})` : ""}</summary><div className="mt-3 flex flex-col gap-2 sm:flex-row"><Textarea aria-label="Order note" value={note} maxLength={2000} className="min-h-20 flex-1" placeholder="Add an internal note for the fulfillment team" onChange={(event) => setNote(event.target.value)} /><button type="button" disabled={!note.trim() || addNote.isPending} className="h-fit rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void submitNote()}>{addNote.isPending ? "Adding…" : "Add note"}</button></div>{fulfillmentNotes.length > 0 ? <div className="mt-3 divide-y">{fulfillmentNotes.map((event) => <div key={event.id} className="py-3 text-sm"><p className="whitespace-pre-wrap break-words">{String(event.payloadJson?.note || "")}</p><p className="mt-1 text-xs text-muted-foreground">{event.actorName || "Staff"} · {new Date(event.createdAt).toLocaleString()}</p></div>)}</div> : <p className="mt-3 text-sm text-muted-foreground">No fulfillment notes yet.</p>}</details>
 
     {shipmentHistory.length > 0 && <section className="rounded-xl border bg-card p-4">
       <h2 className="font-bold">Shipment History</h2>
       <p className="mt-1 text-sm text-muted-foreground">Open a shipment to review its evidence. Owners and Admins can reverse shipped quantities with a reason; the original record is preserved.</p>
       {shipmentHistory.map((shipment) => <div key={shipment.id} className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
         <div><p className="text-sm font-semibold">{shipment.shipmentReference || shipment.id} · {shipment.status}</p>{shipment.shippedAt && <p className="text-xs text-muted-foreground">Shipped {new Date(shipment.shippedAt).toLocaleString()}</p>}</div>
-        <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(ROUTES.fulfillment.shipmentDetail(shipment.id))}>View shipment / corrections</button>
+        <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openShipment(shipment.id)}>View shipment / corrections</button>
       </div>)}
     </section>}
 
     <PickupHistory key={orderId} onSaveHistoryNote={(handoffId, note) => updateHistoryNote.mutateAsync({ handoffId, note })} detail={detail} selectedTravelerIds={selectedTravelerIds}
       onToggle={(id, selected) => setSelectedTravelerIds(ids => selected ? [...ids, id] : ids.filter(value => value !== id))}
       onReprint={traveler => { setReprintTraveler(traveler); setPickupTravelerOpen(true); }} onReverse={openPickupReversal} />
+
+    {detail.administrativeCorrection && <details className="rounded-xl border bg-card p-4"><summary className="cursor-pointer text-sm font-semibold text-muted-foreground">Exceptional actions</summary><div className="mt-3"><AdministrativeCorrection key={orderId} detail={detail} /></div></details>}
 
     <AlertDialog open={!!pickupReversal} onOpenChange={(open) => !open && setPickupReversal(null)}>
       <AlertDialogContent>

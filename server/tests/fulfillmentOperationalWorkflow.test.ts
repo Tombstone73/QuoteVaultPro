@@ -34,7 +34,7 @@ describe("fulfillment operational workflow helpers", () => {
 
     expect(repository).toContain("ticket.status !== 'DRAFT' && ticket.status !== 'READY_FOR_PICKUP'");
     expect(repository).toContain("handoffQuantity > projection.remainingQuantity");
-    expect(repository).toContain("draftQty > projection.remainingQuantity");
+    expect(repository).toContain("draftQty > line.projection.remainingQuantity");
     expect(repository).toContain("QTY_EXCEEDS_ORDER");
     expect(service).toContain("remainingQuantityByOrderId");
     expect(service).toContain("Shipment quantity exceeds the remaining order quantity");
@@ -159,7 +159,8 @@ describe("fulfillment operational workflow helpers", () => {
         .mockImplementationOnce(() => chain([{ status: "DRAFT" }]))
         .mockImplementationOnce(() => chain([], true)),
     };
-    const service = new FulfillmentService({ dbInstance: draftOnlyDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+    const noNetPhysicalFulfillment = { listLineEligibility: async () => [{ projection: { requiresFulfillment: true, fulfilledQuantity: 0 } }] };
+    const service = new FulfillmentService({ dbInstance: draftOnlyDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: noNetPhysicalFulfillment as any });
     await expect(service.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "pickup")).resolves.toBeUndefined();
 
     const terminalDb = {
@@ -168,7 +169,7 @@ describe("fulfillment operational workflow helpers", () => {
         .mockImplementationOnce(() => chain([]))
         .mockImplementationOnce(() => chain([], true)),
     };
-    const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+    const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: noNetPhysicalFulfillment as any });
     await expect(terminalService.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "pickup")).rejects.toMatchObject({
       status: 409,
       code: "FULFILLMENT_METHOD_TERMINAL",
@@ -195,7 +196,8 @@ describe("fulfillment operational workflow helpers", () => {
         .mockImplementationOnce(() => chain([]))
         .mockImplementationOnce(() => chain([], true)),
     };
-    const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+    const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any,
+      dashboardRepo: { listLineEligibility: async () => [{ projection: { requiresFulfillment: true, fulfilledQuantity: 1 } }] } as any });
     await expect(terminalService.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "pickup")).rejects.toMatchObject({
       status: 409,
       code: "FULFILLMENT_METHOD_TERMINAL",

@@ -15,7 +15,7 @@ import { deriveOrderPaymentSummary } from "@shared/orderPaymentSummary";
 };
 Element.prototype.scrollIntoView = jest.fn();
 
-const { MemoryRouter, Route, Routes } = require("react-router-dom") as typeof import("react-router-dom");
+const { MemoryRouter, Route, Routes, parsePath } = require("react-router-dom") as typeof import("react-router-dom");
 const OrderDetail = require("./order-detail").default as typeof import("./order-detail").default;
 
 let mockUser: any = { role: "admin", isAdmin: true };
@@ -34,6 +34,9 @@ const mockInvalidateQueries = jest.fn();
 const mockRefetchQueries = jest.fn();
 const mockUpdateOwner = jest.fn();
 const mockSaveOwner = jest.fn<any>();
+const mockBusinessMutation = jest.fn(async () => ({}));
+const mockGuardedNavigate = jest.fn();
+const mockRegisterGuard = jest.fn((_guard: (path: string) => string | boolean, _shouldBlock: () => boolean, _label: string) => jest.fn());
 let mockExecutePickerRequests = false;
 const actualQuery = jest.requireActual("@tanstack/react-query") as typeof import("@tanstack/react-query");
 const { QueryClient, QueryClientProvider } = actualQuery;
@@ -54,8 +57,8 @@ jest.mock("@tanstack/react-query", () => ({
     setQueryData: jest.fn(),
   }),
   useMutation: () => ({
-    mutate: jest.fn(),
-    mutateAsync: jest.fn(async () => ({})),
+    mutate: mockBusinessMutation,
+    mutateAsync: mockBusinessMutation,
     isPending: false,
   }),
   useQuery: (options: any) => {
@@ -97,8 +100,8 @@ jest.mock("@/hooks/useOrders", () => ({
   useDeleteOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
   useUpdateOrder: () => ({ mutate: mockUpdateOwner, mutateAsync: mockSaveOwner, isPending: false }),
   useUpdateOrderTaxTreatment: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useBulkUpdateOrderLineItemStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useTransitionOrderStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
+  useBulkUpdateOrderLineItemStatus: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
+  useTransitionOrderStatus: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
   useOrderWorkflow: () => ({ data: { statuses: [], transitions: [] }, isLoading: false }),
   useOrderCancellationEligibility: () => ({
     data: mockEligibility,
@@ -117,17 +120,17 @@ jest.mock("@/hooks/useInvoices", () => ({
 
 jest.mock("@/hooks/useShipments", () => ({
   useShipments: () => ({ data: [], isLoading: false }),
-  useDeleteShipment: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useUpdateShipment: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useGeneratePackingSlip: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useSendShipmentEmail: () => ({ mutate: jest.fn(), isPending: false }),
-  useUpdateFulfillmentStatus: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
+  useDeleteShipment: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
+  useUpdateShipment: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
+  useGeneratePackingSlip: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
+  useSendShipmentEmail: () => ({ mutate: mockBusinessMutation, isPending: false }),
+  useUpdateFulfillmentStatus: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
 }));
 
 jest.mock("@/hooks/useOrderState", () => ({
   isTerminalState: (state: string) => state === "closed" || state === "canceled",
-  useCloseOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
-  useCompleteOrder: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
+  useCloseOrder: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
+  useCompleteOrder: () => ({ mutateAsync: mockBusinessMutation, isPending: false }),
 }));
 
 jest.mock("@/hooks/usePaymentOrchestrator", () => ({
@@ -149,8 +152,8 @@ jest.mock("@/lib/paymentResolutionUi", () => ({
 
 jest.mock("@/contexts/NavigationGuardContext", () => ({
   useNavigationGuard: () => ({
-    registerGuard: jest.fn(() => jest.fn()),
-    guardedNavigate: jest.fn(),
+    registerGuard: mockRegisterGuard,
+    guardedNavigate: mockGuardedNavigate,
     getGuardDiagnostics: jest.fn(() => ({ registeredGuardCount: 0, guards: [], activeGuardLabels: [] })),
   }),
 }));
@@ -222,15 +225,19 @@ jest.mock("@/components/FulfillmentStatusBadge", () => ({
 }));
 
 jest.mock("@/components/ShipmentForm", () => ({
-  ShipmentForm: () => null,
+  ShipmentForm: ({ open }: any) => open ? <div role="dialog" aria-label="Legacy shipment form" /> : null,
 }));
 
 jest.mock("@/components/PackingSlipModal", () => ({
   PackingSlipModal: () => null,
 }));
 
-jest.mock("@/components/production/PrintTicketButton", () => ({
-  PrintTicketButton: () => null,
+jest.mock("@/components/production/TravelerPrintDialog", () => ({
+  TravelerPrintDialog: ({ orderId, open, onOpenChange }: any) => open ? (
+    <div role="dialog" aria-label="Traveler print" data-order-id={orderId}>
+      <button type="button" onClick={() => onOpenChange(false)}>Close Traveler</button>
+    </div>
+  ) : null,
 }));
 
 jest.mock("@/features/orders/components/OrderRecipientFallbackDialog", () => ({
@@ -279,7 +286,7 @@ function baseOrder(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function renderOrderDetail(path = "/orders/order-1/edit") {
+function renderOrderDetail(path = "/orders/order-1/edit", state: unknown = null) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   let root: Root;
@@ -287,7 +294,7 @@ function renderOrderDetail(path = "/orders/order-1/edit") {
     root = createRoot(container);
     root.render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>
-      <MemoryRouter initialEntries={[path]}>
+      <MemoryRouter initialEntries={[{ ...parsePath(path), state }]}>
         <Routes>
           <Route path="/orders/:id/edit" element={<OrderDetail />} />
           <Route path="/orders/:id" element={<OrderDetail />} />
@@ -297,6 +304,90 @@ function renderOrderDetail(path = "/orders/order-1/edit") {
   });
   return { container, root: root! };
 }
+
+describe("Order fulfillment and Traveler header actions", () => {
+  test.each(["pickup", "ship", "deliver"])("opens the Order-scoped workspace for %s without business mutations", (shippingMethod) => {
+    mockUser = { role: "employee", isAdmin: false };
+    mockOrgMemberships.data.orgs[0].role = "member";
+    mockOrder = baseOrder({ shippingMethod, status: "completed", productionReportedQuantity: 0 });
+    globalThis.fetch = jest.fn<any>();
+    const returnState = { referrer: { pathname: "/orders", search: "?status=open" }, listContextId: "order-list" };
+    const { container, root } = renderOrderDetail("/orders/order-1?returnTo=%2Forders%3Fstatus%3Dopen#details", returnState);
+    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Fulfillment")!;
+    expect(button).toBeTruthy();
+    expect(button.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Save & Route Jobs");
+
+    act(() => button.click());
+
+    expect(mockGuardedNavigate).toHaveBeenCalledTimes(1);
+    expect(mockGuardedNavigate).toHaveBeenCalledWith("/fulfillment/orders/order-1", {
+      state: {
+        referrer: { pathname: "/orders/order-1", search: "?returnTo=%2Forders%3Fstatus%3Dopen", hash: "#details" },
+        orderReturnState: returnState,
+      },
+    });
+    expect(mockBusinessMutation).not.toHaveBeenCalled();
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockUpdateOwner).not.toHaveBeenCalled();
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(require("@/lib/queryClient").apiFetch).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  test("uses the existing dirty guard without saving or clearing unsaved line-item changes", () => {
+    mockOrder = baseOrder({ shippingMethod: "pickup" });
+    const { container, root } = renderOrderDetail();
+    const [guard, shouldBlock] = mockRegisterGuard.mock.calls[0];
+    expect(shouldBlock()).toBe(false);
+    act(() => latestLineItemsProps.onDirtyStateChange(true));
+    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Fulfillment")!;
+
+    act(() => button.click());
+
+    expect(mockGuardedNavigate).toHaveBeenCalledWith("/fulfillment/orders/order-1", expect.any(Object));
+    expect(shouldBlock()).toBe(true);
+    expect(guard("/fulfillment/orders/order-1")).toBe("You have unsaved changes. Leave without saving?");
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockBusinessMutation).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test.each(["pickup", "ship", "deliver"])("offers one existing Traveler dialog for non-canceled %s orders", (shippingMethod) => {
+    mockUser = { role: "employee", isAdmin: false };
+    mockOrgMemberships.data.orgs[0].role = "member";
+    mockOrder = baseOrder({ shippingMethod, status: "completed" });
+    const { container, root } = renderOrderDetail("/orders/order-1");
+    const buttons = Array.from(container.querySelectorAll("button")).filter(node => node.textContent?.trim() === "Print Traveler");
+    expect(buttons).toHaveLength(1);
+
+    act(() => buttons[0].click());
+
+    expect(container.querySelector('[role="dialog"][aria-label="Traveler print"]')?.getAttribute("data-order-id")).toBe("order-1");
+    expect(mockBusinessMutation).not.toHaveBeenCalled();
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockGuardedNavigate).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test.each(["pickup", "ship", "deliver"])("suppresses Traveler but keeps Fulfillment history navigation for canceled %s orders", (shippingMethod) => {
+    mockOrder = baseOrder({ shippingMethod, state: "canceled", status: "canceled" });
+    const { container, root } = renderOrderDetail("/orders/order-1");
+    expect(container.textContent).not.toContain("Print Traveler");
+    expect(container.querySelector('[aria-label="Traveler print"]')).toBeNull();
+    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Fulfillment")!;
+
+    act(() => button.click());
+
+    expect(mockGuardedNavigate).toHaveBeenCalledWith("/fulfillment/orders/order-1", expect.any(Object));
+    expect(mockBusinessMutation).not.toHaveBeenCalled();
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+});
 
 describe("Order canonical payment display", () => {
   const paidInvoice = (totalCents: number, paidCents: number) => ({

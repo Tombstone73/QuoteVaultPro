@@ -12,7 +12,8 @@ import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../lib/directTravelerPrintUrl";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getPrintAgentRealtimeConfiguration } from "../services/printAgentWake";
-import { isNumericAgentVersion } from "../lib/directPrintAgentCapabilities";
+import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsShippingDocumentAgent } from "../lib/directPrintAgentCapabilities";
+import { isShippingDocumentType, shippingPrintContextSchema } from "@shared/directPrintDocuments";
 import { pickupTravelerContext } from "@shared/pickupTravelerProgress";
 
 const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
@@ -130,29 +131,57 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   });
   // A print host only sees jobs assigned to its paired identity. Claiming is a
   // single conditional update so two agents cannot submit the same Traveler.
-  app.get("/api/local-bridge/direct-print/jobs", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; await recordBridgeActivity(agent.id); const rows = await db.select({ id: directPrintJobs.id, orderId: directPrintJobs.orderId, documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext, copies: directPrintJobs.copies, printNote: directPrintJobs.printNote, trailingFeedMm: directPrintJobs.trailingFeedMm, queueName: printerProfiles.windowsQueueName, destinationName: printerProfiles.displayName, location: printerProfiles.location }).from(directPrintJobs).innerJoin(printerProfiles, eq(directPrintJobs.destinationId, printerProfiles.id)).where(and(eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"))).limit(10); res.json({ success: true, data: rows }); });
+  app.get("/api/local-bridge/direct-print/jobs", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; await recordBridgeActivity(agent.id); const rows = await db.select({ id: directPrintJobs.id, orderId: directPrintJobs.orderId, documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext, copies: directPrintJobs.copies, printNote: directPrintJobs.printNote, trailingFeedMm: directPrintJobs.trailingFeedMm, queueName: printerProfiles.windowsQueueName, destinationName: printerProfiles.displayName, location: printerProfiles.location }).from(directPrintJobs).innerJoin(printerProfiles, eq(directPrintJobs.destinationId, printerProfiles.id)).where(and(eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"), inArray(directPrintJobs.documentType, supportedAgentDocumentTypes(agent.agentVersion)))).limit(10); res.json({ success: true, data: rows }); });
   app.post("/api/local-bridge/direct-print/jobs/:id/claim", bridgeAuth, async (req: any, res) => {
     let canonicalWebOrigin: string; try { canonicalWebOrigin = getCanonicalTravelerWebOrigin(getPublicWebOrigin()); } catch (error: any) { return res.status(503).json({ error: error?.message || "Print web application origin is unavailable." }); }
 
     const agent = req.bridgeAgent;
-    const [job] = await db.update(directPrintJobs).set({ status: "claimed", claimedAt: new Date(), attempts: sql`${directPrintJobs.attempts} + 1`, updatedAt: new Date() }).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"))).returning();
+    const [job] = await db.update(directPrintJobs).set({ status: "claimed", claimedAt: new Date(), attempts: sql`${directPrintJobs.attempts} + 1`, updatedAt: new Date() }).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "queued"), inArray(directPrintJobs.documentType, supportedAgentDocumentTypes(agent.agentVersion)))).returning();
     if (!job) return res.status(409).json({ error: "Print job is no longer available" });
     await recordBridgeActivity(agent.id);
 
     const [destination] = await db.select({ windowsQueueName: printerProfiles.windowsQueueName }).from(printerProfiles).where(and(eq(printerProfiles.id, job.destinationId), eq(printerProfiles.organizationId, agent.organizationId))).limit(1);
+    let travelerUrl: string;
+    switch (job.documentType) {
+      case "traveler":
+      case "pickup_traveler":
+        if (!job.orderId) return res.status(409).json({ error: "Traveler print job is missing its order" });
+        travelerUrl = buildClaimedTravelerWebUrl(canonicalWebOrigin, job.orderId, job.id); break;
+      case "quick_note": travelerUrl = `${canonicalWebOrigin}/print/quick-note?${new URLSearchParams({ directPrintJobId: job.id }).toString()}`; break;
+      case "packing_slip":
+      case "shipment_manifest":
+      case "package_ticket": travelerUrl = `${canonicalWebOrigin}/print-agent/documents/${encodeURIComponent(job.id)}`; break;
+      default: return res.status(409).json({ error: "Unsupported print document type" });
+    }
     return res.json({
       success: true,
       data: {
         ...job,
         queueName: destination?.windowsQueueName ?? null,
-        travelerUrl: job.documentType === "quick_note" ? `${canonicalWebOrigin}/print/quick-note?${new URLSearchParams({ directPrintJobId: job.id }).toString()}` : buildClaimedTravelerWebUrl(canonicalWebOrigin, job.orderId!, job.id),
+        travelerUrl,
       },
     });
   });
   // This endpoint is deliberately job-scoped: it returns the exact source
   // consumed by the existing React Traveler page, never an arbitrary URL or
   // file. A claimed job is the only way an agent credential can read it.
-  app.get("/api/local-bridge/direct-print/jobs/:id/traveler", bridgeAuth, async (req: any, res) => { try { const agent = req.bridgeAgent; const [job] = await db.select({ orderId: directPrintJobs.orderId, documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext }).from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"))).limit(1); if (!job) return res.status(404).json({ error: "Print job not claimed" }); const context = job.documentType === "pickup_traveler" ? pickupTravelerContext(job.printContext) : null; if (job.documentType === "pickup_traveler" && !context) return res.status(409).json({ error: "Pickup traveler print context is unavailable" }); const traveler = await (context ? getOrderTravelerSource(agent.organizationId, job.orderId, context) : getOrderTravelerSource(agent.organizationId, job.orderId)); if (!traveler) return res.status(404).json({ error: "Order not found" }); res.json({ success: true, data: traveler }); } catch (error: any) { const status = Number(error?.status) || 500; if (status >= 500) console.error("[PICKUP TRAVELER] Source read failed", error); return res.status(status).json({ error: status < 500 ? error.message : "Could not load Traveler" }); } });
+  app.get("/api/local-bridge/direct-print/jobs/:id/traveler", bridgeAuth, async (req: any, res) => { try { const agent = req.bridgeAgent; const [job] = await db.select({ orderId: directPrintJobs.orderId, documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext }).from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"), inArray(directPrintJobs.documentType, ["traveler", "pickup_traveler"]))).limit(1); if (!job || !job.orderId || !["traveler", "pickup_traveler"].includes(job.documentType)) return res.status(404).json({ error: "Print job not claimed" }); const context = job.documentType === "pickup_traveler" ? pickupTravelerContext(job.printContext) : null; if (job.documentType === "pickup_traveler" && !context) return res.status(409).json({ error: "Pickup traveler print context is unavailable" }); const traveler = await (context ? getOrderTravelerSource(agent.organizationId, job.orderId, context) : getOrderTravelerSource(agent.organizationId, job.orderId)); if (!traveler) return res.status(404).json({ error: "Order not found" }); res.json({ success: true, data: traveler }); } catch (error: any) { const status = Number(error?.status) || 500; if (status >= 500) console.error("[PICKUP TRAVELER] Source read failed", error); return res.status(status).json({ error: status < 500 ? error.message : "Could not load Traveler" }); } });
+  app.get("/api/local-bridge/direct-print/jobs/:jobId/document", bridgeAuth, async (req: any, res) => {
+    const agent = req.bridgeAgent;
+    if (!supportsShippingDocumentAgent(agent.agentVersion)) return res.status(409).json({ error: "Print Agent update required" });
+    const [job] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId),
+      eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"),
+      inArray(directPrintJobs.documentType, ["packing_slip", "shipment_manifest", "package_ticket"]))).limit(1);
+    const parsedContext = shippingPrintContextSchema.safeParse(job?.printContext);
+    const context = parsedContext.success ? parsedContext.data : null;
+    if (!job || !isShippingDocumentType(job.documentType) || !context?.source || context.source.version !== 1
+      || context.source.organizationId !== agent.organizationId || context.source.shipmentId !== context.shipmentId
+      || (context.packageId !== null && (job.documentType !== "package_ticket" || !context.source.packages.some((item) => item.id === context.packageId)))) {
+      return res.status(404).json({ error: "Shipping document print job not claimed or source unavailable" });
+    }
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ success: true, data: { source: context.source, documentType: job.documentType, packageId: context.packageId, jobId: job.id, copies: job.copies } });
+  });
   app.get("/api/local-bridge/direct-print/jobs/:id/quick-note", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; const [job] = await db.select({ documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext }).from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"))).limit(1); const context = job?.printContext as any; if (!job || job.documentType !== "quick_note" || !context || typeof context.headline !== "string" || typeof context.body !== "string") return res.status(404).json({ error: "Quick Note print job not claimed" }); return res.json({ success: true, data: { headline: context.headline, body: context.body, receiptWidthMm: Number(context.receiptWidthMm) || 80 } }); });
   app.post("/api/local-bridge/direct-print/jobs/:id/:outcome", bridgeAuth, async (req: any, res) => { const outcome = req.params.outcome; if (outcome !== "submitted" && outcome !== "failed") return res.status(400).json({ error: "Invalid print outcome" }); const agent = req.bridgeAgent; const [job] = await db.update(directPrintJobs).set({ status: outcome, submittedAt: outcome === "submitted" ? new Date() : null, failedAt: outcome === "failed" ? new Date() : null, lastError: outcome === "failed" ? String(req.body?.error || "Windows print host failed") : null, updatedAt: new Date() }).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.status, "claimed"))).returning(); if (!job) return res.status(409).json({ error: "Print job is not claimed by this agent" }); await recordBridgeActivity(agent.id); res.json({ success: true, data: job }); });
   app.get("/api/local-bridge/jobs", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; const jobs = await db.select({ id: localFileCopyJobs.id, outputFilename: localFileCopyJobs.outputFilename, destinationPath: localFileDestinations.localPath }).from(localFileCopyJobs).innerJoin(localFileDestinations, eq(localFileCopyJobs.destinationId, localFileDestinations.id)).where(and(eq(localFileCopyJobs.organizationId, agent.organizationId), eq(localFileCopyJobs.status, "pending"), eq(localFileDestinations.destinationType, "customer_art_folder"))).limit(20); res.json({ success: true, data: jobs }); });

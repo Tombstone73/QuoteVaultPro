@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { resolveFulfillmentWorkspaceMode } from './fulfillmentWorkspaceMode';
+import { fulfillmentReturnRoute, resolveFulfillmentWorkspaceMode } from './fulfillmentWorkspaceMode';
 
 describe('fulfillment workspace execution mode', () => {
   test('Pickup wins over a retained draft shipment', () => {
@@ -29,5 +29,15 @@ describe('fulfillment workspace execution mode', () => {
       { id: 'voided', status: 'VOIDED', scope: 'MULTI_ORDER', orderCount: 2 },
     ] });
     expect(state.combinedShipments.map((shipment) => shipment.id)).toEqual(['combined']);
+  });
+
+  test('multiple single-order drafts require explicit selection', () => {
+    const state = resolveFulfillmentWorkspaceMode({ fulfillmentType: 'SHIP', shipments: ['one', 'two'].map(id => ({ id, status: 'DRAFT', scope: 'SINGLE_ORDER', orderCount: 1 })) });
+    expect(state.singleDraftShipmentId).toBeNull();
+    expect(state.historicalDrafts.map(shipment => shipment.id)).toEqual(['one', 'two']);
+  });
+
+  test.each([null, { pathname: '//evil.example' }, { pathname: '/orders/other' }, { pathname: '/orders/one', search: 'https://evil.example' }, { pathname: '/orders/one', hash: 'https://evil.example' }, { pathname: '/orders/one', search: '?next=\\evil' }])('rejects untrusted return context %j', value => {
+    expect(fulfillmentReturnRoute(value, ['/orders/one'])).toBeNull();
   });
 });

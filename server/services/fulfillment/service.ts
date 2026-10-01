@@ -15,6 +15,9 @@ import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod'
 import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
 import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
+import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
+import { resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
+import { getShippingDocumentSource } from '../shippingDocumentService';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -544,16 +547,6 @@ export class FulfillmentService {
       }
     }
 
-    if (ordersForValidation.length > 1) {
-      const firstAddressKey = this.dashboardRepo.getAddressKey(ordersForValidation[0]);
-      for (let i = 1; i < ordersForValidation.length; i += 1) {
-        const key = this.dashboardRepo.getAddressKey(ordersForValidation[i]);
-        if (key !== firstAddressKey) {
-          throw new FulfillmentHttpError(400, 'All combined-shipment orders must have identical Ship To address', 'ADDRESS_MISMATCH');
-        }
-      }
-    }
-
     return ordersForValidation;
   }
 
@@ -585,15 +578,26 @@ export class FulfillmentService {
     if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
       await this.syncSimpleShipmentAllocations(orgId, shipment.id, payload.actorUserId);
     }
-    return this.shipmentRepo.getShipmentById(orgId, shipment.id) ?? shipment;
+    return await this.shipmentRepo.getShipmentById(orgId, shipment.id) ?? shipment;
   }
 
   async getShipment(orgId: string, shipmentId: string) {
     const shipment = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
-    return shipment ? { ...shipment, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length } : null;
+    if (!shipment) return null;
+    const shippingContext = shipment.shippingContext ?? (shipment.status === 'DRAFT'
+      ? await resolveShipmentShippingContext(orgId, shipment.orders.map(order => order.orderId), this.dbInstance) : null);
+    return { ...shipment, shippingContext, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
+  }
+
+  async getShipmentDocument(orgId: string, shipmentId: string, documentType: ShippingDocumentType, packageId?: string) {
+    if (packageId && documentType !== 'package_ticket') throw new FulfillmentHttpError(400, 'Package selection is supported only for package tickets.', 'INVALID_PACKAGE');
+    const source = await getShippingDocumentSource(orgId, shipmentId, this.dbInstance);
+    if (packageId && !source.packages.some(pkg => pkg.id === packageId)) throw new FulfillmentHttpError(404, 'Package not found in this shipment.', 'PACKAGE_NOT_FOUND');
+    return source;
   }
 
   async patchShipment(orgId: string, shipmentId: string, payload: {
+    shippingContext?: ShipmentShippingContext;
     carrier?: string | null;
     serviceLevel?: string | null;
     trackingNumber?: string | null;
@@ -634,7 +638,8 @@ export class FulfillmentService {
     }
     catch (error: any) { throw new FulfillmentHttpError(400, error.message, 'SHIP_DATE_INVALID'); }
 
-    const updated = await this.shipmentRepo.patchDraftShipment(orgId, shipmentId, {
+    if (payload.shippingContext !== undefined) validateShipmentShippingContext(payload.shippingContext, existing.orders.map(order => order.orderId));
+    return this.shipmentRepo.saveDraftShipment(orgId, shipmentId, { patch: {
       carrier: payload.carrier,
       serviceLevel: payload.serviceLevel,
       trackingNumber: payload.trackingNumber,
@@ -645,41 +650,19 @@ export class FulfillmentService {
       dimWidthIn: payload.dims?.width,
       dimHeightIn: payload.dims?.height,
       internalNotes: payload.internalNotes,
-    });
-
-    if (!updated) {
-      throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
-    }
-
-    if (payload.packages) {
-      await this.shipmentRepo.patchDraftShipmentPackages(orgId, shipmentId, payload.packages.map((item) => ({
+      shippingContext: payload.shippingContext,
+    },
+      packages: payload.packages?.map((item) => ({
         id: item.id,
         weightLbs: item.weightLbs,
         dimLengthIn: item.dims?.length,
         dimWidthIn: item.dims?.width,
         dimHeightIn: item.dims?.height,
         notes: item.notes,
-      })));
-    }
-
-    if (payload.shipmentItems) {
-      await this.assertExplicitAllocationsEligible(orgId, payload.shipmentItems);
-      const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, payload.shipmentItems);
-      if (!replacement.ok) {
-        throw new FulfillmentHttpError(409, replacement.message, replacement.code);
-      }
-    }
-
-    await this.shipmentRepo.insertEvent(
-      orgId,
-      payload.actorUserId || null,
-      'SHIPMENT',
-      shipmentId,
-      'SHIPMENT_UPDATED',
-      { hasItemsUpdate: !!payload.shipmentItems },
-    );
-
-    return this.shipmentRepo.getShipmentById(orgId, shipmentId);
+      })),
+      items: payload.shipmentItems,
+      actorUserId: payload.actorUserId,
+    });
   }
 
   /** Order shippingMethod is the current fulfillment intent. Historical draft
@@ -792,27 +775,31 @@ export class FulfillmentService {
     notes?: string | null;
     actorUserId?: string | null;
   }) {
-    const created = await this.shipmentRepo.createShipmentPackage(orgId, shipmentId, {
-      weightLbs: payload.weightLbs,
-      dimLengthIn: payload.dims?.length,
-      dimWidthIn: payload.dims?.width,
-      dimHeightIn: payload.dims?.height,
-      notes: payload.notes,
+    return this.dbInstance.transaction(async tx => {
+      const created = await this.shipmentRepo.createShipmentPackage(orgId, shipmentId, {
+        weightLbs: payload.weightLbs,
+        dimLengthIn: payload.dims?.length,
+        dimWidthIn: payload.dims?.width,
+        dimHeightIn: payload.dims?.height,
+        notes: payload.notes,
+      }, tx as any);
+      if (!created) throw new FulfillmentHttpError(404, 'Draft shipment not found', 'NOT_FOUND');
+      await this.shipmentRepo.insertEvent(orgId, payload.actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
+        packageId: created.id, action: 'package_created', packageReference: created.packageReference,
+      }, tx);
+      return created;
     });
-    if (!created) throw new FulfillmentHttpError(404, 'Draft shipment not found', 'NOT_FOUND');
-    await this.shipmentRepo.insertEvent(orgId, payload.actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
-      packageId: created.id, action: 'package_created', packageReference: created.packageReference,
-    });
-    return created;
   }
 
   async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string, actorUserId?: string | null) {
-    const deleted = await this.shipmentRepo.deleteShipmentPackage(orgId, shipmentId, packageId);
-    if (!deleted) throw new FulfillmentHttpError(404, 'Draft shipment package not found', 'NOT_FOUND');
-    await this.shipmentRepo.insertEvent(orgId, actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
-      packageId, action: 'package_deleted',
+    return this.dbInstance.transaction(async tx => {
+      const deleted = await this.shipmentRepo.deleteShipmentPackage(orgId, shipmentId, packageId, tx as any);
+      if (!deleted) throw new FulfillmentHttpError(404, 'Draft shipment package not found', 'NOT_FOUND');
+      await this.shipmentRepo.insertEvent(orgId, actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
+        packageId, action: 'package_deleted',
+      }, tx);
+      return deleted;
     });
-    return deleted;
   }
 
   async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {

@@ -1,39 +1,42 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle,
   Copy,
-  Download,
   FileText,
   Loader2,
   MapPinned,
-  Package,
-  Printer,
   Truck,
   X,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
+import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
+import { ShippingDocumentPrintDialog } from "@/components/production/ShippingDocumentPrintDialog";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
+import { fulfillmentReturnRoute } from "@/lib/fulfillmentWorkspaceMode";
+import { shippingPartyAddressLines, shippingPartyValidationErrors, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
   getOrderDetails,
   getFulfillmentOrderDetail,
   FulfillmentDetail,
-  ShipmentDetail,
   toFulfillmentError,
   useMarkShippedMutation,
   useCreateShipmentPackageMutation,
   useShipmentDetailQuery,
+  useShippingDocumentSourceQuery,
   useUpdateShipmentMutation,
   useVoidShipmentMutation,
   useReverseTerminalFulfillmentMutation,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ROUTES } from "@/config/routes";
-import { useSmartBack } from "@/hooks/useSmartBack";
-import { buildReferrer } from "@/lib/nav/smartBack";
+import { buildReferrer, toHref } from "@/lib/nav/smartBack";
 
 interface OrderDetailLite {
   id: string;
@@ -96,11 +99,14 @@ function toDateInput(value: string | null | undefined): string {
   return parsed.toISOString().slice(0, 10);
 }
 
-function parseNumber(value: string): number | null {
-  if (!value.trim()) return null;
+function parseNumber(value: string | number): number | null {
+  if (!String(value).trim()) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
+
+const emptyShippingParty: ShippingParty = { name: null, company: null, address1: null, address2: null, city: null, state: null, postalCode: null, country: null, phone: null, email: null };
+const partyFields: Array<[keyof ShippingParty, string]> = [["name", "Contact name"], ["company", "Company"], ["address1", "Street address"], ["address2", "Address line 2"], ["city", "City"], ["state", "State / province"], ["postalCode", "ZIP / postal code"], ["country", "Country"], ["phone", "Phone"], ["email", "Email"]];
 
 export function FulfillmentShipmentEditor({
   shipmentId: embeddedShipmentId,
@@ -112,8 +118,7 @@ export function FulfillmentShipmentEditor({
   onMutationComplete?: () => void | Promise<void>;
 }) {
   const { toast } = useToast();
-  const navigate = useNavigate();
-  const { onSmartBack } = useSmartBack();
+  const { guardedNavigate: navigate } = useNavigationGuard();
   const { shipmentId: routeShipmentId } = useParams<{ shipmentId: string }>();
   const shipmentId = embeddedShipmentId ?? routeShipmentId;
   const location = useLocation();
@@ -133,6 +138,9 @@ export function FulfillmentShipmentEditor({
   const [shipmentReversalReason, setShipmentReversalReason] = useState("");
   const [shipmentReversalConfirmed, setShipmentReversalConfirmed] = useState(false);
   const [shipmentReversalQuantities, setShipmentReversalQuantities] = useState<Record<string, number>>({});
+  const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
+  const [editingDestination, setEditingDestination] = useState(false);
+  const [artworkViewer, setArtworkViewer] = useState<{ attachments: AttachmentData[]; initialIndex: number } | null>(null);
   const hydratedShipmentId = useRef<string | null>(null);
 
   const debugEnabled = useMemo(() => new URLSearchParams(location.search).get("debug") === "1", [location.search]);
@@ -145,11 +153,20 @@ export function FulfillmentShipmentEditor({
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
+  const documentSourceQuery = useShippingDocumentSourceQuery(shipmentId);
+  const shipmentReversalLines = useMemo(() => {
+    const quantities: Record<string, number> = {};
+    for (const item of shipment?.items ?? []) quantities[item.orderLineItemId] = (quantities[item.orderLineItemId] ?? 0) + item.quantity;
+    return Object.entries(quantities).map(([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
+  }, [shipment?.items]);
 
   useEffect(() => {
     if (!shipment) return;
     if (hydratedShipmentId.current === shipment.id) return;
     hydratedShipmentId.current = shipment.id;
+    setShippingContext(shipment.shippingContext ?? null);
+    setEditingDestination(false);
+    setArtworkViewer(null);
     const defaultPackage = shipment.packages[0];
     const nextForm: ShipmentFormState = {
       carrier: shipment.carrier ?? "",
@@ -230,6 +247,10 @@ export function FulfillmentShipmentEditor({
         sku: string;
         orderedQty: number;
         remainingQty: number;
+        size: string | null;
+        material: string | null;
+        options: string[];
+        artwork: FulfillmentDetail["lineItems"][number]["artwork"];
       }>;
     }>;
 
@@ -242,6 +263,14 @@ export function FulfillmentShipmentEditor({
         sku: "--",
         orderedQty: li.production.orderedQuantity,
         remainingQty: li.production.remainingQuantity,
+        size: li.size,
+        material: li.materialName,
+        options: li.optionSummary ?? [],
+        artwork: [...(li.artwork ?? [])].filter(file => file.source === "canonical" && !!file.fileRecordId).sort((a, b) => {
+          const roles = ["modified_production", "production", "customer_source"];
+          const rank = (role: string | null) => roles.includes(role || "") ? roles.indexOf(role!) : roles.length;
+          return rank(a.role) - rank(b.role);
+        }),
       }));
 
       return {
@@ -253,18 +282,13 @@ export function FulfillmentShipmentEditor({
     });
   }, [fulfillmentByOrderId, ordersById, shipment]);
 
-  const addressMismatch = useMemo(() => {
-    const addresses = new Set(
-      (shipment?.orders ?? []).map((o) => {
-        const order = ordersById[o.orderId];
-        return [order?.shipToAddress1, order?.shipToAddress2, order?.shipToCity, order?.shipToState, order?.shipToPostalCode]
-          .filter(Boolean)
-          .join("|")
-          .toLowerCase();
-      }).filter(Boolean),
-    );
-    return addresses.size > 1;
-  }, [ordersById, shipment?.orders]);
+  const destination = shipment?.status === "DRAFT" ? shippingContext?.destination : shipment?.documentSnapshot?.destination ?? shipment?.shippingContext?.destination;
+  const blindShipping = shipment?.status === "DRAFT" ? shippingContext?.blindShipping : shipment?.documentSnapshot?.blindShipping ?? shipment?.shippingContext?.blindShipping;
+  const sender = blindShipping
+    ? (shipment?.status === "DRAFT" ? shippingContext?.blindSender : shipment?.documentSnapshot?.sender ?? shipment?.shippingContext?.blindSender)
+    : shipment?.documentSnapshot?.sender ?? (documentSourceQuery.data?.blindShipping ? undefined : documentSourceQuery.data?.sender);
+  const missingDestination = destination ? shippingPartyValidationErrors(destination) : ["shipping destination"];
+  const missingBlindSender = blindShipping ? sender ? shippingPartyValidationErrors(sender) : ["alternate sender"] : [];
 
   const draftShipmentItems = useMemo(() => lineItemsByOrder.flatMap(group =>
     group.lineItems.flatMap(item => {
@@ -300,16 +324,33 @@ export function FulfillmentShipmentEditor({
     [allocatedByLineItemId],
   );
 
+  const hasUnsavedChanges = shipment?.status === "DRAFT" && (
+    form.carrier !== (shipment.carrier ?? "") || form.serviceLevel !== (shipment.serviceLevel ?? "") ||
+    form.trackingNumber !== (shipment.trackingNumber ?? "") || form.shipDate !== toDateInput(shipment.shipDate) ||
+    form.internalNotes !== (shipment.internalNotes ?? "") ||
+    JSON.stringify(shippingContext) !== JSON.stringify(shipment.shippingContext ?? null) ||
+    JSON.stringify(draftShipmentItems.filter(item => item.quantity > 0).map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort()) !==
+      JSON.stringify(shipment.items.map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort()) ||
+    shipment.packages.some((pkg, index) => {
+      const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes } : packageFieldsById[pkg.id];
+      return !!fields && (parseNumber(fields.weight) !== parseNumber(pkg.weightLbs ?? "") ||
+        parseNumber(fields.length) !== parseNumber(pkg.dimLengthIn ?? "") || parseNumber(fields.width) !== parseNumber(pkg.dimWidthIn ?? "") ||
+        parseNumber(fields.height) !== parseNumber(pkg.dimHeightIn ?? "") || fields.notes !== (pkg.notes ?? ""));
+    })
+  );
+  const documentActionsDisabled = !!hasUnsavedChanges || loadingOrders || updateShipment.isPending;
+
   const markShippedDisabled =
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
     validationErrors.size > 0 ||
     allocatedCount <= 0 ||
+    missingDestination.length > 0 || missingBlindSender.length > 0 ||
     markShipped.isPending ||
     updateShipment.isPending;
 
   const saveDraft = async (silent = false) => {
-    if (!shipmentId || loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || validationErrors.size > 0) return;
+    if (!shipmentId || !shipment || shipment.status !== "DRAFT" || loadingOrders || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId]) || validationErrors.size > 0) return;
     try {
       setLastError(null);
 
@@ -321,6 +362,7 @@ export function FulfillmentShipmentEditor({
         trackingNumber: form.trackingNumber || null,
         shipDate: form.shipDate || null,
         internalNotes: form.internalNotes || null,
+        ...(shippingContext ? { shippingContext } : {}),
         packages: shipment.packages.map((pkg, index) => {
           const fields = index === 0
             ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes }
@@ -355,7 +397,7 @@ export function FulfillmentShipmentEditor({
   };
 
   const handleAddPackage = async () => {
-    if (!shipmentId) return;
+    if (!shipmentId || !shipment) return;
     try {
       const created = await createPackage.mutateAsync({});
       toast({ title: "Package added", description: created.packageReference });
@@ -368,7 +410,7 @@ export function FulfillmentShipmentEditor({
   };
 
   const handleMarkShipped = async () => {
-    if (!shipmentId) return;
+    if (!shipmentId || !shipment || markShippedDisabled) return;
     const saved = await saveDraft(true);
     if (!saved) return;
 
@@ -387,13 +429,14 @@ export function FulfillmentShipmentEditor({
   };
 
   const handleVoid = async () => {
-    if (!shipmentId) return;
+    if (!shipmentId || !shipment) return;
     try {
       setLastError(null);
       const response = await voidShipment.mutateAsync();
       setLastResponse(response);
       toast({ title: "Shipment voided", description: `${shipment.shipmentReference || "Shipment"} moved to VOIDED` });
       await shipmentQuery.refetch();
+      await onMutationComplete?.();
     } catch (error) {
       const parsed = toFulfillmentError(error);
       setLastError({ code: parsed.code, message: parsed.message });
@@ -403,7 +446,7 @@ export function FulfillmentShipmentEditor({
 
   const handleShipmentReversal = async () => {
     if (!shipmentId || !shipment || !shipmentReversalConfirmed || !shipmentReversalReason.trim()) return;
-    const items = shipment.items.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: Math.floor(Number(shipmentReversalQuantities[item.orderLineItemId] ?? 0)) })).filter((item) => item.quantity > 0);
+    const items = shipmentReversalLines.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: Math.floor(Number(shipmentReversalQuantities[item.orderLineItemId] ?? 0)) })).filter((item) => item.quantity > 0);
     if (!items.length) return;
     try {
       setLastError(null);
@@ -434,7 +477,7 @@ export function FulfillmentShipmentEditor({
   if (!shipment) {
     return (
       <div className="rounded-xl border border-border bg-card p-6">
-        <p className="text-sm text-muted-foreground">Shipment not found.</p>
+        {shipmentQuery.isError ? <><h2 className="font-semibold">Could not load shipment</h2><p role="alert" className="mt-2 text-sm text-muted-foreground">{toFulfillmentError(shipmentQuery.error).message}</p><button type="button" className="mt-3 rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => void shipmentQuery.refetch()}>Retry</button></> : <p className="text-sm text-muted-foreground">Shipment not found.</p>}
       </div>
     );
   }
@@ -444,6 +487,11 @@ export function FulfillmentShipmentEditor({
   const advancedPacking = shipment.packingMode === "advanced_separate_packing" || splitMode;
   const packedCount = isDraft ? allocatedCount : shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
+  const returnRoute = fulfillmentReturnRoute(location.state?.referrer, [ROUTES.fulfillment.list, ...shipment.orders.map(order => ROUTES.fulfillment.order(order.orderId))]);
+  const editContext = () => {
+    setShippingContext(context => ({ ...(context ?? { version: 1, sourceOrderId: shipment.primaryOrderId ?? shipment.orders[0]?.orderId ?? null, destination: { ...emptyShippingParty }, blindShipping: false, blindSender: null }), source: "staff" }));
+    setEditingDestination(true);
+  };
 
   const resolveCustomerId = (orderId: string): string | null => {
     const order = ordersById[orderId];
@@ -458,7 +506,8 @@ export function FulfillmentShipmentEditor({
             <button
               className="rounded-lg p-2 transition-colors hover:bg-accent"
               type="button"
-              onClick={onSmartBack}
+              aria-label="Back to fulfillment workspace"
+              onClick={() => navigate(returnRoute ? toHref(returnRoute) : ROUTES.fulfillment.list, { state: returnRoute ? location.state?.referrerState : undefined })}
             >
               <ArrowLeft className="h-4 w-4 text-muted-foreground" />
             </button>
@@ -483,7 +532,7 @@ export function FulfillmentShipmentEditor({
 
       <main className={embedded ? "p-0" : "p-4 md:p-6"}>
         <div className={`grid grid-cols-1 items-start gap-6 ${embedded ? "xl:grid-cols-[minmax(0,1fr)_300px]" : "xl:grid-cols-[320px_minmax(0,1fr)_300px]"}`}>
-          <aside className={embedded ? "hidden" : "flex flex-col gap-4"}>
+          <aside className={embedded ? "hidden" : "order-3 flex min-w-0 flex-col gap-4 xl:order-none"}>
             <div className="mb-2 flex items-center justify-between px-1">
               <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Orders Included</h3>
               <span className="rounded bg-muted px-2 py-0.5 text-xs font-mono text-foreground">{shipment.orders.length.toString().padStart(2, "0")}</span>
@@ -496,7 +545,7 @@ export function FulfillmentShipmentEditor({
                 .find((g) => g.orderId === orderRef.orderId)
                 ?.lineItems.reduce((acc, item) => acc + Number(allocatedByLineItemId[item.id] || 0), 0) ?? 0;
 
-              const addressPreview = [order?.shipToAddress1, order?.shipToCity, order?.shipToState].filter(Boolean).join(", ") || "Address unavailable";
+              const addressPreview = destination ? shippingPartyAddressLines(destination).join(", ") : "Destination not recorded";
 
               return (
                 <div key={orderRef.orderId} className="group relative mb-4 cursor-default rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/50">
@@ -542,140 +591,36 @@ export function FulfillmentShipmentEditor({
             })}
           </aside>
 
-          <section className="flex flex-col gap-6">
-            {addressMismatch && (
-              <div className="mb-6 flex items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
-                <p className="text-sm font-medium text-amber-500">Orders in this shipment have different delivery addresses</p>
-              </div>
-            )}
+          <section className="order-1 flex min-w-0 flex-col gap-6 xl:order-none">
+            <section className="rounded-xl border border-primary/30 bg-card p-4 md:p-5" aria-labelledby="shipment-destination-heading">
+              <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="shipment-destination-heading" className="flex items-center gap-2 text-lg font-bold"><MapPinned className="h-5 w-5 text-primary" />Ship To</h2><div className="flex items-center gap-2">{blindShipping && <span className="rounded border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-semibold">Blind shipment</span>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={editContext}>{editingDestination ? "Editing destination" : "Edit destination / sender"}</button>}</div></div>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2"><div>{destination ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(destination).map((line, index) => <p key={index} className={index === 0 ? "font-semibold" : ""}>{line}</p>)}{destination.phone && <p className="mt-1">{destination.phone}</p>}{destination.email && <p className="break-all">{destination.email}</p>}</address> : <p className="text-sm text-muted-foreground">Destination not recorded for this shipment.</p>}</div><div><h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{blindShipping ? "Alternate sender" : "Sender"}</h3>{sender ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(sender).map((line, index) => <p key={index}>{line}</p>)}{sender.phone && <p>{sender.phone}</p>}{sender.email && <p className="break-all">{sender.email}</p>}</address> : <p className="text-sm text-muted-foreground">{blindShipping ? "Alternate sender not recorded. No sender will be guessed." : documentSourceQuery.isLoading ? "Loading saved document sender..." : "Sender unavailable from the saved document source."}</p>}</div></div>
+              {(missingDestination.length > 0 || missingBlindSender.length > 0) && <div role="alert" className="mt-3 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><p>Missing {missingDestination.length ? `Ship To: ${missingDestination.join(", ")}` : ""}{missingDestination.length && missingBlindSender.length ? "; " : ""}{missingBlindSender.length ? `alternate sender: ${missingBlindSender.join(", ")}` : ""}.</p>{isDraft ? <button type="button" className="mt-1 font-semibold underline" onClick={editContext}>Complete destination / sender before shipping</button> : <p className="mt-1">Historical destination is not reconstructed from live customer fields.</p>}</div>}
+              {isDraft && editingDestination && shippingContext && <div className="mt-4 space-y-4 border-t pt-4"><fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Ship To ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.destination[key] ?? ""} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", destination: { ...context.destination, [key]: event.target.value || null } }))} /></label>)}</div></fieldset><label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={shippingContext.blindShipping} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", blindShipping: event.target.checked, blindSender: event.target.checked ? context.blindSender ?? { ...emptyShippingParty } : context.blindSender }))} />Blind shipping: use an alternate sender</label>{shippingContext.blindShipping && <fieldset><legend className="mb-2 text-sm font-semibold">Alternate sender</legend><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Alternate sender ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.blindSender?.[key] ?? ""} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", blindSender: { ...emptyShippingParty, ...context.blindSender, [key]: event.target.value || null } }))} /></label>)}</div></fieldset>}<p className="text-xs text-muted-foreground">Saved with this draft only. Order and customer records are unchanged.</p></div>}
+            </section>
 
             <div className="overflow-hidden rounded-xl border border-border bg-card">
-              <div className="border-b border-border bg-muted/30 px-6 py-3">
-                <h3 className="text-sm font-bold uppercase tracking-wider">Logistics & Carrier Details</h3>
-              </div>
-              <div className="grid grid-cols-2 gap-6 p-6 md:grid-cols-4">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Carrier</label>
-                  <input
-                    className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
-                    value={form.carrier}
-                    onChange={(event) => setForm((prev) => ({ ...prev, carrier: event.target.value }))}
-                    disabled={!isDraft}
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Service Level</label>
-                  <input
-                    className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
-                    value={form.serviceLevel}
-                    onChange={(event) => setForm((prev) => ({ ...prev, serviceLevel: event.target.value }))}
-                    disabled={!isDraft}
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Tracking Number</label>
-                  <div className="relative">
-                    <input
-                      className="h-10 w-full rounded border border-input bg-background px-3 font-mono text-sm focus:ring-2 focus:ring-primary"
-                      value={form.trackingNumber}
-                      onChange={(event) => setForm((prev) => ({ ...prev, trackingNumber: event.target.value }))}
-                      disabled={!isDraft}
-                    />
-                    <button
-                      type="button"
-                      className="absolute right-2 top-2 text-muted-foreground"
-                      onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ship Date</label>
-                  <input
-                    type="date"
-                    className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
-                    value={form.shipDate}
-                    onChange={(event) => setForm((prev) => ({ ...prev, shipDate: event.target.value }))}
-                    disabled={!isDraft}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-xl border border-border bg-card">
-              <div className="border-b border-border bg-muted/30 px-6 py-3">
-                <h3 className="text-sm font-bold uppercase tracking-wider">Default Package Dimensions & Weight</h3>
-              </div>
-              <div className="p-6">
-                <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-5">
-                  {[
-                    ["Weight (lbs)", "weight"],
-                    ["Length (in)", "length"],
-                    ["Width (in)", "width"],
-                    ["Height (in)", "height"],
-                  ].map(([label, key]) => (
-                    <div key={key} className="flex flex-col gap-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}</label>
-                      <input
-                        type="number"
-                        className="h-10 rounded border border-input bg-background px-3 text-sm focus:ring-2 focus:ring-primary"
-                        value={form[key as keyof ShipmentFormState]}
-                        onChange={(event) => setForm((prev) => ({ ...prev, [key]: event.target.value }))}
-                        disabled={!isDraft}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <p className="mb-4 text-xs text-muted-foreground">Package count: {shipment.packages.length}. Physical package records are the source of truth.</p>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Default Package Notes</label>
-                  <textarea
-                    className="w-full resize-none rounded border border-input bg-background p-3 text-sm focus:ring-2 focus:ring-primary"
-                    rows={2}
-                    placeholder="Add any special handling instructions..."
-                    value={form.packageNotes}
-                    onChange={(event) => setForm((prev) => ({ ...prev, packageNotes: event.target.value }))}
-                    disabled={!isDraft}
-                  />
-                </div>
-                <div className="mt-4 flex flex-col gap-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Shipment Internal Notes</label>
-                  <textarea
-                    className="w-full resize-none rounded border border-input bg-background p-3 text-sm focus:ring-2 focus:ring-primary"
-                    rows={2}
-                    placeholder="Internal shipping instructions..."
-                    value={form.internalNotes}
-                    onChange={(event) => setForm((prev) => ({ ...prev, internalNotes: event.target.value }))}
-                    disabled={!isDraft}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-xl border border-border bg-card">
-              <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-4 py-3">
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
                 <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
               </div>
               {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Choose how many units are leaving now. Reduce Qty in this shipment for a partial shipment; set zero to leave a line out.</p></div>{isDraft && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-left">
-                  <thead>
+              <div>
+                <table className="block w-full text-left">
+                  <thead className="sr-only">
                     <tr className="border-b border-border bg-muted/30">
                       {lineItemsByOrder.length > 1 && <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Order Ref</th>}
-                      <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Product SKU / Name</th>
+                      <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Artwork / Item</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ordered</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Remaining</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Qty in this shipment</th>
                       <th className="px-6 py-3 text-center text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border">
+                  <tbody className="block divide-y divide-border">
                     {loadingOrders && (
-                      <tr>
-                        <td colSpan={lineItemsByOrder.length > 1 ? 6 : 5} className="px-6 py-6 text-center text-sm text-muted-foreground">
+                      <tr className="block">
+                        <td colSpan={lineItemsByOrder.length > 1 ? 6 : 5} className="block px-4 py-6 text-center text-sm text-muted-foreground">
                           <span className="inline-flex items-center gap-2">
                             <Loader2 className="h-4 w-4 animate-spin" />
                             Loading order line items...
@@ -685,9 +630,9 @@ export function FulfillmentShipmentEditor({
                     )}
 
                     {!loadingOrders && lineItemsByOrder.map((group) => (
-                      <>
-                        <tr key={`${group.orderId}-header`} className="bg-muted/20">
-                          <td className="px-6 py-2" colSpan={lineItemsByOrder.length > 1 ? 6 : 5}>
+                      <Fragment key={group.orderId}>
+                        <tr key={`${group.orderId}-header`} className="block bg-muted/20">
+                          <td className="block px-4 py-2" colSpan={lineItemsByOrder.length > 1 ? 6 : 5}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
                               <span className="h-px flex-1 bg-border" />
@@ -700,15 +645,15 @@ export function FulfillmentShipmentEditor({
                           const hasError = validationErrors.has(item.id);
                           const splits = shipment.items.filter(allocation => allocation.orderLineItemId === item.id);
                           return (
-                            <tr key={item.id}>
-                              {lineItemsByOrder.length > 1 && <td className="px-6 py-4 text-xs font-mono text-muted-foreground">#{group.orderNumber}</td>}
-                              <td className="px-6 py-4">
-                                <p className="text-sm font-bold">{item.label}</p>
-                                <p className="text-xs font-mono text-muted-foreground">SKU: {item.sku}</p>
+                            <tr key={item.id} className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
+                              {lineItemsByOrder.length > 1 && <td className="col-span-2 block text-xs font-mono text-muted-foreground sm:col-span-4">#{group.orderNumber}</td>}
+                              <td className="col-span-2 block min-w-0 sm:col-span-4">
+                                <div className="flex min-w-0 items-start gap-3"><div className="max-w-[140px] shrink-0">{item.artwork.length ? <div className="flex flex-wrap gap-1">{item.artwork.map((file, index) => <button key={`${file.id}-${file.fileRecordId}`} type="button" aria-label={`View artwork ${file.fileName} for ${item.label}, Order ${group.orderNumber}`} title={`${file.fileName} (${file.role || "artwork"})`} className="flex h-16 w-16 items-center justify-center overflow-hidden rounded border border-border bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setArtworkViewer({ attachments: toAttachmentViewerAttachments(item.artwork), initialIndex: index })}><AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} fileName={file.fileName} mimeType={file.mimeType} previewStatus={file.previewStatus} previewError={file.previewError} alt={file.fileName} className="h-full w-full object-contain text-[10px]" fallback={<span className="p-1 text-[10px] text-muted-foreground">No artwork available</span>} /></button>)}</div> : <span className="block w-16 text-xs text-muted-foreground">No artwork available</span>}</div><div className="min-w-0 break-words"><p className="text-sm font-bold">{item.label}</p>{(item.size || item.material) && <p className="mt-1 text-xs text-muted-foreground">{[item.size, item.material].filter(Boolean).join(" · ")}</p>}{item.options.length > 0 && <p className="mt-1 text-xs text-muted-foreground">{item.options.join(" · ")}</p>}{item.artwork[0] && <p className="mt-1 text-[10px] text-muted-foreground">{item.artwork[0].role === "modified_production" || item.artwork[0].role === "production" ? "Production artwork first" : "Source artwork"}</p>}</div></div>
                               </td>
-                              <td className="px-6 py-4 text-center text-sm">{item.orderedQty}</td>
-                              <td className={`px-6 py-4 text-center text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-amber-500"}`}>{item.remainingQty}</td>
-                              <td className="px-6 py-4 text-center">
+                              <td className="block text-sm"><span className="mb-1 block text-xs text-muted-foreground">Ordered</span>{item.orderedQty}</td>
+                              <td className={`block text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-foreground"}`}><span className="mb-1 block text-xs font-normal text-muted-foreground">Remaining</span>{item.remainingQty}</td>
+                              <td className="block min-w-0">
+                                <span className="mb-1 block text-xs font-medium text-muted-foreground">Qty in this shipment</span>
                                 <div className="inline-flex items-center gap-2">
                                   {splits.length <= 1 ? <input
                                     type="number"
@@ -723,7 +668,7 @@ export function FulfillmentShipmentEditor({
                                       const next = Math.max(0, Number(event.target.value || 0));
                                       setAllocatedByLineItemId((prev) => ({ ...prev, [item.id]: next }));
                                     }}
-                                  /> : <div className="space-y-2">{splits.map(allocation => <label key={allocation.id} className="flex items-center gap-2 text-xs">
+                                  /> : <div className="space-y-2">{splits.map(allocation => <label key={allocation.id} className="flex min-w-0 flex-col items-start gap-1 break-all text-xs">
                                     {shipment.packages.find(pkg => pkg.id === allocation.packageId)?.packageReference || "Unpacked"}
                                     <input type="number" aria-label={`Qty in package ${allocation.packageId}: ${item.label}`} min={0} max={item.remainingQty} step={1} disabled={!isDraft}
                                       className="h-8 w-16 rounded border bg-background text-center" value={splitQuantities[allocation.id] ?? allocation.quantity}
@@ -738,9 +683,11 @@ export function FulfillmentShipmentEditor({
                                 </div>
                                 {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Enter a whole quantity from 0 to {item.remainingQty}</p>}
                               </td>
-                              <td className="px-6 py-4 text-center">
+                              <td className="block min-w-0">
+                                <span className="mb-1 block text-xs font-medium text-muted-foreground">Package</span>
                                 <select
-                                  className="h-8 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
+                                  aria-label={`Package assignment: ${item.label}, Order ${group.orderNumber}`}
+                                  className="h-8 w-full min-w-0 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
                                   disabled={!isDraft || shipment.packages.length === 0 || splits.length > 1}
                                   value={packageByLineItemId[item.id] || ""}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
@@ -752,7 +699,7 @@ export function FulfillmentShipmentEditor({
                             </tr>
                           );
                         })}
-                      </>
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -762,27 +709,32 @@ export function FulfillmentShipmentEditor({
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
-                {advancedPacking && <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || createPackage.isPending} onClick={() => void handleAddPackage()}>
+                {(advancedPacking || shipment.packages.length === 0) && <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || createPackage.isPending} onClick={() => void handleAddPackage()}>
                   {createPackage.isPending ? "ADDING..." : "ADD PACKAGE"}
                 </button>}
               </div>
               <div className="divide-y divide-border">
                 {shipment.packages.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No packages yet. Create one to group physical contents and print a package ticket.</p> : shipment.packages.map((pkg, index) => {
-                  const fields = packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
-                  const updateFields = (key: keyof typeof fields, value: string) => setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
+                  const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes } : packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
+                  const updateFields = (key: keyof typeof fields, value: string) => index === 0 ? setForm(previous => ({ ...previous, [key === "notes" ? "packageNotes" : key]: value })) : setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
                   return <div key={pkg.id} className="px-6 py-4">
                     <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
-                    {advancedPacking && index > 0 && <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
+                    <details className="mt-2" open={Object.values(fields).some(value => String(value).trim()) || undefined}><summary className="cursor-pointer text-xs font-medium text-muted-foreground">Dimensions, weight & package notes</summary><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
                       {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="number" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft} /></label>)}
-                      <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Package Notes<textarea rows={1} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft} /></label>
-                    </div>}
+                      <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">Package Notes<textarea aria-label={`Package notes: ${pkg.packageReference}`} rows={2} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft} /></label>
+                    </div></details>
                   </div>;
                 })}
               </div>
             </div>
+            <section className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="border-b border-border bg-muted/30 px-4 py-3"><h3 className="text-sm font-bold">Carrier & Tracking</h3></div>
+              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"], ["shipDate", "Ship Date"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type={key === "shipDate" ? "date" : "text"} className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>
+            </section>
+            <details className="rounded-xl border border-border bg-card p-4" open={!!form.internalNotes || undefined}><summary className="cursor-pointer text-sm font-semibold">Shipment Internal Notes</summary><textarea aria-label="Shipment internal notes" className="mt-3 w-full resize-none rounded border border-input bg-background p-3 text-sm" rows={2} placeholder="Internal shipping instructions..." value={form.internalNotes} disabled={!isDraft} onChange={event => setForm(previous => ({ ...previous, internalNotes: event.target.value }))} /></details>
           </section>
 
-          <aside className="sticky top-24 flex flex-col gap-6">
+          <aside className="order-2 flex min-w-0 flex-col gap-4 xl:order-none xl:sticky xl:top-24">
             <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
               <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Shipment Status</label>
               <div className="mb-4 flex items-center gap-4">
@@ -796,7 +748,7 @@ export function FulfillmentShipmentEditor({
               </div>
               {isDraft && (
                 <div className="flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-red-500">
-                  <AlertTriangle className="h-5 w-5 animate-pulse" />
+                   <AlertTriangle className="h-5 w-5" />
                   <div className="flex flex-col">
                     <p className="text-xs font-bold uppercase tracking-tight">Draft Shipment</p>
                     <p className="text-[10px]">Complete allocation and mark as shipped when ready</p>
@@ -805,55 +757,25 @@ export function FulfillmentShipmentEditor({
               )}
             </div>
 
-            <div className="flex flex-col gap-3">
-              <button
-                type="button"
-                className={`flex w-full items-center justify-center gap-2 rounded-lg py-4 font-bold text-white transition-all ${markShippedDisabled ? "cursor-not-allowed bg-primary/50" : "bg-primary hover:bg-primary/90"}`}
-                disabled={markShippedDisabled}
-                onClick={() => void handleMarkShipped()}
-              >
-                {(markShipped.isPending || updateShipment.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                MARK AS SHIPPED
-              </button>
-              <button
-                type="button"
-                className="w-full rounded-lg border border-border bg-background py-3 text-sm font-bold transition-colors hover:bg-muted/50"
-                disabled={!isDraft || updateShipment.isPending || loadingOrders || validationErrors.size > 0 || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId])}
-                onClick={() => void saveDraft()}
-              >
-                {updateShipment.isPending ? "SAVING..." : "SAVE DRAFT"}
-              </button>
-            </div>
-
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-5 py-3">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Documents</h3>
                 <FileText className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
-              <div className="space-y-1 p-2">
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href={`/fulfillment/shipments/${shipment.id}/manifest`} target="_blank" rel="noreferrer">
-                  <div className="flex items-center gap-3"><FileText className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Shipment Packing Slip / Manifest</span></div>
-                  <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
-                </a>
-                <a className="group flex items-center justify-between rounded p-3 transition-colors hover:bg-muted/50" href={`/fulfillment/shipments/${shipment.id}/manifest`} target="_blank" rel="noreferrer">
-                  <div className="flex items-center gap-3"><Printer className="h-4 w-4 text-primary" /><span className="text-xs font-medium">Print Package Tickets</span></div>
-                  <Package className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
-                </a>
-              </div>
+              <div className="divide-y px-4">{([["packing_slip", "Packing Slip"], ["shipment_manifest", "Shipment Manifest"]] as const).map(([documentType, label]) => <div key={documentType} className="space-y-2 py-3"><p className="text-sm font-semibold">{label}</p><div className="flex flex-wrap items-center gap-2">{documentActionsDisabled ? <><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Preview ${label}`}>Preview</button><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Print ${label}`}>Print</button></> : <><a className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" aria-label={`Preview ${label}`} href={`/fulfillment/shipments/${shipment.id}/manifest?documentType=${documentType}`} target="_blank" rel="noreferrer">Preview</a><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType={documentType} label="Print" /></>}</div></div>)}{shipment.packages.map(pkg => <div key={pkg.id} className="space-y-2 py-3"><p className="text-xs font-semibold">Package Ticket · {pkg.packageReference}</p><div className="flex flex-wrap items-center gap-2">{documentActionsDisabled ? <><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Preview Package Ticket ${pkg.packageReference}`}>Preview</button><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Print Package Ticket ${pkg.packageReference}`}>Print</button></> : <><a className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" aria-label={`Preview Package Ticket ${pkg.packageReference}`} href={`/fulfillment/shipments/${shipment.id}/manifest?documentType=package_ticket&packageId=${encodeURIComponent(pkg.id)}`} target="_blank" rel="noreferrer">Preview</a><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="package_ticket" packageId={pkg.id} label="Print" /></>}</div></div>)}</div>
+              {isDraft && <p role={hasUnsavedChanges ? "status" : undefined} className="border-t px-4 py-2 text-xs text-muted-foreground">{hasUnsavedChanges ? "Save draft before previewing or printing. Documents use saved quantities and context." : "Documents use saved quantities and context."}</p>}
+              {documentSourceQuery.isError && <p className="border-t px-4 py-2 text-xs text-destructive">{toFulfillmentError(documentSourceQuery.error).message}</p>}
             </div>
 
-            <div className="relative h-32 overflow-hidden rounded-xl border border-border bg-card" title="Available with carrier integrations">
-              <div className="absolute inset-0 z-10 flex cursor-help flex-col items-center justify-center bg-slate-900/80 p-4 text-center backdrop-blur-[2px]">
-                <div className="rounded border border-border-dark bg-surface-dark p-2 shadow-xl">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Route Visualization</p>
-                  <p className="mt-1 text-[9px] text-muted-foreground">Available with carrier integrations</p>
-                </div>
-              </div>
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-surface-dark opacity-30" />
-            </div>
+            {isDraft && <div className="flex flex-col gap-3">
+              <button type="button" className="w-full rounded-lg border border-border bg-background py-3 text-sm font-bold transition-colors hover:bg-muted/50" disabled={updateShipment.isPending || loadingOrders || validationErrors.size > 0 || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId])} onClick={() => void saveDraft()}>{updateShipment.isPending ? "SAVING..." : "SAVE DRAFT"}</button>
+              <button type="button" className={`flex w-full items-center justify-center gap-2 rounded-lg py-3 font-bold text-primary-foreground transition-colors ${markShippedDisabled ? "cursor-not-allowed bg-primary/50" : "bg-primary hover:bg-primary/90"}`} disabled={markShippedDisabled} onClick={() => void handleMarkShipped()}>{(markShipped.isPending || updateShipment.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}MARK AS SHIPPED</button>
+            </div>}
+            {lastError && <p role="alert" className="rounded border border-destructive/30 p-3 text-sm text-destructive">{lastError.message}</p>}
+            {shipment.orders.map(order => <button key={order.orderId} type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(`${ROUTES.orders.detail(order.orderId)}?panel=timeline`, { state: { referrer: buildReferrer(location), referrerState: location.state } })}>View Order {shipment.orders.length > 1 ? `#${order.orderNumber} ` : ""}Timeline</button>)}
 
-            <div className="mt-2 border-t border-border pt-4">
-              <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Danger Zone</p>
+            <details className="mt-2 border-t border-border pt-4">
+              <summary className="mb-3 cursor-pointer text-xs font-semibold text-muted-foreground">Exceptional actions</summary>
               <button
                 type="button"
                 className="w-full rounded border border-red-500/30 py-2 text-[10px] font-bold uppercase tracking-wider text-red-500 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
@@ -868,19 +790,20 @@ export function FulfillmentShipmentEditor({
               {shipment.status === "SHIPPED" && isSingleOrderShipment && fulfillmentByOrderId[shipment.orders[0].orderId]?.permissions?.canReverseTerminalFulfillment ? <button
                 type="button"
                 className="mt-2 w-full rounded border border-red-500/30 py-2 text-[10px] font-bold uppercase tracking-wider text-red-500 transition-colors hover:bg-red-500/10"
-                onClick={() => { setShipmentReversalReason(""); setShipmentReversalConfirmed(false); setShipmentReversalQuantities(Object.fromEntries(shipment.items.map((item) => [item.orderLineItemId, Number(item.quantity || 0)]))); setShipmentReversalOpen(true); }}
+                onClick={() => { setShipmentReversalReason(""); setShipmentReversalConfirmed(false); setShipmentReversalQuantities(Object.fromEntries(shipmentReversalLines.map((item) => [item.orderLineItemId, item.quantity]))); setShipmentReversalOpen(true); }}
               >
                 Reverse Shipment
               </button> : null}
-            </div>
+            </details>
           </aside>
         </div>
 
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? shipmentQuery.data ?? null} lastError={lastError} />
+        <AttachmentViewerDialog open={!!artworkViewer} onOpenChange={open => !open && setArtworkViewer(null)} attachments={artworkViewer?.attachments ?? []} initialIndex={artworkViewer?.initialIndex ?? 0} />
         <AlertDialog open={shipmentReversalOpen} onOpenChange={setShipmentReversalOpen}>
           <AlertDialogContent>
             <AlertDialogHeader><AlertDialogTitle>Reverse Shipment</AlertDialogTitle><AlertDialogDescription>This records a TitanOS fulfillment correction only. Shipment, carrier, tracking, and invoice/payment history remain intact; the allocated quantity will reopen for fulfillment.</AlertDialogDescription></AlertDialogHeader>
-            <div className="space-y-3"><p className="text-sm">Set the quantity to reopen for each original shipment allocation.</p>{shipment.items.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.orderLineItemId} <span className="text-muted-foreground">(originally {item.quantity})</span></span><input type="number" min={0} max={item.quantity} className="h-9 w-24 rounded border border-input bg-background px-2" value={shipmentReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setShipmentReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: Math.max(0, Math.min(Number(item.quantity || 0), Math.floor(Number(event.target.value) || 0))) }))} /></label>)}<textarea aria-label="Shipment reversal reason" className="min-h-24 w-full rounded border border-input bg-background p-3 text-sm" value={shipmentReversalReason} onChange={(event) => setShipmentReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={shipmentReversalConfirmed} onChange={(event) => setShipmentReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without cancelling the carrier transaction or deleting shipment history.</span></label></div>
+            <div className="space-y-3"><p className="text-sm">Set the quantity to reopen for each original shipment line. Prior reversals are checked by the server.</p>{shipmentReversalLines.map((item) => <label key={item.orderLineItemId} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.orderLineItemId} <span className="text-muted-foreground">(originally {item.quantity})</span></span><input aria-label={`Reverse quantity: ${item.orderLineItemId}`} type="number" min={0} max={item.quantity} className="h-9 w-24 rounded border border-input bg-background px-2" value={shipmentReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setShipmentReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: Math.max(0, Math.min(Number(item.quantity || 0), Math.floor(Number(event.target.value) || 0))) }))} /></label>)}<textarea aria-label="Shipment reversal reason" className="min-h-24 w-full rounded border border-input bg-background p-3 text-sm" value={shipmentReversalReason} onChange={(event) => setShipmentReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={shipmentReversalConfirmed} onChange={(event) => setShipmentReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without cancelling the carrier transaction or deleting shipment history.</span></label></div>
             <AlertDialogFooter><AlertDialogCancel disabled={reverseTerminalFulfillment.isPending}>Cancel</AlertDialogCancel><AlertDialogAction disabled={!shipmentReversalReason.trim() || !shipmentReversalConfirmed || reverseTerminalFulfillment.isPending} onClick={(event) => { event.preventDefault(); void handleShipmentReversal(); }}>{reverseTerminalFulfillment.isPending ? "Reversing…" : "Reverse Shipment"}</AlertDialogAction></AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>

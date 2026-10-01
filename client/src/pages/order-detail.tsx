@@ -352,6 +352,10 @@ export default function OrderDetail() {
   const shipToPostalCodeInputRef = useRef<HTMLInputElement>(null);
 
   const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
+  const requestedPanel = searchParams.get("panel");
+  useEffect(() => {
+    if (requestedPanel === "timeline") setRightPanel("timeline");
+  }, [orderId, requestedPanel]);
 
   const [showReleaseReservationsDialog, setShowReleaseReservationsDialog] = useState(false);
   const [showPbv2RollupDialog, setShowPbv2RollupDialog] = useState(false);
@@ -2202,7 +2206,7 @@ export default function OrderDetail() {
   return (
     <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
       <div className="w-full max-w-none">
-        <div className="flex items-center justify-between mb-6 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
             <BackNavControls
               onBack={() => guardedNavigate(orderBackPath)}
@@ -2239,7 +2243,7 @@ export default function OrderDetail() {
               onNext={() => void listNavigation.go(1)}
             />
 
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-end gap-3">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
                 <Link to={orderDetailPath} state={location.state}>
@@ -2247,6 +2251,19 @@ export default function OrderDetail() {
                 </Link>
               </Button>
             )}
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => guardedNavigate(ROUTES.fulfillment.order(order.id), {
+                state: { referrer: buildReferrer(location), orderReturnState: location.state },
+              })}
+            >
+              <Truck className="mr-1.5 h-4 w-4" />
+              Fulfillment
+            </Button>
+            {!orderIsCanceled && <PrintTicketButton orderId={order.id} />}
 
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}
@@ -3498,18 +3515,6 @@ export default function OrderDetail() {
                           <FileText className="h-4 w-4 mr-2" />
                           {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
                         </Button>
-                      </div>
-
-                      {/* Order Traveler — print-friendly whole-order summary */}
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium">Order Traveler</span>
-                        {orderIsCanceled ? (
-                          <Badge variant="outline" className="border-destructive/40 text-destructive">
-                            Cancelled
-                          </Badge>
-                        ) : (
-                          <PrintTicketButton orderId={order.id} />
-                        )}
                       </div>
 
                       {/* Manual Status Override (Manager+) */}

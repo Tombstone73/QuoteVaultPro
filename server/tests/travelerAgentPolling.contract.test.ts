@@ -36,7 +36,7 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion })');
     expect(presence).toContain("Agent version {AgentVersion} registered");
     expect(presence).not.toContain("Task.Delay");
-    expect(agent).toContain("_ = ReportAgentPresenceAsync();");
+    expect(agent).toContain("await ReportAgentPresenceAsync(); await StartRealtimeWakeSubscriber();");
   });
 
   test("derives a high-entropy agent-specific wake topic without logging tokens or topics", () => {
@@ -60,7 +60,8 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).toContain('ScheduleQueueDrainOnSta("realtime reconnect catch-up")');
     expect(agent).toContain('ObserveQueueDrainSignal("realtime queue_changed wake")');
     expect(agent).not.toContain('RequestQueueDrain("realtime queue_changed wake")');
-    expect(agent).toContain("foreach (var job in jobs ?? [])");
+    expect(agent).toContain("foreach (var job in pending)");
+    expect(agent).toContain("if (pending.Count == 0) return;");
     expect(agent).toContain("await Print(job);");
   });
 
@@ -139,9 +140,9 @@ describe("Traveler print agent event-driven wake contract", () => {
     const setup = read("windows-print-agent/setup-agent.ps1");
     const readme = read("windows-print-agent/README.md");
 
-    expect(agent).toContain('const string AgentVersion = "1.0.24"');
-    expect(project).toContain("<Version>1.0.24</Version>");
-    expect(setup).toContain("$script:SetupVersion = '1.0.24'");
-    expect(readme).toContain("Version 1.0.24");
+    expect(agent).toContain('const string AgentVersion = "1.0.25"');
+    expect(project).toContain("<Version>1.0.25</Version>");
+    expect(setup).toContain("$script:SetupVersion = '1.0.25'");
+    expect(readme).toContain("Version 1.0.25");
   });
 });

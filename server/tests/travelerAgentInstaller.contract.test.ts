@@ -41,7 +41,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.24'");
+    expect(setup).toContain("$script:SetupVersion = '1.0.25'");
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -50,7 +50,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Press Enter to read the pairing token from the clipboard');
     expect(setup).toContain("[Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')");
     expect(agent).toContain("PRINTERSHERO_TRAVELER_PRINTER");
-    expect(agent).toContain("configured Traveler printer unavailable or mismatched");
+    expect(agent).toContain("The configured Traveler printer is unavailable or does not match the assigned destination.");
     expect(agent).toContain("JsonNumberHandling.AllowReadingFromString");
     expect(agent).toContain("Deserialize<T>(JsonOptions)");
     expect(agent).toContain("[STAThread] static void Main");
@@ -60,7 +60,7 @@ describe("Traveler print agent installer contract", () => {
     expect(agent).toContain("__printersHeroTravelerSource");
     expect(agent).toContain("source request:");
     expect(agent).toContain("JsonSerializer.Deserialize<string>(pageStateJson)");
-    expect(agent).toContain('const string AgentVersion = "1.0.24"');
+    expect(agent).toContain('const string AgentVersion = "1.0.25"');
     expect(setup).toContain("PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY");
     expect(setup).not.toContain("installer-check");
     expect(setup).toContain("Get-ServerAgentVersion");

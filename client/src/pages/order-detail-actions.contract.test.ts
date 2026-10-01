@@ -25,4 +25,23 @@ describe("order detail action contracts", () => {
     expect(detail).toContain("handleSaveOrder(true)");
     expect(detail).not.toContain("Save & Route Eligible");
   });
+
+  test("opens the existing Order fulfillment workspace through the unsaved navigation guard", () => {
+    const action = detail.slice(detail.indexOf("onClick={() => guardedNavigate(ROUTES.fulfillment.order(order.id)"), detail.indexOf("<OrderDetailPrimaryActions"));
+    expect(action).toContain("state: { referrer: buildReferrer(location), orderReturnState: location.state }");
+    expect(action).toContain("Fulfillment");
+    expect(action).not.toMatch(/createShipment|handleAddShipment|handleSaveOrder|mutate|production/i);
+  });
+
+  test("reuses one Traveler button before the fulfillment-method-specific content", () => {
+    expect(detail.match(/<PrintTicketButton\b/g)).toHaveLength(1);
+    expect(detail).toContain("{!orderIsCanceled && <PrintTicketButton orderId={order.id} />}");
+    expect(detail.indexOf("<PrintTicketButton")).toBeLessThan(detail.indexOf("currentFulfillmentMethod !== \"pickup\""));
+  });
+
+  test("opens the authoritative existing timeline panel from the fulfillment history link", () => {
+    expect(detail).toContain('const requestedPanel = searchParams.get("panel")');
+    expect(detail).toContain('if (requestedPanel === "timeline") setRightPanel("timeline")');
+    expect(detail).toContain('[orderId, requestedPanel]');
+  });
 });

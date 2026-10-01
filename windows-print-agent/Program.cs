@@ -17,7 +17,7 @@ record Job(string id, string? orderId, string? documentType, JsonElement? printC
 record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.24";
+  const string AgentVersion = "1.0.25";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -56,7 +56,6 @@ static class Program {
         throw new InvalidOperationException("Traveler STA dispatcher did not become ready.");
       }
       Log($"Traveler STA dispatcher ready on thread {StaDispatcherThreadId}.");
-      _ = ReportAgentPresenceAsync();
       _ = ObserveRealtimeStartup();
     };
     staDispatcher.FormClosed += (_, _) => {
@@ -119,7 +118,7 @@ static class Program {
   }
   static string GetRealtimeBaseEndpoint() => RealtimeConnectionConfiguration.GetRealtimeBaseEndpoint(SupabaseUrl);
   static async Task ObserveRealtimeStartup() {
-    try { await StartRealtimeWakeSubscriber(); }
+    try { await ReportAgentPresenceAsync(); await StartRealtimeWakeSubscriber(); }
     catch (Exception ex) { Log($"Realtime wake subscriber stopped: {ex.Message}"); }
   }
   static async Task StartRealtimeWakeSubscriber() {
@@ -224,19 +223,50 @@ static class Program {
     catch (Exception ex) { Log($"Queue drain signal failed ({reason}): {ex.Message}"); }
   }
   static async Task DrainDirectPrintQueue(string reason) {
-    List<Job>? jobs;
-    try {
-      jobs = await Get<List<Job>>("/api/local-bridge/direct-print/jobs");
-    } catch (Exception ex) {
-      Log($"Queue drain failed ({reason}): {ex.Message}");
-      return;
-    }
-    foreach (var job in jobs ?? []) {
-      Log($"Queue job discovered: {job.id}.");
-      await Print(job);
+    var discovered = new HashSet<string>(StringComparer.Ordinal);
+    while (Volatile.Read(ref AgentShuttingDown) == 0) {
+      List<Job>? jobs;
+      try {
+        jobs = await Get<List<Job>>("/api/local-bridge/direct-print/jobs");
+      } catch (Exception ex) {
+        Log($"Queue drain failed ({reason}): {ex.Message}");
+        return;
+      }
+      var pending = (jobs ?? []).Where(job => discovered.Add(job.id)).ToList();
+      // Stop after empty/stale batches, never turn a wake into idle polling.
+      if (pending.Count == 0) return;
+      foreach (var job in pending) {
+        Log($"Queue job discovered: {job.id}.");
+        await Print(job);
+      }
     }
   }
-  static async Task Print(Job job) { Claim? claim; try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); } catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; } if (claim is null) return; Log($"Queue job claimed: {job.id} ({claim.documentType ?? "traveler"})."); if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) { Log($"Job {job.id} failed: configured Traveler printer unavailable or mismatched."); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = "The configured Traveler printer is unavailable or does not match the assigned destination." }); return; } try { Log($"Spooling job {job.id} to {claim.queueName}."); if (string.Equals(claim.documentType, "quick_note", StringComparison.Ordinal)) await RunOnTravelerStaAsync(() => PrintQuickNote(claim)); else await RunOnTravelerStaAsync(() => PrintTraveler(claim)); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { }); Log($"Windows accepted job {job.id}."); } catch (Exception ex) { Log($"Job {job.id} failed: {ex.Message}"); await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message }); } }
+  static async Task Print(Job job) {
+    Claim? claim;
+    try { claim = await Post<Claim>($"/api/local-bridge/direct-print/jobs/{job.id}/claim", new { }); }
+    catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; }
+    if (claim is null) return;
+    Log($"Queue job claimed: {job.id} ({claim.documentType}).");
+    try {
+      if (claim.id != job.id) throw new InvalidOperationException("Claim does not match the requested print job.");
+      if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) throw new InvalidOperationException("The configured Traveler printer is unavailable or does not match the assigned destination.");
+      Log($"Spooling job {job.id} to {claim.queueName}.");
+      switch (claim.documentType) {
+        case "traveler":
+        case "pickup_traveler":
+        case "packing_slip":
+        case "shipment_manifest":
+        case "package_ticket": await RunOnTravelerStaAsync(() => PrintTraveler(claim)); break;
+        case "quick_note": await RunOnTravelerStaAsync(() => PrintQuickNote(claim)); break;
+        default: throw new InvalidOperationException("Unsupported print document type.");
+      }
+      await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { });
+      Log($"Windows accepted job {job.id}.");
+    } catch (Exception ex) {
+      Log($"Job {job.id} failed: {ex.Message}");
+      await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message });
+    }
+  }
   // The Windows spooler is queried locally; the server never accepts a queue
   // supplied by an operator. Status failures still fail closed at PrintAsync.
   static bool QueueExists(string queue) => PrinterSettings.InstalledPrinters.Cast<string>().Any(name => string.Equals(name, queue, StringComparison.OrdinalIgnoreCase));
@@ -254,12 +284,21 @@ static class Program {
     return null;
   }
   static Uri GetTravelerNavigationUri(Claim job) {
+    if (IsShippingDocument(job.documentType)) return GetShippingNavigationUri(job);
     if (string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var travelerUri)) throw new InvalidOperationException("PrintersHero did not return an absolute Traveler web URL.");
     if (travelerUri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(travelerUri.Host)) throw new InvalidOperationException("PrintersHero returned a noncanonical Traveler web URL.");
     if (string.IsNullOrWhiteSpace(job.orderId)) throw new InvalidOperationException("Traveler print job is missing its order id.");
     var expectedPath = $"/orders/{Uri.EscapeDataString(job.orderId)}/traveler";
     if (!string.Equals(travelerUri.AbsolutePath, expectedPath, StringComparison.Ordinal) || !string.Equals(GetQueryParameter(travelerUri, "directPrintJobId"), job.id, StringComparison.Ordinal)) throw new InvalidOperationException("PrintersHero returned an invalid Traveler print route.");
     return travelerUri;
+  }
+  static bool IsShippingDocument(string? type) => type is "packing_slip" or "shipment_manifest" or "package_ticket";
+  static Uri GetShippingNavigationUri(Claim job) {
+    if (!IsShippingDocument(job.documentType) || string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var uri)) throw new InvalidOperationException("Shipping print URL unavailable.");
+    if (uri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(uri.Host) || !uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo)
+      || !string.Equals(uri.AbsolutePath, $"/print-agent/documents/{Uri.EscapeDataString(job.id)}", StringComparison.Ordinal)
+      || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)) throw new InvalidOperationException("Invalid shipping document print route.");
+    return uri;
   }
   static Uri GetQuickNoteNavigationUri(Claim job) {
     if (string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var noteUri)) throw new InvalidOperationException("PrintersHero did not return an absolute Quick Note web URL.");
@@ -337,12 +376,13 @@ static class Program {
     var additionalFeedMm = NormalizeAdditionalTrailingFeedMm(job.trailingFeedMm);
     var effectiveFeedMm = BaseTravelerTrailingFeedMm + additionalFeedMm;
     var separator = travelerUri.Query.Length > 0 ? "&" : "?";
-    var route = $"{travelerUri}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={additionalFeedMm.ToString("0.##", CultureInfo.InvariantCulture)}";
+    var route = IsShippingDocument(job.documentType) ? travelerUri.ToString() : $"{travelerUri}{separator}printNote={Uri.EscapeDataString(job.printNote ?? "")}&feedMm={additionalFeedMm.ToString("0.##", CultureInfo.InvariantCulture)}";
     Log($"Traveler navigation host: {travelerUri.Host}.");
     Log($"Traveler navigation started: {travelerUri.Host}.");
     web.CoreWebView2.Navigate(route);
     await ready.Task.WaitAsync(TimeSpan.FromSeconds(30));
-    await WaitForTravelerRender(web, () => sourceStatus);
+    if (IsShippingDocument(job.documentType)) await WaitForShippingRender(web, job);
+    else await WaitForTravelerRender(web, () => sourceStatus);
     await web.ExecuteScriptAsync("document.fonts ? document.fonts.ready : Promise.resolve()");
     var renderedHeightJson = await web.ExecuteScriptAsync("(() => Math.ceil(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)))()");
     var renderedHeight = JsonSerializer.Deserialize<double>(renderedHeightJson);
@@ -360,6 +400,19 @@ static class Program {
     if (status != CoreWebView2PrintStatus.Succeeded) throw new InvalidOperationException($"WebView2 print failed: {status}");
   }
   static decimal NormalizeAdditionalTrailingFeedMm(decimal value) => Math.Clamp(value, 0m, MaxAdditionalTrailingFeedMm);
+  static async Task WaitForShippingRender(WebView2 web, Claim job) {
+    var id = JsonSerializer.Serialize(job.id);
+    var type = JsonSerializer.Serialize(job.documentType);
+    var deadline = DateTime.UtcNow.AddSeconds(30);
+    while (DateTime.UtcNow < deadline) {
+      var state = await web.ExecuteScriptAsync($"(()=>{{const el=document.querySelector('[data-print-job-id]');if(!el)return 'loading';if(el.dataset.printJobId!=={id}||el.dataset.printDocumentType&&el.dataset.printDocumentType!=={type})return 'mismatch';if(el.dataset.printError==='true')return 'error';return el.dataset.printReady==='true'&&el.dataset.printDocumentType==={type}?'ready':'loading';}})()");
+      var value = JsonSerializer.Deserialize<string>(state);
+      if (value == "ready") { Log("Shipping document job/type-bound ready marker reached."); return; }
+      if (value is "error" or "mismatch") throw new InvalidOperationException($"Shipping document render failed: {value}.");
+      await Task.Delay(100);
+    }
+    throw new InvalidOperationException("Shipping document pages and assets did not finish rendering.");
+  }
   static async Task WaitForTravelerRender(WebView2 web, Func<int?> sourceStatus) {
     var deadline = DateTime.UtcNow.AddSeconds(30);
     while (DateTime.UtcNow < deadline) {

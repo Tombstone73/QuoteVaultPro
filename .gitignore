@@ -50,4 +50,6 @@ server/db/migrations/0061_quote_line_item_routing.sql
 .tools/
 windows-print-agent/bin/
 windows-print-agent/obj/
+windows-print-agent/tests/**/bin/
+windows-print-agent/tests/**/obj/
 windows-print-agent/release/

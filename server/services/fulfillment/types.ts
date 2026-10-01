@@ -113,6 +113,11 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     };
     artwork: Array<{
       id: string;
+      relationshipId?: string;
+      sizeBytes?: number | null;
+      previewStatus?: 'ready' | 'pending' | 'failed' | null;
+      previewError?: string | null;
+      thumbnailStatus?: 'ready' | 'pending' | 'failed' | null;
       /** Canonical file identity for authenticated thumbnail/preview access. */
       fileRecordId: string | null;
       fileName: string;

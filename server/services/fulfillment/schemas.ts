@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { shipmentShippingContextSchema } from '@shared/shippingDocuments';
 
 /** Canonical route identity for an order-centric fulfillment workspace. */
 export const fulfillmentOrderIdSchema = z.string().uuid('Invalid order ID');
@@ -53,9 +54,10 @@ export const shipmentPackageInputSchema = z.object({
 });
 
 export const patchShipmentSchema = z.object({
-  carrier: z.string().trim().min(1).optional().nullable(),
-  serviceLevel: z.string().trim().min(1).optional().nullable(),
-  trackingNumber: z.string().trim().min(1).optional().nullable(),
+  carrier: z.string().trim().max(100).optional().nullable(),
+  serviceLevel: z.string().trim().optional().nullable(),
+  trackingNumber: z.string().trim().max(255).optional().nullable(),
+  shippingContext: shipmentShippingContextSchema.optional(),
   shipDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Ship date must use YYYY-MM-DD').optional().nullable(),
   boxCount: z.coerce.number().int().min(0).optional().nullable(),
   weight: z.coerce.number().min(0).optional().nullable(),

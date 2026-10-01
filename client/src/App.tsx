@@ -58,6 +58,7 @@ import ProductionTicketPage from "@/pages/production-ticket";
 import OrderTravelerPage from "@/pages/order-traveler";
 import DirectPrintTravelerRoute from "@/pages/direct-print-traveler-route";
 import DirectPrintQuickNoteRoute from "@/pages/direct-print-quick-note-route";
+import DirectPrintShippingDocument from "@/pages/DirectPrintShippingDocument";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
@@ -137,6 +138,11 @@ function PortalInvoiceLoginRedirect() {
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword, isPortalCustomer } = useAuth();
+  const location = useLocation();
+  // Opaque print shell only; document data requires the assigned claimed bearer.
+  if (/^\/print-agent\/documents\/[^/]+$/.test(location.pathname)) {
+    return <Routes><Route path="/print-agent/documents/:jobId" element={<DirectPrintShippingDocument />} /></Routes>;
+  }
 
   // While loading auth status, show nothing (or a loading spinner)
   if (isLoading) {
