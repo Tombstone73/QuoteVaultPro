@@ -3,6 +3,8 @@ import type { PoolClient } from "pg";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { ApplyShippingChargeRequest } from "../../src/modules/billing/shippingCharge.js";
 import { composeSalesTax, type CommercialCharge, type FrozenTaxExemption, type TaxReceiptLocation, type TaxResolution, type TenantTaxJurisdiction } from "../../src/modules/sales/taxComposition.js";
+import { readReusableInvoiceTaxEvidenceInTransaction } from "./postgresReusableInvoiceTaxEvidence.js";
+import type { ReusableInvoiceTaxEvidence } from "../../src/modules/billing/reusableInvoiceTaxEvidence.js";
 
 type InvoiceRow = { id:string; sales_order_document_id:string; invoice_state:"draft"|"issued"|"void"; subtotal_cents:string; tax_total_cents:string; total_cents:string; tax_evidence:unknown; sales_adjustment_cents:string; sales_commercial_charge:unknown; synchronization_version:string };
 type InvoiceLineRow = { source_sales_line_id:string; selling_line_cents:string; taxability_snapshot:unknown };
@@ -12,19 +14,15 @@ const text=(value:unknown):string|undefined=>typeof value==="string"&&value.trim
 const integer=(value:unknown):number|undefined=>typeof value==="number"&&Number.isSafeInteger(value)?value:undefined;
 
 /** Reuses the Invoice's frozen tax evidence without a jurisdiction lookup. */
-const frozenResolution=(evidence:unknown):Readonly<{exemption:FrozenTaxExemption;resolution:TaxResolution}>=>{
-  const source=record(evidence);
-  if(source?.status==="unresolved") {
+const frozenResolution=(source:ReusableInvoiceTaxEvidence):Readonly<{exemption:FrozenTaxExemption;resolution:TaxResolution}>=>{
+  if(source.status==="not_reusable") throw new V2ApplicationError("CONFLICT","The destination Invoice has no reusable frozen tax evidence.",{reason:source.reason});
+  if(source.status==="unresolved") {
     const reason=source.reason;
-    if(reason!=="tax_jurisdiction_not_configured"&&reason!=="tax_jurisdiction_conflict") throw new V2ApplicationError("CONFLICT","The destination Invoice has invalid frozen tax evidence.");
     return {exemption:{exempt:false},resolution:{status:"unresolved",reason}};
   }
-  const jurisdictionEvidence=record(source?.jurisdiction),receipt=record(jurisdictionEvidence?.receiptLocation),exemption=record(source?.exemption);
-  const jurisdictionId=text(jurisdictionEvidence?.id),name=text(jurisdictionEvidence?.name),country=text(receipt?.country),region=text(receipt?.region),rateBasisPoints=integer(jurisdictionEvidence?.rateBasisPoints);
-  if(source?.status!=="resolved"||!jurisdictionId||!name||!country||!region||rateBasisPoints===undefined||typeof exemption?.exempt!=="boolean") throw new V2ApplicationError("CONFLICT","The destination Invoice has no reusable frozen tax evidence.");
-  const receiptLocation:TaxReceiptLocation={country,region,...(text(receipt?.postalCode)?{postalCode:text(receipt?.postalCode)}:{})};
-  const frozenJurisdiction:TenantTaxJurisdiction={jurisdictionId,name,receiptLocation,rateBasisPoints,active:true,homeBusiness:false};
-  return {exemption:{exempt:exemption.exempt,...(text(exemption.reason)?{reason:text(exemption.reason)}:{}),...(text(exemption.certificateReference)?{certificateReference:text(exemption.certificateReference)}:{})},resolution:{status:"resolved",jurisdiction:frozenJurisdiction,receiptLocation}};
+  const receiptLocation:TaxReceiptLocation=source.jurisdiction.receiptLocation;
+  const frozenJurisdiction:TenantTaxJurisdiction={jurisdictionId:source.jurisdiction.id,name:source.jurisdiction.name,receiptLocation,rateBasisPoints:source.jurisdiction.rateBasisPoints,active:true,homeBusiness:false};
+  return {exemption:source.exemption,resolution:{status:"resolved",jurisdiction:frozenJurisdiction,receiptLocation}};
 };
 const commercialCharge=(value:unknown):CommercialCharge|undefined=>{const candidate=record(value),kind=candidate?.kind,candidateCents=integer(candidate?.cents),description=text(candidate?.description);return (kind==="shipping"||kind==="delivery"||kind==="handling"||kind==="packing"||kind==="crating"||kind==="postage")&&candidateCents!==undefined&&candidateCents>=0?{kind,cents:candidateCents,...(description?{description}:{})}:undefined;};
 
@@ -45,7 +43,7 @@ export async function applyShippingChargeInTransaction(client:PoolClient, reques
   const taxable=lines.rows.map(line=>{const flag=record(line.taxability_snapshot)?.taxable;if(typeof flag!=="boolean")throw new V2ApplicationError("CONFLICT","The destination Invoice lacks frozen line taxability evidence.");return {lineId:line.source_sales_line_id,amountCents:Number(line.selling_line_cents),taxable:flag};});
   const existing=(await client.query<ExistingCharge>("SELECT customer_charge_cents::text,charge_kind FROM v2_billing_invoice_additional_charges WHERE organization_id=$1 AND invoice_id=$2 ORDER BY created_at,id",[organizationId,invoice.id])).rows;
   const sourceCharge=commercialCharge(invoice.sales_commercial_charge),existingCharges=existing.map(row=>({kind:row.charge_kind,cents:Number(row.customer_charge_cents)} as CommercialCharge));
-  const frozen=frozenResolution(invoice.tax_evidence);
+  const frozen=frozenResolution(await readReusableInvoiceTaxEvidenceInTransaction(client,{organizationId,invoiceId:invoice.id,orderId}));
   const prior=composeSalesTax({lines:taxable,adjustmentCents:Number(invoice.sales_adjustment_cents),charges:[...(sourceCharge?[sourceCharge]:[]),...existingCharges],...frozen});
   if(prior.status!=="resolved"&&frozen.resolution.status==="resolved")throw new V2ApplicationError("CONFLICT","The destination Invoice tax evidence cannot be recomposed safely.");
   if(prior.status==="resolved"&&prior.taxCents!==Number(invoice.tax_total_cents))throw new V2ApplicationError("CONFLICT","The destination Invoice tax total does not match its frozen evidence.");

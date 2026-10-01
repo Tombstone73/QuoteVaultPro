@@ -25,6 +25,7 @@ const create = async (pricing: Source) => {
       (calls as Array<{ sql: string; values: readonly unknown[] }>).push({ sql, values });
       if (sql.includes("replacement_obligation_id=$2 FOR UPDATE")) return { rows: [] };
       if (sql.includes("FROM v2_sales_documents d JOIN v2_sales_order_details")) return { rows: [{ id: "order", display_number: "ORD-100" }] };
+      if (sql.includes('AS "rawEvidence"')) return { rows: [{ organizationId: "org", invoiceId: "base-invoice", orderId: "order", invoiceState: "issued", financialVersion: "1", currency: "USD", rawEvidence: source(pricing).tax_evidence }] };
       if (sql.includes("FROM v2_billing_invoices i")) return { rows: [source(pricing)] };
       if (sql.includes("SELECT invoice_sequence")) return { rows: [{ invoice_sequence: 1 }] };
       if (sql.includes("SELECT 1 FROM invoices")) return { rows: [] };

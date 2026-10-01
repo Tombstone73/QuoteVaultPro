@@ -9,6 +9,7 @@ import type { PoolClient } from "pg";
 import type * as AdapterExports from "../../infrastructure/billing/postgresFinancialRead.js";
 import * as commercialValues from "../../src/modules/shared/commercialValues.js";
 import * as applicationError from "../../src/errors/applicationError.js";
+import * as reusableTaxEvidenceExports from "../../infrastructure/billing/postgresReusableInvoiceTaxEvidence.js";
 
 const workspaceRoot = path.resolve(process.cwd());
 const adapterPath = path.join(workspaceRoot, "v2/infrastructure/billing/postgresFinancialRead.ts");
@@ -25,6 +26,7 @@ const dependencies = new Map<string, Map<string, object>>([
     ["../../src/errors/applicationError.js", applicationError],
     ["node:crypto", { randomUUID }],
     ["../accounting/quickBooksBillingQueue.js", { enqueueV2QuickBooksAutoSync: rejectQuickBooks }],
+    ["./postgresReusableInvoiceTaxEvidence.js", reusableTaxEvidenceExports],
   ])],
 ]);
 const modules = new Map<string, Module>();
@@ -122,6 +124,8 @@ describe("Invoice presentation through the actual page mapper", () => {
         CREATE TABLE v2_billing_invoice_lines (organization_id text,invoice_id text,sales_order_document_id text,source_sales_line_id text,product_id text,description text,quantity int,selling_unit_cents bigint,selling_line_cents bigint,position int);
         CREATE TABLE v2_billing_invoice_additional_charges (organization_id text,invoice_id text,charge_kind text,customer_charge_cents bigint,tax_cents bigint,customer_note text,created_at timestamptz,id text);
         CREATE TABLE v2_billing_invoice_checkpoints (organization_id text,invoice_id text,checkpoint_json jsonb);
+        ALTER TABLE v2_billing_invoices ADD COLUMN tax_evidence jsonb,ADD COLUMN tax_calculator_version text,ADD COLUMN tax_context_reference text,ADD COLUMN sales_tax_composition jsonb,ADD COLUMN sales_commercial_charge jsonb;
+        ALTER TABLE v2_billing_invoice_lines ADD COLUMN currency text DEFAULT 'USD';
         CREATE TABLE v2_billing_payments (organization_id text,id text,currency text,method text,source text,occurred_at timestamptz,recorded_at timestamptz);
         CREATE TABLE v2_billing_payment_allocations (organization_id text,payment_id text,invoice_id text,amount_cents bigint);
         CREATE TABLE v2_billing_refunds (organization_id text,id text,currency text,source text,occurred_at timestamptz,recorded_at timestamptz);
@@ -167,7 +171,11 @@ describe("Invoice presentation through the actual page mapper", () => {
         const detail = id.startsWith("legacy") ? await reader.readLegacyFinancialInvoice(org, invoiceId) : await reader.readFinancialInvoice(org, invoiceId);
         expect(detail?.persistedInvoiceNumber).toBe(persisted);
         expect(calls.slice(before).every((call) => call.values[0] === org && call.values[1] === id)).toBe(true);
-        expect(calls.length - before).toBe(id.startsWith("legacy") ? 2 : id === "live-draft" ? 4 : 5);
+        expect(calls.length - before).toBe(id.startsWith("legacy") ? 2 : id === "live-draft" ? 5 : 6);
+        if (!id.startsWith("legacy")) {
+          expect(calls.slice(before).filter(call => call.sql.includes('AS "rawEvidence"'))).toHaveLength(1);
+          expect(detail?.invoice.reusableTaxEvidence?.status).toBe("not_reusable");
+        }
         if (!id.startsWith("legacy")) expect(detail?.invoice.invoiceNumber).toBe(display); // Existing aggregate/PDF fallback stays intact.
         if (id === "native-missing") {
           expect(detail?.history.map((fact) => [fact.kind, fact.balanceAfter.cents])).toEqual([["payment", 400], ["refund", 450]]);

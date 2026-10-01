@@ -90,7 +90,7 @@ async function setup() {
       operation text,event_type text,resource_type text,resource_id varchar,principal_kind text,principal_subject text,staff_actor_user_id varchar,changes jsonb);
     CREATE TABLE v2_billing_invoices(id varchar PRIMARY KEY,organization_id varchar,sales_order_document_id varchar,invoice_state text,
       invoice_display_number text,invoice_sequence integer,customer_id varchar,contact_id varchar,purchase_order_number text,currency text DEFAULT 'USD',
-      terms_code text,source_sales_state_token text,subtotal_cents bigint,tax_total_cents bigint,total_cents bigint,tax_context_reference text,
+      terms_code text,source_sales_state_token text,synchronization_version bigint DEFAULT 1,subtotal_cents bigint,tax_total_cents bigint,total_cents bigint,tax_context_reference text,
       tax_calculator_version text,tax_evidence jsonb,sales_adjustment_cents bigint,sales_adjustment_reason text,sales_commercial_charge jsonb,
       sales_tax_composition jsonb,UNIQUE(id,organization_id),CONSTRAINT v2_billing_invoices_display_number_state_chk CHECK(true));
     CREATE UNIQUE INDEX v2_billing_invoices_one_draft_per_order_uidx ON v2_billing_invoices(organization_id,sales_order_document_id) WHERE invoice_state='draft';
@@ -99,6 +99,8 @@ async function setup() {
       selling_unit_cents bigint,selling_line_cents bigint,sales_pricing_evidence_fingerprint text);
     CREATE TABLE v2_billing_payment_allocations(id varchar PRIMARY KEY,organization_id varchar,invoice_id varchar,amount_cents bigint);
     CREATE TABLE v2_billing_refund_allocation_evidence(id varchar,organization_id varchar,invoice_id varchar,amount_cents bigint);
+    CREATE TABLE v2_billing_invoice_checkpoints(organization_id varchar,invoice_id varchar,checkpoint_json jsonb);
+    CREATE TABLE v2_billing_invoice_additional_charges(organization_id varchar,invoice_id varchar);
     CREATE TABLE invoices(organization_id varchar,display_number text,qb_doc_number text,invoice_number integer);
   `);
   const outputFunction = sql("0282_v2_production_output_rejections.sql").match(/CREATE OR REPLACE FUNCTION v2_usable_production_good_quantity[\s\S]*?\$\$;/)?.[0];

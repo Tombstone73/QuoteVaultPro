@@ -21,7 +21,7 @@ const fixture=(options:Options={})=>{
   const taxResolution:TaxResolution=options.unresolved?{status:"unresolved",reason:"tax_jurisdiction_not_configured"}:resolution;
   const initial=composeSalesTax({lines,adjustmentCents:-200,charges:[sourceCharge],exemption,resolution:taxResolution});
   const tax=initial.status==="resolved"?initial.taxCents:0;
-  const invoice={id:invoiceId,sales_order_document_id:options.wrongOrder?"other-order":orderId,invoice_state:options.state??"draft",subtotal_cents:"1900",tax_total_cents:String(options.corruptTax?tax+1:tax),total_cents:String(1900+tax),tax_evidence:options.invalidEvidence?{}:initial,sales_adjustment_cents:"-200",sales_commercial_charge:sourceCharge,synchronization_version:"3",issued_checkpoint:{total:1900+tax,evidence:initial}};
+  const invoice={id:invoiceId,currency:"USD",sales_order_document_id:options.wrongOrder?"other-order":orderId,invoice_state:options.state??"draft",subtotal_cents:"1900",tax_total_cents:String(options.corruptTax?tax+1:tax),total_cents:String(1900+tax),tax_evidence:options.invalidEvidence?{}:initial,sales_adjustment_cents:"-200",sales_commercial_charge:sourceCharge,synchronization_version:"3",issued_checkpoint:{total:1900+tax,evidence:initial}};
   const authority={order_document_id:orderId,replacement_obligation_id:options.replacement?"replacement-a":null,display_number:"ORD-1",billing_treatment:options.replacement??null};
   const member=`sha256:${createHash("sha256").update(`${orderId}:${authority.replacement_obligation_id??"original"}`).digest("hex")}`;
   const amount=options.amount??101;
@@ -45,6 +45,8 @@ const fixture=(options:Options={})=>{
     if(sql.startsWith("SELECT id FROM v2_billing_invoices"))return {rows:options.missingInvoice||options.state==="void"?[]:[{id:invoiceId}]};
     if(sql.startsWith("SELECT id,invoice_id,sales_order_document_id FROM v2_billing_invoice_additional_charges"))return {rows:state.charges.filter(value=>value.allocationId===values[1])};
     if(sql.startsWith("SELECT id,sales_order_document_id,invoice_state"))return {rows:options.missingInvoice||values[1]!==invoiceId?[]:[state.invoice]};
+    if(sql.includes('AS "rawEvidence"'))return {rows:[{organizationId,invoiceId,orderId,invoiceState:state.invoice.invoice_state,
+      financialVersion:state.invoice.synchronization_version,currency:state.invoice.currency,rawEvidence:state.invoice.tax_evidence}]};
     if(sql.includes("FROM v2_billing_invoice_lines"))return {rows:lines.map(line=>({source_sales_line_id:line.lineId,selling_line_cents:String(line.amountCents),taxability_snapshot:options.badTaxability?{}:{taxable:line.taxable}}))};
     if(sql.startsWith("SELECT customer_charge_cents"))return {rows:state.charges};
     if(sql.startsWith("INSERT INTO v2_billing_invoice_additional_charges")){state.charges.push({id:String(values[0]),invoice_id:String(values[2]),sales_order_document_id:String(values[3]),allocationId:String(values[5]),customer_charge_cents:String(values[6]),tax_cents:Number(values[7]),charge_kind:"shipping",evidence:JSON.parse(String(values[8])),note:values[9]});return {rows:[]};}

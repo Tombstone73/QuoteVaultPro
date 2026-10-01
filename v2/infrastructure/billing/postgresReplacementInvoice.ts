@@ -4,6 +4,8 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { composeSalesTax, type FrozenTaxExemption, type SalesTaxComposition, type TaxReceiptLocation, type TenantTaxJurisdiction } from "../../src/modules/sales/taxComposition.js";
 import { nextReplacementInvoiceSequence, proportionalReplacementLineCents, replacementInvoiceSuffix } from "../../src/modules/billing/replacementInvoice.js";
 import { brandedId, currencyCode, money, type InvoiceId, type OrderId, type OrderLineId, type OrganizationId, type ReplacementObligationId } from "../../src/modules/shared/commercialValues.js";
+import type { ReusableInvoiceTaxEvidence } from "../../src/modules/billing/reusableInvoiceTaxEvidence.js";
+import { readReusableInvoiceTaxEvidenceInTransaction } from "./postgresReusableInvoiceTaxEvidence.js";
 
 type ExistingReplacementInvoice = Readonly<{ id:string; invoice_display_number:string; invoice_state:"draft"|"issued"|"void"; currency:string; total_cents:string }>;
 type OrderRow = Readonly<{ id:string; display_number:string }>;
@@ -24,23 +26,17 @@ export type ReplacementInvoiceProjection = Readonly<{
 }>;
 
 const record=(value:unknown):Record<string,unknown>|null=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:null;
-const string=(value:unknown):string|undefined=>typeof value==="string"&&value.trim()?value:undefined;
-const integer=(value:unknown):number|undefined=>typeof value==="number"&&Number.isSafeInteger(value)?value:undefined;
-
-const replacementTax=(evidence:unknown,taxability:unknown,lineId:string,lineCents:number):Readonly<{taxCents:number;evidence:SalesTaxComposition}>=>{
-  const source=record(evidence), status=source?.status;
-  if(status==="unresolved") {
-    const reason=source?.reason;
-    if(reason!=="tax_jurisdiction_not_configured"&&reason!=="tax_jurisdiction_conflict") throw new V2ApplicationError("CONFLICT","The original Invoice has invalid frozen tax evidence.");
+const replacementTax=(source:ReusableInvoiceTaxEvidence,taxability:unknown,lineId:string,lineCents:number):Readonly<{taxCents:number;evidence:SalesTaxComposition}>=>{
+  if(source.status==="not_reusable") throw new V2ApplicationError("CONFLICT","The original Invoice has no reusable frozen tax evidence.",{reason:source.reason});
+  if(source.status==="unresolved") {
+    const reason=source.reason;
     return {taxCents:0,evidence:{status:"unresolved",calculatorVersion:"v2-sales-receipt-jurisdiction-v1",reason,finalTotalCents:lineCents}};
   }
-  if(status!=="resolved") throw new V2ApplicationError("CONFLICT","The original Invoice has no reusable frozen tax evidence.");
-  const jurisdiction=record(source?.jurisdiction), receipt=record(jurisdiction?.receiptLocation), exemption=record(source?.exemption), taxable=record(taxability)?.taxable;
-  const jurisdictionId=string(jurisdiction?.id), name=string(jurisdiction?.name), country=string(receipt?.country), region=string(receipt?.region), rateBasisPoints=integer(jurisdiction?.rateBasisPoints);
-  if(!jurisdictionId||!name||!country||!region||rateBasisPoints===undefined||typeof taxable!=="boolean"||typeof exemption?.exempt!=="boolean") throw new V2ApplicationError("CONFLICT","The original Invoice tax facts cannot be safely reused for this replacement.");
-  const receiptLocation:TaxReceiptLocation={country,region,...(string(receipt?.postalCode)?{postalCode:string(receipt?.postalCode)}:{})};
-  const frozenJurisdiction:TenantTaxJurisdiction={jurisdictionId,name,receiptLocation,rateBasisPoints,active:true,homeBusiness:false};
-  const frozenExemption:FrozenTaxExemption={exempt:exemption.exempt,...(string(exemption.reason)?{reason:string(exemption.reason)}:{}),...(string(exemption.certificateReference)?{certificateReference:string(exemption.certificateReference)}:{})};
+  const taxable=record(taxability)?.taxable;
+  if(typeof taxable!=="boolean") throw new V2ApplicationError("CONFLICT","The original Invoice tax facts cannot be safely reused for this replacement.");
+  const receiptLocation:TaxReceiptLocation=source.jurisdiction.receiptLocation;
+  const frozenJurisdiction:TenantTaxJurisdiction={jurisdictionId:source.jurisdiction.id,name:source.jurisdiction.name,receiptLocation,rateBasisPoints:source.jurisdiction.rateBasisPoints,active:true,homeBusiness:false};
+  const frozenExemption:FrozenTaxExemption=source.exemption;
   const composition=composeSalesTax({lines:[{lineId,amountCents:lineCents,taxable}],exemption:frozenExemption,resolution:{status:"resolved",jurisdiction:frozenJurisdiction,receiptLocation}});
   if(composition.status!=="resolved") throw new V2ApplicationError("CONFLICT","The original Invoice tax facts cannot be safely reused for this replacement.");
   return {taxCents:composition.taxCents,evidence:composition};
@@ -77,7 +73,8 @@ export const createOrReadReplacementInvoice=async(client:PoolClient,input:Readon
   const originalLineCents=Number(original.source_selling_line_cents), originalUnitCents=Number(original.source_selling_unit_cents);
   if(!Number.isSafeInteger(originalLineCents)||!Number.isSafeInteger(originalUnitCents)||!Number.isSafeInteger(original.source_quantity)||original.source_quantity<=0||!original.source_pricing_evidence_fingerprint.trim()) throw new V2ApplicationError("CONFLICT","The original Order line cannot safely price this replacement.");
   const lineCents=proportionalReplacementLineCents(originalLineCents,original.source_quantity,input.replacementQuantity);
-  const tax=replacementTax(original.tax_evidence,original.taxability_snapshot,original.source_sales_line_id,lineCents);
+  const reusable=await readReusableInvoiceTaxEvidenceInTransaction(client,{organizationId:input.organizationId,invoiceId:original.id,orderId:input.orderId});
+  const tax=replacementTax(reusable,original.taxability_snapshot,original.source_sales_line_id,lineCents);
 
   const allocated=await client.query<{invoice_sequence:number}>("SELECT invoice_sequence FROM v2_billing_invoices WHERE organization_id=$1 AND sales_order_document_id=$2 AND invoice_sequence IS NOT NULL FOR UPDATE",[input.organizationId,input.orderId]);
   const sequence=nextReplacementInvoiceSequence(allocated.rows.map(row=>row.invoice_sequence));

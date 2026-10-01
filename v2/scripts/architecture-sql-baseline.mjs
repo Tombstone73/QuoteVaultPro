@@ -33,7 +33,7 @@ const groups = {
     ["customer_portal_access","UPDATE","5c4478db513e06a1d5fee8dc350dd9f1f470f6d5c06ad64968ab11d9327e9b11","LEGACY-COMPATIBILITY",1],
   ],
   "infrastructure/billing/postgresBillingDraftInvoiceTransaction.ts": [
-    ["<unresolved>","UNRESOLVED","e6b42a596017cd87a126a655708d522d2351ab35a7603a5c2be84844db473801","SQL-DYNAMIC",1],
+    ["<unresolved>","UNRESOLVED","e852426725148898574a9e2627a2c3057c546cb4c29a1c4aabef912cbb21b392","SQL-DYNAMIC",1],
   ],
   "infrastructure/billing/postgresFinancialRead.ts": [
     ["<unresolved>","UNRESOLVED","98e3c8ed469d2df217d00ae234ff6e8471569ea2fd8f9ff300b4069eca6cde4b","SQL-DYNAMIC",1],

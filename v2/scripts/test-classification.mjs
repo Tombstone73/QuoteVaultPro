@@ -63,6 +63,8 @@ add('v2/tests/', 'tsx', ['interfaces/productionDailyReportMount.test.ts', 'infra
   'safe-deterministic', 'Actual Production composition, Passport binding, fresh permission issuance and Settings clock use local HTTP, in-memory PGlite and bounded operational read fixtures; no credentials, provider or live database.');
 add('v2/tests/infrastructure/', 'jest', ['financialInvoicePresentation.test.ts'],
   'safe-deterministic', 'Closed exact-source FinancialRead and BillingDraft adapters execute with real value/error namespaces, a fail-on-use QuickBooks seam and in-memory PGlite; forbidden source/dependency/dynamic imports fail closed, with no V1 initialization or provider execution.');
+add('v2/tests/', 'tsx', ['modules/reusableInvoiceTaxEvidence.test.ts', 'infrastructure/reusableInvoiceTaxEvidence.postgres.test.ts'],
+  'safe-deterministic', 'Billing evidence contracts and actual producer, issuer, replacement and Shipping adapters run with in-memory PGlite and real DDL; exact-source same-realm loader uses real namespaces and a transaction-local auto-sync-disabled QuickBooks seam, with no V1 initialization, credentials, live database or provider calls.');
 add('v2/tests/infrastructure/', 'tsx', [
   'shipmentShippingInvoiceProjection.pure.ts',
   'proofRecipientAccess.test.ts',

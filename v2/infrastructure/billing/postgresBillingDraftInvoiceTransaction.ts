@@ -22,6 +22,7 @@ import {
 import type { TransactionalClient } from "../persistence/types.js";
 import type { SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
 import { enqueueV2QuickBooksAutoSync } from "../accounting/quickBooksBillingQueue.js";
+import { readReusableInvoiceTaxEvidenceInTransaction } from "./postgresReusableInvoiceTaxEvidence.js";
 
 type InvoiceState = "draft" | "issued" | "void";
 
@@ -218,12 +219,14 @@ export class PostgresBillingDraftInvoiceTransaction implements BillingPort, Bill
     const checkpoint = invoice.invoice_state === "issued" ? await this.client.query<{ checkpoint_json: IssuedInvoiceCheckpoint }>("SELECT checkpoint_json FROM v2_billing_invoice_checkpoints WHERE organization_id=$1 AND invoice_id=$2", [organizationId, invoice.id]) : undefined;
     const currentPresentation = invoice.customer_display_name ? { customerDisplayName: invoice.customer_display_name } : undefined;
     const issuedCheckpoint = checkpoint?.rows[0]?.checkpoint_json;
+    const reusableTaxEvidence = await readReusableInvoiceTaxEvidenceInTransaction(this.client, { organizationId, invoiceId: invoice.id, orderId: invoice.sales_order_document_id });
     return {
       invoiceId: brandedId<"InvoiceId">(invoice.id), organizationId,
       sourceOrderId: brandedId<"OrderId">(invoice.sales_order_document_id), sourceOrderNumber: invoice.display_number, invoiceNumber: invoice.invoice_display_number ?? invoice.display_number, lifecycle: invoice.invoice_state,
       ...(invoice.customer_id ? { customerId: brandedId<"CustomerId">(invoice.customer_id) } : {}),
       ...(issuedCheckpoint ? { customerPresentation: issuedCheckpoint.customerPresentation, issuedCheckpoint } : currentPresentation ? { customerPresentation: currentPresentation } : {}),
       currency, synchronizationVersion: invoice.synchronization_version,
+      reusableTaxEvidence: reusableTaxEvidence.financialVersion === invoice.synchronization_version ? reusableTaxEvidence : { ...reusableTaxEvidence, status: "not_reusable", reason: "invalid_identity" },
       lines: lines.rows.map((line) => ({ sourceOrderLineId: brandedId<"OrderLineId">(line.source_sales_line_id), productId: brandedId<"ProductId">(line.product_id), description: line.description, quantity: line.quantity, sellingUnitAmount: money(currency, Number(line.selling_unit_cents)), lineAmount: money(currency, Number(line.selling_line_cents)) })),
       ...(additionalCharges.rows.length ? { additionalCharges: additionalCharges.rows.map(charge => ({kind:charge.charge_kind,amount:money(currency,Number(charge.customer_charge_cents)),tax:money(currency,Number(charge.tax_cents)),...(charge.customer_note?{note:charge.customer_note}:{})})) } : {}),
       subtotal: money(currency, Number(invoice.subtotal_cents)), ...(Number(invoice.sales_adjustment_cents) !== 0 && invoice.sales_adjustment_reason ? { salesAdjustment: { amount: money(currency, Number(invoice.sales_adjustment_cents)), reason: invoice.sales_adjustment_reason } } : {}), taxTotal: money(currency, Number(invoice.tax_total_cents)), total: money(currency, Number(invoice.total_cents)),

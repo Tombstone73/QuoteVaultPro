@@ -12,6 +12,7 @@ import * as operationRequestExports from "../../infrastructure/persistence/postg
 import * as outboxExports from "../../infrastructure/persistence/postgresOutbox.js";
 import * as errorExports from "../../src/errors/applicationError.js";
 import * as commercialValueExports from "../../src/modules/shared/commercialValues.js";
+import * as reusableTaxEvidenceExports from "../../infrastructure/billing/postgresReusableInvoiceTaxEvidence.js";
 import { BillingPaymentsApplicationService, type BillingFinancialTransaction, type BillingFinancialTransactionRunner, type FinancialLockedInvoice } from "../../src/modules/billing/paymentApplication.js";
 import { PaymentWorkspaceApplicationService, previewPaymentTender, type PaymentWorkspaceReadPort, type PaymentWorkspaceReadRunner, type PaymentWorkspaceRecordInput } from "../../src/modules/billing/paymentWorkspace.js";
 import type { PaymentAggregateFact, RecordManualPaymentAllocationsInput } from "../../src/modules/billing/contracts.js";
@@ -52,6 +53,7 @@ const sources = new Map<string, Readonly<{ identifier: string; dependencies: Map
     ["../../src/errors/applicationError.js", errorExports],
     ["../../src/modules/shared/commercialValues.js", commercialValueExports],
     ["../accounting/quickBooksBillingQueue.js", queueBridge],
+    ["./postgresReusableInvoiceTaxEvidence.js", reusableTaxEvidenceExports],
   ]) }],
   ["billingDraftInvoiceOptionalJson.pure.ts", { identifier: draftRegressionPath, dependencies: draftRegressionDependencies }],
 ]);

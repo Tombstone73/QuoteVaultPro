@@ -2,6 +2,7 @@ import type { CustomerContactReference } from "../customers/contracts.js";
 import type { CustomerPresentationIdentity } from "../customers/contracts.js";
 import type { DocumentOrganizationIdentity } from "../organization/businessProfile.js";
 import type { PrincipalKind } from "../../authorization/principals.js";
+import type { ReusableInvoiceTaxEvidence } from "./reusableInvoiceTaxEvidence.js";
 import type { BusinessRequestId, CurrencyCode, CustomerId, InvoiceCheckpointId, InvoiceId, Money, OrderId, OrderLineId, OrganizationId, PaymentId, PercentageBasisPoints, ProductId, ProviderFinancialOperationId, RefundId, SalesLineId } from "../shared/commercialValues.js";
 
 /** Sales supplies a projection; Billing owns any resulting Invoice row, math, and lifecycle. */
@@ -104,6 +105,8 @@ export type DraftInvoiceReadModel = Readonly<{
   issuedAt?: string;
   /** Billing's immutable issued document snapshot; absent while the Invoice tracks the Order. */
   issuedCheckpoint?: IssuedInvoiceCheckpoint;
+  /** Read-only evidence interpretation of the current financial version, not an amended issued checkpoint. */
+  reusableTaxEvidence?: ReusableInvoiceTaxEvidence;
   createdAt: string;
   updatedAt: string;
 }>;
