@@ -1487,6 +1487,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                         rows={4}
                                         className="w-full"
                                     />
+                                    <p className="mt-2 text-xs text-muted-foreground">Shown on the customer Quote, PDF, email, and portal.</p>
                                 </CardContent>
                             </Card>
                         )}

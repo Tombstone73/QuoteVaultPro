@@ -60,3 +60,23 @@ test("saved job notes hydrate, edit/save, survive refetch and reopen from the ca
   reopened.unmount();
   log.mockRestore();
 });
+
+test("customer-facing line description survives Quote save and reload", async () => {
+  const log = jest.spyOn(console, "log").mockImplementation(() => {});
+  mockQuote = { id: "q", customerId: "customer", lineItems: [{ id: "line", productId: "product", productName: "Coroplast", quantity: 2, linePrice: "100", width: "48", height: "96", status: "active", description: null }] };
+  jest.mocked(apiRequest).mockImplementation(async (method, url, data: any) => {
+    if (method === "PATCH" && url === "/api/quotes/q/line-items/line") {
+      mockQuote = { ...mockQuote, lineItems: [{ ...mockQuote.lineItems[0], description: data.description }] };
+    }
+    return { ok: true, json: async () => mockQuote } as Response;
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  act(() => editor.result.current.handlers.updateLineItemLocal("line", { description: "48 x 96 fluted white sheets" }));
+  await act(async () => { await editor.result.current.handlers.saveQuote(); });
+  expect(apiRequest).toHaveBeenCalledWith("PATCH", "/api/quotes/q/line-items/line", expect.objectContaining({ description: "48 x 96 fluted white sheets" }));
+  editor.unmount();
+  const reopened = renderHook(() => useQuoteEditorState());
+  expect(reopened.result.current.lineItems[0].description).toBe("48 x 96 fluted white sheets");
+  reopened.unmount();
+  log.mockRestore();
+});

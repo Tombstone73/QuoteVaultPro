@@ -787,6 +787,7 @@ export class QuotesRepository {
             }).value as any,
             materialUsages: sanitizeJsonForPostgres((item as any).materialUsages ?? []).value as any,
             displayOrder: item.displayOrder ?? index,
+            description: (item as any).description ?? null,
             // Tax fields
             taxAmount: (item as any).taxAmount != null ? (item as any).taxAmount.toString() : null,
             isTaxableSnapshot: (item as any).isTaxableSnapshot ?? null,
@@ -1199,6 +1200,7 @@ export class QuotesRepository {
                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
             },
             displayOrder: lineItem.displayOrder || 0,
+            description: (lineItem as any).description ?? null,
             // PBV2 server-authoritative fields (migration 0036, pbv2TreeVersionId nullable as of 0041)
             pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId || null,
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},

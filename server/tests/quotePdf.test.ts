@@ -251,6 +251,27 @@ describe("quote PDF generation", () => {
     }
   });
 
+  test("renders customer Quote and line notes while keeping internal notes private", async () => {
+    const text = extractDecodedPdfContent(await generateQuotePdfBytes({
+      quote: {
+        ...validDraftQuote,
+        customerNotes: "Please confirm color before printing.\nPickup Friday.",
+        shippingInstructions: "INTERNAL QUOTE NOTE",
+        lineItems: [{
+          ...validDraftQuote.lineItems[0],
+          description: "48 x 96 fluted white corrugated sheets.",
+          productionNotes: "INTERNAL PRODUCTION NOTE",
+        }],
+      } as any,
+    }));
+    expect(text).toContain("Notes");
+    expect(text).toContain("Please confirm color before printing.");
+    expect(text).toContain("Pickup Friday.");
+    expect(text).toContain("48 x 96 fluted white corrugated sheets.");
+    expect(text).not.toContain("INTERNAL QUOTE NOTE");
+    expect(text).not.toContain("INTERNAL PRODUCTION NOTE");
+  });
+
   test("customer quote PDF keeps the formal product name", async () => {
     const bytes = await generateQuotePdfBytes({
       quote: {

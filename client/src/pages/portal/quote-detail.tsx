@@ -241,7 +241,7 @@ export default function PortalQuoteDetailPage() {
             <div key={item.id} className="grid gap-3 px-4 py-4 md:grid-cols-[1fr_auto_auto] md:items-center">
               <div className="min-w-0">
                 <p className="font-medium">{item.name}</p>
-                {item.description ? <p className="mt-1 text-sm text-muted-foreground">{item.description}</p> : null}
+                {item.description ? <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground">{item.description}</p> : null}
                 <p className="mt-1 text-sm text-muted-foreground">
                   Qty {item.quantity}
                   {item.dimensions.width && item.dimensions.height

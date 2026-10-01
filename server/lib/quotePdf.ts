@@ -364,18 +364,38 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
 
     const name = [lineItem.productName, lineItem.variantName].filter((value) => hasText(value)).join(" - ") || "Line item";
     const wrapped = wrapText(name, 250, regular, 10).slice(0, 3);
+    const rowStartY = y;
+    drawRight(page, String(toNumber(lineItem.quantity)), 350, rowStartY, regular, 10);
+    drawRight(page, formatMoney(quoteDisplayUnitPriceCents(commercialTotalCents, lineItem.quantity), currency), 452, rowStartY, regular, 10);
+    drawRight(page, formatMoney(commercialTotalCents, currency), PAGE_WIDTH - MARGIN, rowStartY, regular, 10);
     for (let index = 0; index < wrapped.length; index += 1) {
-      drawText(page, wrapped[index], MARGIN, y - index * 12, index === 0 ? bold : regular, 10);
+      drawText(page, wrapped[index], MARGIN, y, index === 0 ? bold : regular, 10);
+      y -= 12;
+    }
+
+    const description = cleanText(lineItem.description);
+    if (description) {
+      for (const paragraph of description.split(/\r?\n/)) {
+        for (const line of paragraph ? wrapText(paragraph, 250, regular, 9) : [""]) {
+          if (y < MARGIN + 12) {
+            page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+            y = PAGE_HEIGHT - MARGIN;
+          }
+          if (line) drawText(page, line, MARGIN, y, regular, 9, rgb(0.35, 0.4, 0.48));
+          y -= 11;
+        }
+      }
     }
 
     const width = toNumber(lineItem.width);
     const height = toNumber(lineItem.height);
     const sizeLabel = width > 0 && height > 0 ? `${width} x ${height}` : "-";
-    drawText(page, `Size: ${sizeLabel}`, MARGIN, y - wrapped.length * 12, regular, 9);
-    drawRight(page, String(toNumber(lineItem.quantity)), 350, y, regular, 10);
-    drawRight(page, formatMoney(quoteDisplayUnitPriceCents(commercialTotalCents, lineItem.quantity), currency), 452, y, regular, 10);
-    drawRight(page, formatMoney(commercialTotalCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
-    y -= Math.max(32, wrapped.length * 12 + 22);
+    if (y < MARGIN + 12) {
+      page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+      y = PAGE_HEIGHT - MARGIN;
+    }
+    drawText(page, `Size: ${sizeLabel}`, MARGIN, y, regular, 9);
+    y -= 22;
   }
 
   // Reserve space for all optional total rows without clipping the page footer.

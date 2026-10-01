@@ -99,6 +99,7 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
             : linePrice,
         priceBreakdown: item.priceBreakdown,
         displayOrder: item.displayOrder ?? idx,
+        description: item.description ?? null,
         notes: (item.specsJson as any)?.notes || undefined,
         productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
         requiresDesign: typeof item.requiresDesign === "boolean" ? item.requiresDesign : undefined,
@@ -1962,6 +1963,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                             formula: "",
                         },
                         displayOrder: li.displayOrder ?? 0,
+                        description: li.description ?? null,
                         status: li.status === "canceled" ? "canceled" : "active",
                         // Canonical routing intent (migration 0015)
                         requiresDesign: li.requiresDesign ?? false,
@@ -2433,6 +2435,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                         formula: "",
                     },
                     displayOrder: item.displayOrder ?? 0,
+                    description: item.description ?? null,
                     status: "active",
                 };
 
@@ -2491,6 +2494,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                         formula: "",
                     },
                     displayOrder: item.displayOrder ?? 0,
+                    description: item.description ?? null,
                     status: "active",
                 };
 
