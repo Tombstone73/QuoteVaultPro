@@ -1,4 +1,4 @@
-import { Fragment, createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { Fragment, createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { clearV2ApiSessionState } from "./api";
 import { clearV2SessionQueryState } from "./quoteCache";
@@ -43,33 +43,96 @@ export const AuthGate = ({ children }: { children: ReactNode }) => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const accept = (next: V2AuthSession) => { setSession(next); persistOrganization(next.activeOrganizationId); setState(next.activeOrganizationId ? "authenticated" : "organization"); };
+  const sequence = useRef(0);
+  const mounted = useRef(false);
+  const restorationQueued = useRef(false);
+  const pending = useRef<"restore" | "login" | "selection" | "logout" | null>(null);
+  const clearClientSession = () => {
+    clearOrganizationSwitchClientState(queryClient);
+    persistOrganization(null);
+    setSession(null);
+  };
+  const accept = (next: V2AuthSession) => {
+    // Accepted identity/org resets fence all older responses without emitting
+    // another context-change event. Storage mirrors only this verified result.
+    clearOrganizationSwitchClientState(queryClient);
+    setSession(next);
+    persistOrganization(next.activeOrganizationId);
+    setState(next.activeOrganizationId ? "authenticated" : "organization");
+  };
+  const current = (operation: number) => mounted.current && operation === sequence.current;
 
-  useEffect(() => { void v2AuthApi.session().then(accept).catch(() => setState("login")); }, []);
+  useEffect(() => {
+    let active = true;
+    mounted.current = true;
+    const restore = () => {
+      if (pending.current === "logout") return;
+      sequence.current++;
+      pending.current = "restore";
+      clearClientSession();
+      setState("loading"); setBusy(false); setError("");
+      // Coalesce a synchronous notification burst, but supersede a pending
+      // older server read when a later trusted context change arrives.
+      if (restorationQueued.current) return;
+      restorationQueued.current = true;
+      queueMicrotask(() => {
+        if (!active) return;
+        restorationQueued.current = false;
+        if (pending.current !== "restore") return;
+        const operation = sequence.current;
+        void v2AuthApi.session().then((next) => {
+          if (!active || !current(operation)) return;
+          accept(next); pending.current = null;
+        }).catch(() => {
+          if (!active || !current(operation)) return;
+          clearClientSession(); setState("login"); pending.current = null;
+        });
+      });
+    };
+    window.addEventListener("v2:session-context-changed", restore);
+    restore();
+    return () => {
+      active = false; mounted.current = false; sequence.current++;
+      restorationQueued.current = false;
+      window.removeEventListener("v2:session-context-changed", restore);
+    };
+  }, [queryClient]);
 
   const login = async (event: React.FormEvent) => {
-    event.preventDefault(); setBusy(true); setError("");
-    try { accept(await v2AuthApi.login(email, password)); setPassword(""); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Sign in failed."); }
-    finally { setBusy(false); }
+    event.preventDefault();
+    if (pending.current) return;
+    const operation = ++sequence.current;
+    pending.current = "login";
+    clearClientSession(); setBusy(true); setError("");
+    try {
+      const next = await v2AuthApi.login(email, password);
+      if (current(operation)) { accept(next); setPassword(""); }
+    } catch (reason) {
+      if (current(operation)) { clearClientSession(); setState("login"); setError(reason instanceof Error ? reason.message : "Sign in failed."); }
+    } finally { if (current(operation)) { pending.current = null; setBusy(false); } }
   };
   const selectOrganization = async (organizationId: string) => {
-    if (!session || session.activeOrganizationId === organizationId) return;
-    setBusy(true); setError("");
+    if (!session || session.activeOrganizationId === organizationId || pending.current) return;
+    const operation = ++sequence.current;
+    pending.current = "selection";
+    clearClientSession(); setState("loading"); setBusy(true); setError("");
     try {
       const next = await v2AuthApi.selectOrganization(organizationId, session.csrfToken);
-      clearOrganizationSwitchClientState(queryClient);
+      if (!current(operation)) return;
       window.history.replaceState({}, "", "/");
       accept(next);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Organization selection failed.");
-    } finally { setBusy(false); }
+      if (current(operation)) { clearClientSession(); setState("login"); setError(reason instanceof Error ? reason.message : "Organization selection failed."); }
+    } finally { if (current(operation)) { pending.current = null; setBusy(false); } }
   };
   const logout = async () => {
-    if (!session) return;
-    setBusy(true);
+    if (!session || pending.current === "logout") return;
+    const operation = ++sequence.current;
+    pending.current = "logout";
+    clearClientSession(); setState("loading"); setBusy(true); setError("");
     try { await v2AuthApi.logout(session.csrfToken); }
-    finally { clearOrganizationSwitchClientState(queryClient); persistOrganization(null); setSession(null); setState("login"); setBusy(false); }
+    catch (reason) { if (current(operation)) setError(reason instanceof Error ? reason.message : "Sign out could not be confirmed. Local session data was cleared."); }
+    finally { if (current(operation)) { clearClientSession(); setState("login"); pending.current = null; setBusy(false); } }
   };
 
   if (state === "loading") return <main className="v2-auth"><p>Restoring secure session…</p></main>;

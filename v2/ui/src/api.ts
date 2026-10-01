@@ -1566,6 +1566,14 @@ export type SalesLinePricingPreview = Readonly<{
 }>;
 const csrfTokens = new Map<string, string>();
 let sessionScope: string | undefined;
+let responseGeneration = 0;
+const sessionContextChanged = (): ApiError => ({
+  code: "SESSION_CONTEXT_CHANGED",
+  message: "The secure session changed. This response was not applied. A submitted change may already have been saved; verify its existing request or receipt before retrying.",
+});
+const requireCurrentResponse = (generation: number): void => {
+  if (generation !== responseGeneration) throw sessionContextChanged();
+};
 const csrfKey = (organizationId: string) =>
   `${sessionScope ?? "unscoped"}:${organizationId}`;
 export const newBusinessRequestId = () => crypto.randomUUID();
@@ -1623,6 +1631,7 @@ const withSearch = (
   return text ? `${url}?${text}` : url;
 };
 const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
+  const generation = responseGeneration;
   // FormData owns its multipart boundary. Supplying JSON here would make a
   // legitimate binary upload unreadable by the HTTP boundary.
   const isMultipart =
@@ -1638,12 +1647,14 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
       ...(init?.headers ?? {}),
     },
   });
+  requireCurrentResponse(generation);
   // Every authenticated Quote/form response carries the trusted host's opaque
   // session epoch. Detect a replacement before its body can update the old
   // session's React Query namespace.
   const responseSessionScope = response.headers.get("x-v2-session-scope");
   if (responseSessionScope) adoptSessionScope(responseSessionScope);
   const body = await response.json().catch(() => ({}));
+  requireCurrentResponse(generation);
   if (!response.ok || !body.ok)
     throw (body.error ?? {
       code: "INTERNAL_ERROR",
@@ -1652,6 +1663,7 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   return body.data as T;
 };
 export const clearV2ApiSessionState = (): void => {
+  responseGeneration++;
   csrfTokens.clear();
   sessionScope = undefined;
 };
@@ -1743,9 +1755,12 @@ export const quickBooksIntegrationApi = {
 };
 const adoptSessionScope = (nextScope: string): void => {
   if (sessionScope && sessionScope !== nextScope) {
-    csrfTokens.clear();
+    clearV2ApiSessionState();
     if (typeof window !== "undefined")
-      window.dispatchEvent(new Event("v2:session-context-changed"));
+      window.dispatchEvent(new window.Event("v2:session-context-changed"));
+    // The new epoch is a signal to reverify the server session, not permission
+    // to cache this response in the previous identity's namespace.
+    throw sessionContextChanged();
   }
   sessionScope = nextScope;
 };
@@ -1759,9 +1774,11 @@ export const salesWorkspaceTransport = {
 
 export const quoteApi = {
   bootstrap: async (organizationId: string) => {
+    const generation = responseGeneration;
     const value = await request<UiBootstrap>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/ui-bootstrap`,
     );
+    requireCurrentResponse(generation);
     adoptSessionScope(value.sessionScope);
     csrfTokens.set(csrfKey(organizationId), value.csrfToken);
     return value;
