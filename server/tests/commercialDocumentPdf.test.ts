@@ -24,6 +24,7 @@ describe("shared customer document rendering", () => {
     const html = renderQuoteEmailLineItems(lines);
     expect(html.match(/<tr>/g)).toHaveLength(2);
     expect(html).toContain("$328.44"); expect(html).toContain("$96.13");
+    expect(html).toContain("$164.22"); expect(html).toContain("$48.07");
     expect(html).not.toContain("Hidden child");
     let attachmentText = "";
     const deps: QuoteEmailRecipientDeps = {
@@ -43,6 +44,7 @@ describe("shared customer document rendering", () => {
     const before = structuredClone(quote);
     const content = text(await generateQuotePdfBytes({ quote }));
     expect(content).toContain("$328.44"); expect(content).toContain("$96.13");
+    expect(content).toContain("$164.22"); expect(content).toContain("$48.07");
     expect(content).toContain("$424.57"); expect(content).toContain("$434.57");
     expect(content).toContain("54.21 x 47.5");
     expect(content).not.toContain("Hidden child");

@@ -41,7 +41,7 @@ export default {
     '<rootDir>/client/**/*.spec.ts',
     '<rootDir>/client/**/*.spec.tsx',
   ],
-  testPathIgnorePatterns: ['/node_modules/', '/dist/'],
+  testPathIgnorePatterns: ['/node_modules/', '/dist/', '\\.esm\\.test\\.tsx?$'],
 
   // Keep aliases consistent with app code
   moduleNameMapper: {

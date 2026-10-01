@@ -248,10 +248,10 @@ describe("quote PDF generation", () => {
     });
 
     const text = extractDecodedPdfContent(bytes);
-    expect(text).toContain("ACM / Dibond / Max Metal / Aluminum Composite Material");
+    expect(text.replace(/\s+/g, " ")).toContain("ACM / Dibond / Max Metal / Aluminum Composite Material");
   });
 
-  test("includes quantity-only lines and derives PDF totals from effective overrides", async () => {
+  test("shows effective override line prices but retains the saved document total", async () => {
     const priceOverride = (
       mode: "override_unit_after_margin" | "override_total_after_margin",
       valueCents: number,
@@ -332,8 +332,38 @@ describe("quote PDF generation", () => {
     const text = extractDecodedPdfContent(bytes);
 
     expect(text).toContain("Economy Yard Sign Stakes");
-    expect(text).toContain("$267.00");
-    expect(text).not.toContain("$139.00");
+    expect(text).toContain("$180.00");
+    expect(text).toContain("$90.00");
+    expect(text).toContain("$139.00");
+    expect(text).not.toContain("$267.00");
+  });
+
+  test.each([
+    ["pickup", "Pickup", 0, null],
+    ["ship", "Shipping", 2500, "Shipping"],
+    ["deliver", "Delivery", 2500, "Delivery"],
+  ])("renders %s fulfillment and only the saved customer charge", async (method, label, charge, chargeLabel) => {
+    const quote = {
+      ...validDraftQuote, shippingMethod: method, shippingCents: Number(charge),
+      subtotal: "250.00", taxAmount: "18.75", totalPrice: charge ? "293.75" : "268.75",
+      shippingInstructions: "PRIVATE JOB NOTE - never print",
+      lineItems: [{ ...validDraftQuote.lineItems[0], quantity: 100, linePrice: "250.00" }],
+    };
+    const text = extractDecodedPdfContent(await generateQuotePdfBytes({ quote }));
+    expect(text).toContain(`Fulfillment: ${label}`);
+    expect(text).toContain("Unit Price");
+    expect(text).toContain("Line Total");
+    expect(text).toContain("$2.50");
+    expect(text).toContain("$250.00");
+    expect(text).toContain(`$${quote.totalPrice}`);
+    expect(text).not.toContain("PRIVATE JOB NOTE");
+    if (chargeLabel) {
+      expect(text).toContain(String(chargeLabel));
+      expect(text).toContain("$25.00");
+    } else {
+      expect(text).not.toContain("Shipping");
+      expect(text).not.toContain("$25.00");
+    }
   });
 
   test("blocks unsaved and invalid quotes", () => {

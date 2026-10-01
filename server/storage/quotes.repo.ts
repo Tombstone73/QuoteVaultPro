@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { calculateQuoteAggregateTotals } from "../routes/helpers/quoteTotals.helpers";
 import {
     quotes,
     quoteLineItems,
@@ -597,6 +598,8 @@ export class QuotesRepository {
         taxRate?: number | null;
         taxAmount?: number | null;
         taxableSubtotal?: number | null;
+        shippingCents?: number | null;
+        discountAmount?: number | string | null;
         shippingMethod?: string | null;
         shippingMode?: string | null;
         billToName?: string | null;
@@ -634,8 +637,12 @@ export class QuotesRepository {
             };
             return enrichLineItemWithEffectivePricing(preparedItem);
         });
-        const subtotal = lineItemsInput.reduce((sum, item) => sum + parseFloat(item.linePrice.toString()), 0);
-        const totalPrice = subtotal; // Will be updated if tax is applied
+        const totals = calculateQuoteAggregateTotals({
+            lineItems: lineItemsInput,
+            taxRate: data.taxRate,
+            discountAmount: data.discountAmount,
+            shippingCents: data.shippingCents,
+        });
 
         // Create quote in a transaction to handle quote numbering
         const newQuote = await this.dbInstance.transaction(async (tx) => {
@@ -659,11 +666,13 @@ export class QuotesRepository {
                 visibleInCustomerPortal: data.visibleInCustomerPortal ?? false,
                 status: data.status || 'draft',
                 label: data.label ?? null,
-                subtotal: subtotal.toString(),
+                subtotal: totals.subtotal.toString(),
                 taxRate: data.taxRate ?? null,
-                taxAmount: data.taxAmount != null ? data.taxAmount.toString() : "0",
-                taxableSubtotal: data.taxableSubtotal != null ? data.taxableSubtotal.toString() : "0",
-                totalPrice: totalPrice.toString(),
+                taxAmount: totals.taxAmount.toString(),
+                taxableSubtotal: totals.taxableSubtotal.toString(),
+                totalPrice: totals.totalPrice.toString(),
+                discountAmount: String(data.discountAmount ?? 0),
+                shippingCents: data.shippingCents ?? null,
                 shippingMethod: data.shippingMethod ?? null,
                 shippingMode: data.shippingMode ?? null,
                 billToName: data.billToName ?? null,

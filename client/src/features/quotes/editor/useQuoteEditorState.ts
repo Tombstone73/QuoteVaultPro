@@ -742,6 +742,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         
         // Hydrate shipping cost from persisted shippingCents
         setShippingCents(q.shippingCents ?? null);
+        setQuoteNotes(q.shippingInstructions ?? "");
         
         // Hydrate tags from listLabel (comma-separated string) - only once per quote load
         if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {

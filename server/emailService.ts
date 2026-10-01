@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 import { quoteEmailPlainTextToHtml, resolveQuoteEmailContent } from "./services/quoteEmailTemplate";
@@ -570,12 +571,11 @@ class EmailService {
 
     const subtotal = parseFloat(quote.subtotal || "0");
     const taxRate = parseFloat(quote.taxRate || "0");
-    const marginPercentage = parseFloat(quote.marginPercentage || "0");
     const discountAmount = parseFloat(quote.discountAmount || "0");
     const totalPrice = parseFloat(quote.totalPrice || "0");
 
-    const taxAmount = subtotal * taxRate;
-    const marginAmount = subtotal * marginPercentage;
+    const taxAmount = parseFloat(quote.taxAmount || "0");
+    const shippingAmount = Math.max(0, Number(quote.shippingCents || 0)) / 100;
 
     const quoteDisplayNumber = (quote as any).displayNumber || quote.quoteNumber;
 
@@ -598,7 +598,8 @@ class EmailService {
           <h1 style="margin: 0 0 10px 0; color: #2563eb;">Quote ${quoteDisplayNumber}</h1>
           <p style="margin: 0; color: #666;">
             Date: ${new Date(quote.createdAt).toLocaleDateString()}<br>
-            ${quote.customerName ? `Customer: ${quote.customerName}` : ""}
+            ${quote.customerName ? `Customer: ${quote.customerName}<br>` : ""}
+            Fulfillment: ${quoteFulfillmentLabel(quote.shippingMethod)}
           </p>
         </div>
 
@@ -606,7 +607,9 @@ class EmailService {
           <thead>
             <tr style="background-color: #f8f9fa;">
               <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Item</th>
-              <th style="padding: 12px; text-align: right; border-bottom: 2px solid #dee2e6;">Price</th>
+              <th style="padding: 12px; text-align: right; border-bottom: 2px solid #dee2e6;">Qty</th>
+              <th style="padding: 12px; text-align: right; border-bottom: 2px solid #dee2e6;">Unit Price</th>
+              <th style="padding: 12px; text-align: right; border-bottom: 2px solid #dee2e6;">Line Total</th>
             </tr>
           </thead>
           <tbody>
@@ -620,13 +623,13 @@ class EmailService {
               <td style="padding: 8px 0;"><strong>Subtotal:</strong></td>
               <td style="padding: 8px 0; text-align: right;">$${subtotal.toFixed(2)}</td>
             </tr>
-            ${marginPercentage > 0 ? `
+            ${shippingAmount > 0 ? `
             <tr>
-              <td style="padding: 8px 0;">Margin (${(marginPercentage * 100).toFixed(2)}%):</td>
-              <td style="padding: 8px 0; text-align: right;">$${marginAmount.toFixed(2)}</td>
+              <td style="padding: 8px 0;">${quoteShippingChargeLabel(quote.shippingMethod)}:</td>
+              <td style="padding: 8px 0; text-align: right;">$${shippingAmount.toFixed(2)}</td>
             </tr>
             ` : ""}
-            ${taxRate > 0 ? `
+            ${taxAmount > 0 ? `
             <tr>
               <td style="padding: 8px 0;">Tax (${(taxRate * 100).toFixed(2)}%):</td>
               <td style="padding: 8px 0; text-align: right;">$${taxAmount.toFixed(2)}</td>

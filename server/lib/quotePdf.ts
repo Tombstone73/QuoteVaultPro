@@ -7,8 +7,9 @@ import {
   type CompanyDocumentBrandingInput,
 } from "./documentCompanyBranding";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
-import { getBillableBundleRoots, isCommerciallyRemovedLine } from "../services/lineItemBundles";
+import { isCommerciallyRemovedLine } from "../services/lineItemBundles";
 import { projectCommercialDocumentLines } from "@shared/commercialDocumentLines";
+import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
 
 export class QuotePdfEligibilityError extends Error {
   statusCode: number;
@@ -65,6 +66,7 @@ type QuotePdfInput = {
     discountAmount?: string | number | null;
     taxAmount?: string | number | null;
     shippingCents?: number | null;
+    shippingMethod?: string | null;
     totalPrice?: string | number | null;
     lineItems?: QuotePdfLineItem[] | null;
   };
@@ -330,13 +332,15 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
     y -= 13;
   }
 
+  y -= 12;
+  drawText(page, `Fulfillment: ${quoteFulfillmentLabel(input.quote.shippingMethod)}`, MARGIN, y, regular, 10);
   y -= 22;
   page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
   drawText(page, "Item", MARGIN, y, bold, 10);
-  drawRight(page, "Qty", 390, y, bold, 10);
-  drawRight(page, "Size", 462, y, bold, 10);
-  drawRight(page, "Total", PAGE_WIDTH - MARGIN, y, bold, 10);
+  drawRight(page, "Qty", 350, y, bold, 10);
+  drawRight(page, "Unit Price", 452, y, bold, 10);
+  drawRight(page, "Line Total", PAGE_WIDTH - MARGIN, y, bold, 10);
   y -= 10;
   page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
@@ -348,7 +352,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
     }
 
     const name = [lineItem.productName, lineItem.variantName].filter((value) => hasText(value)).join(" - ") || "Line item";
-    const wrapped = wrapText(name, 270, regular, 10).slice(0, 3);
+    const wrapped = wrapText(name, 250, regular, 10).slice(0, 3);
     for (let index = 0; index < wrapped.length; index += 1) {
       drawText(page, wrapped[index], MARGIN, y - index * 12, index === 0 ? bold : regular, 10);
     }
@@ -356,24 +360,28 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
     const width = toNumber(lineItem.width);
     const height = toNumber(lineItem.height);
     const sizeLabel = width > 0 && height > 0 ? `${width} x ${height}` : "-";
-    drawRight(page, String(toNumber(lineItem.quantity)), 390, y, regular, 10);
-    drawRight(page, sizeLabel, 462, y, regular, 10);
+    drawText(page, `Size: ${sizeLabel}`, MARGIN, y - wrapped.length * 12, regular, 9);
+    drawRight(page, String(toNumber(lineItem.quantity)), 350, y, regular, 10);
+    drawRight(page, formatMoney(quoteDisplayUnitPriceCents(commercialTotalCents, lineItem.quantity), currency), 452, y, regular, 10);
     drawRight(page, formatMoney(commercialTotalCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
-    y -= Math.max(26, wrapped.length * 12 + 10);
+    y -= Math.max(32, wrapped.length * 12 + 22);
   }
 
-  y = Math.max(y - 8, 98);
+  // Reserve space for all optional total rows without clipping the page footer.
+  if (y < MARGIN + 130) {
+    page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    y = PAGE_HEIGHT - MARGIN;
+  }
+  y -= 8;
   page.drawLine({ start: { x: 350, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
 
-  const subtotalCents = getBillableBundleRoots(eligibility.lineItems).reduce(
-    (sum, lineItem) => sum + getPdfLineItemTotalCents(lineItem),
-    0,
-  );
-  const discountCents = Math.min(toCentsFromDecimal(input.quote.discountAmount), subtotalCents);
+  // Saved commercial totals are authoritative; rendering never reprices a Quote.
+  const subtotalCents = toCentsFromDecimal(input.quote.subtotal);
+  const discountCents = toCentsFromDecimal(input.quote.discountAmount);
   const taxCents = toCentsFromDecimal(input.quote.taxAmount);
   const shippingCents = Math.max(0, Math.round(Number(input.quote.shippingCents ?? 0)));
-  const totalCents = Math.max(0, subtotalCents - discountCents + taxCents + shippingCents);
+  const totalCents = toCentsFromDecimal(input.quote.totalPrice);
 
   drawText(page, "Subtotal", 370, y, regular, 10);
   drawRight(page, formatMoney(subtotalCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
@@ -384,7 +392,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
     y -= 16;
   }
   if (shippingCents > 0) {
-    drawText(page, "Shipping", 370, y, regular, 10);
+    drawText(page, quoteShippingChargeLabel(input.quote.shippingMethod), 370, y, regular, 10);
     drawRight(page, formatMoney(shippingCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
     y -= 16;
   }

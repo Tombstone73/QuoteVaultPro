@@ -265,9 +265,21 @@ export default function PortalQuoteDetailPage() {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Fulfillment</span>
+            <span>{quote.fulfillmentLabel}</span>
+          </div>
+          <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Subtotal</span>
             <span>{formatCurrency(quote.subtotal)}</span>
           </div>
+          {quote.discount > 0 && <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Discount</span>
+            <span>-{formatCurrency(quote.discount)}</span>
+          </div>}
+          {quote.shipping > 0 && <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">{quote.shippingLabel}</span>
+            <span>{formatCurrency(quote.shipping)}</span>
+          </div>}
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Tax</span>
             <span>{formatCurrency(quote.tax)}</span>

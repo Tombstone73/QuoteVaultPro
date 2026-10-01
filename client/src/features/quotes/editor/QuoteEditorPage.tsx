@@ -1454,10 +1454,13 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                         {/* Internal Notes (uses existing quote shippingInstructions / editor quoteNotes field) */}
                         <Card>
                             <CardHeader className="pb-3">
-                                <CardTitle className="text-base font-medium">Internal Notes</CardTitle>
+                                <CardTitle className="text-base font-medium">
+                                    <label htmlFor="quote-job-notes">{createTarget === "order" ? "Internal Notes" : "Internal Quote / Job Notes"}</label>
+                                </CardTitle>
                             </CardHeader>
                             <CardContent>
                                 <Textarea
+                                    id="quote-job-notes"
                                     placeholder="Visible to internal staff only"
                                     value={createTarget === "order" ? state.orderInternalNotes : state.quoteNotes}
                                     onChange={(e) => {
@@ -1475,7 +1478,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                     <div className="mt-2 text-xs text-muted-foreground">
                                         {createTarget === "order"
                                             ? "Add internal order notes before creating the order (optional)"
-                                            : "Add internal production notes before converting (optional)"}
+                                            : "Saved with the Quote; carried into the Order on conversion. Not shown on the customer Quote."}
                                     </div>
                                 )}
                             </CardContent>

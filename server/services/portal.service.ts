@@ -1,4 +1,5 @@
 import { getInvoiceCustomerPaymentEligibility, type CustomerPaymentInvoice } from '../lib/invoiceCustomerPaymentEligibility';
+import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
 import { isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import { withInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
@@ -432,6 +433,10 @@ export type QuotePortalListDto = {
 export type QuotePortalDetailDto = QuotePortalListDto & {
   subtotal: number;
   tax: number;
+  fulfillmentLabel: string;
+  shippingLabel: string;
+  shipping: number;
+  discount: number;
   lineItems: QuotePortalLineItemDto[];
   expirationSummary: QuotePortalExpirationSummaryDto;
 };
@@ -655,6 +660,9 @@ type QuotePortalRow = Pick<
   | "validUntil"
   | "status"
   | "visibleInCustomerPortal"
+  | "shippingMethod"
+  | "shippingCents"
+  | "discountAmount"
   | "subtotal"
   | "taxAmount"
   | "totalPrice"
@@ -4126,7 +4134,7 @@ export function mapQuoteDetail(
         width: lineItem.width == null ? null : Number(lineItem.width),
         height: lineItem.height == null ? null : Number(lineItem.height),
       },
-      unitPrice: Math.round((lineTotal / quantity) * 100) / 100,
+      unitPrice: quoteDisplayUnitPriceCents(totalCents, quantity) / 100,
       lineTotal,
       displayOptions: safeQuoteDisplayOptions(lineItem.selectedOptions),
     };
@@ -4150,13 +4158,18 @@ export function mapQuoteDetail(
     customerVisibleActions: mapQuoteActions(displayStatus),
     subtotal: toMoney(quote.subtotal),
     tax: toMoney(quote.taxAmount),
+    fulfillmentLabel: quoteFulfillmentLabel(quote.shippingMethod),
+    shippingLabel: quoteShippingChargeLabel(quote.shippingMethod),
+    shipping: Math.max(0, Number(quote.shippingCents || 0)) / 100,
+    discount: toMoney(quote.discountAmount),
     lineItems: mappedLineItems,
     expirationSummary: buildQuoteExpirationSummary(quote.validUntil, displayStatus),
   };
 }
 
 function mapQuoteList(detail: QuotePortalDetailDto): QuotePortalListDto {
-  const { subtotal: _subtotal, tax: _tax, lineItems: _lineItems, expirationSummary: _expirationSummary, ...listDto } = detail;
+  const { subtotal: _subtotal, tax: _tax, fulfillmentLabel: _fulfillment, shippingLabel: _shippingLabel,
+    shipping: _shipping, discount: _discount, lineItems: _lineItems, expirationSummary: _expirationSummary, ...listDto } = detail;
   return listDto;
 }
 
@@ -4369,6 +4382,9 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       status: quotes.status,
       visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
+      shippingMethod: quotes.shippingMethod,
+      shippingCents: quotes.shippingCents,
+      discountAmount: quotes.discountAmount,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
       convertedToOrderId: quotes.convertedToOrderId,
@@ -4451,6 +4467,9 @@ export async function getPortalCustomerQuoteDebug(organizationId: string, custom
       status: quotes.status,
       visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
+      shippingMethod: quotes.shippingMethod,
+      shippingCents: quotes.shippingCents,
+      discountAmount: quotes.discountAmount,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
       convertedToOrderId: quotes.convertedToOrderId,
@@ -4519,6 +4538,9 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       status: quotes.status,
       visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
+      shippingMethod: quotes.shippingMethod,
+      shippingCents: quotes.shippingCents,
+      discountAmount: quotes.discountAmount,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
       convertedToOrderId: quotes.convertedToOrderId,
@@ -4658,6 +4680,9 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
       status: quotes.status,
       visibleInCustomerPortal: quotes.visibleInCustomerPortal,
       subtotal: quotes.subtotal,
+      shippingMethod: quotes.shippingMethod,
+      shippingCents: quotes.shippingCents,
+      discountAmount: quotes.discountAmount,
       taxAmount: quotes.taxAmount,
       totalPrice: quotes.totalPrice,
       convertedToOrderId: quotes.convertedToOrderId,

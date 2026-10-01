@@ -187,6 +187,10 @@ export type PortalQuoteListDto = {
 export type PortalQuoteDetailDto = PortalQuoteListDto & {
   subtotal: number;
   tax: number;
+  fulfillmentLabel: string;
+  shippingLabel: string;
+  shipping: number;
+  discount: number;
   lineItems: Array<{
     id: string;
     name: string;
