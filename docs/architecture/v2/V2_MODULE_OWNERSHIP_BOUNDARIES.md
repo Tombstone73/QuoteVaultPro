@@ -18,6 +18,13 @@ How to read the additions:
 - **Business decisions required** ([below](#business-decisions-required)) are conflicts in the evidence that this document deliberately does not resolve.
 - Evidence and counts live in the non-authoritative [V2 ownership audit](../audits/V2_OWNERSHIP_AUDIT_origin-dev-63f19bd3.md), which never overrides this document.
 
+**Campaign status supersedes snapshot locations.** Per-module implementation
+locations and the original debt table record the audited implementation. Read
+[Ordering campaign retirement evidence](#ordering-campaign-retirement-evidence)
+for subsequent reviewed corrections before treating a recorded caller write as
+current behavior. Ownership principles and undecided business policies are not
+changed by the retirement record.
+
 ## Governing rules
 
 ### One business fact, one owner
@@ -527,6 +534,41 @@ M0 is unchanged: it is a separately buildable/deployable V2 shell with no commer
 M1+ introduces vertical slices through this owner map, not a general V1 adapter. M1 should establish the commercial spine through Customers/CRM, Products, Pricing behind its contract, Sales, and Billing draft-invoice coordination. It must retain V1 as sole writer until a domain gate passes, use read-only shadow/parity only, avoid dual writes, use compatibility repositories, and record external work transactionally after commit. No startup DDL or copied POC DDL is permitted.
 
 ## Known boundary debt
+
+### Ordering campaign retirement evidence
+
+At campaign base `570160ee3515b7cf1404fe2fdbfb41a5905f0e06`, the historical
+findings below remain the evidence record. In the campaign working tree,
+independently reviewed ownership corrections have retired:
+
+- **BD-1:** Shipping calls Billing's `applyShippingChargeInTransaction` on the
+  caller's existing transaction client. Billing alone composes frozen Invoice
+  tax and writes additional charges, financial revisions, and totals.
+- **BD-2:** Prepress and Fulfillment call Production's case-specific
+  `PostgresSuccessorWorkCreation` operations on that same client. Production
+  creates ordinary/rework/replacement work and updates its rework-cycle link.
+  This extraction preserves current cases; it does not decide BDR-4's future
+  successor-work policy, quantity, cancellation, or lineage semantics.
+- **BD-4:** Proofing requests the narrow Auth `ensureForProofIssue` operation.
+  Auth controls the existing proof-recipient binding, fixed permission-set
+  assignment, and authority revision. General Portal access/invitation/credential
+  lifecycle ownership and linked-contact customer-binding policy remain BDR-3.
+- **BD-3:** Prepress and Sales call Routing's `PostgresOwnerTransitions` for
+  scoped frozen-route inspection and transitions; the owner chooses destination
+  and next step. Production calls Prepress's `PostgresReworkPreparation` for the
+  new preparation unit and retains its own rework-cycle update. All operations
+  share the caller's transaction and retain existing capability gates.
+
+Exact retired caller fingerprints have been removed, not renamed as allowed
+foreign writes. The two unchanged `customer_portal_access` statements now have
+exact legacy-physical-home evidence only inside the bounded Auth operation;
+other Portal lifecycle writers remain deferred. New occurrences or mutations
+still fail. BD-1 through BD-4 are retired; BD-5, BD-6, and BD-7 are unchanged.
+The historical locations in the table must not be used as permission to recreate
+the retired debt. Current operation locations are the new owner adapters under
+`infrastructure/billing`, `infrastructure/production`, and
+`infrastructure/authorization`, `infrastructure/routing`, and
+`infrastructure/prepress`.
 
 This section records places where the implementation at `origin/dev @ 63f19bd39a5c9c799aae3f5335709d346077c96a` writes state that this document assigns to a different owner. It exists so the debt is visible, not so it is excused.
 

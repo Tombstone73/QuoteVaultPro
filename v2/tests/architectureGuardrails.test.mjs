@@ -88,6 +88,40 @@ test("owner operation calls in one transaction pass", () => {
   assert.deepEqual(evaluateSql(files("infrastructure/fulfillment/newCoordinator.ts", source)), []);
 });
 
+test("campaign owner transaction APIs are named and do not expose private repositories", () => {
+  const approved = [
+    ["infrastructure/fulfillment/contractFixture.ts", "../billing/postgresShippingCharge.js", "applyShippingChargeInTransaction"],
+    ["infrastructure/prepress/contractFixture.ts", "../production/postgresSuccessorWorkCreation.js", "PostgresSuccessorWorkCreation"],
+    ["infrastructure/proofing/contractFixture.ts", "../authorization/postgresProofRecipientAccess.js", "PostgresProofRecipientAccess"],
+  ];
+  for (const [file, target, symbol] of approved) {
+    assert.deepEqual(evaluateImports([{ file, source: `import { ${symbol} } from '${target}';` }]), []);
+    assert.ok(evaluateImports([{ file, source: `import { privateQuery } from '${target}';` }]).length > 0);
+  }
+});
+
+test("Invoice tax kernel is scoped to Billing, never Shipping or carrier transport", () => {
+  const source = "import { composeSalesTax, type CommercialCharge } from '../../src/modules/sales/taxComposition.js';";
+  assert.deepEqual(evaluateImports([{ file: "infrastructure/billing/taxFixture.ts", source }]), []);
+  for (const file of ["infrastructure/fulfillment/taxFixture.ts", "infrastructure/billing/stripePaymentInitiation.ts"]) {
+    assert.ok(evaluateImports([{ file, source }]).length > 0, `${file} is not an Invoice financial owner`);
+  }
+  assert.ok(evaluateImports([{ file: "src/modules/products/taxFixture.ts", source: "import { composeSalesTax } from '../sales/taxComposition.js';" }]).length > 0);
+  assert.ok(evaluateImports([{ file: "infrastructure/billing/taxFixture.ts", source: "import { mutateTaxPolicy } from '../../src/modules/sales/taxComposition.js';" }]).length > 0);
+});
+
+test("proof authority binding does not decide general Portal lifecycle or allow new legacy writes", () => {
+  const source = "await client.query('INSERT INTO customer_portal_access(id) VALUES($1)');";
+  const exact = evaluateSql([{ file: "infrastructure/authorization/postgresProofRecipientAccess.ts", source }]);
+  assert.equal(exact[0].owner, "authentication");
+  assert.equal(exact[0].id, "LEGACY-COMPATIBILITY", "even the bounded owner needs exact legacy-home evidence");
+  assert.ok(applyBaseline(exact, []).violations.length > 0);
+  for (const file of ["infrastructure/authorization/otherPortalAccess.ts", "infrastructure/proofing/contractFixture.ts"]) {
+    assert.equal(evaluateSql([{ file, source }])[0].id, "DEFERRED", "BDR-3 remains unresolved outside the bounded operation");
+  }
+  assert.equal(evaluateSql([{ file: "infrastructure/authorization/postgresProofRecipientAccess.ts", source: "await client.query('DELETE FROM customer_portal_access WHERE id=$1');" }])[0].id, "DEFERRED");
+});
+
 test("AST ignores fake imports in comments/strings and recognizes aliased imported symbols", () => {
   assert.deepEqual(evaluateImports(files(moduleFile, `// import { bad } from 'pg';\nconst example = "import { bad } from 'pg'";`)), []);
   const records = extractImports(moduleFile, "import { privateRule as safeLookingAlias } from '../pricing/formulaDomain.js';");
@@ -279,14 +313,15 @@ test("harness safety API is not a general V1 bridge exemption", () => {
   assert.ok(evaluateImports(files(adapterFile, importFixture("../../../server/tests/helpers/safeTestDatabase.js", "{ requireSafeTestDatabaseUrl }"))).length);
 });
 
-test("real tree passes exactly while every known BD ID remains visible", async () => {
+test("real tree passes exactly while active debt stays visible and repaired debt stays retired", async () => {
   const tree = await readArchitectureFiles();
   const imports = applyBaseline(evaluateImports(tree), baseline);
   const sql = applyBaseline(evaluateSql(tree), baseline);
   assert.deepEqual(imports.violations, []);
   assert.deepEqual(sql.violations, []);
   const ids = new Set([...imports.matched, ...sql.matched].map((entry) => entry.id));
-  for (let n = 1; n <= 7; n++) assert.ok(ids.has(`BD-${n}`), `BD-${n} must remain visible`);
+  for (const id of ["BD-5", "BD-6", "BD-7"]) assert.ok(ids.has(id), `${id} must remain visible`);
+  for (const id of ["BD-1", "BD-2", "BD-3", "BD-4"]) assert.ok(!ids.has(id), `${id} must not remain as permission after repair`);
   for (const entry of baseline) {
     assert.match(entry.hash, /^[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(entry.count) && entry.count > 0);
@@ -301,7 +336,7 @@ test("real tree passes exactly while every known BD ID remains visible", async (
 
 test("real-tree duplicate debt and bridge calls fail, and retirement shrinks observed budget", async () => {
   const tree = await readArchitectureFiles();
-  for (const id of ["BD-1", "BD-2", "BD-3", "BD-4", "BD-6"]) {
+  for (const id of ["BD-6"]) {
     const entry = baseline.find((item) => item.id === id && item.kind === "sql");
     const file = tree.find((item) => item.file === entry.file);
     const sql = extractSql(file.file, file.source).find((item) => item.hash === entry.hash && item.table === entry.table);
@@ -318,6 +353,25 @@ test("real-tree duplicate debt and bridge calls fail, and retirement shrinks obs
   assert.ok(applyBaseline(evaluateImports(retired), baseline).retired.some((item) => item.id === "BD-7"));
   const removedBaseline = baseline.filter((item) => item.id !== "BD-7");
   assert.equal(applyBaseline(evaluateImports(tree), removedBaseline).violations.filter((item) => item.id === "BD-7").length, 2);
+});
+
+test("repairing debt never permits the owner's writes to return to foreign callers", async () => {
+  const tree = await readArchitectureFiles();
+  const cases = [
+    ["infrastructure/billing/postgresShippingCharge.ts", "infrastructure/fulfillment/postgresShipmentShippingAllocation.ts", "v2_billing_invoice_additional_charges"],
+    ["infrastructure/production/postgresSuccessorWorkCreation.ts", "infrastructure/prepress/postgresPrepressTransaction.ts", "v2_production_works"],
+    ["infrastructure/routing/postgresOwnerTransitions.ts", "infrastructure/prepress/postgresPrepressTransaction.ts", "v2_route_instances"],
+    ["infrastructure/routing/postgresOwnerTransitions.ts", "infrastructure/sales/postgresOrderWorkflowTransaction.ts", "v2_route_instances"],
+    ["infrastructure/prepress/postgresReworkPreparation.ts", "infrastructure/production/postgresProductionTransaction.ts", "v2_prepress_units"],
+    ["infrastructure/authorization/postgresProofRecipientAccess.ts", "infrastructure/proofing/postgresProofingTransaction.ts", "customer_portal_access"],
+  ];
+  for (const [ownerFile, foreignFile, target] of cases) {
+    const owner = tree.find(item => item.file === ownerFile);
+    assert.ok(owner, `reviewed owner operation ${ownerFile}`);
+    const findings = evaluateSql([{ file: foreignFile, source: owner.source }]);
+    const result = applyBaseline(findings, baseline);
+    assert.ok(result.violations.some(item => item.table === target), `${target} cannot return to ${foreignFile}, even with the exact original SQL`);
+  }
 });
 
 test("deterministic evaluator output is independent of input order", () => {

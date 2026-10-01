@@ -1,4 +1,4 @@
-import { tableOwners } from "./architecture-policy.mjs";
+import { tableOwners, operationTableOwners } from "./architecture-policy.mjs";
 const doc = "docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md";
 // Static reviewed evidence at 63f19bd3. Tuple: table, verb, exact statement
 // SHA-256 (query expression + full file for unresolved SQL), class, exact count.
@@ -24,6 +24,13 @@ const groups = {
   ],
   "infrastructure/authorization/postgresPermissionAdministration.ts": [
     ["<unresolved>","UNRESOLVED","e751817c8d84b9ed6f559c041a4d20205060cd1f56661b0b8d4561ccebf49ea0","SQL-DYNAMIC",1],
+  ],
+  // Reviewed BD-4 relocation: identical statements now execute inside Auth's
+  // narrow proof-recipient authority operation. These pin a legacy physical
+  // home, not foreign writes or general Portal lifecycle permission (BDR-3).
+  "infrastructure/authorization/postgresProofRecipientAccess.ts": [
+    ["customer_portal_access","INSERT","c4578f8a84ab46de8a55ff49f14ac36d0aa68d3e6477b1f24dff9b4e6eeb12c2","LEGACY-COMPATIBILITY",1],
+    ["customer_portal_access","UPDATE","5c4478db513e06a1d5fee8dc350dd9f1f470f6d5c06ad64968ab11d9327e9b11","LEGACY-COMPATIBILITY",1],
   ],
   "infrastructure/billing/postgresBillingDraftInvoiceTransaction.ts": [
     ["<unresolved>","UNRESOLVED","e6b42a596017cd87a126a655708d522d2351ab35a7603a5c2be84844db473801","SQL-DYNAMIC",1],
@@ -65,7 +72,6 @@ const groups = {
     ["customer_notes","INSERT","517eef73daebd683a9d0747e272cb49b4e7c68f00debb2313e41227252f98d2f","LEGACY-COMPATIBILITY",1],
   ],
   "infrastructure/fulfillment/postgresReplacementObligations.ts": [
-    ["v2_production_works","INSERT","6bd69206fee725d2cfc380a7525501092d0cbc7e9e3555879165bd2677b181ba","BD-2",1],
   ],
   "infrastructure/fulfillment/postgresShipmentContainerTransaction.ts": [
     ["v2_fulfillment_handoffs","INSERT","64dae4f914fd6bda7fe366299f28f3d9e16115be98679ea3e3df4ceadfd97e97","OBSERVED",1],
@@ -74,9 +80,6 @@ const groups = {
     ["v2_fulfillment_handoff_document_snapshots","INSERT","c8c964695a2f2fc81cbf01516988ebc71211ad123a47fbd32c70eaa689b4bb4a","SNAPSHOT",1],
   ],
   "infrastructure/fulfillment/postgresShipmentShippingAllocation.ts": [
-    ["v2_billing_invoice_additional_charges","INSERT","05bf407064623ee58d04f71ae6de09dabd34baba4b8a3f0a7c79e4a39df17525","BD-1",1],
-    ["v2_billing_invoices","UPDATE","53d55ad2734d9fd70944b724109b95f9343897ec7e33c6e69a6a7caef506bbf2","BD-1",1],
-    ["v2_billing_invoice_revisions","INSERT","2b394ad67717ff2c7f9ee4c2c087be24dbec64a3281013b8ed6732569a26dbde","BD-1",1],
   ],
   "infrastructure/inbound/postgresInboundIntakeStore.ts": [
     ["<unresolved>","UNRESOLVED","f2df5f90140158cfb1b227d2e7e7892e0bfa9f350ba49288c31883631d78bc44","SQL-DYNAMIC",1],
@@ -141,10 +144,6 @@ const groups = {
     ["v2_permission_audit_events","INSERT","5488c613090c2f99638ec29cbc371c7b54e4e7c986524f5e51c72843a8a7f6d6","DEFERRED",1],
   ],
   "infrastructure/prepress/postgresPrepressTransaction.ts": [
-    ["v2_production_works","INSERT","45198a1f498c96fdfa3bc273a7aab6b7c8a3d8b8c21f0891d9a0ddf82730fff9","BD-2",1],
-    ["v2_production_rework_cycles","UPDATE","de20d99ba15abd6a0353558628d58ec50627c32cab1e59a66497af0d73a67606","OBSERVED",1],
-    ["v2_route_instances","UPDATE","357dd2d154bbb6d7c95be78add821377bf7f814e5112782c6edd52f242a290a2","BD-3",1],
-    ["v2_production_works","INSERT","6d751ea38d83f93f80418a83182426a2732879fad3367a0f89882f6120b0ed7d","BD-2",1],
   ],
   "infrastructure/pricing/postgresFormulaDomain.ts": [
     ["<unresolved>","UNRESOLVED","4ae5f01cdcb9d0cd57d6b5f05148ea09fa051537663fae8b196fd2e4619db011","SQL-DYNAMIC",1],
@@ -154,7 +153,6 @@ const groups = {
     ["v2_product_version_formula_revision_bindings","INSERT","e9dfd0d9cf7776b70200032866264f79ce61edc077efdbfd099ae13fe4a2e61d","DEFERRED",1],
   ],
   "infrastructure/production/postgresProductionTransaction.ts": [
-    ["v2_prepress_units","INSERT","eeecc71f44a1302001673c88f2b9b344bc4687463d4ccfcb7e6eb3501aca936f","BD-3",1],
   ],
   "infrastructure/products/postgresCustomerCommercialStore.ts": [
     ["v2_customer_product_entitlements","INSERT","727a1c201fee5429b85f55f5e5370f6a5c1c575f52ef8787154d7f82837cae2b","DEFERRED",1],
@@ -194,11 +192,7 @@ const groups = {
     ["<unresolved>","UNRESOLVED","000f8a4189862adc704e81500755ac2f5226298d0fe38a9e692e7d8086831e03","SQL-DYNAMIC",1],
   ],
   "infrastructure/proofing/postgresProofingTransaction.ts": [
-    ["customer_portal_access","INSERT","c4578f8a84ab46de8a55ff49f14ac36d0aa68d3e6477b1f24dff9b4e6eeb12c2","BD-4",1],
-    ["customer_portal_access","UPDATE","5c4478db513e06a1d5fee8dc350dd9f1f470f6d5c06ad64968ab11d9327e9b11","BD-4",1],
-    ["v2_portal_permission_set_assignments","INSERT","dc64c9f7dba0f397014852ebdf2d4aaa0e66f008e13cfa2d3735672f8d6234bb","BD-4",1],
     ["v2_proof_delivery_jobs","INSERT","e7022ccbff6e7f165069fb63ed346523921d58f6a0b8cb1dc279e27e36c957c4","DEFERRED",1],
-    ["v2_permission_organization_state","UPDATE","f7954d023db8cfe27761c752da7fa31a0ffa41d95ba8eb519074e3dcbc539916","BD-4",1],
     ["v2_proof_delivery_jobs","UPDATE","29127ffcbc3d4670bff68fddb9cc73b7dfc599f7d537744a23e8ca36f68815b6","DEFERRED",1],
   ],
   "infrastructure/sales/postgresOrderTransaction.ts": [
@@ -206,7 +200,6 @@ const groups = {
     ["v2_production_works","UPDATE","788fb59063b0ac6c9e1c827673fc11951568c109ff848d93086eec95e7671292","PROJECTION",1],
   ],
   "infrastructure/sales/postgresOrderWorkflowTransaction.ts": [
-    ["v2_route_instances","UPDATE","357dd2d154bbb6d7c95be78add821377bf7f814e5112782c6edd52f242a290a2","BD-3",2],
   ],
   "infrastructure/sales/postgresSalesWorkspaceReads.ts": [
     ["<unresolved>","UNRESOLVED","dd8c96265cb938e4dab5ec5fad00b410e3fc5b59c4c1a89b9d2ce78f0413f710","SQL-DYNAMIC",1],
@@ -218,10 +211,6 @@ const groups = {
   ],
 };
 const reasons = {
-  "BD-1": "Shipping applies Billing tax, revision and totals directly; retire through Billing's charge operation (Decision 2).",
-  "BD-2": "Prepress/Fulfillment create Production successor/replacement work; retire through Production creation operation (Decision 3, BDR-4).",
-  "BD-3": "Non-Routing step advances or Production's Prepress insertion; retire through the corresponding owner operation.",
-  "BD-4": "Proofing creates portal access/permission/authority state; retire through the owner after BDR-3, not by permitting Proofing authority writes.",
   "BD-6": "Inventory dual-writes materials.stock_quantity without reconciliation; not legacy compatibility approval (Decision 4).",
   "LEGACY-COMPATIBILITY": "Owner facts currently have a V1 physical home; retain exact existing statement only, independently of boundary debt.",
   "DEFERRED": "Unresolved ownership/administration/producer-consumer or configuration concern; exact existing evidence, not permission (BDR-1, BDR-3, Communications, Settings).",
@@ -232,6 +221,6 @@ const reasons = {
 };
 export const sqlBaseline = Object.entries(groups).flatMap(([file, rows]) => rows.map(([table, verb, hash, id, count]) => ({
   kind: "sql", file, table, verb, hash, id, count, reason: reasons[id],
-  owner: tableOwners[table]?.owner ?? "unresolved",
-  reference: `${tableOwners[table]?.reference ?? `${doc} §Evidence limits`}; §${id.startsWith("BD-") || id === "PROJECTION" ? "Known boundary debt" : id === "SNAPSHOT" ? "Current state and history; Fulfillment; Shipping" : id === "DEFERRED" ? "Business decisions required; Authentication / Permissions; Settings; Communications" : id === "OBSERVED" ? "Cross-module transaction policy" : "Cutover and V1/V2 writer authority"}`,
+  owner: operationTableOwners[file]?.[table]?.verbs.includes(verb) ? operationTableOwners[file][table].owner : tableOwners[table]?.owner ?? "unresolved",
+  reference: `${operationTableOwners[file]?.[table]?.reference ?? tableOwners[table]?.reference ?? `${doc} §Evidence limits`}; §${id.startsWith("BD-") || id === "PROJECTION" ? "Known boundary debt" : id === "SNAPSHOT" ? "Current state and history; Fulfillment; Shipping" : id === "DEFERRED" ? "Business decisions required; Authentication / Permissions; Settings; Communications" : id === "OBSERVED" ? "Cross-module transaction policy" : "Cutover and V1/V2 writer authority"}`,
 })));

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { tableOwners, writerAreas } from "./architecture-policy.mjs";
+import { tableOwners, writerAreas, operationTableOwners } from "./architecture-policy.mjs";
 
 export const documentReference = "docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md";
 export const fingerprint = (text) => createHash("sha256").update(text).digest("hex");
@@ -18,6 +18,10 @@ const parse = (file, source) => ts.createSourceFile(file, source.replaceAll("\r\
 
 // These are explicit persistence-free seams, not a blanket *Application exemption.
 export const publicApis = {
+  "routing/ownerTransitions": ["OwnerRouteScope", "ProductionDestination", "SalesWorkflowRouteRequest", "PreparedPrepressResult", "OwnerTransitions"],
+  "prepress/reworkPreparation": ["CreateReworkPreparationRequest", "ReworkPreparation"],
+  "billing/shippingCharge": ["ApplyShippingChargeRequest"],
+  "production/successorWorkCreation": ["CompletedPrepressWorkCreationInput", "PrepressReworkWorkCreationInput", "ReplacementProductionSource", "ReplacementWorkCreationInput", "ProductionWorkCreation"],
   "sales/orderAutomaticLifecycle": ["OrderAutomaticLifecycle"],
   "sales/orderApplication": ["CreateOrderInput", "OrderOperationResult"],
   "organization/businessProfile": ["DocumentOrganizationIdentity"],
@@ -31,6 +35,10 @@ export const publicApis = {
 // Infrastructure may compose these named owner operations/providers. This does
 // not authorize sibling domain modules to import an application implementation.
 export const adapterPublicApis = {
+  "routing/ownerTransitions": ["OwnerRouteScope", "ProductionDestination", "SalesWorkflowRouteRequest", "PreparedPrepressResult", "OwnerTransitions"],
+  "prepress/reworkPreparation": ["CreateReworkPreparationRequest", "ReworkPreparation"],
+  "billing/shippingCharge": ["ApplyShippingChargeRequest"],
+  "production/successorWorkCreation": ["CompletedPrepressWorkCreationInput", "PrepressReworkWorkCreationInput", "ReplacementProductionSource", "ReplacementWorkCreationInput", "ProductionWorkCreation"],
   "artwork/artworkApplication": ["ArtworkApplicationService"],
   "artwork/quoteArtworkApplication": ["QuoteArtworkApplicationService"],
   "sales/orderApplication": ["OrderApplicationService"],
@@ -56,6 +64,13 @@ export const adapterPublicApis = {
   "materials/materialRequirementResolver": ["MaterialRequirementMaterial", "Pbv2MaterialRequirementContext", "resolveMaterialRequirements"],
 };
 export const ownerOperations = {
+  "infrastructure/routing/postgresOwnerTransitions.js": ["PostgresOwnerTransitions"],
+  "infrastructure/prepress/postgresReworkPreparation.js": ["PostgresReworkPreparation"],
+  // Narrow owner-controlled transaction operations for BD-1, BD-2, and BD-4.
+  // These named APIs permit composition, never SQL in a foreign caller.
+  "infrastructure/billing/postgresShippingCharge.js": ["applyShippingChargeInTransaction"],
+  "infrastructure/production/postgresSuccessorWorkCreation.js": ["PostgresSuccessorWorkCreation"],
+  "infrastructure/authorization/postgresProofRecipientAccess.js": ["PostgresProofRecipientAccess"],
   "infrastructure/sales/postgresOrderAutomaticLifecycle.js": ["reconcileOrderInTransaction"],
   "infrastructure/billing/postgresReplacementInvoice.js": ["createOrReadReplacementInvoice", "ReplacementInvoiceProjection"],
   "infrastructure/persistence/types.js": ["TransactionalClient"],
@@ -65,6 +80,14 @@ export const ownerOperations = {
   "infrastructure/authentication/trustedHostPrincipalProvider.js": ["IssuedV2PrincipalProvider", "TrustedHostIdentitySource"],
   "infrastructure/documents/ownerPdfRenderer.js": ["OwnerPdfDocument", "ownerDocumentFilename", "renderOwnerPdf", "TenantBranding"],
   "infrastructure/documents/postgresTenantBranding.js": ["readTenantBranding"],
+};
+
+// Only Billing may compose Invoice tax from its own frozen evidence using the
+// existing stateless kernel. Shipping/other callers must request Billing work.
+export const ownerScopedAdapterApis = {
+  billing: {
+    "sales/taxComposition": ["composeSalesTax", "CommercialCharge", "FrozenTaxExemption", "TaxReceiptLocation", "TaxResolution", "TenantTaxJurisdiction"],
+  },
 };
 
 export function extractImports(file, source) {
@@ -166,7 +189,7 @@ export function evaluateImports(files) {
       const toInfra = /^v2\/infrastructure\/([^/]+)\//.exec(target)?.[1];
       if (fromInfra && toModule && toModule[1] !== "shared" && fromInfra !== toModule[1] &&
         !(toModule[2] === "contracts" && !symbols.some((symbol) => ["*", "<side-effect>", "<namespace-escape>"].includes(symbol))) &&
-        !symbols.every((symbol) => [...(publicApis[`${toModule[1]}/${toModule[2]}`] ?? []), ...(adapterPublicApis[`${toModule[1]}/${toModule[2]}`] ?? [])].includes(symbol))) {
+        !symbols.every((symbol) => [...(publicApis[`${toModule[1]}/${toModule[2]}`] ?? []), ...(adapterPublicApis[`${toModule[1]}/${toModule[2]}`] ?? []), ...(ownerScopedAdapterApis[writerDomain(file)]?.[`${toModule[1]}/${toModule[2]}`] ?? [])].includes(symbol))) {
         fail("adapter cross-module import must use a named public contract", "ADAPTER-CONTRACT");
       }
       if (fromInfra && toInfra && fromInfra !== toInfra && !symbols.every((symbol) => ownerOperations[target.replace(/^v2\//, "")]?.includes(symbol))) fail("cross-infrastructure import must call a named owner operation", "INFRA-CONTRACT");
@@ -334,7 +357,9 @@ export function evaluateSql(files) {
   for (const { file, source } of [...files].sort(compareFiles)) {
     if (!/^(?:v2\/)?(?:src|infrastructure)\//.test(normalize(file))) continue;
     for (const record of extractSql(file, source)) {
-      const owner = tableOwner(record.table), writer = writerDomain(file);
+      const scoped = operationTableOwners[normalize(file)]?.[record.table];
+      const owner = scoped?.verbs.includes(record.verb) ? scoped.owner : tableOwner(record.table);
+      const writer = writerDomain(file);
       let id, rule;
       if (normalize(file).startsWith("src/modules/") || normalize(file).startsWith("src/authorization/")) { id = "SQL-DOMAIN"; rule = "pure domain and authority must not contain SQL mutation"; }
       else if (record.dynamic) { id = "SQL-DYNAMIC"; rule = "dynamic SQL requires exact reviewed baseline; unresolved targets fail closed"; }

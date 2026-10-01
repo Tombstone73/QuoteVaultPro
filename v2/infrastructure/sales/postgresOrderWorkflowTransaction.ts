@@ -6,6 +6,7 @@ import type { OrganizationId } from "../../src/modules/shared/commercialValues.j
 import { brandedId, type OrderId } from "../../src/modules/shared/commercialValues.js";
 import type { WorkflowActionEligibility } from "../../src/modules/sales/workflowApplication.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
+import { PostgresOwnerTransitions } from "../routing/postgresOwnerTransitions.js";
 
 /** SQL adapter for the narrow exceptional paths. Locking the Order line and
  * Route means a retry cannot create two direct transitions or silently erase
@@ -28,17 +29,12 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
     const actions: WorkflowActionEligibility[] = [];
     for (const line of lines.rows) {
       if (line.workflow_intent !== "standard_production" || !line.requires_production || await this.hasProductionWork(organizationId, line.id)) continue;
-      const route = await this.client.query<{ id:string;current_step_id:string }>("SELECT id,current_step_id FROM v2_route_instances WHERE organization_id=$1 AND order_line_id=$2 AND route_state IN ('pending','active')", [organizationId,line.id]);
-      const frozen = route.rows[0]; if (!frozen) continue;
-      const steps = await this.client.query<{id:string;position:number;step_kind:string;production_destination_station_key:"flatbed"|"roll"|null}>("SELECT id,position,step_kind,production_destination_station_key FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position",[organizationId,frozen.id]);
-      const current = steps.rows.find((step)=>step.id===frozen.current_step_id); if (!current) continue;
-      const fulfillment = steps.rows.find((step)=>step.position>current.position&&step.step_kind==='fulfillment');
-      if (fulfillment && (current.step_kind==='prepress'||current.step_kind==='production') && !steps.rows.some((step)=>step.position>current.position&&step.position<fulfillment.position&&step.step_kind!=='prepress'&&step.step_kind!=='production')) actions.push({action:"production_not_required",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,reasonRequired:true,eligibilityReason:"No Production work exists and the frozen Route can proceed to Fulfillment without fabricating completion."});
-      const production = current.step_kind==='prepress' ? steps.rows.find((step)=>step.position>current.position&&step.step_kind==='production') : undefined;
-      if (!production || steps.rows.some((step)=>step.position>current.position&&step.position<production.position&&step.step_kind!=='prepress')) continue;
+      const route = await new PostgresOwnerTransitions(this.client).inspectSalesWorkflowRoute({organizationId,orderId,orderLineId:line.id});
+      if (route.fulfillmentEligible) actions.push({action:"production_not_required",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,reasonRequired:true,eligibilityReason:"No Production work exists and the frozen Route can proceed to Fulfillment without fabricating completion."});
+      if (!route.directProductionDestination) continue;
       if (!await this.productionArtworkComplete(organizationId,line.id)) continue;
       if (line.requires_proof && !await this.currentProofApproved(organizationId,line.id)) continue;
-      if (production.production_destination_station_key) actions.push({action:"direct_production",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,allowedDestinations:[production.production_destination_station_key],reasonRequired:false,eligibilityReason:"The frozen Route, current Artwork, and required Proof evidence permit a direct Production handoff."});
+      actions.push({action:"direct_production",orderLineId:brandedId<"OrderLineId">(line.id),confirmationRequired,allowedDestinations:[route.directProductionDestination],reasonRequired:false,eligibilityReason:"The frozen Route, current Artwork, and required Proof evidence permit a direct Production handoff."});
     }
     return actions;
   }
@@ -46,22 +42,17 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
     const line = await this.lockEligibleLine(input.organizationId, input.orderId, input.orderLineId);
     if (!line.requiresProduction) throw new V2ApplicationError("CONFLICT", "This Order line has no Production obligation to route directly.");
     if (await this.hasProductionWork(input.organizationId, input.orderLineId)) throw new V2ApplicationError("CONFLICT", "Production work already exists for this Order line.");
-    const route = await this.lockRoute(input.organizationId, input.orderLineId);
-    const productionStep = await this.nextProductionStep(input.organizationId, route.id, route.current_step_id);
-    await this.assertConfiguredDestination(input.organizationId, route.id, productionStep, input.destination);
-    await this.assertProductionArtworkComplete(input.organizationId, input.orderLineId);
-    if (line.requiresProof) await this.assertCurrentProofApproved(input.organizationId, input.orderLineId);
-    await this.upsertException(input, null, input.destination);
-    await this.client.query("UPDATE v2_route_instances SET route_state='active',current_step_id=$3,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [input.organizationId, route.id, productionStep]);
+    await new PostgresOwnerTransitions(this.client).applySalesWorkflowException({...input,kind:"direct_production"},async()=>{
+      await this.assertProductionArtworkComplete(input.organizationId, input.orderLineId);
+      if (line.requiresProof) await this.assertCurrentProofApproved(input.organizationId, input.orderLineId);
+      await this.upsertException(input, null, input.destination);
+    });
   }
   async productionNotRequired(input: Parameters<WorkflowTransitionTransaction["productionNotRequired"]>[0]): Promise<void> {
     const line = await this.lockEligibleLine(input.organizationId, input.orderId, input.orderLineId);
     if (!line.requiresProduction) throw new V2ApplicationError("CONFLICT", "This Order line is already not Production-required.");
     if (await this.hasProductionWork(input.organizationId, input.orderLineId)) throw new V2ApplicationError("CONFLICT", "Production Not Required cannot be selected after Production work exists.");
-    const route = await this.lockRoute(input.organizationId, input.orderLineId);
-    const fulfillmentStep = await this.nextFulfillmentStep(input.organizationId, route.id, route.current_step_id);
-    await this.upsertException(input, "not_required", null);
-    await this.client.query("UPDATE v2_route_instances SET route_state='active',current_step_id=$3,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2", [input.organizationId, route.id, fulfillmentStep]);
+    await new PostgresOwnerTransitions(this.client).applySalesWorkflowException({...input,kind:"production_not_required"},()=>this.upsertException(input, "not_required", null));
   }
   async audit(input: Parameters<WorkflowTransitionTransaction["audit"]>[0]) { await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,'sales_order_line',$5,$6,$7,$8,$9::jsonb)", [input.organizationId, input.requestId, input.operation, input.eventType, input.resourceId, input.principalKind, input.principalSubject, input.staffActorUserId ?? null, JSON.stringify([input.changes])]); }
   private async lockEligibleLine(organizationId: string, orderId: string, lineId: string) {
@@ -76,25 +67,6 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
     if (line.workflow_intent !== "standard_production") throw new V2ApplicationError("CONFLICT", "Only a standard-production Order line can use this workflow exception.");
     return { requiresProduction: line.requires_production, requiresProof: line.requires_proof };
   }
-  private async lockRoute(organizationId: string, lineId: string) {
-    const result = await this.client.query<{ id: string; current_step_id: string }>("SELECT id,current_step_id FROM v2_route_instances WHERE organization_id=$1 AND order_line_id=$2 AND route_state IN ('pending','active') FOR UPDATE", [organizationId, lineId]);
-    if (!result.rows[0]) throw new V2ApplicationError("CONFLICT", "A current frozen Route is required for this workflow exception.");
-    return result.rows[0];
-  }
-  private async nextProductionStep(organizationId: string, routeId: string, currentStepId: string) {
-    const steps = await this.client.query<{ id: string; position: number; step_kind: string }>("SELECT id,position,step_kind FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position FOR SHARE", [organizationId, routeId]);
-    const current = steps.rows.find((step) => step.id === currentStepId);
-    const next = current ? steps.rows.find((step) => step.position > current.position && step.step_kind === "production") : undefined;
-    if (!current || current.step_kind !== "prepress" || !next || steps.rows.some((step) => step.position > current.position && step.position < next.position && step.step_kind !== "prepress")) throw new V2ApplicationError("CONFLICT", "Direct Production is only available while Prepress is the current bypassable Route step.");
-    return next.id;
-  }
-  private async nextFulfillmentStep(organizationId: string, routeId: string, currentStepId: string) {
-    const steps = await this.client.query<{ id: string; position: number; step_kind: string }>("SELECT id,position,step_kind FROM v2_route_instance_steps WHERE organization_id=$1 AND route_instance_id=$2 ORDER BY position FOR SHARE", [organizationId, routeId]);
-    const current = steps.rows.find((step) => step.id === currentStepId);
-    const next = current ? steps.rows.find((step) => step.position > current.position && step.step_kind === "fulfillment") : undefined;
-    if (!current || (current.step_kind !== "prepress" && current.step_kind !== "production") || !next || steps.rows.some((step) => step.position > current.position && step.position < next.position && step.step_kind !== "prepress" && step.step_kind !== "production")) throw new V2ApplicationError("CONFLICT", "Production Not Required is only available before the current Production obligation begins.");
-    return next.id;
-  }
   private async assertProductionArtworkComplete(organizationId: string, lineId: string) {
     if (!await this.productionArtworkComplete(organizationId,lineId)) throw new V2ApplicationError("CONFLICT", "Every required Production Artwork assignment must be current before direct Production.");
   }
@@ -103,13 +75,6 @@ export class PostgresOrderWorkflowTransaction implements WorkflowTransitionTrans
       LEFT JOIN LATERAL (SELECT a.id FROM v2_current_artwork_assignments a WHERE a.organization_id=req.organization_id AND a.order_line_id=req.order_line_id AND a.purpose='production' AND a.side IS NOT DISTINCT FROM req.side AND a.source_page_index IS NOT DISTINCT FROM req.source_page_index AND a.layer_key IS NOT DISTINCT FROM req.layer_key AND a.layer_order IS NOT DISTINCT FROM req.layer_order AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) LIMIT 1) a ON true
       WHERE req.organization_id=$1 AND req.order_line_id=$2`, [organizationId, lineId]);
     return result.rows[0]?.complete===true;
-  }
-  private async assertConfiguredDestination(organizationId: string, routeId: string, productionStepId: string, destination: "flatbed" | "roll") {
-    const result = await this.client.query<{ configured: boolean }>(`SELECT EXISTS(
-      SELECT 1 FROM v2_route_instance_steps step
-      WHERE step.organization_id=$1 AND step.route_instance_id=$2 AND step.id=$3 AND step.step_kind='production' AND step.production_destination_station_key=$4
-    ) configured`, [organizationId, routeId, productionStepId, destination]);
-    if (!result.rows[0]?.configured) throw new V2ApplicationError("CONFLICT", "The frozen Route has no configured Production destination matching this station.");
   }
   private async assertCurrentProofApproved(organizationId: string, lineId: string) {
     if (!await this.currentProofApproved(organizationId,lineId)) throw new V2ApplicationError("CONFLICT", "Direct Production requires the current Proof Version to be approved.");

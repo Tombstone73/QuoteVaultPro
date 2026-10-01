@@ -40,3 +40,17 @@ export const writerAreas = {
   "infrastructure/communications/postgresEmailIntegration.ts": "integrations",
   "infrastructure/sales/postgresSalesTaxSettings.ts": "settings",
 };
+
+// BD-4's minimum correction assigns only proof-recipient authority binding to
+// Auth's bounded operation. Portal lifecycle ownership (BDR-3) remains deferred;
+// other files, operations, and deletion receive no permission from this map.
+// The legacy physical-home check still requires exact compatibility evidence.
+export const operationTableOwners = {
+  "infrastructure/authorization/postgresProofRecipientAccess.ts": {
+    customer_portal_access: {
+      owner: "authentication",
+      verbs: ["INSERT", "UPDATE"],
+      reference: `${doc} §Authentication / Permissions; Known boundary debt BD-4 target; BDR-3 lifecycle remains unresolved`,
+    },
+  },
+};

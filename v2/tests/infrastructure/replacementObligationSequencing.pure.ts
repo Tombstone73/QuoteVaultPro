@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { PostgresReplacementObligationService } from "../../infrastructure/fulfillment/postgresReplacementObligations.js";
 import { reconcileOrderInTransaction } from "../../infrastructure/sales/postgresOrderAutomaticLifecycle.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
+import { AuthorityPolicy } from "../../src/authorization/authorityPolicy.js";
 
 type State = {
   order: "open" | "completed";
@@ -36,10 +37,17 @@ const fixture = (order: State["order"], failWorkInsert = false) => {
   };
   let snapshot: State | undefined;
   const queries: string[] = [];
+  const parameters: (readonly unknown[])[] = [];
+  let connections = 0;
+  const decisions: string[] = [];
+  class ObservedAuthority extends AuthorityPolicy {
+    override decide(...args: Parameters<AuthorityPolicy["decide"]>) { decisions.push(args[1].capability); return super.decide(...args); }
+  }
   const client = {
     release: () => undefined,
     query: async (sql: string, values: readonly unknown[] = []) => {
       queries.push(sql);
+      parameters.push(values);
       if (sql === "BEGIN") { snapshot = structuredClone(state); return { rows: [] }; }
       if (sql === "COMMIT") { snapshot = undefined; return { rows: [] }; }
       if (sql === "ROLLBACK") { assert.ok(snapshot); state = snapshot; snapshot = undefined; return { rows: [] }; }
@@ -80,8 +88,8 @@ const fixture = (order: State["order"], failWorkInsert = false) => {
       throw new Error(`Unexpected query: ${sql.slice(0, 90)}`);
     },
   } as unknown as PoolClient;
-  const service = new PostgresReplacementObligationService({ connect: async () => client } as unknown as Pool);
-  return { service, client, queries, get state() { return state; } };
+  const service = new PostgresReplacementObligationService({ connect: async () => { connections++; return client; } } as unknown as Pool, undefined, new ObservedAuthority());
+  return { service, client, queries, parameters, decisions, get connections() { return connections; }, get state() { return state; } };
 };
 
 const completed = fixture("completed");
@@ -94,12 +102,20 @@ assert.equal(completed.state.invoices.length, 1, "no-charge creation leaves the 
 assert.deepEqual(completed.state.events.map(event => event.event_kind), ["created", "production_authority_created"]);
 assert.equal(completed.queries.findIndex(sql => sql.includes("INSERT INTO v2_order_replacement_obligations")) < completed.queries.findIndex(sql => sql.startsWith("UPDATE v2_sales_order_details SET commercial_state='open'")), true, "obligation precedes canonical reopen");
 assert.equal(completed.queries.findIndex(sql => sql.startsWith("UPDATE v2_sales_order_details SET commercial_state='open'")) < completed.queries.findIndex(sql => sql.includes("INSERT INTO v2_production_works")), true, "canonical reopen precedes successor work");
+const creationParams = completed.parameters[completed.queries.findIndex(sql => sql.includes("INSERT INTO v2_production_works"))]!;
+assert.deepEqual(creationParams.slice(1, 13), ["org-a", "order-a", "line-a", "front", "assignment-a", "file-a", null, "front", null, null, null, 1], "Production owner consumes frozen source units and partial replacement quantity");
+assert.equal(creationParams[13], completed.state.obligations[0]!.id);
+assert.deepEqual(creationParams.slice(14), ["original-work", "staff", "staff-a", "staff-a"], "new work retains original lineage and actual actor");
+assert.equal(completed.connections, 1, "owner creation uses the caller's one client");
+assert.deepEqual(completed.decisions, ["fulfillment.replace"], "creation preserves the current caller authority gate without adding a Production capability requirement");
+assert.deepEqual(completed.queries.filter(sql => /^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)), ["BEGIN", "COMMIT"], "no nested transaction");
 
 const replay = await completed.service.create(context(), input);
 assert.equal(replay.ok, true, "same semantic request replays");
 assert.equal(completed.state.obligations.length, 1, "replay creates no duplicate obligation");
 assert.equal(completed.state.works.filter(work => work.replacement_obligation_id).length, 1, "replay creates no duplicate successor work");
 assert.equal(completed.state.reopenAudits, 1, "replay creates no duplicate reopen audit");
+assert.deepEqual(completed.decisions, ["fulfillment.replace", "fulfillment.replace"], "replay rechecks current caller authority");
 
 completed.state.obligations[0]!.status = "fulfilled";
 await reconcileOrderInTransaction(completed.client, brandedId<"OrganizationId">("org-a"), brandedId<"OrderId">("order-a"));
@@ -119,12 +135,23 @@ assert.equal(failed.state.works.filter(work => work.replacement_obligation_id).l
 assert.equal(failed.state.events.length, 0, "failed successor insertion leaves no replacement events");
 assert.equal(failed.state.invoices.length, 1, "failed successor insertion leaves the original Invoice untouched");
 
+const beforeDenied = completed.queries.length;
+const beforeDeniedConnections = completed.connections;
 const wrongTenant = await completed.service.create(context("org-b", "org-a"), input);
 assert.equal(wrongTenant.ok, false, "tenant scope is enforced before replacement writes");
+if (!wrongTenant.ok) assert.equal(wrongTenant.error.code, "WRONG_TENANT");
 assert.equal(completed.state.obligations.length, 1, "wrong-tenant attempt cannot change canonical tenant state");
+const denied = context();
+denied.principal.authority.capabilities = [];
+const forbidden = await completed.service.create(denied, input);
+assert.equal(forbidden.ok, false);
+if (!forbidden.ok) assert.equal(forbidden.error.code, "FORBIDDEN");
+assert.equal(completed.queries.length, beforeDenied, "scope and authority denial perform no query");
+assert.equal(completed.connections, beforeDeniedConnections, "denial does not connect");
 
 const source = readFileSync(new URL("../../infrastructure/fulfillment/postgresReplacementObligations.ts", import.meta.url), "utf8");
-assert.ok(source.indexOf("await reconcileOrderInTransaction") < source.indexOf("INSERT INTO v2_production_works"), "billable and no-charge paths share reopen-before-work sequencing");
-assert.ok(source.indexOf("INSERT INTO v2_production_works") < source.indexOf("?await createOrReadReplacementInvoice"), "billable Invoice remains after successor Production authority");
+assert.doesNotMatch(source, /INSERT INTO v2_production_works/, "Fulfillment does not mutate Production work");
+assert.ok(source.indexOf("await reconcileOrderInTransaction") < source.indexOf(".createReplacementWork("), "billable and no-charge paths share reopen-before-owner-call sequencing");
+assert.ok(source.indexOf(".createReplacementWork(") < source.indexOf("?await createOrReadReplacementInvoice"), "billable Invoice remains after successor Production authority");
 assert.doesNotMatch(source, /await this\.lifecycle\?\.reconcileOrder\(brandedId<"OrganizationId">\(c\.organizationId\),input\.orderId\)/, "creation has no post-commit reopen gap");
 console.log("replacement obligation sequencing, rollback, idempotency, lifecycle, lineage, and tenant contracts passed.");

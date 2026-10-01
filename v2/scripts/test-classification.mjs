@@ -6,6 +6,14 @@ const entries = [];
 function add(prefix, runner, names, category = 'safe-deterministic', reason) {
   for (const name of names) entries.push({ path: `${prefix}${name}`, category, runner, reason: reason ?? (runner === 'jest' ? 'Jest assertions with fake dependencies or source contracts; runtime import closure reviewed, no DB initialization or network execution.' : 'Self-executing node:assert fixture/source contract; runtime import closure reviewed, no DB initialization or network execution.') });
 }
+add('v2/tests/infrastructure/', 'tsx', [
+  'shipmentShippingInvoiceProjection.pure.ts',
+  'proofRecipientAccess.test.ts',
+], 'safe-deterministic', 'Boundary-owner regressions use explicit fake PoolClient/Pool and exported owner operations; no database initialization, provider calls, or production credentials. Standalone node:assert programs, not Jest suites.');
+add('v2/tests/infrastructure/', 'jest', [
+  'productionWorkCreationOwner.test.ts',
+  'routingPrepressOwnership.test.ts',
+], 'safe-deterministic', 'Production-owned work creation and caller-transaction regressions use explicit fake PoolClient/Pool; no database initialization or provider effects.');
 add('v2/tests/', 'tsx', [
   'aiSafeToolPlane.test.ts',
   'artworkAiCommand.test.ts',
