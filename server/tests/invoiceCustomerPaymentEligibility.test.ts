@@ -5,7 +5,7 @@ const invoice = { status: 'billed', invoiceVersion: 3, accountingApprovedAt: nul
 const approved = { ...invoice, accountingApprovedAt: new Date(), accountingApprovedVersion: 3 };
 
 test('20544 remains a receivable but cannot be paid by a customer before approval', () => {
-  expect(eligibility(invoice, 25000)).toEqual({ payable: false, blockedReason: 'Awaiting approval' });
+  expect(eligibility(invoice, 25000)).toEqual({ payable: false, blockedReason: 'Not released to customer' });
   expect(getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents: 25000 }).payable).toBe(true);
 });
 test('approval on refresh opens payment; revoked or outdated approval closes it', () => {

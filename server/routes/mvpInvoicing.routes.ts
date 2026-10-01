@@ -1,3 +1,6 @@
+import { registerInvoiceCustomerReleaseRoutes } from './invoiceCustomerRelease.routes';
+import { getInvoiceCustomerReleaseDisplay, isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
+import { getInvoiceCustomerPaymentEligibility } from '../lib/invoiceCustomerPaymentEligibility';
 import { InvoicePaymentContextError, retireInvoicePaymentSessions, withInvoicePaymentContext } from '../services/invoicePaymentSession.service';
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
@@ -131,6 +134,7 @@ function toInvoiceAccountingPayments(paymentRows: Array<Record<string, any>> | u
 function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T, paymentRows?: Array<Record<string, any>>) {
   return {
     ...invoice,
+    ...getInvoiceCustomerReleaseDisplay(invoice),
     ...normalizeInvoiceAccountingDisplay({
       ...invoice,
       payments: paymentRows ? toInvoiceAccountingPayments(paymentRows) : undefined,
@@ -309,6 +313,7 @@ export async function registerMvpInvoicingRoutes(
   }
 ) {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = deps;
+  registerInvoiceCustomerReleaseRoutes(app, deps);
 
   async function resolveInvoiceEmailRecipientsForOperations(input: {
     organizationId: string;
@@ -617,10 +622,7 @@ export async function registerMvpInvoicingRoutes(
       throw error;
     }
 
-    const canInvoiceBePaidOnline = cust.kind === "customer" && getInvoiceFinancialPaymentEligibility({
-      invoiceStatus: (inv as any).status,
-      remainingCents: paymentSummary.amountDueCents,
-    }).payable;
+    const canInvoiceBePaidOnline = cust.kind === "customer" && getInvoiceCustomerPaymentEligibility(inv, paymentSummary.amountDueCents).payable;
     const publicWebOrigin = getInvoiceEmailPublicWebOrigin();
     if (!publicWebOrigin && cust.kind === "customer") {
       throw Object.assign(new Error("A valid HTTPS public web origin is required for invoice portal delivery."), {
@@ -652,7 +654,7 @@ export async function registerMvpInvoicingRoutes(
     }
     await logQueueDeliveryStage("invoice_rendering_completed", { pdfBytes: pdfBytes.length });
     const directInvoiceUrl = publicWebOrigin ? buildInvoicePortalInvoiceUrl({ publicWebOrigin, invoiceId: inv.id }) : null;
-    const portalUrl = cust.kind === "contact" ? null : portalDestination?.kind === "setup"
+    const portalUrl = cust.kind === "contact" || !isInvoiceCustomerVisible(inv) ? null : portalDestination?.kind === "setup"
       ? portalDestination.url
       : directInvoiceUrl;
     let guestPaymentUrl: string | null = null;

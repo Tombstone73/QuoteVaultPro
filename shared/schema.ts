@@ -4969,6 +4969,8 @@ export const invoices = pgTable("invoices", {
   accountingApprovedByUserId: varchar("accounting_approved_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   accountingApprovedVersion: integer("accounting_approved_version"),
   accountingApprovalRevokedAt: timestamp("accounting_approval_revoked_at", { withTimezone: true }),
+  customerReleasedAt: timestamp("customer_released_at", { withTimezone: true }),
+  customerReleasedByUserId: varchar("customer_released_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   lastSentVersion: integer("last_sent_version"),
   lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
   lastSentVia: text("last_sent_via"),
@@ -5062,6 +5064,8 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   accountingApprovedByUserId: true,
   accountingApprovedVersion: true,
   accountingApprovalRevokedAt: true,
+  customerReleasedAt: true,
+  customerReleasedByUserId: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
   status: z.enum(['draft','finalized','billed','paid','void','sent','partially_paid','credit','overdue']).default('draft'),

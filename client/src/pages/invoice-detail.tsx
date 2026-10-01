@@ -1,3 +1,4 @@
+import { InvoiceCustomerReleaseAction } from "@/components/InvoiceCustomerReleaseAction";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import { useActiveOrganizationRole } from '@/hooks/useActiveOrganizationRole';
 import { hasPreviousQuickBooksSync, quickBooksHistoryLabel } from "@/lib/invoiceQuickBooksHistory";
@@ -2099,6 +2100,7 @@ export default function InvoiceDetailPage() {
             label="Status"
             value={<Badge variant="secondary">{paymentStatusLabel}</Badge>}
           />
+          {invoice && <StatusTile label="Customer Visibility" value={<InvoiceCustomerReleaseAction invoice={invoice} canRelease={Boolean(isAdminOrOwner)} />} />}
           <StatusTile
             label="Customer Status"
             value={<Badge variant={customerSendStatus === 'sent_outdated' ? 'outline' : 'secondary'}>{customerHasLatest ? 'Sent latest' : customerSendStatus === 'sent_outdated' ? 'Updated After Sent' : 'Not sent'}</Badge>}

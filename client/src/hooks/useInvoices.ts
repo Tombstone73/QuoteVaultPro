@@ -16,7 +16,9 @@ export type ReminderListStatus =
   | 'maxed_out'
   | 'blocked';
 
-export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
+interface InvoiceCustomerVisibility { customerVisible?: boolean; customerReleaseEligible?: boolean; }
+
+export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay, InvoiceCustomerVisibility {
   customerName: string | null;
   companyName: string | null;
   contactName: string | null;
@@ -113,7 +115,7 @@ export type InvoiceListColumnFilterQuery = {
   excludeCustomerIds?: string;
 };
 
-export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay {
+export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay, InvoiceCustomerVisibility {
   lastSentAt?: string | null;
   lastSentVia?: 'email' | 'manual' | 'portal' | null;
   customerSendStatus?: InvoiceEmailStatus;

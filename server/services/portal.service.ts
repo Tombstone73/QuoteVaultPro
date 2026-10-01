@@ -1,6 +1,6 @@
 import { getInvoiceCustomerPaymentEligibility, type CustomerPaymentInvoice } from '../lib/invoiceCustomerPaymentEligibility';
 import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
-import { isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
+import { isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
 import { withInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
@@ -754,7 +754,6 @@ type PortalProofRow = {
   decision: string | null;
 };
 
-const CUSTOMER_VISIBLE_INVOICE_STATUSES = ["billed", "sent", "partially_paid", "credit", "overdue", "paid", "void", "open"];
 
 class PortalAccessError extends Error {
   statusCode: number;
@@ -1628,7 +1627,7 @@ function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[
     customerPoNumber: identity.customerPoNumber,
     jobLabel: identity.jobLabel,
     orderNumber: identity.orderNumber,
-    pdfAvailable: String(row.status || "").toLowerCase() !== "draft",
+    pdfAvailable: isInvoiceCustomerVisible(row),
     paymentStatusLabel: getInvoicePaymentStatusLabel({ invoiceStatus: row.status, rollup }),
     paymentEligibility: getInvoiceCustomerPaymentEligibility(row, rollup.amountDueCents),
   };
@@ -1665,6 +1664,7 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
       status: invoices.status,
+      customerReleasedAt: invoices.customerReleasedAt,
       invoiceVersion: invoices.invoiceVersion,
       accountingApprovedVersion: invoices.accountingApprovedVersion,
       accountingApprovedAt: invoices.accountingApprovedAt,
@@ -1701,13 +1701,14 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       and(
         eq(invoices.organizationId, scope.organizationId),
         eq(canonicalInvoiceCustomerId, scope.customerId),
-        inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
+
       ),
     )
     .orderBy(desc(invoices.issueDate), desc(invoices.createdAt));
 
-  const paymentsByInvoiceId = await loadInvoicePayments(scope.organizationId, rows.map((row) => row.id));
-  return rows.map((row) => mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? []));
+  const visibleRows = rows.filter(isInvoiceCustomerVisible);
+  const paymentsByInvoiceId = await loadInvoicePayments(scope.organizationId, visibleRows.map((row) => row.id));
+  return visibleRows.map((row) => mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? []));
 }
 
 export async function getPortalInvoice(req: Request, invoiceId: string): Promise<InvoicePortalDto | null> {
@@ -1719,6 +1720,7 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
       status: invoices.status,
+      customerReleasedAt: invoices.customerReleasedAt,
       invoiceVersion: invoices.invoiceVersion,
       accountingApprovedVersion: invoices.accountingApprovedVersion,
       accountingApprovedAt: invoices.accountingApprovedAt,
@@ -1755,12 +1757,12 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
         eq(invoices.id, invoiceId),
         eq(invoices.organizationId, scope.organizationId),
         eq(canonicalInvoiceCustomerId, scope.customerId),
-        inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
+
       ),
     )
     .limit(1);
 
-  if (!row) return null;
+  if (!row || !isInvoiceCustomerVisible(row)) return null;
   const paymentsByInvoiceId = await loadInvoicePayments(scope.organizationId, [row.id]);
   return mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? []);
 }
@@ -1775,6 +1777,7 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
       status: invoices.status,
+      customerReleasedAt: invoices.customerReleasedAt,
       invoiceVersion: invoices.invoiceVersion,
       accountingApprovedVersion: invoices.accountingApprovedVersion,
       accountingApprovedAt: invoices.accountingApprovedAt,
@@ -1934,7 +1937,7 @@ async function refreshPortalInvoiceDto(scope: PortalScope, invoiceId: string): P
 export async function listPortalInvoicePayments(req: Request, invoiceId: string): Promise<PortalInvoicePaymentDto[] | null> {
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
-  if (!invoice || !CUSTOMER_VISIBLE_INVOICE_STATUSES.includes(String(invoice.status || "").toLowerCase())) return null;
+  if (!invoice || !isInvoiceCustomerVisible(invoice)) return null;
 
   const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
   return rows.map(mapPayment);
@@ -1944,7 +1947,7 @@ export async function listPortalInvoicePayments(req: Request, invoiceId: string)
 export async function getPortalStripeDiagnosticScope(req: Request, invoiceId: string) {
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
-  return invoice ? { organizationId: scope.organizationId, invoiceId: invoice.id } : null;
+  return invoice && isInvoiceCustomerVisible(invoice) ? { organizationId: scope.organizationId, invoiceId: invoice.id } : null;
 }
 
 /** Browser-safe Stripe configuration, scoped to the authenticated portal invoice. */
@@ -2449,7 +2452,7 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice) return null;
 
-  if (!isInvoiceApprovedForAccounting(invoice)) throw new PortalAccessError(409, "Awaiting approval");
+  if (!isInvoiceCustomerVisible(invoice)) throw new PortalAccessError(409, "Not released to customer");
   const paymentIntentId = String((req.body as any)?.paymentIntentId || "").trim();
   if (!paymentIntentId) {
     throw new PortalAccessError(400, "Missing payment intent");
@@ -2569,7 +2572,7 @@ export async function confirmPortalGroupedStripePayment(req: Request): Promise<P
   for (const allocation of selected) {
     const invoice = await getPortalInvoiceForPayment(scope, allocation.invoiceId);
     if (!invoice) throw new PortalAccessError(404, "Not found");
-    if (!isInvoiceApprovedForAccounting(invoice)) throw new PortalAccessError(409, "Awaiting approval");
+    if (!isInvoiceCustomerVisible(invoice)) throw new PortalAccessError(409, "Not released to customer");
   }
 
   const stripeAccountId = String(batch.stripeAccountId || "").trim();
@@ -2606,7 +2609,7 @@ export async function confirmPortalGroupedStripePayment(req: Request): Promise<P
 export async function getPortalInvoicePdf(req: Request, invoiceId: string): Promise<PortalInvoicePdfResult | null> {
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
-  if (!invoice || normalizeInvoiceStatus(invoice.status) === "draft") return null;
+  if (!invoice || !isInvoiceCustomerVisible(invoice)) return null;
 
   const orderContext = await getInvoiceOrderContext({
     organizationId: scope.organizationId,
@@ -3054,7 +3057,7 @@ async function loadVisibleQuoteAttachments(scope: PortalScope, quoteId: string):
 export async function listPortalInvoiceFiles(req: Request, invoiceId: string): Promise<PortalFileDto[] | null> {
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
-  if (!invoice || normalizeInvoiceStatus(invoice.status) === "draft") return null;
+  if (!invoice || !isInvoiceCustomerVisible(invoice)) return null;
   return [mapInvoicePdfFile(invoice)];
 }
 
@@ -3786,6 +3789,17 @@ async function loadInvoiceSummariesForOrders(organizationId: string, customerId:
     .select({
       id: invoices.id,
       orderId: invoices.orderId,
+      customerReleasedAt: invoices.customerReleasedAt,
+      invoiceVersion: invoices.invoiceVersion,
+      accountingApprovedAt: invoices.accountingApprovedAt,
+      accountingApprovedVersion: invoices.accountingApprovedVersion,
+      accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt,
+      qbSyncStatus: invoices.qbSyncStatus,
+      qbInvoiceId: invoices.qbInvoiceId,
+      externalAccountingId: invoices.externalAccountingId,
+      lastQbSyncedVersion: invoices.lastQbSyncedVersion,
+      importSource: invoices.importSource,
+      isHistorical: invoices.isHistorical,
       status: invoices.status,
       totalCents: invoices.totalCents,
       currency: invoices.currency,
@@ -3797,13 +3811,13 @@ async function loadInvoiceSummariesForOrders(organizationId: string, customerId:
         eq(invoices.organizationId, organizationId),
         eq(canonicalInvoiceCustomerId, customerId),
         inArray(invoices.orderId, orderIds),
-        inArray(invoices.status, CUSTOMER_VISIBLE_INVOICE_STATUSES),
+
       ),
     );
 
   const paymentsByInvoiceId = await loadInvoicePayments(organizationId, rows.map((row) => row.id));
   const byOrderId = new Map<string, OrderPortalInvoiceSummaryDto>();
-  for (const row of rows as OrderInvoiceSummaryRow[]) {
+  for (const row of rows.filter(isInvoiceCustomerVisible) as OrderInvoiceSummaryRow[]) {
     if (!row.orderId) continue;
     const rollup = computeInvoicePaymentRollup({
       invoiceTotalCents: Number(row.totalCents || 0),
