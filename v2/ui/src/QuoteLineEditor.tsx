@@ -34,6 +34,9 @@ type EditorProps = Readonly<{
   /** Saved Order configuration is rendered from its frozen snapshot by the caller. */
   showConfigurationFields?: boolean;
   products: readonly Selection[];
+  /** Neutral workspaces use their own authorized read/preview endpoints. */
+  configurationApi?: Pick<typeof quoteApi, "configuration" | "resolveConfiguration" | "previewLinePricing">;
+  configurationScope?: string;
   canOverridePrice: boolean;
   csrfReady: boolean;
   busy: boolean;
@@ -313,6 +316,8 @@ export const QuoteLineEditor = ({
   onSubmit,
   enableArtworkIntake = false,
   onCancel,
+  configurationApi = quoteApi,
+  configurationScope = "quote-form",
 }: EditorProps) => {
   const [draft, setDraft] = useState(initialDraft);
   const draftRef = useRef(initialDraft);
@@ -335,6 +340,8 @@ export const QuoteLineEditor = ({
     sessionScope,
     organizationId,
     draft.productId,
+    configurationApi,
+    configurationScope,
   );
   const replaceDraft = (
     value: QuoteLineDraft | ((current: QuoteLineDraft) => QuoteLineDraft),
@@ -380,7 +387,7 @@ export const QuoteLineEditor = ({
     const sequence = ++resolutionSequence.current;
     const persistedDraft = draftRef.current;
     setResolving(true);
-    void quoteApi
+    void configurationApi
       .resolveConfiguration(organizationId, draft.productId, {
         ...persistedDraft.selections,
       })
@@ -412,6 +419,7 @@ export const QuoteLineEditor = ({
     draftKey,
     origin,
     organizationId,
+    configurationApi,
   ]);
 
   useEffect(() => {
@@ -425,7 +433,7 @@ export const QuoteLineEditor = ({
       return;
     const sequence = ++pricingPreviewSequence.current;
     const handle = globalThis.setTimeout(() => {
-      void quoteApi
+      void configurationApi
         .previewLinePricing(organizationId, draft.productId, {
           quantity,
           selections: { ...draft.selections },
@@ -457,6 +465,7 @@ export const QuoteLineEditor = ({
     draft.quantity,
     draft.selections,
     organizationId,
+    configurationApi,
   ]);
 
   const resolveSelection = (selectionKey: string, value: unknown) => {
@@ -476,7 +485,7 @@ export const QuoteLineEditor = ({
     const sequence = ++resolutionSequence.current;
     setResolving(true);
     setLocalError("");
-    void quoteApi
+    void configurationApi
       .resolveConfiguration(
         organizationId,
         transition.draft.productId,

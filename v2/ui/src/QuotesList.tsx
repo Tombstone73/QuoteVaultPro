@@ -69,7 +69,7 @@ export const QuotesList = ({
           </p>
         </div>
         <button type="button" className="v2-quotes-new" onClick={onCreate} disabled={!canCreate}>
-          <Plus aria-hidden /> New Quote
+          <Plus aria-hidden /> New Sales Entry
         </button>
       </div>
 

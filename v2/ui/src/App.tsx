@@ -61,7 +61,7 @@ import { ArtworkWorkspace } from "./ArtworkWorkspace";
 import { RoutingWorkspace } from "./RoutingWorkspace";
 import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
-import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
+import { PersistedSalesEntry } from "./PersistedSalesEntry";
 import { QuoteArtworkPanel } from "./QuoteArtworkPanel";
 import { SalesTaxSettingsWorkspace } from "./SalesTaxSettingsWorkspace";
 import { EmailSettingsWorkspace } from "./EmailSettingsWorkspace";
@@ -1391,7 +1391,7 @@ const QuotesPage = (
     try {
       const requested = sessionStorage.getItem("ph.v2.new-quote") === "1";
       if (requested) sessionStorage.removeItem("ph.v2.new-quote");
-      return requested;
+      return requested || new URLSearchParams(window.location.search).has("workspaceId");
     } catch {
       return false;
     }
@@ -1419,25 +1419,12 @@ const QuotesPage = (
     );
   if (mode === "create")
     return (
-      <SalesEntryWorkspace
-        mode="quote"
+      <PersistedSalesEntry
         organizationId={props.organizationId}
         sessionScope={props.sessionScope}
-        canCreate={props.canCreate}
-        canOverridePrice={props.canOverridePrice}
-        csrfReady={props.csrfReady}
-        onCancel={() => {
+        onBack={() => {
           setCreating(false);
           if (props.newQuoteRequested) props.setQuoteId("");
-        }}
-        onQuoteCreated={(result) => {
-          props.applyQuoteResult(
-            result,
-            props.organizationId,
-            props.sessionScope,
-          );
-          props.load(result.quote.quote.quoteId);
-          setCreating(false);
         }}
       />
     );

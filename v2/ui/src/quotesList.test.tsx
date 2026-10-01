@@ -29,7 +29,7 @@ assert.match(markup, /Due/);
 assert.match(markup, /Status/);
 assert.match(markup, /Total/);
 for (const filter of ["All", "Draft", "Sent", "Accepted", "Converted"]) assert.match(markup, new RegExp(`>${filter}<`));
-assert.match(markup, /New Quote/);
+assert.match(markup, /New Sales Entry/);
 assert.match(markup, /Due from/);
 assert.match(markup, /Updated: newest/);
 assert.match(markup, /Actions/);

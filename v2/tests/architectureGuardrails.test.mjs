@@ -20,6 +20,7 @@ const invalidImports = [
   ["module knex", moduleFile, importFixture("knex")],
   ["module Prisma client", moduleFile, importFixture("@prisma/client")],
   ["module builtin SQLite", moduleFile, importFixture("node:sqlite")],
+  ["module embedded PostgreSQL", moduleFile, importFixture("@electric-sql/pglite")],
   ["module infrastructure", moduleFile, importFixture("../../../infrastructure/billing/privateRepository.js")],
   ["module interfaces", moduleFile, importFixture("../../interfaces/http/orderRoutes.js")],
   ["module client", moduleFile, importFixture("../../../../client/src/private.js")],
@@ -86,6 +87,29 @@ test("owner operation calls in one transaction pass", () => {
   const source = `${importFixture("../sales/postgresOrderAutomaticLifecycle.js", "{ reconcileOrderInTransaction }")}\n${importFixture("../billing/postgresReplacementInvoice.js", "{ createOrReadReplacementInvoice }")}\nawait reconcileOrderInTransaction(client, input); await createOrReadReplacementInvoice(client, input);`;
   assert.deepEqual(evaluateImports(files("infrastructure/fulfillment/newCoordinator.ts", source)), []);
   assert.deepEqual(evaluateSql(files("infrastructure/fulfillment/newCoordinator.ts", source)), []);
+});
+
+test("TEMP persistence does not transfer Sales or Artwork state ownership", () => {
+  for (const table of ["v2_sales_workspaces", "v2_sales_workspace_lines", "v2_sales_workspace_requests", "v2_sales_workspace_promotions", "v2_sales_workspace_promotion_lines"]) {
+    assert.deepEqual(evaluateSql(files("infrastructure/sales/workspaceFixture.ts", `await client.query('INSERT INTO ${table}(id) VALUES($1)');`)), []);
+    assert.ok(evaluateSql(files("infrastructure/artwork/workspaceFixture.ts", `await client.query('UPDATE ${table} SET state=$1');`)).length > 0);
+  }
+  assert.deepEqual(evaluateSql(files("infrastructure/artwork/workspaceFixture.ts", "await client.query('INSERT INTO v2_artwork_workspace_claims(id) VALUES($1)');")), []);
+  assert.ok(evaluateSql(files("infrastructure/sales/workspaceFixture.ts", "await client.query('DELETE FROM v2_artwork_workspace_claims WHERE id=$1');")).length > 0);
+});
+
+test("workspace composition exposes named read/owner operations, not private repositories", () => {
+  const edges = [
+    ["infrastructure/artwork/workspaceFixture.ts", "../sales/workspaceArtworkAccess.js", "lockSalesWorkspaceForArtwork"],
+    ["infrastructure/sales/workspaceFixture.ts", "../artwork/postgresWorkspaceArtwork.js", "promoteWorkspaceArtworkInTransaction"],
+    ["infrastructure/sales/workspaceFixture.ts", "../products/customerCommercialPricingPort.js", "createCustomerCommercialPricingPort"],
+    ["infrastructure/sales/workspaceFixture.ts", "../compatibility/workspaceCommercialReads.js", "createSalesWorkspaceReadPorts"],
+  ];
+  for (const [file, specifier, symbol] of edges) {
+    assert.deepEqual(evaluateImports(files(file, `import { ${symbol} } from '${specifier}';`)), []);
+    assert.ok(evaluateImports(files(file, `import { rawRepository } from '${specifier}';`)).length > 0);
+  }
+  assert.ok(evaluateImports(files("infrastructure/artwork/workspaceFixture.ts", "import { PostgresSalesWorkspaceTransaction } from '../sales/postgresSalesWorkspace.js';")).length > 0);
 });
 
 test("campaign owner transaction APIs are named and do not expose private repositories", () => {

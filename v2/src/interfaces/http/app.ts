@@ -43,6 +43,7 @@ import { createCustomerCommercialRouter, createPortalCustomerCommercialRouter, t
 import { createPortalOrderRouter } from "./portalOrderRoutes.js";
 import { createPortalArtworkRouter } from "./portalArtworkRoutes.js";
 import { createAiAssistantRouter, type AiAssistantHttpDependencies } from "./aiAssistantRoutes.js";
+import { createSalesWorkspaceRouter, type SalesWorkspaceHttpDependencies } from "./salesWorkspaceRoutes.js";
 import type { PortalCommercialRead } from "../../modules/portal/commercialReads.js";
 import type { PortalOrderCreationApplicationService } from "../../modules/portal/portalOrderCreation.js";
 import type { PortalArtworkApplicationService } from "../../modules/portal/portalArtwork.js";
@@ -103,6 +104,7 @@ export const createV2HttpApp = (
   inbound?: AuthenticatedInboundRouteRuntime,
   customerCommercial?: AuthenticatedCustomerCommercialRouteRuntime,
   aiAssistant?: AuthenticatedAiAssistantRouteRuntime,
+  salesWorkspace?: Readonly<{ dependencies: SalesWorkspaceHttpDependencies; trustedHostMiddleware: RequestHandler }>,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -174,13 +176,14 @@ export const createV2HttpApp = (
           const policy = new AuthorityPolicy();
           const quoteView = policy.decide(principal, { capability: "quote.view", resource: { organizationId } }).allowed;
           const productView = policy.decide(principal, { capability: "product.view", resource: { organizationId } }).allowed;
-          const anyWorkspaceView = [quoteView, productView, "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view", "inbound.view", "communications.configure", "assistant.use"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
+          const anyWorkspaceView = [quoteView, productView, "quote.create", "order.create", "customer.view", "order.view", "invoice.view", "payment.view", "artwork.view", "proof.view", "prepress.view", "production.view", "inventory.view", "fulfillment.view", "route.view", "inbound.view", "communications.configure", "assistant.use"].some((capability) => capability === true || policy.decide(principal, { capability: capability as import("../../authorization/capabilities.js").Capability, resource: { organizationId } }).allowed);
           if (!anyWorkspaceView)
             return response.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "V2 workspace access is unavailable." } });
           return response.status(200).json({
             ok: true,
             data: {
               organizationId,
+              ...(principal.kind === "staff" ? { userId: principal.userId } : {}),
               csrfToken: issueV2CsrfToken(request),
               sessionScope: issueV2SessionScope(request),
               capabilities: {
@@ -442,6 +445,14 @@ export const createV2HttpApp = (
       requireV2CsrfToken,
       createAiAssistantRouter(aiAssistant.dependencies),
     );
+
+  if (salesWorkspace) app.use(
+    "/v2/organizations/:organizationId/sales-workspaces",
+    salesWorkspace.trustedHostMiddleware,
+    (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+    requireV2CsrfToken,
+    createSalesWorkspaceRouter(salesWorkspace.dependencies),
+  );
 
   app.use((_request, response) =>
     response.status(404).json({ code: "NOT_FOUND" }),

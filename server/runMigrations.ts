@@ -263,6 +263,19 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  // M7.8L: TEMP state must exist before the neutral entry surface is served.
+  { type: "table_exists", table: "v2_sales_workspaces", label: "Sales workspace foundation" },
+  { type: "table_exists", table: "v2_sales_workspace_lines", label: "Stable TEMP Sales lines" },
+  { type: "table_exists", table: "v2_sales_workspace_requests", label: "Workspace request receipts" },
+  { type: "table_exists", table: "v2_sales_workspace_promotions", label: "Workspace promotion receipts" },
+  { type: "table_exists", table: "v2_sales_workspace_promotion_lines", label: "Durable TEMP to canonical mapping" },
+  { type: "table_exists", table: "v2_artwork_workspace_claims", label: "Artwork TEMP storage claims" },
+  { type: "trigger_exists", table: "v2_sales_workspace_promotion_lines", trigger: "v2_sales_workspace_map_canonical_insert", label: "Promotion-time canonical line scope" },
+  { type: "trigger_exists", table: "v2_sales_workspaces", trigger: "v2_sales_workspace_terminal_check", label: "No committed in-progress promotion" },
+  { type: "trigger_exists", table: "v2_sales_workspace_promotions", trigger: "v2_sales_workspace_receipt_immutable", label: "Immutable promotion receipts" },
+  { type: "trigger_exists", table: "v2_sales_workspace_promotion_lines", trigger: "v2_sales_workspace_map_immutable", label: "Immutable promotion mapping" },
+  { type: "trigger_exists", table: "v2_artwork_workspace_claims", trigger: "v2_artwork_workspace_claim_guard", label: "Staged Artwork lifecycle guard" },
+  { type: "trigger_exists", table: "v2_artwork_files", trigger: "v2_artwork_workspace_adoption_guard", label: "Staged Artwork adoption cleanup fence" },
   // Migration 0225 — Formula revisions and ProductVersion bindings are a
   // runtime pricing dependency. Verify the physical domain rather than
   // trusting the migration ledger alone.

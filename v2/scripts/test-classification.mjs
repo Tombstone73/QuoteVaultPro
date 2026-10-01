@@ -6,6 +6,21 @@ const entries = [];
 function add(prefix, runner, names, category = 'safe-deterministic', reason) {
   for (const name of names) entries.push({ path: `${prefix}${name}`, category, runner, reason: reason ?? (runner === 'jest' ? 'Jest assertions with fake dependencies or source contracts; runtime import closure reviewed, no DB initialization or network execution.' : 'Self-executing node:assert fixture/source contract; runtime import closure reviewed, no DB initialization or network execution.') });
 }
+add('v2/tests/', 'jest', [
+  'modules/salesWorkspace.test.ts',
+  'modules/workspaceLines.test.ts',
+  'infrastructure/workspacePromotion.test.ts',
+  'interfaces/salesWorkspaceRoutes.test.ts',
+], 'safe-deterministic', 'Sales TEMP owner and HTTP contracts use scoped in-memory ports and mocked storage; no live database, provider, or root setup.');
+add('v2/tests/persistence/', 'jest', ['salesWorkspace.postgres.test.ts'],
+  'safe-deterministic', 'Actual forward DDL and persistence transactions execute in disposable in-memory PostgreSQL via PGlite, without a connection URL, network, or shared database.');
+add('v2/tests/', 'tsx', [
+  'infrastructure/workspaceArtwork.test.ts',
+  'infrastructure/workspacePromotionAcceptance.test.ts',
+  'persistence/salesWorkspaceAcceptance.postgres.test.ts',
+], 'safe-deterministic', 'Standalone assertions use in-memory PGlite PostgreSQL with actual forward migrations and mocked binary storage; no shared database, credentials, external transport, or root setup.');
+add('v2/ui/src/', 'tsx', ['transactionalSalesWorkspace.test.tsx', 'persistedSalesEntryIntegration.test.tsx'],
+  'safe-deterministic', 'Neutral persisted-entry UI with scoped mocked workspace transport; no canonical/provider/network effects.');
 add('v2/tests/infrastructure/', 'tsx', [
   'shipmentShippingInvoiceProjection.pure.ts',
   'proofRecipientAccess.test.ts',

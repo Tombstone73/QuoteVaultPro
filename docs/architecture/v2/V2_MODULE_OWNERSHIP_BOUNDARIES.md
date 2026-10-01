@@ -103,6 +103,20 @@ Shipping owns: shipment/container/package lifecycle; carrier and service selecti
 
 ### Sales
 
+**Approved entry/edit direction (Decision C).** Sales owns persisted TEMP Sales
+Workspaces and stable TEMP line identities, distinct from canonical Quotes and
+Orders. A new workspace is neutral: normal sales data is entered before choosing
+Save as Quote or Save as Order. Save Draft and discard affect TEMP state only.
+Sales coordinates idempotent promotion, durable TEMP-to-canonical line mapping,
+and owner operations in one transaction. Artwork owns staged file lifecycle and
+promotion; Billing, Routing, Inventory, Production and the other owners retain
+their facts. An existing-Order edit workspace captures its base revision; its
+Save must use one accepted change set/CAS, and Cancel must leave the Order
+untouched. Existing downstream edit guards and unresolved BDR-2/BDR-4 policy are
+not relaxed. The implementation contract and milestone gates are recorded in
+[M7.8L Contract Freeze](M7_8L_SALES_WORKSPACE_CONTRACT_FREEZE.md); an unavailable
+edit or cleanup stage must be reported, not presented as completed behavior.
+
 - **Purpose.** Own canonical commercial documents and their lifecycle.
 - **Authoritative facts/data.** Quotes, orders, line items, shared/current sales transaction data, customer/contact references, PO, due date, sales context, selected/resolved product configuration references, quantities, negotiated prices, quote revisions/sent history, conversion, editing, and Sales audit events.
 - **Key future operations.** Create/edit/revise/send/accept quote; create/edit/cancel order; convert quote; request Billing draft synchronization.

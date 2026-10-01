@@ -423,7 +423,7 @@ const validateCommercialCharge = (value: CommercialCharge | undefined): Commerci
   if (!Number.isSafeInteger(value.cents) || value.cents < 0) throw new V2ApplicationError("VALIDATION_ERROR", "A commercial charge must be a non-negative whole-cent amount.");
   return { ...value, ...(value.description?.trim() ? { description: value.description.trim() } : {}) };
 };
-const calculatedDecision = (
+export const calculatedDecision = (
   pricing: SalesLineSnapshot["pricingResult"],
   instruction: QuoteSellingInstruction | undefined,
   attribution: AttributionSnapshot,

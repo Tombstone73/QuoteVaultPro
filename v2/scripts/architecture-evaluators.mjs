@@ -11,13 +11,16 @@ const targetPath = (file, specifier) => specifier.startsWith(".")
   ? path.posix.normalize(path.posix.join("v2", path.posix.dirname(file), specifier))
   : path.posix.normalize(specifier.replace(/^@\//, "client/src/"));
 const moduleName = (file) => /^src\/modules\/([^/]+)\//.exec(file)?.[1];
-const rawDb = (specifier) => /^(pg|pg-native|drizzle-orm|@neondatabase\/serverless|postgres|kysely|knex|@prisma\/client|typeorm|sequelize|mysql2?|sqlite3|better-sqlite3|node:sqlite)(\/|$)/.test(specifier);
+const rawDb = (specifier) => /^(pg|pg-native|drizzle-orm|@neondatabase\/serverless|@electric-sql\/pglite|postgres|kysely|knex|@prisma\/client|typeorm|sequelize|mysql2?|sqlite3|better-sqlite3|node:sqlite)(\/|$)/.test(specifier);
 const uiPackage = (specifier) => /^(?:(?:react|react-dom)(?:\/|$)|@radix-ui\/|@tanstack\/react-|@headlessui\/|@mui\/|(?:lucide-react|framer-motion|wouter|antd)$)/.test(specifier);
 const parse = (file, source) => ts.createSourceFile(file, source.replaceAll("\r\n", "\n"), ts.ScriptTarget.Latest, true,
   /\.tsx$/.test(file) ? ts.ScriptKind.TSX : /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS);
 
 // These are explicit persistence-free seams, not a blanket *Application exemption.
 export const publicApis = {
+  "sales/workspaceContracts": ["SalesWorkspace", "SalesWorkspaceLineMapEntry"],
+  "sales/workspaceApplication": ["assertSalesWorkspaceMutable", "authorizeSalesWorkspace", "salesWorkspaceFingerprint", "validateSalesWorkspaceId", "validateSalesWorkspaceMutation"],
+  "artwork/workspaceArtwork": ["WorkspaceArtworkPromotionInput", "WorkspaceArtworkPromotionResult"],
   "routing/ownerTransitions": ["OwnerRouteScope", "ProductionDestination", "SalesWorkflowRouteRequest", "PreparedPrepressResult", "OwnerTransitions"],
   "prepress/reworkPreparation": ["CreateReworkPreparationRequest", "ReworkPreparation"],
   "billing/shippingCharge": ["ApplyShippingChargeRequest"],
@@ -64,6 +67,12 @@ export const adapterPublicApis = {
   "materials/materialRequirementResolver": ["MaterialRequirementMaterial", "Pbv2MaterialRequirementContext", "resolveMaterialRequirements"],
 };
 export const ownerOperations = {
+  "infrastructure/sales/workspaceArtworkAccess.js": ["advanceSalesWorkspaceArtworkRevision", "lockSalesWorkspaceForArtwork", "readSalesWorkspaceForArtwork", "readSalesWorkspacePromotionLineMap"],
+  "infrastructure/artwork/artworkBinaryStorage.js": ["ArtworkBinaryStorage"],
+  "infrastructure/artwork/postgresWorkspaceArtwork.js": ["PostgresWorkspaceArtwork", "promoteWorkspaceArtworkInTransaction", "requestWorkspaceArtworkCleanupInTransaction"],
+  "infrastructure/artwork/workspaceArtworkUpload.js": ["WorkspaceArtworkUploadService"],
+  "infrastructure/products/customerCommercialPricingPort.js": ["createCustomerCommercialPricingPort"],
+  "infrastructure/compatibility/workspaceCommercialReads.js": ["createSalesWorkspaceReadPorts"],
   "infrastructure/routing/postgresOwnerTransitions.js": ["PostgresOwnerTransitions"],
   "infrastructure/prepress/postgresReworkPreparation.js": ["PostgresReworkPreparation"],
   // Narrow owner-controlled transaction operations for BD-1, BD-2, and BD-4.

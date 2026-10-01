@@ -94,4 +94,10 @@ export const useQuoteFormConfiguration = (
   sessionScope: string,
   organizationId: string,
   productId: string,
-) => useQuery(quoteFormQueryOptions.configuration(sessionScope, organizationId, productId));
+  api: Pick<typeof quoteApi, "configuration"> = quoteApi,
+  scope = "quote-form",
+) => useQuery({
+  ...quoteFormQueryOptions.configuration(sessionScope, organizationId, productId),
+  queryKey: ["v2", sessionScope, organizationId, scope, "configuration", productId],
+  queryFn: () => api.configuration(organizationId, productId),
+});

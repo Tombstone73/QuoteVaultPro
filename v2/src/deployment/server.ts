@@ -17,6 +17,8 @@ import {
   type StandaloneStaffAuthentication,
 } from "../../infrastructure/authentication/standaloneStaffAuth.js";
 import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/authenticatedQuoteRuntime.js";
+import { createSalesWorkspaceDependencies } from "../../infrastructure/sales/authenticatedSalesWorkspaceRuntime.js";
+import { SupabaseArtworkBinaryStorage } from "../../infrastructure/artwork/artworkBinaryStorage.js";
 import { composeAuthenticatedOrderRuntime } from "../../infrastructure/sales/authenticatedOrderRuntime.js";
 import { OrderApplicationService } from "../modules/sales/orderApplication.js";
 import { PostgresOrderTransactionRunner } from "../../infrastructure/sales/postgresOrderTransaction.js";
@@ -177,6 +179,13 @@ export const createV2DeploymentApp = (
     inbound,
     customerCommercial,
     aiAssistant,
+    {
+      trustedHostMiddleware: quote.trustedHostMiddleware,
+      dependencies: createSalesWorkspaceDependencies({
+        pool, principals: quote.dependencies.principals,
+        formReads: quote.dependencies.formReads!, storage: new SupabaseArtworkBinaryStorage(),
+      }),
+    },
   );
 };
 

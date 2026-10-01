@@ -7,7 +7,8 @@ import { OrderOperationalSummary, OrdersList } from "./OrdersList";
 
 const markup = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><OrdersList organizationId="organization-a" sessionScope="session-a" onOpenV2={() => undefined} onOpenLegacy={() => undefined} /></QueryClientProvider>);
 assert.match(markup, /<h1[^>]*>Orders<\/h1>/);
-assert.match(markup, />New Order</);
+assert.match(markup, />New Sales Entry</);
+assert.doesNotMatch(markup, />New (Quote|Order)</, "entry does not choose a permanent document kind");
 assert.match(markup, /Filter by number, PO, customer/);
 for (const column of ["Order #", "Customer", "PO", "Contact", "Lines", "Due", "Status", "Operations", "Total"]) assert.match(markup, new RegExp(`>${column}<`));
 for (const filter of ["All", "Open", "Completed", "Cancelled", "Archived"]) assert.match(markup, new RegExp(`>${filter}<`));

@@ -309,7 +309,7 @@ export const V2VisualShell = ({
             {canCreate && <><button type="button" className="v2-primary-button v2-new-button" aria-expanded={newOpen} aria-haspopup="menu" onClick={() => setNewOpen((open) => !open)}>
               <Plus aria-hidden /> New
             </button>
-            {newOpen && <div className="v2-new-menu" role="menu" aria-label="Create new record">{canCreateQuote && <button type="button" role="menuitem" onClick={() => { setNewOpen(false); create("quotes"); }}>New Quote</button>}{canCreateOrder && <button type="button" role="menuitem" onClick={() => { setNewOpen(false); create("orders"); }}>New Order</button>}</div>}</>}
+            {newOpen && <div className="v2-new-menu" role="menu" aria-label="Create new record"><button type="button" role="menuitem" onClick={() => { setNewOpen(false); create(canCreateQuote ? "quotes" : "orders"); }}>New Sales Entry</button></div>}</>}
             <button
               type="button"
               className="v2-icon-button"

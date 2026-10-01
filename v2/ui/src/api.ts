@@ -91,6 +91,8 @@ export type QuoteAcceptanceResult = Readonly<{
 }>;
 export type UiBootstrap = Readonly<{
   organizationId: string;
+  /** Verified staff identity for client cache partitioning, never an authority claim. */
+  userId?: string;
   csrfToken: string;
   /** Opaque session epoch, never a user/principal/capability claim. */
   sessionScope: string;
@@ -1745,6 +1747,14 @@ const adoptSessionScope = (nextScope: string): void => {
   }
   sessionScope = nextScope;
 };
+/** Reuse session/CSRF and error handling without exporting mutable token state. */
+export const salesWorkspaceTransport = {
+  request,
+  commandHeaders: (organizationId: string): Readonly<Record<string, string>> => ({
+    "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
+  }),
+};
+
 export const quoteApi = {
   bootstrap: async (organizationId: string) => {
     const value = await request<UiBootstrap>(

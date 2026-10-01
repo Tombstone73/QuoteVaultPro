@@ -2,7 +2,7 @@ import { Search } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { money, quoteApi, type OrderListItem } from "./api";
-import { SalesEntryWorkspace } from "./SalesEntryWorkspace";
+import { PersistedSalesEntry } from "./PersistedSalesEntry";
 import { useSalesOrders } from "./quoteFormQueries";
 import {
   salesOrderLifecycleFilters,
@@ -80,7 +80,7 @@ export const OrdersList = ({
     try {
       const requested = sessionStorage.getItem("ph.v2.new-order") === "1";
       if (requested) sessionStorage.removeItem("ph.v2.new-order");
-      return requested;
+      return requested || new URLSearchParams(window.location.search).has("workspaceId");
     } catch { return false; }
   });
   useEffect(() => {
@@ -118,10 +118,10 @@ export const OrdersList = ({
     setCursor("");
   };
 
-  if (creating) return <SalesEntryWorkspace mode="order" organizationId={organizationId} sessionScope={sessionScope} canCreate={bootstrap.data?.capabilities.orderCreate === true} canOverridePrice={bootstrap.data?.capabilities.orderOverridePrice === true} csrfReady={Boolean(bootstrap.data)} onCancel={() => setCreating(false)} onOrderCreated={(id) => onOpenV2(id)} />;
+  if (creating) return <PersistedSalesEntry organizationId={organizationId} sessionScope={sessionScope} onBack={() => setCreating(false)} />;
   return <section className="v2-orders-list space-y-3 p-4">
     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3">
-      <div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">Orders</h1><p className="mt-0.5 text-[13px] text-muted-foreground">{count} orders{summary?.sellingTotalCents !== undefined && singleCurrency ? <> · {money({ cents: summary.sellingTotalCents, currency: singleCurrency })} total value</> : cursor ? " shown" : ""}</p></div><button type="button" className="v2-quotes-new" disabled={bootstrap.data?.capabilities.orderCreate !== true} onClick={() => setCreating(true)}>New Order</button>
+      <div className="min-w-0"><h1 className="text-lg font-semibold tracking-tight">Orders</h1><p className="mt-0.5 text-[13px] text-muted-foreground">{count} orders{summary?.sellingTotalCents !== undefined && singleCurrency ? <> · {money({ cents: summary.sellingTotalCents, currency: singleCurrency })} total value</> : cursor ? " shown" : ""}</p></div><button type="button" className="v2-quotes-new" disabled={bootstrap.data?.capabilities.orderCreate !== true} onClick={() => setCreating(true)}>New Sales Entry</button>
     </div>
     <div className="v2-orders-filters">
       <label className="v2-orders-search"><Search aria-hidden /><input value={search} onChange={(event) => { setSearch(event.target.value); setCursor(""); }} placeholder="Filter by number, PO, customer…" /></label>
