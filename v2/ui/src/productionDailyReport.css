@@ -1,0 +1,58 @@
+.production-daily-report { padding: 18px; color: var(--color-foreground); background: var(--color-background); }
+.production-daily-report-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin: 14px 0; }
+.production-daily-report-heading h1 { margin: 3px 0; font-size: 21px; }
+.production-daily-report-heading p, .production-daily-report-asof, .production-daily-report-count-note { margin: 3px 0; color: var(--color-muted-foreground); font-size: 12px; }
+.production-daily-report-asof { display: grid; text-align: right; overflow-wrap: anywhere; }
+.production-daily-report-controls, .production-daily-report-pager { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.production-daily-report-controls { justify-content: flex-end; }
+.production-daily-report button { border: 1px solid var(--color-border); border-radius: var(--radius); padding: 6px 10px; background: var(--color-surface); color: var(--color-foreground); cursor: pointer; font-size: 12px; }
+.production-daily-report button:disabled { cursor: not-allowed; opacity: .5; }
+.production-daily-report button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.production-daily-report-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin: 14px 0 10px; }
+.production-daily-report-summary > div { padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); }
+.production-daily-report-summary dt { color: var(--color-muted-foreground); font-size: 11px; }
+.production-daily-report-summary dd { margin: 5px 0 0; font-size: 23px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.production-daily-report-section { margin-top: 22px; }
+.production-daily-report-section h2 { display: flex; align-items: baseline; gap: 10px; font-size: 16px; }
+.production-daily-report-section h2 span, .production-daily-report-section > p { color: var(--color-muted-foreground); font-size: 12px; font-weight: normal; }
+.production-daily-report-table-wrap { overflow-x: auto; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); }
+.production-daily-report table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 12px; }
+.production-daily-report caption { padding: 8px 12px; text-align: left; color: var(--color-muted-foreground); font-size: 11px; }
+.production-daily-report th { padding: 8px 12px; background: var(--color-surface-2); color: var(--color-muted-foreground); text-align: left; font-size: 11px; }
+.production-daily-report td { padding: 10px 12px; border-top: 1px solid var(--color-border); vertical-align: top; overflow-wrap: anywhere; }
+.production-daily-report td small { display: block; margin-top: 3px; color: var(--color-muted-foreground); font-size: 10px; }
+.production-daily-report [data-due-category="overdue"] td:first-child { color: var(--color-destructive); font-weight: 650; }
+.production-daily-report-quantity { text-align: right; font-variant-numeric: tabular-nums; }
+.production-daily-report-work { max-width: 210px; font-family: var(--ui-font-mono); }
+.production-daily-report-warning { padding: 10px 12px; border: 1px solid var(--color-warning); border-radius: var(--radius); color: var(--color-foreground); font-size: 12px; }
+.production-daily-report-blocked ul { padding-left: 20px; font-size: 12px; }
+.production-daily-report-blocked li { margin: 10px 0; overflow-wrap: anywhere; }
+.production-daily-report-blocked li p { margin: 4px 0; }
+.production-daily-report-pager { justify-content: flex-end; margin-top: 16px; }
+.production-daily-report-pager p { flex: 1; color: var(--color-muted-foreground); font-size: 11px; }
+.production-daily-report-print { display: none; }
+@media (max-width: 760px) {
+  .production-daily-report { padding: 12px; }
+  .production-daily-report-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .production-daily-report-heading { flex-direction: column; gap: 5px; }
+  .production-daily-report-asof { text-align: left; }
+}
+@media print {
+  @page production-daily-report { size: landscape; margin: 12mm; }
+  body:has(.production-daily-report) { page: production-daily-report; }
+  body:has(.production-daily-report) * { visibility: hidden; }
+  .production-daily-report-screen { display: none; }
+  .production-daily-report-print, .production-daily-report-print * { visibility: visible !important; }
+  .production-daily-report-print { display: block; position: absolute; inset: 0 auto auto 0; width: 100%; color: #000; background: #fff; font: 10pt Arial, sans-serif; }
+  .production-daily-report-print .production-daily-report-heading { margin-top: 0; }
+  .production-daily-report-print .production-daily-report-summary > div { border: 1px solid #666; background: #fff; }
+  .production-daily-report-print .production-daily-report-table-wrap { overflow: visible; border: 0; border-radius: 0; }
+  .production-daily-report-print table { min-width: 0; table-layout: fixed; }
+  .production-daily-report-print th, .production-daily-report-print td { color: #000; background: #fff; border: 1px solid #999; padding: 5pt; }
+  .production-daily-report-print small, .production-daily-report-print p, .production-daily-report-print dt, .production-daily-report-print caption, .production-daily-report-print h2 span, .production-daily-report-print .production-daily-report-asof { color: #333; }
+  .production-daily-report-print .production-daily-report-warning { color: #000; border: 2px solid #000; }
+  .production-daily-report-print thead { display: table-header-group; }
+  .production-daily-report-print tr, .production-daily-report-print li, .production-daily-report-print .production-daily-report-summary { break-inside: avoid; }
+  .production-daily-report-print h2 { break-after: avoid; }
+  .production-daily-report-print .production-daily-report-section + .production-daily-report-section { break-before: page; }
+}

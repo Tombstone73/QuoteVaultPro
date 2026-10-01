@@ -20,6 +20,7 @@ import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRout
 import { createProofingRouter, type ProofingHttpDependencies } from "./proofingRoutes.js";
 import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
 import { createProductionRouter, type ProductionHttpDependencies } from "./productionRoutes.js";
+import { createProductionDailyReportRouter, type ProductionDailyReportHttpDependencies } from "./productionDailyReportRoutes.js";
 import { createFulfillmentRouter, type FulfillmentHttpDependencies } from "./fulfillmentRoutes.js";
 import { createShipmentContainerRouter } from "./shipmentContainerRoutes.js";
 import { createInboundRouter, type InboundHttpDependencies } from "./inboundRoutes.js";
@@ -72,7 +73,7 @@ export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceH
 export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
-export type AuthenticatedProductionRouteRuntime = Readonly<{ dependencies: ProductionHttpDependencies; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedProductionRouteRuntime = Readonly<{ dependencies: ProductionHttpDependencies; dailyReportDependencies?: ProductionDailyReportHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedFulfillmentRouteRuntime = Readonly<{ dependencies: FulfillmentHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedInboundRouteRuntime = Readonly<{ dependencies: InboundHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedRoutingRouteRuntime = Readonly<{ dependencies: RoutingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
@@ -419,7 +420,7 @@ export const createV2HttpApp = (
       createPrepressRouter(prepress.dependencies),
     );
   if (production)
-    app.use("/v2/organizations/:organizationId/production",production.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createProductionRouter(production.dependencies));
+    app.use("/v2/organizations/:organizationId/production",production.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,...(production.dailyReportDependencies ? [createProductionDailyReportRouter(production.dailyReportDependencies)] : []),createProductionRouter(production.dependencies));
   if (inventory)
     app.use("/v2/organizations/:organizationId/inventory",inventory.trustedHostMiddleware,(request,response,next)=>{try{response.setHeader("x-v2-session-scope",issueV2SessionScope(request));}catch{}next();},requireV2CsrfToken,createInventoryRouter(inventory.dependencies));
   if (fulfillment)

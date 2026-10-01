@@ -15,6 +15,7 @@ import {
   type OrganizationBrandingProvider,
 } from "./theme";
 import "./styles.css";
+import "./productionDailyReport.css";
 
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false }, mutations: { retry: false } },

@@ -19,6 +19,7 @@ import {
   type FinancialInvoiceListItem,
   type FinancialLedgerEntry,
   type FinancialLedgerQuery,
+  type InvoiceRead,
 } from "./api";
 
 type GridColumn<T> = Readonly<{
@@ -35,6 +36,10 @@ type GridPreference = Readonly<{
 }>;
 const errorText = (error: unknown) =>
   (error as ApiError)?.message ?? "The finance service is unavailable.";
+const invoiceLabel = (invoice: Pick<InvoiceRead, "source" | "lifecycle" | "sourceOrderNumber">, persistedNumber: string | null | undefined) =>
+  persistedNumber ? `Invoice ${persistedNumber}`
+    : invoice.source !== "legacy" && invoice.lifecycle === "draft" && invoice.sourceOrderNumber
+      ? `Order ${invoice.sourceOrderNumber}` : "Invoice number unavailable";
 const preferenceKey = (scope: string, org: string, grid: string) =>
   `printershero:v2:finance-grid:${scope}:${org}:${grid}`;
 const centsFromInput = (text: string): number | null => {
@@ -304,6 +309,7 @@ export const FinanceWorkspace = ({
   const client = useQueryClient();
   const [selected, setSelected] = useState(invoiceId);
   const [selectedSource, setSelectedSource] = useState<"v2" | "legacy">("v2");
+  const [autoSelectInvoice, setAutoSelectInvoice] = useState(true);
   const [notice, setNotice] = useState("");
   const [dialog, setDialog] = useState<"payment" | "refund" | "stripePayment" | "stripeRefund" | "invoiceEmail" | "">("");
   const [amount, setAmount] = useState("");
@@ -339,15 +345,16 @@ export const FinanceWorkspace = ({
   // initial empty parent prop race and clear a just-clicked V2 row.
   useEffect(() => { if (invoiceId) { setSelected(invoiceId); setSelectedSource("v2"); } }, [invoiceId]);
   useEffect(() => {
-    if (!selected && overview.data?.items[0] && !invoiceId)
+    if (autoSelectInvoice && !selected && overview.data?.items[0] && !invoiceId)
       { setSelected(overview.data.items[0].invoiceId); setSelectedSource(overview.data.items[0].source); }
-  }, [invoiceId, overview.data, selected]);
+  }, [autoSelectInvoice, invoiceId, overview.data, selected]);
   const selectInvoice = (id: string, source: "v2" | "legacy" = "v2") => {
     setSelected(id);
     setSelectedSource(source);
     if (source === "v2") onSelectInvoice(id);
   };
   const returnToInvoices = () => {
+    setAutoSelectInvoice(false);
     setSelected("");
     setSelectedSource("v2");
     backToInvoices();
@@ -527,9 +534,15 @@ export const FinanceWorkspace = ({
   if (mode === "invoices" && selected && !detail.data)
     return (
       <section className="v2-finance-workspace">
-        <p className="v2-proof-empty">
-          Loading authenticated financial history…
-        </p>
+        <button className="v2-finance-link" onClick={returnToInvoices}>All invoices</button>
+        {detail.isError ? (
+          <>
+            <p className="notice error" role="alert">{errorText(detail.error)}</p>
+            <button className="v2-quiet-button" disabled={detail.isFetching} onClick={() => void detail.refetch()}>Retry invoice</button>
+          </>
+        ) : (
+          <p className="v2-proof-empty" role="status">Loading authenticated financial history…</p>
+        )}
       </section>
     );
   const invoice = detail.data?.invoice,
@@ -551,15 +564,21 @@ export const FinanceWorkspace = ({
       id: "invoice",
       label: "Invoice",
       serverSort: "invoice_number",
-      value: (row) => row.sourceOrderNumber,
+      value: (row) => row.persistedInvoiceNumber ?? "",
       render: (row) => (
         <button
           className="v2-finance-link"
           onClick={() => selectInvoice(row.invoiceId, row.source)}
         >
-          Order {row.sourceOrderNumber}
+          {invoiceLabel(row, row.persistedInvoiceNumber)}
         </button>
       ),
+    },
+    {
+      id: "order",
+      label: "Source Order",
+      value: (row) => row.sourceOrderNumber,
+      render: (row) => row.sourceOrderId ? <button className="v2-finance-link" onClick={() => openOrder(row.sourceOrderId)}>Order {row.sourceOrderNumber}</button> : "Order unavailable",
     },
     {
       id: "customer",
@@ -780,7 +799,8 @@ export const FinanceWorkspace = ({
               <span className={`v2-invoice-state ${invoice.lifecycle}`}>
                 {invoice.lifecycle === "draft" ? "Order-backed" : invoice.lifecycle}
               </span>
-              <h2>Order {invoice.sourceOrderNumber ?? "Invoice"}</h2>
+              <h2>{invoiceLabel(invoice, detail.data?.persistedInvoiceNumber)}</h2>
+              <p>{invoice.sourceOrderNumber ? `Source Order ${invoice.sourceOrderNumber}` : "Source Order unavailable"}</p>
               <p>
                 <button className="v2-finance-link" onClick={() => invoice.customerId && openCustomer(invoice.customerId)} disabled={!invoice.customerId}>
                   {invoice.customerPresentation?.customerDisplayName ??

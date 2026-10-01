@@ -43,6 +43,18 @@ add('v2/ui/src/', 'tsx', ['salesContactSelection.test.tsx', 'contactOnlyWorkspac
   'safe-deterministic', 'Mounted controlled selector and real workspace UI use scoped intercepted transport and in-memory workspace persistence; no external fetch, provider or canonical runtime initialization.');
 add('v2/ui/src/', 'tsx', ['sessionResponseGeneration.test.tsx', 'prepressSessionRecovery.test.tsx'],
   'safe-deterministic', 'Actual API generation and AuthGate/App recovery execute with JSDOM, intercepted fetch, scoped in-memory receipts and CSS-only loading seams; no external transport, credentials, provider or live database.');
+add('v2/ui/src/', 'tsx', ['productionDailyReport.test.tsx', 'productionDailyReportIntegration.test.tsx'],
+  'safe-deterministic', 'Mounted report and actual App/authenticated transport execute in JSDOM with intercepted reads and CSS-only loading seams; no external transport or physical printer.');
+add('v2/tests/modules/', 'tsx', ['productionDailyReport.test.ts'],
+  'safe-deterministic', 'Production report authorization, pagination and population summaries execute with injected immutable read facts.');
+add('v2/tests/interfaces/', 'tsx', ['productionDailyReportRoutes.test.ts'],
+  'safe-deterministic', 'Local HTTP report contract executes scoped authority and injected reads without external services.');
+add('v2/tests/infrastructure/', 'tsx', ['productionDailyReport.postgres.test.ts', 'productionReportDependencies.postgres.test.ts'],
+  'safe-deterministic', 'In-memory PGlite executes report SQL, actual owner projections and canonical replacement triggers; no database URL, provider, or externally mutating runtime.');
+add('v2/tests/', 'tsx', ['interfaces/productionDailyReportMount.test.ts', 'infrastructure/productionDailyReportClock.postgres.test.ts'],
+  'safe-deterministic', 'Actual Production composition, Passport binding, fresh permission issuance and Settings clock use local HTTP, in-memory PGlite and bounded operational read fixtures; no credentials, provider or live database.');
+add('v2/tests/infrastructure/', 'jest', ['financialInvoicePresentation.test.ts'],
+  'safe-deterministic', 'Closed exact-source FinancialRead and BillingDraft adapters execute with real value/error namespaces, a fail-on-use QuickBooks seam and in-memory PGlite; forbidden source/dependency/dynamic imports fail closed, with no V1 initialization or provider execution.');
 add('v2/tests/infrastructure/', 'tsx', [
   'shipmentShippingInvoiceProjection.pure.ts',
   'proofRecipientAccess.test.ts',

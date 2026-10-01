@@ -69,6 +69,8 @@ export const adapterPublicApis = {
   "materials/materialRequirementResolver": ["MaterialRequirementMaterial", "Pbv2MaterialRequirementContext", "resolveMaterialRequirements"],
 };
 export const ownerOperations = {
+  "infrastructure/organization/postgresReportingClock.js": ["readReportingWindow"],
+  "infrastructure/fulfillment/productionReportFulfillmentRead.js": ["PostgresProductionReportFulfillmentRead"],
   "infrastructure/customers/postgresSalesContactSelection.js": ["PostgresSalesContactSelection"],
   "infrastructure/billing/postgresOrderEditSafety.js": ["assessOrderEditBillingInTransaction"],
   "infrastructure/artwork/postgresOrderEditArtwork.js": ["PostgresOrderEditArtwork", "captureOrderEditArtworkFingerprint", "captureOrderEditArtwork", "validateOrderEditArtworkInTransaction", "applyOrderEditArtworkInTransaction", "authorizeOrderEditArtworkReplay"],

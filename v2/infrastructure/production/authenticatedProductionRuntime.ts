@@ -14,6 +14,22 @@ import { PostgresProductionDocumentService } from "./postgresProductionDocuments
 import { ProductionRunApplicationService } from "../../src/modules/production/productionRunApplication.js";
 import { PostgresProductionRunTransactionRunner } from "./postgresProductionRunTransaction.js";
 import type { OrderAutomaticLifecycle } from "../../src/modules/sales/orderAutomaticLifecycle.js";
+import type { ProductionDailyReportHttpDependencies } from "../../src/interfaces/http/productionDailyReportRoutes.js";
+import { ProductionDailyReportService } from "../../src/modules/production/productionDailyReport.js";
+import { PostgresProductionDailyReport } from "./postgresProductionDailyReport.js";
+import { createProductionReportDependencies } from "./productionReportDependencies.js";
+import { readReportingWindow } from "../organization/postgresReportingClock.js";
 export type AuthenticatedProductionRuntimeDependencies=Readonly<{pool:Pool;trustedHostIdentity:TrustedHostIdentitySource;trustedHostMiddleware:RequestHandler;service?:ProductionApplicationService;orderLifecycle?:OrderAutomaticLifecycle;consumption?:ProductionMaterialConsumptionApplicationService;inventory?:InventoryLedgerApplicationService}>;
-export type AuthenticatedProductionRuntime=Readonly<{dependencies:ProductionHttpDependencies;trustedHostMiddleware:RequestHandler}>;
-export const composeAuthenticatedProductionRuntime=(input:AuthenticatedProductionRuntimeDependencies):AuthenticatedProductionRuntime=>({dependencies:{service:input.service??new ProductionApplicationService(new PostgresProductionTransactionRunner(input.pool),undefined,input.orderLifecycle),runs:new ProductionRunApplicationService(new PostgresProductionRunTransactionRunner(input.pool),undefined,input.orderLifecycle),consumption:input.consumption??new ProductionMaterialConsumptionApplicationService(new PostgresProductionMaterialConsumptionTransactionRunner(input.pool)),inventory:input.inventory??new InventoryLedgerApplicationService(new PostgresInventoryLedgerTransactionRunner(input.pool)),documents:new PostgresProductionDocumentService(input.pool),principals:new IssuedV2PrincipalProvider(input.trustedHostIdentity,new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)))},trustedHostMiddleware:input.trustedHostMiddleware});
+export type AuthenticatedProductionRuntime=Readonly<{dependencies:ProductionHttpDependencies;dailyReportDependencies:ProductionDailyReportHttpDependencies;trustedHostMiddleware:RequestHandler}>;
+export const composeAuthenticatedProductionRuntime=(input:AuthenticatedProductionRuntimeDependencies):AuthenticatedProductionRuntime=>{
+  const principals = new IssuedV2PrincipalProvider(input.trustedHostIdentity, new PermissionSetPrincipalIssuer(new PostgresPermissionAuthorityReader(input.pool)));
+  const reportReads = createProductionReportDependencies(async (client, organizationId) => {
+    const window = await readReportingWindow(client, organizationId, { period: "today" });
+    return { asOf: window.asOf, timeZone: window.timeZone, todayDate: window.todayDate, tomorrowDate: window.tomorrowDate };
+  });
+  return {
+    dependencies: { service: input.service ?? new ProductionApplicationService(new PostgresProductionTransactionRunner(input.pool), undefined, input.orderLifecycle), runs: new ProductionRunApplicationService(new PostgresProductionRunTransactionRunner(input.pool), undefined, input.orderLifecycle), consumption: input.consumption ?? new ProductionMaterialConsumptionApplicationService(new PostgresProductionMaterialConsumptionTransactionRunner(input.pool)), inventory: input.inventory ?? new InventoryLedgerApplicationService(new PostgresInventoryLedgerTransactionRunner(input.pool)), documents: new PostgresProductionDocumentService(input.pool), principals },
+    dailyReportDependencies: { service: new ProductionDailyReportService(new PostgresProductionDailyReport(input.pool, reportReads)), principals },
+    trustedHostMiddleware: input.trustedHostMiddleware,
+  };
+};

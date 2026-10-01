@@ -32,6 +32,11 @@ export const productionOperatorContextSql=`SELECT d.display_number order_number,
   LEFT JOIN v2_sales_documents d ON d.organization_id=w.organization_id AND d.id=w.order_document_id AND d.document_kind='order'
   LEFT JOIN customers c ON c.organization_id=d.organization_id AND c.id=d.customer_id
   WHERE w.organization_id=$1 AND w.id=$2`;
+const productionWorkAttention = (orderedQuantity: number, usableGoodQuantity: number, activeGoodQuantity: number, hasActiveAttempt: boolean, latestControl?: ProductionWorkEvent["kind"]) => {
+  const unitQuantitySatisfied = usableGoodQuantity >= orderedQuantity;
+  const state: ProductionWorkProjection["state"] = unitQuantitySatisfied ? "complete" : latestControl === "rework_requested" ? "rework_requested" : latestControl === "hold" ? "held" : hasActiveAttempt ? "active" : "ready";
+  return { remainingGoodQuantity: Math.max(0, orderedQuantity - usableGoodQuantity - activeGoodQuantity), unitQuantitySatisfied, state };
+};
 export type ProductionPersistenceTestHooks=Readonly<{afterWork?:()=>Promise<void>;afterAttempt?:()=>Promise<void>;afterOutput?:()=>Promise<void>;afterAudit?:()=>Promise<void>}>;
 export class PostgresProductionTransaction implements ProductionTransaction {
  private readonly requests=new PostgresOperationRequestRepository();constructor(private readonly client:PoolClient,private readonly hooks?:ProductionPersistenceTestHooks){}
@@ -48,7 +53,22 @@ export class PostgresProductionTransaction implements ProductionTransaction {
    this.client.query<OperatorContextRow>(productionOperatorContextSql,[org,id]),
    this.client.query<EventRow>("SELECT * FROM v2_production_work_events WHERE organization_id=$1 AND production_work_id=$2 ORDER BY sequence",[org,id]),
    this.client.query<DispositionRow>("SELECT * FROM v2_production_output_dispositions WHERE organization_id=$1 AND production_work_id=$2 ORDER BY created_at,id",[org,id]),
- ]);const attempts=rows.rows.map(attempt),exceptionEvents=eventRows.rows.map(event),outputDispositions=dispositionRows.rows.map(disposition),completedGoodQuantity=attempts.filter(x=>x.completedAt).reduce((n,x)=>n+x.goodQuantity,0),recordedGoodQuantity=attempts.reduce((n,x)=>n+x.goodQuantity,0),rejectedGoodQuantity=outputDispositions.reduce((n,x)=>n+x.rejectedQuantity,0),usableGoodQuantity=Math.max(0,completedGoodQuantity-rejectedGoodQuantity),activeGoodQuantity=attempts.filter(x=>!x.completedAt).reduce((n,x)=>n+x.goodQuantity,0),remainingGoodQuantity=Math.max(0,found.orderedQuantity-usableGoodQuantity-activeGoodQuantity),activeAttempt=attempts.find(x=>!x.completedAt),operatorContext=presentation.rows[0]?productionOperatorContext(presentation.rows[0]):undefined,unitQuantitySatisfied=usableGoodQuantity>=found.orderedQuantity,latestControl=[...exceptionEvents].reverse().find(value=>value.kind!=="note"&&value.kind!=="output_rejected"),state=unitQuantitySatisfied?"complete":latestControl?.kind==="rework_requested"?"rework_requested":latestControl?.kind==="hold"?"held":activeAttempt?"active":"ready";return {work:found,attempts,completedGoodQuantity,recordedGoodQuantity,rejectedGoodQuantity,usableGoodQuantity,remainingGoodQuantity,...(activeAttempt?{activeAttempt}:{}),unitQuantitySatisfied,state,exceptionEvents,outputDispositions,...(operatorContext?{operatorContext}:{})};}
+ ]);const attempts=rows.rows.map(attempt),exceptionEvents=eventRows.rows.map(event),outputDispositions=dispositionRows.rows.map(disposition),completedGoodQuantity=attempts.filter(x=>x.completedAt).reduce((n,x)=>n+x.goodQuantity,0),recordedGoodQuantity=attempts.reduce((n,x)=>n+x.goodQuantity,0),rejectedGoodQuantity=outputDispositions.reduce((n,x)=>n+x.rejectedQuantity,0),usableGoodQuantity=Math.max(0,completedGoodQuantity-rejectedGoodQuantity),activeGoodQuantity=attempts.filter(x=>!x.completedAt).reduce((n,x)=>n+x.goodQuantity,0),activeAttempt=attempts.find(x=>!x.completedAt),operatorContext=presentation.rows[0]?productionOperatorContext(presentation.rows[0]):undefined,latestControl=[...exceptionEvents].reverse().find(value=>value.kind!=="note"&&value.kind!=="output_rejected"),attention=productionWorkAttention(found.orderedQuantity,usableGoodQuantity,activeGoodQuantity,Boolean(activeAttempt),latestControl?.kind);return {work:found,attempts,completedGoodQuantity,recordedGoodQuantity,rejectedGoodQuantity,usableGoodQuantity,remainingGoodQuantity:attention.remainingGoodQuantity,...(activeAttempt?{activeAttempt}:{}),unitQuantitySatisfied:attention.unitQuantitySatisfied,state:attention.state,exceptionEvents,outputDispositions,...(operatorContext?{operatorContext}:{})};}
+  /** Bounded read projection; shares readWork's owner calculation without loading histories. */
+  async readDailyReportWorkFacts(org: OrganizationId, ids: readonly ProductionWorkId[]) {
+    if (ids.length > 1_000 || new Set(ids).size !== ids.length) throw Error("Production report facts require at most 1000 unique work IDs.");
+    if (!ids.length) return [];
+    const result = await this.client.query<{ id: string; ordered_quantity: number; usable_good_quantity: number; active_attempt_id: string | null; active_good_quantity: number | null; latest_control: ProductionWorkEvent["kind"] | null }>(`
+      SELECT w.id,w.ordered_quantity,v2_usable_production_good_quantity(w.organization_id,w.id) usable_good_quantity,
+        active.id active_attempt_id,active.good_quantity active_good_quantity,control.event_kind latest_control
+      FROM v2_production_works w
+      LEFT JOIN LATERAL (SELECT a.id,a.good_quantity FROM v2_production_attempts a WHERE a.organization_id=w.organization_id AND a.production_work_id=w.id AND a.completed_at IS NULL) active ON TRUE
+      LEFT JOIN LATERAL (SELECT e.event_kind FROM v2_production_work_events e WHERE e.organization_id=w.organization_id AND e.production_work_id=w.id AND e.event_kind NOT IN ('note','output_rejected') ORDER BY e.sequence DESC LIMIT 1) control ON TRUE
+      WHERE w.organization_id=$1 AND w.id=ANY($2::varchar[])`, [org, ids]);
+    return result.rows.map(row => ({ productionWorkId: brandedId<"ProductionWorkId">(row.id), orderedQuantity: row.ordered_quantity,
+      activeAttemptId: row.active_attempt_id ? brandedId<"ProductionAttemptId">(row.active_attempt_id) : null,
+      ...productionWorkAttention(row.ordered_quantity, row.usable_good_quantity, row.active_good_quantity ?? 0, row.active_attempt_id !== null, row.latest_control ?? undefined) }));
+  }
  /**
   * An untouched work has no durable station yet. It is therefore shown as
  * queue exposes only work whose frozen route names this station. Once an

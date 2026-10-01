@@ -5,6 +5,7 @@ import {
   newBusinessRequestId,
   prepressApi,
   productionApi,
+  productionDailyReportApi,
   type ProductionAttempt,
   type ProductionMaterialProjection,
   type ProductionWorkProjection,
@@ -12,9 +13,10 @@ import {
 import { RollStationPanel } from "./RollStationPanel";
 import { FlatbedStationPanel } from "./FlatbedStationPanel";
 import { ProductionRunWorkspace } from "./ProductionRunWorkspace";
+import { ProductionDailyReport } from "./ProductionDailyReport";
 
 type Station = "flatbed" | "roll";
-type ProductionView = "overview" | "board" | "calendar" | "stations";
+type ProductionView = "overview" | "board" | "calendar" | "stations" | "daily-report";
 
 const keys = {
   queue: (scope: string, organizationId: string, station: Station) =>
@@ -519,23 +521,24 @@ export const ProductionWorkspace = ({
   const [queueState, setQueueState] = useState<Record<Station, { page: number; pageSize: 25 | 50 | 100; search: string }>>({ flatbed: { page: 1, pageSize: 25, search: "" }, roll: { page: 1, pageSize: 25, search: "" } });
   const queryClient = useQueryClient();
   const canRead = Boolean(organizationId && sessionScope && canView);
+  const canReadQueues = canRead && view !== "daily-report";
   const flatbedQueue = useQuery({
     queryKey: [...keys.queue(sessionScope, organizationId, "flatbed"), queueState.flatbed.page, queueState.flatbed.pageSize, queueState.flatbed.search],
     queryFn: () => productionApi.queue(organizationId, "flatbed", queueState.flatbed),
-    enabled: canRead,
+    enabled: canReadQueues,
   });
   const rollQueue = useQuery({
     queryKey: [...keys.queue(sessionScope, organizationId, "roll"), queueState.roll.page, queueState.roll.pageSize, queueState.roll.search],
     queryFn: () => productionApi.queue(organizationId, "roll", queueState.roll),
-    enabled: canRead,
+    enabled: canReadQueues,
   });
   const routedWork = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "production", "work", routedProductionWorkId],
     queryFn: () => productionApi.get(organizationId, routedProductionWorkId!),
-    enabled: canRead && Boolean(routedProductionWorkId),
+    enabled: canReadQueues && Boolean(routedProductionWorkId),
     retry: false,
   });
-  const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId,{page:1,pageSize:100}),enabled:canRead,retry:false});
+  const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId,{page:1,pageSize:100}),enabled:canReadQueues,retry:false});
   const queue = station === "flatbed" ? flatbedQueue : rollQueue;
   const stationQueues = useMemo(
     () => ({ flatbed: flatbedQueue.data?.items ?? [], roll: rollQueue.data?.items ?? [] }),
@@ -555,9 +558,9 @@ export const ProductionWorkspace = ({
   }, [routedProductionWorkId]);
 
   useEffect(() => {
-    if (!selectedWorkId && queue.data?.items[0])
+    if (view !== "daily-report" && !selectedWorkId && queue.data?.items[0])
       setSelectedWorkId(queue.data.items[0].work.productionWorkId);
-  }, [queue.data, selectedWorkId]);
+  }, [queue.data, selectedWorkId, view]);
 
   const work = routedProductionWorkId
     ? routedWork.data
@@ -704,33 +707,33 @@ export const ProductionWorkspace = ({
         <div>
           <h1>Production</h1>
           <p>
-            {totalWork} real production unit{totalWork === 1 ? "" : "s"} across
-            Flatbed and Roll
+            {view === "daily-report" ? "Read-only daily operational attention by Production work." : <>{totalWork} real production unit{totalWork === 1 ? "" : "s"} across Flatbed and Roll</>}
           </p>
         </div>
         <div className="v2-production-view-toggle" aria-label="Production view">
-          {(["overview", "board", "calendar", "stations"] as const).map(
+          {(["overview", "board", "calendar", "stations", "daily-report"] as const).map(
             (option) => (
               <button
                 key={option}
                 type="button"
                 className={view === option ? "active" : ""}
+                aria-pressed={view === option}
                 onClick={() => {
                   setView(option);
-                  if (option === "overview") onStationChange(undefined);
+                  if (option === "overview" || option === "daily-report") onStationChange(undefined);
+                  if (option === "daily-report") setSelectedWorkId("");
                 }}
               >
-                {option[0]!.toUpperCase()}
-                {option.slice(1)}
+                {option === "daily-report" ? "Daily Report" : `${option[0]!.toUpperCase()}${option.slice(1)}`}
               </button>
             ),
           )}
         </div>
       </header>
 
-      {!!openable.length && <section className="v2-production-open-work"><h2>Ready to open</h2>{openable.map(({item,requirement,artworkAssignmentId})=><article key={artworkAssignmentId}><div><b>{item.orderNumber} · {item.lineDescription}</b><small>{item.quantity} ordered · {requirementLabel({work:{requirement:requirement.requirement} as ProductionWorkProjection["work"]} as ProductionWorkProjection)} · Prepress complete</small></div><button type="button" disabled={!canWork||open.isPending} onClick={()=>open.mutate(artworkAssignmentId)}>{open.isPending?"Opening…":"Open Production Work"}</button></article>)}{open.isError&&<p className="v2-product-version-message">{(open.error as Error).message}</p>}</section>}
+      {view !== "daily-report" && !!openable.length && <section className="v2-production-open-work"><h2>Ready to open</h2>{openable.map(({item,requirement,artworkAssignmentId})=><article key={artworkAssignmentId}><div><b>{item.orderNumber} · {item.lineDescription}</b><small>{item.quantity} ordered · {requirementLabel({work:{requirement:requirement.requirement} as ProductionWorkProjection["work"]} as ProductionWorkProjection)} · Prepress complete</small></div><button type="button" disabled={!canWork||open.isPending} onClick={()=>open.mutate(artworkAssignmentId)}>{open.isPending?"Opening…":"Open Production Work"}</button></article>)}{open.isError&&<p className="v2-product-version-message">{(open.error as Error).message}</p>}</section>}
 
-      {view === "board" ? (
+      {view === "daily-report" ? <ProductionDailyReport organizationId={organizationId} sessionScope={sessionScope} canView={canView} client={productionDailyReportApi} /> : view === "board" ? (
         <section className="v2-production-board" aria-label="Production board">
           <p>
             Station columns are a read-only projection of real Production work.

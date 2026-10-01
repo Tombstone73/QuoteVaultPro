@@ -81,6 +81,7 @@ type PagedInvoiceRow = Readonly<{
   source_order_id: string;
   source_order_number: string;
   invoice_number: string;
+  persisted_invoice_number: string | null;
   customer_id: string | null;
   customer_name: string | null;
   lifecycle: "draft" | "issued" | "void";
@@ -124,7 +125,7 @@ type PagedLedgerRow = Readonly<{
 }>;
 const financialItem = (row: PagedInvoiceRow): FinancialInvoiceListItem => {
   const gross = cents(row.gross_cents), paid = cents(row.paid_cents), refunded = cents(row.refunded_cents), balance = cents(row.balance_cents), code = currencyCode(row.currency);
-  return { source: row.source, recordId: row.record_id, invoiceId: brandedId<"InvoiceId">(row.invoice_id), sourceOrderId: row.source_order_id, sourceOrderNumber: row.source_order_number, ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}), ...(row.customer_name ? { customerName: row.customer_name } : {}), lifecycle: row.lifecycle, currency: row.currency, gross: money(code, gross), paid: money(code, paid), refunded: money(code, refunded), balance: money(code, balance), ...(row.settlement ? { settlement: row.settlement } : {}), ...(row.issued_at ? { issuedAt: row.issued_at.toISOString() } : {}), updatedAt: row.updated_at.toISOString() };
+  return { source: row.source, recordId: row.record_id, invoiceId: brandedId<"InvoiceId">(row.invoice_id), invoiceNumber: row.invoice_number, persistedInvoiceNumber: row.persisted_invoice_number, sourceOrderId: row.source_order_id, sourceOrderNumber: row.source_order_number, ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id) } : {}), ...(row.customer_name ? { customerName: row.customer_name } : {}), lifecycle: row.lifecycle, currency: row.currency, gross: money(code, gross), paid: money(code, paid), refunded: money(code, refunded), balance: money(code, balance), ...(row.settlement ? { settlement: row.settlement } : {}), ...(row.issued_at ? { issuedAt: row.issued_at.toISOString() } : {}), updatedAt: row.updated_at.toISOString() };
 };
 const summaryFrom = (rows: readonly AggregateRow[]): FinancialArSummary => {
   const amounts = (field: keyof Pick<AggregateRow, "unpaid_cents" | "partially_paid_cents" | "credit_due_cents">): readonly FinancialCurrencyAmount[] => rows.map((row) => ({ currency: row.currency, cents: cents(row[field]) })).filter((row) => row.cents !== 0);
@@ -204,7 +205,7 @@ const financialProjection = `
     GROUP BY organization_id,invoice_id
   ), native_rows AS (
     SELECT 'v2'::text source,i.id record_id,i.id invoice_id,i.sales_order_document_id source_order_id,
-      d.display_number source_order_number,COALESCE(i.invoice_display_number,d.display_number) invoice_number,
+      d.display_number source_order_number,COALESCE(i.invoice_display_number,d.display_number) invoice_number,i.invoice_display_number persisted_invoice_number,
       i.customer_id,COALESCE(c.display_name,c.company_name) customer_name,i.invoice_state lifecycle,
       i.currency,i.total_cents gross_cents,COALESCE(p.paid_cents,0)::bigint paid_cents,
       COALESCE(r.refunded_cents,0)::bigint refunded_cents,
@@ -219,7 +220,7 @@ const financialProjection = `
   ), legacy_rows AS (
     SELECT 'legacy'::text source,i.id record_id,i.id invoice_id,COALESCE(i.order_id,'') source_order_id,
       COALESCE(o.display_number,o.order_number,'Order unavailable') source_order_number,
-      COALESCE(i.display_number,'Invoice '||i.id) invoice_number,i.customer_id,
+      COALESCE(i.display_number,'Invoice '||i.id) invoice_number,i.display_number persisted_invoice_number,i.customer_id,
       COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,
       CASE WHEN i.status::text='void' THEN 'void' WHEN i.status::text='draft' THEN 'draft' ELSE 'issued' END lifecycle,
       COALESCE(NULLIF(i.currency,''),'USD') currency,
@@ -233,7 +234,7 @@ const financialProjection = `
     WHERE i.organization_id=$1
       AND NOT EXISTS (SELECT 1 FROM v2_billing_invoices v WHERE v.organization_id=i.organization_id AND v.id=i.id)
   ), normalized AS (
-    SELECT source,record_id,invoice_id,source_order_id,source_order_number,invoice_number,customer_id,customer_name,lifecycle,currency,gross_cents,paid_cents,refunded_cents,balance_cents,issued_at,updated_at,purchase_order_number,
+    SELECT source,record_id,invoice_id,source_order_id,source_order_number,invoice_number,persisted_invoice_number,customer_id,customer_name,lifecycle,currency,gross_cents,paid_cents,refunded_cents,balance_cents,issued_at,updated_at,purchase_order_number,
       CASE WHEN lifecycle='void' THEN NULL
         WHEN balance_cents<0 THEN 'credit_due'
         WHEN balance_cents=0 THEN 'paid'
@@ -312,7 +313,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
       this.client,
     ).readInvoice(organizationId, invoiceId);
     if (!invoice) return null;
-    const facts = await this.facts(organizationId, invoiceId);
+    const { facts, persistedInvoiceNumber } = await this.facts(organizationId, invoiceId);
     const rows = history(facts, invoice.total.cents);
     const paid = facts
       .filter((row) => row.kind === "payment")
@@ -322,6 +323,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
       .reduce((total, row) => total + cents(row.amount_cents), 0);
     return {
       invoice,
+      persistedInvoiceNumber,
       settlement: {
         gross: invoice.total,
         paid: money(invoice.currency, paid),
@@ -332,13 +334,13 @@ export class PostgresFinancialRead implements FinancialReadPort {
     };
   }
   async readLegacyFinancialInvoice(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<FinancialInvoiceRead | null> {
-    const result = await this.client.query<{ id:string; order_id:string|null; customer_id:string|null; customer_name:string|null; status:string; currency:string; total_cents:string; subtotal_cents:string; tax_cents:string; amount_paid_cents:string; balance_due_cents:string; issued_at:Date|null; created_at:Date; updated_at:Date }>(`SELECT i.id,i.order_id,i.customer_id,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.status::text,i.currency,COALESCE(NULLIF(i.total_cents,0),ROUND(i.total*100)::int)::text total_cents,COALESCE(NULLIF(i.subtotal_cents,0),ROUND(i.subtotal*100)::int)::text subtotal_cents,COALESCE(NULLIF(i.tax_cents,0),ROUND(i.tax*100)::int)::text tax_cents,ROUND(COALESCE(i.amount_paid,0)*100)::int::text amount_paid_cents,ROUND(COALESCE(i.balance_due,0)*100)::int::text balance_due_cents,i.issued_at,i.created_at,i.updated_at FROM invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND i.id=$2`, [organizationId, invoiceId]);
+    const result = await this.client.query<{ id:string; persisted_invoice_number:string|null; order_id:string|null; customer_id:string|null; customer_name:string|null; status:string; currency:string; total_cents:string; subtotal_cents:string; tax_cents:string; amount_paid_cents:string; balance_due_cents:string; issued_at:Date|null; created_at:Date; updated_at:Date }>(`SELECT i.id,i.display_number persisted_invoice_number,i.order_id,i.customer_id,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,i.status::text,i.currency,COALESCE(NULLIF(i.total_cents,0),ROUND(i.total*100)::int)::text total_cents,COALESCE(NULLIF(i.subtotal_cents,0),ROUND(i.subtotal*100)::int)::text subtotal_cents,COALESCE(NULLIF(i.tax_cents,0),ROUND(i.tax*100)::int)::text tax_cents,ROUND(COALESCE(i.amount_paid,0)*100)::int::text amount_paid_cents,ROUND(COALESCE(i.balance_due,0)*100)::int::text balance_due_cents,i.issued_at,i.created_at,i.updated_at FROM invoices i LEFT JOIN customers c ON c.organization_id=i.organization_id AND c.id=i.customer_id WHERE i.organization_id=$1 AND i.id=$2`, [organizationId, invoiceId]);
     const row = result.rows[0]; if (!row) return null;
     const code = currencyCode(row.currency || "USD"), gross = cents(row.total_cents), paid = cents(row.amount_paid_cents), balance = cents(row.balance_due_cents);
     const paymentRows = await this.client.query<{ id:string; amount_cents:string; currency:string; method:string|null; occurred_at:Date; recorded_at:Date }>(`SELECT p.id,COALESCE(NULLIF(p.amount_cents,0),ROUND(p.amount*100)::int)::text amount_cents,p.currency,COALESCE(p.method,'other') method,COALESCE(p.paid_at,p.applied_at,p.created_at AT TIME ZONE 'UTC') occurred_at,p.created_at recorded_at FROM payments p WHERE p.organization_id=$1 AND p.invoice_id=$2 ORDER BY COALESCE(p.paid_at,p.applied_at,p.created_at AT TIME ZONE 'UTC'),p.created_at,p.id`, [organizationId, invoiceId]);
     let remaining = gross;
     const history = paymentRows.rows.map((payment) => { remaining -= cents(payment.amount_cents); return { kind:"payment" as const, id:brandedId<"PaymentId">(payment.id), paymentId:brandedId<"PaymentId">(payment.id), amount:money(currencyCode(payment.currency || row.currency || "USD"), cents(payment.amount_cents)), ...(payment.method ? { method:payment.method as PaymentMethod } : {}), source:"legacy" as const, occurredAt:payment.occurred_at.toISOString(), recordedAt:payment.recorded_at.toISOString(), balanceAfter:money(code, remaining) }; });
-    return { invoice: { source:"legacy", readOnly:true, invoiceId, organizationId, sourceOrderId: brandedId<"OrderId">(row.order_id ?? ""), ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id), customerPresentation:{ customerDisplayName:row.customer_name ?? "Customer unavailable" } } : {}), lifecycle: row.status === "void" ? "void" : row.status === "draft" ? "draft" : "issued", currency: code, synchronizationVersion:"legacy-read-only", lines:[], subtotal:money(code,cents(row.subtotal_cents)), taxTotal:money(code,cents(row.tax_cents)), total:money(code,gross), ...(row.issued_at ? { issuedAt:row.issued_at.toISOString() } : {}), createdAt:row.created_at.toISOString(), updatedAt:row.updated_at.toISOString() }, settlement:{ gross:money(code,gross), paid:money(code,paid), refunded:money(code,0), balance:money(code,balance) }, history };
+    return { persistedInvoiceNumber: row.persisted_invoice_number, invoice: { source:"legacy", readOnly:true, invoiceId, organizationId, sourceOrderId: brandedId<"OrderId">(row.order_id ?? ""), ...(row.customer_id ? { customerId: brandedId<"CustomerId">(row.customer_id), customerPresentation:{ customerDisplayName:row.customer_name ?? "Customer unavailable" } } : {}), lifecycle: row.status === "void" ? "void" : row.status === "draft" ? "draft" : "issued", currency: code, synchronizationVersion:"legacy-read-only", lines:[], subtotal:money(code,cents(row.subtotal_cents)), taxTotal:money(code,cents(row.tax_cents)), total:money(code,gross), ...(row.issued_at ? { issuedAt:row.issued_at.toISOString() } : {}), createdAt:row.created_at.toISOString(), updatedAt:row.updated_at.toISOString() }, settlement:{ gross:money(code,gross), paid:money(code,paid), refunded:money(code,0), balance:money(code,balance) }, history };
   }
   async pageFinancialInvoices(organizationId: OrganizationId, request: FinancialInvoicePageRequest): Promise<FinancialInvoicePage> {
     const page = financialPage(request.page), pageSize = financialPageSize(request.pageSize), search = financialSearch(request.search), lifecycle = request.lifecycle ?? null, settlement = request.settlement ?? null, offset = (page - 1) * pageSize;
@@ -346,7 +348,7 @@ export class PostgresFinancialRead implements FinancialReadPort {
     const order = `${sort} ${direction} NULLS LAST, source ASC, record_id ASC`;
     const values = [organizationId, search, lifecycle, settlement];
     const [rows, summary] = await Promise.all([
-      this.client.query<PagedInvoiceRow>(`${financialProjection} SELECT source,record_id,invoice_id,source_order_id,source_order_number,invoice_number,customer_id,customer_name,lifecycle,settlement,currency,gross_cents::text,paid_cents::text,refunded_cents::text,balance_cents::text,issued_at,updated_at FROM filtered ORDER BY ${order} LIMIT $5 OFFSET $6`, [...values, pageSize, offset]),
+      this.client.query<PagedInvoiceRow>(`${financialProjection} SELECT source,record_id,invoice_id,source_order_id,source_order_number,invoice_number,persisted_invoice_number,customer_id,customer_name,lifecycle,settlement,currency,gross_cents::text,paid_cents::text,refunded_cents::text,balance_cents::text,issued_at,updated_at FROM filtered ORDER BY ${order} LIMIT $5 OFFSET $6`, [...values, pageSize, offset]),
       this.summary(organizationId, request),
     ]);
     return { items: rows.rows.map(financialItem), page, pageSize, totalMatching: summary.totalMatching, hasNextPage: offset + rows.rows.length < summary.totalMatching, summary };
@@ -433,15 +435,20 @@ export class PostgresFinancialRead implements FinancialReadPort {
   private async facts(
     organizationId: OrganizationId,
     invoiceId: InvoiceId,
-  ): Promise<readonly FactRow[]> {
-    const result = await this.client.query<FactRow>(
-      `SELECT 'payment'::text kind,p.id,p.id payment_id,a.invoice_id,a.amount_cents,p.currency,p.method,p.source,p.occurred_at,p.recorded_at FROM v2_billing_payments p JOIN v2_billing_payment_allocations a ON a.organization_id=p.organization_id AND a.payment_id=p.id WHERE p.organization_id=$1 AND a.invoice_id=$2
-       UNION ALL
-       SELECT 'refund'::text kind,r.id,e.payment_id,e.invoice_id,e.amount_cents,r.currency,p.method,r.source,r.occurred_at,r.recorded_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=e.payment_id WHERE r.organization_id=$1 AND e.invoice_id=$2
-       ORDER BY occurred_at,recorded_at,id`,
+  ): Promise<Readonly<{ facts: readonly FactRow[]; persistedInvoiceNumber: string | null }>> {
+    // The left join retains number provenance even when this Invoice has no facts.
+    const result = await this.client.query<{ persisted_invoice_number: string | null } & (FactRow | { id: null })>(
+      `SELECT i.invoice_display_number persisted_invoice_number,f.* FROM v2_billing_invoices i
+       LEFT JOIN LATERAL (
+        SELECT 'payment'::text kind,p.id,p.id payment_id,a.invoice_id,a.amount_cents,p.currency,p.method,p.source,p.occurred_at,p.recorded_at FROM v2_billing_payments p JOIN v2_billing_payment_allocations a ON a.organization_id=p.organization_id AND a.payment_id=p.id WHERE p.organization_id=$1 AND a.invoice_id=$2
+        UNION ALL
+        SELECT 'refund'::text kind,r.id,e.payment_id,e.invoice_id,e.amount_cents,r.currency,p.method,r.source,r.occurred_at,r.recorded_at FROM v2_billing_refunds r JOIN v2_billing_refund_allocations a ON a.organization_id=r.organization_id AND a.refund_id=r.id JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id JOIN v2_billing_payments p ON p.organization_id=r.organization_id AND p.id=e.payment_id WHERE r.organization_id=$1 AND e.invoice_id=$2
+       ) f ON TRUE WHERE i.organization_id=$1 AND i.id=$2
+       ORDER BY f.occurred_at,f.recorded_at,f.id`,
       [organizationId, invoiceId],
     );
-    return result.rows;
+    return { persistedInvoiceNumber: result.rows[0]?.persisted_invoice_number ?? null,
+      facts: result.rows.filter((row): row is FactRow & { persisted_invoice_number: string | null } => row.id !== null) };
   }
   private async summary(organizationId: OrganizationId, request: Pick<FinancialInvoicePageRequest, "search" | "lifecycle" | "settlement">): Promise<FinancialArSummary> {
     const aggregate = await this.client.query<AggregateRow>(`${financialProjection} SELECT currency,count(*)::text invoice_count,count(*) FILTER (WHERE settlement='unpaid')::text unpaid_count,COALESCE(sum(CASE WHEN settlement='unpaid' THEN GREATEST(balance_cents,0) ELSE 0 END),0)::text unpaid_cents,count(*) FILTER (WHERE settlement='partially_paid')::text partially_paid_count,COALESCE(sum(CASE WHEN settlement='partially_paid' THEN GREATEST(balance_cents,0) ELSE 0 END),0)::text partially_paid_cents,count(*) FILTER (WHERE settlement='paid')::text paid_count,count(*) FILTER (WHERE settlement='credit_due')::text credit_due_count,COALESCE(sum(CASE WHEN settlement='credit_due' THEN -balance_cents ELSE 0 END),0)::text credit_due_cents FROM filtered GROUP BY currency ORDER BY currency`, [organizationId, financialSearch(request.search), request.lifecycle ?? null, request.settlement ?? null]);

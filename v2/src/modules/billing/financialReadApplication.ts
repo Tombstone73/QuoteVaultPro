@@ -31,6 +31,8 @@ export type FinancialHistoryEntry = Readonly<{
 }>;
 export type FinancialInvoiceRead = Readonly<{
   invoice: DraftInvoiceReadModel;
+  /** Persisted number only; the Invoice aggregate may carry an Order-display fallback. */
+  persistedInvoiceNumber?: string | null;
   settlement: Readonly<{
     gross: Money;
     paid: Money;
@@ -43,6 +45,8 @@ export type FinancialInvoiceListItem = Readonly<{
   source: "v2" | "legacy";
   recordId: string;
   invoiceId: InvoiceId;
+  invoiceNumber?: string;
+  persistedInvoiceNumber?: string | null;
   sourceOrderId: string;
   sourceOrderNumber: string;
   customerId?: string;

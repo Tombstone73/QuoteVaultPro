@@ -1,4 +1,5 @@
 import type { ProductOptionRule } from "../../../shared/productOptionRules";
+import { createProductionDailyReportClient } from "./productionDailyReportApi";
 
 export type ApiError = Readonly<{ code: string; message: string }>;
 export type SalesTaxJurisdiction = Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; destinationMethods?: readonly ("shipping"|"local_delivery")[]; updatedAt: string }>;
@@ -1090,6 +1091,7 @@ export type InvoiceRead = Readonly<{
   source?: "v2" | "legacy";
   readOnly?: true;
   invoiceId: string;
+  invoiceNumber?: string;
   organizationId: string;
   sourceOrderId: string;
   sourceOrderNumber?: string;
@@ -1154,6 +1156,7 @@ export type FinancialHistoryEntry = Readonly<{
 }>;
 export type FinancialInvoiceRead = Readonly<{
   invoice: InvoiceRead;
+  persistedInvoiceNumber?: string | null;
   settlement: {
     gross: InvoiceRead["total"];
     paid: InvoiceRead["total"];
@@ -1166,6 +1169,8 @@ export type FinancialInvoiceListItem = Readonly<{
   source: "v2" | "legacy";
   recordId: string;
   invoiceId: string;
+  invoiceNumber?: string;
+  persistedInvoiceNumber?: string | null;
   sourceOrderId: string;
   sourceOrderNumber: string;
   customerId?: string;
@@ -3199,6 +3204,14 @@ const productionMutation = <T>(
     headers: { "x-v2-csrf-token": csrfTokens.get(csrfKey(org)) ?? "" },
     body: JSON.stringify({ ...input, businessRequestId }),
   });
+export const productionDailyReportApi = createProductionDailyReportClient(async <T>(url: string, init: RequestInit): Promise<T> => {
+  try { return await request<T>(url, init); }
+  catch (cause) {
+    if (cause instanceof Error) throw cause;
+    const error = cause as Partial<ApiError> | null;
+    throw Object.assign(new Error(typeof error?.message === "string" ? error.message : "The Production daily report is unavailable."), { code: error?.code });
+  }
+});
 export const productionApi = {
   orderWorks: (org: string, orderId: string) => request<readonly ProductionWorkProjection[]>(productionEndpoint(org, `/orders/${encodeURIComponent(orderId)}/works`)),
   queue: (org: string, station: "flatbed" | "roll", query: OperationalQueuePageRequest = {}) => {
