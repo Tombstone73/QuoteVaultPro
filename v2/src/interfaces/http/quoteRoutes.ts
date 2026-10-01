@@ -16,6 +16,7 @@ import { createQuoteConversionTrace, type QuoteConversionApplicationService } fr
 import type { ConvertQuoteCommand } from "../../modules/sales/contracts.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 import type { SalesWorkspaceReadPort } from "../../modules/sales/workspaceReads.js";
+import type { SalesContactSelectionReadPort } from "../../modules/customers/salesContactSelection.js";
 import type { QuoteArtworkApplicationService } from "../../modules/artwork/quoteArtworkApplication.js";
 import type { QuoteArtworkUploadService } from "../../../infrastructure/artwork/quoteArtworkUploadService.js";
 import busboy from "busboy";
@@ -44,6 +45,7 @@ export type QuoteHttpDependencies = Readonly<{
   conversion?: QuoteConversionApplicationService;
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
+  contactSelection?: SalesContactSelectionReadPort;
   workspace?: SalesWorkspaceReadPort;
   documents?: QuoteCustomerDocumentPort;
   delivery?: QuoteDeliveryPort;
@@ -357,6 +359,27 @@ export const createQuoteRouter = (
     try {
       if (!dependencies.delivery) throw new V2ApplicationError("INTERNAL_ERROR", "Quote delivery runtime is unavailable.");
       response.json({ ok: true, data: await dependencies.delivery.readiness(await context(request, dependencies), brandedId<"QuoteId">(request.params.quoteId)) });
+    } catch (cause) { error(response, cause); }
+  });
+  router.get("/:quoteId/contact-selection", async (request, response) => {
+    response.setHeader("Cache-Control", "private, no-store");
+    try {
+      const operation = await context(request, dependencies);
+      const result = await dependencies.service.read(operation, brandedId<"QuoteId">(request.params.quoteId));
+      if (!result.ok) return error(response, result.error);
+      if (Object.keys(request.query).length || (request.body && Object.keys(request.body).length))
+        throw new V2ApplicationError("VALIDATION_ERROR", "Quote contact selection accepts no lookup fields.");
+      if (!dependencies.contactSelection)
+        throw new V2ApplicationError("RETRYABLE_FAILURE", "Quote contact selection is unavailable.");
+      const reference = result.value.quote.customerContact;
+      if (!reference.contactId) return void response.json({ ok: true, data: null });
+      const selection = await dependencies.contactSelection.lookupActiveContacts(brandedId<"OrganizationId">(operation.organizationId), {
+        ...(reference.customerId ? { customerId: reference.customerId } : {}),
+        selectedContactId: reference.contactId,
+        limit: 1,
+      });
+      const selected = selection.selectedContact;
+      response.json({ ok: true, data: selected ? { id: selected.id, label: selected.label } : null });
     } catch (cause) { error(response, cause); }
   });
   router.get("/:quoteId", async (request, response) => {

@@ -48,7 +48,7 @@ export type QuoteRead = Readonly<{
     quoteId: string;
     customerContact: {
       organizationId: string;
-      customerId: string;
+      customerId?: string;
       contactId?: string;
     };
     purchaseOrderNumber?: string;
@@ -1865,6 +1865,10 @@ export const quoteApi = {
   get: (organizationId: string, quoteId: string) =>
     request<QuoteRead>(
       endpoint(organizationId, `/${encodeURIComponent(quoteId)}`),
+    ),
+  contactSelection: (organizationId: string, quoteId: string) =>
+    request<Readonly<{ id: string; label: string }> | null>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/contact-selection`),
     ),
   artwork: (organizationId: string, quoteId: string) =>
     request<readonly QuoteArtworkProjection[]>(

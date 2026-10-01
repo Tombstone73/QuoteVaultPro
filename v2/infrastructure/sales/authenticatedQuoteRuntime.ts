@@ -21,6 +21,7 @@ import { PostgresCustomerWorkspaceReader } from "../compatibility/postgresCustom
 import { CanonicalCustomerCreationService } from "../customers/canonicalCustomerCreation.js";
 import { CanonicalContactCreationService } from "../customers/canonicalContactCreation.js";
 import { PostgresCustomerContactAdministration } from "../customers/postgresCustomerContactAdministration.js";
+import { PostgresSalesContactSelection } from "../customers/postgresSalesContactSelection.js";
 import type { CustomerHttpDependencies } from "../../src/interfaces/http/customerRoutes.js";
 import { PostgresContactWorkspaceReader } from "../compatibility/postgresContactWorkspaceRead.js";
 import type { ContactHttpDependencies } from "../../src/interfaces/http/contactRoutes.js";
@@ -92,6 +93,16 @@ export const composeAuthenticatedQuoteRuntime = (
       ),
       principals,
       formReads: new PostgresQuoteFormReads(input.pool),
+      contactSelection: {
+        lookupActiveContacts: async (organizationId, query) => {
+          const client = await input.pool.connect();
+          try {
+            return await new PostgresSalesContactSelection(client).lookupActiveContacts(organizationId, query);
+          } finally {
+            client.release();
+          }
+        },
+      },
       workspace: new PostgresSalesWorkspaceReads(input.pool),
       documents: new PostgresCustomerDocumentService(input.pool),
       delivery: new PostgresQuoteDeliveryService(input.pool, service),

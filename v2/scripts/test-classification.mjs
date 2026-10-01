@@ -47,6 +47,8 @@ add('v2/tests/', 'tsx', ['infrastructure/salesContactSelection.postgres.test.ts'
   'safe-deterministic', 'Standalone actual Customers reads, Sales applications and workspace coordinator execute against disposable in-memory PGlite with explicit same-client owner factories; loopback HTTP only, no V1 initialization, credentials, provider or live database.');
 add('v2/ui/src/', 'tsx', ['salesContactSelection.test.tsx', 'contactOnlyWorkspaceIntegration.test.tsx'],
   'safe-deterministic', 'Mounted controlled selector and real workspace UI use scoped intercepted transport and in-memory workspace persistence; no external fetch, provider or canonical runtime initialization.');
+add('v2/', 'tsx', ['tests/interfaces/quoteContactSelection.test.ts', 'ui/src/quoteContactSelection.test.tsx'],
+  'safe-deterministic', 'Canonical Quote authorization and selected Contact hydration use actual Sales application and Customers reads with in-memory Quote persistence, PGlite and local HTTP; mounted App uses JSDOM and intercepted transport, without credentials, V1 initialization or provider execution.');
 add('v2/ui/src/', 'tsx', ['sessionResponseGeneration.test.tsx', 'prepressSessionRecovery.test.tsx'],
   'safe-deterministic', 'Actual API generation and AuthGate/App recovery execute with JSDOM, intercepted fetch, scoped in-memory receipts and CSS-only loading seams; no external transport, credentials, provider or live database.');
 add('v2/ui/src/', 'tsx', ['productionDailyReport.test.tsx', 'productionDailyReportIntegration.test.tsx'],

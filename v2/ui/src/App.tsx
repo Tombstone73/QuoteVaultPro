@@ -1754,6 +1754,7 @@ const QuoteDocumentMetadata = ({
   contactId,
   customers,
   contacts,
+  contactLoading = false,
   purchaseOrderNumber,
   jobLabel = "",
   requestedDueDate,
@@ -1773,6 +1774,7 @@ const QuoteDocumentMetadata = ({
   contactId: string;
   customers: readonly Selection[];
   contacts: readonly Selection[];
+  contactLoading?: boolean;
   purchaseOrderNumber: string;
   jobLabel?: string;
   requestedDueDate: string;
@@ -1790,10 +1792,10 @@ const QuoteDocumentMetadata = ({
 }>) => {
   const customerName =
     customers.find((customer) => customer.customerId === customerId)
-      ?.displayName ?? "Unavailable";
+      ?.displayName ?? (customerId ? "Unavailable" : "No Customer");
   const contactName =
     contacts.find((contact) => contact.contactId === contactId)?.displayName ??
-    "Unavailable";
+    (contactLoading ? `Loading saved Contact (${contactId})` : `Saved Contact unavailable (${contactId})`);
   return (
     <div className="v2-sales-compact-meta">
       <div className="v2-sales-identity">
@@ -1829,6 +1831,9 @@ const QuoteDocumentMetadata = ({
               onChange={(event) => onContactChange?.(event.target.value)}
             >
               <option value="">Select Contact</option>
+              {contactId && !contacts.some(contact => contact.contactId === contactId) && (
+                <option value={contactId} disabled>{contactName}</option>
+              )}
               {contacts.map((contact) =>
                 contact.contactId ? (
                   <option key={contact.contactId} value={contact.contactId}>
@@ -1952,6 +1957,26 @@ const QuoteWorkspace = ({
     quote ? headerCustomerId : customerId,
   );
   const products = useQuoteFormProducts(sessionScope, organizationId);
+  const savedContact = useQuery({
+    queryKey: [
+      "v2", sessionScope, organizationId, "quote-contact-selection",
+      quote?.quote.quoteId ?? "", quote?.revision ?? "",
+      quote?.quote.customerContact.organizationId ?? "",
+      quote?.quote.customerContact.customerId ?? "",
+      quote?.quote.customerContact.contactId ?? "",
+    ],
+    queryFn: () => quoteApi.contactSelection(organizationId, quote!.quote.quoteId),
+    enabled: Boolean(sessionScope && organizationId && quote?.quote.quoteId && quote.quote.customerContact.contactId),
+  });
+  // A persisted lookup must never reintroduce the old Contact after an explicit
+  // Customer/Contact change, even if its network response arrives afterwards.
+  const matchesSavedContact = Boolean(quote
+    && headerCustomerId === (quote.quote.customerContact.customerId ?? "")
+    && headerContactId === quote.quote.customerContact.contactId);
+  const selectedContact = matchesSavedContact && savedContact.isSuccess && savedContact.data?.id === headerContactId ? savedContact.data : null;
+  const headerContacts = selectedContact && !contacts.data?.some(contact => contact.contactId === selectedContact.id)
+    ? [...(contacts.data ?? []), { contactId: selectedContact.id, displayName: selectedContact.label }]
+    : contacts.data ?? [];
   const recipientContact = useQuery({
     queryKey: [
       "v2",
@@ -2096,7 +2121,7 @@ const QuoteWorkspace = ({
           patch: {
             customerContact: {
               organizationId,
-              customerId: headerCustomerId,
+              ...(headerCustomerId ? { customerId: headerCustomerId } : {}),
               ...(headerContactId ? { contactId: headerContactId } : {}),
             },
             purchaseOrderNumber: purchaseOrderNumber.trim() || null,
@@ -2232,7 +2257,8 @@ const QuoteWorkspace = ({
             customerId={headerCustomerId}
             contactId={headerContactId}
             customers={customers.data ?? []}
-            contacts={contacts.data ?? []}
+            contacts={headerContacts}
+            contactLoading={matchesSavedContact && savedContact.isPending}
             purchaseOrderNumber={purchaseOrderNumber}
             jobLabel={jobLabel}
             onJobLabelChange={setJobLabel}
@@ -2268,9 +2294,10 @@ const QuoteWorkspace = ({
             <button
               className="button secondary"
               type="button"
-              onClick={() =>
-                openCustomer?.(quote.quote.customerContact.customerId)
-              }
+              disabled={!quote.quote.customerContact.customerId}
+              onClick={() => {
+                if (quote.quote.customerContact.customerId) openCustomer?.(quote.quote.customerContact.customerId);
+              }}
             >
               Open Customer
             </button>
