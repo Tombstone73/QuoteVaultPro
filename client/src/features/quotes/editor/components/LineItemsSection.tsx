@@ -580,6 +580,7 @@ export function LineItemsSection({
         height: number;
         quantity: number;
         notes: string;
+        description: string;
         requiresProofApproval: boolean;
         selectedOptions: any[];
         optionSelectionsJson: any;
@@ -736,6 +737,7 @@ export function LineItemsSection({
       height: expandedItem.height,
       quantity: expandedItem.quantity,
       notes: (expandedItem.specsJson as any)?.notes || expandedItem.notes || "",
+      description: expandedItem.description || "",
       requiresProofApproval: typeof (expandedItem as any).requiresProofApproval === "boolean"
         ? (expandedItem as any).requiresProofApproval
         : (expandedProduct as any)?.requiresProofApproval === true,
@@ -821,12 +823,13 @@ export function LineItemsSection({
       Math.abs(heightNum - saved.height) > 0.01 ||
       qtyNum !== saved.quantity ||
       currentNotes !== savedNotes ||
+      description !== saved.description ||
       requiresProofApproval !== saved.requiresProofApproval ||
       currentOptions !== savedOptions ||
       currentV2 !== savedV2 ||
       JSON.stringify(currentPendingOrderAttachmentIds) !== JSON.stringify(saved.pendingOrderAttachmentIds)
     );
-  }, [expandedItem, expandedKey, widthNum, heightNum, qtyNum, notes, requiresProofApproval]);
+  }, [expandedItem, expandedKey, widthNum, heightNum, qtyNum, notes, description, requiresProofApproval]);
 
   // Handle save line item
   const handleSaveItem = async () => {
@@ -853,7 +856,7 @@ export function LineItemsSection({
     setSavingItemKey(expandedKey);
     setSavedItemKey(null);
     try {
-      const success = await onSaveLineItem(expandedKey);
+      const success = await onSaveLineItem(expandedKey, { description: description || null });
       if (success) {
         setSavedItemKey(expandedKey);
         // Update saved snapshot with current values
@@ -865,6 +868,7 @@ export function LineItemsSection({
           height: heightNum,
           quantity: qtyNum,
           notes: notes || "",
+          description: description || "",
           requiresProofApproval,
           selectedOptions: expandedItem.selectedOptions || [],
           optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
@@ -991,7 +995,7 @@ export function LineItemsSection({
       quantity: qtyNum,
       specsJson: nextSpecsJson,
       notes: notes || undefined,
-      description: description || undefined,
+      description: description || null,
       productionNotes: productionNotes || undefined,
       // Canonical routing intent (migration 0015)
       requiresDesign,
