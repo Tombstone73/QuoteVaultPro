@@ -110,7 +110,9 @@ export async function downloadAuthenticatedPdf(url: string, filename: string): P
     link.click();
   } finally {
     link.remove();
-    URL.revokeObjectURL(objectUrl);
+    // Keep the Blob available until the browser has picked up the anchor click.
+    // The existing bounded cleanup interval prevents retained object URLs.
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), DEFAULT_BLOB_REVOKE_DELAY_MS);
   }
 }
 

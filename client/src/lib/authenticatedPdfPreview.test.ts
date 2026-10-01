@@ -104,18 +104,20 @@ describe("openAuthenticatedPdfPreview", () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  test("downloads an order PDF through authenticated Blob fetch", async () => {
+  test("downloads the canonical Quote PDF through authenticated Blob fetch and retains it until the browser starts the download", async () => {
     const click = jest.fn();
     const remove = jest.fn();
+    let downloadLink: HTMLAnchorElement | null = null;
     const originalCreateElement = document.createElement.bind(document);
     jest.spyOn(document, "createElement").mockImplementation((tagName: string) => {
       if (tagName === "a") {
-        return { click, remove, rel: "", href: "", download: "" } as any;
+        downloadLink = { click, remove, rel: "", href: "", download: "" } as any;
+        return downloadLink!;
       }
       return originalCreateElement(tagName);
     });
     document.body.appendChild = jest.fn((node: Node) => node) as any;
-    URL.createObjectURL = jest.fn(() => "blob:order-pdf");
+    URL.createObjectURL = jest.fn(() => "blob:quote-pdf");
     mockedApiFetch.mockResolvedValue(
       mockResponse({
         ok: true,
@@ -125,9 +127,9 @@ describe("openAuthenticatedPdfPreview", () => {
       }),
     );
 
-    await downloadAuthenticatedPdf("/api/orders/order_123/pdf?disposition=download", "Order_ORD-10023.pdf");
+    await downloadAuthenticatedPdf("/api/quotes/quote_123/pdf?disposition=download", "Quote-20595.pdf");
 
-    expect(mockedApiFetch).toHaveBeenCalledWith("/api/orders/order_123/pdf?disposition=download", {
+    expect(mockedApiFetch).toHaveBeenCalledWith("/api/quotes/quote_123/pdf?disposition=download", {
       method: "GET",
       credentials: "include",
       headers: {
@@ -136,7 +138,10 @@ describe("openAuthenticatedPdfPreview", () => {
     });
     expect(click).toHaveBeenCalled();
     expect(remove).toHaveBeenCalled();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:order-pdf");
+    expect(downloadLink?.download).toBe("Quote-20595.pdf");
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    jest.runOnlyPendingTimers();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:quote-pdf");
   });
 
   test("opens an order PDF Blob for print without navigating to the raw API URL", async () => {

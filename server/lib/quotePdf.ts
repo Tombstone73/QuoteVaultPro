@@ -324,6 +324,17 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   const validUntil = formatDate(input.quote.validUntil);
   if (validUntil) drawRight(page, `Valid until ${validUntil}`, PAGE_WIDTH - MARGIN, y, regular, 10);
 
+  const jobDescription = cleanText(input.quote.label);
+  if (jobDescription) {
+    y -= 18;
+    const jobLines = wrapText(`Job Description: ${jobDescription}`, PAGE_WIDTH - 2 * MARGIN, regular, 10);
+    for (const line of jobLines) {
+      drawText(page, line, MARGIN, y, regular, 10);
+      y -= 13;
+    }
+    y += 13;
+  }
+
   y -= 34;
   drawText(page, "Bill To", MARGIN, y, bold, 11);
   y -= 16;

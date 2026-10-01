@@ -6,11 +6,11 @@ const { emailService } = await import("../emailService");
 
 describe("portal customer Quote commercial DTO", () => {
   test("Quote email document uses saved tax, fulfillment and charge without internal margin or notes", () => {
-    const html = (emailService as any).generateQuoteEmailHTML({ quoteNumber: 1, createdAt: new Date(),
+    const html = (emailService as any).generateQuoteEmailHTML({ quoteNumber: 1, createdAt: new Date(), label: "Fall Campaign <Signs>",
       shippingMethod: "ship", shippingCents: 2500, subtotal: "250.00", taxRate: 0.1, taxAmount: "18.75",
       totalPrice: "293.75", marginPercentage: 0.5, shippingInstructions: "PRIVATE",
       lineItems: [{ id: "line", productName: "Banner", quantity: 100, linePrice: "250.00" }] });
-    for (const value of ["Fulfillment: Shipping", "Unit Price", "Line Total", "$2.50", "$250.00", "$18.75", "$25.00", "$293.75"]) expect(html).toContain(value);
+    for (const value of ["Fulfillment: Shipping", "Job Description: Fall Campaign &lt;Signs&gt;", "Unit Price", "Line Total", "$2.50", "$250.00", "$18.75", "$25.00", "$293.75"]) expect(html).toContain(value);
     expect(html).not.toMatch(/Margin|PRIVATE|125\.00/);
   });
   test("exposes fulfillment and saved commercial charges without internal notes", () => {

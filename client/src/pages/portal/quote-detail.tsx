@@ -264,6 +264,10 @@ export default function PortalQuoteDetailPage() {
           <CardTitle>Quote Summary</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          {quote.jobLabel?.trim() && <div className="text-sm">
+            <span className="text-muted-foreground">Job Description</span>
+            <p className="whitespace-normal break-words font-medium">{quote.jobLabel}</p>
+          </div>}
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Fulfillment</span>
             <span>{quote.fulfillmentLabel}</span>

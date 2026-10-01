@@ -600,6 +600,7 @@ class EmailService {
             Date: ${new Date(quote.createdAt).toLocaleDateString()}<br>
             ${quote.customerName ? `Customer: ${quote.customerName}<br>` : ""}
             Fulfillment: ${quoteFulfillmentLabel(quote.shippingMethod)}
+            ${quote.label?.trim() ? `<br>Job Description: ${this.escapeHtml(quote.label.trim())}` : ""}
           </p>
         </div>
 

@@ -1414,7 +1414,8 @@ export function registerQuoteRoutes(
       const safeQuoteNumber = String(quoteNumber).replace(/[^a-z0-9._-]+/gi, "-");
 
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="quote-${safeQuoteNumber}.pdf"`);
+      const disposition = req.query.disposition === "download" ? "attachment" : "inline";
+      res.setHeader("Content-Disposition", `${disposition}; filename="Quote-${safeQuoteNumber}.pdf"`);
       return res.status(200).send(Buffer.from(pdfBytes));
     } catch (error) {
       if (error instanceof QuotePdfEligibilityError) {

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2, Eye } from "lucide-react";
+import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2, Eye, Download } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
@@ -52,6 +52,7 @@ type SummaryCardProps = {
     primaryActionSavingLabel?: string;
     onConvertToOrder: () => void;
     onPreviewQuote?: () => void;
+    onDownloadQuote?: () => void;
     onSendQuote?: () => void;
     onDiscard: () => void;
     onCancelQuote?: () => void;
@@ -104,6 +105,7 @@ export function SummaryCard({
     primaryActionSavingLabel,
     onConvertToOrder,
     onPreviewQuote,
+    onDownloadQuote,
     onSendQuote,
     onDiscard,
     onCancelQuote,
@@ -509,6 +511,10 @@ export function SummaryCard({
                             </div>
                         </div>
 
+                        {quoteId && onDownloadQuote && <Button variant="outline" className="w-full" onClick={onDownloadQuote} disabled={previewDisabled}>
+                            <Download className="w-4 h-4 mr-2" /> Download Quote
+                        </Button>}
+
                         {/* Row 6: Convert to Order (conditional) */}
                         {showConvertToOrder && (
                             <Button
@@ -567,6 +573,10 @@ export function SummaryCard({
                                 {previewDisabledReason && <p className="text-xs text-muted-foreground">{previewDisabledReason}</p>}
                             </div>
                         </div>
+
+                        {quoteId && onDownloadQuote && <Button variant="outline" className="w-full" onClick={onDownloadQuote} disabled={previewDisabled}>
+                            <Download className="w-4 h-4 mr-2" /> Download Quote
+                        </Button>}
 
                         {/* Row 2: Convert to Order (primary action, full-width) */}
                         <Button

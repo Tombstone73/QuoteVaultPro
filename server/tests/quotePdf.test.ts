@@ -338,6 +338,17 @@ describe("quote PDF generation", () => {
     expect(text).not.toContain("$267.00");
   });
 
+  test("shows the persisted Job Description only when present and keeps internal notes private", async () => {
+    const withJob = extractDecodedPdfContent(await generateQuotePdfBytes({
+      quote: { ...validDraftQuote, label: "Fall Campaign Coroplast Signs", shippingInstructions: "INTERNAL ONLY" },
+    }));
+    expect(withJob).toContain("Job Description: Fall Campaign Coroplast Signs");
+    expect(withJob).not.toContain("INTERNAL ONLY");
+
+    const withoutJob = extractDecodedPdfContent(await generateQuotePdfBytes({ quote: validDraftQuote }));
+    expect(withoutJob).not.toContain("Job Description:");
+  });
+
   test.each([
     ["pickup", "Pickup", 0, null],
     ["ship", "Shipping", 2500, "Shipping"],

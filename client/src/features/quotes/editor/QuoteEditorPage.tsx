@@ -28,7 +28,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch, apiRequest, queryClient } from "@/lib/queryClient";
-import { openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
+import { downloadAuthenticatedPdf, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import {
     beginCreateOrderSubmit,
@@ -528,6 +528,24 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             toast({
                 title: "Preview failed",
                 description: error instanceof Error ? error.message : "Could not open the quote PDF.",
+                variant: "destructive",
+            });
+        }
+    };
+
+    const handleDownloadQuote = async () => {
+        if (!state.quoteId) return;
+        const displayNumber = (state.quote as any)?.displayNumber || (state.quote as any)?.quoteNumber || state.quoteId;
+        const safeNumber = String(displayNumber).replace(/[^a-z0-9._-]+/gi, "-");
+        try {
+            await downloadAuthenticatedPdf(
+                `/api/quotes/${encodeURIComponent(state.quoteId)}/pdf?disposition=download`,
+                `Quote-${safeNumber}.pdf`,
+            );
+        } catch (error) {
+            toast({
+                title: "Download failed",
+                description: error instanceof Error ? error.message : "Could not download the quote PDF.",
                 variant: "destructive",
             });
         }
@@ -1378,6 +1396,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             requireApproval={orgPreferences?.quotes?.requireApproval || false}
                             isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
                             onPreviewQuote={handlePreviewQuote}
+                            onDownloadQuote={handleDownloadQuote}
                             onSendQuote={handleSendQuote}
                             onApprove={handleApprove}
                             onApproveAndSend={handleApproveAndSend}
