@@ -132,6 +132,7 @@ const quoteForUi = (value: QuoteReadModel) => {
       quoteId: value.quote.quoteId,
       customerContact: value.quote.customerContact,
       purchaseOrderNumber: value.quote.purchaseOrderNumber,
+      jobLabel: value.quote.jobLabel,
       requestedDueDate: value.quote.requestedDueDate,
       terms: value.quote.terms,
       currency,

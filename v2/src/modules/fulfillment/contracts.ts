@@ -1,5 +1,6 @@
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { ContactId, CustomerId, FulfillmentHandoffId, FulfillmentHandoffLineId, OrderId, OrderLineId, OrganizationId, ReplacementObligationId } from "../shared/commercialValues.js";
+import type { ReplacementObligationProjection } from "./replacementObligations.js";
 
 export type FulfillmentMethod = "pickup" | "shipment";
 
@@ -38,10 +39,10 @@ export type FulfillmentHandoffLine = Readonly<{
 export type FulfillmentAvailability = Readonly<{
   orderId: OrderId; orderLineId: OrderLineId; orderedQuantity: number; completedPickupQuantity: number;
   completedShipmentQuantity: number; completedFulfillmentQuantity: number;
-  /** Production-owned output, capped to the commercial line quantity for this read-only projection. */
+  /** Original-obligation Production-owned output (including original rework), capped to commercial demand. */
   completedProductionQuantity: number;
   productionRequired: boolean;
-  /** Physical output not yet consumed by an immutable pickup or shipment handoff. */
+  /** Original physical output not consumed by original handoffs or active original shipment reservations. */
   availableFulfillmentQuantity: number;
   /** Commercial quantity still not produced. */
   remainingProductionQuantity: number;
@@ -59,8 +60,14 @@ export type CompleteFulfillmentInput = Readonly<{
   replacementObligationId?: ReplacementObligationId;
 }>;
 
-/** Replacement supply is separate from the original line's historical handoffs. */
-export type ReplacementFulfillmentAvailability = Readonly<{ replacementObligationId:ReplacementObligationId; orderLineId:OrderLineId; customerId?:CustomerId; contactId?:ContactId; availableFulfillmentQuantity:number }>;
+/** Exact-replacement supply is separate from original and sibling-replacement handoffs and reservations. */
+export type ReplacementFulfillmentAvailability = Readonly<{ replacementObligationId:ReplacementObligationId; orderLineId:OrderLineId; customerId?:CustomerId; contactId?:ContactId; availableFulfillmentQuantity:number; reservedShipmentQuantity?:number; productionAuthorityIssue?:ReplacementProductionAuthorityIssue }>;
+
+/** Read-only blocker, not a Production status or a decision about successor lineage. */
+export type ReplacementProductionAuthorityIssue = Readonly<{ kind:"AMBIGUOUS_REPLACEMENT_PRODUCTION"; requirementKeys:readonly string[] }>;
+
+/** Exact-obligation availability. With an issue, remaining Production is only the existing per-work minimum witness, not resolved successor output. */
+export type ReplacementFulfillmentProjection = ReplacementObligationProjection & Readonly<{ availableFulfillmentQuantity:number; reservedShipmentQuantity?:number; productionAuthorityIssue?:ReplacementProductionAuthorityIssue }>;
 
 export type FulfillmentTerminalResult = Readonly<{
   handoff: FulfillmentHandoff; allocations: readonly FulfillmentHandoffLine[]; availability: readonly FulfillmentAvailability[];

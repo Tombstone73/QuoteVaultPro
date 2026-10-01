@@ -39,15 +39,26 @@ export class PostgresWorkspaceLinePricing implements SalesWorkspaceLinePricing {
   }
 
   async preview(context: OperationContext, headerInput: SalesWorkspaceHeader,
-    lineInput: SalesWorkspaceLineInput): Promise<NonNullable<WorkspaceLine["previews"]>> {
+    lineInput: SalesWorkspaceLineInput, editTarget?: "order"): Promise<NonNullable<WorkspaceLine["previews"]>> {
     const principal = authorizeSalesWorkspace(context);
+    const policy = new AuthorityPolicy();
+    const resource = { organizationId: context.organizationId };
+    if (editTarget === "order") {
+      if (!policy.decide(principal, { capability: "order.view", resource }).allowed
+        || !policy.decide(principal, { capability: "order.edit", resource }).allowed) {
+        throw new V2ApplicationError("FORBIDDEN", "Order edit preview requires view and edit authority.");
+      }
+    } else if (!( ["quote", "order"] as const).some(target => policy.decide(principal, { capability: `${target}.create`, resource }).allowed)) {
+      throw new V2ApplicationError("FORBIDDEN", "New Sales preview requires creation authority.");
+    }
     const header = validateSalesWorkspaceHeader(headerInput, context.organizationId);
     const input = validateSalesWorkspaceLineInput(lineInput);
     if (input.selling && input.selling.kind !== "calculated") {
-      const policy = new AuthorityPolicy();
-      const resource = { organizationId: context.organizationId };
-      if (!(["quote", "order"] as const).some((target) => policy.decide(principal, { capability: `${target}.create`, resource }).allowed
-        && policy.decide(principal, { capability: `${target}.overridePrice`, resource }).allowed)) {
+      const overrideAllowed = editTarget === "order"
+        ? policy.decide(principal, { capability: "order.overridePrice", resource }).allowed
+        : (["quote", "order"] as const).some((target) => policy.decide(principal, { capability: `${target}.create`, resource }).allowed
+          && policy.decide(principal, { capability: `${target}.overridePrice`, resource }).allowed);
+      if (!overrideAllowed) {
         throw new V2ApplicationError("FORBIDDEN", "A permitted promotion target requires selling-price override authority.");
       }
     }
@@ -73,7 +84,7 @@ export class PostgresWorkspaceLinePricing implements SalesWorkspaceLinePricing {
       explanation: explainPricingResult(pricing), calculatedAt,
     });
     // Quote deliberately retains base pricing. Order uses its existing customer policy.
-    const quote = evidence("quote", await this.pricing.calculate(request));
+    const quote = editTarget === "order" ? undefined : evidence("quote", await this.pricing.calculate(request));
     let order: SalesWorkspaceLinePreview | undefined;
     if (header.customerContact) {
       const reference = header.customerContact;
@@ -81,7 +92,7 @@ export class PostgresWorkspaceLinePricing implements SalesWorkspaceLinePricing {
         ? (await this.customers.getContact(organizationId, reference.contactId))?.customerId : undefined);
       order = evidence("order", customerId ? await this.customerPricing.calculateForCustomer(customerId, request) : await this.pricing.calculate(request));
     }
-    const previews = { quote, ...(order ? { order } : {}) };
+    const previews = { ...(quote ? { quote } : {}), ...(order ? { order } : {}) };
     if (Buffer.byteLength(JSON.stringify(previews), "utf8") > 262144) throw new V2ApplicationError("VALIDATION_ERROR", "Workspace pricing evidence is too large.");
     return freezeCheckpoint(previews);
   }

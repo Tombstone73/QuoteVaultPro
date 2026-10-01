@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { OperationContext } from "../../application/operation.js";
+import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
+import type { SalesLineSnapshot } from "./contracts.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import {
-  assertSalesWorkspaceMutable, authorizeSalesWorkspace, bumpSalesWorkspaceRevision,
+  assertSalesWorkspaceMutable, authorizeSalesWorkspace, bumpSalesWorkspaceRevision, getAuthorizedSalesWorkspace,
   salesWorkspaceFingerprint, validateSalesWorkspaceHeader, validateSalesWorkspaceId,
   validateSalesWorkspaceLineInput, validateSalesWorkspaceMutation, visibleSalesWorkspaceState,
 } from "./workspaceApplication.js";
 import type {
   SalesWorkspace, SalesWorkspaceHeader, SalesWorkspaceLineInput, SalesWorkspaceMutation,
-  SalesWorkspaceStore, SalesWorkspaceTransaction, WorkspaceLine,
+  SalesWorkspaceStore, SalesWorkspaceTarget, SalesWorkspaceTransaction, WorkspaceLine,
 } from "./workspaceContracts.js";
 
 /** Provenance of the original entry, not a substitute for current Pricing evidence. */
@@ -19,7 +21,26 @@ export function workspaceLinePreviewFingerprint(
 }
 
 export interface SalesWorkspaceLinePricing {
-  preview(context: OperationContext, header: SalesWorkspaceHeader, input: SalesWorkspaceLineInput): Promise<NonNullable<WorkspaceLine["previews"]>>;
+  preview(context: OperationContext, header: SalesWorkspaceHeader, input: SalesWorkspaceLineInput, target?: SalesWorkspaceTarget): Promise<NonNullable<WorkspaceLine["previews"]>>;
+}
+export function workspaceSourceLineInput(source: SalesLineSnapshot): SalesWorkspaceLineInput {
+  const decision = source.sellingPriceDecision;
+  return { productId: source.productId, description: source.description, quantity: source.quantity,
+    selections: source.resolvedConfiguration.selections,
+    ...(source.resolvedConfiguration.dimensions ? { dimensions: source.resolvedConfiguration.dimensions } : {}),
+    ...(decision.kind === "calculated" ? { selling: { kind: "calculated" as const } }
+      : decision.kind === "unit_override" ? { selling: { kind: "unit_override" as const, unitCents: decision.resultingUnitAmount.cents, reason: decision.reason } }
+      : decision.kind === "total_override" ? { selling: { kind: "total_override" as const, totalCents: decision.resultingLineAmount.cents, reason: decision.reason } } : {}) };
+}
+export function workspaceLineCommercialChanged(line: WorkspaceLine): boolean {
+  if (!line.sourceLineSnapshot) return true;
+  const commercial = ({ description: _description, ...input }: SalesWorkspaceLineInput) => ({ ...input, selections: input.selections ?? {} });
+  return salesWorkspaceFingerprint(commercial(line.input)) !== salesWorkspaceFingerprint(commercial(workspaceSourceLineInput(line.sourceLineSnapshot)));
+}
+function operationalNote(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length > 4000 || value.includes("\u0000")) throw new V2ApplicationError("VALIDATION_ERROR", "Invalid workspace operational note.");
+  return value.trim() || undefined;
 }
 
 /** Only TEMP persistence is reachable here; each dependency joins the locked transaction. */
@@ -32,28 +53,36 @@ export class SalesWorkspaceLineService {
   }>) {}
 
   async add(context: OperationContext, workspaceId: string,
-    input: SalesWorkspaceMutation & Readonly<{ line: SalesWorkspaceLineInput; header?: SalesWorkspaceHeader }>): Promise<SalesWorkspace> {
-    this.validateCommand(input, ["line", "header"]);
+    input: SalesWorkspaceMutation & Readonly<{ line: SalesWorkspaceLineInput; header?: SalesWorkspaceHeader; operationalNote?: string }>): Promise<SalesWorkspace> {
+    this.validateCommand(input, ["line", "header", "operationalNote"]);
     const lineInput = validateSalesWorkspaceLineInput(input.line);
-    return this.mutate(context, workspaceId, input, "add_line", { line: lineInput }, async (tx, workspace) => {
+    const note = operationalNote(input.operationalNote);
+    return this.mutate(context, workspaceId, input, "add_line", { line: lineInput, operationalNote: note }, async (tx, workspace) => {
       if (workspace.lines.length >= 500) throw new V2ApplicationError("VALIDATION_ERROR", "Workspace line limit reached.");
-      const previews = await this.options.pricing(tx).preview(context, workspace.header, lineInput);
+      const previews = await this.preview(tx, context, workspace, lineInput);
       const line: WorkspaceLine = { id: validateSalesWorkspaceId(this.options.newId?.() ?? randomUUID()),
-        workspaceId, position: workspace.lines.length, input: lineInput, previews, revision: 1 };
+        workspaceId, position: workspace.lines.length, input: lineInput, ...(note ? { operationalNote: note } : {}), previews, revision: 1 };
       await tx.putLine(workspace.organizationId, line);
       return { ...workspace, lines: [...workspace.lines, line] };
     });
   }
 
   async update(context: OperationContext, workspaceId: string,
-    input: SalesWorkspaceMutation & Readonly<{ lineId: string; line: SalesWorkspaceLineInput; header?: SalesWorkspaceHeader }>): Promise<SalesWorkspace> {
-    this.validateCommand(input, ["lineId", "line", "header"]);
+    input: SalesWorkspaceMutation & Readonly<{ lineId: string; line: SalesWorkspaceLineInput; header?: SalesWorkspaceHeader; operationalNote?: string }>): Promise<SalesWorkspace> {
+    this.validateCommand(input, ["lineId", "line", "header", "operationalNote"]);
     validateSalesWorkspaceId(input.lineId);
     const lineInput = validateSalesWorkspaceLineInput(input.line);
-    return this.mutate(context, workspaceId, input, "update_line", { lineId: input.lineId, line: lineInput }, async (tx, workspace) => {
+    const note = operationalNote(input.operationalNote);
+    const changesNote = Object.prototype.hasOwnProperty.call(input, "operationalNote");
+    return this.mutate(context, workspaceId, input, "update_line", { lineId: input.lineId, line: lineInput, changesNote, operationalNote: note }, async (tx, workspace) => {
       const prior = this.line(workspace, input.lineId);
-      const previews = await this.options.pricing(tx).preview(context, workspace.header, lineInput);
-      const replacement: WorkspaceLine = { ...prior, input: lineInput, previews, revision: prior.revision + 1 };
+      const candidate = { ...prior, input: lineInput };
+      const commercialChanged = workspace.kind !== "order_edit" || workspaceLineCommercialChanged(candidate);
+      if (commercialChanged && prior.sourceLineSnapshot && ["locked", "discount"].includes(prior.sourceLineSnapshot.sellingPriceDecision.kind)) {
+        throw new V2ApplicationError("CONFLICT", "Historical locked or discounted pricing cannot be rebuilt through this workspace. Presentation edits preserve its source evidence.", { reason: "unsupported_source_selling_rebuild" });
+      }
+      const previews = commercialChanged ? await this.preview(tx, context, workspace, lineInput) : undefined;
+      const replacement: WorkspaceLine = { ...candidate, ...(changesNote ? { operationalNote: note } : {}), previews, revision: prior.revision + 1 };
       await tx.putLine(workspace.organizationId, replacement);
       return { ...workspace, lines: workspace.lines.map((line) => line.id === prior.id ? replacement : line) };
     });
@@ -64,13 +93,14 @@ export class SalesWorkspaceLineService {
     this.validateCommand(input, ["lineId", "header"]);
     validateSalesWorkspaceId(input.lineId);
     return this.mutate(context, workspaceId, input, "remove_line", { lineId: input.lineId }, async (tx, workspace) => {
-      this.line(workspace, input.lineId);
+      const removed = this.line(workspace, input.lineId);
       // Artwork releases its FK/claims before Sales removes this stable TEMP identity.
       await this.options.releaseLineArtwork(tx, workspace, input.lineId);
       await tx.deleteLine(workspace.organizationId, workspaceId, input.lineId);
       const lines = workspace.lines.filter((line) => line.id !== input.lineId);
       if (lines.length) await tx.reorderLines(workspace.organizationId, workspaceId, lines.map((line) => line.id));
-      return { ...workspace, lines: lines.map((line, position) => ({ ...line, position, revision: line.revision + 1 })) };
+      return { ...workspace, ...(removed.sourceLineId ? { removedLines: [...(workspace.removedLines ?? []), { ...removed, revision: removed.revision + 1 }] } : {}),
+        lines: lines.map((line, position) => ({ ...line, position, revision: line.revision + 1 })) };
     });
   }
 
@@ -96,13 +126,25 @@ export class SalesWorkspaceLineService {
       const pricing = this.options.pricing(tx);
       const lines: WorkspaceLine[] = [];
       for (const line of workspace.lines) {
-        const previews = await pricing.preview(context, workspace.header, line.input);
+        if (workspace.kind === "order_edit" && !workspaceLineCommercialChanged(line)) { lines.push(line); continue; }
+        if (workspace.kind === "order_edit" && line.sourceLineSnapshot && ["locked", "discount"].includes(line.sourceLineSnapshot.sellingPriceDecision.kind)) {
+          throw new V2ApplicationError("CONFLICT", "Historical locked or discounted pricing cannot be rebuilt through this workspace.", { reason: "unsupported_source_selling_rebuild" });
+        }
+        const previews = await this.preview(tx, context, workspace, line.input, pricing);
         const refreshed = { ...line, previews, revision: line.revision + 1 };
         await tx.putLine(workspace.organizationId, refreshed);
         lines.push(refreshed);
       }
       return { ...workspace, lines };
     });
+  }
+
+  private async preview(tx: SalesWorkspaceTransaction, context: OperationContext, workspace: SalesWorkspace,
+    input: SalesWorkspaceLineInput, pricing = this.options.pricing(tx)): Promise<NonNullable<WorkspaceLine["previews"]>> {
+    if (workspace.kind === "order_edit" && input.selling && input.selling.kind !== "calculated" && !new AuthorityPolicy().decide(context.principal, {
+      capability: "order.overridePrice", resource: { organizationId: context.organizationId },
+    }).allowed) throw new V2ApplicationError("FORBIDDEN", "Order selling-price override authority is required.");
+    return pricing.preview(context, workspace.header, input, workspace.kind === "order_edit" ? "order" : undefined);
   }
 
   private line(workspace: SalesWorkspace, id: string): WorkspaceLine {
@@ -122,14 +164,12 @@ export class SalesWorkspaceLineService {
   private async mutate(context: OperationContext, workspaceId: string,
     input: SalesWorkspaceMutation & Readonly<{ header?: SalesWorkspaceHeader }>, operation: string, payload: object,
     work: (tx: SalesWorkspaceTransaction, workspace: SalesWorkspace) => Promise<SalesWorkspace>): Promise<SalesWorkspace> {
-    const principal = authorizeSalesWorkspace(context);
+    authorizeSalesWorkspace(context);
     validateSalesWorkspaceId(workspaceId);
     const header = input.header === undefined ? undefined : validateSalesWorkspaceHeader(input.header, context.organizationId);
     const fingerprint = salesWorkspaceFingerprint({ operation, expectedRevision: input.expectedRevision, payload: { ...payload, header } });
     return this.store.run(async (tx) => {
-      const workspace = await tx.get(context.organizationId, principal.userId, workspaceId, true);
-      if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
-      authorizeSalesWorkspace(context, workspace);
+      const workspace = await getAuthorizedSalesWorkspace(tx, context, workspaceId, true);
       const replay = await tx.getRequest(context.organizationId, workspaceId, input.requestId);
       if (replay) {
         if (replay.operation !== operation || replay.fingerprint !== fingerprint) throw new V2ApplicationError("CONFLICT", "Workspace request input changed.");

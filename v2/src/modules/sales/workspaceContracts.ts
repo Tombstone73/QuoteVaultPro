@@ -2,7 +2,7 @@ import type { OperationContext } from "../../application/operation.js";
 import type { CustomerContactReference } from "../customers/contracts.js";
 import type { PricingResult, ResolvedProductConfiguration } from "../pricing/contracts.js";
 import type { OperatorPricingExplanation } from "../pricing/operatorPricingExplanation.js";
-import type { CommercialTerms, RequestedFulfillment, SellingPriceDecision } from "./contracts.js";
+import type { CommercialTerms, OrderCurrentState, RequestedFulfillment, SalesLineSnapshot, SellingPriceDecision } from "./contracts.js";
 import type { QuoteLineInput, QuoteSellingInstruction } from "./quoteApplication.js";
 
 export type SalesWorkspaceKind = "new_sales" | "quote_edit" | "order_edit";
@@ -15,6 +15,7 @@ export type SalesWorkspaceHeader = Readonly<{
   requestedDueDate?: string;
   requestedFulfillment?: RequestedFulfillment;
   terms?: CommercialTerms;
+  /** Workspace-only metadata for every kind; canonical Order notes are terms.commercialNotes. */
   notes?: string;
 }>;
 export type SalesWorkspaceLineInput = Omit<QuoteLineInput, "selling"> & Readonly<{
@@ -36,10 +37,22 @@ export type WorkspaceLine = Readonly<{
   workspaceId: string;
   position: number;
   sourceLineId?: string;
+  /** Immutable server evidence, not a writable line input or a price instruction. */
+  sourceLineSnapshot?: SalesLineSnapshot;
+  sourcePosition?: number;
+  operationalNote?: string;
   input: SalesWorkspaceLineInput;
   previews?: Readonly<{ quote?: SalesWorkspaceLinePreview; order?: SalesWorkspaceLinePreview }>;
   revision: number;
 }>;
+/** Order display number is an immutable, bounded projection, never a second source snapshot. */
+export type SalesWorkspaceSourceHeader = Omit<OrderCurrentState, "lines"> & Readonly<{ orderNumber?: string }>;
+export type StartOrderEditWorkspaceInput = Readonly<{
+  requestId: string;
+  sourceOrderId: string;
+  expectedSourceRevision?: string;
+}>;
+export type SaveOrderEditWorkspaceInput = SalesWorkspaceMutation & Readonly<{ workspaceId: string; target: "order" }>;
 export type SalesWorkspaceLineMapEntry = Readonly<{
   workspaceLineId: string;
   canonicalLineId: string;
@@ -71,9 +84,14 @@ export type SalesWorkspace = Readonly<{
   sourceDocumentKind?: SalesWorkspaceTarget;
   sourceDocumentId?: string;
   baseRevision?: string;
+  /** Server-authored source facts live outside client-editable header JSON. */
+  sourceHeader?: SalesWorkspaceSourceHeader;
+  sourceArtifactFingerprint?: string;
   revision: number;
   header: SalesWorkspaceHeader;
   lines: readonly WorkspaceLine[];
+  /** Source tombstones retain comparison and Artwork-reference history. */
+  removedLines?: readonly WorkspaceLine[];
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
@@ -101,9 +119,13 @@ export type SalesWorkspaceRequestReceipt = Readonly<{
 export interface SalesWorkspaceTransaction {
   lockCreationRequest(organizationId: string, requestId: string): Promise<void>;
   findCreation(organizationId: string, requestId: string): Promise<Readonly<{ workspaceId: string; creatorUserId: string; fingerprint: string }> | null>;
+  findActiveOrderEdit?(organizationId: string, creatorUserId: string, sourceOrderId: string, now: string): Promise<SalesWorkspace | null>;
+  findOrderEditStart?(organizationId: string, requestId: string, creatorUserId: string): Promise<Readonly<{ creatorUserId: string; fingerprint: string; result: SalesWorkspace }> | null>;
+  recordOrderEditStart?(organizationId: string, requestId: string, fingerprint: string, workspace: SalesWorkspace): Promise<void>;
   create(workspace: SalesWorkspace, requestId: string, fingerprint: string): Promise<void>;
+  getKind?(organizationId: string, creatorUserId: string, workspaceId: string): Promise<SalesWorkspaceKind | null>;
   get(organizationId: string, creatorUserId: string, workspaceId: string, lock?: boolean): Promise<SalesWorkspace | null>;
-  list(organizationId: string, creatorUserId: string, now: string, limit: number): Promise<readonly SalesWorkspace[]>;
+  list(organizationId: string, creatorUserId: string, now: string, limit: number, kinds?: readonly SalesWorkspaceKind[]): Promise<readonly SalesWorkspace[]>;
   update(workspace: SalesWorkspace, expectedRevision: number): Promise<void>;
   putLine(organizationId: string, line: WorkspaceLine): Promise<void>;
   deleteLine(organizationId: string, workspaceId: string, lineId: string): Promise<void>;
@@ -121,7 +143,7 @@ export interface SalesWorkspaceTransaction {
     documentId: string, lineMap: readonly SalesWorkspaceLineMapEntry[]): Promise<void>;
   getPromotionLineMap(organizationId: string, workspaceId: string): Promise<readonly SalesWorkspaceLineMapEntry[]>;
   recordPromotion(receipt: SalesWorkspacePromotionReceipt): Promise<void>;
-  expireDrafts(organizationId: string, creatorUserId: string, now: string, limit: number): Promise<readonly string[]>;
+  expireDrafts(organizationId: string, creatorUserId: string, now: string, limit: number, kinds?: readonly SalesWorkspaceKind[]): Promise<readonly string[]>;
 }
 export interface SalesWorkspaceStore {
   run<T>(work: (transaction: SalesWorkspaceTransaction) => Promise<T>): Promise<T>;

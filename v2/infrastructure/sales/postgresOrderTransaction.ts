@@ -24,6 +24,7 @@ import { orderCompletionEligibility } from "../../src/modules/sales/orderLifecyc
 type HeaderRow = Readonly<{
   id: string; organization_id: string; business_number: string; display_number: string;
   customer_id: string | null; contact_id: string | null; purchase_order_number: string | null;
+  job_label?: string | null;
   requested_due_date: string | null; currency: string; terms_json: unknown;
   tax_context_reference: string | null; sales_representative_id: string | null;
   commercial_notes: string | null; revision: string; commercial_state: "open" | "completed" | "cancelled";
@@ -134,8 +135,8 @@ export class PostgresOrderTransaction implements OrderTransaction {
     const terms = toSalesDocumentTermsPersistence(input.terms);
     trace?.event("order_insert", "started");
     await this.client.query(
-      "INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,currency,terms_json,tax_context_reference,sales_representative_id,commercial_notes) VALUES($1,$2,'order',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)",
-      [input.orderId,input.organizationId,input.number.core.toString(),input.number.display,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,input.lines[0]?.pricingResult.currency ?? "USD",JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null],
+      "INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,currency,terms_json,tax_context_reference,sales_representative_id,commercial_notes,job_label) VALUES($1,$2,'order',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)",
+      [input.orderId,input.organizationId,input.number.core.toString(),input.number.display,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,input.lines[0]?.pricingResult.currency ?? "USD",JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null,input.jobLabel ?? null],
     );
     await this.client.query("INSERT INTO v2_sales_order_details(document_id,organization_id,requested_fulfillment_method,requested_destination,fulfillment_instructions,selling_adjustment_cents,selling_adjustment_reason,commercial_charge) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)", [input.orderId,input.organizationId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
     trace?.event("order_insert", "ok");
@@ -148,7 +149,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
   }
   async read(organizationId: OrganizationId, orderId: OrderId, forUpdate = false): Promise<OrderReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,o.commercial_state,o.completed_at,o.completed_principal_kind,o.completed_principal_subject,o.completed_staff_actor_user_id,o.archived_at,o.archived_principal_kind,o.archived_principal_subject,o.archived_staff_actor_user_id,o.requested_fulfillment_method,o.requested_destination,o.fulfillment_instructions,o.selling_adjustment_cents,o.selling_adjustment_reason,o.commercial_charge,o.tax_composition FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.document_id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order'${forUpdate ? " FOR UPDATE OF d,o" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.job_label,d.revision,o.commercial_state,o.completed_at,o.completed_principal_kind,o.completed_principal_subject,o.completed_staff_actor_user_id,o.archived_at,o.archived_principal_kind,o.archived_principal_subject,o.archived_staff_actor_user_id,o.requested_fulfillment_method,o.requested_destination,o.fulfillment_instructions,o.selling_adjustment_cents,o.selling_adjustment_reason,o.commercial_charge,o.tax_composition FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.document_id=d.id AND o.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order'${forUpdate ? " FOR UPDATE OF d,o" : ""}`,
       [organizationId, orderId],
     );
     const row = header.rows[0]; if (!row) return null;
@@ -175,6 +176,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
     );
     const orderCurrency = currencyCode(row.currency);
     const order: OrderCurrentState = { organizationId, orderId, customerContact, currency: orderCurrency,
+      ...(row.job_label != null ? { jobLabel: row.job_label } : {}),
       ...(row.purchase_order_number ? {purchaseOrderNumber: row.purchase_order_number} : {}), ...(row.requested_due_date ? {requestedDueDate: row.requested_due_date} : {}),
       terms: {...(terms.termsCode ? {termsCode:terms.termsCode}: {}), ...(row.tax_context_reference ? {taxContextReference:row.tax_context_reference}: {}), ...(row.sales_representative_id ? {salesRepresentativeId:row.sales_representative_id}: {}), ...(row.commercial_notes ? {commercialNotes:row.commercial_notes}: {})},
       lines, commercialState: row.commercial_state,
@@ -207,16 +209,21 @@ export class PostgresOrderTransaction implements OrderTransaction {
   async update(input: Parameters<OrderTransaction["update"]>[0]): Promise<boolean> {
     const terms = toSalesDocumentTermsPersistence(input.terms);
     const result = await this.client.query(
-      "UPDATE v2_sales_documents SET customer_id=$4,contact_id=$5,purchase_order_number=$6,requested_due_date=$7,terms_json=$8::jsonb,tax_context_reference=$9,sales_representative_id=$10,commercial_notes=$11,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 AND document_kind='order'",
-      [input.organizationId,input.orderId,input.expectedRevision,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null],
+      "UPDATE v2_sales_documents SET customer_id=$4,contact_id=$5,purchase_order_number=$6,requested_due_date=$7,terms_json=$8::jsonb,tax_context_reference=$9,sales_representative_id=$10,commercial_notes=$11,job_label=$12,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3 AND document_kind='order'",
+      [input.organizationId,input.orderId,input.expectedRevision,input.customerContact.customerId ?? null,input.customerContact.contactId ?? null,input.purchaseOrderNumber ?? null,input.requestedDueDate ?? null,JSON.stringify(terms.termsJson),terms.taxContextReference ?? null,terms.salesRepresentativeId ?? null,terms.commercialNotes ?? null,input.jobLabel ?? null],
     );
     if (result.rowCount !== 1) return false;
+    const priorLines = await this.client.query<{ id: string; quantity: number }>(
+      "SELECT id,quantity FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2",
+      [input.organizationId, input.orderId],
+    );
+    const priorQuantities = new Map(priorLines.rows.map((line) => [line.id, line.quantity]));
     await this.client.query("UPDATE v2_sales_order_details SET requested_fulfillment_method=$3,requested_destination=$4::jsonb,fulfillment_instructions=$5,selling_adjustment_cents=$6,selling_adjustment_reason=$7,commercial_charge=$8::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId,input.orderId,input.requestedFulfillment?.method ?? null,input.requestedFulfillment?.destination ? JSON.stringify(input.requestedFulfillment.destination) : null,input.requestedFulfillment?.instructions ?? null,input.sellingAdjustment?.cents ?? 0,input.sellingAdjustment?.reason ?? null,input.commercialCharge ? JSON.stringify(input.commercialCharge) : null]);
     // Vacate the document's position namespace before stable-ID upserts. Rows
     // intentionally removed remain temporarily high until Billing drops its
     // source projection, then removeLinesNotIn deletes them in this transaction.
     await this.client.query("UPDATE v2_sales_document_lines SET position=position+100000,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [input.organizationId, input.orderId]);
-    await this.writeLines(input.organizationId, input.orderId, input.lines);
+    await this.writeLines(input.organizationId, input.orderId, input.lines, priorQuantities);
     await this.writeTaxComposition(input.organizationId, input.orderId, input.customerContact.customerId, input.requestedFulfillment, input.lines, input.sellingAdjustment, input.commercialCharge);
     return true;
   }
@@ -254,7 +261,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
         THEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') ELSE NULL END workflow_intent,
       COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) requires_production,
       CASE WHEN COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false)=false THEN true ELSE
-        COALESCE((SELECT count(*)>0 AND bool_and(COALESCE((SELECT sum(v2_usable_production_good_quantity(w.organization_id,w.id)) FROM v2_production_works w WHERE w.organization_id=req.organization_id AND w.order_line_id=req.order_line_id AND w.requirement_key=req.requirement_key),0)>=l.quantity) FROM v2_sales_line_production_requirements req WHERE req.organization_id=l.organization_id AND req.order_line_id=l.id),false) END production_complete,
+        COALESCE((SELECT count(*)>0 AND bool_and(COALESCE((SELECT sum(v2_usable_production_good_quantity(w.organization_id,w.id)) FROM v2_production_works w WHERE w.organization_id=req.organization_id AND w.order_line_id=req.order_line_id AND w.requirement_key=req.requirement_key AND w.replacement_obligation_id IS NULL),0)>=l.quantity) FROM v2_sales_line_production_requirements req WHERE req.organization_id=l.organization_id AND req.order_line_id=l.id),false) END production_complete,
       COALESCE((SELECT sum(hl.quantity) FROM v2_fulfillment_handoff_lines hl WHERE hl.organization_id=l.organization_id AND hl.order_document_id=l.document_id AND hl.order_line_id=l.id),0)::text fulfilled_quantity,
       CASE WHEN EXISTS(SELECT 1 FROM v2_route_instances ri WHERE ri.organization_id=l.organization_id AND ri.order_line_id=l.id)
         THEN NOT EXISTS(SELECT 1 FROM v2_route_instances ri WHERE ri.organization_id=l.organization_id AND ri.order_line_id=l.id AND ri.route_state<>'completed')
@@ -309,7 +316,7 @@ export class PostgresOrderTransaction implements OrderTransaction {
     const composition = await composePostgresSalesTax({ client: this.client, organizationId, ...(customerId ? { customerId } : {}), fulfillment, lines, adjustment, charge });
     await this.client.query("UPDATE v2_sales_order_details SET tax_composition=$3::jsonb,updated_at=now() WHERE organization_id=$1 AND document_id=$2", [organizationId, orderId, JSON.stringify(composition)]);
   }
-  private async writeLines(organizationId: OrganizationId, orderId: OrderId, lines: readonly SalesLineSnapshot[], replace = false): Promise<void> {
+  private async writeLines(organizationId: OrganizationId, orderId: OrderId, lines: readonly SalesLineSnapshot[], priorQuantities: ReadonlyMap<string, number> = new Map(), replace = false): Promise<void> {
     if (replace) {
       const ids = lines.map((line) => line.lineId);
       await removeProductionRequirementsForAbsentLines(this.client, organizationId, orderId, ids);
@@ -327,11 +334,9 @@ export class PostgresOrderTransaction implements OrderTransaction {
         [e.lineId,organizationId,orderId,position,e.productId,e.productTypeId ?? null,e.description,e.operationalNote ?? null,e.quantity,e.currency,e.calculatedUnitAmount.cents,e.calculatedLineAmount.cents,e.sellingUnitAmount.cents,e.sellingLineAmount.cents,e.pricingResult.id,e.pricingResult.evidenceFingerprint,e.canonicalResolvedConfiguration,e.canonicalPricingResult,e.canonicalSellingPriceDecision,JSON.stringify(e.taxability)],
       );
       await synchronizeProductionRequirements(this.client, organizationId, orderId, line);
-      // A ProductionWork is durable attempt history, but its target remains a
-      // projection of the current commercial line.  A later quantity revision
-      // must expose the remaining output to Production rather than leaving a
-      // previously satisfied one-unit work falsely complete.
-      await this.client.query(
+      // Presentation/header saves must not overwrite partial successor targets.
+      // Retain the declared projection only for an actual commercial quantity change.
+      if (priorQuantities.has(line.lineId) && priorQuantities.get(line.lineId) !== line.quantity) await this.client.query(
         "UPDATE v2_production_works SET ordered_quantity=$4 WHERE organization_id=$1 AND order_document_id=$2 AND order_line_id=$3 AND ordered_quantity IS DISTINCT FROM $4",
         [organizationId, orderId, line.lineId, line.quantity],
       );

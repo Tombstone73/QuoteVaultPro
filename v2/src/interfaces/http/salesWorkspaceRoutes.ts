@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { OperationContext } from "../../application/operation.js";
 import { V2ApplicationError } from "../../errors/applicationError.js";
 import type { WorkspaceArtworkLifecycle, WorkspaceArtworkUploads } from "../../modules/artwork/workspaceArtwork.js";
+import type { OrderEditArtwork } from "../../modules/artwork/orderEditArtwork.js";
+import type { OrderEditWorkspaceApplicationService } from "../../modules/sales/orderEditWorkspace.js";
 import {
   authorizeSalesWorkspace, validateSalesWorkspaceHeader, validateSalesWorkspaceLineInput,
   type SalesWorkspaceApplicationService,
@@ -23,6 +25,8 @@ export type SalesWorkspaceHttpDependencies = Readonly<{
   service: Pick<SalesWorkspaceApplicationService, "create" | "get" | "list" | "saveDraft" | "discard">;
   lines: SalesWorkspaceLineHttpService;
   promotion: WorkspacePromotion;
+  orderEdits?: Pick<OrderEditWorkspaceApplicationService, "start">;
+  orderEditArtwork?: OrderEditArtwork;
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
   preview(context: OperationContext, workspace: SalesWorkspace, input: QuoteLinePricingPreviewInput): Promise<QuoteLinePricingPreview>;
@@ -150,6 +154,27 @@ export const createSalesWorkspaceRouter = (dependencies: SalesWorkspaceHttpDepen
     const query = parse(z.object({ limit: z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(100)).optional() }).strict(), request.query);
     return dependencies.service.list(context, query.limit ?? 50);
   }));
+  router.post("/order-edits", (request, response) => handle(request, response, async (context) => {
+    parse(emptyQuery, request.query);
+    const input = parse(z.object({ requestId, orderId: uuid, expectedSourceRevision: z.string().regex(/^[1-9]\d{0,17}$/).optional() }).strict(), request.body);
+    if (!dependencies.orderEdits) throw new V2ApplicationError("RETRYABLE_FAILURE", "Order edit workspaces are not configured.");
+    return dependencies.orderEdits.start(withRequest(context, input.requestId), {
+      requestId: input.requestId, sourceOrderId: input.orderId,
+      ...(input.expectedSourceRevision === undefined ? {} : { expectedSourceRevision: input.expectedSourceRevision }),
+    });
+  }));
+  router.get("/:workspaceId/artwork-edit", (request, response) => handle(request, response, async (context) => {
+    parse(emptyQuery, request.query);
+    if (!dependencies.orderEditArtwork) throw new V2ApplicationError("RETRYABLE_FAILURE", "Order edit Artwork is not configured.");
+    return dependencies.orderEditArtwork.readOrderEditArtwork(context, workspaceId(request));
+  }));
+  router.post("/:workspaceId/artwork-edit", (request, response) => handle(request, response, async (context) => {
+    parse(emptyQuery, request.query);
+    const input = parse(mutation.extend({ sourceAssignmentId: uuid, action: z.enum(["keep", "remove"]) }).strict(), request.body);
+    if (!dependencies.orderEditArtwork) throw new V2ApplicationError("RETRYABLE_FAILURE", "Order edit Artwork is not configured.");
+    return dependencies.orderEditArtwork.stageOrderEditArtworkIntent(withRequest(context, input.requestId), workspaceId(request),
+      input.sourceAssignmentId, input.action === "keep" ? "KEEP" : "REMOVE", input.expectedRevision, input.requestId);
+  }));
   router.get("/:workspaceId", (request, response) => handle(request, response, async (context) => {
     parse(emptyQuery, request.query);
     return dependencies.service.get(context, workspaceId(request));
@@ -177,18 +202,20 @@ export const createSalesWorkspaceRouter = (dependencies: SalesWorkspaceHttpDepen
 
   router.post("/:workspaceId/lines", (request, response) => handle(request, response, async (context) => {
     parse(emptyQuery, request.query);
-    const input = parse(lineMutation.extend({ line: z.unknown() }).strict(), request.body);
+    const input = parse(lineMutation.extend({ line: z.unknown(), operationalNote: z.string().max(4000).optional() }).strict(), request.body);
     return dependencies.lines.add(withRequest(context, input.requestId), workspaceId(request), {
       requestId: input.requestId, expectedRevision: input.expectedRevision, ...headerInput(input.header, context.organizationId),
       line: validateSalesWorkspaceLineInput(input.line),
+      ...(input.operationalNote === undefined ? {} : { operationalNote: input.operationalNote }),
     });
   }));
   router.patch("/:workspaceId/lines/:lineId", (request, response) => handle(request, response, async (context) => {
     parse(emptyQuery, request.query);
-    const input = parse(lineMutation.extend({ line: z.unknown() }).strict(), request.body);
+    const input = parse(lineMutation.extend({ line: z.unknown(), operationalNote: z.string().max(4000).optional() }).strict(), request.body);
     return dependencies.lines.update(withRequest(context, input.requestId), workspaceId(request), {
       requestId: input.requestId, expectedRevision: input.expectedRevision, ...headerInput(input.header, context.organizationId),
       lineId: parse(uuid, request.params.lineId), line: validateSalesWorkspaceLineInput(input.line),
+      ...(input.operationalNote === undefined ? {} : { operationalNote: input.operationalNote }),
     });
   }));
   router.delete("/:workspaceId/lines/:lineId", (request, response) => handle(request, response, async (context) => {

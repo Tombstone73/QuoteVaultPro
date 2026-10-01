@@ -15,6 +15,8 @@ assert.equal(fulfillmentSupplyQuantity({orderedQuantity:10,completedProductionQu
 assert.equal(fulfillmentSupplyQuantity({orderedQuantity:10,completedProductionQuantity:0,productionRequired:false,workflowIntent:"service_fee"}),0,"service fees never become physical inventory");
 assert.equal(fulfillmentSupplyQuantity({orderedQuantity:10,completedProductionQuantity:3,productionRequired:true,workflowIntent:"standard_production"}),3,"production-required work remains bounded by completed output");
 assert.equal(fulfillmentSupplyQuantity({orderedQuantity:10,completedProductionQuantity:0,productionRequired:false,workflowIntent:null}),0,"missing frozen workflow intent fails closed");
+assert.equal(fulfillmentSupplyQuantity({orderedQuantity:2,completedProductionQuantity:0,productionRequired:false,workflowIntent:"standard_production"}),2,"a frozen production-not-required physical line retains its existing non-Production supply exception");
+assert.equal(fulfillmentSupplyQuantity({orderedQuantity:2,completedProductionQuantity:7,productionRequired:true,workflowIntent:"standard_production"}),2,"usable Production evidence cannot expand the original commercial obligation");
 assert.deepEqual(fulfillmentPhysicalIntegrityAnomaly(0,1),{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION",completedProductionQuantity:0,completedFulfillmentQuantity:1,excessFulfillmentQuantity:1},"historical physical inconsistency is a structured derived condition");
 assert.equal(fulfillmentPhysicalIntegrityAnomaly(0,0),undefined,"empty Production and Fulfillment history is reconciled");
 assert.equal(fulfillmentPhysicalIntegrityAnomaly(40,0),undefined,"recorded Production without Fulfillment is reconciled");
@@ -25,4 +27,4 @@ assert.equal("invoiceId" in handoff,false,"Billing state is not owned by Fulfill
 assert.equal("allocations" in shipmentHistory,false,"shipment history remains a read-only container projection rather than a second allocation authority");
 assert.equal(shipmentHistory.trackingNumber,"TRACK-1","operator history can expose manual tracking without a carrier-provider integration");
 assert.deepEqual(["fulfillment.view","fulfillment.pickup","fulfillment.ship"].every(x=>capabilityIds.includes(x as typeof capabilityIds[number])),true,"Fulfillment capabilities are reviewed vocabulary");
-console.log("[m6] Fulfillment contract tests passed (17 assertions).");
+console.log("[m6] Fulfillment contract tests passed.");

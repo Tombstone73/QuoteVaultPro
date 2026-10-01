@@ -46,6 +46,7 @@ type HeaderRow = {
   customer_id: string | null;
   contact_id: string | null;
   purchase_order_number: string | null;
+  job_label?: string | null;
   requested_due_date: string | null;
   currency: string;
   terms_json: unknown;
@@ -231,7 +232,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
   ): Promise<void> {
     const terms = toSalesDocumentTermsPersistence(input.terms);
     await this.client.query(
-      `INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,currency,terms_json,tax_context_reference,sales_representative_id,commercial_notes) VALUES($1,$2,'quote',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)`,
+      `INSERT INTO v2_sales_documents(id,organization_id,document_kind,business_number,display_number,customer_id,contact_id,purchase_order_number,requested_due_date,currency,terms_json,tax_context_reference,sales_representative_id,commercial_notes,job_label) VALUES($1,$2,'quote',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)`,
       [
         input.quoteId,
         input.organizationId,
@@ -246,6 +247,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         terms.taxContextReference ?? null,
         terms.salesRepresentativeId ?? null,
         terms.commercialNotes ?? null,
+        input.jobLabel ?? null,
       ],
     );
     await this.hooks?.afterDocument?.();
@@ -263,7 +265,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     forUpdate = false,
   ): Promise<QuoteReadModel | null> {
     const header = await this.client.query<HeaderRow>(
-      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.revision,q.expires_at,q.delivery_state,q.acceptance_state,q.lifecycle_state,q.requested_fulfillment_method,q.requested_destination,q.fulfillment_instructions,q.selling_adjustment_cents,q.selling_adjustment_reason,q.commercial_charge,q.tax_composition FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
+      `SELECT d.id,d.organization_id,d.business_number,d.display_number,d.customer_id,d.contact_id,d.purchase_order_number,d.requested_due_date::text AS requested_due_date,d.currency,d.terms_json,d.tax_context_reference,d.sales_representative_id,d.commercial_notes,d.job_label,d.revision,q.expires_at,q.delivery_state,q.acceptance_state,q.lifecycle_state,q.requested_fulfillment_method,q.requested_destination,q.fulfillment_instructions,q.selling_adjustment_cents,q.selling_adjustment_reason,q.commercial_charge,q.tax_composition FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.document_id=d.id AND q.organization_id=d.organization_id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote'${forUpdate ? " FOR UPDATE OF d,q" : ""}`,
       [organizationId, quoteId],
     );
     const row = header.rows[0];
@@ -382,6 +384,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       organizationId,
       quoteId,
       customerContact: reference,
+      ...(row.job_label != null ? { jobLabel: row.job_label } : {}),
       currency: currencyCode(row.currency),
       ...(row.purchase_order_number
         ? { purchaseOrderNumber: row.purchase_order_number }
@@ -436,7 +439,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
   ): Promise<boolean> {
     const terms = toSalesDocumentTermsPersistence(input.terms);
     const header = await this.client.query(
-      "UPDATE v2_sales_documents SET customer_id=$4,contact_id=$5,purchase_order_number=$6,requested_due_date=$7,terms_json=$8::jsonb,tax_context_reference=$9,sales_representative_id=$10,commercial_notes=$11,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3",
+      "UPDATE v2_sales_documents SET customer_id=$4,contact_id=$5,purchase_order_number=$6,requested_due_date=$7,terms_json=$8::jsonb,tax_context_reference=$9,sales_representative_id=$10,commercial_notes=$11,job_label=$12,revision=revision+1,updated_at=now() WHERE organization_id=$1 AND id=$2 AND revision=$3",
       [
         input.organizationId,
         input.quoteId,
@@ -449,6 +452,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         terms.taxContextReference ?? null,
         terms.salesRepresentativeId ?? null,
         terms.commercialNotes ?? null,
+        input.jobLabel ?? null,
       ],
     );
     if (header.rowCount !== 1) return false;

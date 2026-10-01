@@ -61,7 +61,7 @@ describe("Sales workspace foundation", () => {
       expect(() => validateSalesWorkspaceMutation(mutation as never)).toThrow();
     }
   });
-  it("rejects stale, terminal, expired and reserved source-edit drafts", () => {
+  it("allows active neutral and existing Order-edit drafts but rejects stale, terminal, expired and Quote-edit drafts", () => {
     const now = new Date(draft.createdAt);
     expect(() => assertSalesWorkspaceMutable(draft, 1, now)).not.toThrow();
     expect(() => assertSalesWorkspaceMutable(draft, 2, now)).toThrow(expect.objectContaining({ code: "CONFLICT" }));
@@ -70,7 +70,8 @@ describe("Sales workspace foundation", () => {
     }
     expect(() => assertSalesWorkspaceMutable(draft, 1, new Date(draft.expiresAt))).toThrow();
     expect(() => assertSalesWorkspaceMutable({ ...draft, expiresAt: "invalid" }, 1, now)).toThrow();
-    expect(() => assertSalesWorkspaceMutable({ ...draft, kind: "order_edit" }, 1, now)).toThrow(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+    expect(() => assertSalesWorkspaceMutable({ ...draft, kind: "order_edit" }, 1, now)).not.toThrow();
+    expect(() => assertSalesWorkspaceMutable({ ...draft, kind: "quote_edit" }, 1, now)).toThrow(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(bumpSalesWorkspaceRevision(draft, now)).toEqual({ ...draft, revision: 2 });
     expect(draft.revision).toBe(1);
     expect(visibleSalesWorkspaceState(draft, new Date(draft.expiresAt))).toEqual({ ...draft, state: "expired" });
@@ -80,10 +81,19 @@ describe("Sales workspace foundation", () => {
       expect(visibleSalesWorkspaceState(terminal, new Date(draft.expiresAt))).toBe(terminal);
     }
   });
-  it("rejects edit creation and malformed identity before transaction acquisition", async () => {
+  it("rejects generic source/edit creation and malformed identity before transaction acquisition", async () => {
     const run = jest.fn<SalesWorkspaceStore["run"]>();
     const service = new SalesWorkspaceApplicationService({ run, withWorkspace: jest.fn() } as SalesWorkspaceStore);
-    await expect(service.create(context, { requestId: "edit", kind: "order_edit", sourceDocumentId: draft.id })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const sourceInputs: Parameters<SalesWorkspaceApplicationService["create"]>[1][] = [
+      { requestId: "edit", kind: "order_edit", sourceDocumentId: draft.id },
+      { requestId: "edit-kind", kind: "order_edit" },
+      { requestId: "quote-edit", kind: "quote_edit" },
+      { requestId: "source", kind: "new_sales", sourceDocumentKind: "order", sourceDocumentId: draft.id },
+      { requestId: "revision", kind: "new_sales", baseRevision: "1" },
+    ];
+    for (const input of sourceInputs) {
+      await expect(service.create(context, input)).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    }
     await expect(service.get(context, "bad-id")).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     await expect(service.expire(context, 101)).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     expect(run).not.toHaveBeenCalled();

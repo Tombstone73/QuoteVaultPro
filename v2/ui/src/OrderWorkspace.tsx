@@ -19,13 +19,6 @@ import {
   type ProofWorkProjection,
   type SalesLine,
 } from "./api";
-import { QuoteLineEditor } from "./QuoteLineEditor";
-import {
-  clearContactForCustomerChange,
-  draftFromQuoteLine,
-  emptyQuoteLineDraft,
-  type QuoteLineMutationInput,
-} from "./quoteFormModel";
 import {
   salesKeys,
   useQuoteFormContacts,
@@ -46,8 +39,10 @@ import {
 } from "./OrderLineArtwork";
 import { ArtworkUploadPanel } from "./ArtworkUploadPanel";
 import { OrderArtworkFile, type ArtworkRemovalAction } from "./OrderArtworkFile";
-import { cacheOrderArtworkRemoval, cacheOrderArtworkUpload, confirmArtworkProjection, orderArtworkKey } from "./orderArtworkCache";
+import { orderArtworkKey } from "./orderArtworkCache";
 import { orderRoutePresentation } from "./orderRoutingPresentation";
+import { TransactionalSalesWorkspace, type TransactionalSalesWorkspaceProps } from "./TransactionalSalesWorkspace";
+import { salesWorkspaceKeys, workspaceError, type SalesWorkspaceClient } from "./salesWorkspaceApi";
 
 const message = (error: unknown): string => {
   const value = error as ApiError;
@@ -69,8 +64,7 @@ const stateLabel = (value: string) =>
     .replaceAll("_", " ")
     .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
 
-export const OrderWorkspace = (
-  props: Readonly<{
+export type OrderWorkspaceProps = Readonly<{
     organizationId: string;
     sessionScope: string;
     orderId: string;
@@ -85,6 +79,11 @@ export const OrderWorkspace = (
     canViewProofing: boolean;
     canViewProduction: boolean;
     csrfReady: boolean;
+    userId?: string;
+    workspaceClient?: SalesWorkspaceClient;
+    workspaceCapabilities?: TransactionalSalesWorkspaceProps["capabilities"];
+    workspaceId?: string;
+    onWorkspaceIdChange?: (workspaceId: string | undefined) => void;
     onBack: () => void;
     openOrder?: (orderId: string) => void;
     openCustomer?: (customerId: string) => void;
@@ -99,8 +98,84 @@ export const OrderWorkspace = (
     openProduction?: (productionWorkId: string) => void;
     openRouting?: () => void;
     openQuote?: (quoteId: string) => void;
-  }>,
-) => {
+  }>;
+
+const urlEditWorkspaceId = () => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("workspaceId") ?? "";
+
+export const OrderWorkspace = (props: OrderWorkspaceProps) =>
+  <OrderWorkspaceSession key={JSON.stringify([props.organizationId, props.sessionScope, props.userId, props.orderId])} {...props} />;
+
+const OrderWorkspaceSession = (props: OrderWorkspaceProps) => {
+  const cache = useQueryClient();
+  const [workspaceId, setWorkspaceId] = useState(() => props.workspaceId ?? urlEditWorkspaceId());
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef("");
+  const lock = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    const resume = () => {
+      const incoming = props.workspaceId ?? urlEditWorkspaceId();
+      if (workspaceId && incoming !== workspaceId) {
+        const url = new URL(window.location.href); url.searchParams.set("workspaceId", workspaceId);
+        window.history.replaceState(window.history.state, "", url);
+        setError("Finish Save, Cancel, or explicitly Save Draft and return before leaving this Order edit.");
+        return;
+      }
+      setWorkspaceId(incoming);
+    };
+    if (props.workspaceId !== undefined) { resume(); return; }
+    window.addEventListener("popstate", resume);
+    return () => window.removeEventListener("popstate", resume);
+  }, [props.workspaceId, workspaceId]);
+  const navigate = (id?: string) => {
+    setError("");
+    setWorkspaceId(id ?? "");
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set("workspaceId", id); else url.searchParams.delete("workspaceId");
+    window.history.replaceState(window.history.state, "", url);
+    props.onWorkspaceIdChange?.(id);
+  };
+  const canEdit = props.canEdit && props.workspaceCapabilities?.orderView === true && props.workspaceCapabilities.orderEdit === true && Boolean(props.userId && props.workspaceClient?.startOrderEdit);
+  const start = async () => {
+    if (lock.current || !canEdit || !props.csrfReady || !props.workspaceClient?.startOrderEdit || !props.userId) return;
+    lock.current = true; setStarting(true); setError("");
+    request.current ||= newBusinessRequestId();
+    try {
+      const workspace = await props.workspaceClient.startOrderEdit(props.organizationId, { requestId: request.current, orderId: props.orderId });
+      if (!mounted.current) return;
+      if (workspace.organizationId !== props.organizationId || workspace.creatorUserId !== props.userId || workspace.kind !== "order_edit" || workspace.sourceDocumentKind !== "order" || workspace.sourceDocumentId !== props.orderId)
+        throw new Error("The edit workspace does not match this Order and staff session.");
+      cache.setQueryData(salesWorkspaceKeys.workspace(props.sessionScope, props.organizationId, props.userId, workspace.id), workspace);
+      request.current = "";
+      navigate(workspace.id);
+    } catch (failure) { if (mounted.current) setError(workspaceError(failure).message); }
+    finally { lock.current = false; if (mounted.current) setStarting(false); }
+  };
+  if (workspaceId) {
+    if (!canEdit || !props.workspaceClient || !props.userId || !props.workspaceCapabilities)
+      return <p className="notice error" role="alert">Order view and edit access could not be verified. The edit workspace has not been opened.</p>;
+    return <>{error && <p className="notice error" role="alert">{error}</p>}<TransactionalSalesWorkspace
+      organizationId={props.organizationId} sessionScope={props.sessionScope} userId={props.userId}
+      client={props.workspaceClient} capabilities={props.workspaceCapabilities} csrfReady={props.csrfReady}
+      workspaceId={workspaceId} sourceOrderId={props.orderId} onReturnToOrder={() => navigate()}
+      openCanonical={receipt => {
+        if (receipt.target !== "order" || receipt.documentId !== props.orderId) throw new Error("The saved edit does not match this Order.");
+        void cache.invalidateQueries({ queryKey: ["v2", props.sessionScope, props.organizationId] });
+        navigate();
+        props.openOrder?.(receipt.documentId);
+      }}
+    /></>;
+  }
+  if (starting) return <p className="notice" role="status">Opening the TEMP Order edit workspace. Canonical actions are unavailable while its source is captured.</p>;
+  return <>
+    {error && <p className="notice error" role="alert">{error} Retry Edit Order to create or resume the same draft.</p>}
+    <CanonicalOrderWorkspace {...props} canEnterEdit={canEdit} startingEdit={starting} onEnterEdit={() => void start()} />
+  </>;
+};
+
+const CanonicalOrderWorkspace = (props: OrderWorkspaceProps & Readonly<{ canEnterEdit: boolean; startingEdit: boolean; onEnterEdit: () => void }>) => {
   const queryClient = useQueryClient();
   const order = useQuery({
     queryKey: salesKeys.order(
@@ -116,30 +191,27 @@ export const OrderWorkspace = (
   const current = order.data;
   const [notice, setNotice] = useState("");
   const [editingLineId, setEditingLineId] = useState("");
-  const [addVersion, setAddVersion] = useState(0);
-  const [customerId, setCustomerId] = useState("");
-  const [contactId, setContactId] = useState("");
-  const [po, setPo] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [termsCode, setTermsCode] = useState("");
-  const [notes, setNotes] = useState("");
-  const [fulfillmentMethod, setFulfillmentMethod] = useState<
-    "" | "pickup" | "shipping" | "local_delivery"
-  >("");
-  const [destination, setDestination] = useState({
-    recipient: "",
-    company: "",
-    addressLine1: "",
-    addressLine2: "",
-    city: "",
-    region: "",
-    postalCode: "",
-    country: "",
-    phone: "",
-  });
-  const [fulfillmentInstructions, setFulfillmentInstructions] = useState("");
-  const [adjustmentCents, setAdjustmentCents] = useState("");
-  const [adjustmentReason, setAdjustmentReason] = useState("");
+  const customerId = current?.order.customerContact.customerId ?? "";
+  const contactId = current?.order.customerContact.contactId ?? "";
+  const po = current?.order.purchaseOrderNumber ?? "";
+  const dueDate = current?.order.requestedDueDate?.slice(0, 10) ?? "";
+  const termsCode = current?.order.terms.termsCode ?? "";
+  const notes = current?.order.terms.commercialNotes ?? "";
+  const fulfillmentMethod = current?.order.requestedFulfillment?.method ?? "";
+  const destination = {
+    recipient: current?.order.requestedFulfillment?.destination?.recipient ?? "",
+    company: current?.order.requestedFulfillment?.destination?.company ?? "",
+    addressLine1: current?.order.requestedFulfillment?.destination?.addressLine1 ?? "",
+    addressLine2: current?.order.requestedFulfillment?.destination?.addressLine2 ?? "",
+    city: current?.order.requestedFulfillment?.destination?.city ?? "",
+    region: current?.order.requestedFulfillment?.destination?.region ?? "",
+    postalCode: current?.order.requestedFulfillment?.destination?.postalCode ?? "",
+    country: current?.order.requestedFulfillment?.destination?.country ?? "",
+    phone: current?.order.requestedFulfillment?.destination?.phone ?? "",
+  };
+  const fulfillmentInstructions = current?.order.requestedFulfillment?.instructions ?? "";
+  const adjustmentCents = current?.order.sellingAdjustment ? String(current.order.sellingAdjustment.cents) : "";
+  const adjustmentReason = current?.order.sellingAdjustment?.reason ?? "";
   const requests = useRef<Record<string, { payload: string; id: string }>>({});
   const requestId = (operation: string, payload: unknown) => {
     const serialized = JSON.stringify(payload),
@@ -167,51 +239,13 @@ export const OrderWorkspace = (
     props.sessionScope,
     props.organizationId,
   );
-  const pendingArtwork = useRef(new Map<string, Parameters<typeof cacheOrderArtworkUpload>[2]>());
-  const removedArtwork = useRef(new Map<string, string>());
-  const loadOrderArtwork = async () => confirmArtworkProjection(
-    await artworkApi.forOrder(props.organizationId, props.orderId),
-    [...pendingArtwork.current.values()].filter((result) => result.assignment.orderId === props.orderId),
-    [...removedArtwork.current].filter(([, orderId]) => orderId === props.orderId).map(([id]) => id),
-  );
   const artwork = useQuery({
     queryKey: orderArtworkKey(props.sessionScope, props.organizationId, props.orderId),
-    queryFn: loadOrderArtwork,
+    queryFn: () => artworkApi.forOrder(props.organizationId, props.orderId),
     enabled: Boolean(
       props.organizationId && props.sessionScope && current && props.canViewArtwork,
     ),
   });
-  const artworkUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"] = async (result) => {
-    if (!props.canViewArtwork) {
-      setNotice("Artwork uploaded and assigned to this line.");
-      return;
-    }
-    const key = orderArtworkKey(props.sessionScope, props.organizationId, props.orderId);
-    pendingArtwork.current.set(result.assignment.id, result);
-    const reused = await cacheOrderArtworkUpload(queryClient, key, result);
-    try {
-      // Pin the read to the uploaded Order even if the operator navigates away.
-      await queryClient.fetchQuery({ queryKey: key, queryFn: loadOrderArtwork, staleTime: 0 });
-    } catch {
-      throw { code: "UPLOAD_REFRESH_UNCONFIRMED" };
-    }
-    pendingArtwork.current.delete(result.assignment.id);
-    setNotice(reused ? "This Artwork is already assigned to this line. No duplicate was created." : "Artwork uploaded and assigned to this line.");
-  };
-  const artworkRemoval: ArtworkRemovalAction | undefined = props.canViewArtwork && props.canRemoveArtwork && current ? {
-    orderNumber: current.number.display,
-    onRemoved: async (result) => {
-      const key = orderArtworkKey(props.sessionScope, props.organizationId, result.assignment.orderId);
-      removedArtwork.current.set(result.assignment.id, result.assignment.orderId);
-      pendingArtwork.current.delete(result.assignment.id);
-      await cacheOrderArtworkRemoval(queryClient, key, result.assignment.id);
-      setNotice("Artwork removed from the current job. File and history retained.");
-      try {
-        await queryClient.fetchQuery({ queryKey: key, queryFn: loadOrderArtwork, staleTime: 0 });
-        removedArtwork.current.delete(result.assignment.id);
-      } catch { setNotice("Artwork was removed, but the refreshed list could not be confirmed. Reload the Order to reconcile it."); }
-    },
-  } : undefined;
   const fulfillment = useQuery({
     queryKey: [
       "v2",
@@ -305,41 +339,6 @@ export const OrderWorkspace = (
     enabled: Boolean(props.organizationId && props.sessionScope && current),
   });
 
-  useEffect(() => {
-    if (!current) return;
-    setCustomerId(current.order.customerContact.customerId ?? "");
-    setContactId(current.order.customerContact.contactId ?? "");
-    setPo(current.order.purchaseOrderNumber ?? "");
-    setDueDate(current.order.requestedDueDate ?? "");
-    setTermsCode(current.order.terms.termsCode ?? "");
-    setNotes(current.order.terms.commercialNotes ?? "");
-    setEditingLineId("");
-    setFulfillmentMethod(current.order.requestedFulfillment?.method ?? "");
-    setDestination({
-      recipient:
-        current.order.requestedFulfillment?.destination?.recipient ?? "",
-      company: current.order.requestedFulfillment?.destination?.company ?? "",
-      addressLine1:
-        current.order.requestedFulfillment?.destination?.addressLine1 ?? "",
-      addressLine2:
-        current.order.requestedFulfillment?.destination?.addressLine2 ?? "",
-      city: current.order.requestedFulfillment?.destination?.city ?? "",
-      region: current.order.requestedFulfillment?.destination?.region ?? "",
-      postalCode:
-        current.order.requestedFulfillment?.destination?.postalCode ?? "",
-      country: current.order.requestedFulfillment?.destination?.country ?? "",
-      phone: current.order.requestedFulfillment?.destination?.phone ?? "",
-    });
-    setFulfillmentInstructions(
-      current.order.requestedFulfillment?.instructions ?? "",
-    );
-    setAdjustmentCents(
-      current.order.sellingAdjustment
-        ? String(current.order.sellingAdjustment.cents)
-        : "",
-    );
-    setAdjustmentReason(current.order.sellingAdjustment?.reason ?? "");
-  }, [current?.order.orderId]);
   const apply = (result: OrderResult) => {
     queryClient.setQueryData(
       salesKeys.order(
@@ -378,93 +377,7 @@ export const OrderWorkspace = (
         "order-invoice-settlement",
       ],
     });
-    complete("header");
-    complete("line");
   };
-  const update = useMutation({
-    mutationFn: (input: Record<string, unknown>) =>
-      orderApi.patch(
-        props.organizationId,
-        props.orderId,
-        requestId("line", input),
-        input,
-      ),
-    onSuccess: (result) => {
-      apply(result);
-      setEditingLineId("");
-      setAddVersion((value) => value + 1);
-      setNotice("Order saved.");
-    },
-    onError: (error) => {
-      setNotice(message(error));
-      if ((error as unknown as ApiError)?.code === "STALE_STATE") {
-        complete("line");
-        void order.refetch();
-      }
-    },
-  });
-  const saveHeader = useMutation({
-    mutationFn: () => {
-      const cents = adjustmentCents.trim()
-        ? Number(adjustmentCents)
-        : undefined;
-      const requestedFulfillment = !fulfillmentMethod
-        ? null
-        : fulfillmentMethod === "pickup"
-          ? {
-              method: fulfillmentMethod,
-              ...(fulfillmentInstructions.trim()
-                ? { instructions: fulfillmentInstructions.trim() }
-                : {}),
-            }
-          : {
-              method: fulfillmentMethod,
-              destination: Object.fromEntries(
-                Object.entries(destination).filter(([, value]) => value.trim()),
-              ) as { addressLine1: string; city: string },
-              ...(fulfillmentInstructions.trim()
-                ? { instructions: fulfillmentInstructions.trim() }
-                : {}),
-            };
-      const sellingAdjustment =
-        cents === undefined ? null : { cents, reason: adjustmentReason };
-      const input = {
-        expectedRevision: current!.revision,
-        patch: {
-          customerContact: {
-            organizationId: props.organizationId,
-            customerId,
-            ...(contactId ? { contactId } : {}),
-          },
-          purchaseOrderNumber: po.trim() || null,
-          requestedDueDate: dueDate || null,
-          terms: {
-            ...(termsCode.trim() ? { termsCode: termsCode.trim() } : {}),
-            commercialNotes: notes,
-          },
-          requestedFulfillment,
-          sellingAdjustment,
-        },
-      };
-      return orderApi.patch(
-        props.organizationId,
-        props.orderId,
-        requestId("header", input),
-        input,
-      );
-    },
-    onSuccess: (result) => {
-      apply(result);
-      setNotice("Order saved.");
-    },
-    onError: (error) => {
-      setNotice(message(error));
-      if ((error as unknown as ApiError)?.code === "STALE_STATE") {
-        complete("header");
-        void order.refetch();
-      }
-    },
-  });
   const cancelOrder = useMutation({
     mutationFn: (reason: string) => orderApi.cancel(props.organizationId, props.orderId, requestId("cancel", { revision: current!.revision, reason }), current!.revision, reason),
     onSuccess: (result) => { apply(result); complete("cancel"); setNotice("Order cancelled. Billing and downstream history were preserved."); },
@@ -547,19 +460,11 @@ export const OrderWorkspace = (
     return <div className="notice error">{message(order.error)}</div>;
   const routeFor = (lineId: string) =>
     current.routes.find((route) => route.work.orderLineId === lineId);
-  // Closed is a derived state. A permitted current commercial revision is
-  // allowed to reopen it; cancelled and archived records stay read-only.
-  const editable = props.canEdit && current.order.commercialState !== "cancelled" && !current.order.archivedAt;
-  const change = (lineChanges: unknown[]) =>
-    update.mutate({
-      expectedRevision: current.revision,
-      patch: {},
-      lineChanges,
-    });
+  const canEnterEdit = props.canEnterEdit && current.order.commercialState !== "cancelled" && !current.order.archivedAt;
+  const editable = false;
   const selectedLine = current.order.lines.find(
     (line) => line.lineId === editingLineId,
   );
-  const isAdding = editingLineId === "__add__";
   const fulfillmentAvailable = fulfillment.data?.lines.reduce(
     (total, line) => total + line.availableFulfillmentQuantity,
     0,
@@ -574,11 +479,6 @@ export const OrderWorkspace = (
             aria-label="Customer"
             value={customerId}
             disabled={!editable}
-            onChange={(event) => {
-              const next = clearContactForCustomerChange(event.target.value);
-              setCustomerId(next.customerId);
-              setContactId(next.contactId);
-            }}
           >
             <option value="">Select Customer</option>
             {(customers.data ?? []).map((customer) =>
@@ -595,7 +495,6 @@ export const OrderWorkspace = (
               aria-label="Contact"
               value={contactId}
               disabled={!editable || !customerId}
-              onChange={(event) => setContactId(event.target.value)}
             >
               <option value="">Select Contact</option>
               {(contacts.data ?? []).map((contact) =>
@@ -614,7 +513,6 @@ export const OrderWorkspace = (
             aria-label="PO #"
             value={po}
             disabled={!editable}
-            onChange={(event) => setPo(event.target.value)}
           />
         </label>
         <label className="v2-sales-inline-fact">
@@ -624,7 +522,6 @@ export const OrderWorkspace = (
             type="date"
             value={dueDate}
             disabled={!editable}
-            onChange={(event) => setDueDate(event.target.value)}
           />
         </label>
         <div className="v2-sales-inline-fact">
@@ -633,7 +530,7 @@ export const OrderWorkspace = (
         </div>
         <label className="v2-sales-inline-fact">
           <small>Terms</small>
-          <input aria-label="Terms" value={termsCode} disabled={!editable} onChange={(event) => setTermsCode(event.target.value)} placeholder="Terms code" />
+          <input aria-label="Terms" value={termsCode} disabled={!editable} placeholder="Terms code" />
         </label>
         <div className="v2-sales-inline-fact">
           <small>Fulfillment method</small>
@@ -656,8 +553,8 @@ export const OrderWorkspace = (
           </span>
         </div>
         <div className="v2-sales-inline-fact">
-          <small>Job Name</small>
-          <span>—</span>
+          <small>Job Label</small>
+          <span>{current.order.jobLabel || "Not set"}</span>
         </div>
       </div>
       <div className="v2-order-owner-summaries">
@@ -689,16 +586,6 @@ export const OrderWorkspace = (
                 {current.order.lines.length === 1 ? "" : "s"}
               </p>
             </div>
-            {editable && (
-              <button
-                type="button"
-                className="v2-sales-add-line"
-                disabled={update.isPending || !props.csrfReady}
-                onClick={() => setEditingLineId("__add__")}
-              >
-                Add line
-              </button>
-            )}
           </header>
           <div className="v2-sales-items-table-wrap">
             <table>
@@ -796,76 +683,13 @@ export const OrderWorkspace = (
             {...props}
             artwork={artwork.data ?? []}
             artworkLoading={artwork.isLoading}
-            canAdoptArtwork={props.canAdoptArtwork === true}
             orderId={current.order.orderId}
             orderNumber={current.number.display}
             onOpenArtwork={() =>
               props.openArtwork?.(current.order.orderId, selectedLine.lineId)
             }
-            onArtworkUploaded={artworkUploaded}
-            artworkRemoval={artworkRemoval}
             products={products.data ?? []}
-            editable={editable}
-            busy={update.isPending}
-            onSave={(line) =>
-              change([{ kind: "update", lineId: selectedLine.lineId, line }])
-            }
-            onSaveDescription={(description) =>
-              change([
-                {
-                  kind: "update_description",
-                  lineId: selectedLine.lineId,
-                  description,
-                },
-              ])
-            }
-            onSaveNote={(note) => change([{ kind: "update_note", lineId: selectedLine.lineId, ...(note.trim() ? { note } : {}) }])}
-            onDuplicate={() =>
-              change([{ kind: "duplicate", sourceLineId: selectedLine.lineId }])
-            }
-            onMoveUp={() => {
-              const ids = current.order.lines.map((line) => line.lineId);
-              const index = ids.indexOf(selectedLine.lineId);
-              [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
-              change([{ kind: "reorder", lineIds: ids }]);
-            }}
-            onMoveDown={() => {
-              const ids = current.order.lines.map((line) => line.lineId);
-              const index = ids.indexOf(selectedLine.lineId);
-              [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
-              change([{ kind: "reorder", lineIds: ids }]);
-            }}
-            canMoveUp={selectedLine.position > 1}
-            canMoveDown={selectedLine.position < current.order.lines.length}
-            onRemove={() =>
-              change([{ kind: "remove", lineId: selectedLine.lineId }])
-            }
-            onClose={() => setEditingLineId("")}
           />
-        ) : isAdding && editable ? (
-          <section className="v2-sales-line-editor">
-            <header>
-              <div>
-                <small>NEW LINE</small>
-                <h2>Add item</h2>
-              </div>
-            </header>
-            <QuoteLineEditor
-              organizationId={props.organizationId}
-              sessionScope={props.sessionScope}
-              draftKey={`order:add:${current.order.orderId}:${addVersion}`}
-              initialDraft={emptyQuoteLineDraft()}
-              products={products.data ?? []}
-              canOverridePrice={props.canOverridePrice}
-              csrfReady={props.csrfReady}
-              busy={update.isPending}
-              submitLabel="Add line"
-              onSubmit={(line: QuoteLineMutationInput) =>
-                change([{ kind: "add", line }])
-              }
-              onCancel={() => setEditingLineId("")}
-            />
-          </section>
         ) : null
       }
     />
@@ -954,10 +778,10 @@ export const OrderWorkspace = (
             <button
               className="button"
               type="button"
-              disabled={!editable || saveHeader.isPending || !props.csrfReady}
-              onClick={() => saveHeader.mutate()}
+              disabled={!canEnterEdit || props.startingEdit || !props.csrfReady}
+              onClick={props.onEnterEdit}
             >
-              {saveHeader.isPending ? "Saving…" : "Save"}
+              {props.startingEdit ? "Opening edit..." : "Edit Order"}
             </button>
             {props.canCancel && current.order.commercialState === "open" && (
               <button className="button secondary" type="button" disabled={cancelOrder.isPending || !props.csrfReady} onClick={() => {
@@ -986,12 +810,10 @@ export const OrderWorkspace = (
               artwork={artwork.data ?? []}
               loading={artwork.isLoading}
               canView={props.canViewArtwork}
-              canUpload={props.canAdoptArtwork === true}
+              canUpload={false}
               onOpen={(lineId) =>
                 props.openArtwork?.(current.order.orderId, lineId)
               }
-              onUploaded={artworkUploaded}
-              removal={artworkRemoval}
             />
           ),
           Notes: (
@@ -1002,19 +824,8 @@ export const OrderWorkspace = (
                   aria-label="Commercial notes"
                   value={notes}
                   disabled={!editable}
-                  onChange={(event) => setNotes(event.target.value)}
                 />
               </label>
-              {editable && (
-                <button
-                  className="button"
-                  type="button"
-                  disabled={saveHeader.isPending || !props.csrfReady}
-                  onClick={() => saveHeader.mutate()}
-                >
-                  {saveHeader.isPending ? "Saving…" : "Save notes"}
-                </button>
-              )}
             </section>
           ),
           Billing: (
@@ -1031,24 +842,19 @@ export const OrderWorkspace = (
           Fulfillment: (
             <OrderFulfillmentIntentEditor
               editable={editable}
-              busy={saveHeader.isPending}
+              busy={false}
               csrfReady={props.csrfReady}
               method={fulfillmentMethod}
               destination={destination}
               instructions={fulfillmentInstructions}
               adjustmentCents={adjustmentCents}
               adjustmentReason={adjustmentReason}
-              onMethod={setFulfillmentMethod}
-              onDestination={(field, value) =>
-                setDestination((currentDestination) => ({
-                  ...currentDestination,
-                  [field]: value,
-                }))
-              }
-              onInstructions={setFulfillmentInstructions}
-              onAdjustmentCents={setAdjustmentCents}
-              onAdjustmentReason={setAdjustmentReason}
-              onSave={() => saveHeader.mutate()}
+              onMethod={props.onEnterEdit}
+              onDestination={props.onEnterEdit}
+              onInstructions={props.onEnterEdit}
+              onAdjustmentCents={props.onEnterEdit}
+              onAdjustmentReason={props.onEnterEdit}
+              onSave={props.onEnterEdit}
               loading={fulfillment.isLoading}
               fulfillment={fulfillment.data}
               onOpen={() => props.openFulfillment?.(current.order.orderId)}
@@ -1347,60 +1153,24 @@ const OrderLineEditor = ({
   line,
   route,
   organizationId,
-  sessionScope,
-  canOverridePrice,
   canViewArtwork,
-  canAdoptArtwork,
   orderId,
   orderNumber,
-  csrfReady,
   artwork,
   artworkLoading,
   onOpenArtwork,
-  onArtworkUploaded,
-  artworkRemoval,
   products,
-  editable,
-  busy,
-  onSave,
-  onSaveDescription,
-  onSaveNote,
-  onDuplicate,
-  onMoveUp,
-  onMoveDown,
-  canMoveUp,
-  canMoveDown,
-  onRemove,
-  onClose,
 }: Readonly<{
   line: SalesLine;
   route?: OrderRead["routes"][number];
   organizationId: string;
-  sessionScope: string;
-  canOverridePrice: boolean;
   canViewArtwork: boolean;
-  canAdoptArtwork: boolean;
   orderId: string;
   orderNumber: string;
-  csrfReady: boolean;
   artwork: readonly ArtworkOrderProjection[];
   artworkLoading: boolean;
   onOpenArtwork: () => void;
-  onArtworkUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
-  artworkRemoval?: ArtworkRemovalAction;
   products: readonly { productId?: string; displayName: string }[];
-  editable: boolean;
-  busy: boolean;
-  onSave: (line: QuoteLineMutationInput) => void;
-  onSaveDescription: (description: string) => void;
-  onSaveNote: (note: string) => void;
-  onDuplicate: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
-  onRemove: () => void;
-  onClose: () => void;
 }>) => {
   const routing = route ? orderRoutePresentation(route) : undefined;
   const productName =
@@ -1418,23 +1188,7 @@ const OrderLineEditor = ({
             Routing · {routing.summary}
             {routing.reason ? ` · ${routing.reason}` : ""}
           </span>
-        ) : editable ? (
-          <button
-            className="v2-sales-remove-line"
-            type="button"
-            disabled={busy || !csrfReady}
-            onClick={onRemove}
-          >
-            Remove
-          </button>
         ) : null}
-        {editable && (
-          <div className="v2-sales-line-actions">
-            <button className="button secondary" type="button" disabled={busy || !csrfReady} onClick={onDuplicate}>Duplicate line</button>
-            <button className="button secondary" type="button" disabled={busy || !csrfReady || !canMoveUp} onClick={onMoveUp}>Move up</button>
-            <button className="button secondary" type="button" disabled={busy || !csrfReady || !canMoveDown} onClick={onMoveDown}>Move down</button>
-          </div>
-        )}
       </header>
       <section
         className="v2-order-line-editor-section"
@@ -1459,34 +1213,8 @@ const OrderLineEditor = ({
             <dd>{money(line.sellingLineAmount)}</dd>
           </div>
         </dl>
-        <OrderLineDescriptionEditor description={line.description} editable={editable} busy={busy} csrfReady={csrfReady} onSave={onSaveDescription} />
-        <OrderLineOperationalNoteEditor note={line.operationalNote ?? ""} editable={editable} busy={busy} csrfReady={csrfReady} onSave={onSaveNote} />
-        {editable && (
-          <>
-            {!canOverridePrice && (
-              <p className="v2-sales-permission-note">
-                Price overrides are unavailable for this permission set.
-              </p>
-            )}
-            <QuoteLineEditor
-              organizationId={organizationId}
-              sessionScope={sessionScope}
-              draftKey={`order:edit:${line.lineId}`}
-              initialDraft={draftFromQuoteLine(line)}
-              initializeFromPersistedLine
-              productEditable={false}
-              showProductField={false}
-              showConfigurationFields={false}
-              products={products as never}
-              canOverridePrice={canOverridePrice}
-              csrfReady={csrfReady}
-              busy={busy}
-              submitLabel="Save quantity or price"
-              onSubmit={onSave}
-              onCancel={onClose}
-            />
-          </>
-        )}
+        <p>Use Edit Order to change commercial fields in a TEMP workspace.</p>
+        <dl><div><dt>Description</dt><dd>{line.description}</dd></div><div><dt>Operational line note</dt><dd>{line.operationalNote || "Not set"}</dd></div></dl>
       </section>
       <section
         className="v2-order-line-editor-section"
@@ -1502,11 +1230,9 @@ const OrderLineEditor = ({
         artwork={artwork}
         loading={artworkLoading}
         canView={canViewArtwork}
-        canAdopt={canAdoptArtwork}
+        canAdopt={false}
         uploadTarget={lineArtworkUploadTarget(orderId, orderNumber, line)}
         onOpen={onOpenArtwork}
-        onUploaded={onArtworkUploaded}
-        removal={artworkRemoval}
       />
     </section>
   );
@@ -2013,7 +1739,7 @@ export const OrderArtworkPanel = ({
   canView: boolean;
   canUpload: boolean;
   onOpen: (lineId: string) => void;
-  onUploaded: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
+  onUploaded?: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
   removal?: ArtworkRemovalAction;
 }>) => {
   const [uploadLineId, setUploadLineId] = useState<string | undefined>();
@@ -2070,7 +1796,7 @@ export const OrderArtworkPanel = ({
                     organizationId={organizationId}
                     target={{ orderId, orderLineId: line.lineId, orderNumber, lineDescription: line.description || "Order line" }}
                     onUploaded={async (result) => {
-                      await onUploaded(result);
+                      await onUploaded?.(result);
                       setUploadLineId(undefined);
                     }}
                   />

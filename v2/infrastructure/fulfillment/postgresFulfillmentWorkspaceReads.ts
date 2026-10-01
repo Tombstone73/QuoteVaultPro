@@ -3,8 +3,8 @@ import { brandedId, type OrganizationId, type OrderId } from "../../src/modules/
 import { fulfillmentPhysicalIntegrityAnomaly, fulfillmentSupplyQuantity, type FulfillmentAvailability, type FulfillmentHandoff, type FulfillmentHandoffLine, type FulfillmentOrderWorkspace, type FulfillmentShipmentHistory, type FulfillmentWorkspacePage, type FulfillmentWorkspaceReadPort } from "../../src/modules/fulfillment/contracts.js";
 
 type OrderRow={id:string;display_number:string;commercial_state:"open"|"completed"|"cancelled";customer_id:string|null;contact_id:string|null;customer_name:string;requested_due_date:string|null;requested_fulfillment_method:"pickup"|"shipping"|"local_delivery"|null;requested_destination:unknown;fulfillment_instructions:string|null};
-type LineRow={id:string;document_id:string;description:string;quantity:number;pickup_quantity:string;shipment_quantity:string;completed_production_quantity:string;workflow_intent:"standard_production"|"fulfillment_only"|"service_fee"|null;requires_production:boolean};
-type HandoffRow={id:string;organization_id:string;order_document_id:string;handoff_method:"pickup"|"shipment";completed_at:Date;customer_id:string|null;contact_id:string|null;completed_principal_kind:FulfillmentHandoff["completedPrincipalKind"];completed_principal_subject:string;completed_staff_actor_user_id:string|null};
+type LineRow={id:string;document_id:string;description:string;quantity:number;pickup_quantity:string;shipment_quantity:string;reserved_prepared_quantity:string;completed_production_quantity:string;workflow_intent:"standard_production"|"fulfillment_only"|"service_fee"|null;requires_production:boolean};
+type HandoffRow={id:string;organization_id:string;order_document_id:string;handoff_method:"pickup"|"shipment";completed_at:Date;customer_id:string|null;contact_id:string|null;replacement_obligation_id:string|null;completed_principal_kind:FulfillmentHandoff["completedPrincipalKind"];completed_principal_subject:string;completed_staff_actor_user_id:string|null};
 type AllocationRow={id:string;organization_id:string;handoff_id:string;order_document_id:string;order_line_id:string;quantity:number};
 type ShipmentAttachmentRow={handoff_id:string;shipment_id:string;shipment_status:"prepared"|"shipped";created_at:Date;created_principal_subject:string;manual_carrier_name:string|null;manual_carrier_service:string|null;manual_tracking_number:string|null;notes:string|null;package_count:number|null;shipped_at:Date|null;shipped_principal_subject:string|null};
 type MutableHandoffHistory={handoff:FulfillmentHandoff;allocations:readonly FulfillmentHandoffLine[];documentAvailable?:boolean;shipment?:FulfillmentShipmentHistory}[];
@@ -18,10 +18,10 @@ type MutableHandoffHistory={handoff:FulfillmentHandoff;allocations:readonly Fulf
  * as a service fee.
  */
 export const fulfillmentWorkspacePhysicalLinePredicate=`(COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') IS DISTINCT FROM 'service_fee' OR EXISTS(SELECT 1 FROM v2_fulfillment_handoff_lines retained_handoff WHERE retained_handoff.organization_id=l.organization_id AND retained_handoff.order_document_id=l.document_id AND retained_handoff.order_line_id=l.id))`;
-const handoff=(r:HandoffRow):FulfillmentHandoff=>({handoffId:brandedId<"FulfillmentHandoffId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),orderId:brandedId<"OrderId">(r.order_document_id),method:r.handoff_method,completedAt:r.completed_at.toISOString(),...(r.customer_id?{customerId:brandedId<"CustomerId">(r.customer_id)}:{}),...(r.contact_id?{contactId:brandedId<"ContactId">(r.contact_id)}:{}),completedPrincipalKind:r.completed_principal_kind,completedPrincipalSubject:r.completed_principal_subject,...(r.completed_staff_actor_user_id?{completedStaffActorUserId:r.completed_staff_actor_user_id}:{})});
+const handoff=(r:HandoffRow):FulfillmentHandoff=>({handoffId:brandedId<"FulfillmentHandoffId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),orderId:brandedId<"OrderId">(r.order_document_id),method:r.handoff_method,completedAt:r.completed_at.toISOString(),...(r.customer_id?{customerId:brandedId<"CustomerId">(r.customer_id)}:{}),...(r.contact_id?{contactId:brandedId<"ContactId">(r.contact_id)}:{}),...(r.replacement_obligation_id?{replacementObligationId:brandedId<"ReplacementObligationId">(r.replacement_obligation_id)}:{}),completedPrincipalKind:r.completed_principal_kind,completedPrincipalSubject:r.completed_principal_subject,...(r.completed_staff_actor_user_id?{completedStaffActorUserId:r.completed_staff_actor_user_id}:{})});
 const allocation=(r:AllocationRow):FulfillmentHandoffLine=>({handoffLineId:brandedId<"FulfillmentHandoffLineId">(r.id),organizationId:brandedId<"OrganizationId">(r.organization_id),handoffId:brandedId<"FulfillmentHandoffId">(r.handoff_id),orderId:brandedId<"OrderId">(r.order_document_id),orderLineId:brandedId<"OrderLineId">(r.order_line_id),quantity:r.quantity});
 const shipment=(r:ShipmentAttachmentRow):FulfillmentShipmentHistory=>({shipmentId:r.shipment_id,status:r.shipment_status,createdAt:r.created_at.toISOString(),createdPrincipalSubject:r.created_principal_subject,...(r.manual_carrier_name?{carrierName:r.manual_carrier_name}:{}),...(r.manual_carrier_service?{carrierService:r.manual_carrier_service}:{}),...(r.manual_tracking_number?{trackingNumber:r.manual_tracking_number}:{}),...(r.notes?{notes:r.notes}:{}),...(r.package_count!==null?{packageCount:r.package_count}:{}),...(r.shipped_at?{shippedAt:r.shipped_at.toISOString()}:{}),...(r.shipped_principal_subject?{shippedPrincipalSubject:r.shipped_principal_subject}:{})});
-const availability=(r:LineRow):FulfillmentAvailability=>{const pickup=Number(r.pickup_quantity),shipment=Number(r.shipment_quantity),completedFulfillment=pickup+shipment,completedProduction=Math.min(r.quantity,Math.max(0,Number(r.completed_production_quantity))),supplyQuantity=fulfillmentSupplyQuantity({orderedQuantity:r.quantity,completedProductionQuantity:completedProduction,productionRequired:r.requires_production,workflowIntent:r.workflow_intent}),anomaly=fulfillmentPhysicalIntegrityAnomaly(supplyQuantity,completedFulfillment);return {orderId:brandedId<"OrderId">(r.document_id),orderLineId:brandedId<"OrderLineId">(r.id),orderedQuantity:r.quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,productionRequired:r.requires_production,availableFulfillmentQuantity:Math.max(0,supplyQuantity-completedFulfillment),remainingProductionQuantity:r.requires_production?Math.max(0,r.quantity-completedProduction):0,remainingFulfillmentQuantity:Math.max(0,r.quantity-completedFulfillment),...(anomaly?{physicalIntegrityAnomaly:anomaly}:{})};};
+const availability=(r:LineRow):FulfillmentAvailability=>{const pickup=Number(r.pickup_quantity),shipment=Number(r.shipment_quantity),reserved=Math.max(0,Number(r.reserved_prepared_quantity)),completedFulfillment=pickup+shipment,completedProduction=Math.min(r.quantity,Math.max(0,Number(r.completed_production_quantity))),supplyQuantity=fulfillmentSupplyQuantity({orderedQuantity:r.quantity,completedProductionQuantity:completedProduction,productionRequired:r.requires_production,workflowIntent:r.workflow_intent}),anomaly=fulfillmentPhysicalIntegrityAnomaly(supplyQuantity,completedFulfillment);return {orderId:brandedId<"OrderId">(r.document_id),orderLineId:brandedId<"OrderLineId">(r.id),orderedQuantity:r.quantity,completedPickupQuantity:pickup,completedShipmentQuantity:shipment,completedFulfillmentQuantity:completedFulfillment,completedProductionQuantity:completedProduction,productionRequired:r.requires_production,availableFulfillmentQuantity:Math.max(0,supplyQuantity-completedFulfillment-reserved),remainingProductionQuantity:r.requires_production?Math.max(0,r.quantity-completedProduction):0,remainingFulfillmentQuantity:Math.max(0,r.quantity-completedFulfillment),...(reserved?{reservedShipmentQuantity:reserved}:{}),...(anomaly?{physicalIntegrityAnomaly:anomaly}:{})};};
 const decode=(cursor?:string)=>{if(!cursor)return undefined;try{const x=JSON.parse(Buffer.from(cursor,"base64url").toString("utf8"));return typeof x?.number==="string"&&typeof x?.id==="string"?x as {number:string;id:string}:undefined;}catch{return undefined;}};
 const encode=(x:{number:string;id:string})=>Buffer.from(JSON.stringify(x),"utf8").toString("base64url");
 const linesSql=`WITH production_output AS (
@@ -32,7 +32,7 @@ const linesSql=`WITH production_output AS (
   LEFT JOIN LATERAL (
     SELECT COALESCE(SUM(v2_usable_production_good_quantity(w.organization_id,w.id)),0) completed_good_quantity
     FROM v2_production_works w
-    WHERE w.organization_id=l.organization_id AND w.order_line_id=l.id AND w.requirement_key=r.requirement_key
+    WHERE w.organization_id=l.organization_id AND w.order_document_id=l.document_id AND w.order_line_id=l.id AND w.requirement_key=r.requirement_key AND w.replacement_obligation_id IS NULL
   ) unit_output ON r.requirement_key IS NOT NULL
   WHERE l.organization_id=$1 AND l.document_id=ANY($2::text[])
   GROUP BY l.id
@@ -42,15 +42,25 @@ const linesSql=`WITH production_output AS (
     COALESCE(SUM(fhl.quantity) FILTER (WHERE fh.handoff_method='shipment'),0)::text shipment_quantity
   FROM v2_sales_document_lines l
   LEFT JOIN v2_fulfillment_handoff_lines fhl ON fhl.organization_id=l.organization_id AND fhl.order_document_id=l.document_id AND fhl.order_line_id=l.id
-  LEFT JOIN v2_fulfillment_handoffs fh ON fh.organization_id=fhl.organization_id AND fh.id=fhl.handoff_id
+  LEFT JOIN v2_fulfillment_handoffs fh ON fh.organization_id=fhl.organization_id AND fh.id=fhl.handoff_id AND fh.order_document_id=l.document_id AND fh.replacement_obligation_id IS NULL
   WHERE l.organization_id=$1 AND l.document_id=ANY($2::text[])
   GROUP BY l.id
-) SELECT l.id,l.document_id,l.description,l.quantity,f.pickup_quantity,f.shipment_quantity,p.completed_production_quantity,
+), prepared_output AS (
+  SELECT l.id order_line_id,COALESCE(SUM(reservation.quantity) FILTER (WHERE prepared.id IS NOT NULL),0)::text reserved_prepared_quantity
+  FROM v2_sales_document_lines l
+  LEFT JOIN v2_fulfillment_shipment_prepared_revision_lines reservation
+    ON reservation.organization_id=l.organization_id AND reservation.order_document_id=l.document_id AND reservation.order_line_id=l.id AND reservation.replacement_obligation_id IS NULL
+  LEFT JOIN v2_fulfillment_shipments prepared
+    ON prepared.organization_id=reservation.organization_id AND prepared.id=reservation.shipment_id
+    AND prepared.shipment_status='prepared' AND prepared.prepared_revision_id=reservation.revision_id
+  WHERE l.organization_id=$1 AND l.document_id=ANY($2::text[]) GROUP BY l.id
+) SELECT l.id,l.document_id,l.description,l.quantity,f.pickup_quantity,f.shipment_quantity,pr.reserved_prepared_quantity,p.completed_production_quantity,
     CASE WHEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') IN ('standard_production','fulfillment_only','service_fee') THEN COALESCE(l.resolved_configuration#>>'{productFacts,workflowIntent}',v.tree_json#>>'{meta,general,workflowIntent}') ELSE NULL END workflow_intent,
     COALESCE((l.resolved_configuration#>>'{productFacts,requiresProductionJob}')::boolean,(v.tree_json#>>'{meta,general,requiresProductionJob}')::boolean,false) requires_production
   FROM v2_sales_document_lines l
   JOIN production_output p ON p.order_line_id=l.id
   JOIN fulfillment_output f ON f.order_line_id=l.id
+  JOIN prepared_output pr ON pr.order_line_id=l.id
   LEFT JOIN pbv2_tree_versions v ON v.organization_id=l.organization_id AND v.product_id=l.product_id AND v.id=l.resolved_configuration->>'pricingConfigurationId'
   WHERE l.organization_id=$1 AND l.document_id=ANY($2::text[]) AND ${fulfillmentWorkspacePhysicalLinePredicate} ORDER BY l.document_id,l.id`;
 

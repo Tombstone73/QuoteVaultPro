@@ -9,18 +9,34 @@ function add(prefix, runner, names, category = 'safe-deterministic', reason) {
 add('v2/tests/', 'jest', [
   'modules/salesWorkspace.test.ts',
   'modules/workspaceLines.test.ts',
+  'modules/workspaceMaintenanceWorker.test.ts',
+  'modules/orderEditChangeSet.test.ts',
+  'modules/orderEditWorkspace.test.ts',
+  'interfaces/orderEditWorkspaceRoutes.test.ts',
   'infrastructure/workspacePromotion.test.ts',
   'interfaces/salesWorkspaceRoutes.test.ts',
 ], 'safe-deterministic', 'Sales TEMP owner and HTTP contracts use scoped in-memory ports and mocked storage; no live database, provider, or root setup.');
+add('v2/tests/', 'jest', [
+  'infrastructure/orderEditProjection.postgres.test.ts',
+  'persistence/orderEditWorkspace.postgres.test.ts',
+  'persistence/orderEditAcceptance.postgres.test.ts',
+], 'safe-deterministic', 'Disposable in-memory PGlite executes actual Sales/Artwork owner operations and forward DDL. Canonical adapters with V1 dependencies use bounded VM import allowlists that reject every unknown import; no connection URL, root setup, credentials or external provider.');
 add('v2/tests/persistence/', 'jest', ['salesWorkspace.postgres.test.ts'],
   'safe-deterministic', 'Actual forward DDL and persistence transactions execute in disposable in-memory PostgreSQL via PGlite, without a connection URL, network, or shared database.');
 add('v2/tests/', 'tsx', [
   'infrastructure/workspaceArtwork.test.ts',
+  'infrastructure/workspaceMaintenance.test.ts',
+  'infrastructure/orderEditBillingSafety.postgres.test.ts',
+  'infrastructure/orderEditOperationalContext.postgres.test.ts',
+  'infrastructure/orderEditArtwork.postgres.test.ts',
+  'infrastructure/replacementFulfillmentIsolation.postgres.test.ts',
   'infrastructure/workspacePromotionAcceptance.test.ts',
   'persistence/salesWorkspaceAcceptance.postgres.test.ts',
 ], 'safe-deterministic', 'Standalone assertions use in-memory PGlite PostgreSQL with actual forward migrations and mocked binary storage; no shared database, credentials, external transport, or root setup.');
-add('v2/ui/src/', 'tsx', ['transactionalSalesWorkspace.test.tsx', 'persistedSalesEntryIntegration.test.tsx'],
+add('v2/ui/src/', 'tsx', ['transactionalSalesWorkspace.test.tsx', 'persistedSalesEntryIntegration.test.tsx', 'orderEditWorkspace.test.tsx', 'replacementFulfillmentIsolation.test.tsx'],
   'safe-deterministic', 'Neutral persisted-entry UI with scoped mocked workspace transport; no canonical/provider/network effects.');
+add('v2/ui/src/', 'tsx', ['orderEditShellNavigation.test.tsx'],
+  'safe-deterministic', 'Actual App and shell navigation assertions run under tsx with JSDOM, intercepted fetch and scoped in-memory workspace receipts; CommonJS React/query graph shares one runtime, and only CSS evaluation is ignored. No external transport, credentials or canonical persistence.');
 add('v2/tests/infrastructure/', 'tsx', [
   'shipmentShippingInvoiceProjection.pure.ts',
   'proofRecipientAccess.test.ts',

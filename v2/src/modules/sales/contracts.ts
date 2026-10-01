@@ -8,6 +8,19 @@ import type {
 import type { PrincipalKind } from "../../authorization/principals.js";
 import type { CommercialCharge, SalesTaxComposition } from "./taxComposition.js";
 import type { DocumentOrganizationIdentity } from "../organization/businessProfile.js";
+import { z } from "zod";
+import { V2ApplicationError } from "../../errors/applicationError.js";
+
+const jobLabelSchema = z.string().max(300)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value))
+  .nullable().optional();
+
+/** One bounded Sales header field; empty input clears it, never commercial notes. */
+export const normalizeSalesJobLabel = (value: unknown): string | undefined => {
+  const parsed = jobLabelSchema.safeParse(value);
+  if (!parsed.success) throw new V2ApplicationError("VALIDATION_ERROR", "Job Label must be at most 300 characters without control characters.");
+  return parsed.data?.trim() || undefined;
+};
 
 type SellingPriceBase = Readonly<{
   pricingResultId: PricingResultId;
@@ -78,6 +91,7 @@ export type SalesOrderAdjustment = Readonly<{ cents: number; reason: string }>;
 export type SalesDocumentCurrentState = Readonly<{
   organizationId: OrganizationId;
   customerContact: CustomerContactReference;
+  jobLabel?: string;
   purchaseOrderNumber?: string;
   requestedDueDate?: string;
   currency: CurrencyCode;
@@ -124,7 +138,7 @@ type QuoteCheckpointBase = Readonly<{
   /** Captured at a customer-document/issuance boundary; absent only on
    * historical checkpoints created before organization identity snapshots. */
   organizationPresentation?: DocumentOrganizationIdentity;
-  commercial: Readonly<{ purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
+  commercial: Readonly<{ jobLabel?: string; purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
   sourceCheckpointId?: QuoteCheckpointId;
 }>;
 export type QuoteCheckpoint =
@@ -137,6 +151,7 @@ export type QuoteCheckpoint =
 export type CreateQuoteCommand = Readonly<{ organizationId: OrganizationId; businessRequestId: BusinessRequestId; current: Omit<SalesDocumentCurrentState, "organizationId" | "lines"> & Readonly<{ lines: readonly SalesLineInput[] }> }>;
 export type SalesDocumentPatch = Readonly<{
   customerContact?: CustomerContactReference;
+  jobLabel?: string | null;
   purchaseOrderNumber?: string;
   requestedDueDate?: string;
   terms?: CommercialTerms;
@@ -166,7 +181,7 @@ export type ConvertQuoteResult = Readonly<{ quoteId: QuoteId; sourceCheckpointId
 /** Semantic audit, not column diffs, UI events, or a document version. */
 export type MeaningfulAuditChange = Readonly<{
   group: "customer" | "commercial_terms" | "line" | "price" | "notes" | "fulfillment" | "lifecycle";
-  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "line_note_changed" | "line_reordered" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_auto_reopened" | "order_archived" | "order_unarchived";
+  kind: "customer_changed" | "contact_changed" | "po_changed" | "requested_due_date_changed" | "terms_changed" | "line_added" | "line_removed" | "quantity_changed" | "configuration_changed" | "description_changed" | "line_note_changed" | "line_reordered" | "selling_price_changed" | "order_adjustment_changed" | "discount_changed" | "notes_changed" | "fulfillment_intent_changed" | "order_cancelled" | "order_completed" | "order_auto_reopened" | "order_archived" | "order_unarchived" | "order_edit_coordinated";
   resourceId?: SalesLineId | CustomerId | ContactId;
   summary: string;
 }>;

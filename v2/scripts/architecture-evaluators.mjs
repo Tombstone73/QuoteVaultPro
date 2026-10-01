@@ -18,9 +18,10 @@ const parse = (file, source) => ts.createSourceFile(file, source.replaceAll("\r\
 
 // These are explicit persistence-free seams, not a blanket *Application exemption.
 export const publicApis = {
+  "billing/orderEditSafety": ["OrderEditBillingSafetyAssessment", "OrderEditBillingSafetyRequest", "OrderEditBillingSafetyReason", "OrderEditBillingSafetyPort"],
   "sales/workspaceContracts": ["SalesWorkspace", "SalesWorkspaceLineMapEntry"],
   "sales/workspaceApplication": ["assertSalesWorkspaceMutable", "authorizeSalesWorkspace", "salesWorkspaceFingerprint", "validateSalesWorkspaceId", "validateSalesWorkspaceMutation"],
-  "artwork/workspaceArtwork": ["WorkspaceArtworkPromotionInput", "WorkspaceArtworkPromotionResult"],
+  "artwork/workspaceArtwork": ["WorkspaceArtworkPromotionInput", "WorkspaceArtworkPromotionResult", "WorkspaceArtworkCleanupSummary", "WorkspaceArtworkMaintenance"],
   "routing/ownerTransitions": ["OwnerRouteScope", "ProductionDestination", "SalesWorkflowRouteRequest", "PreparedPrepressResult", "OwnerTransitions"],
   "prepress/reworkPreparation": ["CreateReworkPreparationRequest", "ReworkPreparation"],
   "billing/shippingCharge": ["ApplyShippingChargeRequest"],
@@ -67,6 +68,8 @@ export const adapterPublicApis = {
   "materials/materialRequirementResolver": ["MaterialRequirementMaterial", "Pbv2MaterialRequirementContext", "resolveMaterialRequirements"],
 };
 export const ownerOperations = {
+  "infrastructure/billing/postgresOrderEditSafety.js": ["assessOrderEditBillingInTransaction"],
+  "infrastructure/artwork/postgresOrderEditArtwork.js": ["PostgresOrderEditArtwork", "captureOrderEditArtworkFingerprint", "captureOrderEditArtwork", "validateOrderEditArtworkInTransaction", "applyOrderEditArtworkInTransaction", "authorizeOrderEditArtworkReplay"],
   "infrastructure/sales/workspaceArtworkAccess.js": ["advanceSalesWorkspaceArtworkRevision", "lockSalesWorkspaceForArtwork", "readSalesWorkspaceForArtwork", "readSalesWorkspacePromotionLineMap"],
   "infrastructure/artwork/artworkBinaryStorage.js": ["ArtworkBinaryStorage"],
   "infrastructure/artwork/postgresWorkspaceArtwork.js": ["PostgresWorkspaceArtwork", "promoteWorkspaceArtworkInTransaction", "requestWorkspaceArtworkCleanupInTransaction"],

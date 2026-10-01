@@ -39,6 +39,7 @@ import {
 } from "../shared/commercialValues.js";
 import {
   assertSalesLineSnapshot,
+  normalizeSalesJobLabel,
   type AttributionSnapshot,
   type ArchiveOrderCommand,
   type CancelOrderCommand,
@@ -91,6 +92,14 @@ const createOrderOperationTrace = (businessRequestId: string | undefined): Order
   });
 };
 
+const validateOperationalNote = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || value.includes("\0")) throw new V2ApplicationError("VALIDATION_ERROR", "Order line note is invalid.");
+  const note = value.trim();
+  if (note.length > 4000) throw new V2ApplicationError("VALIDATION_ERROR", "Order line note is too long.");
+  return note || undefined;
+};
+
 /**
  * This is the server-side Order-entry input. It deliberately contains neither
  * a PBV2 tree nor caller-authored pricing evidence: Products resolves the
@@ -101,6 +110,7 @@ export type OrderLineInput = Readonly<{
   clientLineKey?: string;
   productId: string;
   description?: string;
+  operationalNote?: string | null;
   quantity: number;
   selections?: Readonly<Record<string, unknown>>;
   dimensions?: ResolveActivePricingInput["dimensions"];
@@ -116,6 +126,7 @@ export type OrderSellingInstruction = Readonly<
 export type CreateOrderInput = Readonly<{
   businessRequestId: string;
   customerContact: CustomerContactReference;
+  jobLabel?: string | null;
   purchaseOrderNumber?: string;
   requestedDueDate?: string;
   requestedFulfillment?: RequestedFulfillment;
@@ -125,13 +136,14 @@ export type CreateOrderInput = Readonly<{
   lines: readonly OrderLineInput[];
 }>;
 
-/** Header-only in M1.9: line/routing edits require a later named coordination operation. */
+/** One canonical commercial change set, including references to newly generated lines. */
 export type UpdateOrderInput = Readonly<{
   businessRequestId: string;
   orderId: OrderId;
   expectedRevision: string;
   patch: Readonly<{
     customerContact?: CustomerContactReference;
+    jobLabel?: string | null;
     purchaseOrderNumber?: string | null;
     requestedDueDate?: string | null;
     terms?: CommercialTerms;
@@ -144,11 +156,13 @@ export type UpdateOrderInput = Readonly<{
     | Readonly<{ kind: "update"; lineId: SalesLineId; line: OrderLineInput }>
     /** A Sales-owned presentation edit. It must not re-resolve or reprice a frozen line. */
     | Readonly<{ kind: "update_description"; lineId: SalesLineId; description: string }>
-    | Readonly<{ kind: "update_note"; lineId: SalesLineId; note?: string }>
+    | Readonly<{ kind: "update_note"; lineId: SalesLineId; note?: string | null }>
     | Readonly<{ kind: "remove"; lineId: SalesLineId }>
-    | Readonly<{ kind: "duplicate"; sourceLineId: SalesLineId }>
+    | Readonly<{ kind: "duplicate"; sourceLineId: SalesLineId; clientLineKey?: string }>
     | Readonly<{ kind: "reorder"; lineIds: readonly SalesLineId[] }>
   )[];
+  /** Resolved after add/duplicate IDs exist; must name every final line exactly once. */
+  finalLineOrder?: readonly (Readonly<{ lineId: SalesLineId }> | Readonly<{ clientLineKey: string }>)[];
 }>;
 
 export type OrderReadModel = Readonly<{
@@ -184,6 +198,7 @@ export type OrderOperationResult = Readonly<{
  */
 export type FrozenOrderCommercialSource = Readonly<{
   customerContact: CustomerContactReference;
+  jobLabel?: string;
   purchaseOrderNumber?: string;
   requestedDueDate?: string;
   terms: CommercialTerms;
@@ -268,6 +283,7 @@ export interface OrderTransaction {
     organizationId: OrganizationId;
     number: SalesDocumentNumber;
     customerContact: CustomerContactReference;
+    jobLabel?: string;
     purchaseOrderNumber?: string;
     requestedDueDate?: string;
     terms: CommercialTerms;
@@ -287,6 +303,7 @@ export interface OrderTransaction {
     orderId: OrderId;
     expectedRevision: number;
     customerContact: CustomerContactReference;
+    jobLabel?: string;
     purchaseOrderNumber?: string;
     requestedDueDate?: string;
     terms: CommercialTerms;
@@ -502,6 +519,7 @@ export class OrderApplicationService {
       trace.event("commercial_terms_resolution", "started");
       const created = await this.createFromCommercialSnapshot(tx, context, request.id, {
         customerContact: input.customerContact,
+        jobLabel: normalizeSalesJobLabel(input.jobLabel),
         purchaseOrderNumber: input.purchaseOrderNumber,
         requestedDueDate: input.requestedDueDate,
         terms: await resolvedTerms(tx.customers, context.organizationId, input.customerContact, input.terms ?? {}),
@@ -535,6 +553,7 @@ export class OrderApplicationService {
       const lines = source.order.lines.map((line) => Object.freeze({ ...line, lineId: brandedId<"SalesLineId">(randomUUID()) }));
       const created = await this.createFromCommercialSnapshot(tx, context, request.id, {
         customerContact: source.order.customerContact,
+        jobLabel: source.order.jobLabel,
         // New Orders deliberately require an intentional PO and due-date.
         terms: source.order.terms,
         requestedFulfillment: source.order.requestedFulfillment,
@@ -601,7 +620,7 @@ export class OrderApplicationService {
       trace?.event(stage, "ok");
       stage = "order_persistence";
       await tx.create({ orderId, organizationId: brandedId<"OrganizationId">(context.organizationId), number,
-        customerContact: source.customerContact, purchaseOrderNumber: source.purchaseOrderNumber,
+        customerContact: source.customerContact, jobLabel: normalizeSalesJobLabel(source.jobLabel), purchaseOrderNumber: source.purchaseOrderNumber,
         requestedDueDate: source.requestedDueDate, terms: source.terms, lines, requestedFulfillment: source.requestedFulfillment, sellingAdjustment: source.sellingAdjustment, commercialCharge: source.commercialCharge, taxComposition: source.taxComposition }, trace);
       // The source checkpoint has immutable Product Version/configuration facts.
       // Freeze expected material requirements in this same conversion transaction
@@ -666,7 +685,17 @@ export class OrderApplicationService {
   async update(
     context: OperationContext,
     input: UpdateOrderInput,
+    options?: Readonly<{ touchRevision?: boolean }>,
   ): Promise<ApplicationResult<OrderOperationResult>> {
+    // Only a trusted same-transaction coordinator may request an Artwork-only
+    // revision. Transport input is deliberately not an authority for this flag.
+    const touchRevision = options?.touchRevision === true;
+    if (touchRevision) {
+      try {
+        requireOperationPrincipalScope(context);
+        requireAllowed(this.authority, context, "order.edit", context.principal.kind === "portal" ? context.principal.customerId : undefined);
+      } catch (error) { return failure(this.error(error)); }
+    }
     const result = await this.mutate(context, "sales.order.edit.v1", input, "order.edit", async (tx, request) => {
       const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), input.orderId, true);
       if (!current) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
@@ -681,6 +710,7 @@ export class OrderApplicationService {
       const customerContact = patch.customerContact ?? current.order.customerContact;
       await validateReference(context.organizationId, tx.customers, customerContact);
       requireAllowed(this.authority, context, "order.edit", customerContact.customerId);
+      const jobLabel = patch.jobLabel === undefined ? current.order.jobLabel : normalizeSalesJobLabel(patch.jobLabel);
       const purchaseOrderNumber = patch.purchaseOrderNumber === null ? undefined : (patch.purchaseOrderNumber ?? current.order.purchaseOrderNumber);
       const requestedDueDate = patch.requestedDueDate === null ? undefined : (patch.requestedDueDate ?? current.order.requestedDueDate);
       const terms = patch.terms ?? current.order.terms;
@@ -689,9 +719,10 @@ export class OrderApplicationService {
         throw new V2ApplicationError("CONFLICT", "Requested fulfillment is frozen after a handoff. Use the Fulfillment recovery workflow.");
       const sellingAdjustment = patch.sellingAdjustment === null ? undefined : validateAdjustment(patch.sellingAdjustment ?? current.order.sellingAdjustment);
       const commercialCharge = patch.commercialCharge === null ? undefined : validateCommercialCharge(patch.commercialCharge ?? current.order.commercialCharge);
-      const lines = await this.applyLineChanges(tx, context, current, input.lineChanges ?? []);
+      const { lines, lineCorrelations } = await this.applyLineChanges(tx, context, current, input.lineChanges ?? [], input.finalLineOrder);
       const unchanged = customerContact.customerId === current.order.customerContact.customerId
         && customerContact.contactId === current.order.customerContact.contactId
+        && jobLabel === current.order.jobLabel
         && purchaseOrderNumber === current.order.purchaseOrderNumber
         && requestedDueDate === current.order.requestedDueDate
         && terms.termsCode === current.order.terms.termsCode
@@ -702,7 +733,7 @@ export class OrderApplicationService {
         && canonicalJson(sellingAdjustment ?? {}) === canonicalJson(current.order.sellingAdjustment ?? {})
         && canonicalJson(commercialCharge ?? {}) === canonicalJson(current.order.commercialCharge ?? {})
         && canonicalJson(lines) === canonicalJson(current.order.lines);
-      if (unchanged) {
+      if (unchanged && !touchRevision) {
         const invoiceId = current.order.billingInvoiceReference;
         if (!invoiceId) throw new V2ApplicationError("CONFLICT", "The Order Draft Invoice is missing.");
         return { order: current, draftInvoiceId: invoiceId, routeInstances: [] };
@@ -715,6 +746,7 @@ export class OrderApplicationService {
         orderId: input.orderId,
         expectedRevision: Number(current.revision),
         customerContact,
+        jobLabel,
         purchaseOrderNumber,
         requestedDueDate,
         terms,
@@ -754,11 +786,12 @@ export class OrderApplicationService {
       if (!order) throw new Error("Updated Order could not be read.");
       const lifecycleChanges: readonly MeaningfulAuditChange[] = wasCompleted ? [{ group: "lifecycle", kind: "order_auto_reopened", summary: "Order reopened because its current commercial facts are being revised." }] : [];
       const changes = [...lifecycleChanges, ...this.headerChanges(current.order, order.order), ...this.lineChanges(current.order.lines, order.order.lines)];
+      if (touchRevision) changes.push({ group: "lifecycle", kind: "order_edit_coordinated", summary: "Order revised as part of a coordinated Artwork edit." });
       await this.history(tx, context, request.id, "sales.order.edit.v1", {
         eventType: "order_updated", resourceId: input.orderId, changes,
       });
-      return { order, draftInvoiceId: draft.invoiceId, routeInstances };
-    });
+      return { order, draftInvoiceId: draft.invoiceId, routeInstances, ...(lineCorrelations.length ? { lineCorrelations } : {}) };
+    }, undefined, touchRevision ? [input, { touchRevision: true }] : undefined);
     if (result.ok) await this.automaticLifecycle?.reconcileOrder(brandedId<"OrganizationId">(context.organizationId), input.orderId);
     return result;
   }
@@ -896,6 +929,9 @@ export class OrderApplicationService {
     for (const [index, input] of inputs.entries()) {
       if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0)
         throw new V2ApplicationError("VALIDATION_ERROR", "Line quantity must be a positive integer.");
+      const prior = existing[index];
+      const operationalNote = prior && input.operationalNote === undefined
+        ? prior.operationalNote : validateOperationalNote(input.operationalNote);
       trace?.event("price_override_authorization", "started");
       if (input.selling && input.selling.kind !== "calculated")
         requireAllowed(this.authority, context, "order.overridePrice");
@@ -936,7 +972,6 @@ export class OrderApplicationService {
       const pricing = tx.customerPricing && customerId
         ? await tx.customerPricing.calculateForCustomer(customerId, pricingRequest)
         : await tx.pricing.calculate(pricingRequest);
-      const prior = existing[index];
       const inherited = !input.selling && prior && prior.sellingPriceDecision.kind !== "calculated"
         ? this.sellingInstruction(prior.sellingPriceDecision)
         : input.selling;
@@ -951,6 +986,7 @@ export class OrderApplicationService {
         productId: resolved.value.sellableProduct.productId,
         ...(resolved.value.sellableProduct.productTypeId ? { productTypeId: resolved.value.sellableProduct.productTypeId } : {}),
         description: input.description?.trim() || resolved.value.sellableProduct.displayName,
+        ...(operationalNote !== undefined ? { operationalNote } : {}),
         quantity: input.quantity,
         resolvedConfiguration: resolved.value.resolvedConfiguration,
         pricingResult: pricing,
@@ -970,8 +1006,19 @@ export class OrderApplicationService {
     context: OperationContext,
     current: OrderReadModel,
     changes: NonNullable<UpdateOrderInput["lineChanges"]>,
-  ): Promise<SalesLineSnapshot[]> {
+    finalLineOrder?: UpdateOrderInput["finalLineOrder"],
+  ): Promise<Readonly<{ lines: SalesLineSnapshot[]; lineCorrelations: NonNullable<OrderOperationResult["lineCorrelations"]> }>> {
     const lines = [...current.order.lines];
+    const lineCorrelations: { clientLineKey: string; orderLineId: SalesLineId }[] = [];
+    const clientLineKeys = new Set<string>();
+    for (const change of changes) {
+      const key = change.kind === "add" ? change.line.clientLineKey : change.kind === "duplicate" ? change.clientLineKey : undefined;
+      if (key === undefined) continue;
+      if (typeof key !== "string" || !/^[A-Za-z0-9_-]{1,120}$/u.test(key))
+        throw new V2ApplicationError("VALIDATION_ERROR", "Order line correlation is invalid.");
+      if (clientLineKeys.has(key)) throw new V2ApplicationError("VALIDATION_ERROR", "Order line correlations must be unique.");
+      clientLineKeys.add(key);
+    }
     for (const change of changes) {
       if (change.kind === "reorder") {
         if (change.lineIds.length !== lines.length || new Set(change.lineIds).size !== lines.length || change.lineIds.some((id) => !lines.some((line) => line.lineId === id)))
@@ -985,10 +1032,13 @@ export class OrderApplicationService {
         const source = lines[index]!;
         const duplicate = (await this.buildLines(tx, context, current.order.customerContact, [{ productId: source.productId, description: source.description, quantity: source.quantity, selections: source.resolvedConfiguration.selections, ...(source.resolvedConfiguration.dimensions ? { dimensions: source.resolvedConfiguration.dimensions } : {}) }]))[0]!;
         lines.splice(index + 1, 0, Object.freeze({ ...duplicate, ...(source.operationalNote ? { operationalNote: source.operationalNote } : {}) }));
+        if (change.clientLineKey !== undefined) lineCorrelations.push({ clientLineKey: change.clientLineKey, orderLineId: duplicate.lineId });
         continue;
       }
       if (change.kind === "add") {
-        lines.push((await this.buildLines(tx, context, current.order.customerContact, [change.line]))[0]!);
+        const added = (await this.buildLines(tx, context, current.order.customerContact, [change.line]))[0]!;
+        lines.push(added);
+        if (change.line.clientLineKey !== undefined) lineCorrelations.push({ clientLineKey: change.line.clientLineKey, orderLineId: added.lineId });
         continue;
       }
       const index = lines.findIndex((line) => line.lineId === change.lineId);
@@ -1012,8 +1062,7 @@ export class OrderApplicationService {
         continue;
       }
       if (change.kind === "update_note") {
-        const note = change.note?.trim();
-        if (note && note.length > 4000) throw new V2ApplicationError("VALIDATION_ERROR", "Order line note is too long.");
+        const note = validateOperationalNote(change.note);
         lines[index] = { ...prior, ...(note ? { operationalNote: note } : {}) };
         if (!note) delete (lines[index] as { operationalNote?: string }).operationalNote;
         continue;
@@ -1044,7 +1093,26 @@ export class OrderApplicationService {
       lines[index] = replacement;
     }
     if (!lines.length) throw new V2ApplicationError("VALIDATION_ERROR", "An Order requires at least one commercial line.");
-    return lines;
+    if (finalLineOrder !== undefined) {
+      if (!Array.isArray(finalLineOrder) || finalLineOrder.length !== lines.length)
+        throw new V2ApplicationError("VALIDATION_ERROR", "Order line order must include every line exactly once.");
+      const correlations = new Map(lineCorrelations.map((entry) => [entry.clientLineKey, entry.orderLineId]));
+      const orderedIds = finalLineOrder.map((reference) => {
+        if (!reference || typeof reference !== "object" || Object.keys(reference).length !== 1)
+          throw new V2ApplicationError("VALIDATION_ERROR", "Order final line reference is invalid.");
+        if ("lineId" in reference && typeof reference.lineId === "string") return reference.lineId;
+        if ("clientLineKey" in reference && typeof reference.clientLineKey === "string") {
+          const id = correlations.get(reference.clientLineKey);
+          if (id) return id;
+        }
+        throw new V2ApplicationError("VALIDATION_ERROR", "Order final line reference is unavailable.");
+      });
+      const byId = new Map(lines.map((line) => [line.lineId, line]));
+      if (new Set(orderedIds).size !== lines.length || orderedIds.some((id) => !byId.has(id as SalesLineId)))
+        throw new V2ApplicationError("VALIDATION_ERROR", "Order line order must include every line exactly once.");
+      lines.splice(0, lines.length, ...orderedIds.map((id) => byId.get(id as SalesLineId)!));
+    }
+    return { lines, lineCorrelations };
   }
 
   private sellingInstruction(decision: SellingPriceDecision): OrderSellingInstruction {
@@ -1159,6 +1227,8 @@ export class OrderApplicationService {
       changes.push({ group: "customer", kind: "customer_changed", summary: "Customer changed." });
     if (before.customerContact.contactId !== after.customerContact.contactId)
       changes.push({ group: "customer", kind: "contact_changed", summary: "Contact changed." });
+    if (before.jobLabel !== after.jobLabel)
+      changes.push({ group: "commercial_terms", kind: "terms_changed", summary: "Job Label updated." });
     if (before.purchaseOrderNumber !== after.purchaseOrderNumber)
       changes.push({ group: "commercial_terms", kind: "po_changed", summary: "PO number updated." });
     if (before.requestedDueDate !== after.requestedDueDate)
@@ -1183,6 +1253,7 @@ export class OrderApplicationService {
     capability: "order.create" | "order.edit" | "order.cancel",
     work: (tx: OrderTransaction, request: OrderOperationRequest) => Promise<OrderOperationResult>,
     trace?: OrderOperationTrace,
+    fingerprintPayload?: unknown,
   ): Promise<ApplicationResult<OrderOperationResult>> {
     try {
       trace?.event("operation_scope_validation", "started");
@@ -1197,7 +1268,7 @@ export class OrderApplicationService {
           organizationId: context.organizationId,
           operation,
           businessRequestId: context.businessRequest!.id,
-          payloadFingerprint: fingerprint(command),
+          payloadFingerprint: fingerprint(fingerprintPayload ?? command),
           principalKind: context.principal.kind,
           principalSubject: principalSubject(context.principal),
           ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}),

@@ -2038,6 +2038,27 @@
       "when": 1790816400001,
       "tag": "0295_v2_sales_workspace_artwork",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1790827200000,
+      "tag": "0296_v2_order_edit_workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1790827200001,
+      "tag": "0297_v2_order_edit_artwork",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1790827200002,
+      "tag": "0298_v2_workspace_maintenance_expiry_index",
+      "breakpoints": true
     }
   ]
 }

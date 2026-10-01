@@ -33,6 +33,7 @@ export type PersistedSalesDocumentCurrentState = Readonly<{
   number: SalesDocumentNumber;
   revision: SalesDocumentRevision;
   customerContact: CustomerContactReference;
+  jobLabel?: string;
   purchaseOrderNumber?: string;
   requestedDueDate?: string;
   currency: CurrencyCode;

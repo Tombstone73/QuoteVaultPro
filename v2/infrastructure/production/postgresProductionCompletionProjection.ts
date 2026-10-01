@@ -2,7 +2,8 @@ import type { PoolClient } from "pg";
 import { productionCompletion, type ProductionCompletionReadPort } from "../../src/modules/production/productionCompletion.js";
 import type { OrderLineId, OrganizationId } from "../../src/modules/shared/commercialValues.js";
 
-/** PostgreSQL implementation stays in Production: completed output from completed attempts is authoritative. */
+/** Original-route completion stays in Production. Replacement obligations never
+ * contribute output; original rework remains part of its requirement's supply. */
 export class PostgresProductionCompletionProjection implements ProductionCompletionReadPort {
   constructor(private readonly client: Pick<PoolClient, "query">) {}
   async readCompletion(organizationId: OrganizationId, orderLineId: OrderLineId) {
@@ -14,7 +15,7 @@ export class PostgresProductionCompletionProjection implements ProductionComplet
         SELECT w.requirement_key,
           COALESCE(SUM(v2_usable_production_good_quantity(w.organization_id,w.id)),0) >= MAX(w.ordered_quantity) satisfied
         FROM v2_production_works w
-        WHERE w.organization_id=$1 AND w.order_line_id=$2
+        WHERE w.organization_id=$1 AND w.order_line_id=$2 AND w.replacement_obligation_id IS NULL
         GROUP BY w.requirement_key
       )
       SELECT (SELECT count(*) FROM required)::text required_count,

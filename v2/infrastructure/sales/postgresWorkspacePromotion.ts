@@ -10,11 +10,11 @@ import type { SalesLineSnapshot } from "../../src/modules/sales/contracts.js";
 import { OrderApplicationService, type OrderTransaction } from "../../src/modules/sales/orderApplication.js";
 import { QuoteApplicationService, type QuoteTransaction } from "../../src/modules/sales/quoteApplication.js";
 import {
-  authorizeSalesWorkspace, bumpSalesWorkspaceRevision, salesWorkspaceFingerprint,
+  authorizeSalesWorkspace, bumpSalesWorkspaceRevision, getAuthorizedSalesWorkspace, salesWorkspaceFingerprint,
   validateSalesWorkspaceHeader, validateSalesWorkspaceId, validateSalesWorkspaceLineInput, validateSalesWorkspaceMutation,
 } from "../../src/modules/sales/workspaceApplication.js";
 import type {
-  SalesWorkspaceLineMapEntry, SalesWorkspaceTransaction, WorkspaceLine,
+  SalesWorkspace, SalesWorkspaceLineMapEntry, SalesWorkspaceTransaction, WorkspaceLine,
 } from "../../src/modules/sales/workspaceContracts.js";
 import { workspaceLinePreviewFingerprint } from "../../src/modules/sales/workspaceLines.js";
 import {
@@ -28,6 +28,9 @@ import { PostgresSalesWorkspaceTransaction } from "./postgresSalesWorkspace.js";
 /** The Artwork owner joins this client; it must neither control the transaction
  * nor perform storage/provider I/O. There is deliberately no default no-op. */
 export type WorkspaceArtworkPromotionRunner = (client: PoolClient, input: WorkspaceArtworkPromotionInput) => Promise<WorkspaceArtworkPromotionResult>;
+/** Joins the already locked outer transaction. It must throw failed owner results. */
+export type WorkspaceOrderEditHandler = (client: PoolClient, context: OperationContext, input: PromoteSalesWorkspaceInput,
+  workspace: SalesWorkspace, transaction: SalesWorkspaceTransaction) => Promise<WorkspacePromotionResult>;
 
 export type WorkspacePromotionOptions = Readonly<{
   now?: () => Date;
@@ -36,6 +39,7 @@ export type WorkspacePromotionOptions = Readonly<{
    * that acquire another connection or open a nested transaction. */
   quoteTransaction: (client: PoolClient) => QuoteTransaction;
   orderTransaction: (client: PoolClient, customerPricing: CustomerScopedPricingPort) => OrderTransaction;
+  orderEditHandler?: WorkspaceOrderEditHandler;
 }>;
 
 const jsonResult = (value: object): Readonly<Record<string, JsonValue>> => JSON.parse(JSON.stringify(value,
@@ -73,7 +77,7 @@ export class PostgresWorkspacePromotion implements WorkspacePromotion {
 
   async promote(context: OperationContext, input: PromoteSalesWorkspaceInput): Promise<ApplicationResult<WorkspacePromotionResult>> {
     try {
-      const principal = authorizeSalesWorkspace(context);
+      authorizeSalesWorkspace(context);
       if (!input || Object.keys(input).some((key) => !["workspaceId", "target", "requestId", "expectedRevision"].includes(key))) {
         throw new V2ApplicationError("VALIDATION_ERROR", "Invalid workspace promotion input.");
       }
@@ -81,14 +85,19 @@ export class PostgresWorkspacePromotion implements WorkspacePromotion {
       validateSalesWorkspaceMutation({ requestId: input.requestId, expectedRevision: input.expectedRevision });
       if (input.target !== "quote" && input.target !== "order") throw new V2ApplicationError("VALIDATION_ERROR", "Invalid promotion target.");
       if (context.businessRequest?.id !== input.requestId) throw new V2ApplicationError("VALIDATION_ERROR", "The promotion business request identity does not match the operation context.");
-      requireCapability(context, input.target === "quote" ? "quote.create" : "order.create");
       const client = await this.pool.connect();
       try {
         await client.query("BEGIN");
         const store = this.options.workspaceTransaction?.(client) ?? new PostgresSalesWorkspaceTransaction(client);
-        const workspace = await store.get(context.organizationId, principal.userId, input.workspaceId, true);
-        if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
-        authorizeSalesWorkspace(context, workspace);
+        const workspace = await getAuthorizedSalesWorkspace(store, context, input.workspaceId, true);
+        if (workspace.kind === "order_edit") {
+          if (input.target !== "order") throw new WorkspacePromotionConflictError("workspace_state", "An Order edit can only save its source Order.");
+          if (!this.options.orderEditHandler) throw new V2ApplicationError("INTERNAL_ERROR", "Transactional Order editing is not configured.");
+          const result = await this.options.orderEditHandler(client, context, input, workspace, store);
+          await client.query("COMMIT");
+          return success(result);
+        }
+        requireCapability(context, input.target === "quote" ? "quote.create" : "order.create");
         if (workspace.lines.some((line) => line.input.selling && line.input.selling.kind !== "calculated")) {
           requireCapability(context, input.target === "quote" ? "quote.overridePrice" : "order.overridePrice");
         }
@@ -99,6 +108,9 @@ export class PostgresWorkspacePromotion implements WorkspacePromotion {
         }
         if (workspace.kind !== "new_sales" || workspace.sourceDocumentId || workspace.sourceDocumentKind || workspace.baseRevision) {
           throw new WorkspacePromotionConflictError("workspace_state", "Only a new Sales workspace can be promoted.");
+        }
+        if (input.target === "quote" && workspace.lines.some((line) => line.operationalNote !== undefined && line.operationalNote.length > 0)) {
+          throw new V2ApplicationError("CONFLICT", "Quote promotion does not support line operational notes. Clear the note or save as an Order.", { reason: "operational_note_unsupported_target", target: "quote" });
         }
         const fingerprint = salesWorkspaceFingerprint({
           organizationId: workspace.organizationId, creatorUserId: workspace.creatorUserId, workspaceId: workspace.id,
@@ -156,6 +168,7 @@ export class PostgresWorkspacePromotion implements WorkspacePromotion {
         })).digest("hex")}`;
         const common = {
           businessRequestId: ownerRequestId, customerContact: header.customerContact,
+          jobLabel: header.jobLabel ?? null,
           ...(header.purchaseOrderNumber === undefined ? {} : { purchaseOrderNumber: header.purchaseOrderNumber }),
           ...(header.requestedDueDate === undefined ? {} : { requestedDueDate: header.requestedDueDate }),
           ...(header.requestedFulfillment === undefined ? {} : { requestedFulfillment: header.requestedFulfillment }),
@@ -194,7 +207,8 @@ export class PostgresWorkspacePromotion implements WorkspacePromotion {
           if (tx.customerPricing !== customerPricing) {
             throw new V2ApplicationError("INTERNAL_ERROR", "Workspace Order promotion requires the existing customer pricing adapter on the same client.");
           }
-          const command = { ...common, lines: workspace.lines.map((line) => ({ ...line.input, clientLineKey: line.id })) };
+          const command = { ...common, lines: workspace.lines.map((line) => ({ ...line.input, clientLineKey: line.id,
+            ...(line.operationalNote === undefined ? {} : { operationalNote: line.operationalNote }) })) };
           const created = await new OrderApplicationService({ transaction: (action) => action(tx) }).create(ownerContext(command), command);
           if (!created.ok) throw created.error;
           const lines = created.value.order.order.lines;

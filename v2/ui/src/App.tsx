@@ -14,7 +14,12 @@ import {
   type QuoteResult,
   type SalesLine,
   type Selection,
+  salesWorkspaceTransport,
 } from "./api";
+import { createSalesWorkspaceClient } from "./salesWorkspaceApi";
+import { canNavigateFromSalesWorkspace } from "./workspaceNavigation";
+
+const transactionalWorkspaceClient = createSalesWorkspaceClient(salesWorkspaceTransport);
 import {
   applyAuthoritativeQuoteResult,
   clearV2SessionQueryState,
@@ -367,6 +372,7 @@ export const App = ({
   }, [queryClient]);
 
   const navigate = (nextPage: V2VisualPage) => {
+    if (!canNavigateFromSalesWorkspace()) return;
     if (nextPage === "home") window.history.pushState({}, "", "/");
     if (nextPage === "products") {
       pushProductLocation();
@@ -1516,6 +1522,9 @@ const OrdersPage = ({
         organizationId={organizationId}
         sessionScope={sessionScope}
         orderId={orderId}
+        userId={bootstrap?.userId}
+        workspaceClient={transactionalWorkspaceClient}
+        workspaceCapabilities={bootstrap?.capabilities}
         canEdit={bootstrap?.capabilities.orderEdit === true}
         canCreate={bootstrap?.capabilities.orderCreate === true}
         canCancel={bootstrap?.capabilities.orderCancel === true}
@@ -1593,6 +1602,7 @@ const QuoteDocumentMetadata = ({
   customers,
   contacts,
   purchaseOrderNumber,
+  jobLabel = "",
   requestedDueDate,
   expiresAt,
   termsCode,
@@ -1601,6 +1611,7 @@ const QuoteDocumentMetadata = ({
   onCustomerChange,
   onContactChange,
   onPurchaseOrderChange,
+  onJobLabelChange,
   onDueDateChange,
   onExpiresAtChange,
   onTermsCodeChange,
@@ -1610,6 +1621,7 @@ const QuoteDocumentMetadata = ({
   customers: readonly Selection[];
   contacts: readonly Selection[];
   purchaseOrderNumber: string;
+  jobLabel?: string;
   requestedDueDate: string;
   expiresAt: string;
   termsCode: string;
@@ -1618,6 +1630,7 @@ const QuoteDocumentMetadata = ({
   onCustomerChange?: (value: string) => void;
   onContactChange?: (value: string) => void;
   onPurchaseOrderChange?: (value: string) => void;
+  onJobLabelChange?: (value: string) => void;
   onDueDateChange?: (value: string) => void;
   onExpiresAtChange?: (value: string) => void;
   onTermsCodeChange?: (value: string) => void;
@@ -1692,6 +1705,10 @@ const QuoteDocumentMetadata = ({
         {readOnly ? <span>{expiresAt || "No expiry"}</span> : <input aria-label="Quote expiry" type="date" value={expiresAt} disabled={!canEdit} onChange={(event) => onExpiresAtChange?.(event.target.value)} />}
       </label>
       <label className="v2-sales-inline-fact">
+        <small>Job Label</small>
+        {readOnly ? <span>{jobLabel || "Unavailable"}</span> : <input aria-label="Job Label" maxLength={300} value={jobLabel} disabled={!canEdit} onChange={event => onJobLabelChange?.(event.target.value)} />}
+      </label>
+      <label className="v2-sales-inline-fact">
         <small>Requested Due</small>
         {readOnly ? (
           <span>{requestedDueDate || "Unavailable"}</span>
@@ -1752,6 +1769,7 @@ const QuoteWorkspace = ({
   const [customerId, setCustomerId] = useState("");
   const [contactId, setContactId] = useState("");
   const [purchaseOrderNumber, setPurchaseOrderNumber] = useState("");
+  const [jobLabel, setJobLabel] = useState(() => quote?.quote.jobLabel ?? "");
   const [requestedDueDate, setRequestedDueDate] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [termsCode, setTermsCode] = useState("");
@@ -1824,6 +1842,7 @@ const QuoteWorkspace = ({
 
   useEffect(() => {
     setPurchaseOrderNumber(quote?.quote.purchaseOrderNumber ?? "");
+    setJobLabel(quote?.quote.jobLabel ?? "");
     setRequestedDueDate(dateInputValue(quote?.quote.requestedDueDate));
     setExpiresAt(dateInputValue(quote?.quote.expiresAt));
     setTermsCode(quote?.quote.terms.termsCode ?? "");
@@ -1863,6 +1882,7 @@ const QuoteWorkspace = ({
         customerId,
         contactId,
         purchaseOrderNumber,
+        jobLabel,
         requestedDueDate,
         commercialNotes,
         line,
@@ -1877,6 +1897,7 @@ const QuoteWorkspace = ({
         ...(purchaseOrderNumber.trim()
           ? { purchaseOrderNumber: purchaseOrderNumber.trim() }
           : {}),
+        ...(jobLabel.trim() ? { jobLabel: jobLabel.trim() } : {}),
         ...(requestedDueDate ? { requestedDueDate } : {}),
         ...(commercialNotes.trim() || termsCode.trim()
           ? { terms: { ...(termsCode.trim() ? { termsCode: termsCode.trim() } : {}), commercialNotes: commercialNotes.trim() } }
@@ -1904,6 +1925,7 @@ const QuoteWorkspace = ({
         quoteId: quote!.quote.quoteId,
         revision: quote!.revision,
         purchaseOrderNumber,
+        jobLabel,
         requestedDueDate,
         expiresAt,
         termsCode,
@@ -1925,8 +1947,9 @@ const QuoteWorkspace = ({
               ...(headerContactId ? { contactId: headerContactId } : {}),
             },
             purchaseOrderNumber: purchaseOrderNumber.trim() || null,
+            ...(jobLabel.trim() !== (quote!.quote.jobLabel ?? "") ? { jobLabel: jobLabel.trim() || null } : {}),
             requestedDueDate: requestedDueDate || null,
-            terms: { ...(termsCode.trim() ? { termsCode: termsCode.trim() } : {}), commercialNotes },
+            terms: { ...quote!.quote.terms, termsCode: termsCode.trim() || undefined, commercialNotes },
             expiresAt: expiresAt || null,
             requestedFulfillment: fulfillmentMethod === "pickup" ? { method: "pickup", ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) } : { method: fulfillmentMethod, destination: { addressLine1: destinationAddress, city: destinationCity, region: destinationRegion, country: destinationCountry, ...(destinationPostalCode ? { postalCode: destinationPostalCode } : {}) }, ...(fulfillmentInstructions.trim() ? { instructions: fulfillmentInstructions.trim() } : {}) },
             sellingAdjustment: adjustmentCents.trim() ? { cents: Number(adjustmentCents), reason: adjustmentReason } : null,
@@ -2058,6 +2081,8 @@ const QuoteWorkspace = ({
             customers={customers.data ?? []}
             contacts={contacts.data ?? []}
             purchaseOrderNumber={purchaseOrderNumber}
+            jobLabel={jobLabel}
+            onJobLabelChange={setJobLabel}
             requestedDueDate={requestedDueDate}
             expiresAt={expiresAt}
             termsCode={termsCode}
@@ -2481,6 +2506,8 @@ const QuoteWorkspace = ({
               customers={customers.data ?? []}
               contacts={contacts.data ?? []}
               purchaseOrderNumber={purchaseOrderNumber}
+              jobLabel={jobLabel}
+              onJobLabelChange={setJobLabel}
               requestedDueDate={requestedDueDate}
               expiresAt={expiresAt}
               termsCode={termsCode}

@@ -322,12 +322,14 @@ describe("Sales workspace HTTP transport", () => {
     expect(f.formReads.products).toHaveBeenCalledWith(org, "Signs");
     expect(f.formReads.configuration).toHaveBeenLastCalledWith(org, productId, { finish: "matte" });
     expect(f.formReads.contacts).toHaveBeenCalledWith(org, customerId);
-    expect(get).toHaveBeenCalledWith(org, principal.userId, id);
+    expect(get).toHaveBeenCalledWith(org, principal.userId, id, false);
+    expect(get).toHaveBeenCalledTimes(4);
     get.mockResolvedValue({ ...workspace, creatorUserId: "someone-else" });
     await request(f.app).get(`${path}/products`).expect(404);
     await request(f.app).post(`${path}/products/${productId}/preview`).send({ quantity: 2 }).expect(404);
     expect(f.formReads.products).toHaveBeenCalledTimes(1);
     expect(f.preview).not.toHaveBeenCalled();
+    expect(get.mock.calls.every(([, , , lock]) => lock === false)).toBe(true);
     expect(principal.authority.capabilities).toEqual(["order.create"]);
   });
 

@@ -38,6 +38,7 @@ import {
 } from "../shared/commercialValues.js";
 import {
   assertSalesLineSnapshot,
+  normalizeSalesJobLabel,
   type AttributionSnapshot,
   type CommercialTerms,
   type DuplicateQuoteCommand,
@@ -81,6 +82,7 @@ export type QuoteLinePricingPreview = Readonly<{
 export type CreateQuoteInput = Readonly<{
   businessRequestId: string;
   customerContact: CustomerContactReference;
+  jobLabel?: string | null;
   purchaseOrderNumber?: string;
   requestedDueDate?: string;
   terms?: CommercialTerms;
@@ -96,6 +98,7 @@ export type UpdateQuoteInput = Readonly<{
   expectedRevision: string;
   patch?: Readonly<{
     customerContact?: CustomerContactReference;
+    jobLabel?: string | null;
     purchaseOrderNumber?: string | null;
     requestedDueDate?: string | null;
     expiresAt?: string | null;
@@ -211,6 +214,7 @@ export interface QuoteTransaction {
       organizationId: OrganizationId;
       number: SalesDocumentNumber;
       customerContact: CustomerContactReference;
+      jobLabel?: string;
       purchaseOrderNumber?: string;
       requestedDueDate?: string;
       terms: CommercialTerms;
@@ -232,6 +236,7 @@ export interface QuoteTransaction {
       quoteId: QuoteId;
       expectedRevision: number;
       customerContact: CustomerContactReference;
+      jobLabel?: string;
       purchaseOrderNumber?: string;
       requestedDueDate?: string;
       expiresAt?: string;
@@ -340,6 +345,7 @@ export const createQuoteLifecycleCheckpoint = (
       currency: quote.currency,
       terms: quote.terms,
       lines: quote.lines,
+      ...(quote.jobLabel !== undefined ? { jobLabel: quote.jobLabel } : {}),
       ...(quote.purchaseOrderNumber
         ? { purchaseOrderNumber: quote.purchaseOrderNumber }
         : {}),
@@ -573,6 +579,7 @@ export class QuoteApplicationService {
           organizationId: brandedId<"OrganizationId">(context.organizationId),
           number,
           customerContact: input.customerContact,
+          jobLabel: normalizeSalesJobLabel(input.jobLabel),
           purchaseOrderNumber: input.purchaseOrderNumber,
           requestedDueDate: input.requestedDueDate,
           terms: await resolvedTerms(tx.customers, context.organizationId, input.customerContact, input.terms ?? {}),
@@ -647,6 +654,7 @@ export class QuoteApplicationService {
         organizationId: brandedId<"OrganizationId">(context.organizationId),
         number: await tx.allocateNumber(context.organizationId),
         customerContact: source.quote.customerContact,
+        jobLabel: source.quote.jobLabel,
         purchaseOrderNumber: source.quote.purchaseOrderNumber,
         requestedDueDate: source.quote.requestedDueDate,
         terms: source.quote.terms,
@@ -715,6 +723,7 @@ export class QuoteApplicationService {
           current.quote.lines,
         );
         const terms = patch.terms ?? current.quote.terms;
+        const jobLabel = patch.jobLabel === undefined ? current.quote.jobLabel : normalizeSalesJobLabel(patch.jobLabel);
         const purchaseOrderNumber =
           patch.purchaseOrderNumber === null
             ? undefined
@@ -730,6 +739,7 @@ export class QuoteApplicationService {
         const headerUnchanged =
           reference.customerId === current.quote.customerContact.customerId &&
           reference.contactId === current.quote.customerContact.contactId &&
+          jobLabel === current.quote.jobLabel &&
           purchaseOrderNumber === current.quote.purchaseOrderNumber &&
           requestedDueDate === current.quote.requestedDueDate &&
           expiresAt === current.quote.expiresAt &&
@@ -753,6 +763,7 @@ export class QuoteApplicationService {
           quoteId: input.quoteId,
           expectedRevision: Number(current.revision),
           customerContact: reference,
+          jobLabel,
           purchaseOrderNumber,
           requestedDueDate,
           expiresAt,
@@ -773,6 +784,8 @@ export class QuoteApplicationService {
         );
         if (!read) throw new Error("Updated Quote could not be read.");
         const changes: MeaningfulAuditChange[] = [];
+        if (jobLabel !== current.quote.jobLabel)
+          changes.push({ group: "commercial_terms", kind: "terms_changed", summary: "Job Label updated." });
         if (reference.customerId !== current.quote.customerContact.customerId)
           changes.push({
             group: "customer",

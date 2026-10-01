@@ -5,6 +5,7 @@ import type {
   SalesWorkspaceLineInput,
   SalesWorkspaceMutation,
   SaveSalesWorkspaceInput,
+  StartOrderEditWorkspaceInput,
   WorkspaceLine,
 } from "../../src/modules/sales/workspaceContracts";
 import type {
@@ -17,6 +18,7 @@ import type {
   WorkspaceArtworkMutation,
   WorkspaceArtworkResult,
 } from "../../src/modules/artwork/workspaceArtwork";
+import type { OrderEditArtworkIntentResult, OrderEditArtworkReference } from "../../src/modules/artwork/orderEditArtwork";
 import type { quoteApi, Selection } from "./api";
 
 /** The wire keeps the owner's shape, without TypeScript-only ID brands. */
@@ -34,9 +36,13 @@ export type WorkspaceLineInput = WorkspaceJson<SalesWorkspaceLineInput>;
 export type WorkspacePromotionView = WorkspaceJson<WorkspacePromotionResult>;
 export type WorkspaceConfigurationApi = Pick<typeof quoteApi, "configuration" | "resolveConfiguration" | "previewLinePricing">;
 export type WorkspaceUpload = Omit<WorkspaceArtworkMutation, "workspaceId"> & Readonly<{ workspaceLineId?: string; file: File }>;
+export type WorkspaceStartOrderEditInput = Pick<WorkspaceJson<StartOrderEditWorkspaceInput>, "requestId"> & Readonly<{ orderId: string }>;
+export type WorkspaceEditArtworkReference = WorkspaceJson<OrderEditArtworkReference>;
+export type WorkspaceEditArtworkIntent = SalesWorkspaceMutation & Readonly<{ sourceAssignmentId: string; action: "keep" | "remove" }>;
 
 export interface SalesWorkspaceClient {
   create(organizationId: string, input: WorkspaceJson<CreateSalesWorkspaceInput>): Promise<WorkspaceView>;
+  startOrderEdit?(organizationId: string, input: WorkspaceStartOrderEditInput): Promise<WorkspaceView>;
   read(organizationId: string, workspaceId: string): Promise<WorkspaceView>;
   list(organizationId: string): Promise<readonly WorkspaceView[]>;
   saveDraft(organizationId: string, workspaceId: string, input: WorkspaceJson<SaveSalesWorkspaceInput>): Promise<WorkspaceView>;
@@ -55,6 +61,8 @@ export interface SalesWorkspaceClient {
   uploadArtwork(organizationId: string, workspaceId: string, input: WorkspaceUpload): Promise<WorkspaceArtworkResult>;
   assignArtwork(organizationId: string, input: WorkspaceArtworkMutation & Readonly<{ claimId: string; workspaceLineId: string }>): Promise<WorkspaceArtworkResult>;
   removeArtwork(organizationId: string, input: WorkspaceArtworkMutation & Readonly<{ claimId: string }>): Promise<WorkspaceArtworkResult>;
+  readEditRefs?(organizationId: string, workspaceId: string): Promise<readonly WorkspaceEditArtworkReference[]>;
+  stageIntent?(organizationId: string, workspaceId: string, input: WorkspaceEditArtworkIntent): Promise<WorkspaceJson<OrderEditArtworkIntentResult>>;
 }
 
 /** Inject the existing authenticated V2 transport, including session-change checks. */
@@ -70,6 +78,7 @@ export const createSalesWorkspaceClient = (transport: SalesWorkspaceTransport): 
     transport.request<T>(path, { method, headers: transport.commandHeaders(organizationId), body: JSON.stringify(input) });
   return {
     create: (org, input) => command(org, endpoint(org), "POST", input),
+    startOrderEdit: (org, input) => command(org, `${endpoint(org)}/order-edits`, "POST", input),
     read: (org, id) => transport.request(endpoint(org, id)),
     list: (org) => transport.request(endpoint(org)),
     saveDraft: (org, id, input) => command(org, endpoint(org, id), "PATCH", input),
@@ -99,6 +108,8 @@ export const createSalesWorkspaceClient = (transport: SalesWorkspaceTransport): 
     },
     assignArtwork: (org, { workspaceId, claimId, ...input }) => command(org, `${endpoint(org, workspaceId)}/artwork/${encodeURIComponent(claimId)}/assign`, "POST", input),
     removeArtwork: (org, { workspaceId, claimId, ...input }) => command(org, `${endpoint(org, workspaceId)}/artwork/${encodeURIComponent(claimId)}`, "DELETE", input),
+    readEditRefs: (org, id) => transport.request(`${endpoint(org, id)}/artwork-edit`),
+    stageIntent: (org, id, input) => command(org, `${endpoint(org, id)}/artwork-edit`, "POST", input),
   };
 };
 
@@ -109,12 +120,13 @@ export const salesWorkspaceKeys = {
     [...salesWorkspaceKeys.scope(sessionScope, organizationId, userId), "workspace", workspaceId] as const,
 };
 
-export const workspaceError = (error: unknown): Readonly<{ code: string; message: string }> => {
+export const workspaceError = (error: unknown): Readonly<{ code: string; message: string; reason?: string }> => {
   if (error && typeof error === "object") {
-    const value = error as { code?: unknown; message?: unknown };
+    const value = error as { code?: unknown; message?: unknown; details?: { reason?: unknown } };
     return {
       code: typeof value.code === "string" ? value.code : "UNKNOWN",
       message: typeof value.message === "string" ? value.message : "The workspace request failed. Your local changes are retained.",
+      ...(typeof value.details?.reason === "string" ? { reason: value.details.reason } : {}),
     };
   }
   return { code: "UNKNOWN", message: "The workspace request failed. Your local changes are retained." };

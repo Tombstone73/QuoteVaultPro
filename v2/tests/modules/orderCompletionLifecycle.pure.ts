@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { OrderApplicationService, type OrderOperationResult, type OrderReadModel, type OrderTransaction } from "../../src/modules/sales/orderApplication.js";
 import { orderCompletionEligibility, type OrderCompletionEligibility, type OrderCompletionLineEvidence } from "../../src/modules/sales/orderLifecycle.js";
+import { assertOrderEditSource } from "../../src/modules/sales/orderEditWorkspace.js";
 import { brandedId, currencyCode, money } from "../../src/modules/shared/commercialValues.js";
 import type { OperationContext } from "../../src/application/operation.js";
 import type { StaffPrincipal } from "../../src/authorization/principals.js";
@@ -99,6 +100,8 @@ class LifecycleHarness {
     update: async () => { throw new Error("not used"); },
     removeLinesNotIn: async () => undefined,
     hasRoute: async () => false,
+    hasFulfillmentHandoff: async () => { throw new Error("Commercial edit guards are outside this lifecycle fixture"); },
+    reopen: async () => { throw new Error("This lifecycle fixture must not reopen through a commercial edit"); },
     cancellationBlockers: async () => [],
     completionEligibility: async () => this.eligibility,
     complete: async () => {
@@ -199,7 +202,18 @@ assert.match(workspaceSource, /o\.archived_at IS NULL/);
 assert.match(workspaceSource, /o\.archived_at IS NOT NULL/);
 assert.match(workspaceSource, /created_at AS occurred_at/, "Order audit history uses the canonical audit timestamp column");
 assert.match(workspaceSource, /='canceled' THEN 'cancelled'/, "legacy cancelled Orders remain discoverable through the canonical lifecycle scope");
-assert.match(orderWorkspaceSource, /commercial revision is[\s/]*allowed to reopen it/, "closed Orders can accept an authorized current commercial revision");
+const completedSource = read("completed");
+const completedSourceBefore = structuredClone(completedSource);
+assert.doesNotThrow(() => assertOrderEditSource(completedSource), "the Sales owner permits a completed Order as an edit source without reopening it at capture");
+assert.deepEqual(completedSource, completedSourceBefore, "edit-source eligibility does not mutate lifecycle, Invoice identity or completion evidence");
+for (const terminalSource of [read("cancelled"), read("completed", "2026-09-03T13:00:00.000Z")]) {
+  const before = structuredClone(terminalSource);
+  assert.throws(() => assertOrderEditSource(terminalSource), { code: "CONFLICT" }, "cancelled or archived sources remain owner-blocked");
+  assert.deepEqual(terminalSource, before, "denied source capture changes no canonical facts");
+}
+assert.match(orderWorkspaceSource, /workspaceClient\.startOrderEdit\(/, "Edit Order starts the dedicated source-capture service rather than a commercial mutation");
+assert.match(orderWorkspaceSource, /<TransactionalSalesWorkspace\b[\s\S]*?sourceOrderId=\{props\.orderId\}/, "commercial editing is scoped to the same source Order in TEMP");
+assert.doesNotMatch(orderWorkspaceSource, /orderApi\.(?:update|reopen)\s*\(/, "the canonical read workspace cannot revise or reopen an Order inline");
 assert.match(orderWorkspaceSource, /"order-history",\s*result\.order\.order\.orderId/, "lifecycle mutations refresh persisted audit history");
 assert.doesNotMatch(orderWorkspaceSource, /Mark Order Complete/, "routine manual completion is retired from the Order UI");
 for (const queueSource of [productionSource, prepressSource, proofingSource, fulfillmentSource])

@@ -1,4 +1,5 @@
 import React, { type ReactNode, useState } from "react";
+import { canNavigateFromSalesWorkspace } from "./workspaceNavigation";
 import {
   Activity,
   Bot,
@@ -236,6 +237,7 @@ export const V2VisualShell = ({
   const nextTheme =
     themeOrder[(themeOrder.indexOf(appearance.theme) + 1) % themeOrder.length]!;
   const create = (target: "quotes" | "orders") => {
+    if (!canNavigateFromSalesWorkspace()) return;
     try { sessionStorage.setItem(`ph.v2.new-${target === "quotes" ? "quote" : "order"}`, "1"); } catch {}
     onNavigate(target);
     window.dispatchEvent(new Event(`v2:new-${target === "quotes" ? "quote" : "order"}`));

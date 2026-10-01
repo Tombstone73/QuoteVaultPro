@@ -40,6 +40,16 @@ const assignment = (row: AssignmentRow): ArtworkAssignment => ({
   ...(row.layer_key !== null ? { layerKey: row.layer_key } : {}), ...(row.layer_order !== null ? { layerOrder: row.layer_order } : {}), ...(row.supersedes_artwork_assignment_id ? { supersedesArtworkAssignmentId: brandedId<"ArtworkAssignmentId">(row.supersedes_artwork_assignment_id) } : {}), createdAt: row.created_at.toISOString(),
 });
 
+/** Lock-only Sales coordination, in the same order as canonical Sales edits.
+ * The Order row also fences assignment phantoms on initially empty lines. */
+export async function lockOrderArtworkCoordination(client: PoolClient, organizationId: string, orderId: string): Promise<void> {
+  const document = await client.query("SELECT id FROM v2_sales_documents WHERE organization_id=$1 AND id=$2 AND document_kind='order' FOR UPDATE", [organizationId, orderId]);
+  if (!document.rows.length) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+  const order = await client.query("SELECT document_id FROM v2_sales_order_details WHERE organization_id=$1 AND document_id=$2 FOR UPDATE", [organizationId, orderId]);
+  if (!order.rows.length) throw new V2ApplicationError("NOT_FOUND", "Order was not found.");
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`order-artwork:${organizationId}:${orderId}`]);
+}
+
 /** One PostgreSQL client is shared with M0 reservation, attribution, and audit. */
 export class PostgresArtworkTransaction implements ArtworkTransaction {
   private readonly requests = new PostgresOperationRequestRepository();
@@ -56,6 +66,10 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     const r = await this.client.query<FileRow>("SELECT * FROM v2_artwork_files WHERE organization_id=$1 AND id=$2", [organizationId, artworkFileId]); return r.rows[0] ? file(r.rows[0]) : null;
   }
   async removeAssignment(input: Parameters<ArtworkTransaction["removeAssignment"]>[0]) {
+    // Resolve scope before locking, then reread under the shared Order lock.
+    const target = (await this.client.query<{ order_document_id: string }>("SELECT order_document_id FROM v2_artwork_assignments WHERE organization_id=$1 AND id=$2", [input.organizationId, input.artworkAssignmentId])).rows[0];
+    if (!target || target.order_document_id !== input.orderId) throw new V2ApplicationError("NOT_FOUND", "Artwork assignment was not found on this Order line.");
+    await lockOrderArtworkCoordination(this.client, input.organizationId, target.order_document_id);
     const found = await this.client.query<AssignmentRow>("SELECT * FROM v2_artwork_assignments WHERE organization_id=$1 AND id=$2 AND order_document_id=$3 AND order_line_id=$4", [input.organizationId,input.artworkAssignmentId,input.orderId,input.orderLineId]);
     const row = found.rows[0];
     if (!row) throw new V2ApplicationError("NOT_FOUND", "Artwork assignment was not found on this Order line.");
@@ -85,6 +99,7 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     return r.rows.map((row) => ({ file: file(row), assignment: assignment({ id: row.assignment_id, organization_id: row.assignment_organization_id, artwork_file_id: row.artwork_file_id, order_document_id: row.order_document_id, order_line_id: row.order_line_id, purpose: row.purpose, side: row.side, source_page_index: row.source_page_index, layer_key: row.layer_key, layer_order: row.layer_order, supersedes_artwork_assignment_id: row.supersedes_artwork_assignment_id, created_at: row.assignment_created_at }) }));
   }
   async createOrGetFile(input: Parameters<ArtworkTransaction["createOrGetFile"]>[0]): Promise<ArtworkFile> {
+    await lockOrderArtworkCoordination(this.client, input.organizationId, input.usage.orderId);
     const f = input.file;
     const r = await this.client.query<FileRow>(`INSERT INTO v2_artwork_files(id,organization_id,storage_provider,object_key,object_version,original_filename,display_filename,content_type,byte_size,checksum_algorithm,checksum_value,source_kind,page_count,detected_width_microns,detected_height_microns,derived_from_artwork_file_id)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
@@ -95,6 +110,7 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     return file(existing.rows[0]);
   }
   async createOrGetAssignment(input: Parameters<ArtworkTransaction["createOrGetAssignment"]>[0]): Promise<ArtworkAssignment> {
+    await lockOrderArtworkCoordination(this.client, input.organizationId, input.usage.orderId);
     const u = input.usage; const semantic = JSON.stringify({ artworkFileId: input.artworkFileId, purpose: u.purpose, side: u.side ?? null, sourcePageIndex: u.sourcePageIndex ?? null, layerKey: u.layerKey ?? null, layerOrder: u.layerOrder ?? null });
     const fingerprint = `sha256:${createHash("sha256").update(semantic).digest("hex")}`;
     const r = await this.client.query<AssignmentRow>(`INSERT INTO v2_artwork_assignments(id,organization_id,artwork_file_id,order_document_id,order_line_id,purpose,side,source_page_index,layer_key,layer_order,identity_fingerprint)
@@ -107,6 +123,7 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
     return assignment(existing.rows[0]);
   }
   async createOrGetReplacementAssignment(input: Parameters<ArtworkTransaction["createOrGetReplacementAssignment"]>[0]): Promise<ArtworkAssignment> {
+    await lockOrderArtworkCoordination(this.client, input.organizationId, input.usage.orderId);
     const u = input.usage; const semantic = JSON.stringify({ artworkFileId: input.artworkFileId, purpose: u.purpose, side: u.side ?? null, sourcePageIndex: u.sourcePageIndex ?? null, layerKey: u.layerKey ?? null, layerOrder: u.layerOrder ?? null });
     const fingerprint = `sha256:${createHash("sha256").update(semantic).digest("hex")}`;
     try {

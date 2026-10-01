@@ -264,7 +264,7 @@ export class QuoteConversionApplicationService {
       sourceToOrderLine.set(line.lineId, orderLine.lineId);
       return orderLine;
     });
-    const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, requestedFulfillment: source.commercial.requestedFulfillment, sellingAdjustment: source.commercial.sellingAdjustment, commercialCharge: source.commercial.commercialCharge, taxComposition: source.commercial.taxComposition, lines };
+    const frozen: FrozenOrderCommercialSource = { customerContact: current.quote.customerContact, jobLabel: source.commercial.jobLabel, purchaseOrderNumber: source.commercial.purchaseOrderNumber, requestedDueDate: source.commercial.requestedDueDate, terms: source.commercial.terms, requestedFulfillment: source.commercial.requestedFulfillment, sellingAdjustment: source.commercial.sellingAdjustment, commercialCharge: source.commercial.commercialCharge, taxComposition: source.commercial.taxComposition, lines };
     trace?.event("commercial_snapshot_loaded", "ok");
     setStage?.("order_creation");
     const created = await this.orders.createFromCommercialSnapshot(transaction.order, context, operationRequestId, frozen, operation, trace);

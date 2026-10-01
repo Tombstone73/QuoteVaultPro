@@ -24,7 +24,7 @@ export interface ArtworkTransaction {
   findFile(organizationId: OrganizationId, artworkFileId: ArtworkFileId): Promise<ArtworkFile | null>;
   findOrderLineArtwork(organizationId: OrganizationId, orderLineId: string): Promise<readonly OrderLineArtworkProjection[]>;
   findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]>;
-  createOrGetFile(input: Readonly<{ id: ArtworkFileId; organizationId: OrganizationId; file: ArtworkFileInput; derivedFromArtworkFileId?: ArtworkFileId }>): Promise<ArtworkFile>;
+  createOrGetFile(input: Readonly<{ id: ArtworkFileId; organizationId: OrganizationId; file: ArtworkFileInput; usage: AdoptArtworkInput["usage"]; derivedFromArtworkFileId?: ArtworkFileId }>): Promise<ArtworkFile>;
   createOrGetAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: AdoptArtworkInput["usage"] }>): Promise<ArtworkAssignment>;
   createOrGetReplacementAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: ReplaceArtworkInput["usage"]; supersedesArtworkAssignmentId: ArtworkAssignmentId }>): Promise<ArtworkAssignment>;
   removeAssignment(input: RemoveArtworkInput & Readonly<{ organizationId: string; removedByUserId: string }>): Promise<ArtworkMutationResult>;
@@ -81,7 +81,7 @@ export class ArtworkApplicationService {
   async adopt(context: OperationContext, input: AdoptArtworkInput): Promise<ApplicationResult<ArtworkMutationResult>> {
     return this.mutate(context, "artwork.adopt.v1", input, "artwork.adopt", async (tx) => {
       validateFile(input); validateArtworkUsage(input.usage);
-      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input });
+      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input, usage: input.usage });
       const assignment = await tx.createOrGetAssignment({ id: brandedId<"ArtworkAssignmentId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), artworkFileId: file.id, usage: input.usage });
       return { artworkFile: file, assignment };
     }, "artwork_file_adopted", "Artwork file adopted for OrderLine work.");
@@ -91,7 +91,7 @@ export class ArtworkApplicationService {
     return this.mutate(context, "artwork.replace.v1", input, "artwork.adopt", async (tx) => {
       validateFile(input); validateArtworkUsage(input.usage);
       if (!input.supersedesArtworkAssignmentId) throw new V2ApplicationError("VALIDATION_ERROR", "The current Artwork assignment is required for replacement.");
-      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input });
+      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input, usage: input.usage });
       const assignment = await tx.createOrGetReplacementAssignment({ id: brandedId<"ArtworkAssignmentId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), artworkFileId: file.id, usage: input.usage, supersedesArtworkAssignmentId: input.supersedesArtworkAssignmentId });
       return { artworkFile: file, assignment };
     }, "artwork_file_adopted", "Replacement Artwork file adopted for OrderLine work.");
@@ -113,7 +113,7 @@ export class ArtworkApplicationService {
       if (input.source !== "prepress_derived") throw new V2ApplicationError("VALIDATION_ERROR", "Derived Artwork must declare prepress_derived provenance.");
       const source = await tx.findFile(brandedId<"OrganizationId">(context.organizationId), input.derivedFromArtworkFileId);
       if (!source) throw new V2ApplicationError("NOT_FOUND", "Derived Artwork source file was not found.");
-      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input, derivedFromArtworkFileId: source.id });
+      const file = await tx.createOrGetFile({ id: brandedId<"ArtworkFileId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), file: input, usage: input.usage, derivedFromArtworkFileId: source.id });
       const assignment = await tx.createOrGetAssignment({ id: brandedId<"ArtworkAssignmentId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), artworkFileId: file.id, usage: input.usage });
       return { artworkFile: file, assignment };
     }, "artwork_file_derived", "Derived Artwork file adopted for OrderLine work.");

@@ -51,6 +51,7 @@ export type QuoteRead = Readonly<{
       contactId?: string;
     };
     purchaseOrderNumber?: string;
+    jobLabel?: string;
     requestedDueDate?: string;
     terms: { termsCode?: string; commercialNotes?: string };
     currency: string;
@@ -1017,6 +1018,7 @@ export type OrderRead = Readonly<{
       contactId?: string;
     };
     purchaseOrderNumber?: string;
+    jobLabel?: string;
     requestedDueDate?: string;
     terms: { termsCode?: string; commercialNotes?: string };
     currency: string;

@@ -2,8 +2,8 @@ import type { PoolClient } from "pg";
 import type { OperationContext } from "../../src/application/operation.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import {
-  authorizeSalesWorkspace, assertSalesWorkspaceMutable, bumpSalesWorkspaceRevision,
-  validateSalesWorkspaceId,
+  assertSalesWorkspaceMutable, bumpSalesWorkspaceRevision,
+  validateSalesWorkspaceId, getAuthorizedSalesWorkspace,
 } from "../../src/modules/sales/workspaceApplication.js";
 import type { SalesWorkspace, SalesWorkspaceLineMapEntry } from "../../src/modules/sales/workspaceContracts.js";
 import { PostgresSalesWorkspaceTransaction } from "./postgresSalesWorkspace.js";
@@ -31,25 +31,16 @@ export async function lockSalesWorkspaceForArtwork(
 export async function readSalesWorkspaceForArtwork(
   client: PoolClient, context: OperationContext, workspaceId: string, lock = false,
 ): Promise<SalesWorkspace> {
-  const actor = authorizeSalesWorkspace(context);
   validateSalesWorkspaceId(workspaceId);
-  const workspace = await new PostgresSalesWorkspaceTransaction(client).get(
-    context.organizationId, actor.userId, workspaceId, lock,
-  );
-  if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace not found.");
-  authorizeSalesWorkspace(context, workspace);
-  return workspace;
+  return getAuthorizedSalesWorkspace(new PostgresSalesWorkspaceTransaction(client), context, workspaceId, lock);
 }
 
 export async function advanceSalesWorkspaceArtworkRevision(
   client: PoolClient, context: OperationContext, workspaceId: string, expectedRevision: number,
 ): Promise<SalesWorkspace> {
-  const actor = authorizeSalesWorkspace(context);
   validateSalesWorkspaceId(workspaceId);
   const tx = new PostgresSalesWorkspaceTransaction(client);
-  const workspace = await tx.get(context.organizationId, actor.userId, workspaceId, true);
-  if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace not found.");
-  authorizeSalesWorkspace(context, workspace);
+  const workspace = await getAuthorizedSalesWorkspace(tx, context, workspaceId, true);
   assertSalesWorkspaceMutable(workspace, expectedRevision);
   const next = bumpSalesWorkspaceRevision(workspace);
   await tx.update(next, expectedRevision);

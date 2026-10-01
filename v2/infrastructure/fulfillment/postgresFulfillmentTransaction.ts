@@ -32,7 +32,7 @@ const availabilitySql=`WITH production_output AS (
   LEFT JOIN LATERAL (
     SELECT COALESCE(SUM(v2_usable_production_good_quantity(w.organization_id,w.id)),0) completed_good_quantity
     FROM v2_production_works w
-    WHERE w.organization_id=l.organization_id AND w.order_line_id=l.id AND w.requirement_key=r.requirement_key
+    WHERE w.organization_id=l.organization_id AND w.order_document_id=l.document_id AND w.order_line_id=l.id AND w.requirement_key=r.requirement_key AND w.replacement_obligation_id IS NULL
   ) unit_output ON r.requirement_key IS NOT NULL
   WHERE l.organization_id=$1 AND l.document_id=$2
   GROUP BY l.id
@@ -42,14 +42,14 @@ const availabilitySql=`WITH production_output AS (
     COALESCE(SUM(fhl.quantity) FILTER (WHERE fh.handoff_method='shipment'),0)::text shipment_quantity
   FROM v2_sales_document_lines l
   LEFT JOIN v2_fulfillment_handoff_lines fhl ON fhl.organization_id=l.organization_id AND fhl.order_document_id=l.document_id AND fhl.order_line_id=l.id
-  LEFT JOIN v2_fulfillment_handoffs fh ON fh.organization_id=fhl.organization_id AND fh.id=fhl.handoff_id AND fh.replacement_obligation_id IS NULL
+  LEFT JOIN v2_fulfillment_handoffs fh ON fh.organization_id=fhl.organization_id AND fh.id=fhl.handoff_id AND fh.order_document_id=l.document_id AND fh.replacement_obligation_id IS NULL
   WHERE l.organization_id=$1 AND l.document_id=$2
  GROUP BY l.id
 ) , prepared_output AS (
  SELECT l.id order_line_id,COALESCE(SUM(reservation.quantity) FILTER (WHERE prepared.id IS NOT NULL),0)::text reserved_prepared_quantity
  FROM v2_sales_document_lines l
   LEFT JOIN v2_fulfillment_shipment_prepared_revision_lines reservation
-    ON reservation.organization_id=l.organization_id AND reservation.order_line_id=l.id AND reservation.replacement_obligation_id IS NULL
+    ON reservation.organization_id=l.organization_id AND reservation.order_document_id=l.document_id AND reservation.order_line_id=l.id AND reservation.replacement_obligation_id IS NULL
  LEFT JOIN v2_fulfillment_shipments prepared
    ON prepared.organization_id=reservation.organization_id AND prepared.id=reservation.shipment_id
    AND prepared.shipment_status='prepared' AND prepared.prepared_revision_id=reservation.revision_id
@@ -76,7 +76,33 @@ export class PostgresFulfillmentTransaction implements FulfillmentTransaction {
  async attribute(input:Parameters<FulfillmentTransaction["attribute"]>[0]){await this.requests.recordAttribution(this.client,{organizationId:input.organizationId,operationRequestId:input.requestId,operation:input.operation,resourceType:"fulfillment_handoff",resourceId:input.resourceId,principalKind:input.principalKind,principalSubject:input.principalSubject,staffActorUserId:input.staffActorUserId});}
  async audit(input:Parameters<FulfillmentTransaction["audit"]>[0]){await this.client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,$3,$4,'fulfillment_handoff',$5,$6,$7,$8,$9::jsonb)",[input.organizationId,input.requestId,input.operation,`fulfillment_${input.method}_completed`,input.resourceId,input.principalKind,input.principalSubject,input.staffActorUserId??null,JSON.stringify(input.allocations.map(a=>({kind:"fulfillment_line_completed",method:input.method,orderLineId:a.orderLineId,quantity:a.quantity})))]);await this.hooks?.afterAudit?.();}
  async lockAvailability(org:OrganizationId,orderId:OrderId,lineIds:readonly string[]){if(!lineIds.length)return null;const ids=[...lineIds].sort();const locked=await this.client.query<{id:string;customer_id:string|null;contact_id:string|null}>("SELECT l.id,d.customer_id,d.contact_id FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id JOIN v2_sales_document_lines l ON l.organization_id=d.organization_id AND l.document_id=d.id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='order' AND o.commercial_state='open' AND l.id=ANY($3::text[]) ORDER BY l.id FOR UPDATE OF d,o,l",[org,orderId,ids]);if(locked.rows.length!==ids.length)return null;const values=await this.client.query<AvailabilityRow>(availabilitySql,[org,orderId]);return {...(locked.rows[0]?.customer_id?{customerId:locked.rows[0].customer_id}:{}),...(locked.rows[0]?.contact_id?{contactId:locked.rows[0].contact_id}:{}),availability:values.rows.filter(x=>ids.includes(x.order_line_id)).map(availability)};}
- async lockReplacementAvailability(org:OrganizationId,orderId:OrderId,replacementObligationId:string):Promise<ReplacementFulfillmentAvailability|null>{const locked=await this.client.query<{order_line_id:string;customer_id:string|null;contact_id:string|null;replacement_quantity:number}>(`SELECT r.order_line_id,d.customer_id,d.contact_id,r.replacement_quantity FROM v2_order_replacement_obligations r JOIN v2_sales_documents d ON d.organization_id=r.organization_id AND d.id=r.order_document_id JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id WHERE r.organization_id=$1 AND r.id=$2 AND r.order_document_id=$3 AND r.status<>'cancelled' AND o.commercial_state='open' FOR UPDATE OF r,d,o`,[org,replacementObligationId,orderId]);const row=locked.rows[0];if(!row)return null;const produced=await this.client.query<{quantity:string}>("SELECT COALESCE(min(v2_usable_production_good_quantity(w.organization_id,w.id)),0)::text quantity FROM v2_production_works w WHERE w.organization_id=$1 AND w.replacement_obligation_id=$2",[org,replacementObligationId]);const fulfilled=await this.client.query<{quantity:string}>("SELECT COALESCE(sum(line.quantity),0)::text quantity FROM v2_fulfillment_handoffs h JOIN v2_fulfillment_handoff_lines line ON line.organization_id=h.organization_id AND line.handoff_id=h.id WHERE h.organization_id=$1 AND h.replacement_obligation_id=$2",[org,replacementObligationId]);const completed=Number(fulfilled.rows[0]?.quantity??0),remaining=Math.max(0,row.replacement_quantity-completed);return {replacementObligationId:brandedId<"ReplacementObligationId">(replacementObligationId),orderLineId:brandedId<"OrderLineId">(row.order_line_id),...(row.customer_id?{customerId:brandedId<"CustomerId">(row.customer_id)}:{}),...(row.contact_id?{contactId:brandedId<"ContactId">(row.contact_id)}:{}),availableFulfillmentQuantity:Math.min(remaining,Math.max(0,Number(produced.rows[0]?.quantity??0)-completed))};}
+ async lockReplacementAvailability(org:OrganizationId,orderId:OrderId,replacementObligationId:string):Promise<ReplacementFulfillmentAvailability|null>{
+  const locked=await this.client.query<{order_line_id:string;customer_id:string|null;contact_id:string|null;replacement_quantity:number}>(`SELECT r.order_line_id,d.customer_id,d.contact_id,r.replacement_quantity FROM v2_order_replacement_obligations r JOIN v2_sales_documents d ON d.organization_id=r.organization_id AND d.id=r.order_document_id AND d.document_kind='order' JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id WHERE r.organization_id=$1 AND r.id=$2 AND r.order_document_id=$3 AND r.status<>'cancelled' AND o.commercial_state='open' FOR UPDATE OF r,d,o`,[org,replacementObligationId,orderId]);
+  const row=locked.rows[0];if(!row)return null;
+  const scope=[org,replacementObligationId,orderId,row.order_line_id];
+  // Replacement authority retains the per-work minimum. Multiple works for
+  // one required key need a Production lineage decision, never an inferred sum.
+  const produced=await this.client.query<{quantity:string;ambiguous_requirement_keys:string[]}>(`SELECT LEAST(COALESCE(MIN(unit_output.quantity),0),
+      COALESCE((SELECT MIN(v2_usable_production_good_quantity(w.organization_id,w.id)) FROM v2_production_works w
+        WHERE w.organization_id=$1 AND w.replacement_obligation_id=$2 AND w.order_document_id=$3 AND w.order_line_id=$4),0))::text quantity,
+      COALESCE(ARRAY_AGG(req.requirement_key::text ORDER BY req.requirement_key) FILTER (WHERE unit_output.work_count>1),ARRAY[]::text[]) ambiguous_requirement_keys
+    FROM v2_sales_line_production_requirements req
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(MIN(v2_usable_production_good_quantity(w.organization_id,w.id)),0) quantity,COUNT(*) work_count
+      FROM v2_production_works w WHERE w.organization_id=req.organization_id AND w.order_line_id=req.order_line_id
+        AND w.requirement_key=req.requirement_key AND w.replacement_obligation_id=$2 AND w.order_document_id=$3
+    ) unit_output ON TRUE WHERE req.organization_id=$1 AND req.order_line_id=$4`,scope);
+  const fulfilled=await this.client.query<{quantity:string}>(`SELECT COALESCE(SUM(line.quantity),0)::text quantity
+    FROM v2_fulfillment_handoffs h JOIN v2_fulfillment_handoff_lines line ON line.organization_id=h.organization_id AND line.handoff_id=h.id AND line.order_document_id=h.order_document_id
+    WHERE h.organization_id=$1 AND h.replacement_obligation_id=$2 AND h.order_document_id=$3 AND line.order_line_id=$4`,scope);
+  const reservations=await this.client.query<{quantity:string}>(`SELECT COALESCE(SUM(line.quantity),0)::text quantity
+    FROM v2_fulfillment_shipment_prepared_revision_lines line JOIN v2_fulfillment_shipments shipment ON shipment.organization_id=line.organization_id AND shipment.id=line.shipment_id
+    WHERE line.organization_id=$1 AND line.replacement_obligation_id=$2 AND line.order_document_id=$3 AND line.order_line_id=$4
+      AND shipment.shipment_status='prepared' AND shipment.prepared_revision_id=line.revision_id`,scope);
+  const completed=Number(fulfilled.rows[0]?.quantity??0),reserved=Math.max(0,Number(reservations.rows[0]?.quantity??0));
+  const ambiguousKeys=produced.rows[0]?.ambiguous_requirement_keys??[];
+  return {replacementObligationId:brandedId<"ReplacementObligationId">(replacementObligationId),orderLineId:brandedId<"OrderLineId">(row.order_line_id),...(row.customer_id?{customerId:brandedId<"CustomerId">(row.customer_id)}:{}),...(row.contact_id?{contactId:brandedId<"ContactId">(row.contact_id)}:{}),availableFulfillmentQuantity:ambiguousKeys.length?0:Math.max(0,Math.min(row.replacement_quantity,Number(produced.rows[0]?.quantity??0))-completed-reserved),...(reserved?{reservedShipmentQuantity:reserved}:{}),...(ambiguousKeys.length?{productionAuthorityIssue:{kind:"AMBIGUOUS_REPLACEMENT_PRODUCTION" as const,requirementKeys:ambiguousKeys}}:{})};
+ }
  async createHandoff(input:Parameters<FulfillmentTransaction["createHandoff"]>[0]){const r=await this.client.query<HandoffRow>("INSERT INTO v2_fulfillment_handoffs(id,organization_id,order_document_id,handoff_method,customer_id,contact_id,replacement_obligation_id,completed_principal_kind,completed_principal_subject,completed_staff_actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",[input.id,input.organizationId,input.orderId,input.method,input.customerId??null,input.contactId??null,input.replacementObligationId??null,input.principalKind,input.principalSubject,input.staffActorUserId??null]);await this.hooks?.afterHandoff?.();return handoff(r.rows[0]!);}
  async createAllocations(input:Parameters<FulfillmentTransaction["createAllocations"]>[0]){if(!input.allocations.length)return [];const rows:FulfillmentHandoffLine[]=[];for(const item of input.allocations){const r=await this.client.query<LineRow>("INSERT INTO v2_fulfillment_handoff_lines(id,organization_id,handoff_id,order_document_id,order_line_id,quantity) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",[item.id,input.organizationId,input.handoffId,input.orderId,item.orderLineId,item.quantity]);rows.push(allocation(r.rows[0]!));await this.hooks?.afterAllocation?.();}return rows;}
  async writeDocumentSnapshot(input:Parameters<FulfillmentTransaction["writeDocumentSnapshot"]>[0]){const result=await this.client.query<{snapshot:unknown}>(`INSERT INTO v2_fulfillment_handoff_document_snapshots(organization_id,handoff_id,snapshot)

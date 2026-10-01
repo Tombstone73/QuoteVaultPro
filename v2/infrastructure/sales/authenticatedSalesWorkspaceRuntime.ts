@@ -17,6 +17,16 @@ import { PostgresWorkspaceLinePricing } from "./postgresWorkspaceLinePricing.js"
 import { PostgresWorkspacePromotion } from "./postgresWorkspacePromotion.js";
 import { PostgresQuoteTransaction } from "./postgresQuoteTransaction.js";
 import { PostgresOrderTransaction } from "./postgresOrderTransaction.js";
+import { PostgresOrderEditWorkspace } from "./postgresOrderEditWorkspace.js";
+import { readOrderEditBlockedLines } from "./postgresOrderEditOperationalContext.js";
+import { brandedId } from "../../src/modules/shared/commercialValues.js";
+import { reconcileOrderInTransaction } from "./postgresOrderAutomaticLifecycle.js";
+import { createCustomerCommercialPricingPort } from "../products/customerCommercialPricingPort.js";
+import { assessOrderEditBillingInTransaction } from "../billing/postgresOrderEditSafety.js";
+import {
+  PostgresOrderEditArtwork, captureOrderEditArtworkFingerprint, captureOrderEditArtwork,
+  validateOrderEditArtworkInTransaction, applyOrderEditArtworkInTransaction, authorizeOrderEditArtworkReplay,
+} from "../artwork/postgresOrderEditArtwork.js";
 
 const clientOf = (tx: SalesWorkspaceTransaction): PoolClient => {
   if (!(tx instanceof PostgresSalesWorkspaceTransaction)) throw new V2ApplicationError("INTERNAL_ERROR", "Workspace transaction composition is unavailable.");
@@ -38,8 +48,38 @@ export function createSalesWorkspaceDependencies(input: Readonly<{
       organizationId: workspace.organizationId, workspaceId: workspace.id,
     }),
   });
+  const orderEdits = new PostgresOrderEditWorkspace(input.pool, {
+    orderTransaction: client => new PostgresOrderTransaction(client, undefined, createCustomerCommercialPricingPort(client)),
+    billingEditGuard: async (client, context, orderId) => {
+      return assessOrderEditBillingInTransaction(client, { organizationId: context.organizationId, orderId });
+    },
+    readProductionContext: readOrderEditBlockedLines,
+    reconcileOrderInTransaction: async (client, organizationId, orderId) => { await reconcileOrderInTransaction(client, brandedId<"OrganizationId">(organizationId), brandedId<"OrderId">(orderId)); },
+    artwork: client => ({
+      captureFingerprint: (context, orderId) => captureOrderEditArtworkFingerprint(client, { context, orderId }),
+      initializeWorkspace: async (context, workspace) => {
+        await captureOrderEditArtwork(client, { context, workspaceId: workspace.id, orderId: workspace.sourceDocumentId!,
+          lineMap: workspace.lines.map(line => ({ workspaceLineId: line.id, canonicalLineId: line.sourceLineId! })) });
+      },
+      validate: async (context, workspace) => {
+        const result = await validateOrderEditArtworkInTransaction(client, { context, workspaceId: workspace.id, orderId: workspace.sourceDocumentId! });
+        const retainedIds = new Set(workspace.lines.flatMap(line => line.sourceLineId ? [line.sourceLineId] : []));
+        if (result.sourceLineIdsWithHistory.some(id => !retainedIds.has(id))) {
+          throw new V2ApplicationError("CONFLICT", "Artwork history prevents removing this source line.");
+        }
+        return { changed: result.hasChanges };
+      },
+      apply: async (context, workspace, lineMap) => {
+        const result = await applyOrderEditArtworkInTransaction(client, { context, workspaceId: workspace.id, orderId: workspace.sourceDocumentId!, lineMap });
+        return { changed: Boolean(result.removedCount || result.promotedCount) };
+      },
+      authorizeReplay: (context, workspace) => authorizeOrderEditArtworkReplay(client, { context, workspaceId: workspace.id, orderId: workspace.sourceDocumentId! }),
+    }),
+  });
   return {
     service,
+    orderEdits,
+    orderEditArtwork: new PostgresOrderEditArtwork(input.pool),
     principals: input.principals,
     formReads: input.formReads,
     lines: new SalesWorkspaceLineService(store, {
@@ -51,6 +91,7 @@ export function createSalesWorkspaceDependencies(input: Readonly<{
     promotion: new PostgresWorkspacePromotion(input.pool, promoteWorkspaceArtworkInTransaction, {
       quoteTransaction: client => new PostgresQuoteTransaction(client),
       orderTransaction: (client, pricing) => new PostgresOrderTransaction(client, undefined, pricing),
+      orderEditHandler: orderEdits.saveInTransaction,
     }),
     artwork: {
       uploads: new WorkspaceArtworkUploadService(artwork, input.storage),
@@ -58,7 +99,7 @@ export function createSalesWorkspaceDependencies(input: Readonly<{
       download: (context, workspaceId, claimId) => artwork.download(context, workspaceId, claimId),
     },
     preview: (context, workspace, line) => store.run(async tx => {
-      const previews = await new PostgresWorkspaceLinePricing(clientOf(tx)).preview(context, workspace.header, line);
+      const previews = await new PostgresWorkspaceLinePricing(clientOf(tx)).preview(context, workspace.header, line, workspace.kind === "order_edit" ? "order" : undefined);
       const preview = previews.quote ?? previews.order;
       if (!preview) throw new V2ApplicationError("CONFLICT", "Pricing preview is unavailable.");
       return {

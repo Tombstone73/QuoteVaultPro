@@ -4,11 +4,14 @@ import path from "node:path";
 import { PostgresSalesWorkspaceReads } from "../../infrastructure/sales/postgresSalesWorkspaceReads.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 import type { SalesWorkspacePageRequest } from "../../src/modules/sales/workspaceReads.js";
+import { SalesWorkspaceLineService } from "../../src/modules/sales/workspaceLines.js";
+import type { SalesWorkspace, SalesWorkspaceStore, SalesWorkspaceTransaction } from "../../src/modules/sales/workspaceContracts.js";
+import type { OperationContext } from "../../src/application/operation.js";
 
 const source = (relative: string) =>
   readFile(path.join(process.cwd(), relative), "utf8");
 
-const [quote, order, quoteRoute, orderRoute, quoteTx, orderTx, workspaceReads, quoteUi, orderUi, quoteListUi, orderListUi] =
+const [quote, order, quoteRoute, orderRoute, quoteTx, orderTx, workspaceReads, quoteUi, orderUi, quoteListUi, orderListUi, tempUi] =
   await Promise.all([
     source("v2/src/modules/sales/quoteApplication.ts"),
     source("v2/src/modules/sales/orderApplication.ts"),
@@ -21,6 +24,7 @@ const [quote, order, quoteRoute, orderRoute, quoteTx, orderTx, workspaceReads, q
     source("v2/ui/src/OrderWorkspace.tsx"),
     source("v2/ui/src/QuotesList.tsx"),
     source("v2/ui/src/OrdersList.tsx"),
+    source("v2/ui/src/TransactionalSalesWorkspace.tsx"),
   ]);
 
 assert.match(quote, /async duplicate\(/);
@@ -142,9 +146,64 @@ for (const kind of ["quote", "order"] as const) {
 
 for (const ui of [quoteUi, orderUi]) {
   assert.match(ui, /Duplicate (Quote|Order|line)/);
-  assert.match(ui, /Move up/);
-  assert.match(ui, /Move down/);
 }
+assert.match(quoteUi, /Move up/);
+assert.match(quoteUi, /Move down/);
+assert.match(orderUi, /<TransactionalSalesWorkspace\b/, "Order editing delegates to the TEMP workspace");
+assert.doesNotMatch(orderUi, /orderApi\.update\s*\(/, "Order line presentation cannot bypass TEMP with an inline canonical write");
+assert.match(tempUi, /client\.reorderLines\(/, "the TEMP controls call the scoped workspace reorder contract");
+assert.match(tempUi, /changeLine\(line\.id,\s*-1\)/, "the upward control passes the stable TEMP identity and direction");
+assert.match(tempUi, /changeLine\(line\.id,\s*1\)/, "the downward control passes the stable TEMP identity and direction");
+
+const tempOrg = "10000000-0000-4000-8000-000000000001";
+const tempId = "10000000-0000-4000-8000-000000000002";
+const tempLineIds = ["10000000-0000-4000-8000-000000000003", "10000000-0000-4000-8000-000000000004"];
+let temp: SalesWorkspace = { id: tempId, organizationId: tempOrg, creatorUserId: "staff-reorder", kind: "new_sales", state: "draft", revision: 1,
+  header: {}, lines: tempLineIds.map((id, position) => ({ id, workspaceId: tempId, position, revision: 1,
+    input: { productId: "10000000-0000-4000-8000-000000000005", quantity: position + 1 } })),
+  createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z", expiresAt: "2026-10-31T00:00:00.000Z" };
+const tempBefore = structuredClone(temp);
+const tempCalls: string[] = [];
+const tempTransaction = {
+  get: async (organizationId: string, creator: string, id: string, lock?: boolean) => {
+    assert.deepEqual([organizationId, creator, id, lock], [tempOrg, temp.creatorUserId, tempId, true]);
+    tempCalls.push("lock"); return temp;
+  },
+  getRequest: async () => null,
+  reorderLines: async (organizationId: string, id: string, lineIds: readonly string[]) => {
+    assert.deepEqual([organizationId, id], [tempOrg, tempId]);
+    assert.deepEqual([...lineIds].sort(), [...tempLineIds].sort()); tempCalls.push("reorder");
+  },
+  update: async (next: SalesWorkspace, expectedRevision: number) => {
+    assert.equal(expectedRevision, temp.revision); assert.equal(next.revision, expectedRevision + 1);
+    tempCalls.push("CAS"); temp = next;
+  },
+  recordRequest: async (_organizationId: string, _id: string, _requestId: string, receipt: { operation: string; result: SalesWorkspace }) => {
+    assert.equal(receipt.operation, "reorder_lines"); assert.deepEqual(receipt.result, temp); tempCalls.push("receipt");
+  },
+} as unknown as SalesWorkspaceTransaction;
+const tempStore: SalesWorkspaceStore = { run: async work => work(tempTransaction), withWorkspace: async () => { throw new Error("Unexpected mutation path"); } };
+const tempLines = new SalesWorkspaceLineService(tempStore, {
+  pricing: () => { throw new Error("A presentation reorder must not resolve Products or Pricing"); },
+  releaseLineArtwork: async () => { throw new Error("A presentation reorder must not mutate Artwork"); },
+  now: () => new Date(temp.createdAt),
+});
+const reorderContext: OperationContext = { organizationId: tempOrg, operationId: "temp-reorder-contract", principal: {
+  kind: "staff", organizationId: tempOrg, userId: temp.creatorUserId, authority: { membershipId: "verified", capabilities: ["order.create"] },
+} };
+await tempLines.reorder(reorderContext, tempId, { requestId: "move-up", expectedRevision: 1, lineIds: [...tempLineIds].reverse() });
+assert.deepEqual(temp.lines.map(line => [line.id, line.position]), [[tempLineIds[1], 0], [tempLineIds[0], 1]]);
+await tempLines.reorder(reorderContext, tempId, { requestId: "move-down", expectedRevision: 2, lineIds: tempLineIds });
+assert.deepEqual(temp.lines.map(line => [line.id, line.position]), [[tempLineIds[0], 0], [tempLineIds[1], 1]]);
+assert.equal(temp.revision, 3, "each direction uses exactly one workspace CAS");
+assert.deepEqual(temp.lines.map(line => line.input), tempBefore.lines.map(line => line.input), "ordering does not rebuild commercial inputs");
+assert.deepEqual(temp.header, tempBefore.header);
+assert.equal(temp.promotion, undefined, "ordering cannot create a canonical promotion receipt");
+assert.deepEqual(tempCalls, ["lock", "reorder", "CAS", "receipt", "lock", "reorder", "CAS", "receipt"], "only TEMP owner operations are reachable");
+const beforeInvalidOrder = structuredClone(temp);
+await assert.rejects(tempLines.reorder(reorderContext, tempId, { requestId: "partial", expectedRevision: 3, lineIds: [tempLineIds[0]] }), { code: "VALIDATION_ERROR" });
+assert.deepEqual(temp, beforeInvalidOrder, "partial ordering leaves every TEMP fact unchanged");
+assert.equal(tempCalls.filter(call => call === "CAS").length, 2, "invalid ordering adds no write or receipt");
 assert.match(quoteUi, /Quote expiry/);
 assert.match(quoteUi, /Terms/);
 assert.match(orderUi, /termsCode/);

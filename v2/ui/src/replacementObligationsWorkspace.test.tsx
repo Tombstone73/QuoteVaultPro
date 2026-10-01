@@ -22,8 +22,8 @@ const render = (replacements: readonly unknown[], canPickup = true) => {
 };
 
 const actionableReplacements = [
-  { obligation: { replacementObligationId: "replacement-r", orderId: "order-r", orderLineId: "line-r", replacementQuantity: 2, reason: "transit_damage", responsibility: "carrier", billingTreatment: "no_charge", status: "production_complete" }, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 2, billingPending: false },
-  { obligation: { replacementObligationId: "replacement-billable", orderId: "order-r", orderLineId: "line-r", replacementQuantity: 2, reason: "transit_damage", responsibility: "carrier", billingTreatment: "billable", status: "open" }, remainingProductionQuantity: 2, remainingFulfillmentQuantity: 2, billingPending: false, billingInvoice: { invoiceId: "invoice-r", invoiceNumber: "ORD-R-B", lifecycle: "draft", currency: "USD", totalCents: 1250 } },
+  { obligation: { replacementObligationId: "replacement-r", orderId: "order-r", orderLineId: "line-r", replacementQuantity: 2, reason: "transit_damage", responsibility: "carrier", billingTreatment: "no_charge", status: "production_complete" }, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 2, availableFulfillmentQuantity: 2, reservedPreparedShipmentQuantity: 0, billingPending: false },
+  { obligation: { replacementObligationId: "replacement-billable", orderId: "order-r", orderLineId: "line-r", replacementQuantity: 2, reason: "transit_damage", responsibility: "carrier", billingTreatment: "billable", status: "open" }, remainingProductionQuantity: 2, remainingFulfillmentQuantity: 2, availableFulfillmentQuantity: 0, reservedPreparedShipmentQuantity: 0, billingPending: false, billingInvoice: { invoiceId: "invoice-r", invoiceNumber: "ORD-R-B", lifecycle: "draft", currency: "USD", totalCents: 1250 } },
 ];
 const actionable = render(actionableReplacements);
 assert.match(actionable, /Replacement Pickup/);
@@ -40,7 +40,16 @@ const unauthorized = render(actionableReplacements, false);
 assert.doesNotMatch(unauthorized, /Record Replacement Pickup/);
 
 const fulfilled = render([
-  { obligation: { replacementObligationId: "replacement-complete", orderId: "order-r", orderLineId: "line-r", replacementQuantity: 2, reason: "transit_damage", responsibility: "carrier", billingTreatment: "no_charge", status: "fulfilled" }, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 0, billingPending: false },
+  { obligation: { replacementObligationId: "replacement-complete", orderId: "order-r", orderLineId: "line-r", replacementQuantity: 2, reason: "transit_damage", responsibility: "carrier", billingTreatment: "no_charge", status: "fulfilled" }, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 0, availableFulfillmentQuantity: 0, reservedPreparedShipmentQuantity: 0, billingPending: false },
 ]);
 assert.doesNotMatch(fulfilled, /Record Replacement Pickup/);
+const ambiguous = render([{ ...actionableReplacements[0],
+  obligation: { ...actionableReplacements[0].obligation, status: "open" },
+  remainingProductionQuantity: 1, availableFulfillmentQuantity: 0,
+  productionAuthorityIssue: { kind: "AMBIGUOUS_REPLACEMENT_PRODUCTION", requirementKeys: ["front"] },
+}]);
+assert.match(ambiguous, /Production quantity unresolved/);
+assert.match(ambiguous, /Replacement Production authority is ambiguous for front/);
+assert.match(ambiguous, /Pickup is unavailable pending owner review/);
+assert.doesNotMatch(ambiguous, /Record Replacement Pickup|Replacement pickup quantity for/);
 console.log("replacement obligation pickup presentation tests passed.");

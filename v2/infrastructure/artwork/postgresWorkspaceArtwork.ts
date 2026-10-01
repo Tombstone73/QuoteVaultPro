@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import type { OperationContext } from "../../src/application/operation.js";
+import { requireOperationPrincipalScope, type OperationContext } from "../../src/application/operation.js";
 import { AuthorityPolicy } from "../../src/authorization/authorityPolicy.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { ArtworkApplicationService } from "../../src/modules/artwork/artworkApplication.js";
@@ -11,7 +11,7 @@ import type {
   WorkspaceArtworkResult, WorkspaceArtworkState, WorkspaceArtworkStorageLiveness,
 } from "../../src/modules/artwork/workspaceArtwork.js";
 import {
-  assertSalesWorkspaceMutable, authorizeSalesWorkspace, salesWorkspaceFingerprint,
+  assertSalesWorkspaceMutable, salesWorkspaceFingerprint,
   validateSalesWorkspaceId, validateSalesWorkspaceMutation,
 } from "../../src/modules/sales/workspaceApplication.js";
 import type { SalesWorkspace } from "../../src/modules/sales/workspaceContracts.js";
@@ -42,7 +42,8 @@ const projection = (row: ClaimRow): WorkspaceArtworkClaim => ({
 const conflict = (message: string): never => { throw new V2ApplicationError("CONFLICT", message); };
 
 function requireArtwork(context: OperationContext, capability: "artwork.view" | "artwork.adopt" | "artwork.assign" | "quote.edit"): void {
-  authorizeSalesWorkspace(context);
+  requireOperationPrincipalScope(context);
+  if (context.principal.kind !== "staff") throw new V2ApplicationError("FORBIDDEN", "Workspace Artwork requires a verified Staff principal.");
   if (!new AuthorityPolicy().decide(context.principal, { capability, resource: { organizationId: context.organizationId } }).allowed) {
     throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for workspace Artwork.");
   }

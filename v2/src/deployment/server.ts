@@ -19,6 +19,10 @@ import {
 import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/authenticatedQuoteRuntime.js";
 import { createSalesWorkspaceDependencies } from "../../infrastructure/sales/authenticatedSalesWorkspaceRuntime.js";
 import { SupabaseArtworkBinaryStorage } from "../../infrastructure/artwork/artworkBinaryStorage.js";
+import { PostgresWorkspaceArtwork } from "../../infrastructure/artwork/postgresWorkspaceArtwork.js";
+import { PostgresWorkspaceMaintenance } from "../../infrastructure/sales/postgresWorkspaceMaintenance.js";
+import { startWorkspaceMaintenanceWorker, type WorkspaceMaintenanceWorker } from "../../infrastructure/sales/workspaceMaintenanceWorker.js";
+import { SalesWorkspaceMaintenanceService } from "../modules/sales/workspaceMaintenance.js";
 import { composeAuthenticatedOrderRuntime } from "../../infrastructure/sales/authenticatedOrderRuntime.js";
 import { OrderApplicationService } from "../modules/sales/orderApplication.js";
 import { PostgresOrderTransactionRunner } from "../../infrastructure/sales/postgresOrderTransaction.js";
@@ -212,6 +216,7 @@ export const startV2DeploymentServer = async (
   let stopQuickBooksWorker: (() => void) | null = null;
   let stopInvoiceEmailWorker: (() => void) | null = null;
   let stopProofEmailWorker: (() => void) | null = null;
+  let workspaceMaintenanceWorker: WorkspaceMaintenanceWorker | undefined;
   let server: Server | undefined;
   try {
     server = await new Promise<Server>((resolve, reject) => {
@@ -222,6 +227,20 @@ export const startV2DeploymentServer = async (
       stopQuickBooksWorker = startV2QuickBooksBillingWorker(pool, (event, data) => logger.log("info", event, data));
       stopInvoiceEmailWorker = startV2InvoiceEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
       stopProofEmailWorker = startV2ProofEmailDeliveryWorker(pool, (event, data) => logger.log("info", event, data));
+      if (environment.V2_WORKSPACE_MAINTENANCE_ENABLED?.trim().toLowerCase() === "true") {
+        const store = new PostgresWorkspaceMaintenance(pool);
+        workspaceMaintenanceWorker = startWorkspaceMaintenanceWorker({
+          store,
+          maintenance: new SalesWorkspaceMaintenanceService(store, new PostgresWorkspaceArtwork(pool, new SupabaseArtworkBinaryStorage())),
+          environment,
+          onResult: summary => logger.log(summary.failedOrganizations || summary.failed || summary.remaining === null ? "warn" : "info", `v2.workspace.maintenance.${summary.reason}`, {
+            operationId: "sales.workspace.maintenance", resourceType: "sales_workspace",
+            ...(summary.remaining === null ? { errorCode: "CLEANUP_COUNT_UNAVAILABLE" } : summary.errorCode ? { errorCode: summary.errorCode } : summary.remaining ? { errorCode: "CLEANUP_RECHECK_PENDING" } : {}),
+          }),
+        });
+      } else {
+        logger.log("info", "v2.workspace.maintenance.disabled", { operationId: "sales.workspace.maintenance" });
+      }
     } else {
       logger.log("info", "v2.deployment.mutation_workers.disabled", {
         errorCode: `MUTATION_WORKERS_${mutationWorkers.reason.toUpperCase()}`,
@@ -231,6 +250,7 @@ export const startV2DeploymentServer = async (
     stopInvoiceEmailWorker?.();
     stopProofEmailWorker?.();
     stopQuickBooksWorker?.();
+    await workspaceMaintenanceWorker?.stop();
     await pool.end();
     throw error;
   }
@@ -245,6 +265,7 @@ export const startV2DeploymentServer = async (
     stopQuickBooksWorker?.();
     stopInvoiceEmailWorker?.();
     stopProofEmailWorker?.();
+    await workspaceMaintenanceWorker?.stop();
     await pool.end();
     logger.log("info", "v2.deployment.stopped");
   };

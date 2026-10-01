@@ -76,8 +76,10 @@ const groups = {
   "infrastructure/fulfillment/postgresShipmentContainerTransaction.ts": [
     ["v2_fulfillment_handoffs","INSERT","64dae4f914fd6bda7fe366299f28f3d9e16115be98679ea3e3df4ceadfd97e97","OBSERVED",1],
     ["v2_fulfillment_handoff_lines","INSERT","9bf248db1dc15cda8e59411e0130342002ddf2630b9e17248e54be63a1006de1","OBSERVED",1],
-    ["<unresolved>","UNRESOLVED","b3ae71ba03ca2c75ae9120dea56cb0c4fe27b62c226fff18ce20516442749e22","SQL-DYNAMIC",1],
-    ["v2_fulfillment_handoff_document_snapshots","INSERT","c8c964695a2f2fc81cbf01516988ebc71211ad123a47fbd32c70eaa689b4bb4a","SNAPSHOT",1],
+    // Independently reviewed M5: same opaque query/count; updated full-source
+    // pin for scoped obligation reads. Snapshot adds explicit parameter types.
+    ["<unresolved>","UNRESOLVED","d9963bd39ec0d93e6c3e643cb4190a7c0375da8e566d495d73ce4c69fce663f1","SQL-DYNAMIC",1],
+    ["v2_fulfillment_handoff_document_snapshots","INSERT","677637aac78acf940f9f97c48d982159444fa954b8114d1a4eebd02acb974b3f","SNAPSHOT",1],
   ],
   "infrastructure/fulfillment/postgresShipmentShippingAllocation.ts": [
   ],
@@ -196,7 +198,7 @@ const groups = {
     ["v2_proof_delivery_jobs","UPDATE","29127ffcbc3d4670bff68fddb9cc73b7dfc599f7d537744a23e8ca36f68815b6","DEFERRED",1],
   ],
   "infrastructure/sales/postgresOrderTransaction.ts": [
-    ["<unresolved>","UNRESOLVED","2f55573afbeabe617f094bc254fb0e3b81f054104ead325003e8d5e367be9912","SQL-DYNAMIC",1],
+    ["<unresolved>","UNRESOLVED","69b8c0c3b4149ab212acdaed9fbe96541357925e3627323045e5559d367eec86","SQL-DYNAMIC",1],
     ["v2_production_works","UPDATE","788fb59063b0ac6c9e1c827673fc11951568c109ff848d93086eec95e7671292","PROJECTION",1],
   ],
   "infrastructure/sales/postgresOrderWorkflowTransaction.ts": [

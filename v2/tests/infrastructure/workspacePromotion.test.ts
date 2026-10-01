@@ -14,6 +14,7 @@ import { workspaceLinePreviewFingerprint } from "../../src/modules/sales/workspa
 import type { PromoteSalesWorkspaceInput, WorkspacePromotionReceipt } from "../../src/modules/sales/workspacePromotion.js";
 import { brandedId, canonicalJson, currencyCode } from "../../src/modules/shared/commercialValues.js";
 import { PostgresWorkspacePromotion, type WorkspaceArtworkPromotionRunner } from "../../infrastructure/sales/postgresWorkspacePromotion.js";
+import { advanceSalesWorkspaceArtworkRevision, lockSalesWorkspaceForArtwork, readSalesWorkspaceForArtwork, readSalesWorkspacePromotionLineMap } from "../../infrastructure/sales/workspaceArtworkAccess.js";
 
 const org = brandedId<"OrganizationId">("00000000-0000-4000-8000-000000000001");
 const otherOrg = "00000000-0000-4000-8000-000000000002";
@@ -143,7 +144,11 @@ async function fixture(options: { artwork?: boolean; agreement?: boolean; lineCo
   const sameClient = (value: PoolClient) => { expect(value).toBe(client); expect(held).toBe(true); clients.push(value); };
   const workspaceTransaction = (value: PoolClient): SalesWorkspaceTransaction => {
     sameClient(value);
-    const tx: Pick<SalesWorkspaceTransaction, "get" | "lockPromotionRequest" | "findPromotionRequest" | "getPromotion" | "beginPromotion" | "update" | "recordPromotionLineMap" | "recordPromotion"> = {
+    const tx: Pick<SalesWorkspaceTransaction, "getKind" | "get" | "lockPromotionRequest" | "findPromotionRequest" | "getPromotion" | "beginPromotion" | "update" | "recordPromotionLineMap" | "recordPromotion"> = {
+      getKind: async (organizationId, creator, id) => {
+        events.push("workspace-kind");
+        return organizationId === state.workspace.organizationId && creator === state.workspace.creatorUserId && id === state.workspace.id ? state.workspace.kind : null;
+      },
       get: async (organizationId, creator, id, lock) => {
         expect(lock).toBe(true); events.push("workspace-lock");
         return organizationId === state.workspace.organizationId && creator === state.workspace.creatorUserId && id === state.workspace.id ? clone(state.workspace) : null;
@@ -271,7 +276,9 @@ describe("atomic Sales workspace promotion", () => {
     expect(result.value.receipt.documentRevision).toBe("4");
     expect(result.value.receipt.header).toMatchObject({ jobLabel: "Durable job label", notes: "Workspace planning note" });
     expect(result.value.promotedWorkspaceHeader).toEqual(result.value.receipt.header);
-    expect(result.value.receipt.result.quote).not.toHaveProperty("jobLabel");
+    expect(result.value.receipt.result.quote).toHaveProperty("jobLabel", "Durable job label");
+    expect(result.value.receipt.result.quote).toHaveProperty("terms.commercialNotes", "Canonical note");
+    expect(result.value.receipt.result.quote).not.toHaveProperty("notes");
     expect(f.state.quote?.quote.terms.commercialNotes).toBe("Canonical note");
     expect(f.state.quote?.quote).toMatchObject({ deliveryState: "not_sent", acceptanceState: "not_accepted", lifecycleState: "open" });
     expect(result.value.receipt.lineMap.map((line) => line.workspaceLineId)).toEqual(f.state.workspace.lines.map((line) => line.id));
@@ -287,12 +294,82 @@ describe("atomic Sales workspace promotion", () => {
     const result = await f.service.promote(context(), input("order"));
     if (!result.ok) throw result.error;
     expect(result.value.promotedWorkspaceHeader).toEqual(f.state.workspace.header);
+    expect(result.value.receipt.result.order).toHaveProperty("jobLabel", "Durable job label");
+    expect(result.value.receipt.result.order).toHaveProperty("terms.commercialNotes", "Canonical note");
+    expect(result.value.receipt.result.order).not.toHaveProperty("notes");
     const mapped = result.value.receipt.lineMap.map((entry) => f.state.order!.order.lines.find((line) => line.lineId === entry.canonicalLineId)!);
     expect(mapped.map((line) => line.quantity)).toEqual([2, 3]);
     expect(mapped.map((line) => line.calculatedLineAmount.cents)).toEqual([300, 450]);
     expect(f.state.materials).toHaveLength(1); expect(f.state.invoices).toHaveLength(1); expect(f.state.routes).toHaveLength(2); expect(f.state.outbox).toHaveLength(1);
     expect(f.state.quote).toBeUndefined(); expect(f.state.audits).toHaveLength(1); expect(f.state.attribution).toHaveLength(1);
     expect(new Set(f.clients).size).toBe(1);
+  });
+  test("new Sales Order forwards operational notes to the actual owner for normalization and exact replay", async () => {
+    const f = await fixture();
+    f.patch({ lines: f.state.workspace.lines.map((line, index) => index === 0 ? { ...line, operationalNote: "  Fold carefully  " } : line) });
+    const result = await f.service.promote(context(), input("order"));
+    if (!result.ok) throw result.error;
+    expect(f.state.order?.order.lines[0]?.operationalNote).toBe("Fold carefully");
+    expect(result.value.receipt.result.order).toHaveProperty("lines.0.operationalNote", "Fold carefully");
+    const before = clone(f.state), reads = f.canonicalReads;
+    const replay = await f.service.promote(context(), input("order"));
+    if (!replay.ok) throw replay.error;
+    expect(replay.value).toEqual({ ...result.value, replayed: true });
+    expect(f.state).toEqual(before); expect(f.canonicalReads).toBe(reads); expect(f.state.requests).toHaveLength(1);
+  });
+  test("new Sales Quote explicitly rejects operational notes before any canonical operation; clearing permits Quote", async () => {
+    const f = await fixture();
+    f.patch({ lines: f.state.workspace.lines.map((line, index) => index === 0 ? { ...line, operationalNote: "Fold carefully" } : line) });
+    const before = clone(f.state);
+    expect(await f.service.promote(context(), input())).toMatchObject({ ok: false, error: { code: "CONFLICT", context: { reason: "operational_note_unsupported_target", target: "quote" } } });
+    expect(f.state).toEqual(before); expect(f.canonicalReads).toBe(0); expect(f.state.requests).toEqual([]);
+    expect(f.events).not.toContain("workspace:promoting"); expect(f.clients).toHaveLength(1);
+    f.patch({ lines: f.state.workspace.lines.map((line) => ({ ...line, operationalNote: undefined })) });
+    const cleared = await f.service.promote(context(), input());
+    if (!cleared.ok) throw cleared.error;
+    expect(f.state.quote?.quote.lines.every((line) => line.operationalNote === undefined)).toBe(true);
+    expect(f.state.requests).toHaveLength(1);
+  });
+  test.each([undefined, ""])("new Sales Quote accepts empty/omitted operational note %p", async (note) => {
+    const f = await fixture(); f.patch({ lines: f.state.workspace.lines.map((line) => ({ ...line, operationalNote: note })) });
+    expect((await f.service.promote(context(), input())).ok).toBe(true);
+  });
+  test("new Sales Order note validation stays with the canonical owner", async () => {
+    const f = await fixture(); f.patch({ lines: f.state.workspace.lines.map((line, index) => index === 0 ? { ...line, operationalNote: "x".repeat(4001) } : line) });
+    const before = clone(f.state);
+    expect(await f.service.promote(context(), input("order"))).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(f.state).toEqual(before); expect(f.state.order).toBeUndefined();
+  });
+  test.each(["draft", "promoting", "promoted"] as const)("quote_edit %s cannot reach promotion or receipt replay through creation authority", async (state) => {
+    const f = await fixture();
+    if (state === "promoted") expect((await f.service.promote(context(), input())).ok).toBe(true);
+    f.patch({ kind: "quote_edit", state });
+    const before = clone(f.state), reads = f.canonicalReads; f.events.length = 0;
+    expect(await f.service.promote(context(), input())).toMatchObject({ ok: false, error: { code: "CONFLICT", context: { reason: "workspace_kind_unsupported" } } });
+    expect(f.state).toEqual(before); expect(f.canonicalReads).toBe(reads);
+    expect(f.events).toContain("workspace-kind"); expect(f.events).not.toContain("workspace-lock");
+    expect(f.events.some((event) => event.startsWith("promotion-lock:"))).toBe(false);
+  });
+  test.each(["draft", "promoting", "promoted"] as const)("Artwork read/staging/promoting/replay helpers reject quote_edit %s before a full Sales read", async (state) => {
+    const reservedRow = { kind: "quote_edit", state };
+    const query = jest.fn(async (sql: string, params?: readonly unknown[]) => {
+      expect(sql).toMatch(/^SELECT kind FROM v2_sales_workspaces/);
+      return { rows: params?.[0] === org && params[1] === userId && params[2] === workspaceId ? [{ kind: reservedRow.kind }] : [], rowCount: 1 };
+    });
+    const client = { query } as unknown as PoolClient;
+    const rejection = { code: "CONFLICT", context: { reason: "workspace_kind_unsupported" } };
+    await expect(readSalesWorkspaceForArtwork(client, context(), workspaceId)).rejects.toMatchObject(rejection);
+    await expect(lockSalesWorkspaceForArtwork(client, context(), workspaceId, 3)).rejects.toMatchObject(rejection);
+    await expect(lockSalesWorkspaceForArtwork(client, context(), workspaceId, 3, true)).rejects.toMatchObject(rejection);
+    await expect(readSalesWorkspacePromotionLineMap(client, context(), workspaceId)).rejects.toMatchObject(rejection);
+    await expect(advanceSalesWorkspaceArtworkRevision(client, context(), workspaceId, 3)).rejects.toMatchObject(rejection);
+    expect(query).toHaveBeenCalledTimes(5);
+    const foreign = context();
+    await expect(readSalesWorkspaceForArtwork(client, { ...foreign, principal: { ...foreign.principal as Extract<OperationContext["principal"], { kind: "staff" }>, userId: "other" } }, workspaceId))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(readSalesWorkspaceForArtwork(client, { ...foreign, organizationId: otherOrg }, workspaceId)).rejects.toMatchObject({ code: "WRONG_TENANT" });
+    await expect(readSalesWorkspaceForArtwork(client, { ...foreign, organizationId: otherOrg,
+      principal: { ...foreign.principal as Extract<OperationContext["principal"], { kind: "staff" }>, organizationId: otherOrg } }, workspaceId)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   test("Quote intentionally keeps base pricing even when Order preview has a customer agreement", async () => {
@@ -395,7 +472,10 @@ describe("atomic Sales workspace promotion", () => {
     if (kind === "discarded" || kind === "promoting") f.patch({ state: kind });
     if (kind === "edit") f.patch({ kind: "order_edit" });
     if (kind === "empty") f.patch({ lines: [] });
-    expect(await f.service.promote(context(), input())).toMatchObject({ ok: false, error: { code: kind === "empty" ? "VALIDATION_ERROR" : "CONFLICT" } });
+    const before = clone(f.state);
+    // Creation grants do not authorize the exact Order-edit workspace kind.
+    expect(await f.service.promote(context(), input())).toMatchObject({ ok: false, error: { code: kind === "edit" ? "FORBIDDEN" : kind === "empty" ? "VALIDATION_ERROR" : "CONFLICT" } });
+    expect(f.state).toEqual(before);
     expect(f.canonicalReads).toBe(0); expect(f.state.requests).toEqual([]); expect(f.state.quote).toBeUndefined();
   });
 

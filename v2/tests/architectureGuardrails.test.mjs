@@ -90,12 +90,14 @@ test("owner operation calls in one transaction pass", () => {
 });
 
 test("TEMP persistence does not transfer Sales or Artwork state ownership", () => {
-  for (const table of ["v2_sales_workspaces", "v2_sales_workspace_lines", "v2_sales_workspace_requests", "v2_sales_workspace_promotions", "v2_sales_workspace_promotion_lines"]) {
+  for (const table of ["v2_sales_workspaces", "v2_sales_workspace_lines", "v2_sales_workspace_requests", "v2_sales_workspace_promotions", "v2_sales_workspace_promotion_lines", "v2_sales_order_edit_starts"]) {
     assert.deepEqual(evaluateSql(files("infrastructure/sales/workspaceFixture.ts", `await client.query('INSERT INTO ${table}(id) VALUES($1)');`)), []);
     assert.ok(evaluateSql(files("infrastructure/artwork/workspaceFixture.ts", `await client.query('UPDATE ${table} SET state=$1');`)).length > 0);
   }
-  assert.deepEqual(evaluateSql(files("infrastructure/artwork/workspaceFixture.ts", "await client.query('INSERT INTO v2_artwork_workspace_claims(id) VALUES($1)');")), []);
-  assert.ok(evaluateSql(files("infrastructure/sales/workspaceFixture.ts", "await client.query('DELETE FROM v2_artwork_workspace_claims WHERE id=$1');")).length > 0);
+  for (const table of ["v2_artwork_workspace_claims", "v2_artwork_workspace_edit_sessions", "v2_artwork_workspace_edit_refs", "v2_artwork_workspace_edit_intents", "v2_artwork_workspace_edit_applications"]) {
+    assert.deepEqual(evaluateSql(files("infrastructure/artwork/workspaceFixture.ts", `await client.query('INSERT INTO ${table}(id) VALUES($1)');`)), []);
+    assert.ok(evaluateSql(files("infrastructure/sales/workspaceFixture.ts", `await client.query('DELETE FROM ${table} WHERE id=$1');`)).length > 0);
+  }
 });
 
 test("workspace composition exposes named read/owner operations, not private repositories", () => {
@@ -117,11 +119,31 @@ test("campaign owner transaction APIs are named and do not expose private reposi
     ["infrastructure/fulfillment/contractFixture.ts", "../billing/postgresShippingCharge.js", "applyShippingChargeInTransaction"],
     ["infrastructure/prepress/contractFixture.ts", "../production/postgresSuccessorWorkCreation.js", "PostgresSuccessorWorkCreation"],
     ["infrastructure/proofing/contractFixture.ts", "../authorization/postgresProofRecipientAccess.js", "PostgresProofRecipientAccess"],
+    ["infrastructure/sales/contractFixture.ts", "../billing/postgresOrderEditSafety.js", "assessOrderEditBillingInTransaction"],
+    ["infrastructure/sales/contractFixture.ts", "../artwork/postgresOrderEditArtwork.js", "captureOrderEditArtworkFingerprint"],
+    ["infrastructure/sales/contractFixture.ts", "../artwork/postgresOrderEditArtwork.js", "captureOrderEditArtwork"],
+    ["infrastructure/sales/contractFixture.ts", "../artwork/postgresOrderEditArtwork.js", "validateOrderEditArtworkInTransaction"],
+    ["infrastructure/sales/contractFixture.ts", "../artwork/postgresOrderEditArtwork.js", "applyOrderEditArtworkInTransaction"],
+    ["infrastructure/sales/contractFixture.ts", "../artwork/postgresOrderEditArtwork.js", "authorizeOrderEditArtworkReplay"],
   ];
   for (const [file, target, symbol] of approved) {
     assert.deepEqual(evaluateImports([{ file, source: `import { ${symbol} } from '${target}';` }]), []);
     assert.ok(evaluateImports([{ file, source: `import { privateQuery } from '${target}';` }]).length > 0);
   }
+});
+
+test("Order edit safety and Artwork cleanup contracts expose only exact owner symbols", () => {
+  const seams = [
+    ["../billing/orderEditSafety.js", "OrderEditBillingSafetyAssessment"],
+    ["../artwork/workspaceArtwork.js", "WorkspaceArtworkMaintenance"],
+    ["../artwork/workspaceArtwork.js", "WorkspaceArtworkCleanupSummary"],
+  ];
+  for (const [target, symbol] of seams) {
+    assert.deepEqual(evaluateImports(files(moduleFile, `import type { ${symbol} } from '${target}';`)), []);
+    assert.ok(evaluateImports(files(moduleFile, `import { privateQuery } from '${target}';`)).length > 0);
+    assert.ok(evaluateImports(files(moduleFile, `export * from '${target}';`)).length > 0);
+  }
+  assert.ok(evaluateImports(files(moduleFile, "import { assessOrderEditBillingInTransaction } from '../../../infrastructure/billing/postgresOrderEditSafety.js';")).length > 0);
 });
 
 test("Invoice tax kernel is scoped to Billing, never Shipping or carrier transport", () => {

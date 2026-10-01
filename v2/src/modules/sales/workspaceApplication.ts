@@ -7,7 +7,7 @@ import { V2ApplicationError } from "../../errors/applicationError.js";
 import { canonicalJson } from "../shared/commercialValues.js";
 import type {
   CreateSalesWorkspaceInput, SalesWorkspace, SalesWorkspaceHeader, SalesWorkspaceLineInput,
-  SalesWorkspaceMutation, SalesWorkspaceStore, SalesWorkspaceTransaction, SaveSalesWorkspaceInput,
+  SalesWorkspaceKind, SalesWorkspaceMutation, SalesWorkspaceStore, SalesWorkspaceTransaction, SaveSalesWorkspaceInput,
 } from "./workspaceContracts.js";
 
 const invalid = (message: string): never => { throw new V2ApplicationError("VALIDATION_ERROR", message); };
@@ -88,25 +88,48 @@ export function salesWorkspaceFingerprint(value: unknown): string {
   // Optional TS properties are absent on the JSON wire, not distinct requests.
   return createHash("sha256").update(canonicalJson(JSON.parse(JSON.stringify(value)))).digest("hex");
 }
-export function authorizeSalesWorkspace(context: OperationContext, workspace?: SalesWorkspace): StaffPrincipal {
+export function authorizeSalesWorkspace(context: OperationContext, workspace?: Pick<SalesWorkspace, "kind" | "organizationId" | "creatorUserId">): StaffPrincipal {
   requireOperationPrincipalScope(context);
   const principal = context.principal;
   if (principal.kind !== "staff") throw new V2ApplicationError("FORBIDDEN", "Sales workspaces require a verified Staff principal.");
   const policy = new AuthorityPolicy();
-  if (!["quote.create", "order.create"].some((capability) => policy.decide(principal, {
+  const canCreate = ["quote.create", "order.create"].some((capability) => policy.decide(principal, {
     capability: capability as "quote.create" | "order.create", resource: { organizationId: context.organizationId },
-  }).allowed)) throw new V2ApplicationError("FORBIDDEN", "Sales creation authority is required.");
+  }).allowed);
+  const canEdit = ["order.view", "order.edit"].every((capability) => policy.decide(principal, {
+    capability: capability as "order.view" | "order.edit", resource: { organizationId: context.organizationId },
+  }).allowed);
+  if (workspace?.kind === "order_edit" ? !canEdit : workspace ? !canCreate : !canCreate && !canEdit) {
+    throw new V2ApplicationError("FORBIDDEN", workspace?.kind === "order_edit" ? "Order viewing and editing authority is required." : "Sales workspace authority is required.");
+  }
   if (workspace && (workspace.organizationId !== context.organizationId || workspace.creatorUserId !== principal.userId)) {
     throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
   }
+  if (workspace && workspace.kind !== "new_sales" && workspace.kind !== "order_edit") {
+    throw new V2ApplicationError("CONFLICT", "Transactional Quote editing is not supported.", { reason: "workspace_kind_unsupported" });
+  }
   return principal;
+}
+/** Read only identity/kind until fresh authority for the exact workspace is established. */
+export async function getAuthorizedSalesWorkspace(tx: SalesWorkspaceTransaction, context: OperationContext,
+  workspaceId: string, lock = false): Promise<SalesWorkspace> {
+  const principal = authorizeSalesWorkspace(context);
+  if (tx.getKind) {
+    const kind = await tx.getKind(context.organizationId, principal.userId, workspaceId);
+    if (!kind) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
+    authorizeSalesWorkspace(context, { kind, organizationId: context.organizationId, creatorUserId: principal.userId });
+  }
+  const workspace = await tx.get(context.organizationId, principal.userId, workspaceId, lock);
+  if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
+  authorizeSalesWorkspace(context, workspace);
+  return workspace;
 }
 export function assertSalesWorkspaceMutable(workspace: SalesWorkspace, expectedRevision: number, now = new Date()): void {
   parse(revision, expectedRevision, "workspace revision");
   if (workspace.state !== "draft" || !Number.isFinite(Date.parse(workspace.expiresAt)) || !Number.isFinite(now.getTime()) || Date.parse(workspace.expiresAt) <= now.getTime()) {
     throw new V2ApplicationError("CONFLICT", "Sales workspace is no longer an active draft.");
   }
-  if (workspace.kind !== "new_sales") invalid("Transactional source editing is not implemented.");
+  if (workspace.kind !== "new_sales" && workspace.kind !== "order_edit") invalid("Transactional Quote editing is not implemented.");
   if (workspace.revision !== expectedRevision) throw new V2ApplicationError("CONFLICT", "Sales workspace revision has changed.");
 }
 export function bumpSalesWorkspaceRevision(workspace: SalesWorkspace, now = new Date()): SalesWorkspace {
@@ -126,7 +149,8 @@ export class SalesWorkspaceApplicationService {
   private now(): Date { return this.options.now?.() ?? new Date(); }
 
   async create(context: OperationContext, input: CreateSalesWorkspaceInput): Promise<SalesWorkspace> {
-    const principal = authorizeSalesWorkspace(context);
+    const principal = authorizeSalesWorkspace(context, { kind: "new_sales", organizationId: context.organizationId,
+      creatorUserId: context.principal.kind === "staff" ? context.principal.userId : "" });
     const parsed = parse(z.object({ requestId, kind: z.enum(["new_sales", "quote_edit", "order_edit"]).optional(),
       header: headerSchema.optional(), sourceDocumentKind: z.enum(["quote", "order"]).optional(),
       sourceDocumentId: uuid.optional(), baseRevision: text(128).optional() }).strict(), input, "workspace creation");
@@ -140,9 +164,7 @@ export class SalesWorkspaceApplicationService {
       const existing = await tx.findCreation(context.organizationId, parsed.requestId);
       if (existing) {
         if (existing.creatorUserId !== principal.userId) throw new V2ApplicationError("CONFLICT", "Workspace creation request is already used.");
-        const workspace = await tx.get(context.organizationId, principal.userId, existing.workspaceId, true);
-        if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
-        authorizeSalesWorkspace(context, workspace);
+        const workspace = await getAuthorizedSalesWorkspace(tx, context, existing.workspaceId, true);
         if (existing.fingerprint !== fingerprint) throw new V2ApplicationError("CONFLICT", "Workspace creation request input changed.");
         return visibleState(workspace, this.now());
       }
@@ -156,19 +178,23 @@ export class SalesWorkspaceApplicationService {
     });
   }
   async get(context: OperationContext, workspaceId: string): Promise<SalesWorkspace> {
-    const principal = authorizeSalesWorkspace(context);
+    authorizeSalesWorkspace(context);
     validateSalesWorkspaceId(workspaceId);
     return this.store.run(async (tx) => {
-      const workspace = await tx.get(context.organizationId, principal.userId, workspaceId);
-      if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
-      authorizeSalesWorkspace(context, workspace);
+      const workspace = await getAuthorizedSalesWorkspace(tx, context, workspaceId);
       return visibleState(workspace, this.now());
     });
   }
   async list(context: OperationContext, limit = 50): Promise<readonly SalesWorkspace[]> {
     const principal = authorizeSalesWorkspace(context);
     parse(z.number().int().min(1).max(100), limit, "workspace list limit");
-    return this.store.run((tx) => tx.list(context.organizationId, principal.userId, this.now().toISOString(), limit));
+    const kinds: SalesWorkspaceKind[] = [];
+    for (const kind of ["new_sales", "order_edit"] as const) {
+      try { authorizeSalesWorkspace(context, { kind, organizationId: context.organizationId, creatorUserId: principal.userId }); kinds.push(kind); }
+      catch (error) { if (!(error instanceof V2ApplicationError) || error.code !== "FORBIDDEN") throw error; }
+    }
+    return this.store.run(async (tx) => (await tx.list(context.organizationId, principal.userId, this.now().toISOString(), limit, kinds))
+      .filter((workspace) => kinds.includes(workspace.kind)));
   }
   async saveDraft(context: OperationContext, workspaceId: string, input: SaveSalesWorkspaceInput): Promise<SalesWorkspace> {
     authorizeSalesWorkspace(context);
@@ -191,7 +217,11 @@ export class SalesWorkspaceApplicationService {
     const principal = authorizeSalesWorkspace(context);
     parse(z.number().int().min(1).max(100), limit, "workspace expiry limit");
     return this.store.run(async (tx) => {
-      const ids = await tx.expireDrafts(context.organizationId, principal.userId, this.now().toISOString(), limit);
+      const kinds = (["new_sales", "order_edit"] as const).filter((kind) => {
+        try { authorizeSalesWorkspace(context, { kind, organizationId: context.organizationId, creatorUserId: principal.userId }); return true; }
+        catch (error) { if (!(error instanceof V2ApplicationError) || error.code !== "FORBIDDEN") throw error; return false; }
+      });
+      const ids = await tx.expireDrafts(context.organizationId, principal.userId, this.now().toISOString(), limit, kinds);
       for (const id of ids) {
         const workspace = await tx.get(context.organizationId, principal.userId, id);
         if (workspace) await this.options.onDiscard?.(tx, workspace);
@@ -201,13 +231,11 @@ export class SalesWorkspaceApplicationService {
   }
   private async mutate(context: OperationContext, workspaceId: string, input: SalesWorkspaceMutation, operation: string,
     payload: unknown, work: (tx: SalesWorkspaceTransaction, workspace: SalesWorkspace) => Promise<SalesWorkspace>): Promise<SalesWorkspace> {
-    const principal = authorizeSalesWorkspace(context);
+    authorizeSalesWorkspace(context);
     validateSalesWorkspaceId(workspaceId);
     const fingerprint = salesWorkspaceFingerprint({ operation, expectedRevision: input.expectedRevision, payload });
     return this.store.run(async (tx) => {
-      const workspace = await tx.get(context.organizationId, principal.userId, workspaceId, true);
-      if (!workspace) throw new V2ApplicationError("NOT_FOUND", "Sales workspace was not found.");
-      authorizeSalesWorkspace(context, workspace);
+      const workspace = await getAuthorizedSalesWorkspace(tx, context, workspaceId, true);
       const replay = await tx.getRequest(context.organizationId, workspaceId, input.requestId);
       if (replay) {
         if (replay.operation !== operation || replay.fingerprint !== fingerprint) throw new V2ApplicationError("CONFLICT", "Workspace request input changed.");
