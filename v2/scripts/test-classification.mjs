@@ -37,6 +37,10 @@ add('v2/ui/src/', 'tsx', ['transactionalSalesWorkspace.test.tsx', 'persistedSale
   'safe-deterministic', 'Neutral persisted-entry UI with scoped mocked workspace transport; no canonical/provider/network effects.');
 add('v2/ui/src/', 'tsx', ['orderEditShellNavigation.test.tsx'],
   'safe-deterministic', 'Actual App and shell navigation assertions run under tsx with JSDOM, intercepted fetch and scoped in-memory workspace receipts; CommonJS React/query graph shares one runtime, and only CSS evaluation is ignored. No external transport, credentials or canonical persistence.');
+add('v2/tests/', 'tsx', ['infrastructure/salesContactSelection.postgres.test.ts', 'modules/contactOnlySalesPromotion.test.ts', 'interfaces/contactOnlyWorkspaceRoutes.test.ts'],
+  'safe-deterministic', 'Standalone actual Customers reads, Sales applications and workspace coordinator execute against disposable in-memory PGlite with explicit same-client owner factories; loopback HTTP only, no V1 initialization, credentials, provider or live database.');
+add('v2/ui/src/', 'tsx', ['salesContactSelection.test.tsx', 'contactOnlyWorkspaceIntegration.test.tsx'],
+  'safe-deterministic', 'Mounted controlled selector and real workspace UI use scoped intercepted transport and in-memory workspace persistence; no external fetch, provider or canonical runtime initialization.');
 add('v2/tests/infrastructure/', 'tsx', [
   'shipmentShippingInvoiceProjection.pure.ts',
   'proofRecipientAccess.test.ts',

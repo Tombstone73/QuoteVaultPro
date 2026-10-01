@@ -6,6 +6,7 @@ import { TransactionalSalesWorkspace, type TransactionalSalesWorkspaceProps } fr
 import { createSalesWorkspaceClient, salesWorkspaceKeys, type SalesWorkspaceClient, type WorkspaceHeader, type WorkspaceLineInput, type WorkspaceLineView, type WorkspacePromotionView, type WorkspaceView } from "./salesWorkspaceApi";
 import type { ProductConfiguration, SalesLinePricingPreview } from "./api";
 import type { WorkspaceArtworkClaim } from "../../src/modules/artwork/workspaceArtwork";
+import { brandedId } from "../../src/modules/shared/commercialValues";
 
 const org = "11111111-1111-4111-8111-111111111111";
 const user = "22222222-2222-4222-8222-222222222222";
@@ -58,7 +59,7 @@ function mockServer(initial = cannedWorkspace(), initialClaims: readonly Workspa
     },
     customers: async () => [{ customerId, displayName: "Canned Customer" }],
     products: async () => [{ productId, displayName: "Banner" }],
-    contacts: async () => [{ contactId, displayName: "Casey" }],
+    contacts: async (_org, _id, query) => ({ items: [{ id: brandedId<"ContactId">(contactId), label: "Casey" }], selectedContact: query.selectedContactId === contactId ? { id: brandedId<"ContactId">(contactId), label: "Casey" } : null }),
     configurationApi: () => ({ configuration: async () => copy(configuration), resolveConfiguration: async (_org, _product, selections) => ({ ...configuration, effectiveSelections: { ...selections } }), previewLinePricing: async () => copy(preview) }),
     listArtwork: async () => { calls.push({ method: "listArtwork" }); return copy(claims); },
     uploadArtwork: async (_org, id, body) => {
@@ -87,6 +88,8 @@ let opened: NonNullable<WorkspaceView["promotion"]>[] = [];
 const text = () => document.body.textContent ?? "";
 const button = (label: string) => { const match = [...document.querySelectorAll("button")].find((node) => node.textContent === label); assert.ok(match, `Button ${label} exists`); return match; };
 const field = (label: string): HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement => {
+  const explicit = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[aria-label="${label}"]`);
+  if (explicit) return explicit;
   const match = [...document.querySelectorAll("label")].find((node) => node.textContent?.trim().startsWith(label));
   const control = match?.querySelector("input,select,textarea"); assert.ok(control, `Field ${label} exists`); return control as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 };
@@ -146,6 +149,19 @@ try {
   await check("Neutral customer selection clears the previous contact before saving", async () => {
     const server = mockServer(); server.client.customers = async () => [{ customerId, displayName: "Canned Customer" }, { customerId: otherLineId, displayName: "Second Customer" }];
     await mount(server); await change("Customer", otherLineId); assert.equal(field("Contact").value, ""); await click("Save Draft"); assert.deepEqual(server.saved().header.customerContact, { organizationId: org, customerId: otherLineId });
+  });
+  await check("Contact-only mode replaces the whole reference and saves without inferring the old Customer", async () => {
+    const original = cannedWorkspace([cannedLine()]);
+    const initial = { ...original, header: { ...original.header, terms: { termsCode: "net_30", commercialNotes: "Preserved terms" }, notes: "TEMP only" } };
+    const server = mockServer(initial); await mount(server);
+    await change("Customer / Contact mode", "contact_only");
+    assert.equal(document.querySelector('[aria-label="Customer"]'), null);
+    assert.doesNotMatch(text(), /\$123\.45/, "unsaved identity changes invalidate displayed target previews");
+    await click("Save Draft");
+    assert.deepEqual(server.saved().header.customerContact, { organizationId: org, contactId });
+    assert.deepEqual(server.saved().header.terms, initial.header.terms); assert.equal(server.saved().header.notes, "TEMP only");
+    await mount(server); assert.equal(field("Customer / Contact mode").value, "contact_only"); assert.equal(field("Contact").value, contactId);
+    assert.equal(server.calls.filter(call => call.method === "promote").length, 0);
   });
   await check("Store line atomically submits unsaved header and reuses the configured editor", async () => {
     const server = mockServer(); await mount(server); await change("Job Label", "Header with line"); await click("Add Item");

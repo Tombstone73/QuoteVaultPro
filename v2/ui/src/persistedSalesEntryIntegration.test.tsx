@@ -12,6 +12,7 @@ const userId = "22222222-2222-4222-8222-222222222222";
 const workspaceId = "33333333-3333-4333-8333-333333333333";
 const productId = "44444444-4444-4444-8444-444444444444";
 const customerId = "55555555-5555-4555-8555-555555555555";
+const contactId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const lineId = "66666666-6666-4666-8666-666666666666";
 const otherUserId = "77777777-7777-4777-8777-777777777777";
 const sessionScope = "verified-workspace-session";
@@ -89,8 +90,11 @@ function server(initial?: WorkspaceView, capabilities: UiBootstrap["capabilities
     }
     if (segments[1] === "customers" && method === "GET") return ok([{ customerId, displayName: "Customer" }]);
     if (segments[1] === "contacts" && method === "GET") {
-      assert.equal(url.searchParams.get("customerId"), customerId);
-      return ok([]);
+      const rows = [{ organizationId, linkedCustomerId: customerId, id: contactId, label: "Saved Customer contact" }];
+      const eligible = rows.filter(row => row.organizationId === state.saved!.organizationId && (!url.searchParams.has("customerId") || row.linkedCustomerId === url.searchParams.get("customerId")));
+      const choices = eligible.map(({ id, label }) => ({ id, label }));
+      return ok({ items: choices.filter(row => row.label.toLowerCase().includes(url.searchParams.get("search")?.trim().toLowerCase() ?? "")).slice(0, Number(url.searchParams.get("limit") ?? 25)),
+        selectedContact: choices.find(row => row.id === url.searchParams.get("selectedContactId")) ?? null });
     }
     if (segments[1] === "products") {
       if (segments.length === 2 && method === "GET") return ok([{ productId, displayName: "Sign" }]);

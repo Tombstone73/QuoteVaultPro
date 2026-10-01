@@ -14,6 +14,7 @@ const user = "22222222-2222-4222-8222-222222222222";
 const workspaceId = "33333333-3333-4333-8333-333333333333";
 const productId = "44444444-4444-4444-8444-444444444444";
 const customerId = "55555555-5555-4555-8555-555555555555";
+const contactId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const tempLineId = "66666666-6666-4666-8666-666666666666";
 const secondTempId = "77777777-7777-4777-8777-777777777777";
 const orderId = "88888888-8888-4888-8888-888888888888";
@@ -98,7 +99,16 @@ function owner(initial = fixture()) {
     else if (url.endsWith("/preview")) result = { calculatedUnitAmount: amount, calculatedLineAmount: amount, currency: "USD", explanation: { optionImpacts: [], minimumChargeApplied: false } };
     else if (url.endsWith("/products")) result = initial.lines[0]?.sourceLineSnapshot?.sellingPriceDecision.kind === "calculated" ? [{ productId, displayName: "Current ACTIVE Banner" }] : [];
     else if (url.includes("/customers?")) result = [{ customerId, displayName: "Original Customer" }];
-    else if (url.includes("/contacts?")) result = [];
+    else if (new URL(url, "https://ui.invalid").pathname.endsWith("/contacts")) {
+      const parsed = new URL(url, "https://ui.invalid");
+      assert.equal(parsed.pathname, `/v2/organizations/${workspace.organizationId}/sales-workspaces/${workspace.id}/contacts`);
+      assert.equal(workspace.creatorUserId, user, "Contact lookup belongs to the current fixture creator");
+      const rows = [{ organizationId: org, linkedCustomerId: customerId, id: contactId, label: "Original Customer contact" }];
+      const eligible = rows.filter(row => row.organizationId === workspace.organizationId && (!parsed.searchParams.has("customerId") || row.linkedCustomerId === parsed.searchParams.get("customerId")));
+      const choices = eligible.map(({ id, label }) => ({ id, label }));
+      result = { items: choices.filter(row => row.label.toLowerCase().includes(parsed.searchParams.get("search")?.trim().toLowerCase() ?? "")).slice(0, Number(parsed.searchParams.get("limit") ?? 25)),
+        selectedContact: choices.find(row => row.id === parsed.searchParams.get("selectedContactId")) ?? null };
+    }
     else if (url.endsWith(`/${workspaceId}`)) { if (method === "PATCH") mutate(body); result = workspace; }
     else throw new Error(`Unexpected TEMP route ${method} ${url}`);
     return copy(result) as T;

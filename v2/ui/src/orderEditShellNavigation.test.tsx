@@ -26,6 +26,7 @@ const user = "22222222-2222-4222-8222-222222222222";
 const workspaceId = "33333333-3333-4333-8333-333333333333";
 const orderId = "88888888-8888-4888-8888-888888888888";
 const customerId = "55555555-5555-4555-8555-555555555555";
+const contactId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const productId = "44444444-4444-4444-8444-444444444444";
 const sourceLineId = "99999999-9999-4999-8999-999999999999";
 const tempLineId = "66666666-6666-4666-8666-666666666666";
@@ -81,6 +82,15 @@ globalThis.fetch = async (input, init) => {
     if (method === "PATCH") { assert.equal(body.expectedRevision, workspace.revision); workspace = { ...workspace, header: clone(body.header as WorkspaceHeader), revision: workspace.revision + 1 }; }
     data = workspace;
   } else if (path.includes("/sales-workspaces/") && (path.endsWith("/artwork") || path.endsWith("/artwork-edit") || path.endsWith("/products"))) data = [];
+  else if (path.endsWith(`/sales-workspaces/${workspaceId}/contacts`)) {
+    assert.equal(path, `/v2/organizations/${workspace.organizationId}/sales-workspaces/${workspace.id}/contacts`);
+    assert.equal(workspace.creatorUserId, bootstrap.userId, "Contact lookup follows the bootstrapped fixture creator");
+    const rows = [{ organizationId: org, linkedCustomerId: customerId, id: contactId, label: "Original Customer contact" }];
+    const eligible = rows.filter(row => row.organizationId === workspace.organizationId && (!url.searchParams.has("customerId") || row.linkedCustomerId === url.searchParams.get("customerId")));
+    const choices = eligible.map(({ id, label }) => ({ id, label }));
+    data = { items: choices.filter(row => row.label.toLowerCase().includes(url.searchParams.get("search")?.trim().toLowerCase() ?? "")).slice(0, Number(url.searchParams.get("limit") ?? 25)),
+      selectedContact: choices.find(row => row.id === url.searchParams.get("selectedContactId")) ?? null };
+  }
   else if (path.endsWith("/sales-workspaces")) data = [];
   else if (path === `/v2/organizations/${org}/orders/${orderId}`) {
     assert.equal(method, "GET", "App must not perform canonical commercial writes"); if (canonicalRevision === "8" && readGate) await readGate();

@@ -5,7 +5,7 @@ import { requireV2CsrfToken } from "../../infrastructure/authentication/sessionC
 import type { Principal, StaffPrincipal } from "../../src/authorization/principals.js";
 import { failure, success, V2ApplicationError, type ApplicationErrorCode } from "../../src/errors/applicationError.js";
 import { SalesWorkspaceApplicationService } from "../../src/modules/sales/workspaceApplication.js";
-import { currencyCode, money } from "../../src/modules/shared/commercialValues.js";
+import { brandedId, currencyCode, money } from "../../src/modules/shared/commercialValues.js";
 import type { SalesWorkspace, SalesWorkspaceTransaction } from "../../src/modules/sales/workspaceContracts.js";
 import { createSalesWorkspaceRouter, type SalesWorkspaceHttpDependencies } from "../../src/interfaces/http/salesWorkspaceRoutes.js";
 import { createV2HttpApp } from "../../src/interfaces/http/app.js";
@@ -17,6 +17,7 @@ const lineId = "44444444-4444-4444-8444-444444444444";
 const productId = "55555555-5555-4555-8555-555555555555";
 const claimId = "66666666-6666-4666-8666-666666666666";
 const customerId = "77777777-7777-4777-8777-777777777777";
+const contactId = brandedId<"ContactId">("88888888-8888-4888-8888-888888888888");
 const base = `/v2/organizations/${org}/sales-workspaces`;
 const path = `${base}/${id}`;
 const command = { requestId: "request-1", expectedRevision: 7 };
@@ -56,6 +57,15 @@ function fixture(actor: Principal = principal) {
     contacts: jest.fn<SalesWorkspaceHttpDependencies["formReads"]["contacts"]>().mockResolvedValue([]),
     configuration: jest.fn<SalesWorkspaceHttpDependencies["formReads"]["configuration"]>().mockResolvedValue({ productId, fields: [], effectiveSelections: {} }),
   };
+  const contactRows = [{ organizationId: org, linkedCustomerId: customerId, id: contactId, label: "Casey Contact" }];
+  const contactSelection = {
+    lookupActiveContacts: jest.fn<SalesWorkspaceHttpDependencies["contactSelection"]["lookupActiveContacts"]>().mockImplementation(async (organizationId, query) => {
+      const eligible = contactRows.filter(row => row.organizationId === organizationId && (query.customerId === undefined || row.linkedCustomerId === query.customerId));
+      const choices = eligible.map(({ id, label }) => ({ id, label }));
+      return { items: choices.filter(row => row.label.toLowerCase().includes(query.search?.trim().toLowerCase() ?? "")).slice(0, query.limit ?? 25),
+        selectedContact: choices.find(row => row.id === query.selectedContactId) ?? null };
+    }),
+  };
   const preview = jest.fn<SalesWorkspaceHttpDependencies["preview"]>();
   const artwork = {
     uploads: { upload: jest.fn<SalesWorkspaceHttpDependencies["artwork"]["uploads"]["upload"]>().mockResolvedValue(success(artworkResult)) },
@@ -66,11 +76,11 @@ function fixture(actor: Principal = principal) {
     },
     download: jest.fn<NonNullable<SalesWorkspaceHttpDependencies["artwork"]["download"]>>().mockResolvedValue({ filename: "source.pdf", bytes: Buffer.from("%PDF-1.4\nread-only") }),
   };
-  const dependencies: SalesWorkspaceHttpDependencies = { service, lines, principals, promotion, formReads, preview, artwork };
+  const dependencies: SalesWorkspaceHttpDependencies = { service, lines, principals, promotion, formReads, contactSelection, preview, artwork };
   const app = express().use(express.json()).use("/v2/organizations/:organizationId/sales-workspaces", createSalesWorkspaceRouter(dependencies));
-  const operations = [...Object.values(service), ...Object.values(lines), promotion.promote, ...Object.values(formReads), preview,
+  const operations = [...Object.values(service), ...Object.values(lines), promotion.promote, ...Object.values(formReads), contactSelection.lookupActiveContacts, preview,
     artwork.uploads.upload, ...Object.values(artwork.lifecycle), artwork.download];
-  return { app, dependencies, service, lines, principals, promotion, formReads, preview, artwork, operations };
+  return { app, dependencies, service, lines, principals, promotion, formReads, contactSelection, preview, artwork, operations };
 }
 
 function protectedFixture(actor: Principal = principal) {
@@ -318,19 +328,49 @@ describe("Sales workspace HTTP transport", () => {
     await request(f.app).get(`${path}/products`).query({ q: "Signs" }).expect(200);
     await request(f.app).get(`${path}/products/${productId}/configuration`).expect(200);
     await request(f.app).post(`${path}/products/${productId}/resolve`).send({ selections: { finish: "matte" } }).expect(200);
-    await request(f.app).get(`${path}/contacts`).query({ customerId }).expect(200);
+    const refreshed = { ...principal, authority: { ...principal.authority, authorityRevision: "fresh-contact-read" } };
+    f.principals.principal.mockResolvedValueOnce(refreshed);
+    const contactRead = await request(f.app).get(`${path}/contacts`).query({ customerId, search: "Casey", limit: "1", selectedContactId: contactId }).expect(200);
     expect(f.formReads.products).toHaveBeenCalledWith(org, "Signs");
     expect(f.formReads.configuration).toHaveBeenLastCalledWith(org, productId, { finish: "matte" });
-    expect(f.formReads.contacts).toHaveBeenCalledWith(org, customerId);
+    expect(contactRead.headers["cache-control"]).toBe("private, no-store");
+    expect(contactRead.body.data).toEqual({ items: [{ id: contactId, label: "Casey Contact" }], selectedContact: { id: contactId, label: "Casey Contact" } });
+    expect(f.contactSelection.lookupActiveContacts).toHaveBeenCalledWith(org, { customerId, search: "Casey", limit: 1, selectedContactId: contactId });
+    expect(f.service.get).toHaveBeenLastCalledWith(expect.objectContaining({ organizationId: org, principal: refreshed }), id);
+    expect(f.principals.principal.mock.invocationCallOrder.at(-1)!).toBeLessThan(f.service.get.mock.invocationCallOrder.at(-1)!);
+    expect(get.mock.invocationCallOrder.at(-1)!).toBeLessThan(f.contactSelection.lookupActiveContacts.mock.invocationCallOrder[0]!);
+    expect(f.formReads.contacts).not.toHaveBeenCalled();
     expect(get).toHaveBeenCalledWith(org, principal.userId, id, false);
     expect(get).toHaveBeenCalledTimes(4);
     get.mockResolvedValue({ ...workspace, creatorUserId: "someone-else" });
     await request(f.app).get(`${path}/products`).expect(404);
     await request(f.app).post(`${path}/products/${productId}/preview`).send({ quantity: 2 }).expect(404);
+    await request(f.app).get(`${path}/contacts`).query({ selectedContactId: contactId }).expect(404);
     expect(f.formReads.products).toHaveBeenCalledTimes(1);
     expect(f.preview).not.toHaveBeenCalled();
+    expect(f.contactSelection.lookupActiveContacts).toHaveBeenCalledTimes(1);
     expect(get.mock.calls.every(([, , , lock]) => lock === false)).toBe(true);
     expect(principal.authority.capabilities).toEqual(["order.create"]);
+  });
+
+  test("contact-only reads hydrate only scoped fixture IDs independently of search and reauthorize every request", async () => {
+    const f = fixture();
+    const response = await request(f.app).get(`${path}/contacts`).query({ search: "no-match", limit: "1", selectedContactId: contactId }).expect(200);
+    expect(response.body.data).toEqual({ items: [], selectedContact: { id: contactId, label: "Casey Contact" } });
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(f.contactSelection.lookupActiveContacts).toHaveBeenLastCalledWith(org, { search: "no-match", limit: 1, selectedContactId: contactId });
+    expect(f.service.get.mock.invocationCallOrder[0]!).toBeLessThan(f.contactSelection.lookupActiveContacts.mock.invocationCallOrder[0]!);
+    const unknown = await request(f.app).get(`${path}/contacts`).query({ selectedContactId: otherOrg }).expect(200);
+    expect(unknown.body.data.selectedContact).toBeNull();
+    const incompatible = await request(f.app).get(`${path}/contacts`).query({ customerId: otherOrg, selectedContactId: contactId }).expect(200);
+    expect(incompatible.body.data).toEqual({ items: [], selectedContact: null });
+    f.service.get.mockRejectedValueOnce(new V2ApplicationError("FORBIDDEN", "Workspace authority was revoked."));
+    await request(f.app).get(`${path}/contacts`).query({ selectedContactId: contactId }).expect(403);
+    expect(f.principals.principal).toHaveBeenCalledTimes(4);
+    expect(f.service.get).toHaveBeenCalledTimes(4);
+    expect(f.contactSelection.lookupActiveContacts).toHaveBeenCalledTimes(3);
+    expect(f.formReads.contacts).not.toHaveBeenCalled();
+    expect(f.service.saveDraft).not.toHaveBeenCalled(); expect(f.promotion.promote).not.toHaveBeenCalled();
   });
 
   test("neutral preview passes only original input and the authorized workspace to its owner", async () => {

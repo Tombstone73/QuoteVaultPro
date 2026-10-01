@@ -19,6 +19,7 @@ import type {
   WorkspaceArtworkResult,
 } from "../../src/modules/artwork/workspaceArtwork";
 import type { OrderEditArtworkIntentResult, OrderEditArtworkReference } from "../../src/modules/artwork/orderEditArtwork";
+import type { SalesContactSelectionQuery, SalesContactSelectionResult } from "../../src/modules/customers/salesContactSelection";
 import type { quoteApi, Selection } from "./api";
 
 /** The wire keeps the owner's shape, without TypeScript-only ID brands. */
@@ -55,7 +56,7 @@ export interface SalesWorkspaceClient {
   promote(organizationId: string, input: PromoteSalesWorkspaceInput): Promise<WorkspacePromotionView>;
   customers(organizationId: string, workspaceId: string, search: string): Promise<readonly Selection[]>;
   products(organizationId: string, workspaceId: string): Promise<readonly Selection[]>;
-  contacts(organizationId: string, workspaceId: string, customerId: string): Promise<readonly Selection[]>;
+  contacts(organizationId: string, workspaceId: string, query: SalesContactSelectionQuery): Promise<SalesContactSelectionResult>;
   configurationApi(workspaceId: string): WorkspaceConfigurationApi;
   listArtwork(organizationId: string, workspaceId: string): Promise<readonly WorkspaceArtworkClaim[]>;
   uploadArtwork(organizationId: string, workspaceId: string, input: WorkspaceUpload): Promise<WorkspaceArtworkResult>;
@@ -91,7 +92,14 @@ export const createSalesWorkspaceClient = (transport: SalesWorkspaceTransport): 
     promote: (org, { workspaceId, ...input }) => command(org, `${endpoint(org, workspaceId)}/promote`, "POST", input),
     customers: (org, id, search) => transport.request(`${endpoint(org, id)}/customers?q=${encodeURIComponent(search)}`),
     products: (org, id) => transport.request(`${endpoint(org, id)}/products`),
-    contacts: (org, id, customerId) => transport.request(`${endpoint(org, id)}/contacts?customerId=${encodeURIComponent(customerId)}`),
+    contacts: (org, id, input) => {
+      const query = new URLSearchParams();
+      if (input.customerId !== undefined) query.set("customerId", input.customerId);
+      if (input.search !== undefined) query.set("search", input.search);
+      if (input.limit !== undefined) query.set("limit", String(input.limit));
+      if (input.selectedContactId !== undefined) query.set("selectedContactId", input.selectedContactId);
+      return transport.request(`${endpoint(org, id)}/contacts${query.size ? `?${query}` : ""}`);
+    },
     configurationApi: (id) => ({
       configuration: (org, productId) => transport.request(`${endpoint(org, id)}/products/${encodeURIComponent(productId)}/configuration`),
       resolveConfiguration: (org, productId, selections) => command(org, `${endpoint(org, id)}/products/${encodeURIComponent(productId)}/resolve`, "POST", { selections }),

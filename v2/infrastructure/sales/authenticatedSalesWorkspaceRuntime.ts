@@ -6,6 +6,7 @@ import type { SalesWorkspaceTransaction } from "../../src/modules/sales/workspac
 import { SalesWorkspaceApplicationService } from "../../src/modules/sales/workspaceApplication.js";
 import { SalesWorkspaceLineService } from "../../src/modules/sales/workspaceLines.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
+import { PostgresSalesContactSelection } from "../customers/postgresSalesContactSelection.js";
 import { explainPricingResult } from "../../src/modules/pricing/operatorPricingExplanation.js";
 import {
   PostgresWorkspaceArtwork, promoteWorkspaceArtworkInTransaction,
@@ -82,6 +83,10 @@ export function createSalesWorkspaceDependencies(input: Readonly<{
     orderEditArtwork: new PostgresOrderEditArtwork(input.pool),
     principals: input.principals,
     formReads: input.formReads,
+    contactSelection: {
+      lookupActiveContacts: (organizationId, query) => store.run(tx =>
+        new PostgresSalesContactSelection(clientOf(tx)).lookupActiveContacts(organizationId, query)),
+    },
     lines: new SalesWorkspaceLineService(store, {
       pricing: tx => new PostgresWorkspaceLinePricing(clientOf(tx)),
       releaseLineArtwork: (tx, workspace, lineId) => requestWorkspaceArtworkCleanupInTransaction(clientOf(tx), {

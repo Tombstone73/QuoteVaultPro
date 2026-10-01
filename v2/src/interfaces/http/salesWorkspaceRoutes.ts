@@ -15,6 +15,8 @@ import type { SalesWorkspace, SalesWorkspaceHeader } from "../../modules/sales/w
 import type { SalesWorkspaceLineService } from "../../modules/sales/workspaceLines.js";
 import type { QuoteLinePricingPreview, QuoteLinePricingPreviewInput } from "../../modules/sales/quoteApplication.js";
 import type { WorkspacePromotion } from "../../modules/sales/workspacePromotion.js";
+import type { SalesContactSelectionReadPort } from "../../modules/customers/salesContactSelection.js";
+import { brandedId } from "../../modules/shared/commercialValues.js";
 import type { QuoteFormReadPort, VerifiedV2PrincipalProvider } from "./quoteRoutes.js";
 
 export type SalesWorkspaceLineHttpService = Pick<SalesWorkspaceLineService, "add" | "update" | "remove" | "reorder" | "refresh">;
@@ -29,6 +31,7 @@ export type SalesWorkspaceHttpDependencies = Readonly<{
   orderEditArtwork?: OrderEditArtwork;
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
+  contactSelection: SalesContactSelectionReadPort;
   preview(context: OperationContext, workspace: SalesWorkspace, input: QuoteLinePricingPreviewInput): Promise<QuoteLinePricingPreview>;
   artwork: Readonly<{
     uploads: WorkspaceArtworkUploads;
@@ -248,9 +251,18 @@ export const createSalesWorkspaceRouter = (dependencies: SalesWorkspaceHttpDepen
     }));
   }
   router.get("/:workspaceId/contacts", (request, response) => handle(request, response, async (context) => {
-    const query = parse(z.object({ customerId: uuid }).strict(), request.query);
+    const query = parse(z.object({
+      customerId: uuid.optional(), search: z.string().max(120).optional(),
+      limit: z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(50)).optional(),
+      selectedContactId: uuid.optional(),
+    }).strict(), request.query);
     await dependencies.service.get(context, workspaceId(request));
-    return dependencies.formReads.contacts(context.organizationId, query.customerId);
+    return dependencies.contactSelection.lookupActiveContacts(brandedId<"OrganizationId">(context.organizationId), {
+      ...(query.search === undefined ? {} : { search: query.search }),
+      ...(query.limit === undefined ? {} : { limit: query.limit }),
+      ...(query.customerId === undefined ? {} : { customerId: brandedId<"CustomerId">(query.customerId) }),
+      ...(query.selectedContactId === undefined ? {} : { selectedContactId: brandedId<"ContactId">(query.selectedContactId) }),
+    });
   }));
   router.get("/:workspaceId/products/:productId/configuration", (request, response) => handle(request, response, async (context) => {
     parse(emptyQuery, request.query);

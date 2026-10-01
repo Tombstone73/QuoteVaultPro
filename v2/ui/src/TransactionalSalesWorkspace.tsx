@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { newBusinessRequestId, type UiBootstrap } from "./api";
-import { SelectionField } from "./SelectionField";
+import { SalesContactSelection } from "./SalesContactSelection";
+import type { CustomerContactReference } from "../../src/modules/customers/contracts";
+import type { SalesContactSelectionQuery } from "../../src/modules/customers/salesContactSelection";
 import { QuoteLineEditor } from "./QuoteLineEditor";
 import { emptyQuoteLineDraft, type QuoteLineDraft, type QuoteLineMutationInput } from "./quoteFormModel";
 import { workspaceNavigationEvent } from "./workspaceNavigation";
@@ -152,6 +154,7 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
   const [customerQuery, setCustomerQuery] = useState("");
   const [editor, setEditor] = useState<Readonly<{ key: string; line?: WorkspaceLineView; presentation?: boolean; description?: string; operationalNote?: string }>>();
   const [configurationApi] = useState(() => client.configurationApi(props.initialWorkspace.id));
+  const [lookupContacts] = useState(() => (query: SalesContactSelectionQuery) => client.contacts(organizationId, props.initialWorkspace.id, query));
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -171,7 +174,6 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
   const customers = useQuery({ queryKey: [...queryKey, "customers", customerQuery], queryFn: () => client.customers(organizationId, workspace.id, customerQuery), enabled: workspace.state === "draft", retry: false });
   const needsProducts = workspace.kind !== "order_edit" || Boolean(editor && !editor.presentation);
   const products = useQuery({ queryKey: [...queryKey, "products"], queryFn: () => client.products(organizationId, workspace.id), enabled: workspace.state === "draft" && needsProducts, retry: false });
-  const contacts = useQuery({ queryKey: [...queryKey, "contacts", customerId], queryFn: () => client.contacts(organizationId, workspace.id, customerId), enabled: Boolean(customerId) && workspace.state === "draft", retry: false });
   const canReadArtwork = capabilities.artworkView === true;
   const canAssignArtwork = canReadArtwork && capabilities.artworkAssign === true;
   const canRemoveArtwork = canAssignArtwork;
@@ -184,6 +186,7 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
   }, enabled: workspace.kind === "order_edit" && canReadArtwork, retry: false });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const dirty = JSON.stringify(header) !== JSON.stringify(workspace.header);
+  const customerContextChanged = JSON.stringify(header.customerContact) !== JSON.stringify(workspace.header.customerContact);
   const promotionReceipt = receipt ?? workspace.promotion;
   const orderEdit = workspace.kind === "order_edit";
   const editable = workspace.state === "draft" && matchesSource(workspace, props) && !receipt;
@@ -330,8 +333,11 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
       <div className="v2-sales-entry-meta">
         <label className="field">Search customers<input value={customerSearch} maxLength={200} onChange={(event) => setCustomerSearch(event.target.value)} /></label>
         <button className="button secondary" onClick={() => setCustomerQuery(customerSearch.trim())}>Search Customers</button>
-        <SelectionField label="Customer" value={customerId} identity="customerId" emptyLabel="Select Customer" options={customerId && !(customers.data ?? []).some((customer) => customer.customerId === customerId) ? [{ customerId, displayName: `Saved Customer (${customerId})` }, ...(customers.data ?? [])] : customers.data ?? []} onChange={(value) => changeHeader({ customerContact: value ? { organizationId, customerId: value } : undefined })} />
-        <label className="field">Contact<select aria-label="Contact" value={header.customerContact?.contactId ?? ""} disabled={!customerId || contacts.isFetching} onChange={(event) => changeHeader({ customerContact: { organizationId, customerId, ...(event.target.value ? { contactId: event.target.value } : {}) } })}><option value="">No contact selected</option>{header.customerContact?.contactId && !(contacts.data ?? []).some((contact) => contact.contactId === header.customerContact?.contactId) && <option value={header.customerContact.contactId}>Saved contact ({header.customerContact.contactId})</option>}{(contacts.data ?? []).map((contact) => contact.contactId && <option key={contact.contactId} value={contact.contactId}>{contact.displayName}</option>)}</select></label>
+        <SalesContactSelection organizationId={organizationId} identityScope={JSON.stringify([organizationId, sessionScope, userId, workspace.id])}
+          value={header.customerContact as CustomerContactReference | undefined}
+          customerOptions={(customers.data ?? []).flatMap(customer => customer.customerId ? [{ id: customer.customerId, label: customer.displayName }] : [])}
+          lookupContacts={lookupContacts} disabled={disabled} readOnly={!editable}
+          onChange={customerContact => changeHeader({ customerContact })} />
         <label className="field">PO #<input value={header.purchaseOrderNumber ?? ""} maxLength={200} onChange={(event) => changeHeader({ purchaseOrderNumber: event.target.value })} /></label>
         <label className="field">Job Label<input value={header.jobLabel ?? ""} maxLength={300} onChange={(event) => changeHeader({ jobLabel: event.target.value })} /></label>
         <label className="field">Requested Due<input type="date" value={header.requestedDueDate?.slice(0, 10) ?? ""} onChange={(event) => changeHeader({ requestedDueDate: event.target.value ? `${event.target.value}T00:00:00.000Z` : undefined })} /></label>
@@ -340,16 +346,16 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
         {fulfillment && fulfillment.method !== "pickup" && ([['recipient', 'Recipient'], ['company', 'Company'], ['addressLine1', 'Street'], ['addressLine2', 'Address line 2'], ['city', 'City'], ['region', 'Region'], ['postalCode', 'Postal code'], ['country', 'Country'], ['phone', 'Phone']] as const).map(([field, label]) => <label className="field" key={field}>{label}<input value={fulfillment.destination?.[field] ?? ""} onChange={(event) => patchDestination(field, event.target.value)} /></label>)}
         <label className="field">Terms code<input value={header.terms?.termsCode ?? ""} maxLength={100} onChange={(event) => changeHeader({ terms: { ...header.terms, termsCode: event.target.value } })} /></label>
       </div>
-      {contacts.isError && <p className="notice error" role="alert">Contacts could not be loaded. The saved reference is retained.</p>}
       {customers.isError && <p className="notice error" role="alert">Customers could not be loaded.<button onClick={() => void customers.refetch()}>Retry Customers</button></p>}
+      {header.customerContact?.contactId && !customerId && <p className="notice">Contact-only saves do not create a Customer account. Payment allocation across accountless Invoices remains unsupported.</p>}
       <label className="field v2-sales-entry-notes">Commercial notes<textarea value={header.terms?.commercialNotes ?? ""} maxLength={4000} onChange={(event) => changeHeader({ terms: { ...header.terms, commercialNotes: event.target.value } })} /></label>
       {orderEdit && workspace.sourceHeader?.sellingAdjustment && <p className="notice">Existing selling adjustment {money({ cents: workspace.sourceHeader.sellingAdjustment.cents, currency: workspace.sourceHeader.currency })}: {workspace.sourceHeader.sellingAdjustment.reason}. It is retained unchanged; adjustment editing is not exposed by this TEMP header contract.</p>}
       <label className="field v2-sales-entry-notes">Workspace notes<textarea value={header.notes ?? ""} maxLength={4000} onChange={(event) => changeHeader({ notes: event.target.value })} /></label>
     </fieldset>
     <section className="v2-sales-entry-items"><header><div><h2>Items</h2><p>Stable TEMP lines belong only to this workspace.</p></div><span>{workspace.lines.length} stored</span></header>
-      {JSON.stringify(header.customerContact) !== JSON.stringify(workspace.header.customerContact) && <p className="notice">The customer or contact has unsaved changes. Displayed previews use the saved workspace context.{orderEdit ? " Historical source prices remain frozen. Save may block a combined customer and commercial-line change pending owner reconciliation." : " Store line or Refresh server previews saves the current header and recalculates on the server."}</p>}
+      {customerContextChanged && <p className="notice">The customer or contact has unsaved changes. Current-context previews require a refresh.{orderEdit ? " Historical source prices remain frozen. Save may block a combined customer and commercial-line change pending owner reconciliation." : " Store line or Refresh server previews saves the current header and recalculates on the server."}</p>}
       <ol className="v2-sales-entry-list">{workspace.lines.map((line, index) => <li key={line.id} data-workspace-line-id={line.id}><div><b>{line.input.description || products.data?.find((product) => product.productId === line.input.productId)?.displayName || line.input.productId}</b><small>Quantity {line.input.quantity}{line.input.dimensions ? ` / ${line.input.dimensions.width} x ${line.input.dimensions.height} ${line.input.dimensions.unit}` : ""}</small>
-        {orderEdit && line.sourceLineSnapshot && !line.previews?.order ? <small>Historical {line.sourceLineSnapshot.sellingPriceDecision.kind} price: {money(line.sourceLineSnapshot.sellingLineAmount)}. Frozen configuration and Product version retained.</small> : (orderEdit ? ["order"] as const : ["quote", "order"] as const).map((target) => { const preview = line.previews?.[target]; return <small key={target}>{target === "quote" ? "Quote" : "Order"} server preview: {preview ? money(preview.sellingPriceDecision.resultingLineAmount) : "Refresh required"}</small>; })}
+        {orderEdit && line.sourceLineSnapshot && !line.previews?.order ? <small>Historical {line.sourceLineSnapshot.sellingPriceDecision.kind} price: {money(line.sourceLineSnapshot.sellingLineAmount)}. Frozen configuration and Product version retained.</small> : (orderEdit ? ["order"] as const : ["quote", "order"] as const).map((target) => { const preview = line.previews?.[target]; return <small key={target}>{target === "quote" ? "Quote" : "Order"} server preview: {!customerContextChanged && preview ? money(preview.sellingPriceDecision.resultingLineAmount) : "Refresh required"}</small>; })}
       </div><div className="actions"><button disabled={disabled || Boolean(editor)} onClick={() => { props.onLeaveStateChange(false); setEditor({ key: newBusinessRequestId(), line, ...(orderEdit && line.sourceLineSnapshot ? { presentation: true, description: line.input.description ?? "", operationalNote: line.operationalNote ?? "" } : {}) }); }}>Edit item {index + 1}</button><button disabled={disabled || Boolean(editor) || index === 0} onClick={() => void changeLine(line.id, -1)}>Move item {index + 1} up</button><button disabled={disabled || Boolean(editor) || index === workspace.lines.length - 1} onClick={() => void changeLine(line.id, 1)}>Move item {index + 1} down</button><button disabled={disabled || Boolean(editor)} onClick={() => void changeLine(line.id)}>Remove item {index + 1}</button></div></li>)}</ol>
       {needsProducts && products.isError && <p className="notice error" role="alert">Products could not be loaded.<button onClick={() => void products.refetch()}>Retry Products</button></p>}
       <button className="button secondary" disabled={disabled || Boolean(editor)} onClick={() => { props.onLeaveStateChange(false); setEditor({ key: newBusinessRequestId() }); }}>Add Item</button>

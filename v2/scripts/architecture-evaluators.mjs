@@ -18,6 +18,7 @@ const parse = (file, source) => ts.createSourceFile(file, source.replaceAll("\r\
 
 // These are explicit persistence-free seams, not a blanket *Application exemption.
 export const publicApis = {
+  "customers/salesContactSelection": ["SalesContactSelectionQuery", "SalesContactSelectionResult", "SalesContactSelectionReadPort"],
   "billing/orderEditSafety": ["OrderEditBillingSafetyAssessment", "OrderEditBillingSafetyRequest", "OrderEditBillingSafetyReason", "OrderEditBillingSafetyPort"],
   "sales/workspaceContracts": ["SalesWorkspace", "SalesWorkspaceLineMapEntry"],
   "sales/workspaceApplication": ["assertSalesWorkspaceMutable", "authorizeSalesWorkspace", "salesWorkspaceFingerprint", "validateSalesWorkspaceId", "validateSalesWorkspaceMutation"],
@@ -68,6 +69,7 @@ export const adapterPublicApis = {
   "materials/materialRequirementResolver": ["MaterialRequirementMaterial", "Pbv2MaterialRequirementContext", "resolveMaterialRequirements"],
 };
 export const ownerOperations = {
+  "infrastructure/customers/postgresSalesContactSelection.js": ["PostgresSalesContactSelection"],
   "infrastructure/billing/postgresOrderEditSafety.js": ["assessOrderEditBillingInTransaction"],
   "infrastructure/artwork/postgresOrderEditArtwork.js": ["PostgresOrderEditArtwork", "captureOrderEditArtworkFingerprint", "captureOrderEditArtwork", "validateOrderEditArtworkInTransaction", "applyOrderEditArtworkInTransaction", "authorizeOrderEditArtworkReplay"],
   "infrastructure/sales/workspaceArtworkAccess.js": ["advanceSalesWorkspaceArtworkRevision", "lockSalesWorkspaceForArtwork", "readSalesWorkspaceForArtwork", "readSalesWorkspacePromotionLineMap"],
