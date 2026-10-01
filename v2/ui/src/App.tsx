@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { flushSync } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import {
   money,
@@ -8,6 +9,9 @@ import {
   orderApi,
   quoteApi,
   clearV2ApiSessionState,
+  authenticatedWorkspaceTransport,
+  financialAuthorityDeniedEvent,
+  type FinancialAuthorityDenial,
   type ApiError,
   type LegacyCommercialDetail,
   type QuoteRead,
@@ -59,6 +63,9 @@ import { FulfillmentWorkspace } from "./FulfillmentWorkspace";
 import { InboundOrdersWorkspace } from "./InboundOrdersWorkspace";
 import { AiAssistantWorkspace } from "./AiAssistantWorkspace";
 import { FinanceWorkspace } from "./FinanceWorkspace";
+import { PaymentsWorkspace } from "./PaymentsWorkspace";
+import { createPaymentsWorkspaceClient } from "./paymentsWorkspaceApi";
+import type { PaymentWorkspaceQuery } from "../../src/modules/billing/paymentWorkspace";
 import { CustomerWorkspace } from "./CustomerWorkspace";
 import { ContactsWorkspace } from "./ContactsWorkspace";
 import { ProductWorkspace } from "./ProductWorkspace";
@@ -119,6 +126,14 @@ const errorText = (error: unknown) => {
 };
 
 const Status = LifecycleBadge;
+const paymentsClient = createPaymentsWorkspaceClient(authenticatedWorkspaceTransport);
+const readPaymentQuery = (search: string): PaymentWorkspaceQuery => {
+  const params = new URLSearchParams(search);
+  const period = params.get("period");
+  return period === "custom"
+    ? { period, fromDate: params.get("fromDate") ?? undefined, toDate: params.get("toDate") ?? undefined }
+    : { period: period === "month" ? "month" : "today" };
+};
 
 const dateInputValue = (value?: string): string =>
   /^\d{4}-\d{2}-\d{2}/u.exec(value ?? "")?.[0] ?? "";
@@ -177,6 +192,14 @@ export const App = ({
   const [invoiceId, setInvoiceId] = useState(
     () => initialLocation?.page === "invoices" ? initialLocation.invoiceId ?? "" : "",
   );
+  const [paymentLocation, setPaymentLocation] = useState(() => typeof window === "undefined" ? "" : window.location.search);
+  const paymentLocationRef = useRef(paymentLocation);
+  paymentLocationRef.current = paymentLocation;
+  const paymentRequestLocked = useRef(false);
+  const [paymentNavigationNotice, setPaymentNavigationNotice] = useState("");
+  const [financialDenial, setFinancialDenial] = useState<Readonly<{ organizationId: string; sessionScope: string; read: boolean; record: boolean; readUrl?: string; recordReadUrl?: string }> | null>(null);
+  const financialDenialRef = useRef(financialDenial);
+  const financialRecoveryFence = useRef(0);
   const [fulfillmentOrderId, setFulfillmentOrderId] = useState("");
   const [productionStation, setProductionStation] = useState<
     "flatbed" | "roll" | undefined
@@ -203,6 +226,71 @@ export const App = ({
     enabled: Boolean(organizationId),
     staleTime: 0,
   });
+  const currentFinancialDenial = financialDenial?.organizationId === organizationId && financialDenial.sessionScope === sessionScope ? financialDenial : null;
+  const trustedBootstrap = bootstrap.isSuccess && bootstrap.data?.sessionScope === sessionScope;
+  const canPaymentView = trustedBootstrap && bootstrap.data?.capabilities.paymentView === true && !currentFinancialDenial?.read;
+  const canPaymentRecord = trustedBootstrap && bootstrap.data?.capabilities.paymentRecord === true && !currentFinancialDenial?.record;
+  useEffect(() => {
+    const reconcileFinancialDenial = (event: Event) => {
+      const denial = (event as CustomEvent<FinancialAuthorityDenial>).detail;
+      if (!denial || denial.organizationId !== organizationRef.current || denial.sessionScope !== sessionScopeRef.current) return;
+      // Every relevant denial invalidates older rechecks, even when authority
+      // refresh work is already deduplicated by the latched access kind.
+      financialRecoveryFence.current++;
+      const previous = financialDenialRef.current;
+      const current = previous?.organizationId === denial.organizationId && previous.sessionScope === denial.sessionScope
+        ? previous : { organizationId: denial.organizationId, sessionScope: denial.sessionScope, read: false, record: false };
+      if (current[denial.kind]) return;
+      const next = { ...current, [denial.kind]: true, ...(denial.kind === "read" ? { readUrl: denial.url } : denial.method === "GET" ? { recordReadUrl: denial.url } : {}) };
+      financialDenialRef.current = next;
+      // Disable mounted financial observers before cache removal can notify
+      // them; otherwise an enabled observer can start another denied read.
+      flushSync(() => setFinancialDenial(next));
+      const scope = ["v2", denial.sessionScope, denial.organizationId];
+      const caches = denial.kind === "read" ? [[...scope, "payment-workspace"], [...scope, "finance"]] : [[...scope, "payment-workspace", "invoices"]];
+      for (const queryKey of caches) {
+        void queryClient.cancelQueries({ queryKey });
+        queryClient.removeQueries({ queryKey });
+      }
+      // Keep the denial latched even if a broader bootstrap still grants the
+      // capability. A tenant/resource denial must not cause an automatic 403 loop.
+      void queryClient.invalidateQueries({ queryKey: quoteKeys.bootstrap(denial.sessionScope, denial.organizationId) });
+    };
+    window.addEventListener(financialAuthorityDeniedEvent, reconcileFinancialDenial);
+    return () => window.removeEventListener(financialAuthorityDeniedEvent, reconcileFinancialDenial);
+  }, [queryClient]);
+  const recheckFinancialAccess = async () => {
+    const denied = financialDenialRef.current;
+    if (!denied || bootstrap.isFetching) return;
+    const recoveryFence = ++financialRecoveryFence.current;
+    try {
+      const result = await bootstrap.refetch({ throwOnError: true });
+      const authority = result.data;
+      if (!authority || authority.sessionScope !== denied.sessionScope || organizationRef.current !== denied.organizationId || sessionScopeRef.current !== denied.sessionScope || financialDenialRef.current !== denied || financialRecoveryFence.current !== recoveryFence) return;
+      // Bootstrap is a capability projection, not proof that this particular
+      // tenant/resource read is permitted. Probe the denied GET before reopening.
+      if (denied.read && authority.capabilities.paymentView === true && denied.readUrl)
+        await authenticatedWorkspaceTransport.request(denied.readUrl);
+      if (denied.record && authority.capabilities.paymentRecord === true && authority.capabilities.invoiceView === true && denied.recordReadUrl)
+        await authenticatedWorkspaceTransport.request(denied.recordReadUrl);
+      if (organizationRef.current !== denied.organizationId || sessionScopeRef.current !== denied.sessionScope || financialDenialRef.current !== denied || financialRecoveryFence.current !== recoveryFence) return;
+      const next = { ...denied, read: denied.read && authority.capabilities.paymentView !== true,
+        record: denied.record && !(authority.capabilities.paymentRecord === true && authority.capabilities.invoiceView === true) };
+      financialDenialRef.current = next;
+      setFinancialDenial(next);
+    } catch { /* The denial stays latched until a fresh trusted read succeeds. */ }
+  };
+  useEffect(() => {
+    if (canPaymentView || !organizationId || !sessionScope) return;
+    const scope = ["v2", sessionScope, organizationId, "payment-workspace"];
+    void queryClient.cancelQueries({ queryKey: scope });
+    queryClient.removeQueries({ queryKey: scope });
+  }, [canPaymentView, organizationId, sessionScope, queryClient]);
+  const leavePaymentWorkspace = () => {
+    if (!paymentRequestLocked.current) return true;
+    setPaymentNavigationNotice("A payment request is pending or unconfirmed. Retry the original payment before leaving this workspace.");
+    return false;
+  };
   useEffect(() => {
     const nextScope = bootstrap.data?.sessionScope;
     if (!nextScope) return;
@@ -315,7 +403,13 @@ export const App = ({
           : null);
       if (redirect) window.history.replaceState({}, "", redirect);
       const location = readWorkspaceLocation();
+      if (paymentRequestLocked.current && (location?.page !== "payments" || new URLSearchParams(window.location.search).get("view") === "legacy")) {
+        window.history.replaceState({}, "", `/payments${paymentLocationRef.current}`);
+        setPaymentNavigationNotice("A payment request is pending or unconfirmed. Retry the original payment before leaving this workspace.");
+        return;
+      }
       if (!location) return;
+      setPaymentNavigationNotice("");
       setPage(location.page);
       setFormulaAuthoringContext(location.page === "formulas" ? readFormulaAuthoringContext() : null);
       if (location.page === "products") setProductId(location.productId ?? "");
@@ -333,6 +427,8 @@ export const App = ({
       else if (location.page === "orders") setOrderId(location.orderId ?? "");
       else if (location.page === "invoices")
         setInvoiceId(location.invoiceId ?? "");
+      else if (location.page === "payments")
+        setPaymentLocation(window.location.search);
       else if (location.page === "fulfillment")
         setFulfillmentOrderId(location.orderId ?? "");
       else if (location.page === "production")
@@ -373,6 +469,7 @@ export const App = ({
 
   const navigate = (nextPage: V2VisualPage) => {
     if (!canNavigateFromSalesWorkspace()) return;
+    if (page === "payments" && nextPage !== "payments" && !leavePaymentWorkspace()) return;
     if (nextPage === "home") window.history.pushState({}, "", "/");
     if (nextPage === "products") {
       pushProductLocation();
@@ -399,6 +496,7 @@ export const App = ({
       pushInvoiceLocation();
       setInvoiceId("");
     }
+    if (nextPage === "payments") setPaymentLocation("");
     if (nextPage === "inboundOrders") {
       pushInboundOrdersLocation();
     }
@@ -435,12 +533,25 @@ export const App = ({
       onNavigate={navigate}
       appearance={appearance}
       setAppearance={setAppearance}
-      capabilities={bootstrap.data?.capabilities}
+      capabilities={bootstrap.data?.capabilities && { ...bootstrap.data.capabilities, paymentView: canPaymentView }}
     >
+      {(currentFinancialDenial?.read || currentFinancialDenial?.record) && <section role="alert">
+        <p>{currentFinancialDenial.read ? "Financial read access was denied. Cached financial data is hidden." : "Payment recording access was denied. The original submitted request is retained."}</p>
+        <button className="v2-quiet-button" disabled={bootstrap.isFetching} onClick={() => void recheckFinancialAccess()}>Recheck financial access</button>
+      </section>}
+      {paymentNavigationNotice && <p role="alert">{paymentNavigationNotice}</p>}
       {page === "home" ? (
         <CommandCenter
           organizationId={organizationId}
           sessionScope={sessionScope}
+          canPaymentView={canPaymentView}
+          paymentsClient={paymentsClient}
+          openPayments={(period) => {
+            const search = `?period=${period}`;
+            window.history.pushState({}, "", `/payments${search}`);
+            setPaymentLocation(search);
+            setPage("payments");
+          }}
         />
       ) : page === "appearance" ? (
         <AppearanceWorkspace
@@ -782,8 +893,49 @@ export const App = ({
           canUse={bootstrap.data?.capabilities.assistantUse === true}
           csrfReady={Boolean(bootstrap)}
         />
+      ) : page === "payments" && new URLSearchParams(paymentLocation).get("view") !== "legacy" ? (
+        <>
+          {canPaymentView && <a className="v2-finance-link" href="/payments?view=legacy" onClick={(event) => {
+            if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            if (!leavePaymentWorkspace()) return;
+            window.history.pushState({}, "", "/payments?view=legacy");
+            setPaymentLocation("?view=legacy");
+          }}>Legacy Transactions</a>}
+          <PaymentsWorkspace
+            organizationId={organizationId}
+            sessionScope={sessionScope}
+            verifiedUserId={trustedBootstrap && bootstrap.data?.organizationId === organizationId ? bootstrap.data.userId : undefined}
+            client={paymentsClient}
+            initialQuery={readPaymentQuery(paymentLocation)}
+            onRequestStateChange={(locked) => { paymentRequestLocked.current = locked; }}
+            canPaymentView={canPaymentView}
+            canInvoiceView={bootstrap.isSuccess && bootstrap.data?.capabilities.invoiceView === true}
+            canPaymentRecord={canPaymentRecord}
+            csrfReady={bootstrap.isSuccess && Boolean(bootstrap.data?.csrfToken) && bootstrap.data?.sessionScope === sessionScope}
+            openCustomer={bootstrap.data?.capabilities.customerView === true ? (id) => {
+              if (!leavePaymentWorkspace()) return;
+              pushCustomerLocation(id); setCustomerId(id); setPage("customers");
+            } : undefined}
+            openOrder={bootstrap.data?.capabilities.orderView === true ? (id) => {
+              if (!leavePaymentWorkspace()) return;
+              pushOrderLocation(id); setOrderId(id); setPage("orders");
+            } : undefined}
+            openInvoice={(id) => {
+              if (!leavePaymentWorkspace()) return;
+              pushInvoiceLocation(id); setInvoiceId(id); setPage("invoices");
+            }}
+          />
+        </>
       ) : page === "invoices" || page === "payments" ? (
-        <FinanceWorkspace
+        <>
+        {page === "payments" && canPaymentView && <a className="v2-finance-link" href="/payments?period=today" onClick={(event) => {
+          if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          window.history.pushState({}, "", "/payments?period=today");
+          setPaymentLocation("?period=today");
+        }}>Payment Facts</a>}
+        {!canPaymentView ? <section role="alert">Payment view permission is required for financial transactions.</section> : <FinanceWorkspace
           mode={page === "payments" ? "ledger" : "invoices"}
           organizationId={organizationId}
           sessionScope={sessionScope}
@@ -799,8 +951,8 @@ export const App = ({
           canInvoiceView={bootstrap.data?.capabilities.invoiceView === true}
           canInvoiceIssue={bootstrap.data?.capabilities.invoiceIssue === true}
           canInvoiceSend={bootstrap.data?.capabilities.invoiceSend === true}
-          canPaymentView={bootstrap.data?.capabilities.paymentView === true}
-          canPaymentRecord={bootstrap.data?.capabilities.paymentRecord === true}
+          canPaymentView={canPaymentView}
+          canPaymentRecord={canPaymentRecord}
           canRefundIssue={bootstrap.data?.capabilities.refundIssue === true}
           csrfReady={Boolean(bootstrap)}
           openOrder={(id) => {
@@ -813,7 +965,8 @@ export const App = ({
             setCustomerId(id);
             setPage("customers");
           }}
-        />
+        />}
+        </>
       ) : (
         <>
           {page === "orders" ? (

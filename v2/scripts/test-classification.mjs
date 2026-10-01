@@ -6,6 +6,12 @@ const entries = [];
 function add(prefix, runner, names, category = 'safe-deterministic', reason) {
   for (const name of names) entries.push({ path: `${prefix}${name}`, category, runner, reason: reason ?? (runner === 'jest' ? 'Jest assertions with fake dependencies or source contracts; runtime import closure reviewed, no DB initialization or network execution.' : 'Self-executing node:assert fixture/source contract; runtime import closure reviewed, no DB initialization or network execution.') });
 }
+add('v2/tests/', 'jest', ['modules/paymentWorkspace.test.ts', 'interfaces/paymentWorkspaceRoutes.test.ts', 'interfaces/paymentWorkspaceMount.test.ts'],
+  'safe-deterministic', 'Billing Payment workspace and actual App/HTTP mount use scoped fake persistence/read ports, canonical Billing application service, verified fresh bootstrap/Principals, real authenticated UI transport and session CSRF; only CSS is mocked for Node, with no live database, provider, credentials or root setup.');
+add('v2/tests/infrastructure/', 'tsx', ['paymentWorkspace.postgres.test.ts'],
+  'safe-deterministic', 'Standalone node:assert regressions run actual released payment DDL and read adapters in disposable in-memory PGlite PostgreSQL with no connection URL, external I/O or shared database.');
+add('v2/ui/src/', 'tsx', ['paymentsWorkspace.test.tsx', 'paymentWorkspaceNavigation.test.tsx'],
+  'safe-deterministic', 'Standalone mounted UI regressions use injected clients or mock fetch with the real authenticated transport and payment client; no live database, provider or external network.');
 add('v2/tests/', 'jest', [
   'modules/salesWorkspace.test.ts',
   'modules/workspaceLines.test.ts',

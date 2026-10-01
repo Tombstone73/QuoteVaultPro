@@ -141,12 +141,20 @@ export type PaymentAllocationFact = Readonly<{ invoiceId: InvoiceId; amount: Mon
  * allocation list is the financial relationship authority.
  */
 export type PaymentAggregateFact = Readonly<{ payment: PaymentFact; allocations: readonly PaymentAllocationFact[] }>;
+/** Optional operational receipt evidence. The Payment itself still records only Applied. */
+export type ManualPaymentTender = Readonly<{
+  tendered: Money;
+  expectedBalances: readonly Readonly<{ invoiceId: InvoiceId; collectibleBalance: Money }>[];
+}>;
+export type ManualPaymentTenderReceipt = Readonly<{ selectedBalance: Money; tendered: Money; applied: Money; changeDue: Money }>;
+export type ManualPaymentAllocationsResult = Readonly<{ payment: PaymentAggregateFact; settlements: readonly InvoiceSettlement[]; tenderReceipt?: ManualPaymentTenderReceipt }>;
 export type RecordManualPaymentAllocationsInput = Readonly<{
   organizationId: OrganizationId;
   allocations: readonly PaymentAllocationInput[];
   method: Exclude<PaymentMethod, "card" | "ach">;
   occurredAt: string;
   businessRequestId: BusinessRequestId;
+  tender?: ManualPaymentTender;
 }>;
 /** A requested reversal of one immutable portion of a Payment.  The server
  * derives the Payment and Invoice from `paymentAllocationId`; callers never

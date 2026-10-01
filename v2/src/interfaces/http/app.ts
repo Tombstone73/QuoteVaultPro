@@ -16,6 +16,7 @@ import {
 } from "./orderRoutes.js";
 import { createInvoiceRouter, type InvoiceHttpDependencies } from "./invoiceRoutes.js";
 import { createFinanceRouter, type FinanceHttpDependencies } from "./financeRoutes.js";
+import { createPaymentWorkspaceRouter, type PaymentWorkspaceHttpDependencies } from "./paymentWorkspaceRoutes.js";
 import { createArtworkRouter, type ArtworkHttpDependencies } from "./artworkRoutes.js";
 import { createProofingRouter, type ProofingHttpDependencies } from "./proofingRoutes.js";
 import { createPrepressRouter, type PrepressHttpDependencies } from "./prepressRoutes.js";
@@ -70,6 +71,7 @@ export type AuthenticatedOrderRouteRuntime = Readonly<{
   trustedHostMiddleware: RequestHandler;
 }>;
 export type AuthenticatedBillingRouteRuntime = Readonly<{ dependencies: InvoiceHttpDependencies & FinanceHttpDependencies & Readonly<{ stripeIngress: import("../../../infrastructure/billing/stripeProviderIngress.js").StripeProviderIngress }>; trustedHostMiddleware: RequestHandler }>;
+export type AuthenticatedPaymentWorkspaceRouteRuntime = Readonly<{ dependencies: PaymentWorkspaceHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedArtworkRouteRuntime = Readonly<{ dependencies: ArtworkHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedProofingRouteRuntime = Readonly<{ dependencies: ProofingHttpDependencies; trustedHostMiddleware: RequestHandler }>;
 export type AuthenticatedPrepressRouteRuntime = Readonly<{ dependencies: PrepressHttpDependencies; trustedHostMiddleware: RequestHandler }>;
@@ -106,6 +108,7 @@ export const createV2HttpApp = (
   customerCommercial?: AuthenticatedCustomerCommercialRouteRuntime,
   aiAssistant?: AuthenticatedAiAssistantRouteRuntime,
   salesWorkspace?: Readonly<{ dependencies: SalesWorkspaceHttpDependencies; trustedHostMiddleware: RequestHandler }>,
+  paymentWorkspace?: AuthenticatedPaymentWorkspaceRouteRuntime,
 ): Express => {
   const app = express();
   app.disable("x-powered-by");
@@ -394,6 +397,14 @@ export const createV2HttpApp = (
       (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
       requireV2CsrfToken,
       createFinanceRouter(billing.dependencies),
+    );
+  if (paymentWorkspace)
+    app.use(
+      "/v2/organizations/:organizationId/payment-workspace",
+      paymentWorkspace.trustedHostMiddleware,
+      (request, response, next) => { try { response.setHeader("x-v2-session-scope", issueV2SessionScope(request)); } catch {} next(); },
+      requireV2CsrfToken,
+      createPaymentWorkspaceRouter(paymentWorkspace.dependencies),
     );
   if (artwork)
     app.use(

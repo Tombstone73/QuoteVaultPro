@@ -6,6 +6,8 @@ import { principalSubject, staffActorId } from "../../authorization/principals.j
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import { brandedId, canonicalJson, money, type InvoiceId, type OrganizationId, type PaymentId, type ProviderFinancialOperationId } from "../shared/commercialValues.js";
 import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
+import { previewPaymentTender } from "./paymentWorkspace.js";
+import type { ManualPaymentAllocationsResult } from "./contracts.js";
 import type { BeginProviderFinancialOperationInput, BeginProviderPaymentAggregateInput, ConfirmProviderPaymentAggregateInput, ConfirmProviderPaymentInput, ConfirmProviderRefundInput, InvoiceSettlement, PaymentAggregateFact, PaymentAllocationFact, PaymentAllocationInput, PaymentFact, ProviderFinancialOperation, ProviderPaymentAggregateConfirmation, ProviderPaymentAggregateOperation, RecordManualPaymentAllocationsInput, RecordManualPaymentInput, RecordRefundAllocationsInput, RecordRefundInput, RefundAggregateFact, RefundAllocationFact, RefundAllocationInput, RefundFact } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
@@ -65,9 +67,10 @@ export class BillingPaymentsApplicationService {
    * intentionally separate from the legacy one-invoice API so callers cannot
    * accidentally turn a multi-invoice checkout into several Payments.
    */
-  async recordManualPaymentAllocations(context: OperationContext, input: RecordManualPaymentAllocationsInput): Promise<ApplicationResult<Readonly<{ payment: PaymentAggregateFact; settlements: readonly InvoiceSettlement[] }>>> {
+  async recordManualPaymentAllocations(context: OperationContext, input: RecordManualPaymentAllocationsInput): Promise<ApplicationResult<ManualPaymentAllocationsResult>> {
     try {
       const allocations = this.normalizeAllocations(input.allocations);
+      const tenderReceipt = input.tender ? previewPaymentTender(allocations, input.method, input.tender) : undefined;
       const result = await this.withInvoices(context, { ...input, allocations }, "billing.payment.aggregate.record.v1", "payment.record", async (tx, invoices, requestId) => {
         const recorder = tx.recordPaymentAggregate;
         if (!recorder) throw new V2ApplicationError("CONFLICT", "This billing persistence runtime does not support payment allocation aggregates.");
@@ -76,18 +79,23 @@ export class BillingPaymentsApplicationService {
           const invoice = byInvoice.get(allocation.invoiceId)!;
           this.assertFinanciallyActive(invoice, allocation.amount);
           const before = await tx.settlement(input.organizationId, allocation.invoiceId, invoice.currency, invoice.totalCents);
+          if (input.tender && input.tender.expectedBalances.find((entry) => entry.invoiceId === allocation.invoiceId)!.collectibleBalance.cents !== before.collectibleBalance.cents) throw new V2ApplicationError("STALE_STATE", "A selected Invoice balance changed. Refresh balances and confirm the allocations again.");
           if (allocation.amount.cents > before.collectibleBalance.cents) throw new V2ApplicationError("CONFLICT", "Payment allocation exceeds the collectible Invoice balance.");
         }
         const currency = invoices[0]!.currency;
-        const payment = await recorder({ organizationId: input.organizationId, allocations, currency, method: input.method, occurredAt: input.occurredAt, operationRequestId: requestId, ...actor(context) });
+        const payment = await recorder.call(tx, { organizationId: input.organizationId, allocations, currency, method: input.method, occurredAt: input.occurredAt, operationRequestId: requestId, ...actor(context) });
         const settlements = await Promise.all(allocations.map(async (allocation) => {
           const invoice = byInvoice.get(allocation.invoiceId)!;
           return tx.settlement(input.organizationId, allocation.invoiceId, invoice.currency, invoice.totalCents);
         }));
-        await this.finish(tx, context, requestId, "billing.payment.aggregate.record.v1", "payment_aggregate_recorded", "payment", payment.payment.paymentId, { source: "manual", allocationCount: allocations.length, allocations: allocations.map((allocation) => ({ invoiceId: allocation.invoiceId, amountCents: allocation.amount.cents })) }, { payment, settlements });
-        return { payment, settlements };
+        const recorded = { payment, settlements, ...(tenderReceipt ? { tenderReceipt } : {}) };
+        await this.finish(tx, context, requestId, "billing.payment.aggregate.record.v1", "payment_aggregate_recorded", "payment", payment.payment.paymentId, { source: "manual", allocationCount: allocations.length, allocations: allocations.map((allocation) => ({ invoiceId: allocation.invoiceId, amountCents: allocation.amount.cents })), ...(tenderReceipt ? { tenderReceipt } : {}) }, recorded);
+        return recorded;
       });
-      if (result.ok) await Promise.all(result.value.payment.allocations.map((allocation: PaymentAllocationFact) => this.orderLifecycle?.reconcileInvoice(input.organizationId, allocation.invoiceId)));
+      if (result.ok) {
+        try { await Promise.all(result.value.payment.allocations.map((allocation: PaymentAllocationFact) => this.orderLifecycle?.reconcileInvoice(input.organizationId, allocation.invoiceId))); }
+        catch { return failure(new V2ApplicationError("RETRYABLE_FAILURE", "Payment was recorded but lifecycle reconciliation could not be confirmed. Retry the original business request to recover its receipt.")); }
+      }
       return result;
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Financial operation conflicts with the immutable ledger."));
@@ -108,7 +116,7 @@ export class BillingPaymentsApplicationService {
           const reserved = tx.pendingProviderPaymentCents ? await tx.pendingProviderPaymentCents(input.organizationId, allocation.invoiceId) : 0;
           if (allocation.amount.cents > settlement.collectibleBalance.cents - reserved) throw new V2ApplicationError("CONFLICT", "Payment allocation exceeds the current available Invoice balance.");
         }
-        const operation = await begin({ organizationId: input.organizationId, allocations, currency: invoices[0]!.currency, provider: input.provider, providerIdempotencyKey: input.providerIdempotencyKey, ...(input.providerAccountId ? { providerAccountId: input.providerAccountId } : {}), operationRequestId: requestId });
+        const operation = await begin.call(tx, { organizationId: input.organizationId, allocations, currency: invoices[0]!.currency, provider: input.provider, providerIdempotencyKey: input.providerIdempotencyKey, ...(input.providerAccountId ? { providerAccountId: input.providerAccountId } : {}), operationRequestId: requestId });
         await this.finish(tx, context, requestId, "billing.provider.payment.aggregate.begin.v1", "provider_payment_aggregate_reconciliation_required", "provider_financial_operation", operation.operation.providerOperationId, { provider: input.provider, allocationCount: allocations.length, amountCents: operation.operation.amount.cents }, operation);
         return operation;
       });
@@ -123,18 +131,21 @@ export class BillingPaymentsApplicationService {
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
       const preview = await this.runner.transaction(async (tx) => {
         const loader = tx.loadProviderPaymentAggregate;
-        return loader ? loader({ organizationId: input.organizationId, providerOperationId: input.providerOperationId }) : null;
+        return loader ? loader.call(tx, { organizationId: input.organizationId, providerOperationId: input.providerOperationId }) : null;
       });
       if (!preview) throw new V2ApplicationError("NOT_FOUND", "Provider Payment aggregate operation was not found.");
       const result = await this.withInvoices(context, { ...input, allocations: preview.allocations }, "billing.provider.payment.aggregate.confirm.v1", "payment.record", async (tx, _invoices, requestId) => {
         const confirm = tx.confirmProviderPaymentAggregate;
         if (!confirm) throw new V2ApplicationError("CONFLICT", "This billing persistence runtime does not support provider payment aggregates.");
-        const confirmation = await confirm({ organizationId: input.organizationId, providerOperationId: input.providerOperationId, providerEventId: input.providerEventId, providerTransactionId: input.providerTransactionId, occurredAt: input.occurredAt, operationRequestId: requestId, ...actor(context) });
+        const confirmation = await confirm.call(tx, { organizationId: input.organizationId, providerOperationId: input.providerOperationId, providerEventId: input.providerEventId, providerTransactionId: input.providerTransactionId, occurredAt: input.occurredAt, operationRequestId: requestId, ...actor(context) });
         if (confirmation.materialized) await this.finish(tx, context, requestId, "billing.provider.payment.aggregate.confirm.v1", "provider_payment_aggregate_succeeded", "payment", confirmation.payment.payment.paymentId, { providerOperationId: input.providerOperationId, allocationCount: confirmation.payment.allocations.length }, confirmation.payment);
         else await tx.succeed(input.organizationId, requestId, "payment", confirmation.payment.payment.paymentId, confirmation.payment);
         return confirmation.payment;
       });
-      if (result.ok) await Promise.all(result.value.allocations.map((allocation: PaymentAllocationFact) => this.orderLifecycle?.reconcileInvoice(input.organizationId, allocation.invoiceId)));
+      if (result.ok) {
+        try { await Promise.all(result.value.allocations.map((allocation: PaymentAllocationFact) => this.orderLifecycle?.reconcileInvoice(input.organizationId, allocation.invoiceId))); }
+        catch { return failure(new V2ApplicationError("RETRYABLE_FAILURE", "Provider Payment was recorded but lifecycle reconciliation could not be confirmed. Retry the original business request to recover its receipt.")); }
+      }
       return result;
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Financial operation conflicts with the immutable ledger."));
@@ -236,7 +247,7 @@ export class BillingPaymentsApplicationService {
     try {
       requireOperationPrincipalScope(context);
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
-      return await this.runner.transaction(async (tx) => {
+      const value = await this.runner.transaction(async (tx) => {
         const ids = input.allocations.map((allocation) => allocation.invoiceId);
         const locked = tx.lockInvoices ? await tx.lockInvoices(input.organizationId, ids) : await Promise.all(ids.map((invoiceId) => tx.lockInvoice(input.organizationId, invoiceId))).then((invoices) => invoices.filter((invoice): invoice is FinancialLockedInvoice => invoice !== null));
         if (locked.length !== ids.length || new Set(locked.map((invoice) => invoice.invoiceId)).size !== ids.length) throw new V2ApplicationError("NOT_FOUND", "One or more Invoices were not found.");
@@ -252,6 +263,7 @@ export class BillingPaymentsApplicationService {
         if (reservation.kind === "replay") return reservation.request.resultJson;
         return action(tx, locked, reservation.request.id);
       });
+      return success(value);
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Financial operation conflicts with the immutable ledger."));
     }

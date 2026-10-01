@@ -1579,6 +1579,8 @@ const sessionContextChanged = (): ApiError => ({
 const requireCurrentResponse = (generation: number): void => {
   if (generation !== responseGeneration) throw sessionContextChanged();
 };
+export const financialAuthorityDeniedEvent = "v2:financial-authority-denied";
+export type FinancialAuthorityDenial = Readonly<{ organizationId: string; sessionScope: string; kind: "read" | "record"; method: "GET" | "POST"; url: string }>;
 const csrfKey = (organizationId: string) =>
   `${sessionScope ?? "unscoped"}:${organizationId}`;
 export const newBusinessRequestId = () => crypto.randomUUID();
@@ -1637,6 +1639,7 @@ const withSearch = (
 };
 const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const generation = responseGeneration;
+  const requestSessionScope = sessionScope;
   // FormData owns its multipart boundary. Supplying JSON here would make a
   // legitimate binary upload unreadable by the HTTP boundary.
   const isMultipart =
@@ -1660,11 +1663,26 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   if (responseSessionScope) adoptSessionScope(responseSessionScope);
   const body = await response.json().catch(() => ({}));
   requireCurrentResponse(generation);
-  if (!response.ok || !body.ok)
+  if (!response.ok || !body.ok) {
+    // A financial denial is not a session replacement or a locally inferred
+    // capability change. The mounted host hides stale data and rechecks authority.
+    const financial = /^\/v2\/organizations\/([^/?]+)\/(payment-workspace|finance)(\/[^?]*)?(?:\?.*)?$/.exec(url);
+    const method = (init?.method ?? "GET").toUpperCase(), suffix = financial?.[3] ?? "";
+    const kind = method === "GET" && financial && (financial[2] === "payment-workspace"
+      ? ["", "/summary", "/customers", "/invoices"].includes(suffix)
+      : /^\/(?:overview|summary|ledger|invoices\/(?:legacy\/)?[^/]+)$/.test(suffix))
+      ? financial[2] === "payment-workspace" && suffix === "/invoices" ? "record" : "read"
+      : method === "POST" && financial?.[2] === "payment-workspace" && suffix === "/manual" ? "record" : undefined;
+    if (response.status === 403 && body.error?.code === "FORBIDDEN" && kind && requestSessionScope && typeof window !== "undefined") {
+      window.dispatchEvent(new window.CustomEvent<FinancialAuthorityDenial>(financialAuthorityDeniedEvent, {
+        detail: { organizationId: decodeURIComponent(financial![1]), sessionScope: requestSessionScope, kind, method: method === "GET" ? "GET" : "POST", url },
+      }));
+    }
     throw (body.error ?? {
       code: "INTERNAL_ERROR",
       message: "The Quote service is unavailable.",
     }) as ApiError;
+  }
   return body.data as T;
 };
 export const clearV2ApiSessionState = (): void => {
@@ -1770,12 +1788,13 @@ const adoptSessionScope = (nextScope: string): void => {
   sessionScope = nextScope;
 };
 /** Reuse session/CSRF and error handling without exporting mutable token state. */
-export const salesWorkspaceTransport = {
+export const authenticatedWorkspaceTransport = {
   request,
   commandHeaders: (organizationId: string): Readonly<Record<string, string>> => ({
     "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
   }),
 };
+export const salesWorkspaceTransport = authenticatedWorkspaceTransport;
 
 export const quoteApi = {
   bootstrap: async (organizationId: string) => {

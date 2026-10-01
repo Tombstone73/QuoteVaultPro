@@ -34,6 +34,8 @@ import { PostgresFulfillmentTransactionRunner } from "../../infrastructure/fulfi
 import { RoutingLifecycleApplicationService } from "../modules/routing/routingLifecycle.js";
 import { PostgresRoutingLifecycleTransactionRunner } from "../../infrastructure/routing/postgresRoutingLifecycleTransaction.js";
 import { composeAuthenticatedBillingRuntime } from "../../infrastructure/billing/authenticatedBillingRuntime.js";
+import { createPaymentWorkspaceDependencies } from "../../infrastructure/billing/authenticatedPaymentWorkspaceRuntime.js";
+import { requireV2CsrfToken } from "../../infrastructure/authentication/sessionCsrf.js";
 import { composeAuthenticatedArtworkRuntime } from "../../infrastructure/artwork/authenticatedArtworkRuntime.js";
 import { composeAuthenticatedProofingRuntime } from "../../infrastructure/proofing/authenticatedProofingRuntime.js";
 import { composeAuthenticatedPrepressRuntime } from "../../infrastructure/prepress/authenticatedPrepressRuntime.js";
@@ -189,6 +191,10 @@ export const createV2DeploymentApp = (
         pool, principals: quote.dependencies.principals,
         formReads: quote.dependencies.formReads!, storage: new SupabaseArtworkBinaryStorage(),
       }),
+    },
+    {
+      trustedHostMiddleware: billing.trustedHostMiddleware,
+      dependencies: createPaymentWorkspaceDependencies({ pool, principals: billing.dependencies.principals, payments: billing.dependencies.payments, requireCsrf: requireV2CsrfToken }),
     },
   );
 };
