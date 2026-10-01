@@ -421,6 +421,7 @@ export type QuotePortalListDto = {
   displayNumber: string | null;
   numberCore: number | null;
   jobLabel: string | null;
+  customerNotes: string | null;
   customerPoNumber: string | null;
   createdAt: string | null;
   validUntil: string | null;
@@ -656,6 +657,7 @@ type QuotePortalRow = Pick<
   | "displayNumber"
   | "numberCore"
   | "label"
+  | "customerNotes"
   | "createdAt"
   | "validUntil"
   | "status"
@@ -4154,6 +4156,7 @@ export function mapQuoteDetail(
     }),
     numberCore: quote.numberCore,
     jobLabel: quote.label?.trim() || null,
+    customerNotes: quote.customerNotes?.trim() || null,
     customerPoNumber,
     createdAt: toIso(quote.createdAt),
     validUntil: toIso(quote.validUntil),
@@ -4382,6 +4385,7 @@ export async function listPortalQuotes(req: Request): Promise<QuotePortalListDto
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
       label: quotes.label,
+      customerNotes: quotes.customerNotes,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -4467,6 +4471,7 @@ export async function getPortalCustomerQuoteDebug(organizationId: string, custom
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
       label: quotes.label,
+      customerNotes: quotes.customerNotes,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -4538,6 +4543,7 @@ export async function getPortalQuote(req: Request, quoteId: string): Promise<Quo
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
       label: quotes.label,
+      customerNotes: quotes.customerNotes,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,
@@ -4680,6 +4686,7 @@ async function getScopedPortalQuoteRecord(scope: PortalScope, quoteId: string): 
       displayNumber: quotes.displayNumber,
       numberCore: quotes.numberCore,
       label: quotes.label,
+      customerNotes: quotes.customerNotes,
       createdAt: quotes.createdAt,
       validUntil: quotes.validUntil,
       status: quotes.status,

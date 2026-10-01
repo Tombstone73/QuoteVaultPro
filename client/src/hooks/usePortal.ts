@@ -175,6 +175,7 @@ export type PortalQuoteListDto = {
   displayNumber: string | null;
   numberCore: number | null;
   jobLabel: string | null;
+  customerNotes: string | null;
   customerPoNumber: string | null;
   createdAt: string | null;
   validUntil: string | null;

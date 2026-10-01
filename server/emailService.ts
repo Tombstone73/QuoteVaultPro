@@ -649,6 +649,13 @@ class EmailService {
           </table>
         </div>
 
+        ${quote.customerNotes?.trim() ? `
+        <div style="margin-bottom: 24px; white-space: pre-wrap; overflow-wrap: anywhere;">
+          <h2 style="font-size: 16px; margin-bottom: 8px;">Notes</h2>
+          <p style="margin: 0;">${this.escapeHtml(quote.customerNotes.trim())}</p>
+        </div>
+        ` : ""}
+
         <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
           <p>Thank you for your business!</p>
           <p style="margin: 0;">If you have any questions about this quote, please don't hesitate to contact us.</p>

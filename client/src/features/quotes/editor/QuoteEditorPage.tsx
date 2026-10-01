@@ -1470,6 +1470,27 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             </Card>
                         )}
 
+                        {createTarget === "quote" && (
+                            <Card>
+                                <CardHeader className="pb-3">
+                                    <CardTitle className="text-base font-medium">
+                                        <label htmlFor="quote-customer-notes">Customer-Facing Notes</label>
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                    <Textarea
+                                        id="quote-customer-notes"
+                                        value={state.customerNotes}
+                                        onChange={(e) => state.handlers.setCustomerNotes(e.target.value)}
+                                        placeholder="Shown on the customer Quote"
+                                        readOnly={readOnly}
+                                        rows={4}
+                                        className="w-full"
+                                    />
+                                </CardContent>
+                            </Card>
+                        )}
+
                         {/* Internal Notes (uses existing quote shippingInstructions / editor quoteNotes field) */}
                         <Card>
                             <CardHeader className="pb-3">

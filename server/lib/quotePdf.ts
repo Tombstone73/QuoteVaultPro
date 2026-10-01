@@ -48,6 +48,7 @@ type QuotePdfInput = {
     quoteNumber?: number | string | null;
     displayNumber?: string | null;
     label?: string | null;
+    customerNotes?: string | null;
     status?: string | null;
     customerName?: string | null;
     billToName?: string | null;
@@ -411,6 +412,28 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   y -= 18;
   drawText(page, "Total", 370, y, bold, 12);
   drawRight(page, formatMoney(totalCents, currency), PAGE_WIDTH - MARGIN, y, bold, 12);
+
+  const customerNotes = cleanText(input.quote.customerNotes);
+  if (customerNotes) {
+    y -= 32;
+    if (y < MARGIN + 25) {
+      page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+      y = PAGE_HEIGHT - MARGIN;
+    }
+    drawText(page, "Notes", MARGIN, y, bold, 11);
+    y -= 17;
+    for (const paragraph of customerNotes.split(/\r?\n/)) {
+      const lines = paragraph ? wrapText(paragraph, PAGE_WIDTH - 2 * MARGIN, regular, 10) : [""];
+      for (const line of lines) {
+        if (y < MARGIN) {
+          page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+          y = PAGE_HEIGHT - MARGIN;
+        }
+        if (line) drawText(page, line, MARGIN, y, regular, 10);
+        y -= 14;
+      }
+    }
+  }
 
   return pdfDoc.save();
 }

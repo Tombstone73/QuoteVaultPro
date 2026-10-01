@@ -1471,6 +1471,13 @@
       "when": 1788048000061,
       "tag": "0216_line_create_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "7",
+      "when": 1788048000062,
+      "tag": "0217_quote_customer_notes",
+      "breakpoints": true
     }
   ]
 }

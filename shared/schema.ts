@@ -1750,6 +1750,7 @@ export const quotes = pgTable("quotes", {
   displayNumber: varchar("display_number", { length: 64 }),
   numberCore: integer("number_core"),
   label: text("label"), // Free-text label for categorization/notes
+  customerNotes: text("customer_notes"), // Customer-facing Quote notes; separate from internal shipping instructions
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   status: quoteStatusEnum("status").notNull().default("active"),
   customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),

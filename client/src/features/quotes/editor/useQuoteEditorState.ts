@@ -213,6 +213,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         country: 'USA'
     });
     const [quoteNotes, setQuoteNotes] = useState('');
+    const [customerNotes, setCustomerNotes] = useState('');
 
     // ============================================================================
     // PRODUCT SEARCH STATE
@@ -259,6 +260,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         useCustomerAddress: boolean;
         shippingAddress: Address;
         quoteNotes: string;
+        customerNotes: string;
         jobLabel: string;
         requestedDueDate: string;
         orderPoNumber: string;
@@ -297,6 +299,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         if (deliveryMethod !== snap.deliveryMethod) return true;
         if ((shippingCents ?? null) !== snap.shippingCents) return true;
         if (quoteNotes !== snap.quoteNotes) return true;
+        if (customerNotes !== snap.customerNotes) return true;
         if (JSON.stringify(tags) !== JSON.stringify(snap.tags)) return true;
         if (quoteTaxExempt !== snap.quoteTaxExempt) return true;
         if (quoteTaxRateOverride !== snap.quoteTaxRateOverride) return true;
@@ -333,6 +336,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         deliveryMethod,
         shippingCents,
         quoteNotes,
+        customerNotes,
         tags,
         quoteTaxExempt,
         quoteTaxRateOverride,
@@ -743,6 +747,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         // Hydrate shipping cost from persisted shippingCents
         setShippingCents(q.shippingCents ?? null);
         setQuoteNotes(q.shippingInstructions ?? "");
+        setCustomerNotes(q.customerNotes ?? "");
         
         // Hydrate tags from listLabel (comma-separated string) - only once per quote load
         if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {
@@ -807,6 +812,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 country: (quote as any).shipToCountry || "USA",
             },
             quoteNotes: (quote as any).shippingInstructions || "",
+            customerNotes: (quote as any).customerNotes || "",
             jobLabel: (quote as any).label || "",
             orderPoNumber: "",
             orderPromisedDate: "",
@@ -1788,6 +1794,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             shippingMethod: deliveryMethod,
             shippingCents: shippingCents,
             shippingInstructions: quoteNotes || null,
+            customerNotes: customerNotes || null,
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
@@ -1861,6 +1868,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             shippingMethod: deliveryMethod,
             shippingCents,
             shippingInstructions: quoteNotes || null,
+            customerNotes: customerNotes || null,
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
@@ -1994,6 +2002,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     useCustomerAddress,
                     shippingAddress,
                     quoteNotes,
+                    customerNotes,
                     jobLabel,
                     requestedDueDate,
                     orderPoNumber,
@@ -2501,6 +2510,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     shippingMethod: deliveryMethod,
                     shippingCents,
                     shippingInstructions: quoteNotes || null,
+                    customerNotes: customerNotes || null,
                     source: "internal",
                     hasCustomerId: !!payloadCustomerId,
                     hasLineItems: true, // We're including a line item
@@ -2578,6 +2588,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             requestedDueDate,
             deliveryMethod,
             quoteNotes,
+            customerNotes,
             tags,
             quoteTaxExempt,
             quoteTaxRateOverride,
@@ -2668,6 +2679,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         setUseCustomerAddress(snap.useCustomerAddress);
         setShippingAddress(snap.shippingAddress);
         setQuoteNotes(snap.quoteNotes);
+        setCustomerNotes(snap.customerNotes);
         setJobLabel(snap.jobLabel);
         setRequestedDueDate(snap.requestedDueDate);
         setOrderPoNumber(snap.orderPoNumber);
@@ -2737,6 +2749,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         shippingCents,
         shippingAddress,
         quoteNotes,
+        customerNotes,
         useCustomerAddress,
 
         // Quote meta
@@ -2852,6 +2865,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 setShippingAddress(prev => ({ ...prev, ...updates }));
             },
             setQuoteNotes,
+            setCustomerNotes,
             handleCopyCustomerAddress,
             setJobLabel,
             setRequestedDueDate,

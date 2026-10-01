@@ -625,6 +625,7 @@ export class QuotesRepository {
         carrier?: string | null;
         carrierAccountNumber?: string | null;
         shippingInstructions?: string | null;
+        customerNotes?: string | null;
         requestedDueDate?: string | Date | null;
         validUntil?: string | Date | null;
         lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
@@ -698,6 +699,7 @@ export class QuotesRepository {
                 carrier: data.carrier ?? null,
                 carrierAccountNumber: data.carrierAccountNumber ?? null,
                 shippingInstructions: data.shippingInstructions ?? null,
+                customerNotes: data.customerNotes ?? null,
                 requestedDueDate: data.requestedDueDate ?? null,
                 validUntil: data.validUntil ?? null,
             } as typeof quotes.$inferInsert;
@@ -1075,6 +1077,7 @@ export class QuotesRepository {
         carrierAccountNumber?: string | null;
         shippingCents?: number | null;
         shippingInstructions?: string | null;
+        customerNotes?: string | null;
         label?: string | null;
         shippingMethod?: string | null;
         shippingMode?: string | null;
@@ -1099,6 +1102,7 @@ export class QuotesRepository {
         if (data.carrierAccountNumber !== undefined) updateData.carrierAccountNumber = data.carrierAccountNumber;
         if (data.shippingCents !== undefined) updateData.shippingCents = data.shippingCents;
         if (data.shippingInstructions !== undefined) updateData.shippingInstructions = data.shippingInstructions;
+        if (data.customerNotes !== undefined) updateData.customerNotes = data.customerNotes;
         if (data.label !== undefined) updateData.label = data.label;
         if (data.shippingMethod !== undefined) updateData.shippingMethod = data.shippingMethod;
         if (data.shippingMode !== undefined) updateData.shippingMode = data.shippingMode;

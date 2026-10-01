@@ -268,6 +268,10 @@ export default function PortalQuoteDetailPage() {
             <span className="text-muted-foreground">Job Description</span>
             <p className="whitespace-normal break-words font-medium">{quote.jobLabel}</p>
           </div>}
+          {quote.customerNotes?.trim() && <div className="text-sm">
+            <span className="text-muted-foreground">Notes</span>
+            <p className="whitespace-pre-wrap break-words">{quote.customerNotes}</p>
+          </div>}
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Fulfillment</span>
             <span>{quote.fulfillmentLabel}</span>

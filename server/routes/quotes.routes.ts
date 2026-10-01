@@ -964,6 +964,7 @@ export function registerQuoteRoutes(
         carrier: quotePayload.carrier || undefined,
         carrierAccountNumber: quotePayload.carrierAccountNumber || undefined,
         shippingInstructions: quotePayload.shippingInstructions || undefined,
+        customerNotes: quotePayload.customerNotes ?? null,
       } });
 
       if (proofApprovalManualOverrideIndexes.length > 0 && Array.isArray((quote as any).lineItems)) {
@@ -1479,6 +1480,7 @@ export function registerQuoteRoutes(
         carrier,
         carrierAccountNumber,
         shippingInstructions,
+        customerNotes,
         shipToCompany,
         shipToName,
         shipToEmail,
@@ -1627,6 +1629,7 @@ export function registerQuoteRoutes(
       if (carrier !== undefined) updateData.carrier = carrier;
       if (carrierAccountNumber !== undefined) updateData.carrierAccountNumber = carrierAccountNumber;
       if (shippingInstructions !== undefined) updateData.shippingInstructions = shippingInstructions;
+      if (customerNotes !== undefined) updateData.customerNotes = customerNotes;
       if (shippingCents !== undefined) updateData.shippingCents = shippingCents ?? null;
       if (shipToCompany !== undefined) updateData.shipToCompany = shipToCompany ?? null;
       if (shipToName !== undefined) updateData.shipToName = shipToName ?? null;
