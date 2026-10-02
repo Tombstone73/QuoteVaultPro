@@ -260,6 +260,7 @@ add('v2/tests/modules/', 'tsx', [
   'salesTaxComposition.pure.ts',
   'shipmentContainer.pure.ts',
   'shipmentContainerIdempotency.pure.ts',
+  'shipmentReplacementAuthorization.pure.ts',
   'shippingEconomicsApplication.pure.ts',
   'shippingPricingPolicy.pure.ts',
   'taxSettings.pure.ts',

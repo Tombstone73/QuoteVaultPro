@@ -76,9 +76,9 @@ const groups = {
   "infrastructure/fulfillment/postgresShipmentContainerTransaction.ts": [
     ["v2_fulfillment_handoffs","INSERT","64dae4f914fd6bda7fe366299f28f3d9e16115be98679ea3e3df4ceadfd97e97","OBSERVED",1],
     ["v2_fulfillment_handoff_lines","INSERT","9bf248db1dc15cda8e59411e0130342002ddf2630b9e17248e54be63a1006de1","OBSERVED",1],
-    // Independently reviewed M5: same opaque query/count; updated full-source
-    // pin for scoped obligation reads. Snapshot adds explicit parameter types.
-    ["<unresolved>","UNRESOLVED","d9963bd39ec0d93e6c3e643cb4190a7c0375da8e566d495d73ce4c69fce663f1","SQL-DYNAMIC",1],
+    // Same opaque list SELECT/count; P2 adds a tenant/shipment/revision-scoped
+    // immutable evidence reader, changing this full-source pin only.
+    ["<unresolved>","UNRESOLVED","9b7e9687fc2dd2b745381b6aba47554e1737467ace7c4617bc301dd3840a5f27","SQL-DYNAMIC",1],
     ["v2_fulfillment_handoff_document_snapshots","INSERT","677637aac78acf940f9f97c48d982159444fa954b8114d1a4eebd02acb974b3f","SNAPSHOT",1],
   ],
   "infrastructure/fulfillment/postgresShipmentShippingAllocation.ts": [

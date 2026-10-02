@@ -16,6 +16,14 @@ const tx: ShipmentContainerTransaction = {
   async create(input) { creates += 1; return { shipmentId: input.id, organizationId: input.organizationId, status: "prepared", carrier: input.carrier, createdAt: "2026-09-09T00:00:00.000Z", createdPrincipalKind: input.principalKind, createdPrincipalSubject: input.principalSubject }; },
   async markShipped() { return null; },
   async attach() { return false; },
+  async get(org, id, options) {
+    assert.equal(options?.forUpdate, true, "authorization locks the shipment in the mutation transaction");
+    return { shipmentId: id, organizationId: org, status: "prepared", carrier: { status: "prepared" }, preparedRevisionId: "revision-2",
+      createdAt: "2026-09-09T00:00:00.000Z", createdPrincipalKind: "staff", createdPrincipalSubject: "operator", events: [],
+      currentPreparedRevision: { revisionId: "revision-2", shipmentId: id, organizationId: org, revisionNumber: 2, kind: "correction", supersedesRevisionId: "revision-1",
+        carrier: { status: "prepared" }, allocations: [{ orderId: "order-a", orderLineId: "line-a", quantity: 2 }],
+        createdAt: "2026-09-09T00:00:00.000Z", createdPrincipalKind: "staff", createdPrincipalSubject: "operator" } };
+  },
   async finalizePrepared(input) {
     if (finalizationFails) return null;
     finalizations += 1;
@@ -37,6 +45,7 @@ const tx: ShipmentContainerTransaction = {
         organizationId: input.organizationId,
         revisionNumber: 2,
         kind: "correction",
+        supersedesRevisionId: "revision-1",
         carrier: { status: "prepared" },
         allocations: [
           { orderId: "order-a", orderLineId: "line-a", quantity: 2 },

@@ -10,7 +10,9 @@ import { PostgresFulfillmentTransaction, PostgresFulfillmentTransactionRunner } 
 import { PostgresFulfillmentWorkspaceReads } from "../../infrastructure/fulfillment/postgresFulfillmentWorkspaceReads.js";
 import { PostgresFulfillmentCompletionProjection } from "../../infrastructure/fulfillment/postgresFulfillmentCompletionProjection.js";
 import { PostgresReplacementObligationService } from "../../infrastructure/fulfillment/postgresReplacementObligations.js";
-import { PostgresShipmentContainerTransaction } from "../../infrastructure/fulfillment/postgresShipmentContainerTransaction.js";
+import { PostgresShipmentContainerRunner, PostgresShipmentContainerTransaction } from "../../infrastructure/fulfillment/postgresShipmentContainerTransaction.js";
+import { ShipmentContainerApplicationService } from "../../src/modules/fulfillment/shipmentContainerApplication.js";
+import type { ApplicationResult } from "../../src/errors/applicationError.js";
 import { PostgresOrderAutomaticLifecycle } from "../../infrastructure/sales/postgresOrderAutomaticLifecycle.js";
 import { PostgresProductionCompletionProjection } from "../../infrastructure/production/postgresProductionCompletionProjection.js";
 import { createOrReadReplacementInvoice } from "../../infrastructure/billing/postgresReplacementInvoice.js";
@@ -494,6 +496,103 @@ cases.push(["no-charge source/replay/pickup preserves all original financial and
   assert.deepEqual(await financialHistory(f.orderId), finance);
   assert.deepEqual((await db.query("SELECT to_jsonb(w) work,(SELECT jsonb_agg(to_jsonb(a)) FROM v2_production_attempts a WHERE a.production_work_id=w.id) attempts FROM v2_production_works w WHERE w.id=$1", [originalWork])).rows, history);
   await assert.rejects(db.query("UPDATE v2_fulfillment_handoffs SET handoff_method='shipment' WHERE id=$1", [source]), error => (error as { code: string }).code === "23514");
+}]);
+cases.push(["P2 actual application locks and gates mixed/removal scope, replays exact bounded history without effects", async () => {
+  const f = await fixture(4); await f.work("front", { orderedQuantity: 4, producedQuantity: 4 });
+  const a = await f.replacement(2); await f.work("front", { orderedQuantity: 2, producedQuantity: 2 }, a);
+  const reconciled: string[] = [];
+  const service = new ShipmentContainerApplicationService(new PostgresShipmentContainerRunner(pool), undefined,
+    { reconcileOrder: async (_org, orderId) => { reconciled.push(orderId); }, reconcileInvoice: async () => undefined });
+  const caller = (id: string, replace = false, organizationId = org): OperationContext => ({ ...context(id, organizationId),
+    principal: { kind: "staff", organizationId, userId: "m5-user", authority: { membershipId: "m5-membership", capabilities: replace ? ["fulfillment.ship", "fulfillment.replace"] : ["fulfillment.ship"] } } });
+  const accepted = <T>(result: ApplicationResult<T>) => { assert.ok(result.ok, result.ok ? "" : result.error.publicMessage); return result.value; };
+  const denied = (result: ApplicationResult<unknown>, code = "FORBIDDEN") => { assert.equal(result.ok, false); if (!result.ok) assert.equal(result.error.code, code); };
+  const noDomainWork = (start: number, replay = false) => {
+    const calls = statements.slice(start);
+    assert.ok(!calls.some(text => /^(INSERT INTO|UPDATE|DELETE FROM)\s+v2_(?!operation_requests)/i.test(text.trim())), "no shipment, revision, event or handoff writes");
+    assert.ok(!calls.some(text => /WITH production_output|v2_usable_production_good_quantity|FROM v2_order_replacement_obligations|SELECT line\.(order_line_id|replacement_obligation_id)/.test(text)), "no availability or reservation checks");
+    if (replay) assert.ok(!calls.some(text => /^(INSERT INTO|UPDATE|DELETE FROM)\s/i.test(text.trim())), "replay performs no writes, including the request ledger");
+  };
+  const original = { orderId: f.orderId, orderLineId: f.lineId, quantity: 1 }, replacement = { ...original, replacementObligationId: a };
+  const prepareInput = { allocations: [original, replacement] };
+  let start = statements.length;
+  denied(await service.createPrepared(caller("p2-prepare"), prepareInput)); noDomainWork(start);
+  assert.equal(statements.at(-1), "ROLLBACK");
+  assert.equal((await db.query("SELECT count(*)::integer n FROM v2_operation_requests WHERE business_request_id='p2-prepare'")).rows[0].n, 0, "denied creation leaves no request or domain write committed");
+  const prepared = accepted(await service.createPrepared(caller("p2-prepare", true), prepareInput));
+  const correction = { shipmentId: prepared.shipmentId, allocations: [original], reason: "Remove replacement allocation" };
+  for (const run of [
+    () => service.correctPrepared(caller("p2-remove-denied"), correction),
+    () => service.finalize(caller("p2-final-denied"), { shipmentId: prepared.shipmentId, expectedPreparedRevisionId: prepared.preparedRevisionId! }),
+    () => service.voidPrepared(caller("p2-void-denied"), { shipmentId: prepared.shipmentId, reason: "Cancel" }),
+  ]) {
+    start = statements.length; denied(await run()); noDomainWork(start);
+    const calls = statements.slice(start), lockAt = calls.findIndex(text => text.startsWith("SELECT * FROM v2_fulfillment_shipments") && text.endsWith("FOR UPDATE"));
+    const scopeAt = calls.findIndex(text => text.includes("FROM v2_fulfillment_shipment_prepared_revisions"));
+    assert.ok(lockAt >= 0 && scopeAt > lockAt, "actual SQL locks the container before reading allocation authority");
+    assert.equal(calls.at(-1), "ROLLBACK", "the same runner client retains its lock through the denied decision");
+  }
+  denied(await service.correctPrepared(caller("p2-wrong-tenant", true, foreignOrg), correction), "CONFLICT");
+  const removed = accepted(await service.correctPrepared(caller("p2-remove", true), correction));
+  start = statements.length; denied(await service.correctPrepared(caller("p2-remove"), correction)); noDomainWork(start, true);
+  start = statements.length; assert.deepEqual(accepted(await service.correctPrepared(caller("p2-remove", true), correction)), removed); noDomainWork(start, true);
+  const laterInput = { ...correction, reason: "New original-only correction" };
+  const later = accepted(await service.correctPrepared(caller("p2-later"), laterInput));
+  accepted(await service.correctPrepared(caller("p2-add-again", true), { ...correction, allocations: [replacement], reason: "Later replacement" }));
+  start = statements.length; assert.deepEqual(accepted(await service.correctPrepared(caller("p2-later"), laterInput)), later); noDomainWork(start, true);
+  start = statements.length; denied(await service.correctPrepared(caller("p2-remove"), correction)); noDomainWork(start, true);
+  start = statements.length; assert.deepEqual(accepted(await service.correctPrepared(caller("p2-remove", true), correction)), removed); noDomainWork(start, true);
+  denied(await service.correctPrepared(caller("p2-remove", true), { ...correction, reason: "Different payload" }), "IDEMPOTENCY_CONFLICT");
+  denied(await service.createPrepared(caller("p2-prepare", true), { allocations: [original] }), "IDEMPOTENCY_CONFLICT");
+  const finalRevision = accepted(await service.correctPrepared(caller("p2-remove-again", true), { ...correction, reason: "Remove later replacement" }));
+  const finalizeInput = { shipmentId: prepared.shipmentId, expectedPreparedRevisionId: finalRevision.preparedRevisionId! };
+  const finalized = accepted(await service.finalize(caller("p2-final"), finalizeInput));
+  assert.equal(finalized.status, "shipped"); assert.deepEqual(reconciled, [f.orderId]);
+  start = statements.length; assert.deepEqual(accepted(await service.finalize(caller("p2-final"), finalizeInput)), finalized); noDomainWork(start, true);
+  assert.deepEqual(reconciled, [f.orderId], "replay does not reconcile lifecycle");
+  start = statements.length; denied(await service.createPrepared(caller("p2-prepare"), prepareInput)); noDomainWork(start, true);
+  start = statements.length; assert.deepEqual(accepted(await service.createPrepared(caller("p2-prepare", true), prepareInput)), prepared); noDomainWork(start, true);
+  assert.deepEqual(await shipping(transaction => transaction.getPreparedRevision(org, prepared.shipmentId, prepared.preparedRevisionId!)), prepared.currentPreparedRevision);
+  for (const [scopeOrg, scopeShipment, scopeRevision] of [[foreignOrg, prepared.shipmentId, prepared.preparedRevisionId!], [org, "foreign-shipment", prepared.preparedRevisionId!], [org, prepared.shipmentId, "missing-revision"]] as const) {
+    assert.equal(await shipping(transaction => transaction.getPreparedRevision(scopeOrg, scopeShipment, scopeRevision)), null, "historical owner read scopes tenant, shipment and revision");
+  }
+  // Simulate unavailable evidence at the client seam, never delete immutable DB history.
+  const missingEvidencePool = { connect: async () => {
+    const connection = await pool.connect();
+    return { release: () => connection.release(), query: async (text: string, params?: unknown[]) =>
+      text.includes("FROM v2_fulfillment_shipment_prepared_revisions") && params?.[2] === prepared.preparedRevisionId ? { rows: [] } : connection.query(text, params) };
+  } } as unknown as Pool;
+  const missingEvidence = new ShipmentContainerApplicationService(new PostgresShipmentContainerRunner(missingEvidencePool));
+  start = statements.length; denied(await missingEvidence.correctPrepared(caller("p2-remove", true), correction), "CONFLICT"); noDomainWork(start, true);
+}]);
+cases.push(["P2 replacement terminal replays reauthorize while original-only and resumed prepare remain supported", async () => {
+  for (const terminal of ["finalize", "void"] as const) for (const replace of [false, true]) {
+    const f = await fixture(2); await f.work("front", { orderedQuantity: 2, producedQuantity: 2 });
+    const a = await f.replacement(1); await f.work("front", { orderedQuantity: 1, producedQuantity: 1 }, a);
+    const service = new ShipmentContainerApplicationService(new PostgresShipmentContainerRunner(pool));
+    const id = `p2-${terminal}-${replace}`, full = context(id), shipOnly = { ...full, principal: { kind: "staff" as const, organizationId: org, userId: "m5-user", authority: { membershipId: "membership", capabilities: ["fulfillment.ship" as const] } } };
+    const prepareInput = { allocations: [{ orderId: f.orderId, orderLineId: f.lineId, quantity: 1, ...(replace ? { replacementObligationId: a } : {}) }] };
+    // A failed request from an earlier caller resumes under the current caller's grants.
+    await shipping(async transaction => {
+      const { createHash } = await import("node:crypto");
+      const { canonicalJson } = await import("../../src/modules/shared/commercialValues.js");
+      const reserved = await transaction.reserve({ organizationId: org, operation: "fulfillment.shipment-container.prepare.v1", businessRequestId: id,
+        payloadFingerprint: `sha256:${createHash("sha256").update(canonicalJson(prepareInput)).digest("hex")}`, principalKind: "staff", principalSubject: "m5-user" });
+      await query("UPDATE v2_operation_requests SET status='retryable_failure' WHERE id=$1", [reserved.request.id]);
+    });
+    if (replace) {
+      const denied = await service.createPrepared(shipOnly, prepareInput); assert.equal(denied.ok, false); if (!denied.ok) assert.equal(denied.error.code, "FORBIDDEN");
+    }
+    const prepared = await service.createPrepared(replace ? full : shipOnly, prepareInput); assert.ok(prepared.ok);
+    const run = (caller: OperationContext) => terminal === "finalize"
+      ? service.finalize(caller, { shipmentId: prepared.value.shipmentId, expectedPreparedRevisionId: prepared.value.preparedRevisionId! })
+      : service.voidPrepared(caller, { shipmentId: prepared.value.shipmentId, reason: "Cancel" });
+    const first = await run(replace ? full : shipOnly); assert.ok(first.ok, first.ok ? "" : first.error.publicMessage);
+    if (replace) { const denied = await run(shipOnly); assert.equal(denied.ok, false); if (!denied.ok) assert.equal(denied.error.code, "FORBIDDEN"); }
+    const start = statements.length; assert.deepEqual(await run(replace ? full : shipOnly), first);
+    assert.ok(statements.slice(start).every(text => !/^(INSERT INTO|UPDATE|DELETE FROM)\s/i.test(text.trim())), "actual terminal replay performs no writes");
+    assert.ok(statements.slice(start).every(text => !/v2_usable_production_good_quantity|FROM v2_order_replacement_obligations/.test(text)), "terminal replay does not recheck availability");
+  }
 }]);
 cases.push(["billable quantity1 uses frozen875 cents through existing Billing owner and creates ORD-1019-B", async () => {
   const f = await fixture(); await f.work("front", { orderedQuantity: 2, producedQuantity: 2 }); await f.handoff(2); await settleOriginal(f);
