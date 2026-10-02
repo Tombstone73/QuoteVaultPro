@@ -694,6 +694,7 @@ export default function OrderDetail() {
   const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
   const [isAddingOrderInternalNote, setIsAddingOrderInternalNote] = useState(false);
   const [isOrderInternalNotesOpen, setIsOrderInternalNotesOpen] = useState(false);
+  const [orderInternalNoteToDelete, setOrderInternalNoteToDelete] = useState<OrderInternalNoteRow | null>(null);
 
   const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
     queryKey: ["orders", "internalNotes", orderId],
@@ -2024,6 +2025,26 @@ export default function OrderDetail() {
     billingStatus,
     invoices: orderInvoices,
   });
+
+  const deleteOrderInternalNoteMutation = useMutation({
+    mutationFn: async (noteId: string) => {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId ?? "")}/internal-notes/${encodeURIComponent(noteId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.message || "Failed to delete order internal note");
+      return payload.data as { id: string };
+    },
+    onSuccess: async () => {
+      setOrderInternalNoteToDelete(null);
+      await queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
+      await queryClient.invalidateQueries({ queryKey: ["orders", orderId, "audit"] });
+      toast({ title: "Internal note removed" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to remove internal note", description: error.message, variant: "destructive" });
+    },
+  });
   const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
   const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
   const billingLineItems = order.lineItems ?? [];
@@ -2282,13 +2303,13 @@ export default function OrderDetail() {
               <Button asChild type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
                 <Link to={`/invoices/${orderInvoices[0].id}`}>
                   <FileText className="mr-1.5 h-4 w-4" />
-                  View Invoice
+                  Invoice
                 </Link>
               </Button>
             ) : !isInvoicesLoading && orderInvoices.length > 1 ? (
               <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={() => setOrderInvoiceSelectorOpen(true)}>
                 <FileText className="mr-1.5 h-4 w-4" />
-                Invoices
+                Invoice
               </Button>
             ) : !isInvoicesLoading && isAdminOrOwner && canCreateInvoiceFromOrder ? (
               <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
@@ -2307,7 +2328,7 @@ export default function OrderDetail() {
               })}
             >
               <Truck className="mr-1.5 h-4 w-4" />
-              Go to Fulfillment
+              Fulfillment
             </Button>
             {!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler" className="h-10 rounded-md px-3 text-xs font-semibold" />}
 
@@ -2890,7 +2911,7 @@ export default function OrderDetail() {
                         <span className="min-w-0">
                           <span className="block text-sm font-medium">Internal Notes</span>
                           <span className="block text-xs text-muted-foreground">
-                            {orderInternalNotesQuery.isLoading ? "Loading…" : `${orderInternalNotesQuery.data?.length ?? 0} append-only note${(orderInternalNotesQuery.data?.length ?? 0) === 1 ? "" : "s"}`}
+                            {orderInternalNotesQuery.isLoading ? "Loading…" : `${orderInternalNotesQuery.data?.length ?? 0} note${(orderInternalNotesQuery.data?.length ?? 0) === 1 ? "" : "s"}`}
                           </span>
                         </span>
                         <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", (isOrderInternalNotesOpen || isAddingOrderInternalNote) && "rotate-180")} />
@@ -2905,26 +2926,26 @@ export default function OrderDetail() {
 
                   <CollapsibleContent className="mt-2">
                   {orderInternalNotesQuery.data && orderInternalNotesQuery.data.length > 0 ? (
-                    <details className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2">
-                      <summary className="cursor-pointer text-sm font-medium">View notes</summary>
                       <div className="mt-2 space-y-2">
                       {orderInternalNotesQuery.data.map((note) => (
-                        <div key={note.id} className="rounded bg-background/70 px-2.5 py-2 text-sm whitespace-pre-wrap">
-                          {note.noteText}
+                        <div key={note.id} className="rounded border border-border/50 bg-background/40 px-2.5 py-2 text-sm">
+                          <div className="whitespace-pre-wrap">{note.noteText}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             {note.createdByUserName || "Staff"} · {format(new Date(note.createdAt), "PPp")}
                           </div>
+                          {canAppendOrderInternalNote ? (
+                            <Button type="button" variant="ghost" size="sm" className="mt-1 h-7 px-1.5 text-xs text-muted-foreground hover:text-destructive" onClick={() => setOrderInternalNoteToDelete(note)}>
+                              <Trash2 className="mr-1 h-3.5 w-3.5" />
+                              Delete
+                            </Button>
+                          ) : null}
                         </div>
                       ))}
                       </div>
-                    </details>
                   ) : !order.notesInternal || isClearlyGeneratedInboundProvenance(order.notesInternal) ? <span className="sr-only">No internal notes.</span> : null}
 
                   {order.notesInternal && !isClearlyGeneratedInboundProvenance(order.notesInternal) ? (
-                    <details className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2">
-                      <summary className="cursor-pointer text-sm font-medium">Existing internal note</summary>
-                      <div className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{order.notesInternal}</div>
-                    </details>
+                    <div className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2 text-sm text-muted-foreground whitespace-pre-wrap">{order.notesInternal}</div>
                   ) : null}
 
                   {canAppendOrderInternalNote && isAddingOrderInternalNote ? (
@@ -2957,6 +2978,20 @@ export default function OrderDetail() {
                   </CollapsibleContent>
                 </div>
                 </Collapsible>
+                <AlertDialog open={orderInternalNoteToDelete !== null} onOpenChange={(open) => { if (!open && !deleteOrderInternalNoteMutation.isPending) setOrderInternalNoteToDelete(null); }}>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete internal note?</AlertDialogTitle>
+                      <AlertDialogDescription>This removes the note from the active Order notes list. Its deletion remains recorded in the Order timeline.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={deleteOrderInternalNoteMutation.isPending}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction disabled={deleteOrderInternalNoteMutation.isPending} onClick={(event) => { event.preventDefault(); if (orderInternalNoteToDelete) deleteOrderInternalNoteMutation.mutate(orderInternalNoteToDelete.id); }}>
+                        {deleteOrderInternalNoteMutation.isPending ? "Deleting…" : "Delete note"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
                   </section>
 
                   <section className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4" aria-label="Commercial and fulfillment">
@@ -3067,7 +3102,7 @@ export default function OrderDetail() {
           </div>
 
           {/* Inline fulfillment and lower-order utilities */}
-          <div className="min-w-0 space-y-6">
+          <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(280px,1fr)_minmax(240px,0.75fr)_minmax(320px,1fr)]">
             {/* Fulfillment stays in the Order flow; detailed shipment work lives in Fulfillment. */}
             <Collapsible
               open={isFulfillmentExpanded || isEditingFulfillment}
@@ -3155,7 +3190,7 @@ export default function OrderDetail() {
                       />
                     </div>
                   ) : (
-                    <>
+                    <div className="grid gap-3 xl:grid-cols-2">
                       {/* Ship To (order-level blind shipping) */}
                       <div className="space-y-3">
                         <div className="text-sm font-medium">Ship To</div>
@@ -3431,7 +3466,7 @@ export default function OrderDetail() {
                         )}
                       </div>
 
-                      <div className="space-y-2">
+                      {(isEditingFulfillment || order.shippingInstructions) ? <div className="space-y-2 xl:col-span-full">
                         <label className="text-sm font-medium">Shipping instructions</label>
                         <Textarea
                           placeholder="Add delivery instructions, dock hours, contact information, etc."
@@ -3443,9 +3478,9 @@ export default function OrderDetail() {
                             void applyOrderPatch({ shippingInstructions: nextValue });
                           }}
                         />
-                      </div>
+                      </div> : null}
 
-                      <div className="rounded-md border border-border/60 p-3">
+                      <div className="rounded-md border border-border/60 p-3 xl:col-start-2 xl:row-start-1">
                         <label className="flex items-center gap-2 text-sm font-medium">
                           <input
                             type="checkbox"
@@ -3519,7 +3554,7 @@ export default function OrderDetail() {
 
                       {/* Shipping / Delivery Price */}
                       {(currentFulfillmentMethod === "ship" || currentFulfillmentMethod === "deliver") && (
-                        <div className="space-y-2">
+                        <div className="space-y-2 xl:col-span-full">
                           <label className="text-sm font-medium">
                             {currentFulfillmentMethod === "deliver" ? "Delivery Fee" : "Shipping Price"}
                           </label>
@@ -3559,92 +3594,14 @@ export default function OrderDetail() {
                         </div>
                       )}
 
-                      {/* Customer-facing order document actions */}
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-medium">Order PDF</span>
-                          {orderPdfUnavailableReason ? (
-                            <span className="ml-2 text-xs text-muted-foreground text-right">{orderPdfUnavailableReason}</span>
-                          ) : null}
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 px-2"
-                            onClick={() => void handleOrderPdfAction("preview")}
-                            disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
-                            aria-label="Preview Order"
-                            title="Preview Order"
-                          >
-                            <FileText className="h-4 w-4" />
-                            <span className="sr-only">{isOrderPdfBusy === "preview" ? "Opening Order preview" : "Preview Order"}</span>
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 px-2"
-                            onClick={() => void handleOrderPdfAction("download")}
-                            disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
-                            aria-label="Download Order PDF"
-                            title="Download PDF"
-                          >
-                            <Download className="h-4 w-4" />
-                            <span className="sr-only">{isOrderPdfBusy === "download" ? "Downloading Order PDF" : "Download PDF"}</span>
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 px-2"
-                            onClick={handleOpenOrderEmailDialog}
-                            disabled={!canUseOrderPdf || sendOrderEmailMutation.isPending}
-                            aria-label="Email Order"
-                            title="Email Order"
-                          >
-                            <Mail className="h-4 w-4" />
-                            <span className="sr-only">{sendOrderEmailMutation.isPending ? "Sending Order email" : "Email Order"}</span>
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 px-2"
-                            onClick={() => void handleOrderPdfAction("print")}
-                            disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
-                            aria-label="Print Order"
-                            title="Print Order"
-                          >
-                            <Printer className="h-4 w-4" />
-                            <span className="sr-only">{isOrderPdfBusy === "print" ? "Opening Order print view" : "Print Order"}</span>
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* Packing Slip */}
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-sm font-medium">Packing Slip</span>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 px-2"
-                          onClick={() => guardedNavigate(ROUTES.fulfillment.order(order.id), {
-                            state: { referrer: buildReferrer(location), orderReturnState: location.state },
-                          })}
-                          aria-label="Generate packing slip in Fulfillment"
-                          title="Generate packing slip in Fulfillment"
-                        >
-                          <Truck className="mr-1.5 h-4 w-4" />
-                          Go to Fulfillment
-                        </Button>
-                      </div>
-
-                    </>
+                    </div>
                   )}
               </CardContent>
               </CollapsibleContent>
             </Card>
             </Collapsible>
 
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(240px,0.8fr)_minmax(280px,1fr)_minmax(320px,1.2fr)]">
+            <div className="contents">
               {/* Totals */}
               <Card className="h-fit">
                 <CardHeader className="px-4 py-3">
@@ -3663,6 +3620,23 @@ export default function OrderDetail() {
               </Card>
 
             <div className="space-y-2">
+            <OrderUtilitySection title="Order Documents" icon={<FileText className="h-4 w-4 text-muted-foreground" />}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => void handleOrderPdfAction("preview")} disabled={!canUseOrderPdf || isOrderPdfBusy !== null} aria-label="Preview Order" title="Preview Order">
+                  <FileText className="mr-1.5 h-4 w-4" /> Preview
+                </Button>
+                <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => void handleOrderPdfAction("download")} disabled={!canUseOrderPdf || isOrderPdfBusy !== null} aria-label="Download Order PDF" title="Download Order PDF">
+                  <Download className="mr-1.5 h-4 w-4" /> Download
+                </Button>
+                <Button variant="outline" size="sm" className="h-8 px-2" onClick={handleOpenOrderEmailDialog} disabled={!canUseOrderPdf || sendOrderEmailMutation.isPending} aria-label="Email Order" title="Email Order">
+                  <Mail className="mr-1.5 h-4 w-4" /> Email
+                </Button>
+                <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => void handleOrderPdfAction("print")} disabled={!canUseOrderPdf || isOrderPdfBusy !== null} aria-label="Print Order" title="Print Order">
+                  <Printer className="mr-1.5 h-4 w-4" /> Print
+                </Button>
+              </div>
+              {orderPdfUnavailableReason ? <p className="mt-2 text-xs text-muted-foreground">{orderPdfUnavailableReason}</p> : null}
+            </OrderUtilitySection>
             {/* Attachments */}
             <OrderUtilitySection
               title="Attachments"

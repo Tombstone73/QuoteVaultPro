@@ -46,7 +46,7 @@ describe("order detail action contracts", () => {
   });
 
   test("keeps invoice navigation in the header and removes the persistent invoice summary", () => {
-    expect(detail).toContain('>\n                  View Invoice\n                </Link>');
+    expect(detail).toContain('>\n                  Invoice\n                </Link>');
     expect(detail).toContain('Invoices for Order {titleText}');
     expect(detail).not.toContain('Invoice Summary');
     expect(detail).not.toContain('Take Payment');
@@ -67,7 +67,15 @@ describe("order detail action contracts", () => {
     expect(detail).toContain('aria-label="Download Order PDF"');
     expect(detail).toContain('aria-label="Email Order"');
     expect(detail).toContain('aria-label="Print Order"');
-    expect(detail).toContain('aria-label="Generate packing slip in Fulfillment"');
+    expect(detail).toContain('title="Order Documents"');
+    expect(detail).not.toContain('aria-label="Generate packing slip in Fulfillment"');
     expect(detail).not.toContain('Shipment administration');
+  });
+
+  test("keeps structured internal-note removal tenant-scoped and auditable", () => {
+    expect(detail).toContain('internal-notes/${encodeURIComponent(noteId)}');
+    expect(detail).toContain('Delete internal note?');
+    expect(routes).toContain("app.delete('/api/orders/:orderId/internal-notes/:noteId', isAuthenticated, tenantContext");
+    expect(routes).toContain("order.internal_note_deleted");
   });
 });

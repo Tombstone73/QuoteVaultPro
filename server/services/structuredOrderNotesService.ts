@@ -75,6 +75,30 @@ export async function addOrderInternalNote(args: {
   return created;
 }
 
+export async function deleteOrderInternalNote(args: {
+  organizationId: string;
+  orderId: string;
+  noteId: string;
+  executor?: any;
+}) {
+  const ownership = await structuredOrderNotesRepository.getOrderOwnership(
+    args.organizationId,
+    args.orderId,
+    args.executor,
+  );
+
+  if (!ownership) {
+    return null;
+  }
+
+  return structuredOrderNotesRepository.deleteOrderInternalNote(
+    args.organizationId,
+    args.orderId,
+    args.noteId,
+    args.executor,
+  );
+}
+
 export async function listLineItemNotes(args: {
   organizationId: string;
   orderId: string;

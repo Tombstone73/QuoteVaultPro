@@ -91,7 +91,7 @@ import {
     isOrderDueFilter,
 } from "../services/orderDueDateService";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
-import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
+import { addLineItemNote, addOrderInternalNote, deleteOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
 import { autoSyncCanonicalProofForLineItem, reconcileLineItemProofGateRelease } from "../services/proofingService";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
@@ -6798,6 +6798,44 @@ export async function registerOrderRoutes(
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
             console.error('[ORDER_INTERNAL_NOTES_POST] Error:', error);
             return res.status(500).json({ message: 'Failed to add order internal note' });
+        }
+    });
+
+    app.delete('/api/orders/:orderId/internal-notes/:noteId', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const orderId = String(req.params.orderId);
+            const noteId = String(req.params.noteId);
+            const deleted = await db.transaction(async (tx) => {
+                const removed = await deleteOrderInternalNote({
+                    organizationId,
+                    orderId,
+                    noteId,
+                    executor: tx,
+                });
+                if (!removed) return null;
+
+                await new OrdersRepository(tx).createOrderAuditLog({
+                    orderId,
+                    userId: getUserId(req.user) ?? null,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    actionType: 'order.internal_note_deleted',
+                    fromStatus: null,
+                    toStatus: null,
+                    note: removed.noteText,
+                    metadata: { noteId: removed.id, deletedAt: new Date().toISOString() },
+                });
+
+                return removed;
+            });
+
+            if (!deleted) return res.status(404).json({ message: 'Order internal note not found' });
+            return res.json({ success: true, data: { id: deleted.id }, message: 'Order internal note deleted' });
+        } catch (error) {
+            console.error('[ORDER_INTERNAL_NOTES_DELETE] Error:', error);
+            return res.status(500).json({ message: 'Failed to delete order internal note' });
         }
     });
 

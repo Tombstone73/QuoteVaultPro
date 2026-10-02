@@ -18,7 +18,7 @@ import {
   users,
 } from "@shared/schema";
 import { OrdersRepository } from "../storage/orders.repo";
-import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
+import { addLineItemNote, addOrderInternalNote, deleteOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 
 const ordersRepo = new OrdersRepository(db);
 
@@ -249,6 +249,33 @@ describe("structured order notes contract", () => {
 
     const listRes = await request(app).get(`/api/orders/${orderId}/internal-notes`);
     expect(listRes.body.data.some((note: any) => note.noteText === "Order-level note")).toBe(true);
+  });
+
+  test("removes an Order note only from the authorized Order's active note list", async () => {
+    const note = await addOrderInternalNote({
+      organizationId,
+      orderId,
+      userId,
+      values: { noteText: "Remove me from the active list" },
+    });
+    expect(note).not.toBeNull();
+
+    const wrongOrderDelete = await deleteOrderInternalNote({
+      organizationId,
+      orderId: otherOrderId,
+      noteId: note!.id,
+    });
+    expect(wrongOrderDelete).toBeNull();
+
+    const deleted = await deleteOrderInternalNote({
+      organizationId,
+      orderId,
+      noteId: note!.id,
+    });
+    expect(deleted?.id).toBe(note!.id);
+
+    const remaining = await listOrderInternalNotes({ organizationId, orderId });
+    expect(remaining?.some((entry) => entry.id === note!.id)).toBe(false);
   });
 
   test("POST creates line-item internal and design working notes correctly", async () => {

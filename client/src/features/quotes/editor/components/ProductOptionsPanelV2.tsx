@@ -756,7 +756,7 @@ export function ProductOptionsPanelV2({
             );
 
             const compactRowClass = orderWorkspace
-              ? "grid min-w-0 grid-cols-[minmax(7rem,10rem)_10rem] items-center gap-x-2 gap-y-1 py-0.5"
+              ? "grid min-w-0 grid-cols-[minmax(0,1fr)_9rem] items-center gap-x-1.5 gap-y-0.5 py-0.5"
               : "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-center gap-3 py-1.5";
             const fieldClass = (defaultClass: string) => cn(compact ? compactRowClass : defaultClass, isDisabled && "opacity-70");
 
@@ -795,7 +795,7 @@ export function ProductOptionsPanelV2({
                       else setNodeValue(node, val);
                     }}
                   >
-                    <SelectTrigger className={cn("h-8", compact && orderWorkspace && "w-40")} disabled={isDisabled}>
+                    <SelectTrigger className={cn("h-8", compact && orderWorkspace && "w-full")} disabled={isDisabled}>
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
                     <SelectContent>
@@ -906,7 +906,7 @@ export function ProductOptionsPanelV2({
                   {commonHeader}
                   <Input
                     type="number"
-                    className={cn("h-8", compact && orderWorkspace && "w-40")}
+                    className={cn("h-8", compact && orderWorkspace && "w-full")}
                     step={step}
                     min={min}
                     max={max}
@@ -928,7 +928,7 @@ export function ProductOptionsPanelV2({
                 <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <Input
-                    className={cn("h-8", compact && orderWorkspace && "w-40")}
+                    className={cn("h-8", compact && orderWorkspace && "w-full")}
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
                     disabled={isDisabled}
                     onChange={(e) => setNodeValue(node, e.target.value)}

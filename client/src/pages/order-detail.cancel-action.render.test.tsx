@@ -313,7 +313,7 @@ describe("Order fulfillment and Traveler header actions", () => {
     globalThis.fetch = jest.fn<any>();
     const returnState = { referrer: { pathname: "/orders", search: "?status=open" }, listContextId: "order-list" };
     const { container, root } = renderOrderDetail("/orders/order-1?returnTo=%2Forders%3Fstatus%3Dopen#details", returnState);
-    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Go to Fulfillment")!;
+    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Fulfillment")!;
     expect(button).toBeTruthy();
     expect(button.disabled).toBe(false);
     expect(container.textContent).not.toContain("Save & Route Jobs");
@@ -343,7 +343,7 @@ describe("Order fulfillment and Traveler header actions", () => {
     const [guard, shouldBlock] = mockRegisterGuard.mock.calls[0];
     expect(shouldBlock()).toBe(false);
     act(() => latestLineItemsProps.onDirtyStateChange(true));
-    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Go to Fulfillment")!;
+    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Fulfillment")!;
 
     act(() => button.click());
 
@@ -377,7 +377,7 @@ describe("Order fulfillment and Traveler header actions", () => {
     const { container, root } = renderOrderDetail("/orders/order-1");
     expect(container.textContent).not.toContain("Print Traveler");
     expect(container.querySelector('[aria-label="Traveler print"]')).toBeNull();
-    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Go to Fulfillment")!;
+    const button = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === "Fulfillment")!;
 
     act(() => button.click());
 

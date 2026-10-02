@@ -3907,9 +3907,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         />
                                         <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
                                       </div>
-                                      {(item as any).taxabilityOverride == null ? (
-                                        <span className="text-[11px] text-muted-foreground">Product default</span>
-                                      ) : (
+                                      {(item as any).taxabilityOverride != null ? (
                                         <Button
                                           type="button"
                                           variant="link"
@@ -3929,7 +3927,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         >
                                           Reset
                                         </Button>
-                                      )}
+                                      ) : null}
                                     </div>
                                   ) : undefined
                                 }

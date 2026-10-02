@@ -121,6 +121,26 @@ export class StructuredOrderNotesRepository {
     return created;
   }
 
+  async deleteOrderInternalNote(
+    organizationId: string,
+    orderId: string,
+    noteId: string,
+    executor: any = this.dbInstance,
+  ): Promise<OrderInternalNote | null> {
+    const [deleted] = await executor
+      .delete(orderInternalNotes)
+      .where(
+        and(
+          eq(orderInternalNotes.organizationId, organizationId),
+          eq(orderInternalNotes.orderId, orderId),
+          eq(orderInternalNotes.id, noteId),
+        ),
+      )
+      .returning();
+
+    return deleted ?? null;
+  }
+
   async listLineItemNotes(
     organizationId: string,
     orderId: string,
