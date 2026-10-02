@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
-import { actionCenterApi } from "./api";
+import { actionCenterApi, type ApiError } from "./api";
 import type { PaymentsWorkspaceClient } from "./paymentsWorkspaceApi";
 
 /**
@@ -18,18 +18,26 @@ export const CommandCenter = ({ organizationId, sessionScope, canPaymentView = f
     queryKey: ["v2", sessionScope, organizationId, "action-center"],
     queryFn: () => actionCenterApi.summary(organizationId),
     enabled: Boolean(organizationId && sessionScope),
+    retry: false,
+    placeholderData: undefined,
   });
-  if (!organizationId || !sessionScope) return <section className="v2-command-center"><p className="v2-proof-empty">Enter an authenticated organization to load its canonical action summary.</p></section>;
+  const denied = ["FORBIDDEN", "WRONG_TENANT", "UNAUTHORIZED"].includes((actions.error as ApiError | null)?.code ?? "");
+  // A refetch retains React Query's old data, including after permission loss.
+  const value = actions.isSuccess && !actions.isFetching ? actions.data : undefined;
+  if (!organizationId || !sessionScope) return <section className="v2-command-center"><p className="v2-proof-empty">Enter an authenticated organization to load its action summary.</p></section>;
   return <section className="v2-command-center">
-    <header><div><p>Workspace overview</p><h1>Command Center</h1><span>What needs staff attention now. Counts are bounded, tenant-scoped V2 domain projections.</span></div></header>
-    {actions.isLoading && <p className="v2-proof-empty">Loading action summary…</p>}
-    {actions.isError && <p className="v2-proof-empty">The action summary is unavailable. Open the permitted workspaces from navigation.</p>}
-    {actions.data && <div className="v2-command-grid">
-      {actions.data.items.map((item) => <article key={item.kind}>
+    <header><div><p>Workspace overview</p><h1>Command Center</h1><span>Operational action summary. Counts are bounded, tenant-scoped V2 domain projections.</span></div></header>
+    <button type="button" disabled={actions.isFetching} onClick={() => { void actions.refetch(); }}>{actions.isError ? "Retry action summary" : "Refresh action summary"}</button>
+    {(actions.isPending || actions.isFetching) && <p role="status" className="v2-proof-empty">{actions.data ? "Refreshing action summary..." : "Loading action summary..."}</p>}
+    {actions.isError && !actions.isFetching && <p role="alert" className="v2-proof-empty">{denied
+      ? "Access to the action summary was denied. No action counts are available."
+      : "The action summary service is unavailable. No action counts are available."} Retry this read or open permitted workspaces from navigation.</p>}
+    {value && <div className="v2-command-grid">
+      {value.items.map((item) => <article key={item.kind}>
         <header><h2>{item.label}</h2><a href={item.href}>Open workspace</a></header>
         <p><b>{item.count}</b><span>{item.count === 1 ? "item needs attention" : "items need attention"}</span></p>
       </article>)}
-      {!actions.data.items.length && <p className="v2-proof-empty">No permitted operational action categories are available for this account.</p>}
+      {!value.items.length && <p className="v2-proof-empty">No permitted operational action categories are available for this account.</p>}
     </div>}
     {canPaymentView && paymentsClient && <div className="v2-command-grid" aria-label="Payment metrics">
       <PaymentSummaryCard organizationId={organizationId} sessionScope={sessionScope} client={paymentsClient} period="today" openPayments={openPayments} />
