@@ -66,5 +66,82 @@
     "The current-baseline user closures remain bounded; no new live/provider check or fixture mutation is authorized. MAIN/PROD and V1 source remain read-only.",
     "Storefront, customer catalog/cart/checkout/publishing/themes/promotions and online Order placement remain explicitly excluded. Staff Product version publication is a separate pre-existing domain concept, not Storefront scope."
   ],
-  "closures": {}
+  "closureAccounting": {
+    "baselineCommit": "9724d1e1676bf944ea1ea4e2583dba7bae39e1c9",
+    "baselineClasses": { "A": 13, "B": 41, "C": 129, "D": 46, "E": 9, "F": 35 },
+    "baselineRemaining": { "L0": 19, "L1": 130, "L2": 60, "L3": 1, "L4": 0 },
+    "fullyClosedRows": ["ART-04", "FUL-25", "BILL-22"],
+    "partialRows": ["OPS-15", "UTIL-03"],
+    "priorityChange": "OPS-15 remains C. Its L0 unauthorized-detail defect is closed; its remaining UI capability/control alignment is L1. This is not full Run readiness or a new completed row.",
+    "delivery": "All source commits are integrated on kilo/v2-ordering-campaign. DEV-only delivery requires the exact final validated tip, a fresh ancestry check and remote confirmation. The completion report records the receipt; no live/deployment success is inferred."
+  },
+  "integrationValidation": {
+    "sourceCommit": "a60695346af5e138b2b8561a9649e87c7e8f3b60",
+    "canonicalCommand": "npm run v2:validate",
+    "canonicalGatesPassed": 11,
+    "jest": { "suites": 99, "passedSuites": 99, "tests": 1088, "passedTests": 1088, "pendingTests": 0 },
+    "coreRunnerEntriesPassed": 286,
+    "uiRunnerEntriesPassed": 98,
+    "buildsPassed": ["V2 foundation main", "V2 deployment server", "V2 production UI"],
+    "importDebt": { "instances": 81, "fingerprints": 81 },
+    "sqlDebt": { "instances": 193, "fingerprints": 173 },
+    "protectedMigrations": 294,
+    "migrationChanges": false,
+    "reviewedPackageBytesMatchIntegration": true,
+    "notRun": ["V1 tests/builds", "native PostgreSQL disposable-clone rehearsals", "native multi-client contention", "shared or live databases", "provider or physical-printer validation", "new DEV-live checks", "MAIN/PROD validation or deployment"],
+    "deploymentStatus": "Deployable but not yet live-validated",
+    "deliveryGate": "After the final documentation commit, rerun canonical validation and builds on that exact tip, verify fresh origin/dev ancestry, push only that SHA to refs/heads/dev and verify the remote ref. No deployment polling or live claim."
+  },
+  "closures": {
+    "ART-04": {
+      "classification": "B", "priority": "L0",
+      "behavior": "Artwork-owned side-effect-free preflight verifies scope, artwork.adopt and matching nonempty request identity before storage or ledger calls. Final adoption/replacement independently validates the verified context; direct callers and scoped Portal delegation remain supported.",
+      "remainingGap": "None in this narrow preauthorization intent. Intake-format breadth, exact layer selection and production-art replacement remain separate open rows. No live storage validation.",
+      "requiredAction": "Preserve negative, final-reauthorization, cleanup and replay regressions; include this repair in later coordinated DEV validation without broadening Portal grants.",
+      "summary": "P1 fully closes this narrowly defined safety row, not all Artwork parity. Nonauthor final-byte review passed; no new storage/provider policy.",
+      "validation": "Executed actual-owner tests in v2/tests/infrastructure/artworkUploadService.test.ts and v2/tests/modules/artworkContracts.test.ts: 58/58; adjacent durability/reconciler/Order-Artwork TSX passed. Isolated canonical 11 gates and three builds passed. Review ses_f05f55bf0ffevnJo3zuGyMe9O6.",
+      "commit": "696edd09a1753b3ebd16c5e935be183a3a40420c",
+      "devPush": "Bundled DEV-only target refs/heads/dev; exact validated tip and remote confirmation recorded in the campaign completion report."
+    },
+    "FUL-25": {
+      "classification": "B", "priority": "L0",
+      "behavior": "Prepared replacement shipment create/correct/finalize/void enforce existing fulfillment.replace in addition to fulfillment.ship. Mutations inspect locked affected allocations; replay uses the saved immutable revision and immediate predecessor for correction. Authorized replay repeats no domain effects.",
+      "remainingGap": "None in this existing-capability gate. Prepared-builder recovery, uncertain physical retries and general successor/readiness policy remain separate open rows. Native multi-client contention and live fulfillment are unverified.",
+      "requiredAction": "Preserve scoped historical replay, original-only access, request conflicts and lock-order regressions; do not infer resolution of broader shipment/replacement parity.",
+      "summary": "P2 fully closes the missing replacement-authorization gate without new grants, receipt formats, migrations, quantity or financial rules. Both code and parent metadata received independent final-byte review.",
+      "validation": "Nine focused TSX suites passed, including v2/tests/modules/shipmentReplacementAuthorization.pure.ts (8 scenarios) and actual application/adapter v2/tests/infrastructure/replacementFulfillmentIsolation.postgres.test.ts (22 PGlite scenarios). Isolated canonical 11 gates, 286 core entries and three builds passed. Review ses_f05f55bf0ffevnJo3zuGyMe9O6.",
+      "commit": "b80b600405af650b5693ebd9453fd61eebc14fd2",
+      "devPush": "Bundled DEV-only target refs/heads/dev; exact validated tip and remote confirmation recorded in the campaign completion report."
+    },
+    "OPS-15": {
+      "classification": "C", "priority": "L1",
+      "behavior": "Run detail now checks existing production.view after tenant validation and before opening a transaction or reading the Run. The wider UI capability/control alignment remains unchanged.",
+      "remainingGap": "Dedicated create/execute grants are still not consistently reflected by normal UI controls/denials. Run-candidate SQL and ordinary/run exclusivity remain open in OPS-12/OPS-13.",
+      "requiredAction": "Align UI grants and recoverable denials in a later bounded package, after the separate Run integrity blockers are addressed. Do not reopen the fixed read gate or count this entire row closed.",
+      "summary": "P3 closes the L0 detail-read authorization defect. This row remains C, now L1 for its residual UI intent; no Run creation/execution was enabled.",
+      "validation": "Red regression reproduced unauthorized detail before fix; actual-service v2/tests/modules/productionRunApplication.pure.ts plus four adjacent Run suites passed. Isolated canonical 11 gates and three builds passed. Review ses_f05ec7c15ffeGCgHxp3xrpFNcI.",
+      "commit": "5e25cc5a4287dd641c8c3af317e08e380a7277c2",
+      "devPush": "Bundled DEV-only target refs/heads/dev; exact validated tip and remote confirmation recorded in the campaign completion report."
+    },
+    "UTIL-03": {
+      "classification": "C", "priority": "L1",
+      "behavior": "Dashboard distinguishes loading, genuine zero, no permitted categories, denial and infrastructure failure. Failed/denied refetch hides cached counts; explicit recovery uses only the existing read. Service failures are sanitized 500s rather than false permission denials.",
+      "remainingGap": "Owner population eligibility and canonical snapshot/freshness provenance remain unreconciled. Counts were not redefined; Payment Today/Month was not changed.",
+      "requiredAction": "Reconcile owner attention predicates and matching drilldowns without copying lifecycle logic or weakening Daily Report truth. Do not claim this partial row closed.",
+      "summary": "P4 closes failure-presentation/read-recovery defects only. No fabricated snapshot time, zero total or SQL population rewrite; UTIL-03 stays C/L1.",
+      "validation": "v2/ui/src/commandCenter.test.tsx: 6 mounted scenarios; v2/tests/interfaces/actionCenterRoutes.test.ts: 14 cases; adjacent paymentWorkspaceNavigation.test.tsx: 9 scenarios. Isolated canonical 11 gates and three builds passed. Review ses_f05dcaccfffeAKhzF6r0LM0yEs.",
+      "commit": "237e4ced8117af5d7dad3d1dcf257813b7c8da54",
+      "devPush": "Bundled DEV-only target refs/heads/dev; exact validated tip and remote confirmation recorded in the campaign completion report."
+    },
+    "BILL-22": {
+      "classification": "B", "priority": "L0",
+      "behavior": "Invoice email and financial dialogs are explicitly disjoint. Read-only recipient-preview retry retains the captured organization/session/Invoice set/request ID; stale preview cannot authorize another selection. Financial mutation handlers require their exact financial dialog.",
+      "remainingGap": "None in dialog isolation and preview recovery. Uncertain admission after closing/reopening, full composer/history/delivery recovery and PAY-08/PAY-09 remain outside this row's closure.",
+      "requiredAction": "Preserve mounted intent/fencing/zero-provider regressions; address broader Communications recovery and financial exact-retry as separate remaining intents.",
+      "summary": "P5 closes the narrow dialog/preview row, not full email or Payment recovery. Existing preview is a read-only POST; retry never calls batch admission automatically or generates a new request identity.",
+      "validation": "Mounted v2/ui/src/financeWorkspace.test.tsx passed; independent reviewer ran 8 additional valid-financial/late-admission cases and sessionResponseGeneration suite. Stale variable-name assertion in invoiceEmailDeliveryQueue.pure.ts was strengthened and independently reviewed, then all 11 canonical gates and three builds passed. Reviews ses_f05ec7c15ffeGCgHxp3xrpFNcI and ses_f05c892a3ffeQmNreJpKc6xzm3.",
+      "commit": "a60695346af5e138b2b8561a9649e87c7e8f3b60",
+      "devPush": "Bundled DEV-only target refs/heads/dev; exact validated tip and remote confirmation recorded in the campaign completion report."
+    }
+  }
 }
