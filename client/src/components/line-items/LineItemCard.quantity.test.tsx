@@ -137,4 +137,35 @@ describe("LineItemCard quantity editor", () => {
       expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/quantity/i);
     }
   });
+
+  test("keeps quantity-only production lines compact without dimension controls", () => {
+    act(() => root.render(
+      <LineItemCard
+        id="quantity-only-production-line"
+        itemKey="quantity-only-production-line"
+        contentId="quantity-only-production-line-details"
+        isExpanded
+        onToggleExpand={jest.fn()}
+        title="Yard Signs"
+        sizeLabel="Quantity only"
+        qtyLabel="Qty 12"
+        unitPriceLabel="$4.00/ea"
+        totalLabel="$48.00"
+        width=""
+        height=""
+        quantity={12}
+        onQuantityChange={jest.fn()}
+        dimsRequired={false}
+        price={48}
+        description=""
+        productionNotes=""
+        compactExpandedLayout
+      />,
+    ));
+
+    expect(container.textContent).toContain("Quantity");
+    expect(container.textContent).not.toContain("Dimensions & Quantity");
+    expect(container.querySelector("input[aria-label='Quantity']")).toBeTruthy();
+    expect(container.querySelector("#line-item-width-input-quantity-only-production-line")).toBeNull();
+  });
 });

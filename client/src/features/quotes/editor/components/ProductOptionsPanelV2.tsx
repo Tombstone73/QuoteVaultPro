@@ -702,7 +702,7 @@ export function ProductOptionsPanelV2({
       {renderedNodeIds.length === 0 ? (
         <div className="text-xs text-muted-foreground">No options.</div>
       ) : (
-        <div className={cn(compact ? "grid gap-x-5 gap-y-1 md:grid-cols-2" : "space-y-3")}>
+        <div className={cn(compact ? "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-3")}>
           {renderedNodeIds.map((nodeId) => {
             const node = tree.nodes[nodeId];
             if (!node) return null;

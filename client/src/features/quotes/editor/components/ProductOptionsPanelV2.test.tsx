@@ -268,6 +268,7 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.textContent).toContain("Print Sides");
     expect(container.textContent).not.toContain("Choose the stock thickness.");
     expect(container.querySelectorAll("select")).toHaveLength(2);
+    expect(container.querySelector("select")?.parentElement?.parentElement?.className).toContain("xl:grid-cols-3");
   });
 
   test("uses a non-empty internal value for an optional select's empty choice", () => {

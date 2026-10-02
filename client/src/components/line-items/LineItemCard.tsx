@@ -536,11 +536,40 @@ export function LineItemCard({
   );
 
   const configurationSection = optionsSlot ? (
-    <section className="rounded-md border border-border/40 bg-background/40 p-3">
-      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product Options</div>
+    <section className={cn(!compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-3")}>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product Options</div>
       {optionsSlot}
     </section>
   ) : null;
+
+  const compactNotesSection = (
+    <section className="min-w-0 space-y-2">
+      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+          Customer-facing description
+          <textarea
+            value={description}
+            onChange={(event) => onDescriptionChange?.(event.target.value)}
+            placeholder="Add custom description for this line item..."
+            className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            disabled={readOnly}
+          />
+        </label>
+        <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+          <span className="flex items-center gap-2">{serviceFee ? "Service Notes (internal)" : fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}<span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-950/50 dark:text-amber-500">Staff only</span></span>
+          <textarea
+            value={productionNotes}
+            onChange={(event) => onProductionNotesChange?.(event.target.value)}
+            placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."}
+            className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            disabled={readOnly}
+          />
+        </label>
+      </div>
+      {internalNotesSlot}
+    </section>
+  );
 
   const secondaryDetailsContent = (
     <div className="space-y-3">
@@ -774,15 +803,15 @@ export function LineItemCard({
             />
             {lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
             {/* Compact operational controls */}
-            <div className="grid gap-3 xl:grid-cols-[minmax(220px,0.85fr)_minmax(320px,1.2fr)_minmax(220px,0.7fr)]">
+            <div className={cn("flex flex-wrap items-end gap-x-5 gap-y-3", compactExpandedLayout && "border-b border-border/40 pb-3")}>
               {primaryControlSlot ? (
-                <section className={cn("min-w-[220px] flex-1", !nonProductionItem && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+                <section className={cn("min-w-[220px] flex-[1_1_280px]", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
                   {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product</div> : null}
                   {primaryControlSlot}
                 </section>
               ) : null}
-              <section className={cn("flex flex-wrap items-end gap-3", !nonProductionItem && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
-              {!nonProductionItem ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dimensions &amp; Quantity</div> : null}
+              <section className={cn("flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+              {!nonProductionItem ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">{dimsRequired ? "Dimensions & Quantity" : "Quantity"}</div> : null}
               {dimsRequired ? (
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2">
@@ -878,7 +907,7 @@ export function LineItemCard({
               </div>
               </section>
 
-              <div className={cn("min-w-[220px] self-end rounded-md border border-border/40 bg-background/40 p-2.5", nonProductionItem ? "text-left" : "text-right")}>
+              <div className={cn("min-w-[190px] self-end", !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5", nonProductionItem ? "text-left" : "text-right")}>
                 {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pricing</div> : null}
                 <div className="text-xs text-muted-foreground">Line total</div>
                 <div className={cn("flex items-center gap-2", nonProductionItem ? "justify-start" : "justify-end")}>
@@ -974,9 +1003,19 @@ export function LineItemCard({
               </div>
             </div>
 
-            {!nonProductionItem ? <Separator className="my-3" /> : null}
+            {!nonProductionItem && !compactExpandedLayout ? <Separator className="my-3" /> : null}
 
-            {/* Options (left) + Artwork (right) */}
+            {compactExpandedLayout ? (
+              <div className="mt-3 space-y-3">
+                {configurationSection}
+                <div className={cn("grid gap-4", artworkSlot && "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]")}>
+                  {artworkSlot ? <div className="min-w-0">{artworkSlot}</div> : null}
+                  {compactNotesSection}
+                </div>
+                {advancedControls}
+                {actionsRow}
+              </div>
+            ) : (
             <div className={cn("grid grid-cols-1 gap-3", !nonProductionItem && "xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)]")}>
               {nonProductionItem ? (
                 <div className="min-w-0">
@@ -1008,6 +1047,7 @@ export function LineItemCard({
                 </>
               )}
             </div>
+            )}
           </div>
         </div>
       )}

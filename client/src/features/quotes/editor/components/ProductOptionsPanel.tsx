@@ -638,7 +638,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
                         {showGroupHeader && idx !== 0 && (
                             <div className="text-sm font-medium">{formatGroupHeader(groupName)}</div>
                         )}
-                        <div className={cn(compact ? "grid gap-x-5 gap-y-1 md:grid-cols-2" : "space-y-2")}>
+                        <div className={cn(compact ? "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-2")}>
                             {options.map((ui) => {
                                 const source = productOptionById.get(ui.id);
                                 const selection = optionSelections[ui.id];

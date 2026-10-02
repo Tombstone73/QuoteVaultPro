@@ -3844,16 +3844,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 optionsSlot={
                                   <>
                                     {activeWorkWarning && (
-                                      <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
-                                        <div className="font-medium">{activeWorkWarning.title}</div>
-                                        <div className="mt-1">{activeWorkWarning.description}</div>
+                                      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900">
+                                        <span className="font-medium">{activeWorkWarning.title}</span>
+                                        <span>{activeWorkWarning.description}</span>
                                       </div>
                                     )}
 
                                     {mediaFitWarning && (
-                                      <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
-                                        <div className="font-medium">{mediaFitWarning.title}</div>
-                                        <div className="mt-1">{mediaFitWarning.description}</div>
+                                      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900">
+                                        <span className="font-medium">{mediaFitWarning.title}</span>
+                                        <span>{mediaFitWarning.description}</span>
                                       </div>
                                     )}
 
@@ -4141,24 +4141,19 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 }
                                 artworkSlot={
                                   showArtworkControls ? <>
-                                    <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                      <div className="flex items-center justify-between mb-2">
-                                        <div className="text-sm font-medium">Artwork</div>
-                                      </div>
-                                      <LineItemAttachmentsPanel
-                                        quoteId={null}
-                                        parentType="order"
-                                        orderId={orderId}
-                                        lineItemId={item.id}
-                                        productName={productName}
-                                        lineQuantity={item.quantity}
-                                        defaultExpanded={false}
-                                        doubleSided={printSides === "Double-sided"}
-                                        useSameArtworkBothSides={useSameArtworkBothSides}
-                                        onUseSameArtworkBothSidesChange={setUseSameArtworkBothSides}
-                                        onSavedAttachmentRemoved={handleSavedArtworkRemoved}
-                                      />
-                                    </div>
+                                    <LineItemAttachmentsPanel
+                                      quoteId={null}
+                                      parentType="order"
+                                      orderId={orderId}
+                                      lineItemId={item.id}
+                                      productName={productName}
+                                      lineQuantity={item.quantity}
+                                      defaultExpanded={false}
+                                      doubleSided={printSides === "Double-sided"}
+                                      useSameArtworkBothSides={useSameArtworkBothSides}
+                                      onUseSameArtworkBothSidesChange={setUseSameArtworkBothSides}
+                                      onSavedAttachmentRemoved={handleSavedArtworkRemoved}
+                                    />
 
                                     {(() => {
                                       if (policy !== "required" && !isMissingArtworkSuppressed) return null;
@@ -4241,16 +4236,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       };
 
                                       return (
-                                        <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                          <div className="flex items-center justify-between mb-2">
-                                            <div className="text-sm font-medium">Flags</div>
-                                          </div>
-
-                                          <div className="flex items-start justify-between gap-3">
-                                            <div className="min-w-0">
-                                              <div className="text-sm">Missing artwork</div>
-
-                                              <div className="mt-1">
+                                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+                                            <div className="flex min-w-0 items-center gap-2">
+                                              <span className="font-medium">Missing artwork</span>
                                                 {isMissingArtworkSuppressed ? (
                                                   <TooltipProvider delayDuration={150}>
                                                     <Tooltip>
@@ -4272,10 +4260,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                                     Active
                                                   </Badge>
                                                 ) : null}
-                                              </div>
                                             </div>
 
-                                            <div className="flex flex-col items-end gap-2">
+                                            <div className="flex flex-wrap items-center gap-2">
                                               {isMissingArtworkSuppressed ? (
                                                 <Button
                                                   type="button"
@@ -4288,16 +4275,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                                   Clear
                                                 </Button>
                                               ) : (
-                                                <div className="flex flex-col gap-2 items-end">
-                                                  <div className="w-56">
-                                                    <div className="text-xs text-muted-foreground mb-1">Reason</div>
+                                                <>
                                                     <Input
                                                       value={missingArtworkSuppressReason}
                                                       onChange={(e) => setMissingArtworkSuppressReason(e.target.value)}
-                                                      className="h-8"
+                                                      className="h-8 w-56"
+                                                      aria-label="Missing artwork suppression reason"
+                                                      placeholder="Reason to suppress"
                                                       disabled={readOnly || savingFlagLineItemId === String(item.id)}
                                                     />
-                                                  </div>
                                                   <Button
                                                     type="button"
                                                     variant="outline"
@@ -4308,10 +4294,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                                   >
                                                     Suppress
                                                   </Button>
-                                                </div>
+                                                </>
                                               )}
                                             </div>
-                                          </div>
                                         </div>
                                       );
                                     })()}
