@@ -415,6 +415,13 @@ async function settlePicker() {
 function saveButton(container: HTMLElement) {
   return Array.from(container.querySelectorAll('button')).find((node) => node.textContent?.trim() === 'Save Order')!;
 }
+
+function removeCustomerFromEditor(container: HTMLElement) {
+  act(() => (container.querySelector('[aria-label="Change customer"]') as HTMLButtonElement).click());
+  const remove = container.querySelector('[aria-label="Remove customer"]') as HTMLButtonElement;
+  expect(remove).toBeTruthy();
+  act(() => remove.click());
+}
 function useRealPickerRequests() {
   mockExecutePickerRequests = true;
   globalThis.fetch = jest.fn<any>(async (input: string) => {
@@ -443,7 +450,8 @@ describe("Order ownership controls", () => {
     const { container, root } = renderOrderDetail();
     await settlePicker();
     expect(mockRequestUrls.some(url => new URL(url, 'http://localhost').searchParams.get('customerId') === 'customer-1')).toBe(true);
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[aria-label="Clear customer"]')).toBeNull();
+    removeCustomerFromEditor(container);
     expect(mockUpdateOwner).not.toHaveBeenCalled();
     expect(mockSaveOwner).not.toHaveBeenCalled();
     expect(mockOrder.customerId).toBe('customer-1'); // persistence has not changed
@@ -462,7 +470,7 @@ describe("Order ownership controls", () => {
     expect(option).toBeTruthy();
     act(() => option.click());
     expect(mockSaveOwner).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Clear customer"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Remove customer"]')).toBeNull();
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
     await act(async () => saveButton(container).click());
     expect(mockSaveOwner).toHaveBeenCalledWith({ customerId: null, contactId: id });
@@ -480,6 +488,8 @@ describe("Order ownership controls", () => {
     mockSaveOwner.mockResolvedValue({});
     const { container, root } = renderOrderDetail();
     act(() => (container.querySelector('[aria-label="Change customer"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[aria-label="Remove customer"]')).toBeTruthy();
+    expect(mockSaveOwner).not.toHaveBeenCalled();
     const customer = Array.from(document.querySelectorAll('[cmdk-item]')).find(node => node.textContent?.includes('Customer B')) as HTMLElement;
     act(() => customer.click());
     expect(mockSaveOwner).not.toHaveBeenCalled();
@@ -493,7 +503,7 @@ describe("Order ownership controls", () => {
   test('Discard restores the persisted Customer and Contact scope', async () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    removeCustomerFromEditor(container);
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
     const discard = Array.from(container.querySelectorAll('button')).find(node => node.textContent?.trim() === 'Discard changes')!;
     await act(async () => discard.click());
@@ -507,7 +517,7 @@ describe("Order ownership controls", () => {
     const context = { invoiceId: 'invoice', invoiceVersion: 3, orderUpdatedAt: '2026-09-28T17:00:00.000Z' };
     mockSaveOwner.mockRejectedValue(Object.assign(new Error('This Invoice was synchronized to QuickBooks.'), { details: { billingOwnershipOverride: context } }));
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    removeCustomerFromEditor(container);
     expect(container.textContent).not.toContain('Override Billing Ownership');
     await act(async () => saveButton(container).click());
     const override = Array.from(container.querySelectorAll('button')).find(node => node.textContent === 'Override Billing Ownership')!;
@@ -532,16 +542,16 @@ describe("Order ownership controls", () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     mockSaveOwner.mockRejectedValue(new Error('A payment has been applied.'));
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    removeCustomerFromEditor(container);
     await act(async () => saveButton(container).click());
     expect(container.textContent).not.toContain('Override Billing Ownership');
     act(() => root.unmount());
   });
 
-  test('Clear retains the selected Contact in the draft without submitting', () => {
+  test('Remove customer retains the selected Contact in the draft without submitting', () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    removeCustomerFromEditor(container);
     expect(mockUpdateOwner).not.toHaveBeenCalled();
     expect(mockSaveOwner).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Alex Able');
@@ -549,10 +559,10 @@ describe("Order ownership controls", () => {
     act(() => root.unmount());
   });
 
-  test('missing owner is validated at Save, not when clearing Customer', async () => {
+  test('missing owner is validated at Save, not when removing Customer', async () => {
     mockOrder = baseOrder({ contactId: null });
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    removeCustomerFromEditor(container);
     expect(mockOwnerToast).not.toHaveBeenCalled();
     await act(async () => saveButton(container).click());
     expect(mockSaveOwner).not.toHaveBeenCalled();
@@ -564,7 +574,7 @@ describe("Order ownership controls", () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     mockSaveOwner.mockRejectedValue(new Error('Billing owner cannot be changed because this Invoice was synchronized to QuickBooks.'));
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Clear customer"]') as HTMLButtonElement).click());
+    removeCustomerFromEditor(container);
     await act(async () => saveButton(container).click());
     expect(mockOrder.customerId).toBe('customer-1');
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();

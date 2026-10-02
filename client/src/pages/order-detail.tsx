@@ -1171,6 +1171,11 @@ export default function OrderDetail() {
     setIsCustomerPickerOpen(false);
   };
 
+  const removeCustomerFromOrder = () => {
+    stageOrderOwner({ customerId: null }, { customer: null });
+    setIsEditingCustomer(false);
+  };
+
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
@@ -2426,6 +2431,20 @@ export default function OrderDetail() {
                               </Command>
                             </PopoverContent>
                           </Popover>
+                          {contactSearchCustomerId && canEditSafeOrderMetadata && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                              disabled={updateOrder.isPending}
+                              onClick={removeCustomerFromOrder}
+                              aria-label="Remove customer"
+                            >
+                              <X className="mr-1 h-3 w-3" />
+                              Remove customer
+                            </Button>
+                          )}
                         </div>
                       ) : (
                         <div className="flex items-start justify-between gap-2 min-w-0">
@@ -2503,21 +2522,6 @@ export default function OrderDetail() {
                         </div>
                       )}
 
-                      {contactSearchCustomerId && canEditSafeOrderMetadata && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          disabled={updateOrder.isPending}
-                          onClick={() => stageOrderOwner({ customerId: null }, { customer: null })}
-                          aria-label="Clear customer"
-                        >
-                          <X className="mr-1 h-3 w-3" />
-                          Clear customer
-                        </Button>
-                      )}
-
                       {hasBillAddress && (
                         <div className="text-[11px] leading-4 text-muted-foreground">
                           <div className="hidden print:block">
@@ -2590,33 +2594,6 @@ export default function OrderDetail() {
                       {order.contact?.id && contactNameFromContact ? (
                         <div className="space-y-1">
                           <div className="flex items-center justify-between gap-2">
-                            <HoverCard openDelay={150} closeDelay={50}>
-                              <HoverCardTrigger asChild>
-                                <span className="min-w-0 truncate text-xs font-medium text-foreground" title={contactNameFromContact}>
-                                  {contactNameFromContact}
-                                </span>
-                              </HoverCardTrigger>
-                              <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
-                                <div className="space-y-2">
-                                  {(order.contact?.email || contactLinePhone) && (
-                                    <div className="text-xs text-muted-foreground">
-                                      {order.contact?.email && <div className="font-mono break-words">{order.contact.email}</div>}
-                                      {contactLinePhone && <div className="font-mono break-words">{formatPhoneForDisplay(contactLinePhone)}</div>}
-                                    </div>
-                                  )}
-                                  {(order.contact as any)?.street1 && (
-                                    <div className="text-xs text-muted-foreground whitespace-pre-wrap">
-                                      {[
-                                        (order.contact as any)?.street1,
-                                        (order.contact as any)?.street2,
-                                        [(order.contact as any)?.city, (order.contact as any)?.state].filter(Boolean).join(", "),
-                                        (order.contact as any)?.postalCode,
-                                      ].filter(Boolean).join("\n")}
-                                    </div>
-                                  )}
-                                </div>
-                              </HoverCardContent>
-                            </HoverCard>
                             <Button asChild variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-xs">
                               <Link
                                 to={`/contacts/${order.contact.id}`}
