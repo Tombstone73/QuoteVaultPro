@@ -1,5 +1,37 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+## Wave 2 L0 Triage Checkpoint
+
+Wave 2 starts from DEV `02bd97641f2d1815c28339fbfd82cd570b910461` and the
+same pinned, read-only V1 MAIN `d4f4c6b8706f0f7a2768d77054efb9b2dc28633e`.
+The Wave 1 matrix/inventory are frozen inputs: no second broad audit or row
+denominator rewrite is authorized. This checkpoint classifies every one of the
+15 remaining L0 rows before implementation. It does not change any row's class,
+priority or evidence status. The full row-specific contract, owner and evidence
+is in `OPERATIONAL_PARITY_2026_10_01.reconciliation.json` under
+`wave2L0Triage.rows`.
+
+| Triage disposition | Rows | Count |
+| --- | --- | ---: |
+| IMPLEMENT NOW, bounded to existing owner contracts | `SALE-08`, `SALE-09`, `ART-10`, `OPS-09`, `OPS-12`, `OPS-13`, `FUL-09`, `FUL-11`, `FUL-26`, `PAY-08`, `PAY-09`, `PAY-22` | 12 |
+| DECISION REQUIRED | `BILL-16`, `ACCESS-05`, `ACCESS-12` | 3 |
+| ALREADY SATISFIED / AUDIT STALE | None | 0 |
+| INTENTIONAL EXCLUSION / RECLASSIFY | None | 0 |
+| BLOCKED BY EXTERNAL ENVIRONMENT | None | 0 |
+
+Decision requests are deliberately narrow: (1) whether an issued Invoice PDF
+remains historical-only or appends a separately identified canonical-current
+balance; (2) which structural/capability authority (or both) defines the
+protected Team-administrator floor and recovery rule; and (3) the Sales-owned
+Portal Quote publication predicate and visibility of last-sent checkpoint versus
+unsent revision. Until answered, no implementation invents these semantics.
+
+Wave 2 preserves BDR-1 through BDR-4. In particular, OPS-13 may close only the
+existing exact-attempt execution-controller invariant; any requirement for new
+successor, quantity, cancellation or lineage policy remains gated by BDR-4.
+The L0 triage and the immutable-baseline details are recorded in the
+reconciliation ledger, which remains coordinator-owned.
+
 ## Status And Authority
 
 Phase: all ten read-only domain audits received and coordinator dispositions
