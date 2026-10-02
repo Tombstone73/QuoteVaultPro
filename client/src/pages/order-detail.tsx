@@ -693,6 +693,7 @@ export default function OrderDetail() {
 
   const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
   const [isAddingOrderInternalNote, setIsAddingOrderInternalNote] = useState(false);
+  const [isOrderInternalNotesOpen, setIsOrderInternalNotesOpen] = useState(false);
 
   const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
     queryKey: ["orders", "internalNotes", orderId],
@@ -2268,9 +2269,9 @@ export default function OrderDetail() {
             />
           </div>
 
-            <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:justify-end" aria-label="Order controls">
             {isOrderEditRoute && (
-              <Button asChild variant="outline" size="sm" className="rounded-titan-md">
+              <Button asChild variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
                 <Link to={orderDetailPath} state={location.state}>
                   View Order
                 </Link>
@@ -2278,19 +2279,19 @@ export default function OrderDetail() {
             )}
 
             {!isInvoicesLoading && orderInvoices.length === 1 ? (
-              <Button asChild type="button" variant="outline" size="sm">
+              <Button asChild type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
                 <Link to={`/invoices/${orderInvoices[0].id}`}>
                   <FileText className="mr-1.5 h-4 w-4" />
                   View Invoice
                 </Link>
               </Button>
             ) : !isInvoicesLoading && orderInvoices.length > 1 ? (
-              <Button type="button" variant="outline" size="sm" onClick={() => setOrderInvoiceSelectorOpen(true)}>
+              <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={() => setOrderInvoiceSelectorOpen(true)}>
                 <FileText className="mr-1.5 h-4 w-4" />
                 Invoices
               </Button>
             ) : !isInvoicesLoading && isAdminOrOwner && canCreateInvoiceFromOrder ? (
-              <Button type="button" variant="outline" size="sm" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
+              <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
                 <FileText className="mr-1.5 h-4 w-4" />
                 {createOrderInvoice.isPending ? "Creating…" : "Create Invoice"}
               </Button>
@@ -2300,6 +2301,7 @@ export default function OrderDetail() {
               type="button"
               variant="outline"
               size="sm"
+              className="h-10 rounded-md px-3 text-xs font-semibold"
               onClick={() => guardedNavigate(ROUTES.fulfillment.order(order.id), {
                 state: { referrer: buildReferrer(location), orderReturnState: location.state },
               })}
@@ -2307,7 +2309,7 @@ export default function OrderDetail() {
               <Truck className="mr-1.5 h-4 w-4" />
               Go to Fulfillment
             </Button>
-            {!orderIsCanceled && <PrintTicketButton orderId={order.id} />}
+            {!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler" className="h-10 rounded-md px-3 text-xs font-semibold" />}
 
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}
@@ -2432,11 +2434,11 @@ export default function OrderDetail() {
           <div className="space-y-4 lg:space-y-5">
           {/* Main Content */}
           <div className="min-w-0 space-y-4">
-            <Card className="bg-titan-bg-card border-titan-border-subtle">
-              <CardContent className="p-3 sm:p-4">
-                <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(340px,0.9fr)_minmax(0,1.8fr)]">
+            <Card className="border-0 bg-transparent shadow-none">
+              <CardContent className="p-0">
+                <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(20rem,1fr)_minmax(24rem,1.2fr)_minmax(18rem,0.8fr)]">
                   {/* Customer + Contact */}
-                  <div className={cn("grid gap-4", !isEditingCustomer && "sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2")}>
+                  <section className={cn("grid gap-4 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4", !isEditingCustomer && "sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2")} aria-label="Customer and contact">
                     <div className="space-y-2">
                       {isEditingCustomer ? (
                         <div className="space-y-2">
@@ -2669,10 +2671,10 @@ export default function OrderDetail() {
                         </div>
                       )}
                     </div>
-                  </div>
+                  </section>
 
                   {/* Order meta */}
-                  <div className="min-w-0 space-y-3">
+                  <section className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4" aria-label="Order details">
                     {/* TitanOS State Architecture */}
                     {(showPaymentStatus || showRoutedTo) && (
                       <div
@@ -2727,7 +2729,7 @@ export default function OrderDetail() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">PO #</label>
                     <Input
@@ -2764,26 +2766,15 @@ export default function OrderDetail() {
                     />
                   </div>
 
-                  <div className="flex min-w-0 items-center gap-2">
-                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Priority</label>
-                    <Select 
-                      value={order.priority} 
-                      onValueChange={handlePriorityChange} 
-                      disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
-                    >
-                    <SelectTrigger className="h-8 min-w-0 flex-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="rush">Rush</SelectItem>
-                        <SelectItem value="normal">Normal</SelectItem>
-                        <SelectItem value="low">Low</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {order.createdAt ? (
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="text-sm font-medium text-muted-foreground whitespace-nowrap">Order Date</span>
+                      <span className="text-sm whitespace-nowrap">{formatOrderDate(order.createdAt, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</span>
+                    </div>
+                  ) : null}
                   <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Due Date</label>
                     {editingDueDate ? (
@@ -2887,24 +2878,32 @@ export default function OrderDetail() {
                       )}
                 </div>
 
+                <Collapsible open={isOrderInternalNotesOpen || isAddingOrderInternalNote} onOpenChange={(open) => {
+                  setIsOrderInternalNotesOpen(open);
+                  if (!open) setIsAddingOrderInternalNote(false);
+                }}>
                 <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2" data-testid="order-internal-notes">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <StickyNote className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium">Internal Notes</div>
-                        <div className="text-xs text-muted-foreground">
-                          {orderInternalNotesQuery.isLoading ? "Loading…" : `${orderInternalNotesQuery.data?.length ?? 0} append-only note${(orderInternalNotesQuery.data?.length ?? 0) === 1 ? "" : "s"}`}
-                        </div>
-                      </div>
-                    </div>
+                    <CollapsibleTrigger asChild>
+                      <button type="button" className="flex min-w-0 items-center gap-2 text-left">
+                        <StickyNote className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">Internal Notes</span>
+                          <span className="block text-xs text-muted-foreground">
+                            {orderInternalNotesQuery.isLoading ? "Loading…" : `${orderInternalNotesQuery.data?.length ?? 0} append-only note${(orderInternalNotesQuery.data?.length ?? 0) === 1 ? "" : "s"}`}
+                          </span>
+                        </span>
+                        <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", (isOrderInternalNotesOpen || isAddingOrderInternalNote) && "rotate-180")} />
+                      </button>
+                    </CollapsibleTrigger>
                     {canAppendOrderInternalNote && !isAddingOrderInternalNote ? (
-                      <Button type="button" size="sm" variant="ghost" onClick={() => setIsAddingOrderInternalNote(true)}>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => { setIsOrderInternalNotesOpen(true); setIsAddingOrderInternalNote(true); }}>
                         Add note
                       </Button>
                     ) : null}
                   </div>
 
+                  <CollapsibleContent className="mt-2">
                   {orderInternalNotesQuery.data && orderInternalNotesQuery.data.length > 0 ? (
                     <details className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2">
                       <summary className="cursor-pointer text-sm font-medium">View notes</summary>
@@ -2955,8 +2954,42 @@ export default function OrderDetail() {
                       </div>
                     </div>
                   ) : null}
+                  </CollapsibleContent>
                 </div>
-                  </div>
+                </Collapsible>
+                  </section>
+
+                  <section className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4" aria-label="Commercial and fulfillment">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Commercial &amp; Fulfillment</div>
+                    <div className="grid gap-3">
+                      <div className="grid min-w-0 gap-1.5">
+                        <label className="text-sm font-medium text-muted-foreground">Priority</label>
+                        <Select value={order.priority} onValueChange={handlePriorityChange} disabled={!canEditSafeOrderMetadata || updateOrder.isPending}>
+                          <SelectTrigger className="h-9 min-w-0"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="rush">Rush</SelectItem>
+                            <SelectItem value="normal">Normal</SelectItem>
+                            <SelectItem value="low">Low</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid min-w-0 gap-1.5">
+                        <label className="text-sm font-medium text-muted-foreground">Fulfillment</label>
+                        <Select value={currentFulfillmentMethod} onValueChange={handleFulfillmentMethodChange} disabled={!canEditOrder}>
+                          <SelectTrigger className="h-9 min-w-0" aria-label="Fulfillment method"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="pickup">Pickup</SelectItem>
+                            <SelectItem value="ship">Ship</SelectItem>
+                            <SelectItem value="deliver">Deliver</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm text-muted-foreground">
+                      <span className="min-w-0 truncate">{currentFulfillmentMethod === "pickup" ? "Pickup by customer" : (order.shipToCompany || order.shipToName || "Ship to address pending")}</span>
+                      {canEditSafeOrderMetadata ? <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2" onClick={enterFulfillmentEdit}>Edit</Button> : null}
+                    </div>
+                  </section>
                 </div>
               </CardContent>
             </Card>
@@ -3622,7 +3655,7 @@ export default function OrderDetail() {
                     <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(displayedOrderTotals.subtotal)}</span></div>
                     {displayedOrderTotals.discount > 0 && <div className="flex justify-between text-sm text-red-500"><span>Discount</span><span>-{formatCurrency(displayedOrderTotals.discount)}</span></div>}
                     {currentFulfillmentMethod !== "pickup" && (order as any).shippingCents > 0 && <div className="flex justify-between text-sm"><span className="text-muted-foreground">{currentFulfillmentMethod === "deliver" ? "Delivery" : "Shipping"}</span><span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span></div>}
-                    <div className="flex justify-between gap-3 text-sm"><span className="text-muted-foreground">Tax · {taxTreatmentLabel}</span><span className="flex items-center gap-2">{formatCurrency(displayedOrderTotals.tax)}{isAdminOrOwner && canEditOrder ? <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={openTaxSettings}>Edit</Button> : null}</span></div>
+                    <div className="flex justify-between gap-3 text-sm"><span className="text-muted-foreground">Tax · {taxTreatmentLabel}</span><span className="flex items-center gap-2">{formatCurrency(displayedOrderTotals.tax)}{isAdminOrOwner && canEditOrder ? <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={openTaxSettings} aria-label="Edit tax settings">Edit</Button> : null}</span></div>
                     <Separator />
                     <div className="flex justify-between font-bold text-lg"><span>Total</span><span>{formatCurrency(displayedOrderTotals.total)}</span></div>
                   </div>

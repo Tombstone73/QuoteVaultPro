@@ -270,7 +270,7 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.textContent).not.toContain("Choose the stock thickness.");
     expect(container.querySelectorAll("select")).toHaveLength(2);
     expect(container.querySelector("select")?.parentElement?.parentElement?.className).toContain(orderWorkspace ? "auto-fit" : "xl:grid-cols-3");
-    expect(container.querySelector("select")?.parentElement?.className).toContain(orderWorkspace ? "flex" : "grid");
+    expect(container.querySelector("select")?.parentElement?.className).toContain("grid");
   });
 
   test("uses a non-empty internal value for an optional select's empty choice", () => {

@@ -644,7 +644,7 @@ describe("OrderDetail cancellation action rendering", () => {
     const { container, root } = renderOrderDetail();
 
     expect(container.textContent).toContain(taxLabel);
-    const editTaxButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.trim() === "Edit");
+    const editTaxButton = container.querySelector('button[aria-label="Edit tax settings"]');
     expect(editTaxButton).toBeTruthy();
 
     act(() => {

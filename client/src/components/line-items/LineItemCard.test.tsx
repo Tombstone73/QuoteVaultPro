@@ -359,12 +359,10 @@ describe("LineItemCard operational sections", () => {
       pricingDetailsSlot: <div>Calculated sqft: 12.00</div>,
     });
 
-    expect(container.textContent).toContain("Pricing details");
+    expect(container.querySelector('button[aria-label="Pricing details"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Calculated sqft: 12.00");
 
-    const detailsButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Pricing details",
-    );
+    const detailsButton = container.querySelector('button[aria-label="Pricing details"]');
     expect(detailsButton).toBeTruthy();
     click(detailsButton!);
 
@@ -386,7 +384,7 @@ describe("LineItemCard operational sections", () => {
     expect(container.textContent).not.toContain("Structured note detail");
 
     const notesButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Advanced & history"),
+      (button) => button.textContent?.trim() === "History",
     );
     expect(notesButton).toBeTruthy();
     click(notesButton!);
@@ -433,11 +431,10 @@ describe("Order workspace composition", () => {
       priceOverride: 85, onPriceClick, onUndoOverride, onSave, onDescriptionChange, onProductionNotesChange,
     });
     const editing = container.querySelector('[data-testid="order-line-main-editing"]')!;
-    expect(editing.querySelectorAll(":scope > section")).toHaveLength(2);
+    expect(editing.querySelectorAll(":scope > section")).toHaveLength(3);
     expect(editing.querySelector('[aria-label="Dimensions & Pricing"] select')).not.toBeNull();
     expect(editing.querySelector('[aria-label="Product Options"] select')).not.toBeNull();
-    const lower = container.querySelector('[data-testid="order-line-lower-editing"]')!;
-    expect(lower.querySelector('[aria-label="Artwork"]')?.textContent).toBe("Artwork manager");
+    expect(editing.querySelector('[aria-label="Artwork"]')?.textContent).toContain("Artwork manager");
     const notes = container.querySelectorAll("textarea");
     expect(Array.from(notes).map((note) => note.value)).toEqual(["Customer copy", "Internal instruction"]);
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -446,10 +443,10 @@ describe("Order workspace composition", () => {
     const productionNote = notes[1] as HTMLTextAreaElement;
     act(() => { setter.call(productionNote, "New internal note"); productionNote.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(onProductionNotesChange).toHaveBeenCalledWith("New internal note");
-    const advanced = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Advanced & history"))!;
-    expect(advanced.getAttribute("aria-expanded")).toBe("false");
+    const history = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "History")!;
+    expect(history.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("Structured staff history");
-    click(advanced);
+    click(history);
     expect(container.textContent).toContain("Structured staff history");
     click(container.querySelector('[title="Undo override"]')!);
     expect(onUndoOverride).toHaveBeenCalledTimes(1);
@@ -534,8 +531,8 @@ describe("Order workspace composition", () => {
     expect(pricing.textContent).toContain("Line total");
     expect(pricing.textContent).toContain("Override");
     expect(pricing.textContent).toContain("Taxable");
-    expect(pricing.querySelectorAll("label.text-center")).toHaveLength(2);
-    expect(pricing.textContent).toContain("Pricing details");
+    expect(pricing.querySelectorAll("label.text-center")).toHaveLength(1);
+    expect(pricing.querySelector('button[aria-label="Pricing details"]')).not.toBeNull();
     await cleanup();
   });
 

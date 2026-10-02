@@ -644,7 +644,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
                         {showGroupHeader && idx !== 0 && (
                             <div className="text-sm font-medium">{formatGroupHeader(groupName)}</div>
                         )}
-                        <div className={cn(compact ? orderWorkspace ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,320px),1fr))] gap-x-4 gap-y-1.5" : "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-2")}>
+                        <div className={cn(compact ? orderWorkspace ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-x-3 gap-y-1.5" : "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-2")}>
                             {options.map((ui) => {
                                 const source = productOptionById.get(ui.id);
                                 const selection = optionSelections[ui.id];

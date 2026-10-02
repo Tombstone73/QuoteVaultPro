@@ -642,7 +642,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   });
   const { preferences: orgPreferences } = useOrgPreferences();
   const canSeeDebug = isAdmin || isPlatformAdmin || isPlatformDeveloper;
-  const [showLineItemDebug, setShowLineItemDebug] = useState(false);
   const [showOrderLineThumbnails, setShowOrderLineThumbnails] = useState(false);
   const [displayPreferencesLoadedScope, setDisplayPreferencesLoadedScope] = useState<string | null>(null);
   const displayPreferenceScope = user?.id ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}` : null;
@@ -4459,7 +4458,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 </div>
                               ) : null}
                                 </>}
-                                advancedControlsSlot={<>
+                                advancedControlsSlot={isExpanded && (canSeeDebug || (import.meta.env.DEV && expandedProductIsPbv2)) ? <>
                                     {isExpanded && expandedItem && expandedItem.id === item.id && false && (
                                       <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
                                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -4504,19 +4503,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     )}
 
                                     {isExpanded && canSeeDebug && (
-                                      <div className="mb-3">
-                                        <button
-                                          type="button"
-                                          onClick={() => setShowLineItemDebug((v) => !v)}
-                                          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                                        >
-                                          <ChevronDown className={cn("h-3 w-3 transition-transform", showLineItemDebug && "rotate-180")} />
-                                          {showLineItemDebug ? "Hide Debug" : "Show Debug"}
-                                        </button>
-
-                                        {showLineItemDebug && (
-                                          <>
-                                            <div className="mt-2 rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
+                                      <div className="space-y-2">
+                                            <div className="rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
                                               <div className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Initial line item draft debug</div>
                                               <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
                                                 <div>initialDraft.requiresDesign: {String(initialDraftSnapshot?.requiresDesign ?? initialDraftDebug?.requiresDesign ?? "(missing)")}</div>
@@ -4533,7 +4521,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             </div>
 
                                             {pricingDebugSnapshot && (
-                                              <div className="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
+                                              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
                                                 <div className="font-medium text-emerald-700 dark:text-emerald-300">PBV2 pricing runtime debug</div>
                                                 <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
                                                   <div>selected option values: {JSON.stringify(pricingDebugSnapshot.selectedOptionValues ?? pricingDebugSnapshot.effectiveSelections ?? null)}</div>
@@ -4547,7 +4535,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                               </div>
                                             )}
 
-                                            <div className="mt-2 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
+                                            <div className="rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
                                               <div className="font-medium text-sky-700 dark:text-sky-300">Live preview calc diagnostics</div>
                                               <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
                                                 <div>request seq: {String(previewDiag?.seq ?? "(none)")}</div>
@@ -4560,8 +4548,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                                 <div>computedTotalQty: {String(computedTotalQty ?? "(none)")}</div>
                                               </div>
                                             </div>
-                                          </>
-                                        )}
                                       </div>
                                     )}
 
@@ -4602,7 +4588,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     )}
 
 
-                                </>}
+                                </> : undefined}
                                 commercialPricingEditable={commercialPricingOnly}
                               />
 

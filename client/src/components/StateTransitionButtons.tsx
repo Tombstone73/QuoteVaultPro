@@ -26,9 +26,10 @@ import { AlertCircle, CheckCircle2, XCircle, RotateCcw } from 'lucide-react';
 interface CompleteProductionButtonProps {
   orderId: string;
   disabled?: boolean;
+  className?: string;
 }
 
-export function CompleteProductionButton({ orderId, disabled }: CompleteProductionButtonProps) {
+export function CompleteProductionButton({ orderId, disabled, className }: CompleteProductionButtonProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [bypassConfirmation, setBypassConfirmation] = useState<Array<{ lineItemId: string; lineLabel: string; stages: string[] }> | null>(null);
   const queryClient = useQueryClient();
@@ -98,7 +99,7 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
         onClick={handleClick}
         disabled={disabled || isProcessing}
         variant="default"
-        className="bg-purple-600 hover:bg-purple-700"
+        className={`bg-purple-600 hover:bg-purple-700 ${className ?? ""}`}
       >
         <CheckCircle2 className="mr-2 h-4 w-4" />
         {isProcessing ? 'Completing...' : 'Complete Production'}
@@ -145,16 +146,17 @@ interface CloseOrderButtonProps {
 interface CompleteOrderButtonProps {
   orderId: string;
   disabled?: boolean;
+  className?: string;
 }
 
-export function CompleteOrderButton({ orderId, disabled }: CompleteOrderButtonProps) {
+export function CompleteOrderButton({ orderId, disabled, className }: CompleteOrderButtonProps) {
   const [showDialog, setShowDialog] = useState(false);
   const [notes, setNotes] = useState('');
   const completeOrder = useCompleteOrder(orderId);
 
   return (
     <>
-      <Button onClick={() => setShowDialog(true)} disabled={disabled} variant="default">
+      <Button onClick={() => setShowDialog(true)} disabled={disabled} variant="default" className={className}>
         <CheckCircle2 className="mr-2 h-4 w-4" />
         Complete Order
       </Button>

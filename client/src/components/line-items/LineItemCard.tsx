@@ -16,7 +16,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronRight, Copy, GripVertical, Loader2, Minus, Plus, Save, Check, Trash2, Undo2 } from "lucide-react";
+import { Bug, ChevronRight, CircleHelp, Copy, GripVertical, History, Loader2, Minus, Plus, Save, Check, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -462,28 +462,42 @@ export function LineItemCard({
     </div>
   ) : null;
 
-  const advancedControls = (advancedControlsSlot || internalNotesSlot) ? (
-    <Collapsible defaultOpen={false} className="border-t border-border/50 pt-2">
+  const lineHistoryControl = compactExpandedLayout && internalNotesSlot ? (
+    <Collapsible className="relative">
       <CollapsibleTrigger asChild>
-        <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">
-          <ChevronRight className="h-3.5 w-3.5" />
-          Advanced & history
-        </button>
+        <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs" title="Line-item note history">
+          <History className="h-3.5 w-3.5" aria-hidden="true" />
+          History
+        </Button>
       </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-3 pt-2">
-        {requiresPrepress === null ? <p className="text-xs text-muted-foreground">Prepress routing follows the product or organization default.</p> : null}
-        {advancedControlsSlot}
-        {compactExpandedLayout ? internalNotesSlot : null}
+      <CollapsibleContent className="absolute bottom-full left-0 z-30 mb-2 w-[min(34rem,calc(100vw-3rem))] rounded-md border border-border bg-background p-3 shadow-lg">
+        {internalNotesSlot}
+      </CollapsibleContent>
+    </Collapsible>
+  ) : null;
+
+  const diagnosticsControl = advancedControlsSlot ? (
+    <Collapsible className="relative">
+      <CollapsibleTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label="Line diagnostics" title="Line diagnostics">
+          <Bug className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="absolute bottom-full right-0 z-30 mb-2 w-[min(46rem,calc(100vw-3rem))] rounded-md border border-border bg-background p-3 shadow-lg">
+        <div className="space-y-3">
+          {requiresPrepress === null ? <p className="text-xs text-muted-foreground">Prepress routing follows the product or organization default.</p> : null}
+          {advancedControlsSlot}
+        </div>
       </CollapsibleContent>
     </Collapsible>
   ) : null;
 
   const actionsRow = (
     <>
-      {!readOnly && (onSave || onDuplicate || onRemove || relationshipActionsSlot) && (
+      {(!readOnly && (onSave || onDuplicate || onRemove || relationshipActionsSlot)) || lineHistoryControl || diagnosticsControl ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            {onSave && isDirty && (
+            {!readOnly && onSave && isDirty && (
               <Button
                 type="button"
                 variant="default"
@@ -505,13 +519,13 @@ export function LineItemCard({
                 )}
               </Button>
             )}
-            {onSave && !isDirty && isSaved && (
+            {!readOnly && onSave && !isDirty && isSaved && (
               <div className="flex items-center gap-1.5 text-xs text-green-600">
                 <Check className="w-3.5 h-3.5" />
                 Saved
               </div>
             )}
-            {onDuplicate && (
+            {!readOnly && onDuplicate && (
               <Button
                 type="button"
                 variant="ghost"
@@ -522,15 +536,17 @@ export function LineItemCard({
                 Duplicate Item
               </Button>
             )}
-            {onRemove && <RemoveLineItemButton onRemove={onRemove} />}
-            {relationshipActionsSlot}
-            {routingControls}
+            {!readOnly && onRemove && <RemoveLineItemButton onRemove={onRemove} />}
+            {!readOnly ? relationshipActionsSlot : null}
+            {!readOnly ? routingControls : null}
+            {lineHistoryControl}
+            {diagnosticsControl}
           </div>
-          {isDirty && (
+          {!readOnly && isDirty && (
             <div className="text-xs text-amber-600">Unsaved</div>
           )}
         </div>
-      )}
+      ) : null}
     </>
   );
 
@@ -574,10 +590,24 @@ export function LineItemCard({
           {priceLabel}
           {editingUnitPrice ? <Input type="text" inputMode="decimal" value={unitPriceEditText} onChange={(event) => onUnitPriceChange?.(event.target.value)} onBlur={onUnitPriceBlur} onKeyDown={onUnitPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 text-center font-mono text-sm font-semibold" aria-label="Unit price override" /> : onUnitPriceClick ? <button type="button" className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-center font-mono text-sm font-semibold shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onUnitPriceClick} aria-label="Edit unit price">{unitPriceLabel}</button> : <div className="flex h-8 items-center justify-center font-mono text-sm font-semibold">{unitPriceLabel}</div>}
         </label>
-        <label className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
-          Line total
+        <div className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
+          <span className="flex items-center justify-center gap-1">
+            Line total
+            {pricingDetailsSlot ? (
+              <Collapsible className="relative leading-none">
+                <CollapsibleTrigger asChild>
+                  <button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Pricing details" title="Pricing details">
+                    <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="absolute left-1/2 top-full z-30 mt-2 w-64 -translate-x-1/2 rounded-md border border-border bg-background p-2.5 text-left text-[11px] leading-4 text-muted-foreground shadow-lg">
+                  {pricingDetailsSlot}
+                </CollapsibleContent>
+              </Collapsible>
+            ) : null}
+          </span>
           {editingPrice ? <Input type="text" inputMode="decimal" value={priceEditText} onChange={(event) => onPriceChange?.(event.target.value)} onBlur={onPriceBlur} onKeyDown={onPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 text-center font-mono text-sm font-semibold" /> : <button type="button" className={cn("h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-center font-mono text-sm font-semibold shadow-sm", canEditPrice && onPriceClick ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : "cursor-default")} onClick={onPriceClick} disabled={!canEditPrice || !onPriceClick}>{formatMoney(priceOverride != null ? priceOverride : price)}</button>}
-        </label>
+        </div>
         <div className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
           <span>Override</span>
           <div className="flex min-h-8 flex-wrap items-center justify-center gap-2">
@@ -586,7 +616,6 @@ export function LineItemCard({
           {priceOverride != null && <div className="flex items-center justify-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
         </div>
         {taxControlSlot ? <div className="flex min-w-0 items-center self-end pb-0.5">{taxControlSlot}</div> : null}
-        {pricingDetailsSlot ? <Collapsible defaultOpen={false} className="col-span-full -mt-1"><CollapsibleTrigger asChild><button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="text-[11px] font-medium text-muted-foreground hover:text-foreground">Pricing details</button></CollapsibleTrigger><CollapsibleContent className="pt-1 text-[11px] text-muted-foreground">{pricingDetailsSlot}</CollapsibleContent></Collapsible> : null}
         <div className="col-span-full flex items-center text-[11px]">
           {isCalculating ? <div className="text-muted-foreground">Calculating…</div> : null}
           {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" ? <div className="font-medium text-amber-600 dark:text-amber-500">⚠️ Outdated PBV2 config</div> : null}
@@ -811,11 +840,11 @@ export function LineItemCard({
       <div className="grid min-w-0 gap-3 sm:grid-cols-2">
         <label className="grid min-w-0 gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Customer notes
-          <textarea value={description} onChange={(event) => onDescriptionChange?.(event.target.value)} placeholder="Add customer-facing description..." className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm normal-case font-normal tracking-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
+          <textarea value={description} onChange={(event) => onDescriptionChange?.(event.target.value)} placeholder="Add customer-facing description..." className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm normal-case font-normal tracking-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
         </label>
         <label className="grid min-w-0 gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Staff only notes
-          <textarea value={productionNotes} onChange={(event) => onProductionNotesChange?.(event.target.value)} placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."} className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm normal-case font-normal tracking-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
+          <textarea value={productionNotes} onChange={(event) => onProductionNotesChange?.(event.target.value)} placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."} className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm normal-case font-normal tracking-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
         </label>
       </div>
     </section>
@@ -847,7 +876,6 @@ export function LineItemCard({
           {notesFields}
         </CollapsibleContent>
       </Collapsible>
-      {advancedControls}
     </div>
   );
 
@@ -1054,19 +1082,23 @@ export function LineItemCard({
 
             {compactExpandedLayout ? (
               <div className="space-y-3" data-testid="order-line-editor">
-                <div className={cn("grid items-start gap-3", optionsSlot && "2xl:grid-cols-2")} data-testid="order-line-main-editing">
+                <div className={cn(
+                  "grid items-start gap-3",
+                  optionsSlot && artworkSlot && "2xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)_minmax(19rem,0.95fr)]",
+                  optionsSlot && !artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)]",
+                  !optionsSlot && artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(19rem,1.15fr)]",
+                )} data-testid="order-line-main-editing">
                   <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
                     <h3 className="mb-3 text-sm font-semibold">{dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}</h3>
                     {commercialControls}
                   </section>
                   {optionsSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
+                  {artworkSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Artwork"><h3 className="mb-2 text-sm font-semibold">Artwork</h3>{artworkSlot}</section> : null}
                 </div>
-                <div className={cn("grid min-w-0 items-start gap-3", artworkSlot && "lg:grid-cols-[minmax(22rem,0.85fr)_minmax(28rem,1.15fr)]")} data-testid="order-line-lower-editing">
+                <div className="grid min-w-0 items-start gap-3" data-testid="order-line-lower-editing">
                   {compactNotesSection}
-                  {artworkSlot ? <section className="min-w-0" aria-label="Artwork">{artworkSlot}</section> : null}
                 </div>
                 {actionsRow}
-                {advancedControls}
               </div>
             ) : (
             <div className={cn("grid grid-cols-1 gap-3", !nonProductionItem && "xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)]")}>

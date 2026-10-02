@@ -704,7 +704,7 @@ export function ProductOptionsPanelV2({
       {renderedNodeIds.length === 0 ? (
         <div className="text-xs text-muted-foreground">No options.</div>
       ) : (
-        <div className={cn(compact ? orderWorkspace ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,320px),1fr))] gap-x-4 gap-y-1.5" : "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-3")}>
+        <div className={cn(compact ? orderWorkspace ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-x-3 gap-y-1.5" : "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-3")}>
           {renderedNodeIds.map((nodeId) => {
             const node = tree.nodes[nodeId];
             if (!node) return null;
@@ -756,7 +756,7 @@ export function ProductOptionsPanelV2({
             );
 
             const compactRowClass = orderWorkspace
-              ? "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-0.5"
+              ? "grid min-w-0 grid-cols-[minmax(7rem,10rem)_10rem] items-center gap-x-2 gap-y-1 py-0.5"
               : "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-center gap-3 py-1.5";
             const fieldClass = (defaultClass: string) => cn(compact ? compactRowClass : defaultClass, isDisabled && "opacity-70");
 
@@ -795,7 +795,7 @@ export function ProductOptionsPanelV2({
                       else setNodeValue(node, val);
                     }}
                   >
-                    <SelectTrigger className={cn("h-9", compact && orderWorkspace && "w-[180px]")} disabled={isDisabled}>
+                    <SelectTrigger className={cn("h-8", compact && orderWorkspace && "w-40")} disabled={isDisabled}>
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
                     <SelectContent>
@@ -906,7 +906,7 @@ export function ProductOptionsPanelV2({
                   {commonHeader}
                   <Input
                     type="number"
-                    className={cn("h-9", compact && orderWorkspace && "w-[180px]")}
+                    className={cn("h-8", compact && orderWorkspace && "w-40")}
                     step={step}
                     min={min}
                     max={max}
@@ -928,7 +928,7 @@ export function ProductOptionsPanelV2({
                 <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <Input
-                    className={cn("h-9", compact && orderWorkspace && "w-[180px]")}
+                    className={cn("h-8", compact && orderWorkspace && "w-40")}
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
                     disabled={isDisabled}
                     onChange={(e) => setNodeValue(node, e.target.value)}

@@ -72,7 +72,7 @@ export function OrderDetailPrimaryActions({
             size="sm"
             onClick={() => void onSaveOrder()}
             disabled={!isDirty || isUpdatingOrder || isSavingOrder}
-            className="rounded-titan-md"
+            className="h-10 rounded-md px-3 text-xs font-semibold"
             title={hasDirtyLineItem ? "Saves open line item changes too" : undefined}
           >
             {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save Order"}
@@ -82,7 +82,7 @@ export function OrderDetailPrimaryActions({
             size="sm"
             onClick={() => void onSaveAndRoute()}
             disabled={isUpdatingOrder || isSavingOrder}
-            className="rounded-titan-md"
+            className="h-10 rounded-md px-3 text-xs font-semibold"
             title="Saves changes, then moves eligible line items to Design, Proofing, or Prepress as needed."
           >
             {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save & Route Jobs"}
@@ -93,7 +93,7 @@ export function OrderDetailPrimaryActions({
               size="sm"
               onClick={() => void onDiscardChanges()}
               disabled={isUpdatingOrder || isSavingOrder}
-              className="rounded-titan-md"
+              className="h-10 rounded-md px-3 text-xs"
             >
               Discard
             </Button>
@@ -107,7 +107,7 @@ export function OrderDetailPrimaryActions({
           size="sm"
           onClick={onMarkCompleted}
           disabled={isTransitioningStatus}
-          className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
+            className="h-10 rounded-md bg-green-600 px-3 text-xs font-semibold text-white hover:bg-green-700"
         >
           <Check className="w-4 h-4 mr-2" />
           Mark Completed
@@ -115,15 +115,15 @@ export function OrderDetailPrimaryActions({
       )}
 
       {canCompleteProduction && (
-        <CompleteProductionButton orderId={orderId} />
+        <CompleteProductionButton orderId={orderId} className="h-10 rounded-md px-3 text-xs font-semibold" />
       )}
 
-      {canCompleteOrder && <CompleteOrderButton orderId={orderId} />}
+      {canCompleteOrder && <CompleteOrderButton orderId={orderId} className="h-10 rounded-md px-3 text-xs font-semibold" />}
 
       {(canShowCancelOrder || canDuplicateOrder) ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" size="icon" className="h-8 w-8" aria-label="More order actions">
+            <Button type="button" variant="outline" size="icon" className="h-10 w-10 rounded-md" aria-label="More order actions">
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>

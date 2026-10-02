@@ -35,7 +35,7 @@ describe("order detail action contracts", () => {
 
   test("reuses one Traveler button before the fulfillment-method-specific content", () => {
     expect(detail.match(/<PrintTicketButton\b/g)).toHaveLength(1);
-    expect(detail).toContain("{!orderIsCanceled && <PrintTicketButton orderId={order.id} />}");
+    expect(detail).toContain('{!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler"');
     expect(detail.indexOf("<PrintTicketButton")).toBeLessThan(detail.indexOf("currentFulfillmentMethod !== \"pickup\""));
   });
 
@@ -46,16 +46,16 @@ describe("order detail action contracts", () => {
   });
 
   test("keeps invoice navigation in the header and removes the persistent invoice summary", () => {
-    expect(detail).toContain('View Invoice');
+    expect(detail).toContain('>\n                  View Invoice\n                </Link>');
     expect(detail).toContain('Invoices for Order {titleText}');
-    expect(detail).toContain('Create Invoice');
     expect(detail).not.toContain('Invoice Summary');
     expect(detail).not.toContain('Take Payment');
   });
 
   test("keeps identity and action controls in one responsive header region", () => {
     expect(detail).toContain('className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-center"');
-    expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end"');
+    expect(detail).toContain('aria-label="Order controls"');
+    expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:justify-end"');
     expect(detail).not.toContain('className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"');
   });
 
