@@ -13,7 +13,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, Download, RotateCcw, Ban } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/queryClient";
 import { OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -236,6 +237,17 @@ export default function Orders() {
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [productionFilter, setProductionFilter] = useState<ProductionFilterValue>("all");
   const [proofFilter, setProofFilter] = useState<ProofFilterValue>("all");
+  const canonicalOpenCountQuery = useQuery({
+    queryKey: ["/api/operational-summary"],
+    queryFn: async () => {
+      const response = await apiFetch("/api/operational-summary", { credentials: "include" });
+      if (!response.ok) return null;
+      const payload = await response.json();
+      return payload.data as { orders?: number } | undefined;
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
   
   // Pagination + performance controls. Page size is persisted independently
   // from sorting; the current page intentionally remains session-only.
@@ -436,6 +448,7 @@ export default function Orders() {
     ? (ordersData.items as OrderRow[])
     : ((ordersData as OrderRow[] | undefined) ?? []);
   const totalCount = isPaginated ? ordersData.totalCount : orders.length;
+  const canonicalOpenCount = canonicalOpenCountQuery.data?.orders ?? totalCount;
   const totalPages = isPaginated ? ordersData.totalPages : 1;
   const hasNext = isPaginated ? ordersData.hasNext : false;
   const hasPrev = isPaginated ? ordersData.hasPrev : false;
@@ -1049,7 +1062,7 @@ export default function Orders() {
               Open
               {!isDashboardDueDrilldown && stateFilter === "open" && (
                 <Badge variant="secondary" className="ml-2">
-                  {filteredOrders.length}
+                  {canonicalOpenCount}
                 </Badge>
               )}
             </TabsTrigger>

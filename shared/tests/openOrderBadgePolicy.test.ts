@@ -1,21 +1,13 @@
-import { isOpenOrderBadgeStatus, OPEN_ORDER_BADGE_STATUSES } from '../openOrderBadgePolicy';
+import { isCanonicalOpenOrder } from '../openOrderBadgePolicy';
 
-test('V1 Orders badge includes only canonical new and in-production status', () => {
-  expect(OPEN_ORDER_BADGE_STATUSES).toEqual(['new', 'in_production']);
-  for (const status of ['new', 'in_production']) expect(isOpenOrderBadgeStatus(status)).toBe(true);
-  for (const status of [
-    'operationally_complete', 'production_complete', 'ready_for_shipment',
-    'invoiced', 'completed', 'closed', 'canceled', 'archived', 'on_hold',
-  ]) expect(isOpenOrderBadgeStatus(status)).toBe(false);
-  expect(isOpenOrderBadgeStatus(null)).toBe(false);
+test('V1 Orders Open bucket follows lifecycle state and excludes Complete display status', () => {
+  for (const statusPillValue of ['New', 'Needs Review', 'Waiting on Artwork', 'Design Needed', 'Proof Sent', 'Approved', 'Prepress', 'In Production', 'Fulfillment', 'On Hold', 'Ready to Ship', 'Shipped', 'Invoiced', 'Picked Up', 'Paid']) {
+    expect(isCanonicalOpenOrder({ state: 'open', statusPillValue })).toBe(true);
+  }
+  expect(isCanonicalOpenOrder({ state: 'open', statusPillKey: 'complete' })).toBe(false);
+  expect(isCanonicalOpenOrder({ state: 'open', statusPillValue: 'Complete' })).toBe(false);
 });
 
-test('transitions change the projected count only when leaving or entering the included set', () => {
-  const count = (statuses: string[]) => statuses.filter(isOpenOrderBadgeStatus).length;
-  expect(count(['new', 'in_production'])).toBe(2);
-  expect(count(['in_production', 'in_production'])).toBe(2);
-  expect(count(['operationally_complete', 'in_production'])).toBe(1);
-  expect(count(['canceled', 'in_production'])).toBe(1);
-  expect(count(['new', 'operationally_complete'])).toBe(1);
-  expect(count(['new', 'in_production'])).toBe(2);
+test.each(['production_complete', 'closed', 'canceled'])('excludes %s lifecycle buckets', (state) => {
+  expect(isCanonicalOpenOrder({ state, statusPillValue: 'New' })).toBe(false);
 });

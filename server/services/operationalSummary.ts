@@ -27,7 +27,7 @@ import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { resolvePrepressQueueEligibility } from "./prepressQueueEligibility";
 import { countDistinctActiveProductionOverviewWork, filterActiveProductionOverviewRows } from "./productionOverviewPopulation";
 import { TERMINAL_PRODUCTION_STATUSES } from "@shared/operationalState";
-import { OPEN_ORDER_BADGE_STATUSES } from "@shared/openOrderBadgePolicy";
+import { canonicalOpenOrderBucketPredicate } from "./orderListBuckets";
 
 export interface OperationalSummary {
   orders: number;
@@ -107,10 +107,11 @@ export async function computeOperationalSummary(organizationId: string): Promise
     invoiceUnpaidResult,
     readyToFinalizeNeverSentPage,
   ] = await Promise.all([
-    // One parent Order contributes one count; no line-item or payment joins.
+    // Share the Orders page's unfiltered Open bucket.  The badge must not use
+    // a stale low-level status or a user's temporary table filters.
     db.select({ count: sql<number>`count(*)::int` }).from(orders).where(and(
       eq(orders.organizationId, organizationId),
-      inArray(orders.status, [...OPEN_ORDER_BADGE_STATUSES]),
+      canonicalOpenOrderBucketPredicate(organizationId),
     )),
 
     db

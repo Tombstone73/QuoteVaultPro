@@ -84,6 +84,7 @@ import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 import { activeOrderDuePredicates } from "../services/orderDueDateService";
+import { canonicalOpenOrderBucketPredicate } from "../services/orderListBuckets";
 import { serializeOrderBusinessDate } from "@shared/orderBusinessDate";
 import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
@@ -873,7 +874,11 @@ export class OrdersRepository {
         const conditions = [eq(orders.organizationId, organizationId)] as any[];
         conditions.push(...buildOrderSearchConditions(organizationId, opts.search));
         if (opts.status) conditions.push(eq(orders.status, opts.status));
-        if (opts.state) conditions.push(eq(orders.state, opts.state));
+        if (opts.state === "open") {
+            conditions.push(canonicalOpenOrderBucketPredicate(organizationId));
+        } else if (opts.state) {
+            conditions.push(eq(orders.state, opts.state));
+        }
         if (opts.statusPillId) conditions.push(eq(orders.statusPillId, opts.statusPillId));
         if (opts.statusPillIds !== undefined) {
             conditions.push(opts.statusPillIds.length > 0
