@@ -1049,12 +1049,12 @@ export function LineItemAttachmentsPanel({
         </div>
 
         {orderWorkspace && primaryAttachment && !isExpanded ? (
-          <div className="mt-3 flex items-start gap-3" data-testid="order-artwork-summary">
-            <button type="button" className="relative flex h-28 w-24 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setPreviewIndex(attachments.indexOf(primaryAttachment))} aria-label={`Preview ${primaryArtworkName}`}>
-              <FileText className="absolute h-8 w-8 text-muted-foreground" />
+          <div className="mt-2 flex items-start gap-2.5" data-testid="order-artwork-summary">
+            <button type="button" className="relative flex h-20 w-16 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setPreviewIndex(attachments.indexOf(primaryAttachment))} aria-label={`Preview ${primaryArtworkName}`}>
+              <FileText className="absolute h-6 w-6 text-muted-foreground" />
               {primaryArtworkThumbnailUrl ? <img src={primaryArtworkThumbnailUrl} alt={primaryArtworkName ?? "Artwork"} className="relative h-full w-full object-contain" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : null}
             </button>
-            <div className="min-w-0 flex-1 space-y-2">
+            <div className="min-w-0 flex-1 space-y-1.5">
               <div className="break-words text-sm font-semibold leading-snug [overflow-wrap:anywhere]">{primaryArtworkName}</div>
               <div className="text-xs text-muted-foreground">{primaryAttachment.fileName.split(".").pop()?.toUpperCase()}{primaryAttachment.fileSize ? ` · ${(primaryAttachment.fileSize / 1024 / 1024).toFixed(1)} MB` : ""}{fileCount > 1 ? ` · ${fileCount} files` : ""}</div>
               {fileCount === 1 ? <label className="grid min-w-0 grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-2">Role
@@ -1346,7 +1346,7 @@ export function LineItemAttachmentsPanel({
           {isLoading && attachments.length === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-2">Loading...</p>
           ) : attachments.length > 0 ? (
-            <div className="max-h-[22rem] space-y-1 overflow-y-auto pr-1">
+            <div className="grid max-h-[22rem] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 2xl:grid-cols-3">
               {attachments.map((file, fileIndex) => {
                 const fileName = getAttachmentDisplayName(file);
                 const FileIcon = isEpsArtwork(file.fileName, file.mimeType) ? FileText : getFileIcon(file.mimeType);
@@ -1373,7 +1373,7 @@ export function LineItemAttachmentsPanel({
                 const openPreview = () => setPreviewIndex(fileIndex);
                 
                 return (
-                  <div key={file.id} className="space-y-1">
+                  <div key={file.id} className="min-w-0 rounded-md border border-border/40 bg-muted/10 p-1.5">
                     <div 
                       className={cn("gap-2 rounded bg-background p-1.5 transition-colors hover:bg-muted/50 cursor-pointer", orderWorkspace ? "grid grid-cols-[44px_minmax(0,1fr)] items-start" : "flex items-center")}
                       onClick={(e) => {

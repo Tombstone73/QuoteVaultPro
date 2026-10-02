@@ -15,7 +15,6 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronRight, Copy, GripVertical, Loader2, Minus, Plus, Save, Check, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -114,6 +113,8 @@ export type LineItemCardProps = {
   onUnitPriceKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onUndoOverride?: () => void;
   priceControlSlot?: ReactNode;
+  /** Existing taxability control, placed adjacent to the commercial override controls. */
+  taxControlSlot?: ReactNode;
   pricingDetailsSlot?: ReactNode;
   primaryControlSlot?: ReactNode;
 
@@ -290,6 +291,7 @@ export function LineItemCard({
   onUnitPriceKeyDown,
   onUndoOverride,
   priceControlSlot,
+  taxControlSlot,
   pricingDetailsSlot,
   primaryControlSlot,
   isCalculating = false,
@@ -341,7 +343,6 @@ export function LineItemCard({
   const proofApprovalDisabled = readOnly || proofApprovalLocked || !onRequiresProofApprovalChange;
   const canEditPrice = !readOnly || commercialPricingEditable;
   const [secondaryDetailsOpen, setSecondaryDetailsOpen] = useState(false);
-  const [notesTab, setNotesTab] = useState<"customer" | "production">("customer");
   const [quantityDraft, setQuantityDraft] = useState(String(quantity));
   const [quantityError, setQuantityError] = useState<string | null>(null);
 
@@ -440,64 +441,42 @@ export function LineItemCard({
         />
       </div>
 
-      {internalNotesSlot}
+      {!compactExpandedLayout ? internalNotesSlot : null}
     </>
   );
 
-  const advancedControls = (
-      <Collapsible defaultOpen={compactExpandedLayout ? false : requiresDesign || requiresPrepress === true || requiresProofApproval} className="rounded-md border border-border/40 bg-background/40 p-2.5">
-        <CollapsibleTrigger asChild>
-          <button type="button" className="flex w-full items-center justify-between text-left">
-            <span className="flex flex-wrap items-center gap-2 text-sm font-medium">Advanced / Staff Controls{compactExpandedLayout && (requiresDesign || requiresPrepress === true || requiresProofApproval) ? <span className="text-xs font-normal text-muted-foreground">{[requiresDesign && "Design", requiresPrepress === true && "Prepress", requiresProofApproval && "Proof required"].filter(Boolean).join(" · ")}</span> : null}</span>
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="pt-3">
-      <div className="space-y-1.5">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={requiresDesign === true}
-              onChange={(e) => onRequiresDesignChange?.(e.target.checked)}
-              disabled={readOnly}
-              className="h-4 w-4 rounded border-input accent-primary"
-            />
-            Requires Design
-          </label>
-          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={requiresPrepress === true}
-              onChange={(e) => onRequiresPrepressChange?.(e.target.checked)}
-              disabled={readOnly}
-              className="h-4 w-4 rounded border-input accent-primary"
-            />
-            Requires Prepress
-          </label>
-          <label className={cn(
-            "flex items-center gap-2 text-sm select-none",
-            proofApprovalDisabled ? "text-muted-foreground" : "cursor-pointer",
-          )}>
-            <input
-              type="checkbox"
-              checked={displayedRequiresProofApproval}
-              onChange={(e) => onRequiresProofApprovalChange?.(e.target.checked)}
-              disabled={proofApprovalDisabled}
-              className="h-4 w-4 rounded border-input accent-primary"
-            />
-            Proof Approval
-          </label>
-        </div>
-        {requiresPrepress === null && (
-          <p className="text-xs text-muted-foreground">Prepress routing not explicitly set — will default to product type / org setting on conversion.</p>
-        )}
-      </div>
-          {advancedControlsSlot}
-          {compactExpandedLayout ? internalNotesSlot : null}
-        </CollapsibleContent>
-      </Collapsible>
-  );
+  const routingControls = !readOnly ? (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2" aria-label="Line routing requirements">
+      <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer select-none">
+        <input type="checkbox" checked={requiresDesign === true} onChange={(e) => onRequiresDesignChange?.(e.target.checked)} className="h-3.5 w-3.5 rounded border-input accent-primary" />
+        Design
+      </label>
+      <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer select-none">
+        <input type="checkbox" checked={requiresPrepress === true} onChange={(e) => onRequiresPrepressChange?.(e.target.checked)} className="h-3.5 w-3.5 rounded border-input accent-primary" />
+        Prepress
+      </label>
+      <label className={cn("flex items-center gap-1.5 text-xs font-medium select-none", proofApprovalDisabled ? "text-muted-foreground" : "cursor-pointer")}>
+        <input type="checkbox" checked={displayedRequiresProofApproval} onChange={(e) => onRequiresProofApprovalChange?.(e.target.checked)} disabled={proofApprovalDisabled} className="h-3.5 w-3.5 rounded border-input accent-primary" />
+        Proof approval
+      </label>
+    </div>
+  ) : null;
+
+  const advancedControls = (advancedControlsSlot || internalNotesSlot) ? (
+    <Collapsible defaultOpen={false} className="border-t border-border/50 pt-2">
+      <CollapsibleTrigger asChild>
+        <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">
+          <ChevronRight className="h-3.5 w-3.5" />
+          Advanced & history
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="space-y-3 pt-2">
+        {requiresPrepress === null ? <p className="text-xs text-muted-foreground">Prepress routing follows the product or organization default.</p> : null}
+        {advancedControlsSlot}
+        {compactExpandedLayout ? internalNotesSlot : null}
+      </CollapsibleContent>
+    </Collapsible>
+  ) : null;
 
   const actionsRow = (
     <>
@@ -545,6 +524,7 @@ export function LineItemCard({
             )}
             {onRemove && <RemoveLineItemButton onRemove={onRemove} />}
             {relationshipActionsSlot}
+            {routingControls}
           </div>
           {isDirty && (
             <div className="text-xs text-amber-600">Unsaved</div>
@@ -557,7 +537,7 @@ export function LineItemCard({
   const compactCommercialControls = (
     <div className="min-w-0 space-y-3">
       {primaryControlSlot ? <div className="min-w-0">{primaryControlSlot}</div> : null}
-      <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" data-testid="compact-commercial-flow">
+      <div className={cn("grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3", dimsRequired ? "2xl:grid-cols-7" : "xl:grid-cols-5")} data-testid="compact-commercial-flow">
         {dimsRequired ? (
           <>
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
@@ -589,10 +569,13 @@ export function LineItemCard({
         </div>
         <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
           Override
-          {priceControlSlot ?? <div className="flex h-8 items-center text-sm">—</div>}
+          <div className="flex min-h-8 items-center gap-2">
+            {priceControlSlot ?? <span className="text-sm">—</span>}
+            {pricingDetailsSlot ? <Collapsible defaultOpen={false} className="relative"><CollapsibleTrigger asChild><button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="whitespace-nowrap text-[11px] font-medium text-muted-foreground hover:text-foreground">Details</button></CollapsibleTrigger><CollapsibleContent className="absolute right-0 z-10 mt-1 w-64 rounded-md border border-border/60 bg-popover p-2 text-[11px] text-popover-foreground shadow-md">{pricingDetailsSlot}</CollapsibleContent></Collapsible> : null}
+          </div>
           {priceOverride != null && <div className="flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
         </div>
-        {pricingDetailsSlot ? <Collapsible defaultOpen={false} className="col-span-full"><CollapsibleTrigger asChild><button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="text-[11px] font-medium text-muted-foreground hover:text-foreground">Pricing details</button></CollapsibleTrigger><CollapsibleContent className="pt-1 text-[11px] text-muted-foreground">{pricingDetailsSlot}</CollapsibleContent></Collapsible> : null}
+        {taxControlSlot ? <div className="flex min-w-0 items-end pb-0.5">{taxControlSlot}</div> : null}
         <div className="col-span-full flex items-center text-[11px]">
           {isCalculating ? <div className="text-muted-foreground">Calculating…</div> : null}
           {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" ? <div className="font-medium text-amber-600 dark:text-amber-500">⚠️ Outdated PBV2 config</div> : null}
@@ -814,24 +797,16 @@ export function LineItemCard({
 
   const compactNotesSection = (
     <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Notes">
-      <Tabs value={notesTab} onValueChange={(value) => setNotesTab(value === "production" ? "production" : "customer")}>
-        <TabsList className="h-8 w-full justify-start">
-          <TabsTrigger value="customer" onClick={() => setNotesTab("customer")} className="h-6 px-2.5 text-xs">Customer Facing</TabsTrigger>
-          <TabsTrigger value="production" onClick={() => setNotesTab("production")} className="h-6 px-2.5 text-xs">Production Notes <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">Staff only</span></TabsTrigger>
-        </TabsList>
-        <TabsContent value="customer">
-          <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-            Customer-facing description
-            <textarea value={description} onChange={(event) => onDescriptionChange?.(event.target.value)} placeholder="Add custom description for this line item..." className="min-h-[92px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
-          </label>
-        </TabsContent>
-        <TabsContent value="production">
-          <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-            {serviceFee ? "Service Notes (internal)" : fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}
-            <textarea value={productionNotes} onChange={(event) => onProductionNotesChange?.(event.target.value)} placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."} className="min-h-[92px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
-          </label>
-        </TabsContent>
-      </Tabs>
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+        <label className="grid min-w-0 gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Customer notes
+          <textarea value={description} onChange={(event) => onDescriptionChange?.(event.target.value)} placeholder="Add customer-facing description..." className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm normal-case font-normal tracking-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
+        </label>
+        <label className="grid min-w-0 gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Staff only notes
+          <textarea value={productionNotes} onChange={(event) => onProductionNotesChange?.(event.target.value)} placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."} className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm normal-case font-normal tracking-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
+        </label>
+      </div>
     </section>
   );
 
@@ -1075,7 +1050,7 @@ export function LineItemCard({
                   </section>
                   {optionsSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
                 </div>
-                <div className={cn("grid min-w-0 items-start gap-3", artworkSlot && "lg:grid-cols-2")} data-testid="order-line-lower-editing">
+                <div className={cn("grid min-w-0 items-start gap-3", artworkSlot && "lg:grid-cols-[minmax(22rem,0.85fr)_minmax(28rem,1.15fr)]")} data-testid="order-line-lower-editing">
                   {compactNotesSection}
                   {artworkSlot ? <section className="min-w-0" aria-label="Artwork">{artworkSlot}</section> : null}
                 </div>

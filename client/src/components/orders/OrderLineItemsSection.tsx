@@ -3229,6 +3229,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     Boolean((item as any).requiresProofApproval) && requiresExplicitProofReturn(workflowState);
                   const currentReturnTarget = prepressReturnQueue.data?.find((queued) => queued.lineItemId === String(item.id));
                   const lineItemProofSummary = (item as any).proofSummary ?? null;
+                  const proofSummaryLabel = lineItemProofSummary?.label === "Not Required"
+                    ? "No Proof"
+                    : lineItemProofSummary?.label;
                   const showOpenProofingAction = shouldOfferProofingNavigation({
                     lineItemId: item.id,
                     requiresProofApproval: Boolean((item as any).requiresProofApproval),
@@ -3302,6 +3305,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     : fulfillmentOnly && workflowState === "in_production"
                       ? "Complete fulfillment"
                       : operationalDisplay.nextStepLabel;
+                  const ownerDuplicatesOperationalStatus = Boolean(
+                    ownerLabel && operationalDisplay.isProductionOwned &&
+                    operationalStatusLabel.toLocaleLowerCase().startsWith(String(ownerLabel).toLocaleLowerCase())
+                  );
                   const initialDraftDebug = initialDraftDebugByLineItemId[String(item.id)];
                   const initialDraftSnapshot = (itemSpecsJson?.initialDraft && typeof itemSpecsJson.initialDraft === "object")
                     ? itemSpecsJson.initialDraft as any
@@ -3465,7 +3472,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           getLineItemProofBadgeClass(lineItemProofSummary.status)
                                         )}
                                       >
-                                        {lineItemProofSummary.label}
+                                        {proofSummaryLabel}
                                       </Badge>
                                     ) : null}
                                     {(item as any).productionBypassed ? (
@@ -3475,7 +3482,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     <span className="text-muted-foreground">
                                       Next: <span className="text-foreground">{operationalNextStep}</span>
                                     </span>
-                                    {ownerLabel ? <span className="text-muted-foreground">Owner: {String(ownerLabel)}</span> : null}
+                                    {ownerLabel && !ownerDuplicatesOperationalStatus ? <span className="text-muted-foreground">Owner: {String(ownerLabel)}</span> : null}
                                     {operationalWarning ? (
                                       <span
                                         className={cn(
@@ -3877,6 +3884,53 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         </>
                                       )}
                                       {isOverride ? <div>Override: {overrideLabel}</div> : <div>No price override</div>}
+                                    </div>
+                                  ) : undefined
+                                }
+                                taxControlSlot={
+                                  !readOnly && !serviceFee && isExpanded && expandedItem?.id === item.id ? (
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                                      <div className="flex items-center gap-1.5">
+                                        <Checkbox
+                                          id={`line-taxable-${item.id}`}
+                                          checked={Boolean((item as any).taxabilityOverride ?? (item as any).isTaxableSnapshot ?? true)}
+                                          disabled={updateLineItemTaxability.isPending}
+                                          onCheckedChange={(checked) => {
+                                            void (async () => {
+                                              try {
+                                                await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: checked === true });
+                                                await onAfterLineItemsChange?.();
+                                              } catch {
+                                                // The mutation owns the user-safe error toast.
+                                              }
+                                            })();
+                                          }}
+                                        />
+                                        <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
+                                      </div>
+                                      {(item as any).taxabilityOverride == null ? (
+                                        <span className="text-[11px] text-muted-foreground">Product default</span>
+                                      ) : (
+                                        <Button
+                                          type="button"
+                                          variant="link"
+                                          size="sm"
+                                          className="h-auto p-0 text-[11px]"
+                                          disabled={updateLineItemTaxability.isPending}
+                                          onClick={() => {
+                                            void (async () => {
+                                              try {
+                                                await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
+                                                await onAfterLineItemsChange?.();
+                                              } catch {
+                                                // The mutation owns the user-safe error toast.
+                                              }
+                                            })();
+                                          }}
+                                        >
+                                          Reset
+                                        </Button>
+                                      )}
                                     </div>
                                   ) : undefined
                                 }
@@ -4303,10 +4357,48 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         setSearchOpen(true);
                                       }}
                                     >
-                                      <Plus className="mr-1 h-3.5 w-3.5" />
                                       Add child item
                                     </Button>
                                   )}
+                                  {!serviceFee ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      onClick={() => {
+                                        setParentLinkTarget(item);
+                                        setSelectedParentLineItemId((item as any).parentLineItemId ?? null);
+                                      }}
+                                      data-testid={`button-link-parent-${item.id}`}
+                                    >
+                                      {(item as any).parentLineItemId ? "Change parent" : "Link to parent"}
+                                    </Button>
+                                  ) : null}
+                                  {(item as any).parentLineItemId ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={parentLinkMutation.isPending}
+                                      onClick={() => parentLinkMutation.mutate({ lineItemId: String(item.id), parentLineItemId: null })}
+                                      data-testid={`button-unlink-parent-${item.id}`}
+                                    >
+                                      Unlink
+                                    </Button>
+                                  ) : null}
+                                  {!childItem && !(item as any).productionBypassed ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-8 text-muted-foreground"
+                                      onClick={() => { setProductionBypassTarget(item); setProductionBypassReason(""); }}
+                                    >
+                                      {getLineItemWorkflowActionLabel("Bypass Production", hasGroupChildren)}
+                                    </Button>
+                                  ) : null}
                                   {!childItem && showOpenProofingAction ? (
                                     <Button asChild type="button" variant="outline" size="sm" className="h-8">
                                       <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
@@ -4510,98 +4602,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     )}
 
 
-                              {!readOnly && !serviceFee && isExpanded && expandedItem?.id === item.id ? (
-                                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-sm">
-                                  <span className="font-medium">Tax</span>
-                                  <div className="flex items-center gap-2">
-                                    <Checkbox
-                                      id={`line-taxable-${item.id}`}
-                                      checked={Boolean((item as any).taxabilityOverride ?? (item as any).isTaxableSnapshot ?? true)}
-                                      disabled={updateLineItemTaxability.isPending}
-                                      onCheckedChange={(checked) => {
-                                        void (async () => {
-                                          try {
-                                            await updateLineItemTaxability.mutateAsync({
-                                              id: String(item.id),
-                                              taxabilityOverride: checked === true,
-                                            });
-                                            await onAfterLineItemsChange?.();
-                                          } catch {
-                                            // The mutation owns the user-safe error toast.
-                                          }
-                                        })();
-                                      }}
-                                    />
-                                    <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
-                                  </div>
-                                  {(item as any).taxabilityOverride == null ? (
-                                    <span className="text-xs text-muted-foreground">Product default</span>
-                                  ) : (
-                                    <>
-                                      <span className="text-xs text-muted-foreground">Order override</span>
-                                      <Button
-                                        type="button"
-                                        variant="link"
-                                        size="sm"
-                                        className="h-auto p-0 text-xs"
-                                        disabled={updateLineItemTaxability.isPending}
-                                        onClick={() => {
-                                          void (async () => {
-                                            try {
-                                              await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
-                                              await onAfterLineItemsChange?.();
-                                            } catch {
-                                              // The mutation owns the user-safe error toast.
-                                            }
-                                          })();
-                                        }}
-                                      >
-                                        Use product default
-                                      </Button>
-                                    </>
-                                  )}
-                                </div>
-                              ) : null}
-
-                              {!readOnly && !serviceFee ? (<div className="mt-3 flex flex-wrap gap-2">
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8"
-                                    onClick={() => {
-                                      setParentLinkTarget(item);
-                                      setSelectedParentLineItemId((item as any).parentLineItemId ?? null);
-                                    }}
-                                    data-testid={`button-link-parent-${item.id}`}
-                                  >
-                                    {(item as any).parentLineItemId ? "Change parent" : "Link to parent"}
-                                  </Button>
-                                  {(item as any).parentLineItemId ? (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-8"
-                                      disabled={parentLinkMutation.isPending}
-                                      onClick={() => parentLinkMutation.mutate({ lineItemId: String(item.id), parentLineItemId: null })}
-                                      data-testid={`button-unlink-parent-${item.id}`}
-                                    >
-                                      Unlink
-                                    </Button>
-                                  ) : null}
-                                  {!childItem && !(item as any).productionBypassed ? (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-8"
-                                      onClick={() => { setProductionBypassTarget(item); setProductionBypassReason(""); }}
-                                    >
-                                      {getLineItemWorkflowActionLabel("Bypass Production", hasGroupChildren)}
-                                    </Button>
-                                  ) : null}
-                              </div>) : null}
                                 </>}
                                 commercialPricingEditable={commercialPricingOnly}
                               />

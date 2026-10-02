@@ -308,7 +308,7 @@ describe("LineItemCard operational sections", () => {
     expect(container.textContent).toContain("Product Options");
     expect(container.textContent).toContain("Artwork");
     expect(container.textContent).toContain("Notes");
-    expect(container.textContent).toContain("Advanced / Staff Controls");
+    expect(container.textContent).not.toContain("Advanced / Staff Controls");
 
     await cleanup();
   });
@@ -327,7 +327,7 @@ describe("LineItemCard operational sections", () => {
     expect(container.querySelector("hr")).toBeNull();
     expect(container.textContent).toContain("Notes");
     expect(container.textContent).not.toContain("Fulfillment Notes");
-    expect(container.textContent).toContain("Advanced / Staff Controls");
+    expect(container.textContent).not.toContain("Advanced / Staff Controls");
 
     await cleanup();
   });
@@ -355,14 +355,15 @@ describe("LineItemCard operational sections", () => {
   it("keeps pricing details hidden until staff opens the compact disclosure", async () => {
     const { container, cleanup } = await renderInteractiveLineItemCard({
       isExpanded: true,
+      compactExpandedLayout: true,
       pricingDetailsSlot: <div>Calculated sqft: 12.00</div>,
     });
 
-    expect(container.textContent).toContain("Pricing details");
+    expect(container.textContent).toContain("Details");
     expect(container.textContent).not.toContain("Calculated sqft: 12.00");
 
     const detailsButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Pricing details",
+      (button) => button.textContent?.trim() === "Details",
     );
     expect(detailsButton).toBeTruthy();
     click(detailsButton!);
@@ -371,19 +372,21 @@ describe("LineItemCard operational sections", () => {
     await cleanup();
   });
 
-  it("collapses notes by default while showing an existing-note indicator", async () => {
+  it("keeps customer and staff notes visible while structured history stays collapsed", async () => {
     const { container, cleanup } = await renderInteractiveLineItemCard({
       isExpanded: true,
+      compactExpandedLayout: true,
       productionNotes: "Use matte laminate",
       internalNoteCount: 2,
       internalNotesSlot: <div>Structured note detail</div>,
     });
 
-    expect(container.textContent).toContain("2 internal notes");
-    expect(container.textContent).not.toContain("Use matte laminate");
+    expect(container.textContent).toContain("Staff only notes");
+    expect(container.textContent).toContain("Use matte laminate");
+    expect(container.textContent).not.toContain("Structured note detail");
 
     const notesButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Notes"),
+      (button) => button.textContent?.includes("Advanced & history"),
     );
     expect(notesButton).toBeTruthy();
     click(notesButton!);
@@ -392,11 +395,28 @@ describe("LineItemCard operational sections", () => {
     expect(container.textContent).toContain("Structured note detail");
     await cleanup();
   });
+
+  it("mounts append-only history only once in the shared non-compact notes path", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      compactExpandedLayout: false,
+      internalNotesSlot: <div data-testid="structured-history">Structured note detail</div>,
+    });
+
+    expect(container.querySelectorAll('[data-testid="structured-history"]')).toHaveLength(0);
+    const notesButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Notes",
+    );
+    expect(notesButton).toBeTruthy();
+    click(notesButton!);
+    expect(container.querySelectorAll('[data-testid="structured-history"]')).toHaveLength(1);
+    await cleanup();
+  });
 });
 
 
 describe("Order workspace composition", () => {
-  it("keeps normal controls and notes directly usable while active staff settings start collapsed", async () => {
+  it("keeps normal controls and both notes directly usable while history starts collapsed", async () => {
     const onPriceClick = jest.fn();
     const onUndoOverride = jest.fn();
     const onSave = jest.fn();
@@ -419,15 +439,14 @@ describe("Order workspace composition", () => {
     const lower = container.querySelector('[data-testid="order-line-lower-editing"]')!;
     expect(lower.querySelector('[aria-label="Artwork"]')?.textContent).toBe("Artwork manager");
     const notes = container.querySelectorAll("textarea");
-    expect(Array.from(notes).map((note) => note.value)).toEqual(["Customer copy"]);
+    expect(Array.from(notes).map((note) => note.value)).toEqual(["Customer copy", "Internal instruction"]);
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
     act(() => { setter.call(notes[0], "New customer copy"); notes[0].dispatchEvent(new Event("input", { bubbles: true })); });
     expect(onDescriptionChange).toHaveBeenCalledWith("New customer copy");
-    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Production Notes"))!);
-    const productionNote = container.querySelector("textarea")!;
+    const productionNote = notes[1] as HTMLTextAreaElement;
     act(() => { setter.call(productionNote, "New internal note"); productionNote.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(onProductionNotesChange).toHaveBeenCalledWith("New internal note");
-    const advanced = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Advanced / Staff Controls"))!;
+    const advanced = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Advanced & history"))!;
     expect(advanced.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("Structured staff history");
     click(advanced);
@@ -474,7 +493,7 @@ describe("Order workspace composition", () => {
     await cleanup();
   });
 
-  it("uses the unit-price editor and keeps notes values available while switching tabs", async () => {
+  it("uses the unit-price editor and keeps both note values available together", async () => {
     const onUnitPriceClick = jest.fn();
     const onDescriptionChange = jest.fn();
     const onProductionNotesChange = jest.fn();
@@ -490,10 +509,8 @@ describe("Order workspace composition", () => {
 
     click(container.querySelector('button[aria-label="Edit unit price"]')!);
     expect(onUnitPriceClick).toHaveBeenCalledTimes(1);
-    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Production Notes"))!);
-    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("Internal instruction");
-    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Customer Facing"))!);
-    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("Customer copy");
+    const noteValues = Array.from(container.querySelectorAll("textarea")).map((note) => (note as HTMLTextAreaElement).value);
+    expect(noteValues).toEqual(["Customer copy", "Internal instruction"]);
     await cleanup();
   });
 

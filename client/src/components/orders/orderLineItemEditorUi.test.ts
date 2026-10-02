@@ -167,6 +167,15 @@ describe("order line item editor UI policy", () => {
     });
   });
 
+  it("uses the station name without redundant queue terminology for queued production", () => {
+    expect(resolveOrderLineItemOperationalDisplay({
+      workflowState: "ready_for_production",
+      activeOwnerJobId: "job-1",
+      activeOwnerStationKey: "flatbed",
+      activeOwnerStatus: "queued",
+    })).toMatchObject({ statusLabel: "Flatbed", nextStepLabel: "Start production", ownerLabel: "Flatbed" });
+  });
+
   it("derives production action eligibility from the active job status", () => {
     expect(getOrderLineItemProductionActions({ activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed", activeOwnerStatus: "queued" }))
       .toEqual(["start", "hold", "return_to_prepress"]);

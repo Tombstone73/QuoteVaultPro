@@ -278,7 +278,9 @@ export function resolveOrderLineItemOperationalDisplay(input: {
     }
     if (ownerStatus === "queued") {
       return {
-        statusLabel: ownerLabel ? `${ownerLabel} queue` : "Scheduled for production",
+        // The station name is the useful operator-facing destination. "Queue"
+        // does not add information when the line is already owned by that station.
+        statusLabel: ownerLabel ?? "Scheduled for production",
         nextStepLabel: "Start production",
         ownerLabel,
         isProductionOwned,
