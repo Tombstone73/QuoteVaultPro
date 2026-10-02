@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "status": "coordinator-approved-baseline-dispositions",
+  "baseline": "bf5e80d0ec77693505a3ce851cba9945dc00f6cb",
+  "inventory": "OPERATIONAL_PARITY_2026_10_01.inventory.json",
+  "defaultDisposition": "Accept the auditor's bounded source/test-supported candidate class and campaign priority, subject to these overrides. No live verification is inferred.",
+  "denominatorRule": "Start with 274 transcribed rows; preserve two whole-row aliases without counting them; split operational Prepress notes/QC from standalone automated preflight. This yields 273 counted operator-intent rows, not a percentage of all application features.",
+  "aliases": {
+    "ACCESS-19": "ART-18",
+    "ACCESS-27": "UTIL-19"
+  },
+  "normalizedDomains": {
+    "ART": {
+      "01": "A/L1", "02": "B/L1", "03": "C/L1", "04": "C/L0", "05": "A/L1", "06": "B/L1", "07": "D/L2", "08": "B/L1", "09": "C/L1", "10": "C/L0", "11": "C/L1", "12": "C/L1", "13": "C/L1", "14": "C/L1", "15": "F/L1", "16": "B/L1", "17": "B/L1", "18": "C/L1", "19": "C/L1", "20": "D/L1", "21": "D/L2", "22": "F/L1", "23": "C/L1", "24": "B/L1", "25": "C/L2", "26": "B/L1", "27": "D/L1", "28": "A/L1", "29": "F/L2", "30": "F/L1"
+    },
+    "SALE": {
+      "01": "C/L1", "02": "C/L2", "03": "D/L2", "04": "B/L1", "05": "A/L1", "06": "A/L1", "07": "B/L1", "08": "C/L0", "09": "C/L0", "10": "C/L1", "11": "C/L1", "12": "B/L1", "13": "B/L1", "14": "C/L1", "15": "F/L1", "16": "B/L2", "17": "C/L1", "18": "A/L1", "19": "B/L1", "20": "C/L1", "21": "C/L1", "22": "B/L1", "23": "C/L1", "24": "A/L1", "25": "C/L2", "26": "B/L1", "27": "C/L2", "28": "C/L1", "29": "F/L1"
+    },
+    "PAY": {
+      "01": "B/L1", "02": "C/L2", "03": "A/L1", "04": "B/L1", "05": "B/L1", "06": "C/L2", "07": "C/L1", "08": "C/L0", "09": "C/L0", "10": "F/L1", "11": "C/L1", "12": "B/L1", "13": "D/L1", "14": "C/L1", "15": "F/L2", "16": "B/L1", "17": "C/L1", "18": "C/L2", "19": "C/L2", "20": "C/L1", "21": "B/L1", "22": "C/L0", "23": "C/L1", "24": "C/L1", "25": "C/L2", "26": "C/L1", "27": "C/L1", "28": "F/L1"
+    }
+  },
+  "overrides": {
+    "OPS-01": { "classification": "B", "priority": "L1", "reason": "Supported bounded daily Order-backed creation, not an outstanding launch blocker." },
+    "OPS-12": { "classification": "C", "priority": "L0", "reason": "Actual unchanged adapter/query reproduced PostgreSQL SQLSTATE 0A000 in PGlite. Query-only variants do not establish the correct locking/exclusivity contract." },
+    "OPS-13": { "classification": "C", "priority": "L0", "reason": "Existing ordinary/run execution can address the same attempts inconsistently; fixing this need not decide general successor policy." },
+    "OPS-15": { "classification": "C", "priority": "L0", "reason": "Actual unchanged service allowed detail read without production.view while list denied before transaction. UI capability alignment remains a distinct residual facet." },
+    "OPS-21": { "classification": "C", "priority": "L1", "reason": "Existing approved actual-usage operation has normal Flatbed reachability gaps; BDR-2 source changes stay under PRODDEF-19." },
+    "OPS-27": { "classification": "D", "priority": "L2", "reason": "Durable destination printing absent; browser PDF printing is a bounded alternative, not physical delivery verification." },
+    "FUL-05": { "classification": "F", "priority": "L1", "reason": "General substitute/successor quantity readiness requires BDR-4. Existing approved nonproduction fulfillment remains valid. Payment-release policy is referenced, not counted again here." },
+    "FUL-09": { "classification": "C", "priority": "L0", "reason": "Prepared reload can omit unloaded members and displayed edits can differ from finalized persisted revision." },
+    "FUL-20": { "classification": "F", "priority": "L1", "reason": "Manual administrative completion/override semantics require an owner decision. Existing automatic Sales reconciliation is credited; ordinary commercial completion is SALE-15 and financial release is PAY-28." },
+    "FUL-25": { "classification": "C", "priority": "L0", "reason": "Actual unchanged application with inert replacement persistence allowed prepare, correct, finalize and void using fulfillment.ship alone." },
+    "FUL-26": { "classification": "C", "priority": "L0", "reason": "New request identities after uncertain success can duplicate physical pickup/replacement facts." },
+    "BILL-07": { "classification": "D", "priority": "L2", "reason": "Individual/select-visible selection is a bounded workaround for absent Shift-range selection." },
+    "BILL-16": { "classification": "C", "priority": "L0", "reason": "Actual readers/document/PGlite reproduced current balance 1000 versus PDF current-labelled 0; preserve issued commercial evidence and explicitly resolve current-settlement presentation before repair." },
+    "BILL-22": { "classification": "C", "priority": "L0", "reason": "Email state renders generic financial/refund controls; isolation is an established intent, not new financial policy. No actual unintended provider refund is claimed." },
+    "ACCESS-01": { "classification": "B", "priority": "L1", "reason": "Supported bounded daily authentication/session recovery; retain only exact historical live provenance." },
+    "ACCESS-05": { "classification": "F", "priority": "L0", "reason": "Structural Team-management authority conflicts with legacy-capability floor. The campaign does not choose a new last-admin policy." },
+    "ACCESS-12": { "classification": "C", "priority": "L0", "reason": "Customer binding alone does not establish Quote publication. Current exposure needs containment, but sent-only visibility would invent policy without resolving published historical versus unsent edits." },
+    "ACCESS-16": { "classification": "C", "priority": "L1", "reason": "Unbilled-as-settled and failed reads as zero misstate daily financial/operational truth." },
+    "ACCESS-18": { "classification": "C", "priority": "L1", "reason": "Portal payment initiation has fresh retry IDs and mutable active selection; bounded backend initiation is not complete client intent isolation. No duplicate charge is asserted." },
+    "ACCESS-20": { "classification": "F", "priority": "L1", "reason": "Existing-work upload authority cannot be repaired by granting excluded online Order creation. Preserve concrete format/scope gaps without deciding BDR-3." },
+    "ACCESS-28": { "classification": "F", "priority": "L2", "reason": "Effectful operational defaults require per-owner semantics; the broad preferences inventory does not establish equivalent V2 application. Notification placeholders are excluded separately, not counted as lost delivery." },
+    "UTIL-06": { "classification": "C", "priority": "L2", "reason": "Additional source-proven report/output breadth is partial parity; launch prioritization alone is not a business-ownership decision." }
+  },
+  "scopeRefinements": {
+    "ART-18": { "reason": "Distinct V1 rejection has not been shown equivalent to approve/request-changes; accept partial rather than broad safe-equivalent classification. ACCESS-19 contributes Portal-consumer evidence." },
+    "ART-15": { "reason": "Cross-customer linked-contact binding remains BDR-3; preserve supported same-customer issue as a bounded subset." },
+    "SALE-08": { "reason": "Acceptance/conversion does not enforce correspondence to the delivered proposal. Conditional equivalence is insufficient; share SALE-09 repair dependency without counting a second implementation." },
+    "SALE-28": { "capability": "Sales document email: Quote composer and Order email integration reachability", "v1Behavior": "Quote email composer permits recipient/subject/message review; Order detail exposes a commercial email action.", "v2Behavior": "Quote initial send uses authoritative attachment/delivery intent, but does not supply full composer parity; no Order email composer/action was found in the traced Order workspace/routes.", "gap": "Quote composition breadth and Order commercial-email integration remain incomplete.", "requiredAction": "Expose owner-authorized Communications composition and Sales document integration without changing lifecycle or provider transport authority.", "reason": "Quote PDF/history is counted in BILL-27; Order commercial PDF in BILL-28. This row retains email/composer reachability, including the absent Order email action, not a second PDF capability." },
+    "ART-27": { "capability": "Prepress: operational preparation notes and QC flags", "v1Behavior": "Prepress session supports operational notes and QC issue types.", "v2Behavior": "Inspected Prepress execution/readiness contract and workspace lack matching note/QC commands.", "gap": "Preparation notes and QC flags are absent from the normal operator workflow.", "requiredAction": "Define bounded Prepress-owned operational note/QC commands and visibility without altering Artwork or Routing truth.", "reason": "Operational notes/QC remain daily L1. Standalone automated preflight is split into ART-31 rather than silently omitted or called polish." },
+    "FUL-20": { "capability": "Fulfillment: explicit administrative close/reopen and override disposition", "reason": "Do not recount ordinary Sales completion or the general Billing payment-release decision as additional missing fulfillment buttons." },
+    "SALE-29": { "capability": "Sales: authorization of progressed commercial corrections", "reason": "One unresolved operator workflow with BDR-2, BDR-4 and Billing release dependencies; dependency references are not separate feature counts." },
+    "ACCESS-28": { "capability": "Settings: owner-governed operational defaults configuration", "reason": "Scoped decision row, not proof that every persisted V1 preference is a required port. Excludes inert notification delivery, UI appearance, settings search, and QB settings counted elsewhere." }
+  },
+  "splits": [
+    { "sourceId": "ART-27", "id": "ART-31", "capability": "Prepress: standalone automated preflight, fix and downloadable findings", "classification": "D", "priority": "L2", "v1Behavior": "Standalone prepress.tsx supports automated check/fix, findings/report/log and download.", "v2Behavior": "Inspected workspace provides PDF viewing and preparation state, not a standalone automated preflight/fix engine.", "gap": "Automated preflight, fixes and downloadable findings are absent; a PDF iframe is not equivalent.", "requiredAction": "Scope a Prepress results workflow using Artwork-owned derived artifacts; manual file inspection remains the bounded alternative.", "reason": "Current V1 prepress.tsx has standalone check/fix/report/download; V2 PDF viewing is not preflight. Manual file inspection is a bounded alternative, not automated parity. Reuse the original source citations with their limitations." }
+  ],
+  "coverageLimits": [
+    "The denominator covers source-proven intents from the requested ten audit lanes, not all possible application features or a readiness percentage.",
+    "Inventory/Materials has definitions and usage fragments but no complete receiving/reservation/release/adjustment/reconciliation/BD-6 coexistence audit in these reports.",
+    "Inbound ingest/source evidence/review/matching/idempotent submission, Procurement/vendor/PO/receiving, reusable Nesting and general AI workflows were not completely audited by these ten lane reports. No parity class is fabricated for unassessed workflows.",
+    "Source and test inspection are distinct from coordinator baseline execution, new regression execution, in-memory SQL and historical live evidence.",
+    "F counts are decision-dependent capability rows, not the number of independent business decisions. BDR references can occur on several distinct workflows.",
+    "The current-baseline user closures remain bounded; no new live/provider check or fixture mutation is authorized. MAIN/PROD and V1 source remain read-only.",
+    "Storefront, customer catalog/cart/checkout/publishing/themes/promotions and online Order placement remain explicitly excluded. Staff Product version publication is a separate pre-existing domain concept, not Storefront scope."
+  ],
+  "closures": {}
+}
