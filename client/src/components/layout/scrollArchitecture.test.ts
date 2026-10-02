@@ -8,6 +8,7 @@ describe("application scroll architecture", () => {
     const styles = source("client/src/index.css");
 
     expect(appLayout).toContain('h-dvh min-h-0 w-full overflow-hidden');
+    expect(appLayout).toContain('flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden');
     expect(appLayout).toContain('root.classList.add("app-shell-scroll-lock")');
     expect(appLayout).toContain('data-testid="app-main-content"');
     expect(appLayout).toContain('overflow-y-auto overscroll-contain bg-background');

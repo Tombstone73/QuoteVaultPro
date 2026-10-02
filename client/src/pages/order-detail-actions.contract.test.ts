@@ -53,6 +53,11 @@ describe("order detail action contracts", () => {
     expect(detail).not.toContain('Take Payment');
   });
 
+  test("keeps the dense Order header shrinkable within the application workspace", () => {
+    expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3"');
+    expect(detail).toContain('className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"');
+  });
+
   test("keeps specialist Order controls reachable through compact disclosure", () => {
     expect(detail).toContain('title="Attachments"');
     expect(detail).toContain('title="Secondary Actions"');

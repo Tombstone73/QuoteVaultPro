@@ -2232,7 +2232,7 @@ export default function OrderDetail() {
     <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
       <div className="w-full max-w-none">
         <header className="mb-5 border-b border-border/60 pb-3">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             <BackNavControls
               onBack={() => guardedNavigate(orderBackPath)}
@@ -2268,7 +2268,7 @@ export default function OrderDetail() {
             />
           </div>
 
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
                 <Link to={orderDetailPath} state={location.state}>
