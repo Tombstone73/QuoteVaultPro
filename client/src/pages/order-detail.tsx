@@ -33,7 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer } from "lucide-react";
+import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer, Paperclip, Clock, Wrench } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -260,22 +260,29 @@ const ORDER_DETAIL_DEV_DIAGNOSTICS =
 function OrderUtilitySection({
   title,
   badge,
+  icon,
   children,
   defaultOpen = false,
+  open,
+  onOpenChange,
 }: {
   title: string;
   badge?: ReactNode;
+  icon?: ReactNode;
   children: ReactNode;
   defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
-    <Collapsible defaultOpen={defaultOpen} className="rounded-lg border bg-card">
+    <Collapsible defaultOpen={defaultOpen} open={open} onOpenChange={onOpenChange} className="rounded-lg border bg-card">
       <CollapsibleTrigger asChild>
         <button
           type="button"
           className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
         >
           <div className="flex items-center gap-2 text-sm font-medium">
+            {icon}
             {title}
             {badge}
           </div>
@@ -365,6 +372,7 @@ export default function OrderDetail() {
   // Per-section edit states (replaces global editMode)
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
   const [isEditingFulfillment, setIsEditingFulfillment] = useState(false);
+  const [isFulfillmentExpanded, setIsFulfillmentExpanded] = useState(false);
   const [isShipToAutofillOpen, setIsShipToAutofillOpen] = useState(false);
   const [shipToAutofillQuery, setShipToAutofillQuery] = useState("");
   const [shipToAutofillDebounced, setShipToAutofillDebounced] = useState("");
@@ -1058,6 +1066,7 @@ export default function OrderDetail() {
     if (!canEditSafeOrderMetadata) return;
     setIsEditingCustomer(false);
     setIsEditingFulfillment(true);
+    setIsFulfillmentExpanded(true);
   };
 
   const handleFulfillmentMethodChange = (value: string) => {
@@ -2404,7 +2413,7 @@ export default function OrderDetail() {
         )}
 
         <ContentLayout>
-          <div className="grid grid-cols-1 gap-4 lg:gap-5 xl:gap-6 lg:[grid-template-columns:minmax(0,1fr)_var(--titan-order-right-col)]">
+          <div className="space-y-4 lg:space-y-5">
           {/* Main Content */}
           <div className="min-w-0 space-y-4">
             <Card className="bg-titan-bg-card border-titan-border-subtle">
@@ -2497,7 +2506,7 @@ export default function OrderDetail() {
                                   <Link
                                     to={`/customers/${order.customer.id}`}
                                     state={{ referrer: buildReferrer(location) }}
-                                    className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                                    className="block truncate text-lg font-semibold leading-6 text-foreground hover:underline"
                                     title={customerCompanyName}
                                   >
                                     {customerCompanyName}
@@ -2505,7 +2514,7 @@ export default function OrderDetail() {
                                 ) : (
                                   <span
                                     tabIndex={0}
-                                    className="block truncate text-sm font-semibold leading-5 text-foreground"
+                                    className="block truncate text-lg font-semibold leading-6 text-foreground"
                                     title={customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "—")}
                                   >
                                     {customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "—")}
@@ -2565,7 +2574,7 @@ export default function OrderDetail() {
                       )}
 
                       {hasBillAddress && (
-                        <div className="text-[11px] leading-4 text-muted-foreground">
+                        <div className="text-sm leading-5 text-foreground/80">
                           <div className="hidden print:block">
                             {billAddressLine1 && <div>{billAddressLine1}</div>}
                             {billAddressLine2 && <div>{billAddressLine2}</div>}
@@ -2580,7 +2589,7 @@ export default function OrderDetail() {
                             <button
                               type="button"
                               onClick={() => setShowCustomerAddress((v) => !v)}
-                              className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
+                              className="shrink-0 text-xs text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
                             >
                               {showCustomerAddress ? "Hide" : "Show"}
                             </button>
@@ -2589,10 +2598,10 @@ export default function OrderDetail() {
                       )}
 
                       {email && (
-                        <div className="text-[11px] leading-4">
+                        <div className="text-sm leading-5">
                           <a
                             href={`mailto:${email}`}
-                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                            className="text-foreground/80 hover:text-foreground hover:underline"
                             title={email}
                           >
                             {email}
@@ -2601,10 +2610,10 @@ export default function OrderDetail() {
                       )}
 
                       {metaPhone && (
-                        <div className="text-[11px] leading-4">
+                        <div className="text-sm leading-5">
                           <a
                             href={phoneToTelHref(metaPhone)}
-                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                            className="text-foreground/80 hover:text-foreground hover:underline"
                             title={metaPhone}
                           >
                             {formatPhoneForDisplay(metaPhone)}
@@ -2647,12 +2656,12 @@ export default function OrderDetail() {
                             </Button>
                           </div>
                           {order.contact?.email && (
-                            <a href={`mailto:${order.contact.email}`} className="block text-[11px] leading-4 font-mono text-muted-foreground hover:text-foreground hover:underline" title={order.contact.email}>
+                          <a href={`mailto:${order.contact.email}`} className="block text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" title={order.contact.email}>
                               {order.contact.email}
                             </a>
                           )}
                           {contactLinePhone && (
-                            <a href={phoneToTelHref(contactLinePhone)} className="block text-[11px] leading-4 font-mono text-muted-foreground hover:text-foreground hover:underline" title={contactLinePhone}>
+                          <a href={phoneToTelHref(contactLinePhone)} className="block text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" title={contactLinePhone}>
                               {formatPhoneForDisplay(contactLinePhone)}
                             </a>
                           )}
@@ -3031,61 +3040,24 @@ export default function OrderDetail() {
                 onDraftLineItemPricingChange={handleDraftLineItemPricingChange}
               />
 
-              {/* Totals */}
-              <Card className="ml-auto w-full max-w-sm">
-                <CardHeader className="px-4 py-3">
-                  <CardTitle className="text-base font-medium">Totals</CardTitle>
-                </CardHeader>
-                <CardContent className="px-4 pb-4 pt-0">
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Subtotal</span>
-                      <span>{formatCurrency(displayedOrderTotals.subtotal)}</span>
-                    </div>
-                    {displayedOrderTotals.discount > 0 && (
-                      <div className="flex justify-between text-sm text-red-500">
-                        <span>Discount</span>
-                        <span>-{formatCurrency(displayedOrderTotals.discount)}</span>
-                      </div>
-                    )}
-                      {currentFulfillmentMethod !== "pickup" && (order as any).shippingCents > 0 && (
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">
-                            {currentFulfillmentMethod === "deliver" ? "Delivery" : "Shipping"}
-                          </span>
-                          <span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span>
-                        </div>
-                      )}
-                    <div className="flex justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground">Tax · {taxTreatmentLabel}</span>
-                      <span className="flex items-center gap-2">
-                        {formatCurrency(displayedOrderTotals.tax)}
-                        {isAdminOrOwner && canEditOrder ? (
-                          <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={openTaxSettings}>
-                            Edit
-                          </Button>
-                        ) : null}
-                      </span>
-                    </div>
-                    <Separator />
-                    <div className="flex justify-between font-bold text-lg">
-                      <span>Total</span>
-                      <span>{formatCurrency(displayedOrderTotals.total)}</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           </div>
 
-          {/* Sidebar */}
+          {/* Inline fulfillment and lower-order utilities */}
           <div className="min-w-0 space-y-6">
-            {/* Fulfillment & Shipping */}
+            {/* Fulfillment stays in the Order flow; detailed shipment work lives in Fulfillment. */}
+            <Collapsible
+              open={isFulfillmentExpanded || isEditingFulfillment}
+              onOpenChange={(open) => {
+                setIsFulfillmentExpanded(open);
+                if (!open && isEditingFulfillment) exitAllEditModes();
+              }}
+            >
             <Card>
               <CardHeader className="px-4 py-3">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     <Select
                       value={currentFulfillmentMethod}
                       onValueChange={handleFulfillmentMethodChange}
@@ -3123,9 +3095,29 @@ export default function OrderDetail() {
                         Done
                       </Button>
                     )}
+                    {!isEditingFulfillment && (
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-8 px-2">
+                          {isFulfillmentExpanded ? "Collapse" : "Details"}
+                        </Button>
+                      </CollapsibleTrigger>
+                    )}
                   </div>
                 </div>
+                {!isFulfillmentExpanded && !isEditingFulfillment && (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+                    {currentFulfillmentMethod === "pickup" ? (
+                      <span>{order.shippingInstructions ? "Pickup instructions on file" : "Pickup"}</span>
+                    ) : (
+                      <>
+                        <span>{order.shipToCompany || order.shipToName || "Ship To pending"}</span>
+                        {order.shipToCity || order.shipToState ? <span>{[order.shipToCity, order.shipToState].filter(Boolean).join(", ")}</span> : null}
+                      </>
+                    )}
+                  </div>
+                )}
               </CardHeader>
+              <CollapsibleContent>
               <CardContent className="space-y-3 px-4 pb-4 pt-0">
                 {currentFulfillmentMethod === "pickup" ? (
                     <div className="space-y-2">
@@ -3695,13 +3687,33 @@ export default function OrderDetail() {
                     </>
                   )}
               </CardContent>
+              </CollapsibleContent>
             </Card>
+            </Collapsible>
+
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(240px,0.8fr)_minmax(280px,1fr)_minmax(320px,1.2fr)]">
+              {/* Totals */}
+              <Card className="h-fit">
+                <CardHeader className="px-4 py-3">
+                  <CardTitle className="text-base font-medium">Totals</CardTitle>
+                </CardHeader>
+                <CardContent className="px-4 pb-4 pt-0">
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(displayedOrderTotals.subtotal)}</span></div>
+                    {displayedOrderTotals.discount > 0 && <div className="flex justify-between text-sm text-red-500"><span>Discount</span><span>-{formatCurrency(displayedOrderTotals.discount)}</span></div>}
+                    {currentFulfillmentMethod !== "pickup" && (order as any).shippingCents > 0 && <div className="flex justify-between text-sm"><span className="text-muted-foreground">{currentFulfillmentMethod === "deliver" ? "Delivery" : "Shipping"}</span><span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span></div>}
+                    <div className="flex justify-between gap-3 text-sm"><span className="text-muted-foreground">Tax · {taxTreatmentLabel}</span><span className="flex items-center gap-2">{formatCurrency(displayedOrderTotals.tax)}{isAdminOrOwner && canEditOrder ? <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={openTaxSettings}>Edit</Button> : null}</span></div>
+                    <Separator />
+                    <div className="flex justify-between font-bold text-lg"><span>Total</span><span>{formatCurrency(displayedOrderTotals.total)}</span></div>
+                  </div>
+                </CardContent>
+              </Card>
 
             {/* Billing */}
-            <Card>
+            <Card className="h-fit">
               <CardHeader className="px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="text-lg font-medium">Billing</CardTitle>
+                  <CardTitle className="text-base font-medium">Invoice Summary</CardTitle>
                   <div className="flex items-center gap-2">
                     <Badge variant={billingBadgeVariant}>{billingLabel}</Badge>
                     <Badge variant="outline">{invoiceStateSummary.label}</Badge>
@@ -3863,54 +3875,29 @@ export default function OrderDetail() {
                 </Collapsible>
 
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Invoices</div>
                   {isInvoicesLoading ? (
                     <div className="text-sm text-muted-foreground">Loading invoices…</div>
                   ) : orderInvoices.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">No invoices for this order.</div>
+                    <div className="text-sm text-muted-foreground">No invoice yet.</div>
                   ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Invoice</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead className="text-right">Balance</TableHead>
-                          <TableHead className="text-right">Total</TableHead>
-                          <TableHead className="text-right">Actions</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {orderInvoices.map((inv: any) => {
-                          const balance = Number(inv.displayRemaining ?? inv.balanceDue ?? Number(inv.total || 0) - Number(inv.amountPaid || 0));
-                          return (
-                            <TableRow key={inv.id}>
-                              <TableCell className="font-medium">
-                                <Link to={`/invoices/${inv.id}`} className="hover:underline">
-                                  #{inv.invoiceNumber}
-                                </Link>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant="outline">{String(inv.displayStatus || inv.status || '').toUpperCase()}</Badge>
-                              </TableCell>
-                              <TableCell className="text-right">{formatCurrency(balance)}</TableCell>
-                              <TableCell className="text-right">{formatCurrency(inv.displayTotal ?? inv.total)}</TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex justify-end gap-2">
-                                  {balance > 0 && String(inv.status || '').toLowerCase() !== 'void' ? (
-                                    <Button variant="outline" size="sm" asChild>
-                                      <Link to={`/invoices/${inv.id}?takePayment=1`}>Take Payment</Link>
-                                    </Button>
-                                  ) : null}
-                                  <Button variant="outline" size="sm" asChild>
-                                    <Link to={`/invoices/${inv.id}`}>Open Invoice</Link>
-                                  </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
+                    <div className="space-y-2">
+                      {orderInvoices.map((inv: any) => {
+                        const balance = Number(inv.displayRemaining ?? inv.balanceDue ?? Number(inv.total || 0) - Number(inv.amountPaid || 0));
+                        return (
+                          <div key={inv.id} className="rounded-md border border-border/60 px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <Link to={`/invoices/${inv.id}`} className="font-medium hover:underline">#{inv.invoiceNumber}</Link>
+                              <Badge variant="outline">{String(inv.displayStatus || inv.status || '').toUpperCase()}</Badge>
+                            </div>
+                            <div className="mt-1 flex justify-between text-sm text-muted-foreground"><span>Balance {formatCurrency(balance)}</span><span>Total {formatCurrency(inv.displayTotal ?? inv.total)}</span></div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {balance > 0 && String(inv.status || '').toLowerCase() !== 'void' ? <Button variant="outline" size="sm" asChild><Link to={`/invoices/${inv.id}?takePayment=1`}>Take Payment</Link></Button> : null}
+                              <Button variant="outline" size="sm" asChild><Link to={`/invoices/${inv.id}`}>View Invoice</Link></Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
 
@@ -4036,10 +4023,12 @@ export default function OrderDetail() {
               </CardContent>
             </Card>
 
+            <div className="space-y-2">
             {/* Attachments */}
             <OrderUtilitySection
               title="Attachments"
               badge={<Badge variant="outline">{orderAttachments.length}</Badge>}
+              icon={<Paperclip className="h-4 w-4 text-muted-foreground" />}
             >
               <p className="mb-3 text-sm text-muted-foreground">Add POs, instructions, shipping docs, and other order files.</p>
                 <OrderAttachmentsPanel
@@ -4086,82 +4075,35 @@ export default function OrderDetail() {
               </Card>
             )}
 
-            <Card>
-              <CardHeader className="px-4 py-3">
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setRightPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
-                      className={cn(
-                        "text-sm font-medium transition-colors hover:text-foreground cursor-pointer",
-                        rightPanel === "timeline" ? "text-foreground" : "text-muted-foreground"
-                      )}
-                    >
-                      Timeline
-                    </button>
+            <OrderUtilitySection
+              title="Timeline"
+              icon={<Clock className="h-4 w-4 text-muted-foreground" />}
+              open={rightPanel === "timeline"}
+              onOpenChange={(open) => setRightPanel(open ? "timeline" : "collapsed")}
+            >
+              <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
+            </OrderUtilitySection>
 
-                    <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
-
-                    <button
-                      type="button"
-                      onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
-                      className={cn(
-                        "text-sm font-medium transition-colors hover:text-foreground cursor-pointer",
-                        rightPanel === "material" ? "text-foreground" : "text-muted-foreground"
-                      )}
-                    >
-                      Material Usage
-                    </button>
-                  </div>
-
-                  <div className="ml-auto flex w-full flex-wrap justify-start gap-2 sm:w-auto sm:justify-end">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setShowInventoryReservationsDialog(true)}
-                    >
-                      Inventory
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setShowManualReservationsDialog(true)}
-                    >
-                      Manual
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setShowPbv2RollupDialog(true)}
-                    >
-                      Rollup
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-              {rightPanel !== "collapsed" && (
-                <CardContent className="px-4 pb-4 pt-0">
-                  {rightPanel === "timeline" && (
-                    <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
-                  )}
-                  {rightPanel === "material" && (
-                    <>
-                      <CardDescription>Automatic deductions recorded for this order</CardDescription>
-                      <div className="mt-3">
-                        <MaterialUsageTable orderId={order.id} />
-                      </div>
-                    </>
-                  )}
-                </CardContent>
-              )}
-            </Card>
+            <OrderUtilitySection
+              title="Material Usage"
+              icon={<Package className="h-4 w-4 text-muted-foreground" />}
+              open={rightPanel === "material"}
+              onOpenChange={(open) => setRightPanel(open ? "material" : "collapsed")}
+            >
+              <CardDescription>Automatic deductions recorded for this order</CardDescription>
+              <div className="mt-3"><MaterialUsageTable orderId={order.id} /></div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => setShowInventoryReservationsDialog(true)}>Inventory</Button>
+                <Button size="sm" variant="outline" onClick={() => setShowManualReservationsDialog(true)}>Manual</Button>
+                <Button size="sm" variant="outline" onClick={() => setShowPbv2RollupDialog(true)}>Rollup</Button>
+              </div>
+            </OrderUtilitySection>
 
             {hasOrderDetailSecondaryActions({
               canManageProofPolicy: isAdminOrOwner && !orderIsCanceled,
               proofBypassed,
             }) && (
-              <OrderUtilitySection title="Secondary Actions">
+              <OrderUtilitySection title="Secondary Actions" icon={<Wrench className="h-4 w-4 text-muted-foreground" />}>
                   <OrderDetailSecondaryActions
                     canManageProofPolicy={isAdminOrOwner && !orderIsCanceled}
                     proofBypassed={proofBypassed}
@@ -4173,6 +4115,8 @@ export default function OrderDetail() {
                   />
               </OrderUtilitySection>
             )}
+            </div>
+            </div>
           </div>
         </div>
       </ContentLayout>
