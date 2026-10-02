@@ -45,15 +45,23 @@ describe("order detail action contracts", () => {
     expect(detail).toContain('[orderId, requestedPanel]');
   });
 
+  test("keeps invoice navigation in the header and removes the persistent invoice summary", () => {
+    expect(detail).toContain('View Invoice');
+    expect(detail).toContain('Invoices for Order {titleText}');
+    expect(detail).toContain('Create Invoice');
+    expect(detail).not.toContain('Invoice Summary');
+    expect(detail).not.toContain('Take Payment');
+  });
+
   test("keeps specialist Order controls reachable through compact disclosure", () => {
     expect(detail).toContain('title="Attachments"');
     expect(detail).toContain('title="Secondary Actions"');
-    expect(detail).toContain('Shipment administration');
     expect(detail).toContain('Design billing diagnostics');
     expect(detail).toContain('aria-label="Preview Order"');
     expect(detail).toContain('aria-label="Download Order PDF"');
     expect(detail).toContain('aria-label="Email Order"');
     expect(detail).toContain('aria-label="Print Order"');
-    expect(detail).toContain('aria-label="Generate and view packing slip"');
+    expect(detail).toContain('aria-label="Generate packing slip in Fulfillment"');
+    expect(detail).not.toContain('Shipment administration');
   });
 });

@@ -129,6 +129,20 @@ describe("LineItemCard visible price render path", () => {
 });
 
 describe("LineItemCard collapsed header actions", () => {
+  it("keeps the customer description and primary artwork filename visible while collapsed", () => {
+    const html = renderToStaticMarkup(
+      <LineItemCard
+        {...buildLineItemCardProps({
+          descriptionPreview: "Printed on 13oz scrim vinyl.",
+          artworkSummary: "customer-banner-final.pdf",
+        })}
+      />,
+    );
+
+    expect(html).toContain("Printed on 13oz scrim vinyl.");
+    expect(html).toContain("Artwork · customer-banner-final.pdf");
+  });
+
   it("forwards pointer-down from the reorder handle to the sortable listener without expanding the row", async () => {
     const onToggleExpand = jest.fn();
     const onPointerDown = jest.fn();
@@ -288,10 +302,11 @@ describe("LineItemCard operational sections", () => {
       artworkSlot: <div>Artwork upload</div>,
     });
 
-    expect(container.textContent).toContain("Material & Product");
+    expect(container.textContent).toContain("Product");
     expect(container.textContent).toContain("Dimensions & Quantity");
-    expect(container.textContent).toContain("Finishing & Print");
-    expect(container.textContent).toContain("Artwork Assets");
+    expect(container.textContent).toContain("Pricing");
+    expect(container.textContent).toContain("Product Options");
+    expect(container.textContent).toContain("Artwork");
     expect(container.textContent).toContain("Notes");
     expect(container.textContent).toContain("Advanced / Staff Controls");
 

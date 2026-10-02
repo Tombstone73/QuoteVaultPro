@@ -30,6 +30,21 @@ describe('shipment-owned shipping context', () => {
     expect(validateShipmentShippingContext({ ...first, source: 'staff', blindSender: { ...first.destination, company: 'Confirmed alternate' } }, ['order-a'], true).blindSender?.company).toBe('Confirmed alternate');
   });
 
+  test('an Order-level blind sender is distinct from Ship To and overrides the Customer default', () => {
+    const blindSender = {
+      company: 'Alternate Sender', name: 'Shipping Desk', address1: '90 Sender Way', address2: null,
+      city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: null, email: null,
+    };
+    const enabled = orderShippingContext({ ...flatOrder, customerBlindShipping: false, blindShipping: true, blindShippingAddress: blindSender });
+    expect(enabled).toMatchObject({
+      blindShipping: true,
+      blindSenderSource: 'custom',
+      blindSender: { company: 'Alternate Sender', address1: '90 Sender Way' },
+      destination: { address1: '12 Main' },
+    });
+    expect(orderShippingContext({ ...flatOrder, customerBlindShipping: true, blindShipping: false }).blindShipping).toBe(false);
+  });
+
   test('ordering customer uses one account billing address, not Ship To or another linked customer', () => {
     expect(orderingCustomerSender([{ ...account, ...flatOrder }]).sender).toMatchObject({
       company: 'Ordering Company', address1: '100 Billing Street', city: 'Indianapolis', phone: '317-555-0100',
@@ -44,6 +59,21 @@ describe('shipment-owned shipping context', () => {
     const first = orderShippingContext(flatOrder);
     expect(() => commonShipmentShippingContext([first, { ...first, blindShipping: true }])).toThrow('conflicting blind-shipping');
     expect(() => commonShipmentShippingContext([first, { ...first, destination: { ...first.destination, phone: 'Other phone' } }])).toThrow('different Ship To');
+  });
+
+  test('combined blind-shipping Orders require the same explicit sender', () => {
+    const first = orderShippingContext({
+      ...flatOrder,
+      blindShipping: true,
+      blindShippingAddress: { name: null, company: 'First Sender', address1: '1 Sender Way', address2: null, city: 'Carmel', state: 'IN', postalCode: '46032', country: null, phone: null, email: null },
+    });
+    const second = orderShippingContext({
+      ...flatOrder,
+      id: 'order-b',
+      blindShipping: true,
+      blindShippingAddress: { name: null, company: 'Second Sender', address1: '2 Sender Way', address2: null, city: 'Carmel', state: 'IN', postalCode: '46032', country: null, phone: null, email: null },
+    });
+    expect(() => commonShipmentShippingContext([first, second])).toThrow('different blind-shipping sender details');
   });
 
   test('PATCH shipping context is strict, source is bound, and blank logistics remain valid', () => {
@@ -70,6 +100,30 @@ describe('shipment-owned shipping context', () => {
     expect(queries[1].params).toEqual(['org-a', 'order-a']);
     expect(write).not.toHaveBeenCalled();
     await expect(resolveShipmentShippingContext('org-a', ['order-a', 'missing'], executor)).rejects.toMatchObject({ status: 404, code: 'ORDER_NOT_FOUND' });
+  });
+
+  test('resolver preserves an explicit Order blind sender over the ordering-customer fallback', async () => {
+    const blindShippingAddress = {
+      company: 'Alternate Sender', name: 'Shipping Desk', address1: '90 Sender Way', address2: null,
+      city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: null, email: null,
+    };
+    const write = jest.fn(() => { throw new Error('Resolver must be read-only'); });
+    const executor: any = { insert: write, update: write, delete: write, select: () => {
+      const chain: any = {
+        from: () => chain,
+        leftJoin: () => chain,
+        where: () => Promise.resolve([{
+          ...flatOrder, ...account, blindShipping: true, customerBlindShipping: true, blindShippingAddress,
+        }]),
+      };
+      return chain;
+    } };
+    await expect(resolveShipmentShippingContext('org-a', ['order-a'], executor)).resolves.toMatchObject({
+      blindShipping: true,
+      blindSenderSource: 'custom',
+      blindSender: { company: 'Alternate Sender', address1: '90 Sender Way' },
+    });
+    expect(write).not.toHaveBeenCalled();
   });
 
   test('new blind draft snapshots the ordering customer; later account changes cannot alter saved context', async () => {

@@ -70,6 +70,9 @@ export type LineItemCardProps = {
 
   // Thumbnail
   thumbnail?: ReactNode;
+  /** Compact identity of the primary production artwork for a collapsed line. */
+  artworkSummary?: string | null;
+  artworkSummaryKind?: "artwork" | "file";
 
   // Drag handle (for edit mode)
   dragHandleProps?: {
@@ -248,6 +251,8 @@ export function LineItemCard({
   relationshipActionsSlot,
   containerClassName,
   thumbnail,
+  artworkSummary,
+  artworkSummaryKind = "artwork",
   dragHandleProps,
   showDragHandle = false,
   width,
@@ -532,7 +537,7 @@ export function LineItemCard({
 
   const configurationSection = optionsSlot ? (
     <section className="rounded-md border border-border/40 bg-background/40 p-3">
-      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Finishing &amp; Print</div>
+      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product Options</div>
       {optionsSlot}
     </section>
   ) : null;
@@ -541,7 +546,7 @@ export function LineItemCard({
     <div className="space-y-3">
       {artworkSlot ? (
         <section className="rounded-md border border-border/40 bg-background/40 p-3">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Artwork Assets</div>
+          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Artwork</div>
           {artworkSlot}
         </section>
       ) : null}
@@ -696,6 +701,11 @@ export function LineItemCard({
                   </Tooltip>
                 </TooltipProvider>
               )}
+              {artworkSummary && (
+                <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={artworkSummary}>
+                  {artworkSummaryKind === "artwork" ? "Artwork" : "Files"} · {artworkSummary}
+                </div>
+              )}
             </div>
           </div>
 
@@ -764,10 +774,10 @@ export function LineItemCard({
             />
             {lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
             {/* Compact operational controls */}
-            <div className="flex flex-wrap items-end gap-3">
+            <div className="grid gap-3 xl:grid-cols-[minmax(220px,0.85fr)_minmax(320px,1.2fr)_minmax(220px,0.7fr)]">
               {primaryControlSlot ? (
                 <section className={cn("min-w-[220px] flex-1", !nonProductionItem && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
-                  {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Material &amp; Product</div> : null}
+                  {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product</div> : null}
                   {primaryControlSlot}
                 </section>
               ) : null}
@@ -868,8 +878,9 @@ export function LineItemCard({
               </div>
               </section>
 
-              <div className={cn("w-[220px] self-end", nonProductionItem ? "text-left" : "ml-auto text-right")}>
-                <div className="text-xs text-muted-foreground">Total</div>
+              <div className={cn("min-w-[220px] self-end rounded-md border border-border/40 bg-background/40 p-2.5", nonProductionItem ? "text-left" : "text-right")}>
+                {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pricing</div> : null}
+                <div className="text-xs text-muted-foreground">Line total</div>
                 <div className={cn("flex items-center gap-2", nonProductionItem ? "justify-start" : "justify-end")}>
                   {editingPrice ? (
                     <Input
@@ -966,7 +977,7 @@ export function LineItemCard({
             {!nonProductionItem ? <Separator className="my-3" /> : null}
 
             {/* Options (left) + Artwork (right) */}
-            <div className={cn("grid grid-cols-1 gap-3", !nonProductionItem && "lg:grid-cols-[1fr_360px]")}>
+            <div className={cn("grid grid-cols-1 gap-3", !nonProductionItem && "xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)]")}>
               {nonProductionItem ? (
                 <div className="min-w-0">
                   {secondaryDetailsPanel}

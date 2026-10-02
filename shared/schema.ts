@@ -3840,6 +3840,21 @@ export const orders = pgTable("orders", {
   shipToCountry: text("ship_to_country"),
   shipToPhone: text("ship_to_phone"),
   shipToEmail: text("ship_to_email"),
+  // Explicit Order override. Null preserves the Customer-level default;
+  // this sender address is never used as the Ship To destination.
+  blindShipping: boolean("blind_shipping"),
+  blindShippingAddress: jsonb("blind_shipping_address").$type<{
+    name?: string | null;
+    company?: string | null;
+    address1?: string | null;
+    address2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+    country?: string | null;
+    phone?: string | null;
+    email?: string | null;
+  } | null>(),
   carrier: text("carrier"),
   carrierAccountNumber: text("carrier_account_number"),
   shippingInstructions: text("shipping_instructions"),
@@ -3939,6 +3954,19 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
     country: z.string().optional(),
     phone: z.string().optional(),
   }).optional().nullable(),
+  blindShipping: z.boolean().optional().nullable(),
+  blindShippingAddress: z.object({
+    name: z.string().max(255).optional().nullable(),
+    company: z.string().max(255).optional().nullable(),
+    address1: z.string().max(255).optional().nullable(),
+    address2: z.string().max(255).optional().nullable(),
+    city: z.string().max(100).optional().nullable(),
+    state: z.string().max(100).optional().nullable(),
+    postalCode: z.string().max(20).optional().nullable(),
+    country: z.string().max(100).optional().nullable(),
+    phone: z.string().max(50).optional().nullable(),
+    email: z.string().email().max(255).optional().nullable(),
+  }).strict().optional().nullable(),
   dueDate: z.preprocess((val) => {
     if (!val) return null;
     if (val instanceof Date) return val.toISOString();

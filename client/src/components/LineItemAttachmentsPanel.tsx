@@ -150,6 +150,7 @@ export function LineItemAttachmentsPanel({
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const headerFileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const [isUploading, setIsUploading] = useState(false);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
@@ -304,6 +305,16 @@ export function LineItemAttachmentsPanel({
   const displayedArtworkMembers: Array<{ id: string; fileName: string; productionGroupId?: string | null }> = parentType === "order" && orderId
     ? productionRows.map((file) => ({ id: file.id, fileName: getAttachmentDisplayName(file), productionGroupId: file.productionGroupId ?? null }))
     : pendingOrderAttachments.map((file) => ({ id: file.uploadId, fileName: file.fileName, productionGroupId: file.productionGroupId ?? null }));
+  const hasComplexArtworkSets = displayedArtworkSets.some((set) => set.explicit || set.memberIds.length > 1);
+  const canCreateArtworkSet = displayedArtworkMembers.filter((member) => !member.productionGroupId?.trim()).length >= 2;
+  const primaryProductionAttachment = productionRows[0] ?? null;
+  const primaryAttachment = primaryProductionAttachment ?? attachments[0] ?? null;
+  const primaryArtworkName = primaryAttachment
+    ? getAttachmentDisplayName(primaryAttachment)
+    : pendingOrderAttachments[0]?.fileName ?? null;
+  const primaryArtworkThumbnailUrl = primaryAttachment && !isEpsArtwork(primaryAttachment.fileName, primaryAttachment.mimeType)
+    ? getThumbSrc(primaryAttachment)
+    : null;
   // Asset-only uploads are assignable too. The backend materializes their
   // order_attachment link when the first explicit side is saved.
   const artworkAttachments = attachments;
@@ -482,6 +493,7 @@ export function LineItemAttachmentsPanel({
 
   const clearFileInput = () => {
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (headerFileInputRef.current) headerFileInputRef.current.value = "";
   };
 
   const performUpload = async (filesToUpload: File[]) => {
@@ -948,15 +960,33 @@ export function LineItemAttachmentsPanel({
       className="border rounded-lg bg-muted/30"
       onPointerDownCapture={(e) => e.stopPropagation()}
     >
+      <input
+        type="file"
+        ref={headerFileInputRef}
+        className="hidden"
+        multiple
+        accept="image/*,.pdf,.ai,.eps,.psd,.svg"
+        onChange={handleFileUpload}
+      />
       {/* Compact header - always visible */}
       <div className="px-3 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <Paperclip className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm font-medium">Artwork</span>
             {fileCount > 0 && (
               <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
                 <span data-testid="line-item-artwork-count">{fileCount}</span>
+              </span>
+            )}
+            {primaryArtworkName && (
+              primaryArtworkThumbnailUrl ? (
+                <img src={primaryArtworkThumbnailUrl} alt="" className="h-7 w-7 shrink-0 rounded border border-border/60 object-cover" />
+              ) : null
+            )}
+            {primaryArtworkName && (
+              <span className="min-w-0 break-all text-sm font-medium leading-tight" title={primaryArtworkName}>
+                {primaryProductionAttachment ? "" : "Reference file · "}{primaryArtworkName}{fileCount > 1 ? ` · ${fileCount} files` : ""}
               </span>
             )}
           </div>
@@ -967,10 +997,24 @@ export function LineItemAttachmentsPanel({
               {isDownloadingAll ? "Preparing ZIP..." : "Download All"}
             </Button>
           )}
-          {canRepairArtworkRelationships && (
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void handleRepairArtworkRelationships()} disabled={isRepairingRelationships}>
-              {isRepairingRelationships ? "Repairing…" : "Repair artwork relationships"}
+          {fileCount > 0 && (
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={uploadDisabled} onClick={(event) => {
+              event.stopPropagation();
+              headerFileInputRef.current?.click();
+            }}>
+              <Upload className="mr-1 h-3.5 w-3.5" />
+              Upload artwork
             </Button>
+          )}
+          {attachments.length === 1 && !isExpanded && (
+            <>
+              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setPreviewIndex(0)}>
+                <Eye className="mr-1 h-3.5 w-3.5" /> Preview
+              </Button>
+              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void handleDownloadFile(attachments[0])}>
+                <Download className="mr-1 h-3.5 w-3.5" /> Download
+              </Button>
+            </>
           )}
           {fileCount > 0 && (
             <Button 
@@ -1074,24 +1118,26 @@ export function LineItemAttachmentsPanel({
       {/* Expanded content - file list */}
       {isExpanded && fileCount > 0 && (
         <div className="px-3 pb-3 space-y-2 border-t">
-          {(parentType === "order" || parentType === "quote") && productionRows.length > 0 && allocationStatus.requiredQuantity != null && (
+          {(parentType === "order" || parentType === "quote") && productionRows.length > 0 && allocationStatus.requiredQuantity != null && !allocationStatus.valid && (
             <div className="mt-2 text-xs" data-testid="artwork-allocation-summary" aria-live="polite">
               <div className="font-medium">Assigned {allocationStatus.allocatedTotal} of {allocationStatus.requiredQuantity}</div>
               <div className="text-muted-foreground">
-                {allocationStatus.valid
-                  ? "Allocation complete"
-                  : allocationStatus.allocatedTotal < allocationStatus.requiredQuantity
-                    ? `${allocationStatus.requiredQuantity - allocationStatus.allocatedTotal} pieces still need an artwork quantity`
-                    : allocationStatus.issue}
+                {allocationStatus.allocatedTotal < allocationStatus.requiredQuantity
+                  ? `${allocationStatus.requiredQuantity - allocationStatus.allocatedTotal} pieces still need an artwork quantity`
+                  : allocationStatus.issue}
               </div>
             </div>
           )}
-          {parentType === "order" && displayedArtworkSets.length > 0 && (
-            <div className="mt-2 rounded-md border border-sky-400/30 bg-sky-400/5 p-2.5 text-xs" data-testid="artwork-sets">
+          {parentType === "order" && (hasComplexArtworkSets || canCreateArtworkSet) && (
+            <details className="mt-2 rounded-md border border-border/60 bg-muted/10 p-2.5 text-xs" data-testid="artwork-sets">
+              <summary className="cursor-pointer font-medium">Advanced artwork grouping</summary>
+              <div className="pt-2">
+              {hasComplexArtworkSets && (
+                <div className="rounded-md border border-sky-400/30 bg-sky-400/5 p-2.5">
               <div className="font-medium">Artwork Sets</div>
               <p className="mt-0.5 text-muted-foreground">Each set is one finished output. All files in a set are required layers; Qty is counted once per set.</p>
               <div className="mt-2 space-y-1.5">
-                {displayedArtworkSets.map((set, index) => {
+                {displayedArtworkSets.filter((set) => set.explicit || set.memberIds.length > 1).map((set, index) => {
                   const members = set.memberIds.map((id) => displayedArtworkMembers.find((member) => member.id === id)).filter(Boolean) as Array<{ id: string; fileName: string }>;
                   const quantity = set.quantity ?? "";
                   const saveQuantity = (raw: string) => {
@@ -1132,7 +1178,9 @@ export function LineItemAttachmentsPanel({
                   );
                 })}
               </div>
-              {displayedArtworkMembers.filter((member) => !member.productionGroupId?.trim()).length >= 2 && (
+              </div>
+              )}
+              {canCreateArtworkSet && (
                 <div className="mt-2 flex flex-wrap items-end gap-2 border-t border-border/60 pt-2">
                   <label className="grid gap-0.5 text-[10px] text-muted-foreground">
                     New set Qty to produce
@@ -1154,7 +1202,8 @@ export function LineItemAttachmentsPanel({
                   <span className="text-[11px] text-muted-foreground">Select ungrouped files below, then give the set one finished-piece quantity.</span>
                 </div>
               )}
-            </div>
+              </div>
+            </details>
           )}
           {parentType === 'order' && doubleSided && orderId && artworkAttachments.length > 0 && (
             <div className="mt-2 rounded-md border border-violet-400/30 bg-violet-400/5 p-2.5 space-y-2" data-testid="order-double-sided-artwork-assignment">
@@ -1249,15 +1298,13 @@ export function LineItemAttachmentsPanel({
                   ) : null}
                 </div>
               ))}
-              {stagedAllocationStatus.requiredQuantity != null && (
+              {stagedAllocationStatus.requiredQuantity != null && !stagedAllocationStatus.valid && (
                 <div className="rounded border border-border/70 bg-muted/20 px-2 py-1.5 text-xs" aria-live="polite">
                   <div className="font-medium">Artwork allocation: Assigned {stagedAllocationStatus.allocatedTotal} of {stagedAllocationStatus.requiredQuantity}</div>
                   <div className="text-muted-foreground">
-                    {stagedAllocationStatus.valid
-                      ? "Allocation complete"
-                      : stagedAllocationStatus.allocatedTotal < stagedAllocationStatus.requiredQuantity
-                        ? `Remaining ${stagedAllocationStatus.requiredQuantity - stagedAllocationStatus.allocatedTotal}`
-                        : stagedAllocationStatus.issue}
+                    {stagedAllocationStatus.allocatedTotal < stagedAllocationStatus.requiredQuantity
+                      ? `Remaining ${stagedAllocationStatus.requiredQuantity - stagedAllocationStatus.allocatedTotal}`
+                      : stagedAllocationStatus.issue}
                   </div>
                 </div>
               )}
@@ -1267,7 +1314,7 @@ export function LineItemAttachmentsPanel({
           {isLoading && attachments.length === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-2">Loading...</p>
           ) : attachments.length > 0 ? (
-            <div className="space-y-1">
+            <div className="max-h-[22rem] space-y-1 overflow-y-auto pr-1">
               {attachments.map((file, fileIndex) => {
                 const fileName = getAttachmentDisplayName(file);
                 const FileIcon = isEpsArtwork(file.fileName, file.mimeType) ? FileText : getFileIcon(file.mimeType);
@@ -1423,14 +1470,29 @@ export function LineItemAttachmentsPanel({
                           </select>
                           {(file.role ?? file.productionRole) !== 'reference' && (parentType === "order" ? (
                             !file.productionGroupId?.trim() ? (
-                              <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                                <Checkbox
-                                  checked={selectedArtworkIds.includes(file.id)}
-                                  onCheckedChange={(checked) => toggleArtworkSetSelection(file.id, checked === true)}
-                                  aria-label={`Select ${fileName} for an Artwork Set`}
+                              <div className="flex items-center gap-1">
+                                <input
+                                  className="h-7 w-14 rounded border bg-background px-1 text-[10px]"
+                                  type="number" min="1" step="1" inputMode="numeric"
+                                  aria-label={`Production quantity for ${fileName}`}
+                                  defaultValue={file.productionQuantity ?? lineQuantity ?? ''}
+                                  placeholder="Qty"
+                                  onBlur={(event) => {
+                                    const value = event.currentTarget.value.trim();
+                                    void updateArtworkAllocation(file, { role: 'artwork', productionQuantity: value ? Number(value) : null, productionGroupId: null });
+                                  }}
                                 />
-                                Set
-                              </label>
+                                {attachments.length > 1 && (
+                                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                    <Checkbox
+                                      checked={selectedArtworkIds.includes(file.id)}
+                                      onCheckedChange={(checked) => toggleArtworkSetSelection(file.id, checked === true)}
+                                      aria-label={`Select ${fileName} for an Artwork Set`}
+                                    />
+                                    Set
+                                  </label>
+                                )}
+                              </div>
                             ) : <span className="text-[10px] text-muted-foreground">Set layer</span>
                           ) : (
                             <input
@@ -1564,6 +1626,15 @@ export function LineItemAttachmentsPanel({
               No artwork attached
             </p>
           ) : null}
+          {canRepairArtworkRelationships && (
+            <details className="border-t border-border/50 pt-2 text-xs">
+              <summary className="cursor-pointer text-muted-foreground">Artwork repair tools</summary>
+              <p className="mt-1 text-muted-foreground">Owner/Admin only. Repairs duplicate or stale artwork relationships without changing the artwork files.</p>
+              <Button type="button" variant="outline" size="sm" className="mt-2 h-7 text-xs" onClick={() => void handleRepairArtworkRelationships()} disabled={isRepairingRelationships}>
+                {isRepairingRelationships ? "Repairing…" : "Repair artwork relationships"}
+              </Button>
+            </details>
+          )}
         </div>
       )}
 

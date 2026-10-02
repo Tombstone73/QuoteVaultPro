@@ -10,7 +10,8 @@ const text = (value: unknown): string | null => typeof value === 'string' && val
 export function orderShippingContext(order: {
   id: string; shipToName?: unknown; shipToCompany?: unknown; shipToAddress1?: unknown; shipToAddress2?: unknown;
   shipToCity?: unknown; shipToState?: unknown; shipToPostalCode?: unknown; shipToCountry?: unknown;
-  shipToPhone?: unknown; shipToEmail?: unknown; shippingAddress?: unknown; blindShipping?: boolean | null;
+  shipToPhone?: unknown; shipToEmail?: unknown; shippingAddress?: unknown;
+  blindShipping?: boolean | null; customerBlindShipping?: boolean | null; blindShippingAddress?: unknown;
 }): ShipmentShippingContext {
   const flat = [order.shipToAddress1, order.shipToAddress2, order.shipToCity, order.shipToState, order.shipToPostalCode, order.shipToCountry].some(value => text(value));
   const legacy = order.shippingAddress && typeof order.shippingAddress === 'object' ? order.shippingAddress as Record<string, unknown> : {};
@@ -23,8 +24,20 @@ export function orderShippingContext(order: {
     city: text(legacy.city), state: text(legacy.state), postalCode: text(legacy.postalCode ?? legacy.zip), country: text(legacy.country),
     phone: text(legacy.phone), email: text(legacy.email),
   };
-  return { version: 1, source: flat ? 'order' : 'legacy_order', sourceOrderId: order.id, destination,
-    blindShipping: order.blindShipping === true, blindSender: null };
+  const explicitBlindShipping = typeof order.blindShipping === 'boolean' ? order.blindShipping : null;
+  const blindShipping = explicitBlindShipping ?? order.customerBlindShipping === true;
+  const candidateBlindSender = order.blindShippingAddress && typeof order.blindShippingAddress === 'object'
+    ? shippingPartySchema.safeParse(order.blindShippingAddress)
+    : null;
+  return {
+    version: 1,
+    source: flat ? 'order' : 'legacy_order',
+    sourceOrderId: order.id,
+    destination,
+    blindShipping,
+    blindSender: blindShipping && candidateBlindSender?.success ? candidateBlindSender.data : null,
+    ...(blindShipping && candidateBlindSender?.success ? { blindSenderSource: 'custom' as const } : {}),
+  };
 }
 
 export function commonShipmentShippingContext(contexts: ShipmentShippingContext[]): ShipmentShippingContext {
@@ -35,6 +48,9 @@ export function commonShipmentShippingContext(contexts: ShipmentShippingContext[
   }
   if (contexts.some(context => context.blindShipping !== first.blindShipping)) {
     throw new FulfillmentHttpError(409, 'Combined Orders have conflicting blind-shipping defaults. Confirm matching customer preferences or create separate shipments.', 'BLIND_SHIPPING_CONFLICT');
+  }
+  if (first.blindShipping && contexts.some(context => JSON.stringify(context.blindSender ?? null) !== JSON.stringify(first.blindSender ?? null))) {
+    throw new FulfillmentHttpError(409, 'Combined Orders have different blind-shipping sender details. Use matching sender details or create separate shipments.', 'BLIND_SENDER_MISMATCH');
   }
   return first;
 }
@@ -87,7 +103,9 @@ export async function resolveShipmentShippingContext(orgId: string, orderIds: st
     shipToAddress1: orders.shipToAddress1, shipToAddress2: orders.shipToAddress2, shipToCity: orders.shipToCity,
     shipToState: orders.shipToState, shipToPostalCode: orders.shipToPostalCode, shipToCountry: orders.shipToCountry,
     shipToPhone: orders.shipToPhone, shipToEmail: orders.shipToEmail, shippingAddress: orders.shippingAddress,
-    blindShipping: customers.blindShipping,
+    blindShipping: orders.blindShipping,
+    blindShippingAddress: orders.blindShippingAddress,
+    customerBlindShipping: customers.blindShipping,
     ...customerSenderSelection,
   }).from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, orgId)))
     .where(and(eq(orders.organizationId, orgId), inArray(orders.id, ids)));
@@ -95,7 +113,7 @@ export async function resolveShipmentShippingContext(orgId: string, orderIds: st
   const byId = new Map(rows.map(row => [row.id, row]));
   const context = commonShipmentShippingContext(ids.map(id => orderShippingContext(byId.get(id)!)));
   const { sender, issue } = orderingCustomerSender(ids.map(id => byId.get(id)!));
-  return context.blindShipping && sender && !issue
+  return context.blindShipping && !context.blindSender && sender && !issue
     ? { ...context, blindSender: sender, blindSenderSource: 'ordering_customer' }
     : context;
 }

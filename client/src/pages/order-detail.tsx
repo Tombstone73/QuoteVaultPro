@@ -33,7 +33,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer, Paperclip, Clock, Wrench } from "lucide-react";
+import { AlertTriangle, Calendar, Package, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer, Paperclip, Clock, Wrench } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -98,9 +98,6 @@ import { ROUTES } from "@/config/routes";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
 import { hasEnteredShipToAddress, resolveCustomerShipTo } from "@/lib/customerShipTo";
-import { useOrderPaymentResolution } from "@/hooks/usePaymentOrchestrator";
-import type { PaymentInvoiceCandidate } from "@shared/paymentOrchestration";
-import { getOrderBillingActionState } from "@/lib/paymentResolutionUi";
 import { isClearlyGeneratedInboundProvenance } from "@/lib/inboundInternalNotes";
 import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
 import {
@@ -147,6 +144,8 @@ type OrderAddressSnapshotFields = {
   shipToState?: string | null;
   shipToPostalCode?: string | null;
   shipToCountry?: string | null;
+  blindShipping?: boolean | null;
+  blindShippingAddress?: BlindShippingAddress | null;
 
   shippingMethod?: string | null;
   shippingInstructions?: string | null;
@@ -162,6 +161,19 @@ type OrderAddressSnapshotFields = {
   statusPillId?: string | null;
   paymentStatus?: string;
   routingTarget?: string | null;
+};
+
+type BlindShippingAddress = {
+  name?: string | null;
+  company?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+  phone?: string | null;
+  email?: string | null;
 };
 
 type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
@@ -794,11 +806,9 @@ export default function OrderDetail() {
   const createOrderInvoice = useCreateOrderInvoice();
   const closeOrder = useCloseOrder(orderId || '');
   const completeOrder = useCompleteOrder(orderId || '');
-  const orderPaymentResolution = useOrderPaymentResolution(orderId);
   const [billingOverrideDialogOpen, setBillingOverrideDialogOpen] = useState(false);
   const [billingOverrideNote, setBillingOverrideNote] = useState('');
-  const [paymentInvoiceSelectorOpen, setPaymentInvoiceSelectorOpen] = useState(false);
-  const [paymentBlockedDialogOpen, setPaymentBlockedDialogOpen] = useState(false);
+  const [orderInvoiceSelectorOpen, setOrderInvoiceSelectorOpen] = useState(false);
   const [closeFeeOnlyAfterInvoice, setCloseFeeOnlyAfterInvoice] = useState<{ invoiceId: string } | null>(null);
 
   const setBillingOverrideMutation = useMutation({
@@ -1118,6 +1128,20 @@ export default function OrderDetail() {
   };
 
   const currentFulfillmentMethod: FulfillmentMethod = effectiveOrderFulfillmentMethod(order?.shippingMethod);
+  // An explicit Order setting takes precedence, while existing Customer defaults
+  // remain effective until staff make a per-Order choice.
+  const blindShippingEnabled = typeof order?.blindShipping === "boolean"
+    ? order.blindShipping
+    : (order as any)?.customer?.blindShipping === true;
+  const blindShippingAddress = order?.blindShippingAddress ?? {};
+  const updateBlindShippingAddress = (field: keyof BlindShippingAddress, value: string) => {
+    const nextAddress = { ...blindShippingAddress, [field]: normalizeNullableString(value) };
+    const hasAddressValue = Object.values(nextAddress).some((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
+    void applyOrderPatch({
+      blindShipping: true,
+      blindShippingAddress: hasAddressValue ? nextAddress : null,
+    });
+  };
 
   // Keep shipping input in sync when order hydrates/changes
   useEffect(() => {
@@ -2000,20 +2024,13 @@ export default function OrderDetail() {
       : invoiceEligibleForCreation
         ? 'Invoice Eligible'
         : 'Financial Review Needed';
-  const paymentResolution = orderPaymentResolution.data;
-  const isPreparingInvoicePayment = createOrderInvoice.isPending;
-  const billingActions = getOrderBillingActionState({
-    // This is deliberately financial eligibility, not the persisted operational
-    // billing-status field, which can lag behind production workflow updates.
-    billingReady: invoiceEligibleForCreation,
-    hasExistingInvoice: orderInvoices.length > 0,
-    orderCanceled: orderIsCanceled,
-    isLoading: orderPaymentResolution.isLoading || isInvoicesLoading,
-    isPreparing: isPreparingInvoicePayment,
-    resolutionStatus: paymentResolution?.resolutionStatus,
-    blockedReason: paymentResolution?.blockedReason,
-  });
-  const payableInvoiceCandidates = paymentResolution?.invoiceCandidates.filter((invoice) => invoice.payable) ?? [];
+  // Invoice creation remains subject to the existing canonical backend checks.
+  // This only controls whether the compact Order-header shortcut is useful.
+  const canCreateInvoiceFromOrder = !isInvoicesLoading
+    && !createOrderInvoice.isPending
+    && !orderIsCanceled
+    && invoiceEligibleForCreation
+    && orderInvoices.length === 0;
   const billingNotReadyExplanation = billingLineItems.length === 0
     ? 'Add at least one billable line before creating an invoice.'
     : unpricedServiceFeeCount > 0
@@ -2042,92 +2059,6 @@ export default function OrderDetail() {
     } catch (error: any) {
       toast({ title: 'Error', description: error.message || 'Failed to create invoice', variant: 'destructive' });
     }
-  };
-
-  const navigateToInvoicePayment = (invoiceId: string, takePayment = true) => {
-    const suffix = takePayment ? "?takePayment=1" : "";
-    navigate(`/invoices/${invoiceId}${suffix}`);
-  };
-
-  const handleCreateInvoiceAndTakePayment = async () => {
-    if (!orderId) return;
-    try {
-      const result = await createOrderInvoice.mutateAsync({ orderId, terms: 'due_on_receipt' });
-      const created = (result as any)?.data;
-      if (!created?.id) {
-        throw new Error('Invoice was created, but the response did not include an invoice id.');
-      }
-
-      toast({ title: 'Invoice ready', description: 'Invoice generated and ready for payment.' });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', { orderId }] });
-      queryClient.invalidateQueries({ queryKey: ['orders', orderId, 'payment-resolution'] });
-      navigateToInvoicePayment(String(created.id), true);
-    } catch (error: any) {
-      toast({
-        title: 'Could not prepare payment',
-        description: error?.message || 'Invoice generation failed.',
-        variant: 'destructive',
-      });
-    }
-  };
-
-  const handleTakePaymentFromOrder = async () => {
-    if (!orderId) return;
-
-    let resolution = orderPaymentResolution.data;
-    if (!resolution) {
-      const refreshed = await orderPaymentResolution.refetch();
-      resolution = refreshed.data;
-    }
-
-    if (!resolution) {
-      toast({ title: 'Payment unavailable', description: 'Could not resolve payment state for this order.', variant: 'destructive' });
-      return;
-    }
-
-    if (resolution.resolutionStatus === 'NO_INVOICE') {
-      await handleCreateInvoiceAndTakePayment();
-      return;
-    }
-
-    if (resolution.resolutionStatus === 'MULTIPLE_PAYABLE_INVOICES') {
-      setPaymentInvoiceSelectorOpen(true);
-      return;
-    }
-
-    if (resolution.resolutionStatus === 'ALREADY_PAID' && resolution.selectedInvoice?.id) {
-      navigateToInvoicePayment(resolution.selectedInvoice.id, false);
-      return;
-    }
-
-    if (resolution.resolutionStatus === 'SINGLE_PAYABLE_INVOICE' && resolution.selectedInvoice?.id) {
-      navigateToInvoicePayment(resolution.selectedInvoice.id, true);
-      return;
-    }
-
-    setPaymentBlockedDialogOpen(true);
-  };
-
-  const handleInvoiceAndTakePayment = async () => {
-    if (!orderId) return;
-    let resolution = orderPaymentResolution.data;
-    if (!resolution) {
-      const refreshed = await orderPaymentResolution.refetch();
-      resolution = refreshed.data;
-    }
-
-    if (resolution?.resolutionStatus === 'NO_INVOICE' || (!resolution && orderInvoices.length === 0)) {
-      await handleCreateInvoiceAndTakePayment();
-      return;
-    }
-
-    await handleTakePaymentFromOrder();
-  };
-
-  const handleSelectPayableInvoice = (candidate: PaymentInvoiceCandidate) => {
-    setPaymentInvoiceSelectorOpen(false);
-    navigateToInvoicePayment(candidate.id, true);
   };
 
   const handleSetBillingOverride = async () => {
@@ -2308,6 +2239,25 @@ export default function OrderDetail() {
               </Button>
             )}
 
+            {!isInvoicesLoading && orderInvoices.length === 1 ? (
+              <Button asChild type="button" variant="outline" size="sm">
+                <Link to={`/invoices/${orderInvoices[0].id}`}>
+                  <FileText className="mr-1.5 h-4 w-4" />
+                  View Invoice
+                </Link>
+              </Button>
+            ) : !isInvoicesLoading && orderInvoices.length > 1 ? (
+              <Button type="button" variant="outline" size="sm" onClick={() => setOrderInvoiceSelectorOpen(true)}>
+                <FileText className="mr-1.5 h-4 w-4" />
+                Invoices
+              </Button>
+            ) : !isInvoicesLoading && isAdminOrOwner && canCreateInvoiceFromOrder ? (
+              <Button type="button" variant="outline" size="sm" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
+                <FileText className="mr-1.5 h-4 w-4" />
+                {createOrderInvoice.isPending ? "Creating…" : "Create Invoice"}
+              </Button>
+            ) : null}
+
             <Button
               type="button"
               variant="outline"
@@ -2317,7 +2267,7 @@ export default function OrderDetail() {
               })}
             >
               <Truck className="mr-1.5 h-4 w-4" />
-              Fulfillment
+              Go to Fulfillment
             </Button>
             {!orderIsCanceled && <PrintTicketButton orderId={order.id} />}
 
@@ -2353,6 +2303,33 @@ export default function OrderDetail() {
             />
           </div>
         </div>
+
+        <Dialog open={orderInvoiceSelectorOpen} onOpenChange={setOrderInvoiceSelectorOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Invoices for Order {titleText}</DialogTitle>
+              <DialogDescription>Select an invoice to view its billing and payment activity.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              {orderInvoices.map((invoice: any) => {
+                const balance = Number(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total || 0) - Number(invoice.amountPaid || 0));
+                return (
+                  <div key={invoice.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="font-medium">Invoice {invoice.invoiceNumber ?? invoice.id}</div>
+                      <div className="text-sm text-muted-foreground">
+                        {String(invoice.displayStatus || invoice.status || "").replace(/_/g, " ")} · Balance {formatCurrency(balance)}
+                      </div>
+                    </div>
+                    <Button asChild size="sm" variant="outline" onClick={() => setOrderInvoiceSelectorOpen(false)}>
+                      <Link to={`/invoices/${invoice.id}`}>View Invoice</Link>
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <OrderCreditHoldBanner orderId={order.id} hold={order.creditHold} canOverride={isAdminOrOwner} />
         <BillingOwnershipReviewPanel hold={billingOwnershipReview.data?.hold} canResolve={isAdminOrOwner} />
@@ -3058,20 +3035,20 @@ export default function OrderDetail() {
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
                   <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Select
-                      value={currentFulfillmentMethod}
-                      onValueChange={handleFulfillmentMethodChange}
-                      disabled={!canEditOrder}
-                    >
-                      <SelectTrigger className="h-8 w-[140px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="pickup">Pickup</SelectItem>
-                        <SelectItem value="ship">Ship</SelectItem>
-                        <SelectItem value="deliver">Deliver</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {isEditingFulfillment ? (
+                      <Select value={currentFulfillmentMethod} onValueChange={handleFulfillmentMethodChange} disabled={!canEditOrder}>
+                        <SelectTrigger className="h-8 w-[140px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="pickup">Pickup</SelectItem>
+                          <SelectItem value="ship">Ship</SelectItem>
+                          <SelectItem value="deliver">Deliver</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Badge variant="outline" className="capitalize">{currentFulfillmentMethod}</Badge>
+                    )}
                     {order.fulfillmentStatus && (
                       <FulfillmentStatusBadge status={order.fulfillmentStatus as any} />
                     )}
@@ -3107,11 +3084,13 @@ export default function OrderDetail() {
                 {!isFulfillmentExpanded && !isEditingFulfillment && (
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                     {currentFulfillmentMethod === "pickup" ? (
-                      <span>{order.shippingInstructions ? "Pickup instructions on file" : "Pickup"}</span>
+                      <span>{order.shippingInstructions ? "Pickup · instructions on file" : "Pickup"}</span>
                     ) : (
                       <>
                         <span>{order.shipToCompany || order.shipToName || "Ship To pending"}</span>
                         {order.shipToCity || order.shipToState ? <span>{[order.shipToCity, order.shipToState].filter(Boolean).join(", ")}</span> : null}
+                        {(order as any).shippingCents > 0 ? <span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span> : null}
+                        {blindShippingEnabled ? <span>Blind ship address on file</span> : null}
                       </>
                     )}
                   </div>
@@ -3424,6 +3403,40 @@ export default function OrderDetail() {
                         />
                       </div>
 
+                      <div className="rounded-md border border-border/60 p-3">
+                        <label className="flex items-center gap-2 text-sm font-medium">
+                          <input
+                            type="checkbox"
+                            checked={blindShippingEnabled}
+                            disabled={!canEditSafeOrderMetadata || !isEditingFulfillment}
+                            onChange={(event) => void applyOrderPatch({ blindShipping: event.target.checked })}
+                          />
+                          Blind shipping
+                        </label>
+                        <p className="mt-1 text-xs text-muted-foreground">Use a separate sender address. The Ship To destination remains unchanged.</p>
+                        {blindShippingEnabled && isEditingFulfillment && (
+                          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                            {([
+                              ["company", "Company"], ["name", "Contact name"], ["address1", "Address"], ["address2", "Address line 2"],
+                              ["city", "City"], ["state", "State"], ["postalCode", "Postal code"], ["country", "Country"],
+                              ["phone", "Phone"], ["email", "Email"],
+                            ] as Array<[keyof BlindShippingAddress, string]>).map(([field, label]) => (
+                              <div key={field} className="space-y-1">
+                                <label className="text-xs text-muted-foreground">{label}</label>
+                                <Input
+                                  type={field === "email" ? "email" : "text"}
+                                  defaultValue={blindShippingAddress[field] ?? ""}
+                                  onBlur={(event) => updateBlindShippingAddress(field, event.target.value)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {blindShippingEnabled && !isEditingFulfillment && (
+                          <div className="mt-2 text-sm text-muted-foreground">{blindShippingAddress.address1 ? "Blind ship address on file" : "Blind shipping enabled"}</div>
+                        )}
+                      </div>
+
                       {/* Shipping / Delivery Price */}
                       {(currentFulfillmentMethod === "ship" || currentFulfillmentMethod === "deliver") && (
                         <div className="space-y-2">
@@ -3533,157 +3546,17 @@ export default function OrderDetail() {
                           variant="outline"
                           size="sm"
                           className="h-8 px-2"
-                          onClick={handleGeneratePackingSlip}
-                          disabled={generatePackingSlip.isPending || orderIsCanceled}
-                          aria-label="Generate and view packing slip"
-                          title="Generate and view packing slip"
+                          onClick={() => guardedNavigate(ROUTES.fulfillment.order(order.id), {
+                            state: { referrer: buildReferrer(location), orderReturnState: location.state },
+                          })}
+                          aria-label="Generate packing slip in Fulfillment"
+                          title="Generate packing slip in Fulfillment"
                         >
-                          <FileText className="h-4 w-4" />
-                          <span className="sr-only">{generatePackingSlip.isPending ? "Generating packing slip" : "Generate and view packing slip"}</span>
+                          <Truck className="mr-1.5 h-4 w-4" />
+                          Go to Fulfillment
                         </Button>
                       </div>
 
-                      <Collapsible defaultOpen={false} className="rounded-md border border-border/60 px-3 py-2">
-                        <CollapsibleTrigger asChild>
-                          <button type="button" className="flex w-full items-center justify-between text-left text-sm font-medium">
-                            <span>Shipment administration</span>
-                            <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
-                              {shipments.length} {shipments.length === 1 ? "shipment" : "shipments"}
-                              <ChevronDown className="h-4 w-4" />
-                            </span>
-                          </button>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="space-y-3 pt-3">
-                      {/* Manual Status Override (Manager+) */}
-                      {isManagerOrHigher && (
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium">Manual Status Override</label>
-                          <Select
-                            value={order.fulfillmentStatus || "pending"}
-                            onValueChange={(value) => handleFulfillmentStatusChange(value as any)}
-                            disabled={orderIsCanceled}
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="pending">Pending</SelectItem>
-                              <SelectItem value="packed">Packed</SelectItem>
-                              <SelectItem value="shipped">Shipped</SelectItem>
-                              <SelectItem value="delivered">Delivered</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
-
-                      <Separator />
-
-                      {/* Shipments */}
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium">Shipments ({shipments.length})</span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleAddShipment}
-                            disabled={orderIsCanceled}
-                          >
-                            <Truck className="h-4 w-4 mr-2" />
-                            Add Shipment
-                          </Button>
-                        </div>
-
-                        {shipments.length === 0 ? (
-                          <div className="text-xs text-muted-foreground">No shipments yet.</div>
-                        ) : (
-                          <div className="space-y-2">
-                            {shipments.map((shipment) => (
-                              <div
-                                key={shipment.id}
-                                className="border rounded-lg p-3 space-y-2"
-                              >
-                                <div className="flex items-start justify-between">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                      <Badge variant="outline" className="text-xs">
-                                        {shipment.carrier || 'Carrier'}
-                                      </Badge>
-                                      {shipment.deliveredAt && (
-                                        <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">
-                                          Delivered
-                                        </Badge>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-sm font-mono">
-                                        {shipment.trackingNumber}
-                                      </span>
-                                      {(shipment.carrier || 'Other') !== "Other" && shipment.trackingNumber && (
-                                        <a
-                                          href={getTrackingUrl(shipment.carrier || 'Other', shipment.trackingNumber)}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-primary hover:underline"
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                        </a>
-                                      )}
-                                    </div>
-                                    {shipment.shippedAt && (
-                                      <div className="text-xs text-muted-foreground">
-                                        Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
-                                      </div>
-                                    )}
-                                    {shipment.deliveredAt && (
-                                      <div className="text-xs text-muted-foreground">
-                                        Delivered: {format(new Date(shipment.deliveredAt), "MMM d, yyyy h:mm a")}
-                                      </div>
-                                    )}
-                                    {shipment.notes && (
-                                      <div className="text-xs text-muted-foreground italic mt-1">
-                                        {shipment.notes}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="flex items-center gap-1">
-                                    {!shipment.deliveredAt && (
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={() => handleMarkDelivered(shipment)}
-                                        title="Mark as delivered"
-                                      >
-                                        <Check className="h-4 w-4" />
-                                      </Button>
-                                    )}
-
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => handleEditShipment(shipment)}
-                                      title="Edit shipment"
-                                    >
-                                      <Edit className="h-4 w-4" />
-                                    </Button>
-                              {isAdminOrOwner && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => setShipmentToDelete(shipment.id)}
-                                  className="text-destructive hover:text-destructive"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                    </div>
-                    </CollapsibleContent>
-                  </Collapsible>
                     </>
                   )}
               </CardContent>
@@ -3708,320 +3581,6 @@ export default function OrderDetail() {
                   </div>
                 </CardContent>
               </Card>
-
-            {/* Billing */}
-            <Card className="h-fit">
-              <CardHeader className="px-4 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="text-base font-medium">Invoice Summary</CardTitle>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={billingBadgeVariant}>{billingLabel}</Badge>
-                    <Badge variant="outline">{invoiceStateSummary.label}</Badge>
-                    {billingOverrideActive && <Badge variant="secondary">Override</Badge>}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3 px-4 pb-4 pt-0">
-                {billingStatus === 'ready' && billingReadyAtValue && (
-                  <div className="text-sm text-muted-foreground">
-                    Ready since {formatDate(billingReadyAtValue)}
-                  </div>
-                )}
-                {billingOverrideActive && billingOverrideNoteValue && (
-                  <div className="text-sm text-muted-foreground whitespace-pre-wrap">
-                    {billingOverrideNoteValue}
-                  </div>
-                )}
-
-                {billingNotReadyExplanation && (
-                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
-                    {billingNotReadyExplanation}
-                  </div>
-                )}
-
-                {productionStatusWarning && (
-                  <div className="rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-900 dark:text-sky-100">
-                    {productionStatusWarning}
-                  </div>
-                )}
-
-                <div className="flex flex-wrap gap-2">
-                  {isAdminOrOwner && (
-                    <span title={billingActions.takePaymentHelp ?? undefined}>
-                      <Button
-                        variant="outline"
-                        onClick={() => void handleTakePaymentFromOrder()}
-                        disabled={!billingActions.canTakePayment}
-                      >
-                        <DollarSign className="mr-2 h-4 w-4" />
-                        {billingActions.takePaymentLabel}
-                      </Button>
-                    </span>
-                  )}
-
-                  {isAdminOrOwner && (
-                    <Button onClick={handleCreateInvoice} disabled={!billingActions.canCreateInvoice}>
-                      <FileText className="mr-2 h-4 w-4" />
-                      {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
-                    </Button>
-                  )}
-
-                </div>
-
-                {isAdminOrOwner && billingStatus !== 'billed' && (
-                  <Collapsible defaultOpen={false} className="rounded-md border border-border/60 px-3 py-2">
-                    <CollapsibleTrigger asChild>
-                      <button type="button" className="flex w-full items-center justify-between gap-3 text-left text-sm font-medium">
-                        <span>Billing administration</span>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-3">
-                      {!billingOverrideActive ? (
-                        <Button variant="secondary" size="sm" onClick={() => setBillingOverrideDialogOpen(true)}>
-                          Set Ready Override
-                        </Button>
-                      ) : (
-                        <Button variant="outline" size="sm" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
-                          {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
-                        </Button>
-                      )}
-                    </CollapsibleContent>
-                  </Collapsible>
-                )}
-
-                <Collapsible defaultOpen={false} className="rounded-md border border-border/60 px-3 py-2">
-                  <CollapsibleTrigger asChild>
-                    <button type="button" className="flex w-full items-center justify-between gap-3 text-left text-sm font-medium">
-                      <span>Design billing diagnostics</span>
-                      <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
-                        {designBillingRows.length > 0 ? `${designBillingRows.length} lines` : "No lines"}
-                        <ChevronDown className="h-4 w-4" />
-                      </span>
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="space-y-2 pt-3">
-                  <div className="text-sm text-muted-foreground">
-                    Visibility only. This does not create invoice rows or change order totals.
-                    {designBillingUnsyncedCount > 0 ? ` ${designBillingUnsyncedCount} line item${designBillingUnsyncedCount === 1 ? '' : 's'} still have no synced design summary.` : ''}
-                  </div>
-                  {orderDesignBillingVisibilityQuery.isLoading ? (
-                    <div className="text-sm text-muted-foreground">Loading design billing visibility…</div>
-                  ) : orderDesignBillingVisibilityQuery.isError ? (
-                    <div className="text-sm text-destructive">{(orderDesignBillingVisibilityQuery.error as Error).message}</div>
-                  ) : designBillingRows.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">No line items available for design billing visibility.</div>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Line Item</TableHead>
-                          <TableHead>Pricing</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead className="text-right">Tracked</TableHead>
-                          <TableHead className="text-right">Sold</TableHead>
-                          <TableHead className="text-right">Candidate</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {designBillingRows.map((row) => {
-                          const title = row.description || row.productName || "Line item";
-                          const pricingLabel = row.designPricingModeSnapshot
-                            ? (DESIGN_PRICING_MODE_LABELS[row.designPricingModeSnapshot] ?? row.designPricingModeSnapshot)
-                            : "—";
-                          const statusLabel = row.visibilityState === "not_applicable"
-                            ? "Not applicable"
-                            : row.visibilityState === "no_summary"
-                              ? "No summary yet"
-                              : row.billingStatus
-                                ? (DESIGN_BILLING_STATUS_LABELS[row.billingStatus] ?? row.billingStatus)
-                                : row.designCostState
-                                  ? (DESIGN_COST_STATE_LABELS[row.designCostState] ?? row.designCostState)
-                                  : "Available";
-
-                          return (
-                            <TableRow key={row.lineItemId}>
-                              <TableCell>
-                                <div className="font-medium">{title}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  Qty {row.quantity}{row.productName ? ` • ${row.productName}` : ""}
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <div>{pricingLabel}</div>
-                                {row.lastSyncedAt && (
-                                  <div className="text-xs text-muted-foreground">Synced {formatDate(row.lastSyncedAt)}</div>
-                                )}
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant={row.visibilityState === "available" ? "outline" : "secondary"}>{statusLabel}</Badge>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {row.correctedTrackedMinutes == null ? "—" : `${row.correctedTrackedMinutes}m`}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {row.soldDesignAmount == null ? "—" : formatCurrency(row.soldDesignAmount)}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {row.billableDesignAmount == null ? "—" : formatCurrency(row.billableDesignAmount)}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  )}
-                  </CollapsibleContent>
-                </Collapsible>
-
-                <div className="space-y-2">
-                  {isInvoicesLoading ? (
-                    <div className="text-sm text-muted-foreground">Loading invoices…</div>
-                  ) : orderInvoices.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">No invoice yet.</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {orderInvoices.map((inv: any) => {
-                        const balance = Number(inv.displayRemaining ?? inv.balanceDue ?? Number(inv.total || 0) - Number(inv.amountPaid || 0));
-                        return (
-                          <div key={inv.id} className="rounded-md border border-border/60 px-3 py-2">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <Link to={`/invoices/${inv.id}`} className="font-medium hover:underline">#{inv.invoiceNumber}</Link>
-                              <Badge variant="outline">{String(inv.displayStatus || inv.status || '').toUpperCase()}</Badge>
-                            </div>
-                            <div className="mt-1 flex justify-between text-sm text-muted-foreground"><span>Balance {formatCurrency(balance)}</span><span>Total {formatCurrency(inv.displayTotal ?? inv.total)}</span></div>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {balance > 0 && String(inv.status || '').toLowerCase() !== 'void' ? <Button variant="outline" size="sm" asChild><Link to={`/invoices/${inv.id}?takePayment=1`}>Take Payment</Link></Button> : null}
-                              <Button variant="outline" size="sm" asChild><Link to={`/invoices/${inv.id}`}>View Invoice</Link></Button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                <Dialog open={paymentInvoiceSelectorOpen} onOpenChange={setPaymentInvoiceSelectorOpen}>
-                  <DialogContent className="max-w-3xl">
-                    <DialogHeader>
-                      <DialogTitle>Select invoice to pay</DialogTitle>
-                      <DialogDescription>
-                        This order has multiple payable invoices. Choose the invoice to open before taking payment.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Invoice</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead className="text-right">Total</TableHead>
-                          <TableHead className="text-right">Paid</TableHead>
-                          <TableHead className="text-right">Remaining</TableHead>
-                          <TableHead className="text-right">Action</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {payableInvoiceCandidates.map((candidate) => (
-                          <TableRow key={candidate.id}>
-                            <TableCell className="font-medium">
-                              {candidate.displayNumber || candidate.invoiceNumber || candidate.id}
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant="outline">{candidate.status.toUpperCase()}</Badge>
-                            </TableCell>
-                            <TableCell className="text-right">{formatCurrency(candidate.totalCents / 100)}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(candidate.amountPaidCents / 100)}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(candidate.remainingBalanceCents / 100)}</TableCell>
-                            <TableCell className="text-right">
-                              <Button size="sm" onClick={() => handleSelectPayableInvoice(candidate)}>
-                                Take Payment
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </DialogContent>
-                </Dialog>
-
-                <Dialog open={paymentBlockedDialogOpen} onOpenChange={setPaymentBlockedDialogOpen}>
-                  <DialogContent className="max-w-2xl">
-                    <DialogHeader>
-                      <DialogTitle>Payment cannot be taken</DialogTitle>
-                      <DialogDescription>
-                        {paymentResolution?.blockedReason || 'This order has invoices, but none can currently accept payment.'}
-                      </DialogDescription>
-                    </DialogHeader>
-                    {paymentResolution?.invoiceCandidates.length ? (
-                      <div className="space-y-2">
-                        <div className="text-sm font-medium">Existing invoices</div>
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Invoice</TableHead>
-                              <TableHead>Status</TableHead>
-                              <TableHead className="text-right">Remaining</TableHead>
-                              <TableHead>Reason</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {paymentResolution.invoiceCandidates.map((candidate) => (
-                              <TableRow key={candidate.id}>
-                                <TableCell className="font-medium">
-                                  <Link to={`/invoices/${candidate.id}`} className="hover:underline">
-                                    {candidate.displayNumber || candidate.invoiceNumber || candidate.id}
-                                  </Link>
-                                </TableCell>
-                                <TableCell>
-                                  <Badge variant="outline">{candidate.status.toUpperCase()}</Badge>
-                                </TableCell>
-                                <TableCell className="text-right">{formatCurrency(candidate.remainingBalanceCents / 100)}</TableCell>
-                                <TableCell className="text-sm text-muted-foreground">
-                                  {candidate.blockedReason || 'Not payment-eligible'}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    ) : null}
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setPaymentBlockedDialogOpen(false)}>
-                        Close
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-
-                <Dialog open={billingOverrideDialogOpen} onOpenChange={setBillingOverrideDialogOpen}>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Billing Ready Override</DialogTitle>
-                      <DialogDescription>
-                        Mark this order as ready for billing, regardless of line item status.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-2">
-                      <Label htmlFor="billingOverrideNote">Note (optional)</Label>
-                      <Textarea
-                        id="billingOverrideNote"
-                        value={billingOverrideNote}
-                        onChange={(e) => setBillingOverrideNote(e.target.value)}
-                        placeholder="Why is this order ready to bill?"
-                      />
-                    </div>
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(false)}>
-                        Cancel
-                      </Button>
-                      <Button onClick={handleSetBillingOverride} disabled={setBillingOverrideMutation.isPending}>
-                        {setBillingOverrideMutation.isPending ? 'Saving…' : 'Set Override'}
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </CardContent>
-            </Card>
 
             <div className="space-y-2">
             {/* Attachments */}
@@ -4099,20 +3658,81 @@ export default function OrderDetail() {
               </div>
             </OrderUtilitySection>
 
-            {hasOrderDetailSecondaryActions({
+            {(hasOrderDetailSecondaryActions({
               canManageProofPolicy: isAdminOrOwner && !orderIsCanceled,
               proofBypassed,
-            }) && (
+            }) || (isAdminOrOwner && billingStatus !== "billed")) && (
               <OrderUtilitySection title="Secondary Actions" icon={<Wrench className="h-4 w-4 text-muted-foreground" />}>
+                {hasOrderDetailSecondaryActions({
+                  canManageProofPolicy: isAdminOrOwner && !orderIsCanceled,
+                  proofBypassed,
+                }) && (
                   <OrderDetailSecondaryActions
-                    canManageProofPolicy={isAdminOrOwner && !orderIsCanceled}
-                    proofBypassed={proofBypassed}
-                    proofBypassReason={proofBypassReason}
-                    isUpdatingProofPolicy={proofPolicyMutation.isPending}
-                    onProofBypassReasonChange={setProofBypassReason}
-                    onBypassProof={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
-                    onRequireProofDefaults={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}
-                  />
+                      canManageProofPolicy={isAdminOrOwner && !orderIsCanceled}
+                      proofBypassed={proofBypassed}
+                      proofBypassReason={proofBypassReason}
+                      isUpdatingProofPolicy={proofPolicyMutation.isPending}
+                      onProofBypassReasonChange={setProofBypassReason}
+                      onBypassProof={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
+                      onRequireProofDefaults={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}
+                    />
+                )}
+                {isAdminOrOwner && billingStatus !== "billed" && (
+                  <div className="mt-3 border-t border-border/50 pt-3">
+                    <div className="text-sm font-medium">Billing administration</div>
+                    <p className="mt-1 text-sm text-muted-foreground">Use only when an authorized exception requires billing readiness to be overridden.</p>
+                    {!billingOverrideActive ? (
+                      <Button className="mt-2" variant="secondary" size="sm" onClick={() => setBillingOverrideDialogOpen(true)}>
+                        Set Ready Override
+                      </Button>
+                    ) : (
+                      <Button className="mt-2" variant="outline" size="sm" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
+                        {clearBillingOverrideMutation.isPending ? "Clearing…" : "Clear Override"}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {isAdminOrOwner && (
+                  <details className="mt-3 border-t border-border/50 pt-3">
+                    <summary className="cursor-pointer text-sm font-medium">Design billing diagnostics</summary>
+                    <div className="mt-2 text-sm text-muted-foreground">Visibility only. This does not create invoice rows or change order totals.</div>
+                    {orderDesignBillingVisibilityQuery.isLoading ? (
+                      <div className="mt-2 text-sm text-muted-foreground">Loading design billing visibility…</div>
+                    ) : orderDesignBillingVisibilityQuery.isError ? (
+                      <div className="mt-2 text-sm text-destructive">{(orderDesignBillingVisibilityQuery.error as Error).message}</div>
+                    ) : designBillingRows.length === 0 ? (
+                      <div className="mt-2 text-sm text-muted-foreground">No line items available for design billing visibility.</div>
+                    ) : (
+                      <div className="mt-2 max-h-64 overflow-auto rounded-md border border-border/50">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Line Item</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead className="text-right">Tracked</TableHead>
+                              <TableHead className="text-right">Sold</TableHead>
+                              <TableHead className="text-right">Candidate</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {designBillingRows.map((row) => (
+                              <TableRow key={row.lineItemId}>
+                                <TableCell>
+                                  <div className="font-medium">{row.description || row.productName || "Line item"}</div>
+                                  <div className="text-xs text-muted-foreground">Qty {row.quantity}{row.productName ? ` · ${row.productName}` : ""}</div>
+                                </TableCell>
+                                <TableCell>{row.billingStatus ? (DESIGN_BILLING_STATUS_LABELS[row.billingStatus] ?? row.billingStatus) : "Not billable"}</TableCell>
+                                <TableCell className="text-right">{row.correctedTrackedMinutes == null ? "—" : `${row.correctedTrackedMinutes}m`}</TableCell>
+                                <TableCell className="text-right">{row.soldDesignAmount == null ? "—" : formatCurrency(row.soldDesignAmount)}</TableCell>
+                                <TableCell className="text-right">{row.billableDesignAmount == null ? "—" : formatCurrency(row.billableDesignAmount)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
+                  </details>
+                )}
               </OrderUtilitySection>
             )}
             </div>
@@ -4120,6 +3740,25 @@ export default function OrderDetail() {
           </div>
         </div>
       </ContentLayout>
+
+      <Dialog open={billingOverrideDialogOpen} onOpenChange={setBillingOverrideDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Billing Ready Override</DialogTitle>
+            <DialogDescription>Mark this order as ready for billing, regardless of line-item status.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="billingOverrideNote">Note (optional)</Label>
+            <Textarea id="billingOverrideNote" value={billingOverrideNote} onChange={(event) => setBillingOverrideNote(event.target.value)} placeholder="Why is this order ready to bill?" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSetBillingOverride} disabled={setBillingOverrideMutation.isPending}>
+              {setBillingOverrideMutation.isPending ? "Saving…" : "Set Override"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>

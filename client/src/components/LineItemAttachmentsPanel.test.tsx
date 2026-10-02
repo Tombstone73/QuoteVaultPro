@@ -437,12 +437,12 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       </QueryClientProvider>,
     );
 
-    expect(html).toContain("Assigned 2 of 2");
+    expect(html).not.toContain("Assigned 2 of 2");
     expect(html).toContain('value="1"');
     expect(html).not.toContain("Assigned 3 of 2");
   });
 
-  test("shows staged artwork quantity controls and an allocation total before the line is saved", () => {
+  test("keeps a complete staged single-artwork allocation quiet before the line is saved", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <LineItemAttachmentsPanel
@@ -466,10 +466,9 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       </QueryClientProvider>,
     );
 
-    expect(html).toContain("Qty to produce");
     expect(html).toContain("Auto-filled from line quantity");
-    expect(html).toContain("Artwork allocation: Assigned 4 of 4");
-    expect(html).toContain("Allocation complete");
+    expect(html).not.toContain("Artwork allocation:");
+    expect(html).not.toContain("Allocation complete");
   });
 
   test("renders a multilayer staged artwork group as one finished-output quantity", () => {
@@ -492,7 +491,7 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     );
 
     expect(html).toContain("Artwork Set 1 · 2 required layers");
-    expect(html).toContain("Artwork allocation: Assigned 250 of 250");
+    expect(html).not.toContain("Artwork allocation:");
     expect(html).not.toContain("Assigned 500 of 250");
   });
 

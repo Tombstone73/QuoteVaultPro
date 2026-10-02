@@ -29,6 +29,26 @@ describe("V1 Order header PATCH contract", () => {
     expect(orderChangesRequireOrderBackedInvoiceSynchronization(parsed)).toBe(false);
   });
 
+  test("accepts a distinct Order-level blind-shipping sender without changing Ship To", () => {
+    const parsed = updateOrderSchema.parse({
+      id: orderId,
+      blindShipping: true,
+      blindShippingAddress: {
+        company: "Blind Sender",
+        address1: "1 Sender Way",
+        city: "Carmel",
+        state: "IN",
+        postalCode: "46032",
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      blindShipping: true,
+      blindShippingAddress: { company: "Blind Sender", address1: "1 Sender Way" },
+    });
+    expect(orderChangesRequireOrderBackedInvoiceSynchronization(parsed)).toBe(false);
+  });
+
   test("keeps draft-invoice synchronization for financial and identity changes", () => {
     expect(orderChangesRequireOrderBackedInvoiceSynchronization({ customerId: "customer-1" } as any)).toBe(true);
     expect(orderChangesRequireOrderBackedInvoiceSynchronization({ shippingCents: 1_250 } as any)).toBe(true);

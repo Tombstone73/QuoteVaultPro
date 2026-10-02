@@ -1492,6 +1492,13 @@
       "when": 1788048000064,
       "tag": "0219_shipment_shipping_documents",
       "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1788048000065,
+      "tag": "0220_order_blind_shipping",
+      "breakpoints": true
     }
   ]
 }

@@ -3080,6 +3080,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const attachmentsForThumb = (allOrderFiles as any[]).filter(
                     (file) => String(file?.orderLineItemId ?? file?.parentLineItemId ?? "") === String(item.id),
                   ) as OrderFileWithUser[];
+                  const primaryProductionArtwork = attachmentsForThumb.find((file) => {
+                    const role = String((file as any)?.productionRole ?? (file as any)?.role ?? "artwork").toLowerCase();
+                    return role === "artwork" || role === "output" || role === "final";
+                  });
+                  const primaryArtworkFileName = primaryProductionArtwork
+                    ? String((primaryProductionArtwork as any)?.originalFilename || (primaryProductionArtwork as any)?.fileName || "Artwork")
+                    : null;
+                  const referenceFileCount = attachmentsForThumb.length;
                   const lineItemAttachmentsAssociationKnown =
                     orderFilesAssociationKnown &&
                     ((allOrderFiles as any[]).length === 0 ||
@@ -3426,7 +3434,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   internal: hasProductionNotes,
                                 }}
                                 showNoteLabel={false}
-                                descriptionPreview={undefined}
+                                descriptionPreview={persistedDescription || undefined}
+                                artworkSummary={primaryArtworkFileName
+                                  ? `${primaryArtworkFileName}${attachmentsForThumb.length > 1 ? ` · ${attachmentsForThumb.length} files` : ""}`
+                                  : referenceFileCount > 0 ? `${referenceFileCount} reference file${referenceFileCount === 1 ? "" : "s"}`
+                                    : assetCountForItem > 0 ? `${assetCountForItem} artwork file${assetCountForItem === 1 ? "" : "s"}` : undefined}
+                                artworkSummaryKind={primaryArtworkFileName || assetCountForItem > 0 ? "artwork" : "file"}
                                 optionChips={optionChips.map((chip, index) => ({
                                   text: chip,
                                   key: `${itemKey}-chip-${index}`,
@@ -4139,7 +4152,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         lineItemId={item.id}
                                         productName={productName}
                                         lineQuantity={item.quantity}
-                                        defaultExpanded={true}
+                                        defaultExpanded={false}
                                         doubleSided={printSides === "Double-sided"}
                                         useSameArtworkBothSides={useSameArtworkBothSides}
                                         onUseSameArtworkBothSidesChange={setUseSameArtworkBothSides}
