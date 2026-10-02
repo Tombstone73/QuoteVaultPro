@@ -100,6 +100,8 @@ interface LineItemAttachmentsPanelProps {
   productName?: string;
   /** Whether the panel is expanded by default */
   defaultExpanded?: boolean;
+  /** Balanced expanded Order-line artwork presentation. */
+  orderWorkspace?: boolean;
   /** Optional function to ensure quote is created before upload (for new quotes) */
   ensureQuoteId?: () => Promise<string>;
   /** Optional function to ensure line item is persisted before upload (for TEMP line items) */
@@ -131,6 +133,7 @@ export function LineItemAttachmentsPanel({
   lineItemId,
   productName,
   defaultExpanded = false,
+  orderWorkspace = false,
   ensureQuoteId,
   ensureLineItemId,
   lineItemKey,
@@ -957,7 +960,7 @@ export function LineItemAttachmentsPanel({
 
   return (
     <div 
-      className="border rounded-lg bg-muted/30"
+      className={cn("min-w-0 rounded-md border", orderWorkspace ? "border-border/40 bg-background/40" : "bg-muted/30")}
       onPointerDownCapture={(e) => e.stopPropagation()}
     >
       <input
@@ -979,19 +982,19 @@ export function LineItemAttachmentsPanel({
                 <span data-testid="line-item-artwork-count">{fileCount}</span>
               </span>
             )}
-            {primaryArtworkName && (
+            {!orderWorkspace && primaryArtworkName && (
               primaryArtworkThumbnailUrl ? (
                 <img src={primaryArtworkThumbnailUrl} alt="" className="h-7 w-7 shrink-0 rounded border border-border/60 object-cover" />
               ) : null
             )}
-            {primaryArtworkName && (
+            {!orderWorkspace && primaryArtworkName && (
               <span className="min-w-0 break-all text-sm font-medium leading-tight" title={primaryArtworkName}>
                 {primaryProductionAttachment ? "" : "Reference file · "}{primaryArtworkName}{fileCount > 1 ? ` · ${fileCount} files` : ""}
               </span>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-1">
-          {parentType === "order" && orderId && lineItemId && attachments.length > 0 && (
+          {parentType === "order" && orderId && lineItemId && attachments.length > (orderWorkspace ? 1 : 0) && (
             <Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={isDownloadingAll} onClick={() => void handleDownloadAll()}>
               {isDownloadingAll ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1 h-3.5 w-3.5" />}
               {isDownloadingAll ? "Preparing ZIP..." : "Download All"}
@@ -1006,7 +1009,7 @@ export function LineItemAttachmentsPanel({
               Upload artwork
             </Button>
           )}
-          {attachments.length === 1 && !isExpanded && (
+          {!orderWorkspace && attachments.length === 1 && !isExpanded && (
             <>
               <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setPreviewIndex(0)}>
                 <Eye className="mr-1 h-3.5 w-3.5" /> Preview
@@ -1020,7 +1023,10 @@ export function LineItemAttachmentsPanel({
             <Button 
               variant="ghost" 
               size="sm" 
-              className="h-6 w-6 p-0"
+              type="button"
+              className={orderWorkspace ? "h-8 gap-1 px-2 text-xs" : "h-6 w-6 p-0"}
+              aria-label={isExpanded ? "Collapse artwork manager" : "Manage artwork"}
+              aria-expanded={isExpanded}
               onPointerDownCapture={(e) => e.stopPropagation()}
               onClick={() => {
                 const nextExpanded = !isExpanded;
@@ -1031,6 +1037,7 @@ export function LineItemAttachmentsPanel({
                 }
               }}
             >
+              {orderWorkspace ? (isExpanded ? "Close manager" : "Manage") : null}
               {isExpanded ? (
                 <ChevronUp className="w-4 h-4" />
               ) : (
@@ -1040,6 +1047,31 @@ export function LineItemAttachmentsPanel({
           )}
           </div>
         </div>
+
+        {orderWorkspace && primaryAttachment && !isExpanded ? (
+          <div className="mt-3 flex items-start gap-3" data-testid="order-artwork-summary">
+            <button type="button" className="relative flex h-28 w-24 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setPreviewIndex(attachments.indexOf(primaryAttachment))} aria-label={`Preview ${primaryArtworkName}`}>
+              <FileText className="absolute h-8 w-8 text-muted-foreground" />
+              {primaryArtworkThumbnailUrl ? <img src={primaryArtworkThumbnailUrl} alt={primaryArtworkName ?? "Artwork"} className="relative h-full w-full object-contain" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : null}
+            </button>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="break-words text-sm font-semibold leading-snug [overflow-wrap:anywhere]">{primaryArtworkName}</div>
+              <div className="text-xs text-muted-foreground">{primaryAttachment.fileName.split(".").pop()?.toUpperCase()}{primaryAttachment.fileSize ? ` · ${(primaryAttachment.fileSize / 1024 / 1024).toFixed(1)} MB` : ""}{fileCount > 1 ? ` · ${fileCount} files` : ""}</div>
+              {fileCount === 1 ? <label className="grid min-w-0 grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-2">Role
+                <select className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm text-foreground" aria-label={`Artwork role for ${primaryArtworkName}`} value={(primaryAttachment.role ?? primaryAttachment.productionRole) === "reference" ? "reference" : "artwork"} onChange={(event) => void updateArtworkAllocation(primaryAttachment, { role: event.target.value as "artwork" | "reference", productionQuantity: event.target.value === "reference" ? null : primaryAttachment.productionQuantity ?? null, productionGroupId: event.target.value === "reference" ? null : primaryAttachment.productionGroupId ?? null })}>
+                  <option value="artwork">Production</option><option value="reference">Reference</option>
+                </select>
+              </label> : null}
+              <div className="flex flex-wrap gap-1">
+                <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={() => setPreviewIndex(attachments.indexOf(primaryAttachment))}><Eye className="mr-1 h-3.5 w-3.5" />Preview</Button>
+                <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={() => void handleDownloadFile(primaryAttachment)}><Download className="mr-1 h-3.5 w-3.5" />Download</Button>
+              </div>
+              {!primaryArtworkThumbnailUrl && isVectorArtwork(primaryAttachment.fileName, primaryAttachment.mimeType) ? <p className="text-xs text-muted-foreground">{artworkPreviewMessage(primaryAttachment.thumbStatus, primaryAttachment.thumbError)}</p> : null}
+            </div>
+          </div>
+        ) : null}
+        {orderWorkspace && !isExpanded && productionRows.length > 0 && allocationStatus.requiredQuantity != null && !allocationStatus.valid ? <button type="button" className="mt-2 text-left text-xs text-amber-600 dark:text-amber-400" onClick={() => setIsExpanded(true)}>Artwork allocation needs attention: {allocationStatus.issue || `${allocationStatus.allocatedTotal} of ${allocationStatus.requiredQuantity} assigned`}</button> : null}
+        {orderWorkspace && !isExpanded && doubleSided && !(useSameArtworkBothSides ? sharedArtwork : frontArtwork && backArtwork) ? <button type="button" className="mt-2 block text-left text-xs text-amber-600 dark:text-amber-400" onClick={() => setIsExpanded(true)}>Front/back artwork needs assignment</button> : null}
 
         {/* Upload button - always visible when no files, or when expanded */}
         {(fileCount === 0 || isExpanded) && (
@@ -1117,7 +1149,7 @@ export function LineItemAttachmentsPanel({
 
       {/* Expanded content - file list */}
       {isExpanded && fileCount > 0 && (
-        <div className="px-3 pb-3 space-y-2 border-t">
+        <div className={cn("px-3 pb-3 space-y-2 border-t", orderWorkspace && "max-h-[24rem] overflow-y-auto")}>
           {(parentType === "order" || parentType === "quote") && productionRows.length > 0 && allocationStatus.requiredQuantity != null && !allocationStatus.valid && (
             <div className="mt-2 text-xs" data-testid="artwork-allocation-summary" aria-live="polite">
               <div className="font-medium">Assigned {allocationStatus.allocatedTotal} of {allocationStatus.requiredQuantity}</div>
@@ -1343,7 +1375,7 @@ export function LineItemAttachmentsPanel({
                 return (
                   <div key={file.id} className="space-y-1">
                     <div 
-                      className="flex items-center gap-2 p-1.5 rounded bg-background hover:bg-muted/50 transition-colors cursor-pointer"
+                      className={cn("gap-2 rounded bg-background p-1.5 transition-colors hover:bg-muted/50 cursor-pointer", orderWorkspace ? "grid grid-cols-[44px_minmax(0,1fr)] items-start" : "flex items-center")}
                       onClick={(e) => {
                         // Only trigger preview if click is not on action buttons
                         const target = e.target as HTMLElement;
@@ -1403,7 +1435,7 @@ export function LineItemAttachmentsPanel({
                       
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <span className="text-xs truncate block">
+                          <span className={orderWorkspace ? "block break-words text-sm font-medium [overflow-wrap:anywhere]" : "text-xs truncate block"}>
                             {fileName}
                           </span>
                           {file.storageProvider === "local" && (
@@ -1454,7 +1486,7 @@ export function LineItemAttachmentsPanel({
                         })()}
                       </div>
                       {(parentType === "order" || parentType === "quote") && (
-                        <div className="flex shrink-0 items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
+                        <div className={cn("flex flex-wrap items-center gap-1.5", orderWorkspace ? "col-start-2" : "shrink-0")} onClick={(event) => event.stopPropagation()}>
                           <select
                             className="h-7 rounded border bg-background px-1 text-[10px]"
                             aria-label={`Artwork role for ${fileName}`}
@@ -1509,7 +1541,7 @@ export function LineItemAttachmentsPanel({
                           ))}
                         </div>
                       )}
-                      <div className="flex gap-0.5 shrink-0">
+                      <div className={cn("flex gap-0.5 shrink-0", orderWorkspace && "col-start-2")} >
                         <Button
                           variant="ghost"
                           size="sm"

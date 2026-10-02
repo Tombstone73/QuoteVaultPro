@@ -3842,7 +3842,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     : undefined
                                 }
                                 optionsSlot={
-                                  <>
+                                  (activeWorkWarning || mediaFitWarning || effectivePbv2Tree || expandedProductOptions.length > 0 || showDesignBriefEditor || expandedProductIsPbv2) ? <>
                                     {activeWorkWarning && (
                                       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900">
                                         <span className="font-medium">{activeWorkWarning.title}</span>
@@ -3854,147 +3854,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900">
                                         <span className="font-medium">{mediaFitWarning.title}</span>
                                         <span>{mediaFitWarning.description}</span>
-                                      </div>
-                                    )}
-
-                                    {isExpanded && expandedItem && expandedItem.id === item.id && false && (
-                                      <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
-                                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                                          <div>
-                                            <div className="text-sm font-medium">Price details</div>
-                                            <div className="text-xs text-muted-foreground">
-                                              Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(displayTotal)}
-                                            </div>
-                                          </div>
-                                          {isOverride ? (
-                                            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700">
-                                              {overrideLabel}
-                                            </Badge>
-                                          ) : null}
-                                        </div>
-                                        <div className="flex">
-                                          <select
-                                            value={selectedOverrideMode}
-                                            onChange={(event) => {
-                                              const nextMode = event.target.value as LineItemPriceOverrideMode;
-                                              const lineItemId = String(item.id);
-                                              markPricingDirtyByUser(lineItemId, "price_override_mode");
-                                              setPriceOverrideModeById((prev) => ({ ...prev, [lineItemId]: nextMode }));
-                                              const currentValue = getLineItemOverrideInputValue(item, nextMode, displayPrice);
-                                              setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: currentValue.toFixed(2) }));
-                                            }}
-                                            className="hidden"
-                                            disabled={readOnly}
-                                          >
-                                            <option value="override_total_after_margin">Total override</option>
-                                            <option value="override_unit_after_margin">Unit override</option>
-                                            <option value="override_total_before_margin">Total before margin</option>
-                                            <option value="override_unit_before_margin">Unit before margin</option>
-                                            <option value="apply_discount">Discount</option>
-                                            <option value="append_value">Add value</option>
-                                          </select>
-                                          <div className="text-xs text-muted-foreground self-center">
-                                            Base unit {formatMoney(baseCalculatedTotal / Math.max(1, Number(item.quantity) || 1))} · Qty {item.quantity || 0}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {isExpanded && canSeeDebug && (
-                                      <div className="mb-3">
-                                        <button
-                                          type="button"
-                                          onClick={() => setShowLineItemDebug((v) => !v)}
-                                          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                                        >
-                                          <ChevronDown className={cn("h-3 w-3 transition-transform", showLineItemDebug && "rotate-180")} />
-                                          {showLineItemDebug ? "Hide Debug" : "Show Debug"}
-                                        </button>
-
-                                        {showLineItemDebug && (
-                                          <>
-                                            <div className="mt-2 rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
-                                              <div className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Initial line item draft debug</div>
-                                              <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
-                                                <div>initialDraft.requiresDesign: {String(initialDraftSnapshot?.requiresDesign ?? initialDraftDebug?.requiresDesign ?? "(missing)")}</div>
-                                                <div>initialDraft.requiresPrepress: {String(initialDraftSnapshot?.requiresPrepress ?? initialDraftDebug?.requiresPrepress ?? "(missing)")}</div>
-                                                <div>initialDraft.requiresProofApproval: {String(initialDraftSnapshot?.requiresProofApproval ?? initialDraftDebug?.requiresProofApproval ?? "(missing)")}</div>
-                                                <div>initialDraft.optionSelectionsJson: {JSON.stringify(initialDraftSnapshot?.optionSelectionsJson ?? initialDraftDebug?.optionSelectionsJson ?? null)}</div>
-                                                <div>rendered option labels in order: {(initialDraftSnapshot?.renderedOptionLabels ?? initialDraftDebug?.sortedOptionLabels ?? []).join(", ") || "(none)"}</div>
-                                                <div>product routing defaults used: {JSON.stringify(initialDraftSnapshot?.productRoutingDefaultsUsed ?? initialDraftDebug?.productRoutingDefaultsUsed ?? null)}</div>
-                                                <div>rendered.requiresDesign: {String(renderedRequiresDesign)}</div>
-                                                <div>rendered.requiresPrepress: {String(renderedRequiresPrepress)}</div>
-                                                <div>rendered.requiresProofApproval: {String(renderedRequiresProofApproval)}</div>
-                                                <div>userEditedOptions: {String(lineItemUserEditedOptions)}</div>
-                                              </div>
-                                            </div>
-
-                                            {pricingDebugSnapshot && (
-                                              <div className="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
-                                                <div className="font-medium text-emerald-700 dark:text-emerald-300">PBV2 pricing runtime debug</div>
-                                                <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
-                                                  <div>selected option values: {JSON.stringify(pricingDebugSnapshot.selectedOptionValues ?? pricingDebugSnapshot.effectiveSelections ?? null)}</div>
-                                                  <div>matched matrix row id: {String(pricingDebugSnapshot.resolvedMatrixRowId ?? "(none)")}</div>
-                                                  <div>resolved matrix variables: {JSON.stringify(pricingDebugSnapshot.resolvedMatrixVariables ?? {})}</div>
-                                                  <div>base_price source: {String(pricingDebugSnapshot.basePriceSource ?? "(unknown)")}</div>
-                                                  <div>rate used source: {String(pricingDebugSnapshot.rateUsedSource ?? "(unknown)")}</div>
-                                                  <div>minimum applied: {String(pricingDebugSnapshot.minimumApplied ?? false)}</div>
-                                                  <div>formula scope used: {JSON.stringify(pricingDebugSnapshot.formulaScopeUsed ?? pricingDebugSnapshot.formulaVariables ?? null)}</div>
-                                                </div>
-                                              </div>
-                                            )}
-
-                                            <div className="mt-2 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
-                                              <div className="font-medium text-sky-700 dark:text-sky-300">Live preview calc diagnostics</div>
-                                              <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
-                                                <div>request seq: {String(previewDiag?.seq ?? "(none)")}</div>
-                                                <div>status: {String(previewDiag?.status ?? "(idle)")}</div>
-                                                <div>payload quantity: {String(previewDiag?.payloadQuantity ?? "(none)")}</div>
-                                                <div>payload option selections: {JSON.stringify(previewDiag?.payloadSelections ?? {})}</div>
-                                                <div>last response total: {previewDiag?.responseTotal != null ? `$${previewDiag.responseTotal.toFixed(2)}` : "(none)"}</div>
-                                                <div>requested at: {String(previewDiag?.at ?? "(none)")}</div>
-                                                <div>computedTotal: {computedTotal != null ? `$${Number(computedTotal).toFixed(2)}` : "(none)"}</div>
-                                                <div>computedTotalQty: {String(computedTotalQty ?? "(none)")}</div>
-                                              </div>
-                                            </div>
-                                          </>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {import.meta.env.DEV && expandedProductIsPbv2 && (
-                                      <div className="mb-3 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
-                                        <div className="font-medium text-sky-700 dark:text-sky-300">PBV2 diagnostics (dev only)</div>
-                                        <div className="mt-2 space-y-0.5 font-mono text-muted-foreground">
-                                          <div>productId: {String(pbv2Diagnostics.productId ?? "(none)")}</div>
-                                          <div>productName: {String(pbv2Diagnostics.productName ?? "(none)")}</div>
-                                          <div>isPbv2Product: {String(pbv2Diagnostics.isPbv2Product)}</div>
-                                          <div>optionTreeJson present: {String(pbv2Diagnostics.optionTreeJsonExists)}</div>
-                                          <div>pbv2ActiveTreeVersionId: {String(pbv2Diagnostics.pbv2ActiveTreeVersionId ?? "(none)")}</div>
-                                          <div>live active tree query status: {pbv2Diagnostics.liveActiveTreeQueryStatus}</div>
-                                          <div>effectivePbv2Tree exists: {String(pbv2Diagnostics.effectivePbv2TreeExists)}</div>
-                                          <div>total node count: {pbv2Diagnostics.totalNodeCount}</div>
-                                          <div>group count: {pbv2Diagnostics.groupCount}</div>
-                                          <div>selectable question count: {pbv2Diagnostics.selectableQuestionCount}</div>
-                                          <div>choice count: {pbv2Diagnostics.choiceCount}</div>
-                                          <div>visible node count: {pbv2Diagnostics.visibleNodeCount}</div>
-                                          <div>rendered control count: {pbv2Diagnostics.renderedControlCount}</div>
-                                          <div>
-                                            first 10 question labels: {pbv2Diagnostics.firstQuestionLabels.join(", ") || "(none)"}
-                                          </div>
-                                          <div>
-                                            first 10 question input types: {pbv2Diagnostics.firstQuestionInputTypes.join(", ") || "(none)"}
-                                          </div>
-                                          <div>
-                                            first 10 selection keys: {pbv2Diagnostics.firstSelectionKeys.join(", ") || "(none)"}
-                                          </div>
-                                          <div>tree valid: {String(pbv2Diagnostics.treeOk)}</div>
-                                          {pbv2Diagnostics.treeErrors.length > 0 && (
-                                            <div className="text-amber-600 dark:text-amber-400">
-                                              tree errors: {pbv2Diagnostics.treeErrors.join("; ")}
-                                            </div>
-                                          )}
-                                        </div>
                                       </div>
                                     )}
 
@@ -4020,6 +3879,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           onValidityChange={setOptionsV2Valid}
                                           onRenderStatsChange={setPbv2PanelRenderStats}
                                           compact
+                                          orderWorkspace
                                         />
                                       </div>
                                     )}
@@ -4036,6 +3896,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             setOptionSelections(next);
                                           }}
                                           compact
+                                          orderWorkspace
                                         />
                                       </div>
                                     )}
@@ -4137,11 +3998,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       </div>
                                     )}
 
-                                  </>
+                                  </> : null
                                 }
                                 artworkSlot={
                                   showArtworkControls ? <>
                                     <LineItemAttachmentsPanel
+                                      orderWorkspace
                                       quoteId={null}
                                       parentType="order"
                                       orderId={orderId}
@@ -4156,7 +4018,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     />
 
                                     {(() => {
-                                      if (policy !== "required" && !isMissingArtworkSuppressed) return null;
+                                      if (!missingArtworkActive && !isMissingArtworkSuppressed) return null;
 
                                       const suppress = async () => {
                                         if (readOnly) return;
@@ -4324,64 +4186,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
                                 onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}
                                 readOnly={readOnly}
-                                commercialPricingEditable={commercialPricingOnly}
-                              />
-
-                              {!readOnly && !serviceFee && isExpanded && expandedItem?.id === item.id ? (
-                                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-sm">
-                                  <span className="font-medium">Tax</span>
-                                  <div className="flex items-center gap-2">
-                                    <Checkbox
-                                      id={`line-taxable-${item.id}`}
-                                      checked={Boolean((item as any).taxabilityOverride ?? (item as any).isTaxableSnapshot ?? true)}
-                                      disabled={updateLineItemTaxability.isPending}
-                                      onCheckedChange={(checked) => {
-                                        void (async () => {
-                                          try {
-                                            await updateLineItemTaxability.mutateAsync({
-                                              id: String(item.id),
-                                              taxabilityOverride: checked === true,
-                                            });
-                                            await onAfterLineItemsChange?.();
-                                          } catch {
-                                            // The mutation owns the user-safe error toast.
-                                          }
-                                        })();
-                                      }}
-                                    />
-                                    <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
-                                  </div>
-                                  {(item as any).taxabilityOverride == null ? (
-                                    <span className="text-xs text-muted-foreground">Product default</span>
-                                  ) : (
-                                    <>
-                                      <span className="text-xs text-muted-foreground">Order override</span>
-                                      <Button
-                                        type="button"
-                                        variant="link"
-                                        size="sm"
-                                        className="h-auto p-0 text-xs"
-                                        disabled={updateLineItemTaxability.isPending}
-                                        onClick={() => {
-                                          void (async () => {
-                                            try {
-                                              await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
-                                              await onAfterLineItemsChange?.();
-                                            } catch {
-                                              // The mutation owns the user-safe error toast.
-                                            }
-                                          })();
-                                        }}
-                                      >
-                                        Use product default
-                                      </Button>
-                                    </>
-                                  )}
-                                </div>
-                              ) : null}
-
+                                relationshipActionsSlot={<>
                               {!readOnly && !serviceFee ? (
-                                <div className="mt-2 flex flex-wrap justify-end gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
                                   {!childItem && (
                                     <Button
                                       type="button"
@@ -4398,32 +4205,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       Add child item
                                     </Button>
                                   )}
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8"
-                                    onClick={() => {
-                                      setParentLinkTarget(item);
-                                      setSelectedParentLineItemId((item as any).parentLineItemId ?? null);
-                                    }}
-                                    data-testid={`button-link-parent-${item.id}`}
-                                  >
-                                    {(item as any).parentLineItemId ? "Change parent" : "Link to parent"}
-                                  </Button>
-                                  {(item as any).parentLineItemId ? (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-8"
-                                      disabled={parentLinkMutation.isPending}
-                                      onClick={() => parentLinkMutation.mutate({ lineItemId: String(item.id), parentLineItemId: null })}
-                                      data-testid={`button-unlink-parent-${item.id}`}
-                                    >
-                                      Unlink
-                                    </Button>
-                                  ) : null}
                                   {!childItem && showOpenProofingAction ? (
                                     <Button asChild type="button" variant="outline" size="sm" className="h-8">
                                       <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
@@ -4481,6 +4262,232 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         </Button>
                                       ))
                                     : null}
+                                </div>
+                              ) : null}
+                                </>}
+                                advancedControlsSlot={<>
+                                    {isExpanded && expandedItem && expandedItem.id === item.id && false && (
+                                      <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
+                                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                          <div>
+                                            <div className="text-sm font-medium">Price details</div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(displayTotal)}
+                                            </div>
+                                          </div>
+                                          {isOverride ? (
+                                            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700">
+                                              {overrideLabel}
+                                            </Badge>
+                                          ) : null}
+                                        </div>
+                                        <div className="flex">
+                                          <select
+                                            value={selectedOverrideMode}
+                                            onChange={(event) => {
+                                              const nextMode = event.target.value as LineItemPriceOverrideMode;
+                                              const lineItemId = String(item.id);
+                                              markPricingDirtyByUser(lineItemId, "price_override_mode");
+                                              setPriceOverrideModeById((prev) => ({ ...prev, [lineItemId]: nextMode }));
+                                              const currentValue = getLineItemOverrideInputValue(item, nextMode, displayPrice);
+                                              setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: currentValue.toFixed(2) }));
+                                            }}
+                                            className="hidden"
+                                            disabled={readOnly}
+                                          >
+                                            <option value="override_total_after_margin">Total override</option>
+                                            <option value="override_unit_after_margin">Unit override</option>
+                                            <option value="override_total_before_margin">Total before margin</option>
+                                            <option value="override_unit_before_margin">Unit before margin</option>
+                                            <option value="apply_discount">Discount</option>
+                                            <option value="append_value">Add value</option>
+                                          </select>
+                                          <div className="text-xs text-muted-foreground self-center">
+                                            Base unit {formatMoney(baseCalculatedTotal / Math.max(1, Number(item.quantity) || 1))} · Qty {item.quantity || 0}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {isExpanded && canSeeDebug && (
+                                      <div className="mb-3">
+                                        <button
+                                          type="button"
+                                          onClick={() => setShowLineItemDebug((v) => !v)}
+                                          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                                        >
+                                          <ChevronDown className={cn("h-3 w-3 transition-transform", showLineItemDebug && "rotate-180")} />
+                                          {showLineItemDebug ? "Hide Debug" : "Show Debug"}
+                                        </button>
+
+                                        {showLineItemDebug && (
+                                          <>
+                                            <div className="mt-2 rounded-md border border-fuchsia-500/40 bg-fuchsia-500/5 p-3 text-[11px]">
+                                              <div className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Initial line item draft debug</div>
+                                              <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                                <div>initialDraft.requiresDesign: {String(initialDraftSnapshot?.requiresDesign ?? initialDraftDebug?.requiresDesign ?? "(missing)")}</div>
+                                                <div>initialDraft.requiresPrepress: {String(initialDraftSnapshot?.requiresPrepress ?? initialDraftDebug?.requiresPrepress ?? "(missing)")}</div>
+                                                <div>initialDraft.requiresProofApproval: {String(initialDraftSnapshot?.requiresProofApproval ?? initialDraftDebug?.requiresProofApproval ?? "(missing)")}</div>
+                                                <div>initialDraft.optionSelectionsJson: {JSON.stringify(initialDraftSnapshot?.optionSelectionsJson ?? initialDraftDebug?.optionSelectionsJson ?? null)}</div>
+                                                <div>rendered option labels in order: {(initialDraftSnapshot?.renderedOptionLabels ?? initialDraftDebug?.sortedOptionLabels ?? []).join(", ") || "(none)"}</div>
+                                                <div>product routing defaults used: {JSON.stringify(initialDraftSnapshot?.productRoutingDefaultsUsed ?? initialDraftDebug?.productRoutingDefaultsUsed ?? null)}</div>
+                                                <div>rendered.requiresDesign: {String(renderedRequiresDesign)}</div>
+                                                <div>rendered.requiresPrepress: {String(renderedRequiresPrepress)}</div>
+                                                <div>rendered.requiresProofApproval: {String(renderedRequiresProofApproval)}</div>
+                                                <div>userEditedOptions: {String(lineItemUserEditedOptions)}</div>
+                                              </div>
+                                            </div>
+
+                                            {pricingDebugSnapshot && (
+                                              <div className="mt-2 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-[11px]">
+                                                <div className="font-medium text-emerald-700 dark:text-emerald-300">PBV2 pricing runtime debug</div>
+                                                <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                                  <div>selected option values: {JSON.stringify(pricingDebugSnapshot.selectedOptionValues ?? pricingDebugSnapshot.effectiveSelections ?? null)}</div>
+                                                  <div>matched matrix row id: {String(pricingDebugSnapshot.resolvedMatrixRowId ?? "(none)")}</div>
+                                                  <div>resolved matrix variables: {JSON.stringify(pricingDebugSnapshot.resolvedMatrixVariables ?? {})}</div>
+                                                  <div>base_price source: {String(pricingDebugSnapshot.basePriceSource ?? "(unknown)")}</div>
+                                                  <div>rate used source: {String(pricingDebugSnapshot.rateUsedSource ?? "(unknown)")}</div>
+                                                  <div>minimum applied: {String(pricingDebugSnapshot.minimumApplied ?? false)}</div>
+                                                  <div>formula scope used: {JSON.stringify(pricingDebugSnapshot.formulaScopeUsed ?? pricingDebugSnapshot.formulaVariables ?? null)}</div>
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            <div className="mt-2 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
+                                              <div className="font-medium text-sky-700 dark:text-sky-300">Live preview calc diagnostics</div>
+                                              <div className="mt-2 grid gap-1 font-mono text-muted-foreground">
+                                                <div>request seq: {String(previewDiag?.seq ?? "(none)")}</div>
+                                                <div>status: {String(previewDiag?.status ?? "(idle)")}</div>
+                                                <div>payload quantity: {String(previewDiag?.payloadQuantity ?? "(none)")}</div>
+                                                <div>payload option selections: {JSON.stringify(previewDiag?.payloadSelections ?? {})}</div>
+                                                <div>last response total: {previewDiag?.responseTotal != null ? `$${previewDiag.responseTotal.toFixed(2)}` : "(none)"}</div>
+                                                <div>requested at: {String(previewDiag?.at ?? "(none)")}</div>
+                                                <div>computedTotal: {computedTotal != null ? `$${Number(computedTotal).toFixed(2)}` : "(none)"}</div>
+                                                <div>computedTotalQty: {String(computedTotalQty ?? "(none)")}</div>
+                                              </div>
+                                            </div>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {import.meta.env.DEV && expandedProductIsPbv2 && (
+                                      <div className="mb-3 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-[11px]">
+                                        <div className="font-medium text-sky-700 dark:text-sky-300">PBV2 diagnostics (dev only)</div>
+                                        <div className="mt-2 space-y-0.5 font-mono text-muted-foreground">
+                                          <div>productId: {String(pbv2Diagnostics.productId ?? "(none)")}</div>
+                                          <div>productName: {String(pbv2Diagnostics.productName ?? "(none)")}</div>
+                                          <div>isPbv2Product: {String(pbv2Diagnostics.isPbv2Product)}</div>
+                                          <div>optionTreeJson present: {String(pbv2Diagnostics.optionTreeJsonExists)}</div>
+                                          <div>pbv2ActiveTreeVersionId: {String(pbv2Diagnostics.pbv2ActiveTreeVersionId ?? "(none)")}</div>
+                                          <div>live active tree query status: {pbv2Diagnostics.liveActiveTreeQueryStatus}</div>
+                                          <div>effectivePbv2Tree exists: {String(pbv2Diagnostics.effectivePbv2TreeExists)}</div>
+                                          <div>total node count: {pbv2Diagnostics.totalNodeCount}</div>
+                                          <div>group count: {pbv2Diagnostics.groupCount}</div>
+                                          <div>selectable question count: {pbv2Diagnostics.selectableQuestionCount}</div>
+                                          <div>choice count: {pbv2Diagnostics.choiceCount}</div>
+                                          <div>visible node count: {pbv2Diagnostics.visibleNodeCount}</div>
+                                          <div>rendered control count: {pbv2Diagnostics.renderedControlCount}</div>
+                                          <div>
+                                            first 10 question labels: {pbv2Diagnostics.firstQuestionLabels.join(", ") || "(none)"}
+                                          </div>
+                                          <div>
+                                            first 10 question input types: {pbv2Diagnostics.firstQuestionInputTypes.join(", ") || "(none)"}
+                                          </div>
+                                          <div>
+                                            first 10 selection keys: {pbv2Diagnostics.firstSelectionKeys.join(", ") || "(none)"}
+                                          </div>
+                                          <div>tree valid: {String(pbv2Diagnostics.treeOk)}</div>
+                                          {pbv2Diagnostics.treeErrors.length > 0 && (
+                                            <div className="text-amber-600 dark:text-amber-400">
+                                              tree errors: {pbv2Diagnostics.treeErrors.join("; ")}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+
+
+                              {!readOnly && !serviceFee && isExpanded && expandedItem?.id === item.id ? (
+                                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-sm">
+                                  <span className="font-medium">Tax</span>
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox
+                                      id={`line-taxable-${item.id}`}
+                                      checked={Boolean((item as any).taxabilityOverride ?? (item as any).isTaxableSnapshot ?? true)}
+                                      disabled={updateLineItemTaxability.isPending}
+                                      onCheckedChange={(checked) => {
+                                        void (async () => {
+                                          try {
+                                            await updateLineItemTaxability.mutateAsync({
+                                              id: String(item.id),
+                                              taxabilityOverride: checked === true,
+                                            });
+                                            await onAfterLineItemsChange?.();
+                                          } catch {
+                                            // The mutation owns the user-safe error toast.
+                                          }
+                                        })();
+                                      }}
+                                    />
+                                    <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
+                                  </div>
+                                  {(item as any).taxabilityOverride == null ? (
+                                    <span className="text-xs text-muted-foreground">Product default</span>
+                                  ) : (
+                                    <>
+                                      <span className="text-xs text-muted-foreground">Order override</span>
+                                      <Button
+                                        type="button"
+                                        variant="link"
+                                        size="sm"
+                                        className="h-auto p-0 text-xs"
+                                        disabled={updateLineItemTaxability.isPending}
+                                        onClick={() => {
+                                          void (async () => {
+                                            try {
+                                              await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
+                                              await onAfterLineItemsChange?.();
+                                            } catch {
+                                              // The mutation owns the user-safe error toast.
+                                            }
+                                          })();
+                                        }}
+                                      >
+                                        Use product default
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              ) : null}
+
+                              {!readOnly && !serviceFee ? (<div className="mt-3 flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8"
+                                    onClick={() => {
+                                      setParentLinkTarget(item);
+                                      setSelectedParentLineItemId((item as any).parentLineItemId ?? null);
+                                    }}
+                                    data-testid={`button-link-parent-${item.id}`}
+                                  >
+                                    {(item as any).parentLineItemId ? "Change parent" : "Link to parent"}
+                                  </Button>
+                                  {(item as any).parentLineItemId ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={parentLinkMutation.isPending}
+                                      onClick={() => parentLinkMutation.mutate({ lineItemId: String(item.id), parentLineItemId: null })}
+                                      data-testid={`button-unlink-parent-${item.id}`}
+                                    >
+                                      Unlink
+                                    </Button>
+                                  ) : null}
                                   {!childItem && !(item as any).productionBypassed ? (
                                     <Button
                                       type="button"
@@ -4492,8 +4499,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       {getLineItemWorkflowActionLabel("Bypass Production", hasGroupChildren)}
                                     </Button>
                                   ) : null}
-                                </div>
-                              ) : null}
+                              </div>) : null}
+                                </>}
+                                commercialPricingEditable={commercialPricingOnly}
+                              />
+
                             </div>
                           </div>
                         </div>

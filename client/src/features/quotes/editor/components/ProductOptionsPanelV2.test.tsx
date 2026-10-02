@@ -230,7 +230,7 @@ describe("ProductOptionsPanelV2", () => {
     expect(onSelectionsChange).not.toHaveBeenCalled();
   });
 
-  test("renders compact order-entry fields without permanent helper text", () => {
+  test.each([false, true])("renders compact fields without permanent helper text (Order workspace %s)", (orderWorkspace) => {
     const tree: OptionTreeV2 = {
       schemaVersion: 2,
       rootNodeIds: ["thickness_node", "sides_node"],
@@ -260,6 +260,7 @@ describe("ProductOptionsPanelV2", () => {
           selections={{ schemaVersion: 2, selected: {} }}
           onSelectionsChange={jest.fn()}
           compact
+          orderWorkspace={orderWorkspace}
         />,
       );
     });
@@ -268,7 +269,7 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.textContent).toContain("Print Sides");
     expect(container.textContent).not.toContain("Choose the stock thickness.");
     expect(container.querySelectorAll("select")).toHaveLength(2);
-    expect(container.querySelector("select")?.parentElement?.parentElement?.className).toContain("xl:grid-cols-3");
+    expect(container.querySelector("select")?.parentElement?.parentElement?.className).toContain(orderWorkspace ? "auto-fit" : "xl:grid-cols-3");
   });
 
   test("uses a non-empty internal value for an optional select's empty choice", () => {

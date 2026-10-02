@@ -393,3 +393,62 @@ describe("LineItemCard operational sections", () => {
     await cleanup();
   });
 });
+
+
+describe("Order workspace composition", () => {
+  it("keeps normal controls and notes directly usable while active staff settings start collapsed", async () => {
+    const onPriceClick = jest.fn();
+    const onUndoOverride = jest.fn();
+    const onSave = jest.fn();
+    const onDescriptionChange = jest.fn();
+    const onProductionNotesChange = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true, compactExpandedLayout: true, isDirty: true,
+      requiresDesign: true, requiresPrepress: true,
+      primaryControlSlot: <select aria-label="Product"><option>Banner</option></select>,
+      optionsSlot: <select aria-label="Print sides"><option>Single-sided</option></select>,
+      artworkSlot: <div>Artwork manager</div>,
+      internalNotesSlot: <div>Structured staff history</div>,
+      description: "Customer copy", productionNotes: "Internal instruction",
+      priceOverride: 85, onPriceClick, onUndoOverride, onSave, onDescriptionChange, onProductionNotesChange,
+    });
+    const editing = container.querySelector('[data-testid="order-line-main-editing"]')!;
+    expect(editing.querySelectorAll(":scope > section")).toHaveLength(3);
+    expect(editing.querySelector('[aria-label="Dimensions & Pricing"] select')).not.toBeNull();
+    expect(editing.querySelector('[aria-label="Product Options"] select')).not.toBeNull();
+    expect(editing.querySelector('[aria-label="Artwork"]')?.textContent).toBe("Artwork manager");
+    const notes = container.querySelectorAll("textarea");
+    expect(Array.from(notes).map((note) => note.value)).toEqual(["Customer copy", "Internal instruction"]);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    ["New customer copy", "New internal note"].forEach((value, index) => {
+      act(() => { setter.call(notes[index], value); notes[index].dispatchEvent(new Event("input", { bubbles: true })); });
+    });
+    expect(onDescriptionChange).toHaveBeenCalledWith("New customer copy");
+    expect(onProductionNotesChange).toHaveBeenCalledWith("New internal note");
+    const advanced = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Advanced / Staff Controls"))!;
+    expect(advanced.getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).not.toContain("Structured staff history");
+    click(advanced);
+    expect(container.textContent).toContain("Structured staff history");
+    click(container.querySelector('[title="Undo override"]')!);
+    expect(onUndoOverride).toHaveBeenCalledTimes(1);
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "$85.00")!);
+    expect(onPriceClick).toHaveBeenCalledTimes(1);
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Save Item")!);
+    expect(onSave).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it("does not reserve dimensions or an options section for quantity-only work", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true, compactExpandedLayout: true, dimsRequired: false,
+      primaryControlSlot: <select aria-label="Product"><option>Stakes</option></select>,
+    });
+    expect(container.querySelector('[aria-label="Quantity & Pricing"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Width");
+    expect(container.textContent).not.toContain("Height");
+    expect(container.querySelector('[aria-label="Product Options"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Quantity"]')).not.toBeNull();
+    await cleanup();
+  });
+});

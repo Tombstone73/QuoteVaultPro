@@ -137,6 +137,7 @@ export type LineItemCardProps = {
   // Expanded view - Artwork slot (right column, above notes)
   artworkSlot?: ReactNode;
   internalNotesSlot?: ReactNode;
+  advancedControlsSlot?: ReactNode;
   internalNoteCount?: number;
   detailsSide?: "left" | "right";
   collapseSecondaryDetails?: boolean;
@@ -296,6 +297,7 @@ export function LineItemCard({
   optionsSlot,
   artworkSlot,
   internalNotesSlot,
+  advancedControlsSlot,
   internalNoteCount = 0,
   detailsSide = "left",
   collapseSecondaryDetails = false,
@@ -428,16 +430,16 @@ export function LineItemCard({
   );
 
   const advancedControls = (
-      <Collapsible defaultOpen={requiresDesign || requiresPrepress === true || requiresProofApproval} className="rounded-md border border-border/40 bg-background/40 p-2.5">
+      <Collapsible defaultOpen={compactExpandedLayout ? false : requiresDesign || requiresPrepress === true || requiresProofApproval} className="rounded-md border border-border/40 bg-background/40 p-2.5">
         <CollapsibleTrigger asChild>
           <button type="button" className="flex w-full items-center justify-between text-left">
-            <span className="text-sm font-medium">Advanced / Staff Controls</span>
+            <span className="flex flex-wrap items-center gap-2 text-sm font-medium">Advanced / Staff Controls{compactExpandedLayout && (requiresDesign || requiresPrepress === true || requiresProofApproval) ? <span className="text-xs font-normal text-muted-foreground">{[requiresDesign && "Design", requiresPrepress === true && "Prepress", requiresProofApproval && "Proof required"].filter(Boolean).join(" · ")}</span> : null}</span>
             <ChevronRight className="h-4 w-4" />
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-3">
       <div className="space-y-1.5">
-        <div className="flex items-center gap-5">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
           <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
             <input
               type="checkbox"
@@ -476,6 +478,8 @@ export function LineItemCard({
           <p className="text-xs text-muted-foreground">Prepress routing not explicitly set — will default to product type / org setting on conversion.</p>
         )}
       </div>
+          {advancedControlsSlot}
+          {compactExpandedLayout ? internalNotesSlot : null}
         </CollapsibleContent>
       </Collapsible>
   );
@@ -535,6 +539,208 @@ export function LineItemCard({
     </>
   );
 
+  const commercialControls = (
+            <div className={compactExpandedLayout ? "min-w-0 space-y-3" : "flex flex-wrap items-end gap-x-5 gap-y-3"}>
+              {primaryControlSlot ? (
+                <section className={cn(compactExpandedLayout ? "min-w-0" : "min-w-[220px] flex-[1_1_280px]", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+                  {!nonProductionItem && !compactExpandedLayout ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product</div> : null}
+                  {primaryControlSlot}
+                </section>
+              ) : null}
+              <section className={cn("flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+              {!nonProductionItem && !compactExpandedLayout ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">{dimsRequired ? "Dimensions & Quantity" : "Quantity"}</div> : null}
+              {dimsRequired ? (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex flex-col gap-1">
+                    <div className="text-xs text-muted-foreground">Width</div>
+                    <Input
+                      id={`line-item-width-input-${id}`}
+                      ref={widthInputRef}
+                      value={width}
+                      onChange={(e) => onWidthChange?.(e.target.value)}
+                      onFocus={selectInputTextOnFocus}
+                      className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
+                      inputMode="decimal"
+                      disabled={readOnly || !dimsRequired}
+                      readOnly={readOnly}
+                    />
+                  </div>
+                  <span className="text-muted-foreground self-end pb-2">×</span>
+                  <div className="flex flex-col gap-1">
+                    <div className="text-xs text-muted-foreground">Height</div>
+                    <Input
+                      value={height}
+                      onChange={(e) => onHeightChange?.(e.target.value)}
+                      onFocus={selectInputTextOnFocus}
+                      className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
+                      inputMode="decimal"
+                      disabled={readOnly || !dimsRequired}
+                      readOnly={readOnly}
+                    />
+                  </div>
+                </div>
+              </div>
+              ) : null}
+
+              <div className={cn("flex gap-2", compactExpandedLayout ? "flex-col items-start gap-1" : "items-center")}>
+                <div className="text-xs text-muted-foreground">Qty</div>
+                <div className="flex items-center rounded-md border border-border/60 bg-background/40">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    aria-label="Decrease quantity"
+                    onClick={() => {
+                      if (onQuantityChange) applyQuantity(quantity - 1);
+                      else onQuantityDecrement?.();
+                    }}
+                    disabled={readOnly}
+                  >
+                    <Minus className="h-4 w-4" />
+                  </Button>
+                  <Input
+                    value={quantityDraft}
+                    onChange={(e) => updateQuantityDraft(e.currentTarget.value)}
+                    onBlur={commitQuantityDraft}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitQuantityDraft();
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
+                    inputMode="numeric"
+                    type="text"
+                    pattern="[0-9]*"
+                    aria-label="Quantity"
+                    aria-invalid={Boolean(quantityError)}
+                    aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined}
+                    disabled={readOnly}
+                    readOnly={readOnly}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    aria-label="Increase quantity"
+                    onClick={() => {
+                      if (onQuantityChange) applyQuantity(quantity + 1);
+                      else onQuantityIncrement?.();
+                    }}
+                    disabled={readOnly}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+                {quantityError ? (
+                  <div id={`line-item-quantity-error-${id}`} className="mt-1 text-xs text-destructive" role="alert">
+                    {quantityError}
+                  </div>
+                ) : null}
+              </div>
+              </section>
+
+              <div className={cn(compactExpandedLayout ? "grid min-w-0 grid-cols-2 items-start gap-x-3 gap-y-1 text-left" : "min-w-[190px] self-end", !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5", nonProductionItem || compactExpandedLayout ? "text-left" : "text-right")}>
+                {!nonProductionItem && !compactExpandedLayout ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pricing</div> : null}
+                <div className={compactExpandedLayout ? "col-start-2 text-xs text-muted-foreground" : "text-xs text-muted-foreground"}>Line total</div>
+                <div className={cn("flex flex-wrap items-center gap-2", compactExpandedLayout ? "col-start-2 row-start-2 justify-start" : nonProductionItem ? "justify-start" : "justify-end")}>
+                  {editingPrice ? (
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      value={priceEditText}
+                      onChange={(e) => onPriceChange?.(e.target.value)}
+                      onBlur={onPriceBlur}
+                      onKeyDown={onPriceKeyDown}
+                      autoFocus
+                      className="h-8 w-32 px-3 text-right font-mono text-sm font-semibold"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className={cn(
+                        "h-8 w-32 rounded-md border border-input bg-background px-3 text-right font-mono text-sm font-semibold shadow-sm",
+                        canEditPrice && onPriceClick
+                          ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          : "cursor-default"
+                      )}
+                      onClick={onPriceClick}
+                      disabled={!canEditPrice || !onPriceClick}
+                    >
+                      {formatMoney(priceOverride != null ? priceOverride : price)}
+                    </button>
+                  )}
+                  {priceOverride != null && (
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded font-medium">
+                        {priceOverrideLabel}
+                      </span>
+                      {canEditPrice && onUndoOverride && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5"
+                          onClick={onUndoOverride}
+                          title="Undo override"
+                        >
+                          <Undo2 className="h-3 w-3" />
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {priceControlSlot ? (
+                  <div className={compactExpandedLayout ? "col-span-2 mt-1" : "mt-1"}>{priceControlSlot}</div>
+                ) : null}
+                <div className={compactExpandedLayout ? "col-start-1 row-start-1 row-span-2 space-y-1 text-sm" : "text-[11px] text-muted-foreground"}>{compactExpandedLayout ? <><div className="text-xs text-muted-foreground">{priceLabel}</div><div className="flex h-8 items-center font-mono font-semibold">{unitPriceLabel}</div></> : <>{priceLabel} {unitPriceLabel}</>}</div>
+                {pricingDetailsSlot ? (
+                  <Collapsible defaultOpen={false} className={compactExpandedLayout ? "col-span-2 mt-1" : "mt-1"}>
+                    <CollapsibleTrigger asChild>
+                      <button
+                        type="button"
+                        data-quantity-only={quantityOnly ? "true" : "false"}
+                        className={cn(
+                          "text-[11px] font-medium text-muted-foreground hover:text-foreground",
+                          nonProductionItem || compactExpandedLayout ? "text-left" : "ml-auto block"
+                        )}
+                      >
+                        Pricing details
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className={cn("pt-1 text-[11px] text-muted-foreground", nonProductionItem || compactExpandedLayout ? "text-left" : "text-right")}>
+                      {pricingDetailsSlot}
+                    </CollapsibleContent>
+                  </Collapsible>
+                ) : null}
+                <div className={cn("flex items-center", compactExpandedLayout ? "col-span-2 justify-start" : "h-5", nonProductionItem ? "justify-start" : "justify-end")}>
+                  {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
+                  {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
+                    <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
+                      ⚠️ Outdated PBV2 config
+                    </div>
+                  )}
+                  {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" && (
+                    <div className="text-[11px] text-destructive truncate max-w-[420px]" title={calcError}>
+                      {/* Never show raw JSON in the UI; fall back to a friendly message if it leaks through. */}
+                      {calcError.trim().startsWith("{") || /^\d+:\s*{/.test(calcError)
+                        ? "Calculation failed. Check required options."
+                        : calcError}
+                    </div>
+                  )}
+                  {!isCalculating && !calcError && isPreviewPrice && (
+                    <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">Preview price · unsaved</div>
+                  )}
+                  {!compactExpandedLayout && !isCalculating && !calcError && !isPreviewPrice && <div className="text-[11px] text-transparent">—</div>}
+                </div>
+              </div>
+            </div>
+  );
+
   const configurationSection = optionsSlot ? (
     <section className={cn(!compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-3")}>
       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product Options</div>
@@ -544,7 +750,6 @@ export function LineItemCard({
 
   const compactNotesSection = (
     <section className="min-w-0 space-y-2">
-      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</div>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
           Customer-facing description
@@ -552,7 +757,7 @@ export function LineItemCard({
             value={description}
             onChange={(event) => onDescriptionChange?.(event.target.value)}
             placeholder="Add custom description for this line item..."
-            className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            className="min-h-[60px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
             disabled={readOnly}
           />
         </label>
@@ -562,12 +767,11 @@ export function LineItemCard({
             value={productionNotes}
             onChange={(event) => onProductionNotesChange?.(event.target.value)}
             placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."}
-            className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            className="min-h-[60px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
             disabled={readOnly}
           />
         </label>
       </div>
-      {internalNotesSlot}
     </section>
   );
 
@@ -671,7 +875,7 @@ export function LineItemCard({
         aria-controls={contentId}
         aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
       >
-        <div className="grid gap-2 items-center" style={{ gridTemplateColumns: showDragHandle ? 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
+        <div className={cn("grid gap-2 items-center", compactExpandedLayout && (showDragHandle ? "grid-cols-[auto_minmax(0,1fr)] md:grid-cols-[auto_minmax(0,1.2fr)_minmax(0,2fr)_auto]" : "grid-cols-1 md:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_auto]"))} style={compactExpandedLayout ? undefined : { gridTemplateColumns: showDragHandle ? 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
           {/* Drag Handle (edit mode only) */}
           {showDragHandle && (
             <button
@@ -710,7 +914,7 @@ export function LineItemCard({
                   </Badge>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+              <div className={cn("flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums", compactExpandedLayout && "flex-wrap")}>
                 <span className="font-mono">{sizeLabel}</span>
                 <span>·</span>
                 <span>{qtyLabel}</span>
@@ -739,7 +943,7 @@ export function LineItemCard({
           </div>
 
           {/* Middle Zone: Option Chips (single line, no wrap) */}
-          <div className="min-w-0 flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
+          <div className={cn("min-w-0 flex items-center gap-1.5 overflow-hidden whitespace-nowrap", compactExpandedLayout && showDragHandle && "col-start-2 md:col-start-auto")}>
             {optionChips.map((chip) => (
               <span
                 key={chip.key}
@@ -756,7 +960,7 @@ export function LineItemCard({
           </div>
 
           {/* Right Zone: Price + Expand Icon */}
-          <div className="flex items-center justify-end gap-2 shrink-0">
+          <div className={cn("flex items-center gap-2 shrink-0", compactExpandedLayout ? "justify-start md:justify-end" : "justify-end", compactExpandedLayout && showDragHandle && "col-start-2 md:col-start-auto")}>
             <div className="text-right tabular-nums">
               <div className="font-mono text-sm font-semibold">{totalLabel}</div>
               <div className="text-[10px] text-muted-foreground">{unitPriceLabel}</div>
@@ -801,219 +1005,24 @@ export function LineItemCard({
               aria-hidden="true"
               className="h-0 w-full overflow-hidden outline-none"
             />
-            {lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
-            {/* Compact operational controls */}
-            <div className={cn("flex flex-wrap items-end gap-x-5 gap-y-3", compactExpandedLayout && "border-b border-border/40 pb-3")}>
-              {primaryControlSlot ? (
-                <section className={cn("min-w-[220px] flex-[1_1_280px]", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
-                  {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product</div> : null}
-                  {primaryControlSlot}
-                </section>
-              ) : null}
-              <section className={cn("flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
-              {!nonProductionItem ? <div className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground">{dimsRequired ? "Dimensions & Quantity" : "Quantity"}</div> : null}
-              {dimsRequired ? (
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2">
-                  <div className="flex flex-col gap-1">
-                    <div className="text-xs text-muted-foreground">Width</div>
-                    <Input
-                      id={`line-item-width-input-${id}`}
-                      ref={widthInputRef}
-                      value={width}
-                      onChange={(e) => onWidthChange?.(e.target.value)}
-                      onFocus={selectInputTextOnFocus}
-                      className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                      inputMode="decimal"
-                      disabled={readOnly || !dimsRequired}
-                      readOnly={readOnly}
-                    />
-                  </div>
-                  <span className="text-muted-foreground self-end pb-2">×</span>
-                  <div className="flex flex-col gap-1">
-                    <div className="text-xs text-muted-foreground">Height</div>
-                    <Input
-                      value={height}
-                      onChange={(e) => onHeightChange?.(e.target.value)}
-                      onFocus={selectInputTextOnFocus}
-                      className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                      inputMode="decimal"
-                      disabled={readOnly || !dimsRequired}
-                      readOnly={readOnly}
-                    />
-                  </div>
-                </div>
-              </div>
-              ) : null}
-
-              <div className="flex items-center gap-2">
-                <div className="text-xs text-muted-foreground">Qty</div>
-                <div className="flex items-center rounded-md border border-border/60 bg-background/40">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    aria-label="Decrease quantity"
-                    onClick={() => {
-                      if (onQuantityChange) applyQuantity(quantity - 1);
-                      else onQuantityDecrement?.();
-                    }}
-                    disabled={readOnly}
-                  >
-                    <Minus className="h-4 w-4" />
-                  </Button>
-                  <Input
-                    value={quantityDraft}
-                    onChange={(e) => updateQuantityDraft(e.currentTarget.value)}
-                    onBlur={commitQuantityDraft}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        commitQuantityDraft();
-                        e.currentTarget.blur();
-                      }
-                    }}
-                    className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
-                    inputMode="numeric"
-                    type="text"
-                    pattern="[0-9]*"
-                    aria-label="Quantity"
-                    aria-invalid={Boolean(quantityError)}
-                    aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined}
-                    disabled={readOnly}
-                    readOnly={readOnly}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    aria-label="Increase quantity"
-                    onClick={() => {
-                      if (onQuantityChange) applyQuantity(quantity + 1);
-                      else onQuantityIncrement?.();
-                    }}
-                    disabled={readOnly}
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </div>
-                {quantityError ? (
-                  <div id={`line-item-quantity-error-${id}`} className="mt-1 text-xs text-destructive" role="alert">
-                    {quantityError}
-                  </div>
-                ) : null}
-              </div>
-              </section>
-
-              <div className={cn("min-w-[190px] self-end", !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5", nonProductionItem ? "text-left" : "text-right")}>
-                {!nonProductionItem ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pricing</div> : null}
-                <div className="text-xs text-muted-foreground">Line total</div>
-                <div className={cn("flex items-center gap-2", nonProductionItem ? "justify-start" : "justify-end")}>
-                  {editingPrice ? (
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      value={priceEditText}
-                      onChange={(e) => onPriceChange?.(e.target.value)}
-                      onBlur={onPriceBlur}
-                      onKeyDown={onPriceKeyDown}
-                      autoFocus
-                      className="h-8 w-32 px-3 text-right font-mono text-sm font-semibold"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className={cn(
-                        "h-8 w-32 rounded-md border border-input bg-background px-3 text-right font-mono text-sm font-semibold shadow-sm",
-                        canEditPrice && onPriceClick
-                          ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          : "cursor-default"
-                      )}
-                      onClick={onPriceClick}
-                      disabled={!canEditPrice || !onPriceClick}
-                    >
-                      {formatMoney(priceOverride != null ? priceOverride : price)}
-                    </button>
-                  )}
-                  {priceOverride != null && (
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded font-medium">
-                        {priceOverrideLabel}
-                      </span>
-                      {canEditPrice && onUndoOverride && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5"
-                          onClick={onUndoOverride}
-                          title="Undo override"
-                        >
-                          <Undo2 className="h-3 w-3" />
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {priceControlSlot ? (
-                  <div className="mt-1">{priceControlSlot}</div>
-                ) : null}
-                <div className="text-[11px] text-muted-foreground">{priceLabel} {unitPriceLabel}</div>
-                {pricingDetailsSlot ? (
-                  <Collapsible defaultOpen={false} className="mt-1">
-                    <CollapsibleTrigger asChild>
-                      <button
-                        type="button"
-                        data-quantity-only={quantityOnly ? "true" : "false"}
-                        className={cn(
-                          "text-[11px] font-medium text-muted-foreground hover:text-foreground",
-                          nonProductionItem ? "text-left" : "ml-auto block"
-                        )}
-                      >
-                        Pricing details
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className={cn("pt-1 text-[11px] text-muted-foreground", nonProductionItem ? "text-left" : "text-right")}>
-                      {pricingDetailsSlot}
-                    </CollapsibleContent>
-                  </Collapsible>
-                ) : null}
-                <div className={cn("h-5 flex items-center", nonProductionItem ? "justify-start" : "justify-end")}>
-                  {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
-                  {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
-                    <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
-                      ⚠️ Outdated PBV2 config
-                    </div>
-                  )}
-                  {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" && (
-                    <div className="text-[11px] text-destructive truncate max-w-[420px]" title={calcError}>
-                      {/* Never show raw JSON in the UI; fall back to a friendly message if it leaks through. */}
-                      {calcError.trim().startsWith("{") || /^\d+:\s*{/.test(calcError)
-                        ? "Calculation failed. Check required options."
-                        : calcError}
-                    </div>
-                  )}
-                  {!isCalculating && !calcError && isPreviewPrice && (
-                    <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">Preview price · unsaved</div>
-                  )}
-                  {!isCalculating && !calcError && !isPreviewPrice && <div className="text-[11px] text-transparent">—</div>}
-                </div>
-              </div>
-            </div>
+            {!compactExpandedLayout && lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
+            {!compactExpandedLayout ? commercialControls : null}
 
             {!nonProductionItem && !compactExpandedLayout ? <Separator className="my-3" /> : null}
 
             {compactExpandedLayout ? (
-              <div className="mt-3 space-y-3">
-                {configurationSection}
-                <div className={cn("grid gap-4", artworkSlot && "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]")}>
-                  {artworkSlot ? <div className="min-w-0">{artworkSlot}</div> : null}
-                  {compactNotesSection}
+              <div className="space-y-3" data-testid="order-line-editor">
+                <div className={cn("grid items-start gap-3", optionsSlot && artworkSlot ? "lg:grid-cols-2 xl:grid-cols-3" : (optionsSlot || artworkSlot) && "lg:grid-cols-2")} data-testid="order-line-main-editing">
+                  <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
+                    <h3 className="mb-3 text-sm font-semibold">{dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}</h3>
+                    {commercialControls}
+                  </section>
+                  {optionsSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
+                  {artworkSlot ? <section className={cn("min-w-0", optionsSlot && "lg:col-span-2 xl:col-span-1")} aria-label="Artwork">{artworkSlot}</section> : null}
                 </div>
-                {advancedControls}
+                {compactNotesSection}
                 {actionsRow}
+                {advancedControls}
               </div>
             ) : (
             <div className={cn("grid grid-cols-1 gap-3", !nonProductionItem && "xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)]")}>

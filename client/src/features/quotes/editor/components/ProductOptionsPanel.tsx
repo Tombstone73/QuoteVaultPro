@@ -26,6 +26,7 @@ type ProductOptionsPanelProps = {
     optionSelections: Record<string, OptionSelection>;
     onOptionSelectionsChange: (selections: Record<string, OptionSelection>) => void;
     compact?: boolean;
+    orderWorkspace?: boolean;
 };
 
 function groupSortKey(groupName: string): number {
@@ -90,6 +91,7 @@ type OptionTileProps = {
     onCacheSelection: (optionId: string, selection: OptionSelection) => void;
     onRestoreCachedSelection: (optionId: string) => OptionSelection | null;
     compact?: boolean;
+    orderWorkspace?: boolean;
 };
 
 const OptionRow = memo(function OptionRow({
@@ -102,6 +104,7 @@ const OptionRow = memo(function OptionRow({
     onCacheSelection,
     onRestoreCachedSelection,
     compact = false,
+    orderWorkspace = false,
 }: OptionTileProps) {
     const children = ui.children;
     const hasChildren = !!children && children.length > 0;
@@ -271,7 +274,7 @@ const OptionRow = memo(function OptionRow({
 
     const rowClass = cn(
         compact
-            ? "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-start gap-x-3 gap-y-2 py-1.5"
+            ? cn("grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-start gap-x-3 gap-y-2", orderWorkspace ? "py-0.5" : "py-1.5")
             : "flex flex-wrap items-start gap-x-3 gap-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2",
         isInvalid && "border-destructive/40 bg-destructive/5"
     );
@@ -527,6 +530,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
     optionSelections,
     onOptionSelectionsChange,
     compact = false,
+    orderWorkspace = false,
 }: ProductOptionsPanelProps) {
     const effectiveProductOptions = useMemo(() => {
         return injectDerivedMaterialOptionIntoProductOptions(product, productOptions || []);
@@ -638,7 +642,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
                         {showGroupHeader && idx !== 0 && (
                             <div className="text-sm font-medium">{formatGroupHeader(groupName)}</div>
                         )}
-                        <div className={cn(compact ? "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-2")}>
+                        <div className={cn(compact ? orderWorkspace ? "grid grid-cols-[repeat(auto-fit,minmax(min(100%,320px),1fr))] gap-x-4 gap-y-1.5" : "grid grid-cols-1 gap-x-4 gap-y-1.5 md:grid-cols-2 xl:grid-cols-3" : "space-y-2")}>
                             {options.map((ui) => {
                                 const source = productOptionById.get(ui.id);
                                 const selection = optionSelections[ui.id];
@@ -655,6 +659,7 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
                                         onCacheSelection={onCacheSelection}
                                         onRestoreCachedSelection={onRestoreCachedSelection}
                                         compact={compact}
+                                        orderWorkspace={orderWorkspace}
                                     />
                                 );
                             })}

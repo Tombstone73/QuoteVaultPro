@@ -206,7 +206,7 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(panel).not.toContain("downloadFileFromUrl(proxyUrl, fileName)");
   });
 
-  test("one Order artwork row uses the same fileRecordId for View and Download", async () => {
+  test.each([false, true])("Order artwork uses the same fileRecordId for View and Download (workspace %s)", async (orderWorkspace) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const filesPath = "/api/orders/order-1/line-items/line-1/files";
     client.setQueryData([filesPath], [{
@@ -229,10 +229,10 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     try {
       await act(async () => root.render(
         <QueryClientProvider client={client}>
-          <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+          <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" orderWorkspace={orderWorkspace} defaultExpanded={!orderWorkspace} />
         </QueryClientProvider>,
       ));
-      const downloadButton = host.querySelector("button[title='Download original file']") as HTMLButtonElement;
+      const downloadButton = (orderWorkspace ? Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Download") : host.querySelector("button[title='Download original file']")) as HTMLButtonElement;
       const previewButton = host.querySelector("button[aria-label='Preview saved-art.pdf']") as HTMLButtonElement;
       await act(async () => previewButton.click());
       expect(host.querySelector("[data-testid='order-artwork-viewer']")?.getAttribute("data-open")).toBe("true");
@@ -699,5 +699,35 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       host.remove();
       globalThis.fetch = previousFetch;
     }
+  });
+});
+
+
+describe("Order workspace artwork presentation", () => {
+  const file = { id: "art-1", source: "attachment", fileName: "customer-full-production-filename.pdf", fileUrl: "/objects/art.pdf", mimeType: "application/pdf", createdAt: "2026-07-16T00:00:00.000Z", role: "artwork", productionQuantity: 1, thumbStatus: "thumb_ready" };
+  function renderWorkspace(count: number, expanded = false) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/orders/order-1/line-items/line-1/files"], Array.from({ length: count }, (_, index) => ({ ...file, id: `art-${index}`, fileName: index ? `design-${index}.pdf` : file.fileName })));
+    return renderToStaticMarkup(<QueryClientProvider client={client}><LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" lineQuantity={count} orderWorkspace defaultExpanded={expanded} /></QueryClientProvider>);
+  }
+  test("shows original identity, role and file actions while healthy single-file bookkeeping stays quiet", () => {
+    const html = renderWorkspace(1);
+    expect(html).toContain(file.fileName);
+    expect(html).toContain(`Artwork role for ${file.fileName}`);
+    expect(html).toContain("Preview");
+    expect(html).toContain("Download");
+    expect(html).toContain("Upload artwork");
+    expect(html).not.toContain("Download All");
+    expect(html).not.toContain("Assigned 1 of 1");
+    expect(html).not.toContain("Artwork Set 1");
+    expect(html).not.toContain("Production quantity");
+  });
+  test("keeps every original and its allocation controls accessible in a bounded large collection", () => {
+    const html = renderWorkspace(27, true);
+    expect(html).toContain("Download All");
+    expect(html).toContain("design-26.pdf");
+    expect(html).toContain("Production quantity for design-26.pdf");
+    expect(html).toContain("max-h-[24rem] overflow-y-auto");
+    expect(html).not.toContain("Artwork Set 27");
   });
 });
