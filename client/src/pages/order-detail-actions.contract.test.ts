@@ -44,4 +44,16 @@ describe("order detail action contracts", () => {
     expect(detail).toContain('if (requestedPanel === "timeline") setRightPanel("timeline")');
     expect(detail).toContain('[orderId, requestedPanel]');
   });
+
+  test("keeps specialist Order controls reachable through compact disclosure", () => {
+    expect(detail).toContain('title="Attachments"');
+    expect(detail).toContain('title="Secondary Actions"');
+    expect(detail).toContain('Shipment administration');
+    expect(detail).toContain('Design billing diagnostics');
+    expect(detail).toContain('aria-label="Preview Order"');
+    expect(detail).toContain('aria-label="Download Order PDF"');
+    expect(detail).toContain('aria-label="Email Order"');
+    expect(detail).toContain('aria-label="Print Order"');
+    expect(detail).toContain('aria-label="Generate and view packing slip"');
+  });
 });

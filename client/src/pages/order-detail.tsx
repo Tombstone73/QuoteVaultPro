@@ -1,7 +1,7 @@
 import { OrderCreditHoldBanner } from "@/components/orders/OrderCreditHoldBanner";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import type { BillingOwnershipOverrideContext } from '@shared/billingOwnershipReview';
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { type ReactNode, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { OrderPaymentBadge } from '@/components/orders/OrderPaymentBadge';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -256,6 +257,38 @@ function formatCustomerPaymentTerms(value: string | null | undefined): string {
 const ORDER_DETAIL_DEV_DIAGNOSTICS =
   typeof process !== "undefined" && process.env?.NODE_ENV === "development";
 
+function OrderUtilitySection({
+  title,
+  badge,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  badge?: ReactNode;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <Collapsible defaultOpen={defaultOpen} className="rounded-lg border bg-card">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium">
+            {title}
+            {badge}
+          </div>
+          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="border-t">
+        <div className="p-4">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export default function OrderDetail() {
   const { user } = useAuth();
   const { activeOrg: activeOrganization, role, isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
@@ -394,6 +427,17 @@ export default function OrderDetail() {
       return Array.isArray(payload?.data)
         ? payload.data.filter((entry: OrderInboundAttachmentAudit) => entry.actionType === "inbound_record_attached")
         : [];
+    },
+    enabled: Boolean(orderId),
+    staleTime: 30_000,
+  });
+  const { data: orderAttachments = [] } = useQuery<Array<{ id: string }>>({
+    queryKey: [`/api/orders/${orderId}/attachments`],
+    queryFn: async () => {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId ?? "")}/attachments`);
+      if (!response.ok) throw new Error("Failed to load order attachments");
+      const payload = await response.json();
+      return Array.isArray(payload?.data) ? payload.data : [];
     },
     enabled: Boolean(orderId),
     staleTime: 30_000,
@@ -1911,8 +1955,6 @@ export default function OrderDetail() {
     invoices: orderInvoices,
   });
   const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
-  const designBillingCandidateTotal = designBillingRows.reduce((sum, row) => sum + (row.billableDesignAmount ?? 0), 0);
-  const designBillingSoldTotal = designBillingRows.reduce((sum, row) => sum + (row.soldDesignAmount ?? 0), 0);
   const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
   const billingLineItems = order.lineItems ?? [];
   const isServiceFeeOnlyOrder = billingLineItems.length > 0 && billingLineItems.every((lineItem: any) =>
@@ -2990,11 +3032,11 @@ export default function OrderDetail() {
               />
 
               {/* Totals */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg font-medium">Totals</CardTitle>
+              <Card className="ml-auto w-full max-w-sm">
+                <CardHeader className="px-4 py-3">
+                  <CardTitle className="text-base font-medium">Totals</CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="px-4 pb-4 pt-0">
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Subtotal</span>
@@ -3040,7 +3082,7 @@ export default function OrderDetail() {
           <div className="min-w-0 space-y-6">
             {/* Fulfillment & Shipping */}
             <Card>
-              <CardHeader>
+              <CardHeader className="px-4 py-3">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
                   <div className="flex items-center gap-2">
@@ -3084,7 +3126,7 @@ export default function OrderDetail() {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3 px-4 pb-4 pt-0">
                 {currentFulfillmentMethod === "pickup" ? (
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Pickup notes</label>
@@ -3433,67 +3475,93 @@ export default function OrderDetail() {
                       )}
 
                       {/* Customer-facing order document actions */}
-                      <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-sm font-medium">Order PDF</span>
                           {orderPdfUnavailableReason ? (
-                            <span className="text-xs text-muted-foreground text-right">{orderPdfUnavailableReason}</span>
+                            <span className="ml-2 text-xs text-muted-foreground text-right">{orderPdfUnavailableReason}</span>
                           ) : null}
                         </div>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-wrap gap-1">
                           <Button
                             variant="outline"
                             size="sm"
+                            className="h-8 px-2"
                             onClick={() => void handleOrderPdfAction("preview")}
                             disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
+                            aria-label="Preview Order"
+                            title="Preview Order"
                           >
-                            <FileText className="h-4 w-4 mr-2" />
-                            {isOrderPdfBusy === "preview" ? "Opening..." : "Preview Order"}
+                            <FileText className="h-4 w-4" />
+                            <span className="sr-only">{isOrderPdfBusy === "preview" ? "Opening Order preview" : "Preview Order"}</span>
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
+                            className="h-8 px-2"
                             onClick={() => void handleOrderPdfAction("download")}
                             disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
+                            aria-label="Download Order PDF"
+                            title="Download PDF"
                           >
-                            <Download className="h-4 w-4 mr-2" />
-                            {isOrderPdfBusy === "download" ? "Downloading..." : "Download PDF"}
+                            <Download className="h-4 w-4" />
+                            <span className="sr-only">{isOrderPdfBusy === "download" ? "Downloading Order PDF" : "Download PDF"}</span>
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
+                            className="h-8 px-2"
                             onClick={handleOpenOrderEmailDialog}
                             disabled={!canUseOrderPdf || sendOrderEmailMutation.isPending}
+                            aria-label="Email Order"
+                            title="Email Order"
                           >
-                            <Mail className="h-4 w-4 mr-2" />
-                            {sendOrderEmailMutation.isPending ? "Sending..." : "Email Order"}
+                            <Mail className="h-4 w-4" />
+                            <span className="sr-only">{sendOrderEmailMutation.isPending ? "Sending Order email" : "Email Order"}</span>
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
+                            className="h-8 px-2"
                             onClick={() => void handleOrderPdfAction("print")}
                             disabled={!canUseOrderPdf || isOrderPdfBusy !== null}
+                            aria-label="Print Order"
+                            title="Print Order"
                           >
-                            <Printer className="h-4 w-4 mr-2" />
-                            {isOrderPdfBusy === "print" ? "Opening..." : "Print Order"}
+                            <Printer className="h-4 w-4" />
+                            <span className="sr-only">{isOrderPdfBusy === "print" ? "Opening Order print view" : "Print Order"}</span>
                           </Button>
                         </div>
                       </div>
 
                       {/* Packing Slip */}
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-3">
                         <span className="text-sm font-medium">Packing Slip</span>
                         <Button
                           variant="outline"
                           size="sm"
+                          className="h-8 px-2"
                           onClick={handleGeneratePackingSlip}
                           disabled={generatePackingSlip.isPending || orderIsCanceled}
+                          aria-label="Generate and view packing slip"
+                          title="Generate and view packing slip"
                         >
-                          <FileText className="h-4 w-4 mr-2" />
-                          {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
+                          <FileText className="h-4 w-4" />
+                          <span className="sr-only">{generatePackingSlip.isPending ? "Generating packing slip" : "Generate and view packing slip"}</span>
                         </Button>
                       </div>
 
+                      <Collapsible defaultOpen={false} className="rounded-md border border-border/60 px-3 py-2">
+                        <CollapsibleTrigger asChild>
+                          <button type="button" className="flex w-full items-center justify-between text-left text-sm font-medium">
+                            <span>Shipment administration</span>
+                            <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
+                              {shipments.length} {shipments.length === 1 ? "shipment" : "shipments"}
+                              <ChevronDown className="h-4 w-4" />
+                            </span>
+                          </button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="space-y-3 pt-3">
                       {/* Manual Status Override (Manager+) */}
                       {isManagerOrHigher && (
                         <div className="space-y-2">
@@ -3621,7 +3689,9 @@ export default function OrderDetail() {
                       ))}
                     </div>
                   )}
-                </div>
+                    </div>
+                    </CollapsibleContent>
+                  </Collapsible>
                     </>
                   )}
               </CardContent>
@@ -3629,7 +3699,7 @@ export default function OrderDetail() {
 
             {/* Billing */}
             <Card>
-              <CardHeader>
+              <CardHeader className="px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <CardTitle className="text-lg font-medium">Billing</CardTitle>
                   <div className="flex items-center gap-2">
@@ -3639,7 +3709,7 @@ export default function OrderDetail() {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3 px-4 pb-4 pt-0">
                 {billingStatus === 'ready' && billingReadyAtValue && (
                   <div className="text-sm text-muted-foreground">
                     Ready since {formatDate(billingReadyAtValue)}
@@ -3684,28 +3754,41 @@ export default function OrderDetail() {
                     </Button>
                   )}
 
-                  {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
-                    <Button variant="secondary" onClick={() => setBillingOverrideDialogOpen(true)}>
-                      Set Ready Override
-                    </Button>
-                  )}
-
-                  {isAdminOrOwner && billingOverrideActive && (
-                    <Button variant="outline" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
-                      {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
-                    </Button>
-                  )}
                 </div>
 
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-medium">Design billing visibility</div>
-                    {designBillingRows.length > 0 && (
-                      <div className="text-xs text-muted-foreground">
-                        Candidate {formatCurrency(designBillingCandidateTotal)} • Sold {formatCurrency(designBillingSoldTotal)}
-                      </div>
-                    )}
-                  </div>
+                {isAdminOrOwner && billingStatus !== 'billed' && (
+                  <Collapsible defaultOpen={false} className="rounded-md border border-border/60 px-3 py-2">
+                    <CollapsibleTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between gap-3 text-left text-sm font-medium">
+                        <span>Billing administration</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3">
+                      {!billingOverrideActive ? (
+                        <Button variant="secondary" size="sm" onClick={() => setBillingOverrideDialogOpen(true)}>
+                          Set Ready Override
+                        </Button>
+                      ) : (
+                        <Button variant="outline" size="sm" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
+                          {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
+                        </Button>
+                      )}
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+
+                <Collapsible defaultOpen={false} className="rounded-md border border-border/60 px-3 py-2">
+                  <CollapsibleTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between gap-3 text-left text-sm font-medium">
+                      <span>Design billing diagnostics</span>
+                      <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
+                        {designBillingRows.length > 0 ? `${designBillingRows.length} lines` : "No lines"}
+                        <ChevronDown className="h-4 w-4" />
+                      </span>
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="space-y-2 pt-3">
                   <div className="text-sm text-muted-foreground">
                     Visibility only. This does not create invoice rows or change order totals.
                     {designBillingUnsyncedCount > 0 ? ` ${designBillingUnsyncedCount} line item${designBillingUnsyncedCount === 1 ? '' : 's'} still have no synced design summary.` : ''}
@@ -3776,7 +3859,8 @@ export default function OrderDetail() {
                       </TableBody>
                     </Table>
                   )}
-                </div>
+                  </CollapsibleContent>
+                </Collapsible>
 
                 <div className="space-y-2">
                   <div className="text-sm font-medium">Invoices</div>
@@ -3953,14 +4037,11 @@ export default function OrderDetail() {
             </Card>
 
             {/* Attachments */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg font-medium">Attachments</CardTitle>
-                <CardDescription>
-                  Add POs, instructions, shipping docs, etc.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
+            <OrderUtilitySection
+              title="Attachments"
+              badge={<Badge variant="outline">{orderAttachments.length}</Badge>}
+            >
+              <p className="mb-3 text-sm text-muted-foreground">Add POs, instructions, shipping docs, and other order files.</p>
                 <OrderAttachmentsPanel
                   orderId={order.id}
                   locked={false}
@@ -3982,8 +4063,7 @@ export default function OrderDetail() {
                     </div>
                   </div>
                 )}
-              </CardContent>
-            </Card>
+            </OrderUtilitySection>
 
             {/* Source Quote */}
             {(order.quote || order.sourceQuoteNumber) && (
@@ -4007,14 +4087,14 @@ export default function OrderDetail() {
             )}
 
             <Card>
-              <CardHeader className="py-4 px-6">
+              <CardHeader className="px-4 py-3">
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
                       onClick={() => setRightPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
                       className={cn(
-                        "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
+                        "text-sm font-medium transition-colors hover:text-foreground cursor-pointer",
                         rightPanel === "timeline" ? "text-foreground" : "text-muted-foreground"
                       )}
                     >
@@ -4027,7 +4107,7 @@ export default function OrderDetail() {
                       type="button"
                       onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
                       className={cn(
-                        "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
+                        "text-sm font-medium transition-colors hover:text-foreground cursor-pointer",
                         rightPanel === "material" ? "text-foreground" : "text-muted-foreground"
                       )}
                     >
@@ -4061,7 +4141,7 @@ export default function OrderDetail() {
                 </div>
               </CardHeader>
               {rightPanel !== "collapsed" && (
-                <CardContent className="py-4 px-6">
+                <CardContent className="px-4 pb-4 pt-0">
                   {rightPanel === "timeline" && (
                     <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
                   )}
@@ -4081,11 +4161,7 @@ export default function OrderDetail() {
               canManageProofPolicy: isAdminOrOwner && !orderIsCanceled,
               proofBypassed,
             }) && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Secondary Actions</CardTitle>
-                </CardHeader>
-                <CardContent>
+              <OrderUtilitySection title="Secondary Actions">
                   <OrderDetailSecondaryActions
                     canManageProofPolicy={isAdminOrOwner && !orderIsCanceled}
                     proofBypassed={proofBypassed}
@@ -4095,8 +4171,7 @@ export default function OrderDetail() {
                     onBypassProof={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
                     onRequireProofDefaults={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}
                   />
-                </CardContent>
-              </Card>
+              </OrderUtilitySection>
             )}
           </div>
         </div>
