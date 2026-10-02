@@ -14,6 +14,8 @@ test('Close Job Override actions render only from the backend canonical eligibil
   expect(source).toContain('useCloseJobOverrideEligibility');
   expect(source).toContain('isCloseJobOverrideEligible(previewQuery.data)');
   expect(source).toContain('canCloseJobOverride: boolean');
+  expect(source).toContain('label = "Close Job Override"');
+  expect(source).toContain('label?: string');
 });
 
 test('Close Job Override requires a live bootstrap acknowledgement when any remaining line has no owner', () => {

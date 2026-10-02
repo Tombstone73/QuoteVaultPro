@@ -100,16 +100,18 @@ export function CloseJobOverrideAction({
   isAdminOrOwner,
   onOpen,
   className,
+  label = "Close Job Override",
 }: {
   target: CloseJobOverrideTarget | null;
   isAdminOrOwner: boolean;
   onOpen: (target: CloseJobOverrideTarget) => void;
   className?: string;
+  label?: string;
 }) {
   const previewQuery = useCloseJobOverrideEligibility(target?.orderId, isAdminOrOwner);
   if (!target || !isAdminOrOwner || !isCloseJobOverrideEligible(previewQuery.data)) return null;
   return <Button variant="outline" size="sm" className={className} onClick={() => onOpen(target)}>
-    <ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />Close Job Override
+    <ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />{label}
   </Button>;
 }
 

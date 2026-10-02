@@ -45,6 +45,7 @@ test('cancel makes no mutation; unauthorized users see state without a release a
 
 test('compact list menu opens the same release confirmation without mutating', () => {
   render(base, true, true);
+  expect(document.body.textContent).not.toContain('Internal Only');
   const menu = document.querySelector('button[aria-label="Customer access actions"]')!;
   act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
   const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find(element => element.textContent === 'Release to Customer')!;
@@ -52,6 +53,13 @@ test('compact list menu opens the same release confirmation without mutating', (
   act(() => (item as HTMLElement).click());
   expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
   expect(mockFetch).not.toHaveBeenCalled();
+});
+
+test('compact list presentation only shows a subtle accessible indicator after customer visibility is explicit', () => {
+  render({ ...base, customerVisible: true, customerReleaseEligible: false }, false, true);
+  const indicator = document.querySelector('[role="img"][aria-label="Customer Visible"]');
+  expect(indicator).not.toBeNull();
+  expect(document.body.textContent).not.toContain('Internal Only');
 });
 
 test.each([

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { MoreHorizontal } from 'lucide-react';
+import { Eye, MoreHorizontal } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from '@/components/ui/alert-dialog';
 import { apiFetch } from '@/lib/queryClient';
@@ -37,8 +37,11 @@ export function InvoiceCustomerReleaseAction({ invoice, canRelease, compact = fa
     },
     onError: (error: Error) => toast({ title: 'Release failed', description: error.message, variant: 'destructive' }),
   });
+  const visibilityLabel = invoice.customerReleasedAt ? 'Customer Released' : 'Customer Visible';
   return <div className="flex flex-wrap items-center gap-1" onClick={(event) => event.stopPropagation()}>
-    <Badge variant="outline">{invoice.customerReleasedAt ? 'Customer Released' : invoice.customerVisible ? 'Customer Visible' : 'Internal Only'}</Badge>
+    {compact
+      ? invoice.customerVisible ? <span role="img" className="inline-flex h-8 w-6 items-center justify-center text-muted-foreground" aria-label={visibilityLabel} title={visibilityLabel}><Eye className="h-3.5 w-3.5" aria-hidden="true" /><span className="sr-only">{visibilityLabel}</span></span> : null
+      : <Badge variant="outline">{invoice.customerVisible ? visibilityLabel : 'Internal Only'}</Badge>}
     {canRelease && invoice.customerReleaseEligible && (compact ? <DropdownMenu>
       <DropdownMenuTrigger asChild><Button type="button" size="icon" variant="outline" className="h-8 w-8" aria-label="Customer access actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setOpen(true)}>Release to Customer</DropdownMenuItem></DropdownMenuContent>

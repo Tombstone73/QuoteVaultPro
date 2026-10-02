@@ -888,7 +888,7 @@ export default function InvoicesListPage() {
       case "total": return <>{renderSortableHead("total", column.label, "min-w-[110px] text-right")}</>;
       case "paid": return <>{renderSortableHead("paid", column.label, "min-w-[100px] text-right")}</>;
       case "balance": return <>{renderSortableHead("balance", column.label, "min-w-[110px] text-right")}</>;
-      case "actions": return <TitanTableHead key={column.id} className="sticky right-0 z-10 min-w-[310px] bg-background text-center">Actions</TitanTableHead>;
+      case "actions": return <TitanTableHead key={column.id} className="sticky right-0 z-10 min-w-[220px] bg-background text-center">Actions</TitanTableHead>;
       default: return null;
     }
   };
@@ -911,7 +911,7 @@ export default function InvoicesListPage() {
       case "total": return <TitanTableCell key={column.id} className="text-right">{formatCurrency(invoice.displayTotal ?? invoice.total)}</TitanTableCell>;
       case "paid": return <TitanTableCell key={column.id} className="text-right">{formatCurrency(invoice.displayPaid ?? invoice.amountPaid)}</TitanTableCell>;
       case "balance": return <TitanTableCell key={column.id} className="text-right font-semibold">{formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}</TitanTableCell>;
-      case "actions": return <TitanTableCell key={column.id} className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(event) => event.stopPropagation()}><TooltipProvider delayDuration={250}><div className="flex min-w-max flex-wrap items-center justify-start gap-1"><InvoiceCustomerReleaseAction invoice={invoice} canRelease={Boolean(isAdminOrOwner)} compact />{renderInvoiceEmailButton(invoice)}<CloseJobOverrideAction target={invoice.orderId ? { orderId: invoice.orderId, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) } : null} isAdminOrOwner={Boolean(isAdminOrOwner)} onOpen={setOverrideTarget} className="h-8 px-2" />{canTakePaymentFromInvoiceList(invoice) ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip> : null}<Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip></div></TooltipProvider></TitanTableCell>;
+      case "actions": return <TitanTableCell key={column.id} className="sticky right-0 min-w-[220px] bg-background px-2" onClick={(event) => event.stopPropagation()}><TooltipProvider delayDuration={250}><div className="flex flex-wrap items-center justify-start gap-1"><InvoiceCustomerReleaseAction invoice={invoice} canRelease={Boolean(isAdminOrOwner)} compact />{renderInvoiceEmailButton(invoice)}<CloseJobOverrideAction target={invoice.orderId ? { orderId: invoice.orderId, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) } : null} isAdminOrOwner={Boolean(isAdminOrOwner)} onOpen={setOverrideTarget} className="h-8 px-2" label="Close Job" />{canTakePaymentFromInvoiceList(invoice) ? <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip> : null}<Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8" asChild><Link to={`/invoices/${invoice.id}`} aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye className="h-4 w-4" /></Link></Button></TooltipTrigger><TooltipContent>View Invoice</TooltipContent></Tooltip></div></TooltipProvider></TitanTableCell>;
       default: return null;
     }
   };
@@ -1132,7 +1132,7 @@ export default function InvoicesListPage() {
                 {renderSortableHead("total", "Total", "min-w-[110px] text-right")}
                 <TitanTableHead className="min-w-[100px] text-right">Paid</TitanTableHead>
                 {renderSortableHead("balance", "Balance", "min-w-[110px] text-right")}
-                <TitanTableHead className="sticky right-0 z-10 min-w-[310px] bg-background text-center">Actions</TitanTableHead>
+                <TitanTableHead className="sticky right-0 z-10 min-w-[220px] bg-background text-center">Actions</TitanTableHead>
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
@@ -1258,11 +1258,11 @@ export default function InvoicesListPage() {
                   <TitanTableCell className="text-right font-semibold">
                     {formatCurrency(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid))}
                   </TitanTableCell>
-                  <TitanTableCell className="sticky right-0 min-w-[310px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
+                  <TitanTableCell className="sticky right-0 min-w-[220px] bg-background px-2" onClick={(e) => e.stopPropagation()}>
                     <TooltipProvider delayDuration={250}>
-                    <div className="flex min-w-max flex-wrap items-center justify-start gap-1">
+                    <div className="flex flex-wrap items-center justify-start gap-1">
                       <InvoiceCustomerReleaseAction invoice={invoice} canRelease={Boolean(isAdminOrOwner)} compact />{renderInvoiceEmailButton(invoice)}
-                      <CloseJobOverrideAction target={invoice.orderId ? { orderId: invoice.orderId, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) } : null} isAdminOrOwner={Boolean(isAdminOrOwner)} onOpen={setOverrideTarget} className="h-8 px-2" />
+                      <CloseJobOverrideAction target={invoice.orderId ? { orderId: invoice.orderId, orderNumber: invoice.orderNumber, jobName: invoice.jobName || invoice.orderName, purchaseOrderNumber: invoice.purchaseOrderNumber, customerName: invoice.companyName || invoice.customerName, invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, jobStatus: getOrderJobStatus(invoice) } : null} isAdminOrOwner={Boolean(isAdminOrOwner)} onOpen={setOverrideTarget} className="h-8 px-2" label="Close Job" />
                       {canTakePaymentFromInvoiceList(invoice) ? (
                         <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" className="h-8 w-8 text-base font-semibold" aria-label={`Take payment for invoice ${invoice.invoiceNumber}`} onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>$</Button></TooltipTrigger><TooltipContent>Take Payment</TooltipContent></Tooltip>
                       ) : null}
