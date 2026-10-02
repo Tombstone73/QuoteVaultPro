@@ -53,9 +53,10 @@ describe("order detail action contracts", () => {
     expect(detail).not.toContain('Take Payment');
   });
 
-  test("keeps the dense Order header shrinkable within the application workspace", () => {
-    expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3"');
-    expect(detail).toContain('className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"');
+  test("keeps identity and action controls in one responsive header region", () => {
+    expect(detail).toContain('className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-center"');
+    expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end"');
+    expect(detail).not.toContain('className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"');
   });
 
   test("keeps specialist Order controls reachable through compact disclosure", () => {
