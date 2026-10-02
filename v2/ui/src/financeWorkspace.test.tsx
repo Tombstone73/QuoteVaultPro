@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
-import { financeApi, type FinancialInvoicePage, type FinancialInvoiceRead } from "./api";
+import { financeApi, invoiceApi, type FinancialInvoicePage, type FinancialInvoiceRead } from "./api";
 import { FinanceWorkspace, invoiceDocumentPath } from "./FinanceWorkspace";
 
 const money = (cents: number) => ({ cents, currency: "USD" });
@@ -147,11 +147,8 @@ assert.match(apiSource, /settings\/accounting\/sync-selected/);
 assert.match(workspaceSource, /selectInvoice\(row\.invoiceId, row\.source\)/, "the Invoice grid opens with the canonical V2 Invoice ID");
 assert.match(workspaceSource, /if \(invoiceId\) \{ setSelected\(invoiceId\); setSelectedSource\("v2"\); \}/, "a direct Invoice route preserves its canonical selection through workspace initialization");
 assert.match(workspaceSource, /loadStripe\(publishableKey,\{stripeAccount:stripeAccountId\}\)/, "Payment Element must bind the server-selected connected account for direct charges");
-assert.match(workspaceSource, /setEmailInvoiceIds\(invoiceIds\)/, "email admission snapshots the selected invoices before opening its preview");
-assert.match(workspaceSource, /setEmailRequestId\(newBusinessRequestId\(\)\)/, "email admission keeps one stable request identity across pending state and retry");
 assert.match(workspaceSource, /emailAdmissionError && <p className="notice error" role="alert">/, "email admission failures remain visible in the dialog");
 assert.match(workspaceSource, /<p role="status">\{emailAdmission\.queuedInvoices\}/, "email admission success reports queued work in the dialog");
-assert.match(workspaceSource, /disabled=\{!csrfReady \|\| !emailRequestId \|\| !emailInvoiceIds\.length \|\| emailSelected\.isPending/, "email admission prevents duplicate submission while pending");
 assert.match(apiSource, /Invoice email admission returned an invalid response\. No email was queued\./, "an invalid admission response is surfaced as an actionable failure");
 assert.match(workspaceSource, /"finance", "overview", invoiceQuery/, "Finance pages cache by the complete server query");
 assert.match(workspaceSource, /Select visible invoices/, "select-visible is explicitly page scoped");
@@ -195,18 +192,32 @@ const emptyPage: FinancialInvoicePage = { ...invoicePage, items: [], totalMatchi
   summary: { ...invoicePage.summary, totalMatching: 0, outstanding: [], openInvoiceCount: 0, unpaid: { count: 0, balance: [] } } };
 type WorkspaceProps = React.ComponentProps<typeof FinanceWorkspace>;
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://ui.invalid/invoices" });
-const previousGlobals = new Map(["window", "document", "localStorage", "IS_REACT_ACT_ENVIRONMENT"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-const originalApi = { overview: financeApi.overview, invoice: financeApi.invoice, legacyInvoice: financeApi.legacyInvoice };
+const previousGlobals = new Map(["window", "document", "localStorage", "crypto", "fetch", "IS_REACT_ACT_ENVIRONMENT"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+const originalApi = { ...financeApi }, originalInvoiceApi = { ...invoiceApi };
+const businessRequestIds: string[] = [], financialCalls: string[] = [];
+let stripeCreations = 0, networkCalls = 0;
 Object.defineProperties(globalThis, {
   window: { configurable: true, value: dom.window }, document: { configurable: true, value: dom.window.document },
   localStorage: { configurable: true, value: dom.window.localStorage }, IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
+  crypto: { configurable: true, value: { randomUUID: () => { const id = `email-request-${businessRequestIds.length + 1}`; businessRequestIds.push(id); return id; } } },
+  fetch: { configurable: true, value: async () => { networkCalls++; throw new Error("Unexpected network call in mounted Finance test."); } },
 });
+Object.defineProperty(dom.window, "Stripe", { value: () => { stripeCreations++; throw new Error("Email must not create a Stripe SDK instance."); } });
+for (const operation of ["recordPayment", "recordRefund", "beginStripePayment", "beginStripeRefund"] as const) {
+  financeApi[operation] = async () => { financialCalls.push(operation); throw new Error(`Unexpected financial mutation: ${operation}`); };
+}
+invoiceApi.issue = async () => { financialCalls.push("issue"); throw new Error("Unexpected Invoice issue mutation."); };
+type EmailPreview = Awaited<ReturnType<typeof invoiceApi.emailPreview>>;
+type EmailAdmission = Awaited<ReturnType<typeof invoiceApi.emailSelected>>;
+const previewResult = (selected = 1, recipientCount = 1): EmailPreview => ({ selected, deliverableInvoices: selected, recipientCount, skipped: 0 });
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const mount = async (overrides: Partial<WorkspaceProps> = {}, page = invoicePage) => {
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
   const reads: { organizationId: string; invoiceId: string; result: ReturnType<typeof deferred<FinancialInvoiceRead>> }[] = [];
+  const previews: { organizationId: string; invoiceIds: readonly string[]; result: ReturnType<typeof deferred<EmailPreview>> }[] = [];
+  const admissions: { organizationId: string; requestId: string; invoiceIds: readonly string[]; result: ReturnType<typeof deferred<EmailAdmission>> }[] = [];
   const selections: string[] = [], orders: string[] = [];
   let backCount = 0, overviewCount = 0;
   financeApi.overview = async () => { overviewCount++; return page; };
@@ -214,6 +225,12 @@ const mount = async (overrides: Partial<WorkspaceProps> = {}, page = invoicePage
     const result = deferred<FinancialInvoiceRead>(); reads.push({ organizationId, invoiceId, result }); return result.promise;
   };
   financeApi.legacyInvoice = financeApi.invoice;
+  invoiceApi.emailPreview = async (organizationId, invoiceIds) => {
+    const result = deferred<EmailPreview>(); previews.push({ organizationId, invoiceIds, result }); return result.promise;
+  };
+  invoiceApi.emailSelected = async (organizationId, requestId, invoiceIds) => {
+    const result = deferred<EmailAdmission>(); admissions.push({ organizationId, requestId, invoiceIds, result }); return result.promise;
+  };
   let props: WorkspaceProps = {
     mode: "invoices", organizationId: "org-a", sessionScope: "scope-a", invoiceId: "invoice-original",
     onSelectInvoice: (id) => { selections.push(id); props = { ...props, invoiceId: id }; render(); },
@@ -228,13 +245,24 @@ const mount = async (overrides: Partial<WorkspaceProps> = {}, page = invoicePage
     assert.ok(found, `Missing button: ${label}`); return found;
   };
   return {
-    container, client, reads, selections, orders, button,
+    container, client, reads, previews, admissions, selections, orders, button,
     get backCount() { return backCount; }, get overviewCount() { return overviewCount; },
     click: async (label: string) => { await act(async () => button(label).click()); await flush(); },
     update: async (next: Partial<WorkspaceProps>) => { props = { ...props, ...next }; await act(async () => render()); await flush(); },
     resolve: async (index: number, value: FinancialInvoiceRead) => { await act(async () => reads[index]!.result.resolve(value)); await flush(); },
     reject: async (index: number, code = "NOT_FOUND", message = "Invoice financial history was not found.") => {
       await act(async () => reads[index]!.result.reject({ code, status: code === "FORBIDDEN" ? 403 : 404, message })); await flush();
+    },
+    toggleInvoice: async (index: number) => {
+      const checkbox = container.querySelectorAll<HTMLInputElement>('input[aria-label="Select invoice"]')[index];
+      assert.ok(checkbox, `Missing selectable Invoice ${index}`);
+      await act(async () => checkbox.click()); await flush();
+    },
+    resolvePreview: async (index: number, value = previewResult()) => { await act(async () => previews[index]!.result.resolve(value)); await flush(); },
+    rejectPreview: async (index: number) => { await act(async () => previews[index]!.result.reject(new Error("Recipient service unavailable."))); await flush(); },
+    resolveAdmission: async (index: number) => {
+      const selected = admissions[index]!.invoiceIds.length;
+      await act(async () => admissions[index]!.result.resolve({ batchId: "batch-a", selected, queuedInvoices: selected, queuedMessages: 1, skipped: 0, replayed: false })); await flush();
     },
     close: async () => { await act(async () => root.unmount()); client.clear(); container.remove(); },
   };
@@ -327,8 +355,147 @@ try {
     } finally { await view.close(); }
   }
   console.log("PASS mounted Invoice safe empty, initial denied, raw native/legacy number absence, and live-draft Order display");
+
+  const assertEmailIsolation = (view: Awaited<ReturnType<typeof mount>>) => {
+    const dialogs = [...view.container.querySelectorAll('[role="dialog"]')];
+    assert.equal(dialogs.length, 1, "Email with loaded Invoice detail must render exactly one dialog");
+    assert.equal(dialogs[0]!.getAttribute("aria-label"), "Send selected invoices");
+    assert.equal(dialogs[0]!.querySelector("input, select, form, iframe"), null);
+    assert.deepEqual([...view.container.querySelectorAll("button")].map((button) => button.textContent)
+      .filter((label) => /^(Take Payment|Pay by Card|Record Refund|Refund to Card|Record Payment|Submit Stripe Refund|Continue to card|Confirm card payment|Issue Invoice)$/.test(label!)),
+    [], "The email path exposes no financial controls, including behind the modal");
+    assert.deepEqual(financialCalls, []);
+    assert.equal(stripeCreations, 0);
+    assert.equal(document.querySelector('script[src*="stripe"]'), null);
+    assert.equal(networkCalls, 0);
+  };
+  const email = await mount({ canInvoiceSend: true });
+  try {
+    const withPayment: FinancialInvoiceRead = { ...originalInvoice,
+      settlement: { ...originalInvoice.settlement, paid: money(200), balance: money(400) },
+      history: [{ kind: "payment", id: "stripe-payment-a", amount: money(200), method: "card", source: "provider",
+        occurredAt: "2026-08-27T00:00:00.000Z", recordedAt: "2026-08-27T00:00:00.000Z", balanceAfter: money(400) }] };
+    const unchangedFacts = JSON.stringify(withPayment);
+    await email.resolve(0, withPayment);
+    for (const label of ["Take Payment", "Pay by Card", "Record Refund", "Refund to Card"]) email.button(label);
+    await email.toggleInvoice(0); await email.toggleInvoice(1);
+    const before = businessRequestIds.length;
+    await email.click("Send selected");
+    const requestId = businessRequestIds.at(-1)!;
+    assert.equal(businessRequestIds.length, before + 1);
+    assertEmailIsolation(email);
+    assert.deepEqual(email.previews[0]!.invoiceIds, ["invoice-original", "invoice-replacement"]);
+    assert.equal(email.button("Queue email delivery").disabled, true);
+    await email.click("Queue email delivery");
+    assert.equal(email.admissions.length, 0);
+    await email.rejectPreview(0);
+    assertEmailIsolation(email);
+    assert.match(email.container.querySelector('[role="dialog"] [role="alert"]')!.textContent!, /Recipient service unavailable/);
+    assert.equal(email.button("Queue email delivery").disabled, true);
+    assert.equal(email.previews.length, 1, "Failed preview must not retry automatically");
+    await email.click("Clear selection");
+    await email.toggleInvoice(1);
+    await email.click("Retry recipient preview (read only)");
+    assert.equal(email.previews.length, 2);
+    assert.equal(email.previews[1]!.organizationId, "org-a");
+    assert.strictEqual(email.previews[1]!.invoiceIds, email.previews[0]!.invoiceIds, "Read retry retains the captured set, not the changed grid selection");
+    assert.equal(businessRequestIds.length, before + 1, "Read retry cannot create a business request identity");
+    assert.equal(email.admissions.length, 0, "Read retry cannot invoke the batch admission POST");
+    assertEmailIsolation(email);
+    await email.resolvePreview(1, previewResult(2));
+    assert.equal(email.admissions.length, 0, "Preview success must not automatically queue email");
+    assert.equal(email.button("Queue email delivery").disabled, false);
+    await email.update({ csrfReady: false });
+    assert.equal(email.button("Queue email delivery").disabled, true);
+    await email.click("Queue email delivery");
+    assert.equal(email.admissions.length, 0);
+    await email.update({ csrfReady: true });
+    await email.click("Queue email delivery");
+    assert.equal(email.admissions.length, 1);
+    assert.equal(email.admissions[0]!.requestId, requestId, "Admission uses the identity created before the failed read");
+    assert.equal(email.admissions[0]!.organizationId, "org-a");
+    assert.strictEqual(email.admissions[0]!.invoiceIds, email.previews[0]!.invoiceIds);
+    assert.equal(email.button("Queuing…").disabled, true);
+    assert.equal(email.button("Close").disabled, true);
+    await email.click("Queuing…");
+    assert.equal(email.admissions.length, 1);
+    await email.resolveAdmission(0);
+    assert.match(email.container.querySelector('[role="dialog"] [role="status"]')!.textContent!, /2 invoices queued in 1 customer email/);
+    assert.equal(businessRequestIds.length, before + 1);
+    assertEmailIsolation(email);
+    assert.equal(JSON.stringify(withPayment), unchangedFacts, "Email operations do not change issued financial evidence");
+    await email.click("Close");
+    assert.equal(email.container.querySelector('[role="dialog"]'), null);
+    for (const label of ["Take Payment", "Pay by Card", "Record Refund", "Refund to Card"]) email.button(label);
+    console.log("PASS mounted email-only dialog, failed preview read retry, captured selection/request identity, explicit admission and no financial/Stripe effects");
+  } finally { await email.close(); }
+
+  const stale = await mount({ canInvoiceSend: true });
+  try {
+    await stale.resolve(0, originalInvoice);
+    await stale.toggleInvoice(0); await stale.click("Send selected");
+    await stale.resolvePreview(0, previewResult(1, 17));
+    assert.equal(stale.button("Queue email delivery").disabled, false);
+    await stale.click("Close"); await stale.click("Clear selection");
+    await stale.toggleInvoice(1); await stale.click("Send selected");
+    assertEmailIsolation(stale);
+    assert.equal(stale.button("Queue email delivery").disabled, true, "A prior successful preview cannot authorize the new selection");
+    assert.doesNotMatch(stale.container.querySelector('[role="dialog"]')!.textContent!, /17 recipients/);
+    await stale.rejectPreview(1);
+    assert.equal(stale.button("Queue email delivery").disabled, true);
+    await stale.click("Queue email delivery"); assert.equal(stale.admissions.length, 0);
+    await stale.click("Retry recipient preview (read only)");
+    await stale.click("Close"); await stale.click("Clear selection");
+    await stale.toggleInvoice(0); await stale.click("Send selected");
+    await stale.rejectPreview(3);
+    await stale.resolvePreview(2, previewResult(1, 23));
+    assert.equal(stale.button("Queue email delivery").disabled, true, "A late success cannot replace the new selection's failed preview");
+    assert.doesNotMatch(stale.container.querySelector('[role="dialog"]')!.textContent!, /23 recipients/);
+    await stale.click("Queue email delivery"); assert.equal(stale.admissions.length, 0);
+    assertEmailIsolation(stale);
+    console.log("PASS mounted prior and late email preview successes cannot authorize another selection");
+  } finally { await stale.close(); }
+
+  for (const change of [
+    { organizationId: "org-b" }, { sessionScope: "scope-b" }, { canInvoiceSend: false }, { canPaymentView: false },
+  ] satisfies Partial<WorkspaceProps>[]) {
+    const scoped = await mount({ canInvoiceSend: true });
+    try {
+      await scoped.resolve(0, originalInvoice);
+      await scoped.toggleInvoice(0); await scoped.click("Send selected");
+      const requestCount = businessRequestIds.length;
+      await scoped.update(change);
+      assert.equal(scoped.container.querySelector('[role="dialog"]'), null, "Context changes invalidate the email dialog immediately");
+      await scoped.update({ organizationId: "org-a", sessionScope: "scope-a", canInvoiceSend: true, canPaymentView: true });
+      assert.equal(scoped.container.querySelector('[role="dialog"]'), null, "Returning to the old scope cannot revive its email intent");
+      assert.equal(businessRequestIds.length, requestCount);
+      assert.equal(scoped.previews.length, 1, "Context changes never automatically retry preview");
+      assert.ok([...scoped.container.querySelectorAll<HTMLInputElement>('input[aria-label="Select invoice"]')].every((input) => !input.checked));
+      await scoped.toggleInvoice(1); await scoped.click("Send selected");
+      await scoped.resolvePreview(0, previewResult(1, 31));
+      assertEmailIsolation(scoped);
+      assert.equal(scoped.button("Queue email delivery").disabled, true);
+      assert.doesNotMatch(scoped.container.querySelector('[role="dialog"]')!.textContent!, /31 recipients/);
+      await scoped.rejectPreview(1); await scoped.click("Retry recipient preview (read only)");
+      assert.deepEqual(scoped.previews[2]!.invoiceIds, ["invoice-replacement"]);
+      assert.equal(scoped.previews[2]!.organizationId, "org-a");
+      assert.equal(businessRequestIds.length, requestCount + 1);
+      assert.equal(scoped.admissions.length, 0);
+      await scoped.resolvePreview(2);
+      assert.equal(scoped.button("Queue email delivery").disabled, false);
+      await scoped.update(change);
+      await scoped.update({ organizationId: "org-a", sessionScope: "scope-a", canInvoiceSend: true, canPaymentView: true });
+      assert.equal(scoped.container.querySelector('[role="dialog"]'), null, "A successful preview is also invalidated when scope or permission changes");
+      assert.equal(scoped.previews.length, 3);
+      assert.equal(scoped.admissions.length, 0);
+    } finally { await scoped.close(); }
+  }
+  assert.deepEqual(financialCalls, []);
+  assert.equal(stripeCreations, 0); assert.equal(networkCalls, 0);
+  console.log("PASS mounted email tenant/session/permission invalidation, explicit scoped read retry, and zero financial/provider calls");
 } finally {
   Object.assign(financeApi, originalApi);
+  Object.assign(invoiceApi, originalInvoiceApi);
   for (const [key, descriptor] of previousGlobals) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
     else Reflect.deleteProperty(globalThis, key);

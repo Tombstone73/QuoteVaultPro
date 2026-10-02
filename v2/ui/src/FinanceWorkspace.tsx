@@ -34,6 +34,12 @@ type GridPreference = Readonly<{
   widths: Record<string, number>;
   sorting?: { id: string; direction: "asc" | "desc" };
 }>;
+type InvoiceEmailSelection = Readonly<{
+  organizationId: string;
+  sessionScope: string;
+  requestId: string;
+  invoiceIds: readonly string[];
+}>;
 const errorText = (error: unknown) =>
   (error as ApiError)?.message ?? "The finance service is unavailable.";
 const invoiceLabel = (invoice: Pick<InvoiceRead, "source" | "lifecycle" | "sourceOrderNumber">, persistedNumber: string | null | undefined) =>
@@ -331,10 +337,11 @@ export const FinanceWorkspace = ({
   const [ledgerSource, setLedgerSource] = useState<"" | "v2" | "legacy">("");
   const [ledgerSort, setLedgerSort] = useState<NonNullable<FinancialLedgerQuery["sort"]>>("occurred_at");
   const [ledgerSortDirection, setLedgerSortDirection] = useState<"asc" | "desc">("desc");
-  const [emailRequestId, setEmailRequestId] = useState("");
-  const [emailInvoiceIds, setEmailInvoiceIds] = useState<readonly string[]>([]);
-  const [emailAdmission, setEmailAdmission] = useState<Awaited<ReturnType<typeof invoiceApi.emailSelected>> | null>(null);
-  const [emailAdmissionError, setEmailAdmissionError] = useState("");
+  const [emailSelection, setEmailSelection] = useState<InvoiceEmailSelection | null>(null);
+  const isEmailDialog = dialog === "invoiceEmail";
+  const isFinancialDialog = dialog === "payment" || dialog === "refund" || dialog === "stripePayment" || dialog === "stripeRefund";
+  const emailContextCurrent = Boolean(emailSelection && organizationId && sessionScope && canInvoiceSend && canPaymentView
+    && emailSelection.organizationId === organizationId && emailSelection.sessionScope === sessionScope);
   const invoiceQuery: FinancialInvoiceQuery = { page, pageSize, ...(search ? { q: search } : {}), ...(lifecycleFilter ? { lifecycle: lifecycleFilter } : {}), ...(settlementFilter ? { settlement: settlementFilter } : {}), sort: invoiceSort, direction: invoiceSortDirection };
   const overview = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "finance", "overview", invoiceQuery],
@@ -394,6 +401,7 @@ export const FinanceWorkspace = ({
   };
   const payment = useMutation({
     mutationFn: () => {
+      if (dialog !== "payment") throw new Error("The Payment dialog is not active.");
       const parsed = centsFromInput(amount);
       if (!parsed || !detail.data)
         throw new Error(
@@ -432,6 +440,7 @@ export const FinanceWorkspace = ({
   });
   const refund = useMutation({
     mutationFn: () => {
+      if (dialog !== "refund") throw new Error("The Refund dialog is not active.");
       const parsed = centsFromInput(amount);
       if (!parsed || !detail.data || !paymentId)
         throw new Error(
@@ -460,6 +469,7 @@ export const FinanceWorkspace = ({
   });
   const stripePayment = useMutation({
     mutationFn: () => {
+      if (dialog !== "stripePayment") throw new Error("The card Payment dialog is not active.");
       const parsed = centsFromInput(amount);
       if (!parsed || !detail.data || !providerRequestId) throw new Error("Enter a positive amount with no more than two decimal places.");
       return financeApi.beginStripePayment(organizationId, detail.data.invoice.invoiceId, providerRequestId, { amountCents: parsed, currency: detail.data.invoice.currency });
@@ -468,6 +478,7 @@ export const FinanceWorkspace = ({
   });
   const stripeRefund = useMutation({
     mutationFn: () => {
+      if (dialog !== "stripeRefund") throw new Error("The card Refund dialog is not active.");
       const parsed = centsFromInput(amount);
       if (!parsed || !detail.data || !paymentId || !providerRequestId) throw new Error("Choose a Stripe Payment and enter a positive exact amount.");
       return financeApi.beginStripeRefund(organizationId, detail.data.invoice.invoiceId, providerRequestId, { paymentId, amountCents: parsed, currency: detail.data.invoice.currency });
@@ -475,38 +486,54 @@ export const FinanceWorkspace = ({
     onSuccess: async () => { setNotice("Refund submitted to Stripe. The signed provider event will record the canonical V2 Refund."); closeDialog(); await refresh(); },
     onError: (error) => setNotice(errorText(error)),
   });
-  const emailSelected = useMutation({
-    mutationFn: () => {
-      if (!emailRequestId || !emailInvoiceIds.length)
-        throw new Error("Invoice email selection is unavailable. Close this dialog and preview the selection again.");
-      return invoiceApi.emailSelected(organizationId, emailRequestId, emailInvoiceIds);
-    },
-    onSuccess: (result) => {
-      setEmailAdmission(result);
-      setEmailAdmissionError("");
-      setNotice(`${result.queuedInvoices} invoices queued in ${result.queuedMessages} customer email${result.queuedMessages === 1 ? "" : "s"}; ${result.skipped} skipped.`);
-      setSelectedInvoiceIds(new Set());
-    },
-    onError: (error) => {
-      const message = errorText(error);
-      setEmailAdmissionError(message);
-      setNotice(message);
-    },
+  const emailPreview = useMutation({
+    mutationFn: (selection: InvoiceEmailSelection) => invoiceApi.emailPreview(selection.organizationId, selection.invoiceIds),
+    retry: false,
   });
-  const emailPreview = useMutation({ mutationFn: (invoiceIds: readonly string[]) => invoiceApi.emailPreview(organizationId, invoiceIds) });
+  // Only the successful read for this captured intent can authorize admission.
+  const emailPreviewReady = emailContextCurrent && emailPreview.variables === emailSelection && emailPreview.isSuccess;
+  const emailSelected = useMutation({
+    mutationFn: (selection: InvoiceEmailSelection) => {
+      if (!isEmailDialog || !emailPreviewReady || !csrfReady || selection !== emailSelection || !selection.requestId || !selection.invoiceIds.length)
+        throw new Error("Invoice email selection is unavailable. Close this dialog and preview the selection again.");
+      return invoiceApi.emailSelected(selection.organizationId, selection.requestId, selection.invoiceIds);
+    },
+    retry: false,
+  });
+  const emailAdmission = emailSelected.variables === emailSelection ? emailSelected.data : undefined;
+  const emailAdmissionError = emailSelected.variables === emailSelection && emailSelected.isError ? errorText(emailSelected.error) : "";
+  useEffect(() => {
+    setEmailSelection(null);
+    setSelectedInvoiceIds(new Set());
+    setDialog((current) => current === "invoiceEmail" ? "" : current);
+    emailPreview.reset();
+    emailSelected.reset();
+  }, [organizationId, sessionScope, canInvoiceSend, canPaymentView]);
   const beginInvoiceEmail = () => {
-    const invoiceIds = [...selectedInvoiceIds];
-    setEmailRequestId(newBusinessRequestId());
-    setEmailInvoiceIds(invoiceIds);
-    setEmailAdmission(null);
-    setEmailAdmissionError("");
+    if (!organizationId || !sessionScope || !canInvoiceSend || !canPaymentView || !selectedInvoiceIds.size || emailSelected.isPending) return;
+    const selection = { organizationId, sessionScope, requestId: newBusinessRequestId(), invoiceIds: [...selectedInvoiceIds] };
+    setEmailSelection(selection);
+    emailSelected.reset();
     setDialog("invoiceEmail");
-    emailPreview.mutate(invoiceIds);
+    emailPreview.mutate(selection);
+  };
+  const retryEmailPreview = () => {
+    if (!isEmailDialog || !emailContextCurrent || !emailSelection || emailPreview.isPending || emailSelected.isPending) return;
+    emailPreview.mutate(emailSelection);
+  };
+  const queueInvoiceEmail = () => {
+    if (!isEmailDialog || !emailPreviewReady || !csrfReady || !emailSelection || emailSelected.isPending) return;
+    emailSelected.mutate(emailSelection, {
+      onSuccess: (result) => {
+        setNotice(`${result.queuedInvoices} invoices queued in ${result.queuedMessages} customer email${result.queuedMessages === 1 ? "" : "s"}; ${result.skipped} skipped.`);
+        setSelectedInvoiceIds(new Set());
+      },
+      onError: (error) => setNotice(errorText(error)),
+    });
   };
   const closeEmailDialog = () => {
     if (emailSelected.isPending) return;
     setDialog("");
-    setEmailAdmissionError("");
   };
   const resetInvoicePage = (message = "Selection cleared because the invoice search or filters changed.") => {
     setPage(1);
@@ -830,12 +857,12 @@ export const FinanceWorkspace = ({
                   Preview PDF
                 </button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle === "draft" && canInvoiceIssue && (
+              {!isEmailDialog && invoice.source !== "legacy" && invoice.lifecycle === "draft" && canInvoiceIssue && (
                 <button className="v2-invoice-issue" disabled={!csrfReady || issueInvoice.isPending} onClick={() => issueInvoice.mutate()}>
                   {issueInvoice.isPending ? "Issuing…" : "Issue Invoice"}
                 </button>
               )}
-              {paymentEligible && canPaymentRecord && (
+              {!isEmailDialog && paymentEligible && canPaymentRecord && (
                 <button
                   className="v2-invoice-issue"
                   disabled={!csrfReady}
@@ -847,10 +874,10 @@ export const FinanceWorkspace = ({
                   Take Payment
                 </button>
               )}
-              {paymentEligible && canPaymentRecord && (
+              {!isEmailDialog && paymentEligible && canPaymentRecord && (
                 <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setAmount(centsForInput(settlement.balance.cents)); setProviderRequestId(newBusinessRequestId()); setDialog("stripePayment"); }}>Pay by Card</button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.length > 0 && (
+              {!isEmailDialog && invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.length > 0 && (
                 <button
                   className="v2-quiet-button"
                   disabled={
@@ -862,7 +889,7 @@ export const FinanceWorkspace = ({
                   Record Refund
                 </button>
               )}
-              {invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.some((entry) => entry.source === "provider") && (
+              {!isEmailDialog && invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.some((entry) => entry.source === "provider") && (
                 <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setPaymentId(""); setAmount(""); setProviderRequestId(newBusinessRequestId()); setDialog("stripeRefund"); }}>Refund to Card</button>
               )}
             </div>
@@ -940,7 +967,7 @@ export const FinanceWorkspace = ({
           {notice && <p className="v2-invoice-notice">{notice}</p>}
         </article>
       )}
-      {dialog && invoice && (
+      {isFinancialDialog && invoice && (
         <div
           className="v2-finance-modal"
           role="dialog"
@@ -977,7 +1004,7 @@ export const FinanceWorkspace = ({
                   <option value="external">External</option>
                 </select>
               </label>
-            ) : dialog !== "stripePayment" ? (
+            ) : dialog === "refund" || dialog === "stripeRefund" ? (
               <label>
                 Original Payment
                 <select
@@ -1007,20 +1034,41 @@ export const FinanceWorkspace = ({
               onClick={() => stripePayment.mutate()}
             >{stripePayment.isPending ? "Preparing card payment…" : "Continue to card"}</button>}
             {dialog === "stripePayment" && stripePayment.data && <StripePaymentElement publishableKey={stripePayment.data.publishableKey} stripeAccountId={stripePayment.data.stripeAccountId} clientSecret={stripePayment.data.clientSecret} onSubmitted={() => { setNotice("Payment submitted. Waiting for the signed Stripe confirmation before updating this Invoice."); closeDialog(); void refresh(); }} onError={(message) => setNotice(message)} />}
-            <button
+            {dialog !== "stripePayment" && <button
               className="v2-invoice-issue"
-              disabled={!csrfReady || payment.isPending || refund.isPending || stripeRefund.isPending || dialog === "stripePayment"}
-              onClick={() =>
-                dialog === "payment" ? payment.mutate() : dialog === "refund" ? refund.mutate() : stripeRefund.mutate()
-              }
+              disabled={!csrfReady || payment.isPending || refund.isPending || stripeRefund.isPending}
+              onClick={() => {
+                if (dialog === "payment") payment.mutate();
+                else if (dialog === "refund") refund.mutate();
+                else if (dialog === "stripeRefund") stripeRefund.mutate();
+              }}
             >
               {dialog === "payment" ? "Record Payment" : dialog === "refund" ? "Record Refund" : "Submit Stripe Refund"}
-            </button>
+            </button>}
           </div>
         </div>
       )}
-      {dialog === "invoiceEmail" && (
-        <div className="v2-finance-modal" role="dialog" aria-modal="true" aria-label="Send selected invoices"><div><header><h2>Send selected invoices</h2><button disabled={emailSelected.isPending} onClick={closeEmailDialog}>Close</button></header>{emailAdmission ? <><p role="status">{emailAdmission.queuedInvoices} invoices queued in {emailAdmission.queuedMessages} customer email{emailAdmission.queuedMessages === 1 ? "" : "s"}; {emailAdmission.skipped} skipped{emailAdmission.replayed ? ". Existing batch reused." : "."}</p><p>Delivery continues through the throttled worker. No duplicate admission was created.</p></> : <>{emailPreview.isPending ? <p>Resolving canonical billing recipients…</p> : emailPreview.data ? <p>{emailPreview.data.selected} invoices selected · {emailPreview.data.recipientCount} recipients · {emailPreview.data.skipped} skipped for missing or invalid billing email.</p> : <p>Recipient preview is unavailable. Retry before queuing delivery.</p>}<p>Customer messages are admitted to the throttled delivery worker. They are not sent from this page.</p>{emailAdmissionError && <p className="notice error" role="alert">{emailAdmissionError}</p>}<button className="v2-invoice-issue" disabled={!csrfReady || !emailRequestId || !emailInvoiceIds.length || emailSelected.isPending || emailPreview.isPending || !emailPreview.data} onClick={() => emailSelected.mutate()}>{emailSelected.isPending ? "Queuing…" : "Queue email delivery"}</button></>}</div></div>
+      {isEmailDialog && emailContextCurrent && (
+        <div className="v2-finance-modal" role="dialog" aria-modal="true" aria-label="Send selected invoices">
+          <div>
+            <header><h2>Send selected invoices</h2><button disabled={emailSelected.isPending} onClick={closeEmailDialog}>Close</button></header>
+            {emailAdmission ? <>
+              <p role="status">{emailAdmission.queuedInvoices} invoices queued in {emailAdmission.queuedMessages} customer email{emailAdmission.queuedMessages === 1 ? "" : "s"}; {emailAdmission.skipped} skipped{emailAdmission.replayed ? ". Existing batch reused." : "."}</p>
+              <p>Delivery continues through the throttled worker. No duplicate admission was created.</p>
+            </> : <>
+              {emailPreview.isPending ? <p>Resolving canonical billing recipients…</p>
+                : emailPreviewReady && emailPreview.data ? <p>{emailPreview.data.selected} invoices selected · {emailPreview.data.recipientCount} recipients · {emailPreview.data.skipped} skipped for missing or invalid billing email.</p>
+                : <>
+                  <p>Recipient preview is unavailable. Retry before queuing delivery.</p>
+                  {emailPreview.isError && <p className="notice error" role="alert">{errorText(emailPreview.error)}</p>}
+                  <button className="v2-quiet-button" onClick={retryEmailPreview}>Retry recipient preview (read only)</button>
+                </>}
+              <p>Customer messages are admitted to the throttled delivery worker. They are not sent from this page.</p>
+              {emailAdmissionError && <p className="notice error" role="alert">{emailAdmissionError}</p>}
+              <button className="v2-invoice-issue" disabled={!csrfReady || !emailPreviewReady || !emailSelection?.requestId || !emailSelection.invoiceIds.length || emailSelected.isPending} onClick={queueInvoiceEmail}>{emailSelected.isPending ? "Queuing…" : "Queue email delivery"}</button>
+            </>}
+          </div>
+        </div>
       )}
     </section>
   );
