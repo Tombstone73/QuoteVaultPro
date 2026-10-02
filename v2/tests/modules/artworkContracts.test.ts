@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 import { ArtworkApplicationService, type ArtworkTransaction, type ArtworkTransactionRunner } from "../../src/modules/artwork/artworkApplication";
 import type { ArtworkAssignment, ArtworkFile, ArtworkMutationResult } from "../../src/modules/artwork/contracts";
 import { brandedId } from "../../src/modules/shared/commercialValues";
@@ -35,6 +35,30 @@ class MemoryArtworkTransaction implements ArtworkTransaction {
 const memory=new MemoryArtworkTransaction(); const runner:ArtworkTransactionRunner={transaction:async(action)=>action(memory)}; const service=new ArtworkApplicationService(runner);
 
 describe("M2.0 Artwork contracts", () => {
+  test("adoption preflight is side-effect-free and does not reserve a request", () => {
+    const tx = new MemoryArtworkTransaction();
+    const isolatedRunner: ArtworkTransactionRunner = { transaction: async action => action(tx) };
+    const transaction = jest.spyOn(isolatedRunner, "transaction");
+    expect(new ArtworkApplicationService(isolatedRunner).preflightAdoption(context("preflight"), input("preflight"))).toEqual({ ok: true, value: undefined });
+    expect(transaction).not.toHaveBeenCalled(); expect(tx.requests.size).toBe(0);
+  });
+  describe.each(["adopt", "replace"] as const)("direct %s caller admission", operation => {
+    test.each([
+      ["missing capability", () => ({ ...context("request"), principal: { ...principal, authority: { ...principal.authority, capabilities: [] } } }), "request", "FORBIDDEN"],
+      ["wrong tenant", () => ({ ...context("request"), organizationId: "foreign" }), "request", "WRONG_TENANT"],
+      ["missing context request", () => ({ ...context("request"), businessRequest: undefined }), "request", "VALIDATION_ERROR"],
+      ["mismatched request", () => context("other"), "request", "VALIDATION_ERROR"],
+      ["empty request", () => context(""), "", "VALIDATION_ERROR"],
+      ["blank request", () => context(" \t "), " \t ", "VALIDATION_ERROR"],
+    ] as const)("rejects %s without requiring an earlier preflight", async (_label, ctx, requestId, code) => {
+      const tx = new MemoryArtworkTransaction();
+      const isolatedRunner: ArtworkTransactionRunner = { transaction: async action => action(tx) };
+      const transaction = jest.spyOn(isolatedRunner, "transaction");
+      const app = new ArtworkApplicationService(isolatedRunner);
+      const result = await app[operation](ctx(), { ...input(requestId), supersedesArtworkAssignmentId: brandedId<"ArtworkAssignmentId">("current") });
+      expect(result).toMatchObject({ ok: false, error: { code } }); expect(transaction).not.toHaveBeenCalled();
+    });
+  });
   test("assignment-specific removal retains files/history, isolates other lines and is retryable", async () => {
     const tx = new MemoryArtworkTransaction();
     const app = new ArtworkApplicationService({ transaction: async (action) => action(tx) });

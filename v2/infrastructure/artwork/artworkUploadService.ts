@@ -46,8 +46,9 @@ export class ArtworkUploadService {
 
   private async persist(context: OperationContext, input: ArtworkUploadInput, replacement: boolean): Promise<ApplicationResult<ArtworkMutationResult>> {
     try {
+      const admission = this.artwork.preflightAdoption(context, input);
+      if (!admission.ok) return admission;
       const filename = safeFilename(input.filename);
-      if (!input.businessRequestId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "businessRequestId is required.");
       if (replacement && !input.supersedesArtworkAssignmentId?.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "The current Artwork assignment is required for replacement.");
       if (!validPurpose(input.purpose)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork purpose is invalid.");
       if (input.side !== undefined && !validSide(input.side)) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork side is invalid.");

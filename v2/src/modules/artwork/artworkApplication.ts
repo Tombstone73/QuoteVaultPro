@@ -55,6 +55,14 @@ const actor = (context: OperationContext) => ({
 export class ArtworkApplicationService {
   constructor(private readonly runner: ArtworkTransactionRunner, private readonly authority = new AuthorityPolicy()) {}
 
+  /** Side-effect-free admission for binary ingestion; final adoption still checks current authority and request identity. */
+  preflightAdoption(context: OperationContext, input: Pick<AdoptArtworkInput, "businessRequestId">): ApplicationResult<void> {
+    try {
+      this.requireMutation(context, input, "artwork.adopt");
+      return success(undefined);
+    } catch (error) { return failure(this.error(error)); }
+  }
+
   async readFile(context: OperationContext, artworkFileId: ArtworkFileId): Promise<ApplicationResult<ArtworkFile>> {
     try {
       requireOperationPrincipalScope(context); this.require(context, "artwork.view");
@@ -142,10 +150,15 @@ export class ArtworkApplicationService {
       throw new V2ApplicationError("FORBIDDEN", "The principal does not have authority for this Artwork operation.");
   }
 
+  private requireMutation(context: OperationContext, input: Pick<AdoptArtworkInput, "businessRequestId">, capability: "artwork.adopt" | "artwork.assign"): void {
+    requireOperationPrincipalScope(context); this.require(context, capability);
+    if (!context.businessRequest || typeof input.businessRequestId !== "string" || !input.businessRequestId.trim() || input.businessRequestId !== context.businessRequest.id)
+      throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+  }
+
   private async mutate<T extends { businessRequestId: string }>(context: OperationContext, operation: "artwork.adopt.v1" | "artwork.replace.v1" | "artwork.assign.v1" | "artwork.derive.v1" | "artwork.remove.v1", input: T, capability: "artwork.adopt" | "artwork.assign", work: (tx: ArtworkTransaction) => Promise<ArtworkMutationResult>, eventType: "artwork_file_adopted" | "artwork_file_derived" | "artwork_assignment_added" | "artwork_assignment_removed", summary: string): Promise<ApplicationResult<ArtworkMutationResult>> {
     try {
-      requireOperationPrincipalScope(context); this.require(context, capability);
-      if (!context.businessRequest || input.businessRequestId !== context.businessRequest.id) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
+      this.requireMutation(context, input, capability);
       return success(await this.runner.transaction(async (tx) => {
         const reservation = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint(input), ...actor(context) });
         if (reservation.kind === "replay") return reservation.request.resultJson as ArtworkMutationResult;
