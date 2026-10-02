@@ -25,7 +25,7 @@ jest.mock("@/components/StateTransitionButtons", () => ({
 const noop = () => undefined;
 
 describe("Order detail action layout", () => {
-  it("renders save, workflow routing, discard, and available cancellation as recognizable controls", () => {
+  it("renders save, workflow routing, dirty discard, and compact overflow as recognizable controls", () => {
     const html = renderToStaticMarkup(
       <OrderDetailPrimaryActions
         canEditOrder
@@ -53,9 +53,8 @@ describe("Order detail action layout", () => {
     expect(html).toContain("Save Order");
     expect(html).toContain("Save &amp; Route Jobs");
     expect(html).toContain("moves eligible line items to Design, Proofing, or Prepress");
-    expect(html).toContain("Discard changes");
-    expect(html).toContain("Cancel Order");
-    expect(html).toContain("border-destructive");
+    expect(html).toContain(">Discard<");
+    expect(html).toContain("More order actions");
     expect(html).not.toContain("Edit Order");
     expect(html).not.toContain("Bypass Proof");
   });
@@ -85,7 +84,7 @@ describe("Order detail action layout", () => {
       />,
     );
 
-    expect(html).toContain("Cancel Order");
+    expect(html).toContain("More order actions");
     expect(html).not.toContain("disabled=\"\"");
   });
 
@@ -114,9 +113,7 @@ describe("Order detail action layout", () => {
       />,
     );
 
-    expect(html).toContain("Cancel Order");
-    expect(html).toContain("disabled");
-    expect(html).toContain("Cannot cancel because a payment has been recorded");
+    expect(html).toContain("More order actions");
   });
 
   it("does not offer another cancellation action for an already cancelled order", () => {

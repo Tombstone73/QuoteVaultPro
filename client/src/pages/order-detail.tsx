@@ -34,7 +34,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Calendar, Package, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer, Paperclip, Clock, Wrench } from "lucide-react";
+import { AlertTriangle, Calendar, Package, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown, Download, Printer, Paperclip, Clock, Wrench, StickyNote } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
@@ -417,7 +417,6 @@ export default function OrderDetail() {
   const [showInventoryReservationsDialog, setShowInventoryReservationsDialog] = useState(false);
   const [showManualReservationsDialog, setShowManualReservationsDialog] = useState(false);
 
-  const [showCustomerAddress, setShowCustomerAddress] = useState(true);
   const lineItemsSectionRef = useRef<HTMLDivElement | null>(null);
   // Imperative API for orchestrating an open-line-item save from Save Order.
   const orderLineItemsApiRef = useRef<OrderLineItemsSectionHandle | null>(null);
@@ -2161,9 +2160,11 @@ export default function OrderDetail() {
   })();
   const contactLinePhone: string | null = (order.contact as any)?.phone || (order.contact as any)?.phoneNumber || (order.contact as any)?.mobile || null;
 
-  const email: string | null = order.contact?.email || order.customer?.email || order.billToEmail || null;
-  const customerPhone: string | null = order.customer?.phone || null;
-  const metaPhone: string | null = customerPhone || contactLinePhone || null;
+  // Keep the two context summaries semantically separate. A Contact can be
+  // selected without a Customer, but its identity must never be presented as
+  // Customer data or duplicated above the Contact summary.
+  const customerContextEmail: string | null = order.customer?.email || order.billToEmail || null;
+  const customerContextPhone: string | null = order.customer?.phone || order.billToPhone || null;
 
   const getAddressParts = (source: {
     street1?: string | null;
@@ -2230,8 +2231,9 @@ export default function OrderDetail() {
   return (
     <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
       <div className="w-full max-w-none">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-6 pb-3">
-          <div className="flex items-center gap-4 min-w-0">
+        <header className="mb-5 border-b border-border/60 pb-3">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             <BackNavControls
               onBack={() => guardedNavigate(orderBackPath)}
               onSectionHome={() => guardedNavigate("/orders")}
@@ -2243,16 +2245,14 @@ export default function OrderDetail() {
                 {`Order ${titleText}`}
               </h1>
             </div>
-          </div>
-
-            <div className="flex flex-1 items-center justify-center px-4">
+            <div className="flex items-center">
             {(order.state === 'closed' || order.status === 'operationally_complete') ? <OrderStatusBadge status={order.status} state={order.state} /> : <OrderStatusPillSelector
               orderId={order.id}
               currentState={order.state as OrderState}
               currentPillId={order.statusPillId}
               currentPillValue={order.statusPillValue}
               disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
-              className="h-10 w-[260px] rounded-full text-base"
+              className="h-9 w-[220px] rounded-full text-sm"
             />}
             </div>
 
@@ -2266,8 +2266,9 @@ export default function OrderDetail() {
               onPrevious={() => void listNavigation.go(-1)}
               onNext={() => void listNavigation.go(1)}
             />
+          </div>
 
-            <div className="flex flex-wrap items-center justify-end gap-3">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="rounded-titan-md">
                 <Link to={orderDetailPath} state={location.state}>
@@ -2339,7 +2340,8 @@ export default function OrderDetail() {
               }}
             />
           </div>
-        </div>
+          </div>
+        </header>
 
         <Dialog open={orderInvoiceSelectorOpen} onOpenChange={setOrderInvoiceSelectorOpen}>
           <DialogContent className="max-w-2xl">
@@ -2431,10 +2433,10 @@ export default function OrderDetail() {
           {/* Main Content */}
           <div className="min-w-0 space-y-4">
             <Card className="bg-titan-bg-card border-titan-border-subtle">
-              <CardContent className="p-4">
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+              <CardContent className="p-3 sm:p-4">
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(340px,0.9fr)_minmax(0,1.8fr)]">
                   {/* Customer + Contact */}
-                  <div className="space-y-4">
+                  <div className={cn("grid gap-4", !isEditingCustomer && "sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2")}>
                     <div className="space-y-2">
                       {isEditingCustomer ? (
                         <div className="space-y-2">
@@ -2514,6 +2516,7 @@ export default function OrderDetail() {
                       ) : (
                         <div className="flex items-start justify-between gap-2 min-w-0">
                           <div className="min-w-0 flex-1">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Customer</div>
                             <HoverCard openDelay={150} closeDelay={50}>
                               <HoverCardTrigger asChild>
                                 {contactSearchCustomerId && order.customer?.id && customerCompanyName ? (
@@ -2529,15 +2532,15 @@ export default function OrderDetail() {
                                   <span
                                     tabIndex={0}
                                     className="block truncate text-lg font-semibold leading-6 text-foreground"
-                                    title={customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "—")}
+                                    title={customerCompanyName || "No customer selected"}
                                   >
-                                    {customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "—")}
+                                    {customerCompanyName || "No customer selected"}
                                   </span>
                                 )}
                               </HoverCardTrigger>
                               <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
                                 <div className="space-y-2">
-                                  <div className="text-sm font-semibold text-foreground">{customerCompanyName || (contactNameFromContact ? `Contact: ${contactNameFromContact}` : "No customer")}</div>
+                                  <div className="text-sm font-semibold text-foreground">{customerCompanyName || "No customer selected"}</div>
                                   {hasBillAddress && (
                                     <div className="text-sm">
                                       <div className="font-medium text-foreground">Billing</div>
@@ -2546,10 +2549,10 @@ export default function OrderDetail() {
                                       </div>
                                     </div>
                                   )}
-                                  {(email || metaPhone) && (
+                                  {(customerContextEmail || customerContextPhone) && (
                                     <div className="text-xs text-muted-foreground">
-                                      {email && <div className="font-mono break-words">{email}</div>}
-                                      {metaPhone && <div className="font-mono break-words">{formatPhoneForDisplay(metaPhone)}</div>}
+                                      {customerContextEmail && <div className="font-mono break-words">{customerContextEmail}</div>}
+                                      {customerContextPhone && <div className="font-mono break-words">{formatPhoneForDisplay(customerContextPhone)}</div>}
                                     </div>
                                   )}
                                   {contactSearchCustomerId && order.customer && (order.customer.paymentTerms || typeof order.customer.isTaxExempt === "boolean") && (
@@ -2588,87 +2591,66 @@ export default function OrderDetail() {
                       )}
 
                       {hasBillAddress && (
-                        <div className="text-sm leading-5 text-foreground/80">
-                          <div className="hidden print:block">
-                            {billAddressLine1 && <div>{billAddressLine1}</div>}
-                            {billAddressLine2 && <div>{billAddressLine2}</div>}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {showCustomerAddress && (
-                              <div className="space-y-0.5 print:hidden">
-                                {billAddressLine1 && <div>{billAddressLine1}</div>}
-                                {billAddressLine2 && <div>{billAddressLine2}</div>}
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => setShowCustomerAddress((v) => !v)}
-                              className="shrink-0 text-xs text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
-                            >
-                              {showCustomerAddress ? "Hide" : "Show"}
-                            </button>
-                          </div>
+                        <div className="space-y-0.5 text-sm leading-5 text-foreground/80">
+                          {billAddressLine1 && <div>{billAddressLine1}</div>}
+                          {billAddressLine2 && <div>{billAddressLine2}</div>}
                         </div>
                       )}
 
-                      {email && (
+                      {customerContextEmail && (
                         <div className="text-sm leading-5">
                           <a
-                            href={`mailto:${email}`}
+                            href={`mailto:${customerContextEmail}`}
                             className="text-foreground/80 hover:text-foreground hover:underline"
-                            title={email}
+                            title={customerContextEmail}
                           >
-                            {email}
+                            {customerContextEmail}
                           </a>
                         </div>
                       )}
 
-                      {metaPhone && (
+                      {customerContextPhone && (
                         <div className="text-sm leading-5">
                           <a
-                            href={phoneToTelHref(metaPhone)}
+                            href={phoneToTelHref(customerContextPhone)}
                             className="text-foreground/80 hover:text-foreground hover:underline"
-                            title={metaPhone}
+                            title={customerContextPhone}
                           >
-                            {formatPhoneForDisplay(metaPhone)}
+                            {formatPhoneForDisplay(customerContextPhone)}
                           </a>
                         </div>
                       )}
                     </div>
 
-                    <Separator />
-
                     <div className="space-y-2">
-                      <ContactSelect
-                        value={order.contactId ?? null}
-                        customerId={contactSearchCustomerId}
-                        label=""
-                        placeholder="Search contacts..."
-                        disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
-                        onChange={(contactId, contact) => {
-                          if (!contactId && !contactSearchCustomerId) {
-                            toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
-                            return;
-                          }
-                          stageOrderOwner(contactSearchCustomerId
-                            ? { contactId }
-                            : { customerId: null, contactId }, { contact: contact ?? null, customer: order.customer });
-                        }}
-                      />
-
-                      {order.contact?.id && contactNameFromContact ? (
+                      {isEditingCustomer ? (
+                        <ContactSelect
+                          value={order.contactId ?? null}
+                          customerId={contactSearchCustomerId}
+                          label="Contact"
+                          placeholder="Search contacts..."
+                          disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
+                          onChange={(contactId, contact) => {
+                            if (!contactId && !contactSearchCustomerId) {
+                              toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
+                              return;
+                            }
+                            stageOrderOwner(contactSearchCustomerId
+                              ? { contactId }
+                              : { customerId: null, contactId }, { contact: contact ?? null, customer: order.customer });
+                          }}
+                        />
+                      ) : order.contact?.id && contactNameFromContact ? (
                         <div className="space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <Button asChild variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-xs">
-                              <Link
-                                to={`/contacts/${order.contact.id}`}
-                                state={{ referrer: buildReferrer(location) }}
-                                aria-label={`Open ${contactNameFromContact}`}
-                              >
-                                Open <ExternalLink className="ml-1 h-3 w-3" />
-                              </Link>
-                            </Button>
-                          </div>
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Contact</div>
+                          <Link
+                            to={`/contacts/${order.contact.id}`}
+                            state={{ referrer: buildReferrer(location) }}
+                            className="inline-flex max-w-full items-center gap-1 truncate text-base font-semibold leading-5 text-foreground hover:underline"
+                            aria-label={`Open ${contactNameFromContact}`}
+                          >
+                            <span className="truncate">{contactNameFromContact}</span><ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                          </Link>
                           {order.contact?.email && (
                           <a href={`mailto:${order.contact.email}`} className="block text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" title={order.contact.email}>
                               {order.contact.email}
@@ -2681,35 +2663,38 @@ export default function OrderDetail() {
                           )}
                         </div>
                       ) : (
-                        <p className="text-xs text-muted-foreground">No contact selected</p>
+                        <div>
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Contact</div>
+                          <p className="text-sm text-muted-foreground">No contact selected</p>
+                        </div>
                       )}
                     </div>
                   </div>
 
                   {/* Order meta */}
-                  <div className="min-w-0 space-y-4">
+                  <div className="min-w-0 space-y-3">
                     {/* TitanOS State Architecture */}
                     {(showPaymentStatus || showRoutedTo) && (
                       <div
                         className={cn(
-                          "grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg border border-border",
+                          "grid grid-cols-1 gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5",
                           showPaymentStatus && showRoutedTo ? "md:grid-cols-2" : "md:grid-cols-1"
                         )}
                       >
                         {showPaymentStatus && (
                           <div>
                             <label className="text-sm font-medium text-muted-foreground">Payment</label>
-                            <div className="mt-2">
+                            <div className="mt-1">
                               <OrderPaymentBadge summary={order.paymentSummary} />
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1">Payment status</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">Payment status</p>
                           </div>
                         )}
 
                         {showRoutedTo && (
                           <div>
                             <label className="text-sm font-medium text-muted-foreground">Routed To</label>
-                            <div className="mt-2">
+                            <div className="mt-1">
                               <Badge
                                 variant="outline"
                                 className="bg-purple-100 text-purple-800 border-purple-300"
@@ -2717,7 +2702,7 @@ export default function OrderDetail() {
                                 {order.routingTarget === "fulfillment" ? "Fulfillment" : "Invoicing"}
                               </Badge>
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1">Next workflow stage</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">Next workflow stage</p>
                           </div>
                         )}
                       </div>
@@ -2742,8 +2727,8 @@ export default function OrderDetail() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="flex items-center gap-2">
+                <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">PO #</label>
                     <Input
                       value={poNumberDraft}
@@ -2755,13 +2740,13 @@ export default function OrderDetail() {
                           (e.target as HTMLInputElement).blur();
                         }
                       }}
-                      className="h-8 w-auto min-w-[120px]"
+                      className="h-8 min-w-0 flex-1"
                       disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
                       placeholder="—"
                     />
                   </div>
 
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Job Label</label>
                     <Input
                       value={jobLabelDraft}
@@ -2779,14 +2764,14 @@ export default function OrderDetail() {
                     />
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Priority</label>
                     <Select 
                       value={order.priority} 
                       onValueChange={handlePriorityChange} 
                       disabled={!canEditSafeOrderMetadata || updateOrder.isPending}
                     >
-                      <SelectTrigger className="h-8 w-auto min-w-[100px]">
+                    <SelectTrigger className="h-8 min-w-0 flex-1">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -2798,8 +2783,8 @@ export default function OrderDetail() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="flex items-center gap-2">
+                <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Due Date</label>
                     {editingDueDate ? (
                       <div className="flex items-center gap-2 shrink-0">
@@ -2834,7 +2819,7 @@ export default function OrderDetail() {
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Promised Date</label>
                     {editingPromisedDate ? (
                       <div className="flex items-center gap-2 shrink-0">
@@ -2870,15 +2855,8 @@ export default function OrderDetail() {
                   </div>
                 </div>
 
-                <div className="flex items-start gap-2">
-                  <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Flags</label>
-                  <div className="flex-1">
-                    <div
-                      className="min-h-9 rounded-md bg-muted/30 border border-border/50 px-2 py-1 flex flex-wrap items-center gap-1.5 cursor-text focus-within:ring-1 focus-within:ring-ring/20"
-                      onClick={() => flagInputRef.current?.focus()}
-                      role="group"
-                      aria-label="Flags"
-                    >
+                <div className="flex min-h-8 flex-wrap items-center gap-1.5" role="group" aria-label="Flags">
+                  {flags.length > 0 ? <span className="mr-1 text-sm font-medium text-muted-foreground">Flags</span> : null}
                       {flags.map((t) => (
                         <Badge key={t} variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center gap-1">
                           {t}
@@ -2895,31 +2873,30 @@ export default function OrderDetail() {
                         </Badge>
                       ))}
 
-                      {!canEditSafeOrderMetadata || updateOrder.isPending || updateListNoteMutation.isPending ? (
-                        flags.length === 0 ? (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        ) : null
-                      ) : (
+                      {!canEditSafeOrderMetadata || updateOrder.isPending || updateListNoteMutation.isPending ? null : (
                         <Badge variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center">
                           <input
                             ref={flagInputRef}
                             value={flagInput}
                             onChange={(e) => setFlagInput(e.target.value)}
                             onKeyDown={handleFlagKeyDown}
-                            placeholder="Add Flag"
+                            placeholder={flags.length === 0 ? "+ Add Flag" : "Add Flag"}
                             className="w-[7rem] min-w-[7rem] bg-transparent outline-none text-xs font-semibold placeholder:text-muted-foreground/70"
                           />
                         </Badge>
                       )}
-                    </div>
-                  </div>
                 </div>
 
-                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2.5" data-testid="order-internal-notes">
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2" data-testid="order-internal-notes">
                   <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">Internal Notes</div>
-                      <div className="text-xs text-muted-foreground">Staff only</div>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <StickyNote className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">Internal Notes</div>
+                        <div className="text-xs text-muted-foreground">
+                          {orderInternalNotesQuery.isLoading ? "Loading…" : `${orderInternalNotesQuery.data?.length ?? 0} append-only note${(orderInternalNotesQuery.data?.length ?? 0) === 1 ? "" : "s"}`}
+                        </div>
+                      </div>
                     </div>
                     {canAppendOrderInternalNote && !isAddingOrderInternalNote ? (
                       <Button type="button" size="sm" variant="ghost" onClick={() => setIsAddingOrderInternalNote(true)}>
@@ -2928,10 +2905,10 @@ export default function OrderDetail() {
                     ) : null}
                   </div>
 
-                  {orderInternalNotesQuery.isLoading ? (
-                    <div className="mt-2 text-sm text-muted-foreground">Loading notes…</div>
-                  ) : orderInternalNotesQuery.data && orderInternalNotesQuery.data.length > 0 ? (
-                    <div className="mt-2 space-y-2">
+                  {orderInternalNotesQuery.data && orderInternalNotesQuery.data.length > 0 ? (
+                    <details className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2">
+                      <summary className="cursor-pointer text-sm font-medium">View notes</summary>
+                      <div className="mt-2 space-y-2">
                       {orderInternalNotesQuery.data.map((note) => (
                         <div key={note.id} className="rounded bg-background/70 px-2.5 py-2 text-sm whitespace-pre-wrap">
                           {note.noteText}
@@ -2940,10 +2917,9 @@ export default function OrderDetail() {
                           </div>
                         </div>
                       ))}
-                    </div>
-                  ) : !order.notesInternal || isClearlyGeneratedInboundProvenance(order.notesInternal) ? (
-                    <div className="mt-2 text-sm text-muted-foreground">No internal notes.</div>
-                  ) : null}
+                      </div>
+                    </details>
+                  ) : !order.notesInternal || isClearlyGeneratedInboundProvenance(order.notesInternal) ? <span className="sr-only">No internal notes.</span> : null}
 
                   {order.notesInternal && !isClearlyGeneratedInboundProvenance(order.notesInternal) ? (
                     <details className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2">
@@ -4197,7 +4173,8 @@ export default function OrderDetail() {
         selectedContactId={order.contact?.id ?? null}
         initialRecipientEmail={
           resolveSelectedOrderContactEmail(customerContacts as OrderRecipientContactLike[], order.contact?.id ?? null)
-          || email
+          || order.contact?.email
+          || customerContextEmail
         }
         initialRecipientName={contactNameFromContact}
         attachPdfDefault={resolveAttachOrderPdfDefault(preferences)}

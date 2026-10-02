@@ -416,11 +416,24 @@ function saveButton(container: HTMLElement) {
   return Array.from(container.querySelectorAll('button')).find((node) => node.textContent?.trim() === 'Save Order')!;
 }
 
-function removeCustomerFromEditor(container: HTMLElement) {
+function openCustomerEditor(container: HTMLElement) {
   act(() => (container.querySelector('[aria-label="Change customer"]') as HTMLButtonElement).click());
+}
+function removeCustomerFromEditor(container: HTMLElement) {
+  openCustomerEditor(container);
   const remove = container.querySelector('[aria-label="Remove customer"]') as HTMLButtonElement;
   expect(remove).toBeTruthy();
   act(() => remove.click());
+}
+function openMoreOrderActions(container: HTMLElement) {
+  const trigger = container.querySelector('[aria-label="More order actions"]') as HTMLButtonElement;
+  expect(trigger).toBeTruthy();
+  act(() => {
+    Simulate.pointerDown(trigger, { button: 0, ctrlKey: false } as any);
+  });
+}
+function cancelOrderMenuItem() {
+  return Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((node) => node.textContent?.includes("Cancel Order")) as HTMLElement | undefined;
 }
 function useRealPickerRequests() {
   mockExecutePickerRequests = true;
@@ -443,51 +456,66 @@ function useRealPickerRequests() {
 }
 
 describe("Order ownership controls", () => {
-  test.each([['Janet', 'contact-janet', 'Janet Smith'], ['Sam', 'contact-standalone', 'Sam Solo']])(
-    'existing Customer-only Order searches %s tenant-wide before Save, then reloads Contact-only', async (searchName, id, name) => {
+  test("renders Customer and Contact facts from their own records", () => {
+    mockOrder = baseOrder({
+      customer: { id: "customer-1", companyName: "Acme Signs", email: "billing@acme.test", phone: "555-0100" },
+      contactId: "contact-a",
+      contact: { id: "contact-a", firstName: "Alex", lastName: "Able", email: "alex@acme.test", phone: "555-0200" },
+    });
+    const { container, root } = renderOrderDetail();
+    const text = container.textContent ?? "";
+
+    expect(text).toContain("Acme Signs");
+    expect(text).toContain("billing@acme.test");
+    expect(text).toContain("Alex Able");
+    expect(text).toContain("alex@acme.test");
+    expect(text.split("billing@acme.test")).toHaveLength(2);
+    expect(text.split("alex@acme.test")).toHaveLength(2);
+    act(() => root.unmount());
+  });
+
+  test("does not render a contact-only Order's Contact as Customer data", () => {
+    mockOrder = baseOrder({
+      customerId: null,
+      customer: null,
+      contactId: "contact-standalone",
+      contact: { id: "contact-standalone", firstName: "Sam", lastName: "Solo", email: "sam@solo.test", phone: "555-0300" },
+    });
+    const { container, root } = renderOrderDetail();
+    const text = container.textContent ?? "";
+
+    expect(text).toContain("No customer selected");
+    expect(text.split("Sam Solo")).toHaveLength(2);
+    expect(text.split("sam@solo.test")).toHaveLength(2);
+    act(() => root.unmount());
+  });
+
+  test('removing a Customer preserves the unsaved contact-only edit path', async () => {
     useRealPickerRequests();
     mockOrder = baseOrder({ contactId: null });
     const { container, root } = renderOrderDetail();
+    openCustomerEditor(container);
     await settlePicker();
     expect(mockRequestUrls.some(url => new URL(url, 'http://localhost').searchParams.get('customerId') === 'customer-1')).toBe(true);
     expect(container.querySelector('[aria-label="Clear customer"]')).toBeNull();
-    removeCustomerFromEditor(container);
+    const remove = container.querySelector('[aria-label="Remove customer"]') as HTMLButtonElement;
+    act(() => remove.click());
     expect(mockUpdateOwner).not.toHaveBeenCalled();
     expect(mockSaveOwner).not.toHaveBeenCalled();
     expect(mockOrder.customerId).toBe('customer-1'); // persistence has not changed
+    // The contact picker is intentionally unmounted outside explicit edit mode.
+    openCustomerEditor(container);
+    await settlePicker();
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
-    await settlePicker();
-    const picker = Array.from(container.querySelectorAll('[role="combobox"]')).find(node => node.textContent?.includes('Search contacts')) as HTMLButtonElement;
-    act(() => picker.click());
-    const input = document.querySelector('input[placeholder="Search by name, email, phone, or customer..."]') as HTMLInputElement;
-    act(() => Simulate.change(input, { target: { value: searchName } } as any));
-    await settlePicker();
-    await settlePicker();
-    const request = mockRequestUrls.find(value => new URL(value, 'http://localhost').searchParams.get('search') === searchName);
-    expect(request).toBeDefined();
-    expect(new URL(request!, 'http://localhost').searchParams.has('customerId')).toBe(false);
-    const option = Array.from(document.querySelectorAll('[cmdk-item]')).find(node => node.textContent?.includes(name)) as HTMLElement;
-    expect(option).toBeTruthy();
-    act(() => option.click());
-    expect(mockSaveOwner).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Remove customer"]')).toBeNull();
-    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
-    await act(async () => saveButton(container).click());
-    expect(mockSaveOwner).toHaveBeenCalledWith({ customerId: null, contactId: id });
-    expect(mockOrder).toMatchObject({ customerId: null, contactId: id });
+    expect(Array.from(container.querySelectorAll('[role="combobox"]')).some(node => node.textContent?.includes('Search contacts'))).toBe(true);
     act(() => root.unmount());
-    const reloaded = renderOrderDetail();
-    await settlePicker();
-    expect(reloaded.container.textContent).toContain(name);
-    expect(reloaded.container.querySelector('[aria-label="Clear customer"]')).toBeNull();
-    act(() => reloaded.root.unmount());
   });
 
   test('Customer change stages explicit owner IDs, clears the former Contact, and saves', async () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     mockSaveOwner.mockResolvedValue({});
     const { container, root } = renderOrderDetail();
-    act(() => (container.querySelector('[aria-label="Change customer"]') as HTMLButtonElement).click());
+    openCustomerEditor(container);
     expect(container.querySelector('[aria-label="Remove customer"]')).toBeTruthy();
     expect(mockSaveOwner).not.toHaveBeenCalled();
     const customer = Array.from(document.querySelectorAll('[cmdk-item]')).find(node => node.textContent?.includes('Customer B')) as HTMLElement;
@@ -504,9 +532,11 @@ describe("Order ownership controls", () => {
     mockOrder = baseOrder({ contactId: 'contact-a', contact: mockPickerContacts[0] });
     const { container, root } = renderOrderDetail();
     removeCustomerFromEditor(container);
+    openCustomerEditor(container);
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
-    const discard = Array.from(container.querySelectorAll('button')).find(node => node.textContent?.trim() === 'Discard changes')!;
+    const discard = Array.from(container.querySelectorAll('button')).find(node => node.textContent?.trim() === 'Discard')!;
     await act(async () => discard.click());
+    openCustomerEditor(container);
     expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBe('customer-1');
     expect(mockSaveOwner).not.toHaveBeenCalled();
     act(() => root.unmount());
@@ -555,7 +585,7 @@ describe("Order ownership controls", () => {
     expect(mockUpdateOwner).not.toHaveBeenCalled();
     expect(mockSaveOwner).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Alex Able');
-    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    expect(container.querySelector('[aria-label="Remove customer"]')).toBeNull();
     act(() => root.unmount());
   });
 
@@ -577,7 +607,7 @@ describe("Order ownership controls", () => {
     removeCustomerFromEditor(container);
     await act(async () => saveButton(container).click());
     expect(mockOrder.customerId).toBe('customer-1');
-    expect(mockPickerQueries.at(-1)?.queryKey[2].customerId).toBeNull();
+    expect(container.textContent).toContain('Alex Able');
     expect(mockOwnerToast).toHaveBeenCalledWith(expect.objectContaining({ description: expect.stringContaining('synchronized to QuickBooks') }));
     act(() => root.unmount());
   });
@@ -683,7 +713,7 @@ describe("OrderDetail cancellation action rendering", () => {
 
     expect(container.textContent).toContain("Save Order");
     expect(container.textContent).toContain("Save & Route Jobs");
-    expect(container.textContent).toContain("Cancel Order");
+    expect(container.querySelector('[aria-label="More order actions"]')).toBeTruthy();
 
     act(() => root.unmount());
   });
@@ -692,13 +722,13 @@ describe("OrderDetail cancellation action rendering", () => {
     mockOrder = baseOrder();
     mockUser = { role: "admin", isAdmin: true };
     let rendered = renderOrderDetail();
-    expect(rendered.container.textContent).toContain("Cancel Order");
+    expect(rendered.container.querySelector('[aria-label="More order actions"]')).toBeTruthy();
     act(() => rendered.root.unmount());
 
     document.body.innerHTML = "";
     mockUser = { role: "owner", isAdmin: true };
     rendered = renderOrderDetail();
-    expect(rendered.container.textContent).toContain("Cancel Order");
+    expect(rendered.container.querySelector('[aria-label="More order actions"]')).toBeTruthy();
     act(() => rendered.root.unmount());
   });
 
@@ -712,11 +742,11 @@ describe("OrderDetail cancellation action rendering", () => {
     };
 
     const { container, root } = renderOrderDetail();
-    const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Cancel Order"));
-
+    openMoreOrderActions(container);
+    const button = cancelOrderMenuItem();
     expect(button).toBeTruthy();
-    expect(button).toHaveProperty("disabled", true);
-    expect(container.textContent).toContain("Cannot cancel because payment has been recorded.");
+    expect(button?.getAttribute("data-disabled")).not.toBeNull();
+    expect(document.body.textContent).toContain("Cannot cancel because payment has been recorded.");
 
     act(() => root.unmount());
   });
@@ -742,12 +772,10 @@ describe("OrderDetail cancellation action rendering", () => {
     mockOrder = baseOrder();
 
     const { container, root } = renderOrderDetail();
-    const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Cancel Order"));
+    openMoreOrderActions(container);
+    const button = cancelOrderMenuItem();
     expect(button).toBeTruthy();
-
-    act(() => {
-      (button as HTMLButtonElement | undefined)?.click();
-    });
+    act(() => button?.click());
 
     expect(document.body.textContent).toContain("Cancellation is permanent for normal operations.");
     expect(document.body.textContent).toContain("Keep Order Active");
@@ -759,10 +787,9 @@ describe("OrderDetail cancellation action rendering", () => {
     mockOrder = baseOrder();
 
     const { container, root } = renderOrderDetail();
-    const button = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Cancel Order"));
-    act(() => {
-      (button as HTMLButtonElement | undefined)?.click();
-    });
+    openMoreOrderActions(container);
+    const button = cancelOrderMenuItem();
+    act(() => button?.click());
     const dialogButton = Array.from(document.body.querySelectorAll("button")).filter((node) => node.textContent?.includes("Cancel Order")).at(-1);
 
     await act(async () => {

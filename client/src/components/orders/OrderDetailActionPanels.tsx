@@ -2,7 +2,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CompleteOrderButton, CompleteProductionButton } from "@/components/StateTransitionButtons";
-import { Ban, Check, Copy } from "lucide-react";
+import { Ban, Check, Copy, MoreHorizontal } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 type MaybePromise = void | Promise<void>;
 
@@ -79,49 +87,18 @@ export function OrderDetailPrimaryActions({
           >
             {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save & Route Jobs"}
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void onDiscardChanges()}
-            disabled={!isDirty || isUpdatingOrder || isSavingOrder}
-            className="rounded-titan-md"
-          >
-            Discard changes
-          </Button>
-        </>
-      )}
-
-      {canShowCancelOrder && (
-        <div className="flex max-w-[260px] flex-col items-start gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onCancelOrder}
-            disabled={!canCancelOrder || isCancelingOrder}
-            className="rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
-            title={!canCancelOrder ? cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order." : undefined}
-          >
-            <Ban className="w-4 h-4 mr-2" />
-            {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
-          </Button>
-          {!canCancelOrder && cancelOrderUnavailableReason ? (
-            <span className="text-xs leading-snug text-muted-foreground">{cancelOrderUnavailableReason}</span>
+          {isDirty ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void onDiscardChanges()}
+              disabled={isUpdatingOrder || isSavingOrder}
+              className="rounded-titan-md"
+            >
+              Discard
+            </Button>
           ) : null}
-        </div>
-      )}
-
-      {canDuplicateOrder && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onDuplicateOrder}
-          disabled={isDuplicatingOrder}
-          className="rounded-titan-md"
-          title="Creates a new order with the same commercial configuration. Historical operations are not copied."
-        >
-          <Copy className="mr-2 h-4 w-4" />
-          {isDuplicatingOrder ? "Duplicating..." : "Duplicate Order"}
-        </Button>
+        </>
       )}
 
       {canMarkCompleted && (
@@ -142,6 +119,44 @@ export function OrderDetailPrimaryActions({
       )}
 
       {canCompleteOrder && <CompleteOrderButton orderId={orderId} />}
+
+      {(canShowCancelOrder || canDuplicateOrder) ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="outline" size="icon" className="h-8 w-8" aria-label="More order actions">
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[210px]">
+            <DropdownMenuLabel>Order actions</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {canDuplicateOrder ? (
+              <DropdownMenuItem
+                onSelect={onDuplicateOrder}
+                disabled={isDuplicatingOrder}
+                title="Creates a new order with the same commercial configuration. Historical operations are not copied."
+              >
+                <Copy className="mr-2 h-4 w-4" />
+                {isDuplicatingOrder ? "Duplicating..." : "Duplicate Order"}
+              </DropdownMenuItem>
+            ) : null}
+            {canShowCancelOrder ? (
+              <DropdownMenuItem
+                onSelect={onCancelOrder}
+                disabled={!canCancelOrder || isCancelingOrder}
+                className="text-destructive focus:text-destructive"
+                title={!canCancelOrder ? cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order." : undefined}
+              >
+                <Ban className="mr-2 h-4 w-4" />
+                {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
+              </DropdownMenuItem>
+            ) : null}
+            {!canCancelOrder && cancelOrderUnavailableReason ? (
+              <p className="px-2 pb-1.5 text-xs leading-snug text-muted-foreground">{cancelOrderUnavailableReason}</p>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
     </>
   );
 }
