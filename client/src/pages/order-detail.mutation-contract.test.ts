@@ -30,6 +30,16 @@ describe("Order mutation UI contract", () => {
     expect(orderDetail).toContain("{isOrderEditRoute && orderIsCanceled && (");
   });
 
+  it("keeps fulfillment method selection available outside Details while separating blind sender sources from Ship To", async () => {
+    const orderDetail = await source("client/src/pages/order-detail.tsx");
+
+    expect(orderDetail).toContain('aria-label="Fulfillment method"');
+    expect(orderDetail).toContain('blindShippingAddressSource: value');
+    expect(orderDetail).toContain('Use Customer Address');
+    expect(orderDetail).toContain('Custom Address');
+    expect(orderDetail).toContain('The Ship To destination remains unchanged.');
+  });
+
   it("does not misreport a completed deletion when only the post-mutation refresh fails", async () => {
     const section = await source("client/src/components/orders/OrderLineItemsSection.tsx");
 

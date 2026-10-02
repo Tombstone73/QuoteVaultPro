@@ -49,6 +49,21 @@ describe("V1 Order header PATCH contract", () => {
     expect(orderChangesRequireOrderBackedInvoiceSynchronization(parsed)).toBe(false);
   });
 
+  test("accepts an explicit blind-shipping sender source without changing Ship To", () => {
+    const parsed = updateOrderSchema.parse({
+      id: orderId,
+      blindShipping: true,
+      blindShippingAddressSource: "customer",
+    });
+
+    expect(parsed).toMatchObject({
+      blindShipping: true,
+      blindShippingAddressSource: "customer",
+    });
+    expect(parsed).not.toHaveProperty("shipToAddress1");
+    expect(orderChangesRequireOrderBackedInvoiceSynchronization(parsed)).toBe(false);
+  });
+
   test("keeps draft-invoice synchronization for financial and identity changes", () => {
     expect(orderChangesRequireOrderBackedInvoiceSynchronization({ customerId: "customer-1" } as any)).toBe(true);
     expect(orderChangesRequireOrderBackedInvoiceSynchronization({ shippingCents: 1_250 } as any)).toBe(true);

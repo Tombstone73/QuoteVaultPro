@@ -126,6 +126,36 @@ describe('shipment-owned shipping context', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  test('an explicit custom source never falls back to a Customer address when its sender is incomplete', async () => {
+    const executor: any = { select: () => {
+      const chain: any = { from: () => chain, leftJoin: () => chain, where: () => Promise.resolve([{
+        ...flatOrder, ...account, blindShipping: true, blindShippingAddressSource: 'custom', blindShippingAddress: { company: 'Incomplete sender' },
+      }]) };
+      return chain;
+    } };
+    await expect(resolveShipmentShippingContext('org-a', ['order-a'], executor)).resolves.toMatchObject({
+      blindShipping: true,
+      blindSender: null,
+    });
+  });
+
+  test('an explicit Customer source resolves the ordering Customer address without modifying Ship To', async () => {
+    const write = jest.fn(() => { throw new Error('Resolver must be read-only'); });
+    const executor: any = { insert: write, update: write, delete: write, select: () => {
+      const chain: any = { from: () => chain, leftJoin: () => chain, where: () => Promise.resolve([{
+        ...flatOrder, ...account, blindShipping: true, blindShippingAddressSource: 'customer',
+      }]) };
+      return chain;
+    } };
+    await expect(resolveShipmentShippingContext('org-a', ['order-a'], executor)).resolves.toMatchObject({
+      blindShipping: true,
+      blindSenderSource: 'ordering_customer',
+      blindSender: { company: 'Ordering Company', address1: '100 Billing Street' },
+      destination: { address1: '12 Main' },
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
   test('new blind draft snapshots the ordering customer; later account changes cannot alter saved context', async () => {
     const dialect = new PgDialect();
     const predicates: any[] = [];

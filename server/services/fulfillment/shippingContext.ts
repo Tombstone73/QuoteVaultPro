@@ -11,7 +11,8 @@ export function orderShippingContext(order: {
   id: string; shipToName?: unknown; shipToCompany?: unknown; shipToAddress1?: unknown; shipToAddress2?: unknown;
   shipToCity?: unknown; shipToState?: unknown; shipToPostalCode?: unknown; shipToCountry?: unknown;
   shipToPhone?: unknown; shipToEmail?: unknown; shippingAddress?: unknown;
-  blindShipping?: boolean | null; customerBlindShipping?: boolean | null; blindShippingAddress?: unknown;
+  blindShipping?: boolean | null; customerBlindShipping?: boolean | null;
+  blindShippingAddressSource?: unknown; blindShippingAddress?: unknown;
 }): ShipmentShippingContext {
   const flat = [order.shipToAddress1, order.shipToAddress2, order.shipToCity, order.shipToState, order.shipToPostalCode, order.shipToCountry].some(value => text(value));
   const legacy = order.shippingAddress && typeof order.shippingAddress === 'object' ? order.shippingAddress as Record<string, unknown> : {};
@@ -26,6 +27,9 @@ export function orderShippingContext(order: {
   };
   const explicitBlindShipping = typeof order.blindShipping === 'boolean' ? order.blindShipping : null;
   const blindShipping = explicitBlindShipping ?? order.customerBlindShipping === true;
+  const blindShippingAddressSource = order.blindShippingAddressSource === 'customer' || order.blindShippingAddressSource === 'custom'
+    ? order.blindShippingAddressSource
+    : null;
   const candidateBlindSender = order.blindShippingAddress && typeof order.blindShippingAddress === 'object'
     ? shippingPartySchema.safeParse(order.blindShippingAddress)
     : null;
@@ -35,8 +39,10 @@ export function orderShippingContext(order: {
     sourceOrderId: order.id,
     destination,
     blindShipping,
-    blindSender: blindShipping && candidateBlindSender?.success ? candidateBlindSender.data : null,
-    ...(blindShipping && candidateBlindSender?.success ? { blindSenderSource: 'custom' as const } : {}),
+    // A selected Customer source is resolved from the tenant-scoped Customer
+    // at shipment-context creation. Never let a stale custom snapshot win.
+    blindSender: blindShipping && blindShippingAddressSource !== 'customer' && candidateBlindSender?.success ? candidateBlindSender.data : null,
+    ...(blindShipping && blindShippingAddressSource !== 'customer' && candidateBlindSender?.success ? { blindSenderSource: 'custom' as const } : {}),
   };
 }
 
@@ -104,6 +110,7 @@ export async function resolveShipmentShippingContext(orgId: string, orderIds: st
     shipToState: orders.shipToState, shipToPostalCode: orders.shipToPostalCode, shipToCountry: orders.shipToCountry,
     shipToPhone: orders.shipToPhone, shipToEmail: orders.shipToEmail, shippingAddress: orders.shippingAddress,
     blindShipping: orders.blindShipping,
+    blindShippingAddressSource: orders.blindShippingAddressSource,
     blindShippingAddress: orders.blindShippingAddress,
     customerBlindShipping: customers.blindShipping,
     ...customerSenderSelection,
@@ -112,8 +119,17 @@ export async function resolveShipmentShippingContext(orgId: string, orderIds: st
   if (rows.length !== ids.length) throw new FulfillmentHttpError(404, 'One or more linked Orders were not found.', 'ORDER_NOT_FOUND');
   const byId = new Map(rows.map(row => [row.id, row]));
   const context = commonShipmentShippingContext(ids.map(id => orderShippingContext(byId.get(id)!)));
+  const configuredSources = new Set(ids.map(id => byId.get(id)!.blindShippingAddressSource).filter((source): source is 'customer' | 'custom' => source === 'customer' || source === 'custom'));
+  if (configuredSources.size > 1) {
+    throw new FulfillmentHttpError(409, 'Combined Orders have different blind-shipping sender sources. Use matching sender sources or create separate shipments.', 'BLIND_SENDER_SOURCE_MISMATCH');
+  }
+  const configuredSource = configuredSources.values().next().value as 'customer' | 'custom' | undefined;
   const { sender, issue } = orderingCustomerSender(ids.map(id => byId.get(id)!));
-  return context.blindShipping && !context.blindSender && sender && !issue
+  // Historic Orders with blind shipping but no explicit source preserve their
+  // former customer-address fallback. Explicit Custom selection never falls
+  // back to Customer data, and explicit Customer selection resolves live,
+  // tenant-scoped Customer data without mutating either record.
+  return context.blindShipping && !context.blindSender && configuredSource !== 'custom' && sender && !issue
     ? { ...context, blindSender: sender, blindSenderSource: 'ordering_customer' }
     : context;
 }

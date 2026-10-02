@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -145,6 +146,7 @@ type OrderAddressSnapshotFields = {
   shipToPostalCode?: string | null;
   shipToCountry?: string | null;
   blindShipping?: boolean | null;
+  blindShippingAddressSource?: "customer" | "custom" | null;
   blindShippingAddress?: BlindShippingAddress | null;
 
   shippingMethod?: string | null;
@@ -1134,11 +1136,46 @@ export default function OrderDetail() {
     ? order.blindShipping
     : (order as any)?.customer?.blindShipping === true;
   const blindShippingAddress = order?.blindShippingAddress ?? {};
+  const hasCustomBlindShippingAddress = Object.values(blindShippingAddress)
+    .some((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
+  // Existing Order-level sender snapshots predate the source column and are
+  // therefore custom by definition. New blind shipments default to the linked
+  // Customer return address, which is resolved server-side for fulfillment.
+  const blindShippingAddressSource = order?.blindShippingAddressSource
+    ?? (hasCustomBlindShippingAddress ? "custom" : "customer");
+  const blindShippingCustomer = order?.customer as CustomerWithContacts | null | undefined;
+  const blindShippingCustomerAddress = blindShippingCustomer ? {
+    company: blindShippingCustomer.companyName ?? null,
+    name: null,
+    address1: blindShippingCustomer.billingStreet1 ?? null,
+    address2: blindShippingCustomer.billingStreet2 ?? null,
+    city: blindShippingCustomer.billingCity ?? null,
+    state: blindShippingCustomer.billingState ?? null,
+    postalCode: blindShippingCustomer.billingPostalCode ?? null,
+    country: blindShippingCustomer.billingCountry ?? null,
+    phone: blindShippingCustomer.phone ?? null,
+    email: blindShippingCustomer.email ?? null,
+  } satisfies BlindShippingAddress : null;
+  const hasBlindShippingCustomerAddress = Boolean(
+    blindShippingCustomerAddress?.address1
+    || blindShippingCustomerAddress?.city
+    || blindShippingCustomerAddress?.postalCode,
+  );
+  const blindShippingCustomerAddressLines = blindShippingCustomerAddress
+    ? [
+      blindShippingCustomerAddress.company,
+      blindShippingCustomerAddress.address1,
+      blindShippingCustomerAddress.address2,
+      [blindShippingCustomerAddress.city, blindShippingCustomerAddress.state, blindShippingCustomerAddress.postalCode].filter(Boolean).join(", "),
+      blindShippingCustomerAddress.country,
+    ].filter((line): line is string => Boolean(line?.trim()))
+    : [];
   const updateBlindShippingAddress = (field: keyof BlindShippingAddress, value: string) => {
     const nextAddress = { ...blindShippingAddress, [field]: normalizeNullableString(value) };
     const hasAddressValue = Object.values(nextAddress).some((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
     void applyOrderPatch({
       blindShipping: true,
+      blindShippingAddressSource: "custom",
       blindShippingAddress: hasAddressValue ? nextAddress : null,
     });
   };
@@ -3035,20 +3072,16 @@ export default function OrderDetail() {
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
                   <div className="flex flex-wrap items-center justify-end gap-2">
-                    {isEditingFulfillment ? (
-                      <Select value={currentFulfillmentMethod} onValueChange={handleFulfillmentMethodChange} disabled={!canEditOrder}>
-                        <SelectTrigger className="h-8 w-[140px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="pickup">Pickup</SelectItem>
-                          <SelectItem value="ship">Ship</SelectItem>
-                          <SelectItem value="deliver">Deliver</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Badge variant="outline" className="capitalize">{currentFulfillmentMethod}</Badge>
-                    )}
+                    <Select value={currentFulfillmentMethod} onValueChange={handleFulfillmentMethodChange} disabled={!canEditOrder}>
+                      <SelectTrigger className="h-8 w-[140px]" aria-label="Fulfillment method">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pickup">Pickup</SelectItem>
+                        <SelectItem value="ship">Ship</SelectItem>
+                        <SelectItem value="deliver">Deliver</SelectItem>
+                      </SelectContent>
+                    </Select>
                     {order.fulfillmentStatus && (
                       <FulfillmentStatusBadge status={order.fulfillmentStatus as any} />
                     )}
@@ -3090,7 +3123,7 @@ export default function OrderDetail() {
                         <span>{order.shipToCompany || order.shipToName || "Ship To pending"}</span>
                         {order.shipToCity || order.shipToState ? <span>{[order.shipToCity, order.shipToState].filter(Boolean).join(", ")}</span> : null}
                         {(order as any).shippingCents > 0 ? <span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span> : null}
-                        {blindShippingEnabled ? <span>Blind ship address on file</span> : null}
+                        {blindShippingEnabled ? <span>{blindShippingAddressSource === "customer" ? "Blind shipping · Customer address" : "Blind shipping · Custom sender on file"}</span> : null}
                       </>
                     )}
                   </div>
@@ -3409,31 +3442,69 @@ export default function OrderDetail() {
                             type="checkbox"
                             checked={blindShippingEnabled}
                             disabled={!canEditSafeOrderMetadata || !isEditingFulfillment}
-                            onChange={(event) => void applyOrderPatch({ blindShipping: event.target.checked })}
+                            onChange={(event) => void applyOrderPatch(event.target.checked
+                              ? { blindShipping: true, blindShippingAddressSource }
+                              : { blindShipping: false })}
                           />
                           Blind shipping
                         </label>
                         <p className="mt-1 text-xs text-muted-foreground">Use a separate sender address. The Ship To destination remains unchanged.</p>
                         {blindShippingEnabled && isEditingFulfillment && (
-                          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                            {([
-                              ["company", "Company"], ["name", "Contact name"], ["address1", "Address"], ["address2", "Address line 2"],
-                              ["city", "City"], ["state", "State"], ["postalCode", "Postal code"], ["country", "Country"],
-                              ["phone", "Phone"], ["email", "Email"],
-                            ] as Array<[keyof BlindShippingAddress, string]>).map(([field, label]) => (
-                              <div key={field} className="space-y-1">
-                                <label className="text-xs text-muted-foreground">{label}</label>
-                                <Input
-                                  type={field === "email" ? "email" : "text"}
-                                  defaultValue={blindShippingAddress[field] ?? ""}
-                                  onBlur={(event) => updateBlindShippingAddress(field, event.target.value)}
-                                />
+                          <div className="mt-3 space-y-3">
+                            <div className="text-sm font-medium">Shipper / Return Address</div>
+                            <RadioGroup
+                              value={blindShippingAddressSource}
+                              onValueChange={(value) => {
+                                if (value !== "customer" && value !== "custom") return;
+                                void applyOrderPatch({ blindShipping: true, blindShippingAddressSource: value });
+                              }}
+                              className="gap-2"
+                            >
+                              <label className="flex items-center gap-2 text-sm">
+                                <RadioGroupItem value="customer" disabled={!canEditSafeOrderMetadata} />
+                                Use Customer Address
+                              </label>
+                              <label className="flex items-center gap-2 text-sm">
+                                <RadioGroupItem value="custom" disabled={!canEditSafeOrderMetadata} />
+                                Custom Address
+                              </label>
+                            </RadioGroup>
+
+                            {blindShippingAddressSource === "customer" ? (
+                              hasBlindShippingCustomerAddress ? (
+                                <address className="rounded-md border border-border/60 bg-muted/20 p-3 text-sm not-italic">
+                                  <div className="mb-1 font-medium">{blindShippingCustomer?.companyName || "Customer address"}</div>
+                                  {blindShippingCustomerAddressLines.map((line) => <div key={line}>{line}</div>)}
+                                </address>
+                              ) : (
+                                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200">
+                                  No usable Customer address is available. Choose Custom Address before completing blind shipping.
+                                </p>
+                              )
+                            ) : (
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                {([
+                                  ["company", "Company"], ["name", "Contact name"], ["address1", "Address"], ["address2", "Address line 2"],
+                                  ["city", "City"], ["state", "State"], ["postalCode", "Postal code"], ["country", "Country"],
+                                  ["phone", "Phone"], ["email", "Email"],
+                                ] as Array<[keyof BlindShippingAddress, string]>).map(([field, label]) => (
+                                  <div key={field} className="space-y-1">
+                                    <label className="text-xs text-muted-foreground">{label}</label>
+                                    <Input
+                                      type={field === "email" ? "email" : "text"}
+                                      defaultValue={blindShippingAddress[field] ?? ""}
+                                      onBlur={(event) => updateBlindShippingAddress(field, event.target.value)}
+                                    />
+                                  </div>
+                                ))}
                               </div>
-                            ))}
+                            )}
                           </div>
                         )}
                         {blindShippingEnabled && !isEditingFulfillment && (
-                          <div className="mt-2 text-sm text-muted-foreground">{blindShippingAddress.address1 ? "Blind ship address on file" : "Blind shipping enabled"}</div>
+                          <div className="mt-2 text-sm text-muted-foreground">
+                            {blindShippingAddressSource === "customer" ? "Blind shipping · Customer address" : "Blind shipping · Custom sender on file"}
+                          </div>
                         )}
                       </div>
 

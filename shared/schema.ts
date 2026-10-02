@@ -3843,6 +3843,10 @@ export const orders = pgTable("orders", {
   // Explicit Order override. Null preserves the Customer-level default;
   // this sender address is never used as the Ship To destination.
   blindShipping: boolean("blind_shipping"),
+  // Distinguishes a live Customer return-address resolution from an explicitly
+  // stored custom sender.  The address snapshot below is only authoritative
+  // for the custom source.
+  blindShippingAddressSource: varchar("blind_shipping_address_source", { length: 20 }),
   blindShippingAddress: jsonb("blind_shipping_address").$type<{
     name?: string | null;
     company?: string | null;
@@ -3955,6 +3959,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
     phone: z.string().optional(),
   }).optional().nullable(),
   blindShipping: z.boolean().optional().nullable(),
+  blindShippingAddressSource: z.enum(["customer", "custom"]).optional().nullable(),
   blindShippingAddress: z.object({
     name: z.string().max(255).optional().nullable(),
     company: z.string().max(255).optional().nullable(),
