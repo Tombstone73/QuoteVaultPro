@@ -413,17 +413,19 @@ describe("Order workspace composition", () => {
       priceOverride: 85, onPriceClick, onUndoOverride, onSave, onDescriptionChange, onProductionNotesChange,
     });
     const editing = container.querySelector('[data-testid="order-line-main-editing"]')!;
-    expect(editing.querySelectorAll(":scope > section")).toHaveLength(3);
+    expect(editing.querySelectorAll(":scope > section")).toHaveLength(2);
     expect(editing.querySelector('[aria-label="Dimensions & Pricing"] select')).not.toBeNull();
     expect(editing.querySelector('[aria-label="Product Options"] select')).not.toBeNull();
-    expect(editing.querySelector('[aria-label="Artwork"]')?.textContent).toBe("Artwork manager");
+    const lower = container.querySelector('[data-testid="order-line-lower-editing"]')!;
+    expect(lower.querySelector('[aria-label="Artwork"]')?.textContent).toBe("Artwork manager");
     const notes = container.querySelectorAll("textarea");
-    expect(Array.from(notes).map((note) => note.value)).toEqual(["Customer copy", "Internal instruction"]);
+    expect(Array.from(notes).map((note) => note.value)).toEqual(["Customer copy"]);
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
-    ["New customer copy", "New internal note"].forEach((value, index) => {
-      act(() => { setter.call(notes[index], value); notes[index].dispatchEvent(new Event("input", { bubbles: true })); });
-    });
+    act(() => { setter.call(notes[0], "New customer copy"); notes[0].dispatchEvent(new Event("input", { bubbles: true })); });
     expect(onDescriptionChange).toHaveBeenCalledWith("New customer copy");
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Production Notes"))!);
+    const productionNote = container.querySelector("textarea")!;
+    act(() => { setter.call(productionNote, "New internal note"); productionNote.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(onProductionNotesChange).toHaveBeenCalledWith("New internal note");
     const advanced = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Advanced / Staff Controls"))!;
     expect(advanced.getAttribute("aria-expanded")).toBe("false");
@@ -436,6 +438,62 @@ describe("Order workspace composition", () => {
     expect(onPriceClick).toHaveBeenCalledTimes(1);
     click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Save Item")!);
     expect(onSave).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it("keeps an active-work summary flag visible and keyboard-safe on a collapsed read-only line", async () => {
+    const onToggleExpand = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: false,
+      readOnly: true,
+      onToggleExpand,
+      summaryFooter: (
+        <button
+          type="button"
+          aria-label="Active work warning: operator review required"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+          }}
+        >
+          Active work
+        </button>
+      ),
+    });
+
+    const warning = container.querySelector('button[aria-label^="Active work warning"]')!;
+    expect(warning).toBeTruthy();
+    ["Enter", " "].forEach((key) => {
+      act(() => warning.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+    });
+    expect(onToggleExpand).not.toHaveBeenCalled();
+
+    const expand = container.querySelector('button[aria-label="Expand line item"]')!;
+    click(expand);
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it("uses the unit-price editor and keeps notes values available while switching tabs", async () => {
+    const onUnitPriceClick = jest.fn();
+    const onDescriptionChange = jest.fn();
+    const onProductionNotesChange = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      compactExpandedLayout: true,
+      description: "Customer copy",
+      productionNotes: "Internal instruction",
+      onUnitPriceClick,
+      onDescriptionChange,
+      onProductionNotesChange,
+    });
+
+    click(container.querySelector('button[aria-label="Edit unit price"]')!);
+    expect(onUnitPriceClick).toHaveBeenCalledTimes(1);
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Production Notes"))!);
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("Internal instruction");
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Customer Facing"))!);
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("Customer copy");
     await cleanup();
   });
 

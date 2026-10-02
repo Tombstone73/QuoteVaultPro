@@ -26,6 +26,7 @@ import {
   Plus,
   Save,
   Check,
+  AlertTriangle,
   Trash2,
   Upload,
   Send,
@@ -1091,6 +1092,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
+  const [editingPriceFieldById, setEditingPriceFieldById] = useState<Record<string, "total" | "unit">>({});
   const [priceEditTextById, setPriceEditTextById] = useState<Record<string, string>>({});
   const [priceOverrideModeById, setPriceOverrideModeById] = useState<Record<string, LineItemPriceOverrideMode>>({});
   const [pendingPriceOverrideById, setPendingPriceOverrideById] = useState<Record<string, PendingLineItemPriceOverride>>({});
@@ -3070,6 +3072,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     : displayPersistedTotal;
                   const priceEditText = priceEditTextById[String(item.id)] ?? editorPriceValue.toFixed(2);
                   const isEditingPrice = editingPriceItemId === String(item.id);
+                  const editingPriceField = editingPriceFieldById[String(item.id)] ?? "total";
+                  const isEditingUnitPrice = isEditingPrice && editingPriceField === "unit";
+                  const isEditingTotalPrice = isEditingPrice && !isEditingUnitPrice;
+                  const unitPriceEditorValue = selectedOverrideMode === "override_unit_after_margin"
+                    ? (pendingPricing?.priceOverrideValueCents != null
+                      ? pendingPricing.priceOverrideValueCents / 100
+                      : getLineItemOverrideInputValue(item, "override_unit_after_margin", total))
+                    : displayPerEa;
                   const overrideSelectValue = isOverride ? selectedOverrideMode : "__none";
 
                   const statusValue = item.status || "new";
@@ -3225,9 +3235,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     approvedProofVersionId: (item as any).approvedProofVersionId ?? null,
                   }) || Boolean(lineItemProofSummary?.openProofingAvailable);
                   const hasActiveOwner = Boolean(operationalItem.activeOwnerStepKey || operationalItem.activeOwnerStationKey || operationalItem.activeOwnerJobId);
-                  const activeWorkWarning = !readOnly && isExpanded
-                    ? getOrderLineItemActiveWorkWarning({ fulfillmentOnly, workflowState, hasActiveOwner })
-                    : null;
+                  const activeWorkWarning = getOrderLineItemActiveWorkWarning({ fulfillmentOnly, workflowState, hasActiveOwner });
                   const mediaFitSnapshot = isExpanded && expandedItem?.id === item.id
                     ? (pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.mediaFit
                     : (item as any)?.pbv2SnapshotJson?.pbv2PricingSnapshot?.mediaFit;
@@ -3419,7 +3427,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     return;
                                   }
                                   setExpandedId(itemKey);
-                                  setPendingJumpToLineItemId(itemKey);
                                 }}
                                 title={productName}
                                 lineLabel={`Line ${lineNumber}`}
@@ -3481,6 +3488,31 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         {operationalWarning}
                                       </span>
                                     ) : null}
+                                    {activeWorkWarning ? (
+                                      <TooltipProvider delayDuration={150}>
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <button
+                                              type="button"
+                                              className="inline-flex h-5 items-center gap-1 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-800 hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-amber-300"
+                                              aria-label={`${activeWorkWarning.title}: ${activeWorkWarning.description}`}
+                                              onClick={(event) => event.stopPropagation()}
+                                              onPointerDown={(event) => event.stopPropagation()}
+                                              onKeyDown={(event) => {
+                                                if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+                                              }}
+                                            >
+                                              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                                              Active work
+                                            </button>
+                                          </TooltipTrigger>
+                                          <TooltipContent side="bottom" align="start" className="max-w-sm text-xs">
+                                            <p className="font-medium">{activeWorkWarning.title}</p>
+                                            <p>{activeWorkWarning.description}</p>
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </TooltipProvider>
+                                    ) : null}
                                   </div>
                                 }
                                 thumbnail={thumbnailNode}
@@ -3535,13 +3567,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 price={displayTotal}
                                 priceOverride={isOverride ? displayTotal : null}
                                 priceOverrideLabel={overrideLabel}
-                                editingPrice={isEditingPrice}
+                                editingPrice={isEditingTotalPrice}
                                 priceEditText={priceEditText}
                                 onPriceClick={
                                   !canEditPrice
                                     ? undefined
                                     : () => {
                                         const lineItemId = String(item.id);
+                                        setEditingPriceFieldById((prev) => ({ ...prev, [lineItemId]: "total" }));
                                         setEditingPriceItemId(lineItemId);
                                         setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: editorPriceValue.toFixed(2) }));
                                       }
@@ -3552,6 +3585,82 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     : (value) => {
                                         const lineItemId = String(item.id);
                                         setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: value }));
+                                      }
+                                }
+                                editingUnitPrice={isEditingUnitPrice}
+                                unitPriceEditText={priceEditText}
+                                onUnitPriceClick={
+                                  !canEditPrice
+                                    ? undefined
+                                    : () => {
+                                        const lineItemId = String(item.id);
+                                        // A unit-price edit is always the canonical after-margin unit override.
+                                        // It deliberately reuses the normal override payload/audit path.
+                                        markPricingDirtyByUser(lineItemId, "unit_price_override");
+                                        setPriceOverrideModeById((prev) => ({ ...prev, [lineItemId]: "override_unit_after_margin" }));
+                                        setEditingPriceFieldById((prev) => ({ ...prev, [lineItemId]: "unit" }));
+                                        setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: unitPriceEditorValue.toFixed(2) }));
+                                        setEditingPriceItemId(lineItemId);
+                                      }
+                                }
+                                onUnitPriceChange={
+                                  !canEditPrice
+                                    ? undefined
+                                    : (value) => {
+                                        const lineItemId = String(item.id);
+                                        setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: value }));
+                                      }
+                                }
+                                onUnitPriceBlur={
+                                  !canEditPrice
+                                    ? undefined
+                                    : async () => {
+                                        const lineItemId = String(item.id);
+                                        const rawValue = priceEditTextById[lineItemId] ?? unitPriceEditorValue.toFixed(2);
+                                        const nextCents = parseCurrencyDollarsToCents(rawValue);
+                                        if (nextCents === null) {
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: unitPriceEditorValue.toFixed(2) }));
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                          return;
+                                        }
+
+                                        const mode: LineItemPriceOverrideMode = "override_unit_after_margin";
+                                        const calculatedCents = baseCalculatedTotalCents;
+                                        const qtyForOverride = isExpanded && expandedItem?.id === item.id ? qtyNum : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
+                                        const nextPricing = applyLineItemEditPriceOverride({
+                                          baseCalculatedTotalCents: calculatedCents,
+                                          quantity: qtyForOverride,
+                                          mode,
+                                          valueCents: nextCents,
+                                        });
+                                        markPricingDirtyByUser(lineItemId, "unit_price_override_value");
+                                        if (commercialPricingOnly) {
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                          void saveCommercialPricing(item, nextPricing);
+                                          return;
+                                        }
+                                        setPendingPriceOverrideById((prev) => ({ ...prev, [lineItemId]: nextPricing }));
+                                        setComputedTotal(nextPricing.effectiveTotalCents / 100);
+                                        setComputedTotalQty(qtyForOverride);
+                                        onDraftLineItemPricingChange?.(lineItemId, nextPricing.effectiveTotalCents);
+                                        setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
+                                        setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                      }
+                                }
+                                onUnitPriceKeyDown={
+                                  !canEditPrice
+                                    ? undefined
+                                    : (event) => {
+                                        const lineItemId = String(item.id);
+                                        if (event.key === "Enter") {
+                                          event.preventDefault();
+                                          (event.currentTarget as HTMLInputElement).blur();
+                                        }
+                                        if (event.key === "Escape") {
+                                          event.preventDefault();
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: unitPriceEditorValue.toFixed(2) }));
+                                        }
                                       }
                                 }
                                 onPriceBlur={
@@ -3842,14 +3951,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     : undefined
                                 }
                                 optionsSlot={
-                                  (activeWorkWarning || mediaFitWarning || effectivePbv2Tree || expandedProductOptions.length > 0 || showDesignBriefEditor || expandedProductIsPbv2) ? <>
-                                    {activeWorkWarning && (
-                                      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900">
-                                        <span className="font-medium">{activeWorkWarning.title}</span>
-                                        <span>{activeWorkWarning.description}</span>
-                                      </div>
-                                    )}
-
+                                  (mediaFitWarning || effectivePbv2Tree || expandedProductOptions.length > 0 || showDesignBriefEditor || expandedProductIsPbv2) ? <>
                                     {mediaFitWarning && (
                                       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900">
                                         <span className="font-medium">{mediaFitWarning.title}</span>

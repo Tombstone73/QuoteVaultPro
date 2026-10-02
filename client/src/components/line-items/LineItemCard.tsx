@@ -15,6 +15,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronRight, Copy, GripVertical, Loader2, Minus, Plus, Save, Check, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -104,6 +105,13 @@ export type LineItemCardProps = {
   onPriceChange?: (value: string) => void;
   onPriceBlur?: () => void;
   onPriceKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  /** Uses the existing canonical unit-price override path. */
+  editingUnitPrice?: boolean;
+  unitPriceEditText?: string;
+  onUnitPriceClick?: () => void;
+  onUnitPriceChange?: (value: string) => void;
+  onUnitPriceBlur?: () => void;
+  onUnitPriceKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onUndoOverride?: () => void;
   priceControlSlot?: ReactNode;
   pricingDetailsSlot?: ReactNode;
@@ -274,6 +282,12 @@ export function LineItemCard({
   onPriceChange,
   onPriceBlur,
   onPriceKeyDown,
+  editingUnitPrice = false,
+  unitPriceEditText = "",
+  onUnitPriceClick,
+  onUnitPriceChange,
+  onUnitPriceBlur,
+  onUnitPriceKeyDown,
   onUndoOverride,
   priceControlSlot,
   pricingDetailsSlot,
@@ -327,6 +341,7 @@ export function LineItemCard({
   const proofApprovalDisabled = readOnly || proofApprovalLocked || !onRequiresProofApprovalChange;
   const canEditPrice = !readOnly || commercialPricingEditable;
   const [secondaryDetailsOpen, setSecondaryDetailsOpen] = useState(false);
+  const [notesTab, setNotesTab] = useState<"customer" | "production">("customer");
   const [quantityDraft, setQuantityDraft] = useState(String(quantity));
   const [quantityError, setQuantityError] = useState<string | null>(null);
 
@@ -539,10 +554,59 @@ export function LineItemCard({
     </>
   );
 
-  const commercialControls = (
-            <div className={compactExpandedLayout ? "min-w-0 space-y-3" : "flex flex-wrap items-end gap-x-5 gap-y-3"}>
+  const compactCommercialControls = (
+    <div className="min-w-0 space-y-3">
+      {primaryControlSlot ? <div className="min-w-0">{primaryControlSlot}</div> : null}
+      <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" data-testid="compact-commercial-flow">
+        {dimsRequired ? (
+          <>
+            <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+              Width
+              <Input id={`line-item-width-input-${id}`} ref={widthInputRef} value={width} onChange={(event) => onWidthChange?.(event.target.value)} onFocus={selectInputTextOnFocus} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
+            </label>
+            <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+              Height
+              <Input value={height} onChange={(event) => onHeightChange?.(event.target.value)} onFocus={selectInputTextOnFocus} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
+            </label>
+          </>
+        ) : null}
+        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+          Qty
+          <div className="flex h-8 min-w-0 items-center rounded-md border border-border/60 bg-background/40">
+            <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Decrease quantity" onClick={() => { if (onQuantityChange) applyQuantity(quantity - 1); else onQuantityDecrement?.(); }} disabled={readOnly}><Minus className="h-3.5 w-3.5" /></Button>
+            <Input value={quantityDraft} onChange={(event) => updateQuantityDraft(event.currentTarget.value)} onBlur={commitQuantityDraft} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitQuantityDraft(); event.currentTarget.blur(); } }} className="h-7 min-w-0 border-0 px-1 text-center font-mono focus-visible:ring-0" inputMode="numeric" type="text" pattern="[0-9]*" aria-label="Quantity" aria-invalid={Boolean(quantityError)} aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined} disabled={readOnly} readOnly={readOnly} />
+            <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Increase quantity" onClick={() => { if (onQuantityChange) applyQuantity(quantity + 1); else onQuantityIncrement?.(); }} disabled={readOnly}><Plus className="h-3.5 w-3.5" /></Button>
+          </div>
+          {quantityError ? <div id={`line-item-quantity-error-${id}`} className="text-xs text-destructive" role="alert">{quantityError}</div> : null}
+        </div>
+        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+          {priceLabel}
+          {editingUnitPrice ? <Input type="text" inputMode="decimal" value={unitPriceEditText} onChange={(event) => onUnitPriceChange?.(event.target.value)} onBlur={onUnitPriceBlur} onKeyDown={onUnitPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 font-mono text-sm font-semibold" aria-label="Unit price override" /> : onUnitPriceClick ? <button type="button" className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-right font-mono text-sm font-semibold shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onUnitPriceClick} aria-label="Edit unit price">{unitPriceLabel}</button> : <div className="flex h-8 items-center font-mono text-sm font-semibold">{unitPriceLabel}</div>}
+        </div>
+        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+          Line total
+          {editingPrice ? <Input type="text" inputMode="decimal" value={priceEditText} onChange={(event) => onPriceChange?.(event.target.value)} onBlur={onPriceBlur} onKeyDown={onPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 text-right font-mono text-sm font-semibold" /> : <button type="button" className={cn("h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-right font-mono text-sm font-semibold shadow-sm", canEditPrice && onPriceClick ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : "cursor-default")} onClick={onPriceClick} disabled={!canEditPrice || !onPriceClick}>{formatMoney(priceOverride != null ? priceOverride : price)}</button>}
+        </div>
+        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+          Override
+          {priceControlSlot ?? <div className="flex h-8 items-center text-sm">—</div>}
+          {priceOverride != null && <div className="flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
+        </div>
+        {pricingDetailsSlot ? <Collapsible defaultOpen={false} className="col-span-full"><CollapsibleTrigger asChild><button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="text-[11px] font-medium text-muted-foreground hover:text-foreground">Pricing details</button></CollapsibleTrigger><CollapsibleContent className="pt-1 text-[11px] text-muted-foreground">{pricingDetailsSlot}</CollapsibleContent></Collapsible> : null}
+        <div className="col-span-full flex items-center text-[11px]">
+          {isCalculating ? <div className="text-muted-foreground">Calculating…</div> : null}
+          {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" ? <div className="font-medium text-amber-600 dark:text-amber-500">⚠️ Outdated PBV2 config</div> : null}
+          {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" ? <div className="max-w-[420px] truncate text-destructive" title={calcError}>{calcError.trim().startsWith("{") || /^\d+:\s*{/.test(calcError) ? "Calculation failed. Check required options." : calcError}</div> : null}
+          {!isCalculating && !calcError && isPreviewPrice ? <div className="font-medium text-amber-600 dark:text-amber-500">Preview price · unsaved</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  const commercialControls = compactExpandedLayout ? compactCommercialControls : (
+            <div className={compactExpandedLayout ? "flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3" : "flex flex-wrap items-end gap-x-5 gap-y-3"}>
               {primaryControlSlot ? (
-                <section className={cn(compactExpandedLayout ? "min-w-0" : "min-w-[220px] flex-[1_1_280px]", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
+                <section className={cn(compactExpandedLayout ? "basis-full min-w-0" : "min-w-[220px] flex-[1_1_280px]", !nonProductionItem && !compactExpandedLayout && "rounded-md border border-border/40 bg-background/40 p-2.5")}>
                   {!nonProductionItem && !compactExpandedLayout ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product</div> : null}
                   {primaryControlSlot}
                 </section>
@@ -697,7 +761,7 @@ export function LineItemCard({
                 {priceControlSlot ? (
                   <div className={compactExpandedLayout ? "col-span-2 mt-1" : "mt-1"}>{priceControlSlot}</div>
                 ) : null}
-                <div className={compactExpandedLayout ? "col-start-1 row-start-1 row-span-2 space-y-1 text-sm" : "text-[11px] text-muted-foreground"}>{compactExpandedLayout ? <><div className="text-xs text-muted-foreground">{priceLabel}</div><div className="flex h-8 items-center font-mono font-semibold">{unitPriceLabel}</div></> : <>{priceLabel} {unitPriceLabel}</>}</div>
+                <div className={compactExpandedLayout ? "col-start-1 row-start-1 row-span-2 space-y-1 text-sm" : "text-[11px] text-muted-foreground"}>{compactExpandedLayout ? <><div className="text-xs text-muted-foreground">{priceLabel}</div>{editingUnitPrice ? <Input type="text" inputMode="decimal" value={unitPriceEditText} onChange={(event) => onUnitPriceChange?.(event.target.value)} onBlur={onUnitPriceBlur} onKeyDown={onUnitPriceKeyDown} autoFocus className="h-8 w-28 px-2 font-mono text-sm font-semibold" aria-label="Unit price override" /> : onUnitPriceClick ? <button type="button" className="flex h-8 min-w-28 items-center rounded-md border border-input bg-background px-2 font-mono text-sm font-semibold shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onUnitPriceClick} aria-label="Edit unit price">{unitPriceLabel}</button> : <div className="flex h-8 items-center font-mono font-semibold">{unitPriceLabel}</div>}</> : <>{priceLabel} {unitPriceLabel}</>}</div>
                 {pricingDetailsSlot ? (
                   <Collapsible defaultOpen={false} className={compactExpandedLayout ? "col-span-2 mt-1" : "mt-1"}>
                     <CollapsibleTrigger asChild>
@@ -749,29 +813,25 @@ export function LineItemCard({
   ) : null;
 
   const compactNotesSection = (
-    <section className="min-w-0 space-y-2">
-      <div className="grid gap-3 md:grid-cols-2">
-        <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-          Customer-facing description
-          <textarea
-            value={description}
-            onChange={(event) => onDescriptionChange?.(event.target.value)}
-            placeholder="Add custom description for this line item..."
-            className="min-h-[60px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-            disabled={readOnly}
-          />
-        </label>
-        <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-          <span className="flex items-center gap-2">{serviceFee ? "Service Notes (internal)" : fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}<span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-950/50 dark:text-amber-500">Staff only</span></span>
-          <textarea
-            value={productionNotes}
-            onChange={(event) => onProductionNotesChange?.(event.target.value)}
-            placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."}
-            className="min-h-[60px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-            disabled={readOnly}
-          />
-        </label>
-      </div>
+    <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Notes">
+      <Tabs value={notesTab} onValueChange={(value) => setNotesTab(value === "production" ? "production" : "customer")}>
+        <TabsList className="h-8 w-full justify-start">
+          <TabsTrigger value="customer" onClick={() => setNotesTab("customer")} className="h-6 px-2.5 text-xs">Customer Facing</TabsTrigger>
+          <TabsTrigger value="production" onClick={() => setNotesTab("production")} className="h-6 px-2.5 text-xs">Production Notes <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">Staff only</span></TabsTrigger>
+        </TabsList>
+        <TabsContent value="customer">
+          <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+            Customer-facing description
+            <textarea value={description} onChange={(event) => onDescriptionChange?.(event.target.value)} placeholder="Add custom description for this line item..." className="min-h-[92px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
+          </label>
+        </TabsContent>
+        <TabsContent value="production">
+          <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+            {serviceFee ? "Service Notes (internal)" : fulfillmentOnly ? "Fulfillment Notes (internal)" : "Production Notes (internal)"}
+            <textarea value={productionNotes} onChange={(event) => onProductionNotesChange?.(event.target.value)} placeholder={serviceFee ? "Internal service or billing instructions..." : fulfillmentOnly ? "Internal pick, pack, or fulfillment instructions..." : "Internal production notes..."} className="min-h-[92px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" disabled={readOnly} />
+          </label>
+        </TabsContent>
+      </Tabs>
     </section>
   );
 
@@ -853,27 +913,17 @@ export function LineItemCard({
   return (
     <div
       id={`line-item-${id}`}
+      ref={topAnchorRef}
       tabIndex={-1}
       className={cn("relative rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60", containerClassName)}
     >
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
       <div
-        role="button"
-        tabIndex={0}
         className={cn(
-          "w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg",
+          "w-full text-left p-2.5 hover:bg-muted/20 transition-colors rounded-lg",
           headerActions && "pr-20"
         )}
         onClick={onToggleExpand}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onToggleExpand();
-          }
-        }}
-        aria-expanded={isExpanded}
-        aria-controls={contentId}
-        aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
       >
         <div className={cn("grid gap-2 items-center", compactExpandedLayout && (showDragHandle ? "grid-cols-[auto_minmax(0,1fr)] md:grid-cols-[auto_minmax(0,1.2fr)_minmax(0,2fr)_auto]" : "grid-cols-1 md:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_auto]"))} style={compactExpandedLayout ? undefined : { gridTemplateColumns: showDragHandle ? 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
           {/* Drag Handle (edit mode only) */}
@@ -965,7 +1015,20 @@ export function LineItemCard({
               <div className="font-mono text-sm font-semibold">{totalLabel}</div>
               <div className="text-[10px] text-muted-foreground">{unitPriceLabel}</div>
             </div>
-            <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform shrink-0", isExpanded && "rotate-90")} />
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-expanded={isExpanded}
+              aria-controls={contentId}
+              aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
+              onClick={(event) => {
+                stopLineItemActionPropagation(event);
+                onToggleExpand();
+              }}
+              onPointerDown={stopLineItemActionPropagation}
+            >
+              <ChevronRight className={cn("h-4 w-4 transition-transform", isExpanded && "rotate-90")} aria-hidden="true" />
+            </button>
           </div>
         </div>
 
@@ -998,13 +1061,6 @@ export function LineItemCard({
       {isExpanded && (
         <div id={contentId} className="px-3 pb-3">
           <div className={cn("rounded-md border border-border/40 bg-muted/20 p-3", !compactExpandedLayout && "min-h-[400px]")}>
-            <div
-              id={`line-item-top-anchor-${id}`}
-              ref={topAnchorRef}
-              tabIndex={-1}
-              aria-hidden="true"
-              className="h-0 w-full overflow-hidden outline-none"
-            />
             {!compactExpandedLayout && lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
             {!compactExpandedLayout ? commercialControls : null}
 
@@ -1012,15 +1068,17 @@ export function LineItemCard({
 
             {compactExpandedLayout ? (
               <div className="space-y-3" data-testid="order-line-editor">
-                <div className={cn("grid items-start gap-3", optionsSlot && artworkSlot ? "lg:grid-cols-2 xl:grid-cols-3" : (optionsSlot || artworkSlot) && "lg:grid-cols-2")} data-testid="order-line-main-editing">
+                <div className={cn("grid items-start gap-3", optionsSlot && "2xl:grid-cols-2")} data-testid="order-line-main-editing">
                   <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
                     <h3 className="mb-3 text-sm font-semibold">{dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}</h3>
                     {commercialControls}
                   </section>
                   {optionsSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
-                  {artworkSlot ? <section className={cn("min-w-0", optionsSlot && "lg:col-span-2 xl:col-span-1")} aria-label="Artwork">{artworkSlot}</section> : null}
                 </div>
-                {compactNotesSection}
+                <div className={cn("grid min-w-0 items-start gap-3", artworkSlot && "lg:grid-cols-2")} data-testid="order-line-lower-editing">
+                  {compactNotesSection}
+                  {artworkSlot ? <section className="min-w-0" aria-label="Artwork">{artworkSlot}</section> : null}
+                </div>
                 {actionsRow}
                 {advancedControls}
               </div>
