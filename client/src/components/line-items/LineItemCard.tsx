@@ -537,7 +537,13 @@ export function LineItemCard({
   const compactCommercialControls = (
     <div className="min-w-0 space-y-3">
       {primaryControlSlot ? <div className="min-w-0">{primaryControlSlot}</div> : null}
-      <div className={cn("grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3", dimsRequired ? "2xl:grid-cols-7" : "xl:grid-cols-5")} data-testid="compact-commercial-flow">
+      <div
+        className={cn(
+          "grid min-w-0 gap-3",
+          dimsRequired ? "grid-cols-1 sm:grid-cols-3" : "max-w-[10rem] grid-cols-1",
+        )}
+        data-testid="order-line-dimensions-row"
+      >
         {dimsRequired ? (
           <>
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
@@ -559,23 +565,28 @@ export function LineItemCard({
           </div>
           {quantityError ? <div id={`line-item-quantity-error-${id}`} className="text-xs text-destructive" role="alert">{quantityError}</div> : null}
         </div>
-        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+      </div>
+      <div
+        className="grid min-w-0 grid-cols-2 items-start gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,9rem)_minmax(0,12rem)_auto]"
+        data-testid="order-line-pricing-row"
+      >
+        <label className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
           {priceLabel}
-          {editingUnitPrice ? <Input type="text" inputMode="decimal" value={unitPriceEditText} onChange={(event) => onUnitPriceChange?.(event.target.value)} onBlur={onUnitPriceBlur} onKeyDown={onUnitPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 font-mono text-sm font-semibold" aria-label="Unit price override" /> : onUnitPriceClick ? <button type="button" className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-right font-mono text-sm font-semibold shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onUnitPriceClick} aria-label="Edit unit price">{unitPriceLabel}</button> : <div className="flex h-8 items-center font-mono text-sm font-semibold">{unitPriceLabel}</div>}
-        </div>
-        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+          {editingUnitPrice ? <Input type="text" inputMode="decimal" value={unitPriceEditText} onChange={(event) => onUnitPriceChange?.(event.target.value)} onBlur={onUnitPriceBlur} onKeyDown={onUnitPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 text-center font-mono text-sm font-semibold" aria-label="Unit price override" /> : onUnitPriceClick ? <button type="button" className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-center font-mono text-sm font-semibold shadow-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onUnitPriceClick} aria-label="Edit unit price">{unitPriceLabel}</button> : <div className="flex h-8 items-center justify-center font-mono text-sm font-semibold">{unitPriceLabel}</div>}
+        </label>
+        <label className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
           Line total
-          {editingPrice ? <Input type="text" inputMode="decimal" value={priceEditText} onChange={(event) => onPriceChange?.(event.target.value)} onBlur={onPriceBlur} onKeyDown={onPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 text-right font-mono text-sm font-semibold" /> : <button type="button" className={cn("h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-right font-mono text-sm font-semibold shadow-sm", canEditPrice && onPriceClick ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : "cursor-default")} onClick={onPriceClick} disabled={!canEditPrice || !onPriceClick}>{formatMoney(priceOverride != null ? priceOverride : price)}</button>}
-        </div>
-        <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-          Override
-          <div className="flex min-h-8 items-center gap-2">
+          {editingPrice ? <Input type="text" inputMode="decimal" value={priceEditText} onChange={(event) => onPriceChange?.(event.target.value)} onBlur={onPriceBlur} onKeyDown={onPriceKeyDown} autoFocus className="h-8 w-full min-w-0 px-2 text-center font-mono text-sm font-semibold" /> : <button type="button" className={cn("h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-center font-mono text-sm font-semibold shadow-sm", canEditPrice && onPriceClick ? "cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : "cursor-default")} onClick={onPriceClick} disabled={!canEditPrice || !onPriceClick}>{formatMoney(priceOverride != null ? priceOverride : price)}</button>}
+        </label>
+        <div className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
+          <span>Override</span>
+          <div className="flex min-h-8 flex-wrap items-center justify-center gap-2">
             {priceControlSlot ?? <span className="text-sm">—</span>}
-            {pricingDetailsSlot ? <Collapsible defaultOpen={false} className="relative"><CollapsibleTrigger asChild><button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="whitespace-nowrap text-[11px] font-medium text-muted-foreground hover:text-foreground">Details</button></CollapsibleTrigger><CollapsibleContent className="absolute right-0 z-10 mt-1 w-64 rounded-md border border-border/60 bg-popover p-2 text-[11px] text-popover-foreground shadow-md">{pricingDetailsSlot}</CollapsibleContent></Collapsible> : null}
           </div>
-          {priceOverride != null && <div className="flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
+          {priceOverride != null && <div className="flex items-center justify-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
         </div>
-        {taxControlSlot ? <div className="flex min-w-0 items-end pb-0.5">{taxControlSlot}</div> : null}
+        {taxControlSlot ? <div className="flex min-w-0 items-center self-end pb-0.5">{taxControlSlot}</div> : null}
+        {pricingDetailsSlot ? <Collapsible defaultOpen={false} className="col-span-full -mt-1"><CollapsibleTrigger asChild><button type="button" data-quantity-only={quantityOnly ? "true" : "false"} className="text-[11px] font-medium text-muted-foreground hover:text-foreground">Pricing details</button></CollapsibleTrigger><CollapsibleContent className="pt-1 text-[11px] text-muted-foreground">{pricingDetailsSlot}</CollapsibleContent></Collapsible> : null}
         <div className="col-span-full flex items-center text-[11px]">
           {isCalculating ? <div className="text-muted-foreground">Calculating…</div> : null}
           {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" ? <div className="font-medium text-amber-600 dark:text-amber-500">⚠️ Outdated PBV2 config</div> : null}

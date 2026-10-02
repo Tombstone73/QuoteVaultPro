@@ -359,11 +359,11 @@ describe("LineItemCard operational sections", () => {
       pricingDetailsSlot: <div>Calculated sqft: 12.00</div>,
     });
 
-    expect(container.textContent).toContain("Details");
+    expect(container.textContent).toContain("Pricing details");
     expect(container.textContent).not.toContain("Calculated sqft: 12.00");
 
     const detailsButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Details",
+      (button) => button.textContent?.trim() === "Pricing details",
     );
     expect(detailsButton).toBeTruthy();
     click(detailsButton!);
@@ -511,6 +511,31 @@ describe("Order workspace composition", () => {
     expect(onUnitPriceClick).toHaveBeenCalledTimes(1);
     const noteValues = Array.from(container.querySelectorAll("textarea")).map((note) => (note as HTMLTextAreaElement).value);
     expect(noteValues).toEqual(["Customer copy", "Internal instruction"]);
+    await cleanup();
+  });
+
+  it("keeps dimensions separate from centered pricing controls in the compact editor", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      compactExpandedLayout: true,
+      priceControlSlot: <select aria-label="Price override mode"><option>No override</option></select>,
+      taxControlSlot: <label><input type="checkbox" />Taxable</label>,
+      pricingDetailsSlot: <div>Pricing formula</div>,
+    });
+
+    const dimensions = container.querySelector('[data-testid="order-line-dimensions-row"]')!;
+    expect(dimensions.textContent).toContain("Width");
+    expect(dimensions.textContent).toContain("Height");
+    expect(dimensions.textContent).toContain("Qty");
+    expect(dimensions.textContent).not.toContain("Unit price");
+
+    const pricing = container.querySelector('[data-testid="order-line-pricing-row"]')!;
+    expect(pricing.textContent).toContain("Unit price");
+    expect(pricing.textContent).toContain("Line total");
+    expect(pricing.textContent).toContain("Override");
+    expect(pricing.textContent).toContain("Taxable");
+    expect(pricing.querySelectorAll("label.text-center")).toHaveLength(2);
+    expect(pricing.textContent).toContain("Pricing details");
     await cleanup();
   });
 

@@ -755,7 +755,9 @@ export function ProductOptionsPanelV2({
               </div>
             );
 
-            const compactRowClass = cn("grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-center gap-3", orderWorkspace ? "py-0.5" : "py-1.5");
+            const compactRowClass = orderWorkspace
+              ? "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-0.5"
+              : "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-center gap-3 py-1.5";
             const fieldClass = (defaultClass: string) => cn(compact ? compactRowClass : defaultClass, isDisabled && "opacity-70");
 
             if (inputType === "boolean" || inputType === "checkbox") {
@@ -793,7 +795,7 @@ export function ProductOptionsPanelV2({
                       else setNodeValue(node, val);
                     }}
                   >
-                    <SelectTrigger className="h-9" disabled={isDisabled}>
+                    <SelectTrigger className={cn("h-9", compact && orderWorkspace && "w-[180px]")} disabled={isDisabled}>
                       <SelectValue placeholder="Select" />
                     </SelectTrigger>
                     <SelectContent>
@@ -904,7 +906,7 @@ export function ProductOptionsPanelV2({
                   {commonHeader}
                   <Input
                     type="number"
-                    className="h-9"
+                    className={cn("h-9", compact && orderWorkspace && "w-[180px]")}
                     step={step}
                     min={min}
                     max={max}
@@ -926,7 +928,7 @@ export function ProductOptionsPanelV2({
                 <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <Input
-                    className="h-9"
+                    className={cn("h-9", compact && orderWorkspace && "w-[180px]")}
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
                     disabled={isDisabled}
                     onChange={(e) => setNodeValue(node, e.target.value)}

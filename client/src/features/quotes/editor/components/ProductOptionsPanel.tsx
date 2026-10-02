@@ -274,7 +274,9 @@ const OptionRow = memo(function OptionRow({
 
     const rowClass = cn(
         compact
-            ? cn("grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-start gap-x-3 gap-y-2", orderWorkspace ? "py-0.5" : "py-1.5")
+            ? orderWorkspace
+                ? "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-0.5"
+                : "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-start gap-x-3 gap-y-2 py-1.5"
             : "flex flex-wrap items-start gap-x-3 gap-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2",
         isInvalid && "border-destructive/40 bg-destructive/5"
     );
