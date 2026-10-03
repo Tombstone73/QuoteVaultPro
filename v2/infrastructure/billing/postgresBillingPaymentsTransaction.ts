@@ -6,6 +6,7 @@ import type { BillingFinancialTransaction, BillingFinancialTransactionRunner, Fi
 import type { InvoiceSettlement, PaymentAggregateFact, PaymentAllocationFact, PaymentFact, ProviderFinancialOperation, ProviderPaymentAggregateConfirmation, ProviderPaymentAggregateOperation, RefundAggregateFact, RefundFact } from "../../src/modules/billing/contracts.js";
 import { brandedId, currencyCode, money, type InvoiceId, type OrganizationId, type PaymentId, type ProviderFinancialOperationId } from "../../src/modules/shared/commercialValues.js";
 import { enqueueV2QuickBooksAutoSync } from "../accounting/quickBooksBillingQueue.js";
+import { readPendingProviderPaymentCents } from "./pendingProviderPaymentCents.js";
 
 type Actor = { principalKind: "staff" | "delegated_ai" | "portal" | "service"; principalSubject: string; staffActorUserId?: string };
 export type BillingFinancialPersistenceTestHooks = Readonly<{ afterPayment?: () => Promise<void>; afterRefund?: () => Promise<void>; afterProviderOperationLock?: () => Promise<void>; afterProviderRefundOperationLock?: () => Promise<void>; afterProviderPaymentMaterialized?: () => Promise<void>; afterProviderPaymentAllocation?: () => Promise<void>; afterProviderRefundMaterialized?: () => Promise<void>; afterProviderRefundAllocation?: () => Promise<void>; afterAudit?: () => Promise<void>; afterOutbox?: () => Promise<void>; beforeComplete?: () => Promise<void> }>;
@@ -33,15 +34,7 @@ export class PostgresBillingPaymentsTransaction implements BillingFinancialTrans
     return result.rows.map((row) => ({ invoiceId: brandedId<"InvoiceId">(row.id), ...(row.customer_id ? { customerId: row.customer_id } : {}), currency: row.currency, totalCents: Number(row.total_cents), lifecycle: row.invoice_state }));
   }
   async settlement(organizationId: OrganizationId, invoiceId: InvoiceId, currency: string, grossCents: number): Promise<InvoiceSettlement> { const result = await this.client.query<{ paid: string; refunded: string }>(`SELECT COALESCE((SELECT sum(amount_cents) FROM v2_billing_payment_allocations WHERE organization_id=$1 AND invoice_id=$2),0)::text paid,COALESCE((SELECT sum(amount_cents) FROM v2_billing_refund_allocation_evidence WHERE organization_id=$1 AND invoice_id=$2),0)::text refunded`, [organizationId, invoiceId]); const paid = Number(result.rows[0]!.paid), refunded = Number(result.rows[0]!.refunded), code = currencyCode(currency); return { invoiceId, gross: money(code, grossCents), successfulPayments: money(code, paid), successfulRefunds: money(code, refunded), collectibleBalance: money(code, grossCents - paid + refunded) }; }
-  async pendingProviderPaymentCents(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<number> {
-    const result = await this.client.query<{ cents:string }>(`SELECT COALESCE(sum((allocation->>'amountCents')::bigint),0)::text cents
-      FROM v2_billing_provider_financial_operations operation
-      CROSS JOIN LATERAL jsonb_array_elements(operation.allocation_intent) allocation
-      WHERE operation.organization_id=$1 AND operation.operation_kind='payment'
-        AND operation.reconciliation_state IN ('pending','uncertain')
-        AND allocation->>'invoiceId'=$2`, [organizationId,invoiceId]);
-    return Number(result.rows[0]?.cents ?? 0);
-  }
+  async pendingProviderPaymentCents(organizationId: OrganizationId, invoiceId: InvoiceId): Promise<number> { return readPendingProviderPaymentCents(this.client, organizationId, invoiceId); }
   async recordPayment(input: Parameters<BillingFinancialTransaction["recordPayment"]>[0]): Promise<PaymentFact> {
     const aggregate = await this.recordPaymentAggregate!({ ...input, allocations: [{ invoiceId: input.invoiceId, amount: money(currencyCode(input.currency), input.amountCents) }] });
     return aggregate.payment;
@@ -76,6 +69,39 @@ export class PostgresBillingPaymentsTransaction implements BillingFinancialTrans
     const allocations=parseAllocationIntent(row.allocation_intent,row.currency);
     return { operation:{providerOperationId:brandedId<"ProviderFinancialOperationId">(row.id),invoiceId:brandedId<"InvoiceId">(row.invoice_id),kind:"payment",amount:money(currencyCode(row.currency),Number(row.amount_cents)),provider:row.provider,providerIdempotencyKey:row.provider_idempotency_key,...(row.stripe_account_id?{providerAccountId:row.stripe_account_id}:{}),...(row.provider_transaction_id?{providerTransactionId:row.provider_transaction_id}:{}),reconciliationState:row.reconciliation_state},allocations };
   }
+  async transitionProviderPaymentIntent(input: NonNullable<BillingFinancialTransaction["transitionProviderPaymentIntent"]> extends (input: infer Value) => unknown ? Value : never): Promise<ProviderFinancialOperation> {
+    const result = await this.client.query<{ id: string; invoice_id: string; operation_kind: "payment" | "refund"; provider: string; provider_idempotency_key: string; provider_transaction_id: string | null; stripe_account_id: string | null; reconciliation_state: ProviderFinancialOperation["reconciliationState"]; allocation_intent: unknown; amount_cents: string; currency: string; initiated_principal_kind: string; initiated_principal_subject: string }>(
+      "SELECT operation.id,operation.invoice_id,operation.operation_kind,operation.provider,operation.provider_idempotency_key,operation.provider_transaction_id,operation.stripe_account_id,operation.reconciliation_state,operation.allocation_intent,operation.amount_cents,operation.currency,request.initiated_principal_kind,request.initiated_principal_subject FROM v2_billing_provider_financial_operations operation JOIN v2_operation_requests request ON request.organization_id=operation.organization_id AND request.id=operation.operation_request_id WHERE operation.organization_id=$1 AND operation.id=$2 FOR UPDATE OF operation",
+      [input.organizationId, input.providerOperationId],
+    );
+    const row = result.rows[0];
+    if (!row || row.operation_kind !== "payment" || row.provider !== "stripe") throw new Error("Stripe PaymentIntent Billing operation is unavailable.");
+    if (row.initiated_principal_kind !== input.principalKind || row.initiated_principal_subject !== input.principalSubject) throw new Error("Stripe PaymentIntent principal does not own the Billing operation.");
+    if (!input.stripeAccountId || row.stripe_account_id !== input.stripeAccountId) throw new Error("Stripe account conflicts with the Billing operation.");
+    const expected = Array.isArray(row.allocation_intent) && row.allocation_intent.length
+      ? parseAllocationIntent(row.allocation_intent, row.currency).map((allocation) => ({ invoiceId: allocation.invoiceId, amountCents: allocation.amount.cents }))
+      : [{ invoiceId: row.invoice_id, amountCents: Number(row.amount_cents) }];
+    const supplied = [...input.allocations].map((allocation) => ({ invoiceId: allocation.invoiceId, amountCents: allocation.amount.cents })).sort((left, right) => left.invoiceId.localeCompare(right.invoiceId));
+    if (JSON.stringify(expected) !== JSON.stringify(supplied) || supplied.reduce((sum, allocation) => sum + allocation.amountCents, 0) !== Number(row.amount_cents)) throw new Error("Stripe PaymentIntent allocation conflicts with the Billing operation.");
+    if (row.provider_transaction_id && input.providerTransactionId && row.provider_transaction_id !== input.providerTransactionId) throw new Error("Stripe PaymentIntent identity conflicts with the Billing operation.");
+    if (row.reconciliation_state === "succeeded") {
+      if (!row.provider_transaction_id || row.provider_transaction_id !== input.providerTransactionId) throw new Error("Confirmed Billing Payment has a different Stripe transaction.");
+      return { providerOperationId: brandedId<"ProviderFinancialOperationId">(row.id), invoiceId: brandedId<"InvoiceId">(row.invoice_id), kind: "payment", amount: money(currencyCode(row.currency), Number(row.amount_cents)), provider: row.provider, providerIdempotencyKey: row.provider_idempotency_key, providerAccountId: input.stripeAccountId, providerTransactionId: row.provider_transaction_id, reconciliationState: row.reconciliation_state };
+    }
+    if (row.reconciliation_state === "failed") {
+      if (input.state !== "failed" || (row.provider_transaction_id && row.provider_transaction_id !== input.providerTransactionId)) throw new Error("Terminal failed Stripe operation cannot be reopened.");
+      return { providerOperationId: brandedId<"ProviderFinancialOperationId">(row.id), invoiceId: brandedId<"InvoiceId">(row.invoice_id), kind: "payment", amount: money(currencyCode(row.currency), Number(row.amount_cents)), provider: row.provider, providerIdempotencyKey: row.provider_idempotency_key, providerAccountId: input.stripeAccountId, ...(row.provider_transaction_id ? { providerTransactionId: row.provider_transaction_id } : {}), reconciliationState: row.reconciliation_state };
+    }
+    if (input.state === "pending" && !input.providerTransactionId) throw new Error("A Stripe PaymentIntent transaction identity is required before binding.");
+    if (input.state === "failed" && row.provider_transaction_id && row.provider_transaction_id !== input.providerTransactionId) throw new Error("Failed Stripe operation has a different provider transaction.");
+    const updated = await this.client.query<{ provider_transaction_id: string | null; reconciliation_state: ProviderFinancialOperation["reconciliationState"] }>(
+      "UPDATE v2_billing_provider_financial_operations SET provider_transaction_id=COALESCE(provider_transaction_id,$3),reconciliation_state=CASE WHEN $4='failed' THEN 'failed' WHEN reconciliation_state='uncertain' THEN 'pending' ELSE reconciliation_state END,updated_at=now() WHERE organization_id=$1 AND id=$2 AND reconciliation_state IN ('uncertain','pending') AND (provider_transaction_id IS NULL OR provider_transaction_id=$3) RETURNING provider_transaction_id,reconciliation_state",
+      [input.organizationId, input.providerOperationId, input.providerTransactionId, input.state],
+    );
+    const final = updated.rows[0];
+    if (!final) throw new Error("Stripe PaymentIntent transition lost its Billing operation lock.");
+    return { providerOperationId: brandedId<"ProviderFinancialOperationId">(row.id), invoiceId: brandedId<"InvoiceId">(row.invoice_id), kind: "payment", amount: money(currencyCode(row.currency), Number(row.amount_cents)), provider: row.provider, providerIdempotencyKey: row.provider_idempotency_key, providerAccountId: input.stripeAccountId, ...(final.provider_transaction_id ? { providerTransactionId: final.provider_transaction_id } : {}), reconciliationState: final.reconciliation_state };
+  }
   async confirmProviderPaymentAggregate(input: NonNullable<BillingFinancialTransaction["confirmProviderPaymentAggregate"]> extends (input: infer Value) => unknown ? Value : never): Promise<ProviderPaymentAggregateConfirmation> {
     const operation = await this.client.query<{ provider:string; invoice_id:string; amount_cents:string; currency:string; provider_transaction_id:string|null; stripe_account_id:string|null; allocation_intent:unknown }>("SELECT provider,invoice_id,amount_cents,currency,provider_transaction_id,stripe_account_id,allocation_intent FROM v2_billing_provider_financial_operations WHERE organization_id=$1 AND id=$2 AND operation_kind='payment' FOR UPDATE", [input.organizationId,input.providerOperationId]);
     const op=operation.rows[0]; if(!op) throw new Error("Provider payment aggregate operation is unavailable.");
@@ -94,7 +120,18 @@ export class PostgresBillingPaymentsTransaction implements BillingFinancialTrans
   }
   async lockRefundAllocations(input: Readonly<{ organizationId: OrganizationId; paymentId: PaymentId; paymentAllocationIds: readonly string[] }>): Promise<readonly FinancialLockedRefundAllocation[]> {
     if (!input.paymentAllocationIds.length) return [];
-    const result=await this.client.query<{payment_allocation_id:string;payment_id:string;invoice_id:string;amount_cents:string;customer_id:string|null;currency:string;total_cents:string;invoice_state:"draft"|"issued"|"void";refunded_cents:string}>(`SELECT a.id payment_allocation_id,a.payment_id,a.invoice_id,a.amount_cents,i.customer_id,i.currency,i.total_cents,i.invoice_state,COALESCE((SELECT sum(e.amount_cents) FROM v2_billing_refund_allocation_evidence e WHERE e.organization_id=a.organization_id AND e.payment_allocation_id=a.id),0)::text refunded_cents FROM v2_billing_payment_allocations a JOIN v2_billing_payments p ON p.organization_id=a.organization_id AND p.id=a.payment_id JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id WHERE a.organization_id=$1 AND a.payment_id=$2 AND a.id=ANY($3::varchar[]) ORDER BY a.id FOR UPDATE OF a,p,i`,[input.organizationId,input.paymentId,[...input.paymentAllocationIds].sort()]);
+    const allocationIds=[...new Set(input.paymentAllocationIds)].sort();
+    const discovered=await this.client.query<{payment_allocation_id:string;invoice_id:string}>("SELECT a.id payment_allocation_id,a.invoice_id FROM v2_billing_payment_allocations a WHERE a.organization_id=$1 AND a.payment_id=$2 AND a.id=ANY($3::varchar[]) ORDER BY a.invoice_id,a.id",[input.organizationId,input.paymentId,allocationIds]);
+    if(!discovered.rows.length)return [];
+    const invoiceIds=[...new Set(discovered.rows.map((row)=>row.invoice_id))].sort();
+    // Allocation facts discover scope; the shared Invoice lock order comes before allocation/Payment locks.
+    const lockedInvoices=await this.lockInvoices(input.organizationId,invoiceIds.map((id)=>brandedId<"InvoiceId">(id)));
+    const lockedInvoiceIds=new Set<string>(lockedInvoices.map((invoice)=>invoice.invoiceId));
+    const discoveredById=new Map(discovered.rows.map((row)=>[row.payment_allocation_id,row.invoice_id]));
+    const result=await this.client.query<{payment_allocation_id:string;payment_id:string;invoice_id:string;amount_cents:string;customer_id:string|null;currency:string;total_cents:string;invoice_state:"draft"|"issued"|"void";refunded_cents:string}>(`SELECT a.id payment_allocation_id,a.payment_id,a.invoice_id,a.amount_cents,i.customer_id,i.currency,i.total_cents,i.invoice_state,COALESCE((SELECT sum(e.amount_cents) FROM v2_billing_refund_allocation_evidence e WHERE e.organization_id=a.organization_id AND e.payment_allocation_id=a.id),0)::text refunded_cents FROM v2_billing_payment_allocations a JOIN v2_billing_payments p ON p.organization_id=a.organization_id AND p.id=a.payment_id JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id WHERE a.organization_id=$1 AND a.payment_id=$2 AND a.id=ANY($3::varchar[]) ORDER BY a.invoice_id,a.id FOR UPDATE OF a,p`,[input.organizationId,input.paymentId,allocationIds]);
+    if(new Set(result.rows.map((row)=>row.payment_allocation_id)).size!==result.rows.length||result.rows.length>discovered.rows.length
+      ||result.rows.some((row)=>row.payment_id!==input.paymentId||discoveredById.get(row.payment_allocation_id)!==row.invoice_id||!lockedInvoiceIds.has(row.invoice_id)))
+      throw new Error("Refund allocation scope changed while its Invoice locks were acquired.");
     return result.rows.map((row)=>{const allocatedCents=Number(row.amount_cents),alreadyRefundedCents=Number(row.refunded_cents);return {paymentAllocationId:row.payment_allocation_id,paymentId:brandedId<"PaymentId">(row.payment_id),invoice:{invoiceId:brandedId<"InvoiceId">(row.invoice_id),...(row.customer_id?{customerId:row.customer_id}:{}),currency:row.currency,totalCents:Number(row.total_cents),lifecycle:row.invoice_state},allocatedCents,alreadyRefundedCents,remainingRefundableCents:allocatedCents-alreadyRefundedCents};});
   }
   async recordRefundAggregate(input: NonNullable<BillingFinancialTransaction["recordRefundAggregate"]> extends (input: infer Value) => unknown ? Value : never): Promise<RefundAggregateFact> {

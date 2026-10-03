@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import type { Pool, PoolClient } from "pg";
 import { PostgresPaymentWorkspace, PostgresPaymentWorkspaceReadRunner } from "../../infrastructure/billing/postgresPaymentWorkspace.js";
+import { readPendingProviderPaymentCents } from "../../infrastructure/billing/pendingProviderPaymentCents.js";
 import { readReportingWindow } from "../../infrastructure/organization/postgresReportingClock.js";
 
 assert.equal(process.env.V2_VALIDATION_MODE, "deterministic", "Use the cleanEnvironment/run deterministic runner.");
@@ -181,6 +182,20 @@ try {
     assert.deepEqual(await port.listCustomers("org-a", "Local"), [{ customerId: "customer-a", customerName: "Local Customer" }]);
     assert.deepEqual(await port.listCustomers("org-a", "%"), []);
     assert.deepEqual(await port.listCustomers("org-a", "FOREIGN"), []);
+  });
+  await check("pending provider reservation sums scalar invoice_id and aggregate allocation_intent exactly once", async () => {
+    const providerOperation = async (id: string, invoiceId: string, cents: number, state: "pending" | "uncertain" | "succeeded" | "failed", allocations: readonly Readonly<{ invoiceId: string; amountCents: number }>[] = []) => {
+      const requestId = `op-provider-${id}`;
+      await request(requestId, "org-a");
+      await db.query("INSERT INTO v2_billing_provider_financial_operations(id,organization_id,invoice_id,operation_kind,provider,provider_idempotency_key,amount_cents,currency,reconciliation_state,operation_request_id,allocation_intent) VALUES($1,'org-a',$2,'payment','stripe',$3,$4,'USD',$5,$6,$7::jsonb)", [id, invoiceId, `key-${id}`, cents, state, requestId, JSON.stringify(allocations)]);
+    };
+    await providerOperation("scalar-pending", "invoice-1", 500, "pending");
+    await providerOperation("aggregate-uncertain", "invoice-1", 4000, "uncertain", [{ invoiceId: "invoice-1", amountCents: 2500 }, { invoiceId: "invoice-2", amountCents: 1500 }]);
+    await providerOperation("scalar-failed", "invoice-1", 900, "failed");
+    await providerOperation("scalar-succeeded", "invoice-1", 800, "succeeded");
+    assert.equal(await readPendingProviderPaymentCents(client, "org-a", "invoice-1"), 3000);
+    assert.equal(await readPendingProviderPaymentCents(client, "org-a", "invoice-2"), 1500);
+    assert.equal(await readPendingProviderPaymentCents(client, "org-a", "invoice-3"), 0);
   });
   await check("window+page+summary share a real REPEATABLE READ READ ONLY transaction", async () => {
     const from = statements.length;

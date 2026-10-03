@@ -5,8 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
-import { financeApi, invoiceApi, type FinancialInvoicePage, type FinancialInvoiceRead } from "./api";
-import { FinanceWorkspace, invoiceDocumentPath } from "./FinanceWorkspace";
+import { financeApi, invoiceApi, type FinancialInvoicePage, type FinancialInvoiceRead, type UiBootstrap } from "./api";
+import { FinanceWorkspace, invoiceDocumentPath, submitStripeConfirmationIfAuthorized } from "./FinanceWorkspace";
+import { persistFinanceRequestRecovery, readFinanceRequestRecovery, type FinanceRequestRecoveryIdentity, type FinanceRequestStorage } from "./financeRequestRecovery";
+const { Simulate } = await import("react-dom/test-utils");
 
 const money = (cents: number) => ({ cents, currency: "USD" });
 const read = (lifecycle: "draft" | "issued", balanceCents = 600, paidCents = 0): FinancialInvoiceRead => ({
@@ -166,6 +168,40 @@ const deferred = <T,>() => {
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
   return { promise, resolve, reject };
 };
+const sessionStorageFixture = (): FinanceRequestStorage & { values: Map<string, string> } => {
+  const values = new Map<string, string>();
+  return { values, getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: (key) => { values.delete(key); } };
+};
+const recoveryIdentity: FinanceRequestRecoveryIdentity = { organizationId: "org-storage", verifiedUserId: "actor-storage", sessionScope: "scope-one" };
+const recoveryRequest = {
+  kind: "payment" as const, organizationId: "org-storage", verifiedUserId: "actor-storage", submittedSessionScope: "scope-one",
+  invoiceId: "invoice-storage", businessRequestId: "request-storage",
+  input: { amountCents: 1234, currency: "USD", method: "cash" as const, occurredAt: "2026-10-02T11:00:00.000Z" },
+};
+const recoveryStorage = sessionStorageFixture();
+assert.deepEqual(persistFinanceRequestRecovery(recoveryIdentity, recoveryRequest, recoveryStorage), { status: "stored", requests: [recoveryRequest] });
+const storedRecoveryJson = [...recoveryStorage.values.values()][0]!;
+assert.ok(storedRecoveryJson.includes("request-storage") && storedRecoveryJson.includes("2026-10-02T11:00:00.000Z"));
+assert.doesNotMatch(storedRecoveryJson, /clientSecret|cardNumber|paymentMethodToken/u, "recovery stores request identity/body only, never provider secrets or card details");
+assert.deepEqual(readFinanceRequestRecovery({ ...recoveryIdentity, sessionScope: "scope-after-reauth" }, recoveryStorage), { status: "stored", requests: [recoveryRequest] });
+assert.deepEqual(readFinanceRequestRecovery({ ...recoveryIdentity, verifiedUserId: "other-actor", sessionScope: "scope-after-reauth" }, recoveryStorage), { status: "empty", requests: [] }, "different actors have disjoint sessionStorage keys");
+const changedRecoveryRequest = { ...recoveryRequest, input: { ...recoveryRequest.input, amountCents: 1235 } };
+assert.equal(persistFinanceRequestRecovery(recoveryIdentity, changedRecoveryRequest, recoveryStorage).status, "blocked", "same request ID cannot overwrite a frozen stored body");
+assert.equal([...recoveryStorage.values.values()][0], storedRecoveryJson, "failed replacement leaves original storage intact");
+const leakyRecoveryRequest = { ...recoveryRequest, clientSecret: "must-not-persist" };
+assert.equal(persistFinanceRequestRecovery(recoveryIdentity, leakyRecoveryRequest, sessionStorageFixture()).status, "blocked", "unexpected secret-bearing fields fail closed");
+const noActorIdentity = { organizationId: "org-storage", sessionScope: "scope-only" };
+assert.equal(persistFinanceRequestRecovery(noActorIdentity, { ...recoveryRequest, verifiedUserId: undefined, submittedSessionScope: "scope-only" }, recoveryStorage).status, "stored");
+assert.equal(readFinanceRequestRecovery({ ...noActorIdentity, sessionScope: "rotated-scope" }, recoveryStorage).status, "empty", "without a stable bootstrap actor, recovery remains epoch-scoped");
+const refundSlotStorage = sessionStorageFixture();
+const manualRefundSlot = { ...recoveryRequest, kind: "refund" as const, input: { paymentId: "payment-slot", amountCents: 300, currency: "USD", occurredAt: "2026-10-02T11:00:00.000Z" } };
+assert.equal(persistFinanceRequestRecovery(recoveryIdentity, manualRefundSlot, refundSlotStorage).status, "stored");
+const providerRefundSameSlot = { ...manualRefundSlot, kind: "stripeRefund" as const, input: { paymentId: "payment-slot", amountCents: 300, currency: "USD" }, submitted: false, businessRequestId: "provider-refund-slot" };
+assert.equal(persistFinanceRequestRecovery(recoveryIdentity, providerRefundSameSlot, refundSlotStorage).status, "blocked", "manual and provider Refunds cannot replace the same unresolved original-Payment allocation");
+const corruptStorage = sessionStorageFixture(); corruptStorage.setItem("printershero:v2:finance-request:v1:corrupt", "{");
+assert.equal(readFinanceRequestRecovery(recoveryIdentity, { ...corruptStorage, getItem: () => "{" }).status, "blocked");
+const unavailableStorage = { getItem: () => { throw new Error("storage denied"); }, setItem: () => { throw new Error("storage denied"); }, removeItem: () => { throw new Error("storage denied"); } };
+assert.equal(persistFinanceRequestRecovery(recoveryIdentity, recoveryRequest, unavailableStorage).status, "unavailable");
 const originalInvoice: FinancialInvoiceRead = {
   ...read("issued"),
   persistedInvoiceNumber: "ORD-1010",
@@ -192,6 +228,12 @@ const emptyPage: FinancialInvoicePage = { ...invoicePage, items: [], totalMatchi
   summary: { ...invoicePage.summary, totalMatching: 0, outstanding: [], openInvoiceCount: 0, unpaid: { count: 0, balance: [] } } };
 type WorkspaceProps = React.ComponentProps<typeof FinanceWorkspace>;
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://ui.invalid/invoices" });
+dom.window.sessionStorage.clear();
+const storedRequestById = (businessRequestId: string): Record<string, unknown> | undefined =>
+  Array.from({ length: dom.window.sessionStorage.length }, (_, index) => dom.window.sessionStorage.getItem(dom.window.sessionStorage.key(index)!)!)
+    .map((raw) => JSON.parse(raw) as { requests?: Record<string, unknown>[] })
+    .flatMap((entry) => entry.requests ?? [])
+    .find((request) => request.businessRequestId === businessRequestId);
 const previousGlobals = new Map(["window", "document", "localStorage", "crypto", "fetch", "IS_REACT_ACT_ENVIRONMENT"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const originalApi = { ...financeApi }, originalInvoiceApi = { ...invoiceApi };
 const businessRequestIds: string[] = [], financialCalls: string[] = [];
@@ -211,7 +253,7 @@ type EmailPreview = Awaited<ReturnType<typeof invoiceApi.emailPreview>>;
 type EmailAdmission = Awaited<ReturnType<typeof invoiceApi.emailSelected>>;
 const previewResult = (selected = 1, recipientCount = 1): EmailPreview => ({ selected, deliverableInvoices: selected, recipientCount, skipped: 0 });
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-const mount = async (overrides: Partial<WorkspaceProps> = {}, page = invoicePage) => {
+const mount = async (overrides: Partial<WorkspaceProps> = {}, page = invoicePage, initialUserId = "staff-a") => {
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
@@ -238,17 +280,37 @@ const mount = async (overrides: Partial<WorkspaceProps> = {}, page = invoicePage
     canInvoiceView: true, canInvoiceSend: false, canPaymentView: true, canPaymentRecord: true, canRefundIssue: true,
     csrfReady: true, openOrder: (id) => orders.push(id), openCustomer: () => {}, ...overrides,
   };
+  let verifiedUserId = initialUserId;
+  const seedBootstrap = () => client.setQueryData<UiBootstrap>(["v2", props.sessionScope, props.organizationId, "ui-bootstrap"], {
+    organizationId: props.organizationId, userId: verifiedUserId, sessionScope: props.sessionScope, csrfToken: `csrf-${props.sessionScope}`, capabilities: { quoteOverridePrice: false },
+  } as UiBootstrap);
+  seedBootstrap();
   const render = () => root.render(<QueryClientProvider client={client}><FinanceWorkspace {...props} /></QueryClientProvider>);
   await act(async () => render()); await flush();
   const button = (label: string) => {
     const found = [...container.querySelectorAll("button")].find((value) => value.textContent === label);
     assert.ok(found, `Missing button: ${label}`); return found;
   };
+  const dialogButton = (label: string) => {
+    const found = [...(container.querySelector('[role="dialog"]')?.querySelectorAll("button") ?? [])].find((value) => value.textContent === label);
+    assert.ok(found, `Missing dialog button: ${label}`); return found;
+  };
   return {
     container, client, reads, previews, admissions, selections, orders, button,
     get backCount() { return backCount; }, get overviewCount() { return overviewCount; },
     click: async (label: string) => { await act(async () => button(label).click()); await flush(); },
-    update: async (next: Partial<WorkspaceProps>) => { props = { ...props, ...next }; await act(async () => render()); await flush(); },
+    clickDialog: async (label: string) => { await act(async () => dialogButton(label).click()); await flush(); },
+    setInput: async (label: string, value: string) => {
+      const field = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      assert.ok(field, `Missing input: ${label}`);
+      await act(async () => { field.value = value; Simulate.change(field); }); await flush();
+    },
+    setSelect: async (label: string, value: string) => {
+      const field = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
+      assert.ok(field, `Missing select: ${label}`);
+      await act(async () => { field.value = value; Simulate.change(field); }); await flush();
+    },
+    update: async (next: Partial<WorkspaceProps>, nextUserId = verifiedUserId) => { props = { ...props, ...next }; verifiedUserId = nextUserId; seedBootstrap(); await act(async () => render()); await flush(); },
     resolve: async (index: number, value: FinancialInvoiceRead) => { await act(async () => reads[index]!.result.resolve(value)); await flush(); },
     reject: async (index: number, code = "NOT_FOUND", message = "Invoice financial history was not found.") => {
       await act(async () => reads[index]!.result.reject({ code, status: code === "FORBIDDEN" ? 403 : 404, message })); await flush();
@@ -490,6 +552,332 @@ try {
       assert.equal(scoped.admissions.length, 0);
     } finally { await scoped.close(); }
   }
+  type ManualPaymentInput = Parameters<typeof financeApi.recordPayment>[3];
+  type ManualRefundInput = Parameters<typeof financeApi.recordRefund>[3];
+  const paymentCalls: { organizationId: string; invoiceId: string; requestId: string; input: ManualPaymentInput; result: ReturnType<typeof deferred<unknown>> }[] = [];
+  financeApi.recordPayment = async (organizationId, invoiceId, requestId, input) => {
+    const result = deferred<unknown>(); paymentCalls.push({ organizationId, invoiceId, requestId, input, result }); return result.promise;
+  };
+  const beforePaymentIdentity = businessRequestIds.length;
+  const paymentView = await mount();
+  let originalPaymentRequest: Omit<(typeof paymentCalls)[number], "result"> | undefined;
+  try {
+    await paymentView.resolve(0, originalInvoice);
+    await paymentView.click("Take Payment");
+    await paymentView.setInput("Amount", "3.25");
+    await paymentView.setSelect("Payment method", "cash");
+    await paymentView.click("Record Payment");
+    assert.equal(paymentCalls.length, 1);
+    const first = paymentCalls[0]!;
+    assert.equal(first.organizationId, "org-a"); assert.equal(first.invoiceId, "invoice-original");
+    assert.equal(first.requestId, businessRequestIds.at(-1));
+    assert.deepEqual({ ...first.input, occurredAt: undefined }, { amountCents: 325, currency: "USD", method: "cash", occurredAt: undefined });
+    assert.ok(Number.isFinite(Date.parse(first.input.occurredAt)));
+    const storedPayment = storedRequestById(first.requestId);
+    assert.equal((storedPayment?.input as { occurredAt?: string } | undefined)?.occurredAt, first.input.occurredAt, "identity, tender, amount, currency and occurredAt are in sessionStorage before the stubbed POST");
+    assert.equal(businessRequestIds.length, beforePaymentIdentity + 1);
+    assert.equal(paymentView.container.querySelector<HTMLInputElement>('input[aria-label="Amount"]')!.disabled, true);
+    first.result.reject({ code: "NETWORK", message: "Connection reset after submission." }); await flush();
+    assert.equal(paymentCalls.length, 1, "an unknown result cannot auto-submit a replacement Payment");
+    assert.match(paymentView.container.querySelector('[role="status"]')!.textContent!, /exact submitted identity/u);
+    originalPaymentRequest = { organizationId: first.organizationId, invoiceId: first.invoiceId, requestId: first.requestId, input: first.input };
+  } finally { await paymentView.close(); }
+  const paymentRecoveryView = await mount({ sessionScope: "scope-b", csrfReady: false });
+  try {
+    await paymentRecoveryView.resolve(0, originalInvoice);
+    assert.equal(paymentCalls.length, 1, "sessionStorage recovery after a fresh Finance mount does not submit automatically");
+    assert.equal(paymentRecoveryView.button("Resume original Payment").disabled, true, "same-actor replay waits for the new CSRF context");
+    await paymentRecoveryView.update({ csrfReady: true });
+    await paymentRecoveryView.click("Resume original Payment");
+    assert.equal(paymentRecoveryView.container.querySelector<HTMLInputElement>('input[aria-label="Amount"]')!.value, "3.25");
+    assert.equal(paymentRecoveryView.container.querySelector<HTMLSelectElement>('select[aria-label="Payment method"]')!.value, "cash");
+    await paymentRecoveryView.click("Retry original Payment");
+    assert.equal(paymentCalls.length, 2);
+    assert.deepEqual({ organizationId: paymentCalls[1]!.organizationId, invoiceId: paymentCalls[1]!.invoiceId, requestId: paymentCalls[1]!.requestId, input: paymentCalls[1]!.input }, originalPaymentRequest);
+    assert.equal(businessRequestIds.length, beforePaymentIdentity + 1, "reload recovery must not mint another request identity");
+    paymentCalls[1]!.result.resolve({ accepted: true }); await flush();
+    assert.match(paymentRecoveryView.container.textContent!, /Payment recorded as an immutable financial fact/u);
+  } finally { await paymentRecoveryView.close(); }
+  const actorIsolationView = await mount({}, invoicePage, "verified-actor-a");
+  try {
+    await actorIsolationView.resolve(0, originalInvoice);
+    await actorIsolationView.click("Take Payment");
+    await actorIsolationView.setInput("Amount", "3.25");
+    await actorIsolationView.click("Record Payment");
+    const unknownForActorA = paymentCalls[2]!;
+    unknownForActorA.result.reject({ code: "NETWORK", message: "Actor A request outcome is unknown." }); await flush();
+    await actorIsolationView.update({ sessionScope: "actor-b-epoch" }, "verified-actor-b");
+    await actorIsolationView.resolve(1, originalInvoice);
+    assert.doesNotMatch(actorIsolationView.container.textContent!, /Resume original Payment|3\.25|Actor A request/u);
+    assert.ok(actorIsolationView.button("Take Payment"), "a different verified actor receives no prior request body or recovery controls");
+    assert.equal(businessRequestIds.length, beforePaymentIdentity + 2, "actor change does not replay or regenerate the prior actor's identity");
+    await actorIsolationView.click("Take Payment");
+    assert.equal(actorIsolationView.container.querySelector<HTMLInputElement>('input[aria-label="Amount"]')!.value, "6.00", "a different actor sees a fresh form, not the prior submitted amount");
+  } finally { await actorIsolationView.close(); }
+  financeApi.recordPayment = originalApi.recordPayment;
+
+  const refundCalls: { organizationId: string; invoiceId: string; requestId: string; input: ManualRefundInput; result: ReturnType<typeof deferred<unknown>> }[] = [];
+  financeApi.recordRefund = async (organizationId, invoiceId, requestId, input) => {
+    const result = deferred<unknown>(); refundCalls.push({ organizationId, invoiceId, requestId, input, result }); return result.promise;
+  };
+  const withPayment: FinancialInvoiceRead = {
+    ...originalInvoice, settlement: { ...originalInvoice.settlement, paid: money(600), balance: money(0) },
+    history: [{ kind: "payment", id: "payment-original", amount: money(600), method: "check", source: "manual", occurredAt: "2026-10-01T12:00:00.000Z", recordedAt: "2026-10-01T12:00:00.000Z", balanceAfter: money(0) }],
+  };
+  const beforeRefundIdentity = businessRequestIds.length;
+  const refundView = await mount();
+  try {
+    await refundView.resolve(0, withPayment);
+    await refundView.click("Record Refund");
+    await refundView.setSelect("Original Payment", "payment-original");
+    await refundView.setInput("Amount", "2.50");
+    await refundView.clickDialog("Record Refund");
+    const first = refundCalls[0]!;
+    assert.equal(refundCalls.length, 1); assert.equal(first.requestId, businessRequestIds.at(-1));
+    assert.deepEqual({ ...first.input, occurredAt: undefined }, { paymentId: "payment-original", amountCents: 250, currency: "USD", occurredAt: undefined });
+    assert.ok(Number.isFinite(Date.parse(first.input.occurredAt)));
+    assert.deepEqual(storedRequestById(first.requestId)?.input, first.input, "the exact Refund allocation and occurrence time are persisted before POST");
+    first.result.reject({ code: "NETWORK", message: "Refund response was lost." }); await flush();
+    assert.equal(refundCalls.length, 1, "an unknown Refund outcome cannot auto-submit again");
+    assert.equal(refundView.container.querySelector<HTMLInputElement>('input[aria-label="Amount"]')!.disabled, true);
+    await refundView.clickDialog("Retry original Refund");
+    assert.equal(refundCalls.length, 2);
+    assert.deepEqual({ ...refundCalls[1]!, result: undefined }, { ...first, result: undefined }, "Refund retry preserves Payment allocation and occurredAt");
+    assert.equal(businessRequestIds.length, beforeRefundIdentity + 1);
+    refundCalls[1]!.result.resolve({ accepted: true }); await flush();
+    assert.match(refundView.container.textContent!, /Refund recorded as a separate immutable financial fact/u);
+  } finally { await refundView.close(); }
+  financeApi.recordRefund = originalApi.recordRefund;
+
+  type StripeRefundResult = Awaited<ReturnType<typeof financeApi.beginStripeRefund>>;
+  const stripeRefundCalls: { organizationId: string; invoiceId: string; requestId: string; input: Parameters<typeof financeApi.beginStripeRefund>[3]; result: ReturnType<typeof deferred<StripeRefundResult>> }[] = [];
+  financeApi.beginStripeRefund = async (organizationId, invoiceId, requestId, input) => {
+    const result = deferred<StripeRefundResult>(); stripeRefundCalls.push({ organizationId, invoiceId, requestId, input, result }); return result.promise;
+  };
+  const providerInvoice: FinancialInvoiceRead = {
+    ...withPayment,
+    history: [{ kind: "payment", id: "provider-payment-a", amount: money(600), method: "card", source: "provider", occurredAt: "2026-10-01T12:00:00.000Z", recordedAt: "2026-10-01T12:00:00.000Z", balanceAfter: money(0) }],
+  };
+  const beforeStripeRefundIdentity = businessRequestIds.length;
+  const stripeRefundView = await mount({ organizationId: "org-refund", sessionScope: "scope-refund", invoiceId: "invoice-original" }, invoicePage, "verified-refund-actor");
+  try {
+    await stripeRefundView.resolve(0, providerInvoice);
+    await stripeRefundView.click("Refund to Card");
+    await stripeRefundView.setSelect("Original Payment", "provider-payment-a");
+    await stripeRefundView.setInput("Amount", "2.50");
+    await stripeRefundView.clickDialog("Submit Stripe Refund");
+    const first = stripeRefundCalls[0]!;
+    assert.equal(stripeRefundCalls.length, 1);
+    assert.deepEqual(first.input, { paymentId: "provider-payment-a", amountCents: 250, currency: "USD" });
+    assert.equal(first.requestId, businessRequestIds.at(-1));
+    assert.deepEqual(storedRequestById(first.requestId)?.input, first.input, "the original provider Refund target and amount are persisted before POST");
+    first.result.reject({ code: "NETWORK", message: "Stripe Refund response was lost." }); await flush();
+    assert.equal(stripeRefundCalls.length, 1, "an unknown Stripe Refund result cannot mint a replacement ID");
+  } finally { await stripeRefundView.close(); }
+  const stripeRefundRecoveryView = await mount({ organizationId: "org-refund", sessionScope: "scope-refund-next", invoiceId: "invoice-original" }, invoicePage, "verified-refund-actor");
+  try {
+    await stripeRefundRecoveryView.resolve(0, providerInvoice);
+    assert.equal(stripeRefundCalls.length, 1, "reloaded Stripe Refund recovery is not automatically submitted");
+    await stripeRefundRecoveryView.click("Resume original Stripe Refund");
+    assert.equal(stripeRefundRecoveryView.container.querySelector<HTMLInputElement>('input[aria-label="Amount"]')!.value, "2.50");
+    assert.equal(stripeRefundRecoveryView.container.querySelector<HTMLSelectElement>('select[aria-label="Original Payment"]')!.value, "provider-payment-a");
+    await stripeRefundRecoveryView.clickDialog("Retry original Stripe Refund");
+    assert.equal(stripeRefundCalls.length, 2);
+    assert.equal(stripeRefundCalls[1]!.requestId, stripeRefundCalls[0]!.requestId);
+    assert.deepEqual(stripeRefundCalls[1]!.input, stripeRefundCalls[0]!.input);
+    assert.equal(businessRequestIds.length, beforeStripeRefundIdentity + 1);
+    stripeRefundCalls[1]!.result.resolve({ providerOperationId: "refund-op-a", refundId: "refund-a" }); await flush();
+    assert.match(stripeRefundRecoveryView.container.textContent!, /Refund submitted to Stripe/u);
+  } finally { await stripeRefundRecoveryView.close(); }
+  financeApi.beginStripeRefund = originalApi.beginStripeRefund;
+
+  type StripePaymentResult = Awaited<ReturnType<typeof financeApi.beginStripePayment>>;
+  const stripeCalls: { organizationId: string; invoiceId: string; requestId: string; input: Parameters<typeof financeApi.beginStripePayment>[3]; result: ReturnType<typeof deferred<StripePaymentResult>> }[] = [];
+  financeApi.beginStripePayment = async (organizationId, invoiceId, requestId, input) => {
+    const result = deferred<StripePaymentResult>(); stripeCalls.push({ organizationId, invoiceId, requestId, input, result }); return result.promise;
+  };
+  const beforeStripeIdentity = businessRequestIds.length;
+  const stripeView = await mount();
+  try {
+    await stripeView.resolve(0, originalInvoice);
+    await stripeView.click("Pay by Card");
+    await stripeView.setInput("Amount", "4.75");
+    await stripeView.click("Continue to card");
+    assert.equal(stripeCalls.length, 1);
+    const submitted = stripeCalls[0]!;
+    assert.equal(submitted.organizationId, "org-a"); assert.equal(submitted.invoiceId, "invoice-original");
+    assert.deepEqual(submitted.input, { amountCents: 475, currency: "USD" });
+    assert.equal(submitted.requestId, businessRequestIds.at(-1));
+    assert.equal(businessRequestIds.length, beforeStripeIdentity + 1);
+    const storedIntent = storedRequestById(submitted.requestId);
+    assert.deepEqual(storedIntent?.input, submitted.input, "Stripe request body is persisted and round-tripped before POST");
+    assert.doesNotMatch(JSON.stringify(storedIntent), /clientSecret|pi_secret|cardNumber|paymentMethodToken/u);
+    await stripeView.update({ sessionScope: "scope-b" });
+    await stripeView.resolve(1, originalInvoice);
+    submitted.result.resolve({ providerOperationId: "operation-old", paymentIntentId: "intent-old", clientSecret: "pi_secret_old", publishableKey: "pk_test_stub", stripeAccountId: "acct-old", amountCents: 475, currency: "USD" });
+    await flush();
+    assert.equal(stripeView.container.querySelector('[role="dialog"]'), null, "late Stripe response cannot revive the prior session");
+    assert.doesNotMatch(stripeView.container.textContent!, /Enter card details|pi_secret_old|intent-old|operation-old/);
+    assert.ok(stripeView.button("Resume original card intent"), "the same verified actor retains the original intent across session epochs");
+    assert.equal(stripeCalls.length, 1, "same-actor session recovery never automatically replays the begin request");
+    await stripeView.click("Resume original card intent");
+    assert.ok(stripeView.button("Retry original card intent"));
+    await stripeView.click("Retry original card intent");
+    assert.equal(stripeCalls.length, 2);
+    assert.equal(stripeCalls[1]!.requestId, submitted.requestId);
+    assert.deepEqual(stripeCalls[1]!.input, submitted.input);
+    assert.equal(businessRequestIds.length, beforeStripeIdentity + 1, "same-actor Stripe replay preserves its original request ID and body");
+    stripeCalls[1]!.result.resolve({ providerOperationId: "operation-new-epoch", paymentIntentId: "intent-new-epoch", clientSecret: "pi_secret_new_epoch", publishableKey: "pk_test_stub", stripeAccountId: "acct-new", amountCents: 475, currency: "USD" });
+    await flush();
+    assert.ok(stripeView.button("Enter card details"), "a response fetched by explicit authorized replay is available only in the current epoch");
+    assert.doesNotMatch(stripeView.container.textContent!, /pi_secret_new_epoch/);
+    assert.ok(!Array.from({ length: dom.window.sessionStorage.length }, (_, index) => dom.window.sessionStorage.getItem(dom.window.sessionStorage.key(index)!)!).some((raw) => raw.includes("pi_secret_new_epoch")), "client secrets remain ephemeral and never enter sessionStorage");
+    await stripeView.update({ sessionScope: "actor-b-epoch" }, "verified-actor-b");
+    await stripeView.resolve(2, originalInvoice);
+    assert.doesNotMatch(stripeView.container.textContent!, /Resume original card intent|Enter card details|intent-new-epoch|pi_secret_new_epoch/);
+    assert.ok(stripeView.button("Pay by Card"), "a different actor cannot see the original request or its secret");
+    assert.equal(stripeCalls.length, 2, "actor change does not replay another actor's provider intent");
+    assert.equal(stripeCreations, 0, "mounted tests never instantiate Stripe.js or Elements");
+    assert.equal(networkCalls, 0, "mounted tests use in-memory API stubs only");
+  } finally { await stripeView.close(); }
+  const previousStripeBegin = financeApi.beginStripePayment;
+  const multiInvoiceCalls: typeof stripeCalls = [];
+  financeApi.beginStripePayment = async (organizationId, invoiceId, requestId, input) => {
+    const result = deferred<StripePaymentResult>(); multiInvoiceCalls.push({ organizationId, invoiceId, requestId, input, result }); return result.promise;
+  };
+  const multiInvoiceView = await mount({ organizationId: "org-multi-intent", sessionScope: "scope-multi-intent", invoiceId: "invoice-original" }, invoicePage, "verified-multi-actor");
+  try {
+    await multiInvoiceView.resolve(0, originalInvoice);
+    await multiInvoiceView.click("Pay by Card");
+    await multiInvoiceView.setInput("Amount", "4.00");
+    await multiInvoiceView.click("Continue to card");
+    multiInvoiceCalls[0]!.result.reject({ code: "NETWORK", message: "Invoice A intent outcome is unknown." }); await flush();
+    const idsBeforeInvoiceB = businessRequestIds.length;
+    await multiInvoiceView.update({ invoiceId: "invoice-replacement" });
+    await multiInvoiceView.resolve(1, replacementInvoice);
+    assert.equal(multiInvoiceCalls.length, 1, "changing Invoice does not automatically replay the pending intent");
+    assert.equal(multiInvoiceView.button("Pay by Card").disabled, false, "an unresolved operation is scoped to its affected Invoice, not a global one-intent lock");
+    await multiInvoiceView.click("Pay by Card");
+    await multiInvoiceView.setInput("Amount", "2.00");
+    await multiInvoiceView.click("Continue to card");
+    assert.equal(multiInvoiceCalls.length, 2);
+    assert.equal(multiInvoiceCalls[0]!.invoiceId, "invoice-original");
+    assert.equal(multiInvoiceCalls[1]!.invoiceId, "invoice-replacement");
+    assert.notEqual(multiInvoiceCalls[0]!.requestId, multiInvoiceCalls[1]!.requestId);
+    assert.equal(businessRequestIds.length, idsBeforeInvoiceB + 1, "the second ID is created only for the distinct Invoice operation");
+    assert.equal(stripeCreations, 0);
+    assert.equal(networkCalls, 0);
+  } finally { await multiInvoiceView.close(); }
+  financeApi.beginStripePayment = previousStripeBegin;
+  const beforeMalformedIdentity = businessRequestIds.length;
+  const malformedStripeView = await mount({ organizationId: "org-c", sessionScope: "scope-c", invoiceId: "invoice-replacement" });
+  try {
+    await malformedStripeView.resolve(0, replacementInvoice);
+    await malformedStripeView.click("Pay by Card");
+    await malformedStripeView.setInput("Amount", "4.75");
+    await malformedStripeView.click("Continue to card");
+    const mismatchIndex = stripeCalls.length - 1;
+    const mismatched = stripeCalls[mismatchIndex]!;
+    mismatched.result.resolve({ providerOperationId: "operation-c", paymentIntentId: "intent-c", clientSecret: "pi_secret_mismatched", publishableKey: "pk_test_stub", stripeAccountId: "acct-c", amountCents: 475, currency: "CAD" });
+    await flush();
+    assert.equal(businessRequestIds.length, beforeMalformedIdentity + 1);
+    assert.doesNotMatch(malformedStripeView.container.textContent!, /Enter card details|pi_secret_mismatched/);
+    assert.ok(malformedStripeView.button("Retry original card intent"), "mismatched response keeps the original intent for explicit retry");
+    await malformedStripeView.click("Retry original card intent");
+    assert.equal(stripeCalls.length, mismatchIndex + 2);
+    assert.equal(stripeCalls[mismatchIndex + 1]!.requestId, mismatched.requestId);
+    assert.deepEqual(stripeCalls[mismatchIndex + 1]!.input, mismatched.input);
+    assert.equal(businessRequestIds.length, beforeMalformedIdentity + 1, "Stripe response mismatch cannot mint a replacement intent");
+    stripeCalls[mismatchIndex + 1]!.result.reject({ code: "NETWORK", message: "Original card intent still has unknown outcome." }); await flush();
+    assert.equal(stripeCalls.length, mismatchIndex + 2, "Stripe retry remains explicit with automatic mutation retries disabled");
+  } finally { await malformedStripeView.close(); }
+
+  const revokedCalls: typeof stripeCalls = [];
+  financeApi.beginStripePayment = async (organizationId, invoiceId, requestId, input) => {
+    const result = deferred<StripePaymentResult>(); revokedCalls.push({ organizationId, invoiceId, requestId, input, result }); return result.promise;
+  };
+  const revokedView = await mount({ organizationId: "org-d", sessionScope: "scope-d", invoiceId: "invoice-original" }, invoicePage, "verified-actor-d");
+  try {
+    await revokedView.resolve(0, originalInvoice);
+    await revokedView.click("Pay by Card");
+    await revokedView.setInput("Amount", "5.25");
+    await revokedView.click("Continue to card");
+    const first = revokedCalls[0]!;
+    const beforeRevokeIdCount = businessRequestIds.length;
+    await revokedView.update({ canPaymentRecord: false });
+    await revokedView.update({ canPaymentRecord: true });
+    first.result.resolve({ providerOperationId: "operation-revoked", paymentIntentId: "intent-revoked", clientSecret: "pi_secret_revoked", publishableKey: "pk_test_stub", stripeAccountId: "acct-d", amountCents: 525, currency: "USD" });
+    await flush();
+    assert.doesNotMatch(revokedView.container.textContent!, /Enter card details|pi_secret_revoked/, "a begin response from the revoked grant epoch is never adopted after regrant");
+    assert.ok(revokedView.button("Resume original card intent"));
+    await revokedView.click("Resume original card intent");
+    await revokedView.click("Retry original card intent");
+    assert.equal(revokedCalls.length, 2);
+    assert.equal(revokedCalls[1]!.requestId, first.requestId);
+    assert.deepEqual(revokedCalls[1]!.input, first.input);
+    revokedCalls[1]!.result.resolve({ providerOperationId: "operation-adopted", paymentIntentId: "intent-adopted", clientSecret: "pi_secret_adopted", publishableKey: "pk_test_stub", stripeAccountId: "acct-d", amountCents: 525, currency: "USD" });
+    await flush();
+    assert.ok(revokedView.button("Enter card details"), "an explicit same-ID begin under restored authority can adopt the result");
+    await revokedView.update({ canPaymentRecord: false });
+    assert.equal(revokedView.container.querySelector('[role="dialog"]'), null, "grant loss closes the active card dialog");
+    assert.doesNotMatch(revokedView.container.textContent!, /Enter card details|pi_secret_adopted|Confirm card payment/);
+    assert.equal(stripeCreations, 0, "permission-revocation tests never load Stripe.js or Elements");
+    await revokedView.update({ canPaymentRecord: true });
+    assert.doesNotMatch(revokedView.container.textContent!, /Enter card details|pi_secret_adopted/ , "grant restoration does not resurrect the stale client secret");
+    assert.ok(revokedView.button("Resume original card intent"));
+    await revokedView.click("Resume original card intent");
+    assert.ok(revokedView.button("Retry original card intent"));
+    assert.equal(revokedCalls.length, 2, "grant restoration requires an explicit same-ID replay");
+    await revokedView.click("Retry original card intent");
+    assert.equal(revokedCalls.length, 3);
+    assert.equal(revokedCalls[2]!.requestId, first.requestId);
+    assert.deepEqual(revokedCalls[2]!.input, first.input);
+    assert.equal(businessRequestIds.length, beforeRevokeIdCount, "permission revalidation does not mint another intent identity");
+    revokedCalls[2]!.result.resolve({ providerOperationId: "operation-revalidated", paymentIntentId: "intent-revalidated", clientSecret: "pi_secret_revalidated", publishableKey: "pk_test_stub", stripeAccountId: "acct-d", amountCents: 525, currency: "USD" });
+    await flush();
+    assert.ok(revokedView.button("Enter card details"), "a newly initiated same-ID response is adopted only after current permission is restored");
+    assert.doesNotMatch(revokedView.container.textContent!, /pi_secret_revalidated/);
+    assert.equal(stripeCreations, 0);
+    assert.equal(networkCalls, 0);
+  } finally { await revokedView.close(); }
+
+  const confirmResult = deferred<Readonly<{ error?: Readonly<{ message?: string }> | null }>>();
+  let currentAuthority = true, currentAuthorityEpoch = "scope-d", confirmationCalls = 0, submittedConfirmations = 0;
+  const confirmation = submitStripeConfirmationIfAuthorized(
+    () => { confirmationCalls++; return confirmResult.promise; },
+    () => currentAuthority && currentAuthorityEpoch === "scope-d",
+    () => { submittedConfirmations++; },
+    () => assert.fail("permission revoked while confirmation was pending must not publish a completion callback"),
+  );
+  assert.equal(confirmationCalls, 1, "the fake confirmation port is called only while the grant is current");
+  currentAuthority = false;
+  currentAuthorityEpoch = "scope-replaced";
+  confirmResult.resolve({});
+  assert.equal(await confirmation, false);
+  assert.equal(submittedConfirmations, 0, "a pending confirm result after grant revocation or scope replacement cannot transition Finance state");
+  assert.equal(await submitStripeConfirmationIfAuthorized(
+    async () => { confirmationCalls++; return {}; }, () => false, () => { submittedConfirmations++; }, () => {},
+  ), false);
+  assert.equal(confirmationCalls, 1, "no Stripe confirm call is made when payment.record is already revoked");
+  financeApi.beginStripePayment = originalApi.beginStripePayment;
+  const sessionStorageProperty = Object.getOwnPropertyDescriptor(dom.window, "sessionStorage");
+  Object.defineProperty(dom.window, "sessionStorage", { configurable: true, get: () => { throw new Error("sessionStorage unavailable"); } });
+  const beforeStorageFailureCalls = financialCalls.length, beforeStorageFailureIds = businessRequestIds.length;
+  const storageFailureView = await mount({ organizationId: "org-storage-failure", sessionScope: "scope-storage-failure", invoiceId: "invoice-original" }, invoicePage, "verified-storage-failure");
+  try {
+    await storageFailureView.resolve(0, originalInvoice);
+    assert.equal(storageFailureView.button("Take Payment").disabled, true, "unavailable session recovery disables every financial POST");
+    await storageFailureView.click("Take Payment");
+    assert.equal(storageFailureView.container.querySelector('[role="dialog"]'), null);
+    assert.equal(financialCalls.length, beforeStorageFailureCalls);
+    assert.equal(businessRequestIds.length, beforeStorageFailureIds, "storage failure does not mint or submit a financial request identity");
+  } finally {
+    await storageFailureView.close();
+    if (sessionStorageProperty) Object.defineProperty(dom.window, "sessionStorage", sessionStorageProperty);
+    else Reflect.deleteProperty(dom.window, "sessionStorage");
+  }
+  console.log("PASS Finance Payment/Refund exact retry identity and Stripe response session binding without SDK/network");
+
   assert.deepEqual(financialCalls, []);
   assert.equal(stripeCreations, 0); assert.equal(networkCalls, 0);
   console.log("PASS mounted email tenant/session/permission invalidation, explicit scoped read retry, and zero financial/provider calls");

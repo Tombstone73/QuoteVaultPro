@@ -1,6 +1,8 @@
 import React, {
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type MouseEvent,
   type ReactNode,
@@ -20,7 +22,24 @@ import {
   type FinancialLedgerEntry,
   type FinancialLedgerQuery,
   type InvoiceRead,
+  type UiBootstrap,
 } from "./api";
+import {
+  clearFinanceRequestRecovery,
+  persistFinanceRequestRecovery,
+  readFinanceRequestRecovery,
+  sameFinanceRequest,
+  sameFinanceRequestBody,
+  type FinanceRequestRecovery,
+  type FinanceRequestRecoveryIdentity,
+  type ManualPaymentRequest,
+  type ManualRefundRequest,
+  type PendingFinanceRequest,
+  type StripePaymentRequest,
+  type StripeRefundRequest,
+} from "./financeRequestRecovery";
+
+const useFinanceLayoutEffect = typeof document === "undefined" ? useEffect : useLayoutEffect;
 
 type GridColumn<T> = Readonly<{
   id: string;
@@ -40,6 +59,14 @@ type InvoiceEmailSelection = Readonly<{
   requestId: string;
   invoiceIds: readonly string[];
 }>;
+type FinanceDialogContext = Readonly<{ organizationId: string; sessionScope: string; invoiceId: string }>;
+type StripePaymentResult = Awaited<ReturnType<typeof financeApi.beginStripePayment>>;
+type StripeSubmissionBinding = Readonly<{ organizationId: string; verifiedUserId?: string; sessionScope: string; authorityLease: number; grantEpoch: number }>;
+type StripePaymentSubmission = Readonly<{ request: StripePaymentRequest; binding: StripeSubmissionBinding }>;
+type BoundStripePaymentResult = Readonly<{ request: StripePaymentRequest; binding: StripeSubmissionBinding; result: StripePaymentResult }>;
+type FinanceAuthorityFence = Readonly<{ lease: number; grantEpoch: number; verifiedUserId?: string; sessionScope: string; canPaymentRecord: boolean; canRefundIssue: boolean }>;
+const financeAuthorityFences = new Map<string, FinanceAuthorityFence>();
+let nextFinanceAuthorityLease = 0;
 const errorText = (error: unknown) =>
   (error as ApiError)?.message ?? "The finance service is unavailable.";
 const invoiceLabel = (invoice: Pick<InvoiceRead, "source" | "lifecycle" | "sourceOrderNumber">, persistedNumber: string | null | undefined) =>
@@ -60,18 +87,46 @@ const centsForInput = (cents: number) =>
 const amounts = (value: readonly Readonly<{ currency: string; cents: number }>[]) =>
   value.length ? value.map((amount) => money(amount)).join(" · ") : "—";
 
-const StripeCardConfirmation = ({ onSubmitted, onError }: Readonly<{ onSubmitted:()=>void; onError:(message:string)=>void }>) => {
+export const submitStripeConfirmationIfAuthorized = async (
+  confirm: () => Promise<Readonly<{ error?: Readonly<{ message?: string }> | null }>>,
+  authorized: () => boolean,
+  onSubmitted: () => void,
+  onError: (message: string) => void,
+): Promise<boolean> => {
+  if (!authorized()) return false;
+  const result = await confirm();
+  if (!authorized()) return false;
+  if (result.error) { onError(result.error.message ?? "Card confirmation could not be completed."); return false; }
+  onSubmitted();
+  return true;
+};
+
+const StripeCardConfirmation = ({ onSubmitted, onError, authorized }: Readonly<{ onSubmitted:()=>void; onError:(message:string)=>void; authorized:()=>boolean }>) => {
   const stripe = useStripe();
   const elements = useElements();
   const [submitting, setSubmitting] = useState(false);
-  return <form onSubmit={async (event) => { event.preventDefault(); if (!stripe || !elements) return; setSubmitting(true); const result = await stripe.confirmPayment({ elements, redirect:"if_required" }); setSubmitting(false); if (result.error) return onError(result.error.message ?? "Card confirmation could not be completed."); onSubmitted(); }}>
+  const authorizationRef = useRef(authorized);
+  authorizationRef.current = authorized;
+  return <form onSubmit={async (event) => {
+    event.preventDefault();
+    if (!stripe || !elements || submitting || !authorizationRef.current()) return;
+    setSubmitting(true);
+    try {
+      await submitStripeConfirmationIfAuthorized(
+        () => stripe.confirmPayment({ elements, redirect: "if_required" }),
+        () => authorizationRef.current(), onSubmitted, onError,
+      );
+    } catch (error) {
+      if (authorizationRef.current()) onError(error instanceof Error ? error.message : "Card confirmation could not be completed.");
+    } finally { setSubmitting(false); }
+  }}>
     <PaymentElement />
-    <button className="v2-invoice-issue" disabled={!stripe || submitting}>{submitting ? "Confirming…" : "Confirm card payment"}</button>
+    <button className="v2-invoice-issue" disabled={!stripe || submitting || !authorizationRef.current()}>{submitting ? "Confirming…" : "Confirm card payment"}</button>
   </form>;
 };
-const StripePaymentElement = ({ publishableKey, stripeAccountId, clientSecret, onSubmitted, onError }: Readonly<{ publishableKey:string; stripeAccountId:string; clientSecret:string; onSubmitted:()=>void; onError:(message:string)=>void }>) => {
+const StripePaymentElement = ({ publishableKey, stripeAccountId, clientSecret, onSubmitted, onError, authorized }: Readonly<{ publishableKey:string; stripeAccountId:string; clientSecret:string; onSubmitted:()=>void; onError:(message:string)=>void; authorized:()=>boolean }>) => {
   const stripePromise = useMemo(() => loadStripe(publishableKey,{stripeAccount:stripeAccountId}), [publishableKey,stripeAccountId]);
-  return <Elements stripe={stripePromise} options={{ clientSecret }}><StripeCardConfirmation onSubmitted={onSubmitted} onError={onError} /></Elements>;
+  return <Elements stripe={stripePromise} options={{ clientSecret }}><StripeCardConfirmation onSubmitted={onSubmitted} onError={onError} authorized={authorized} /></Elements>;
 };
 export const invoiceDocumentPath = (organizationId: string, invoiceId: string) =>
   `/v2/organizations/${encodeURIComponent(organizationId)}/invoices/${encodeURIComponent(invoiceId)}/document.pdf`;
@@ -279,23 +334,7 @@ const HistoryTable = ({
   </table>
 );
 
-export const FinanceWorkspace = ({
-  mode,
-  organizationId,
-  sessionScope,
-  invoiceId,
-  onSelectInvoice,
-  backToInvoices,
-  canInvoiceView,
-  canInvoiceIssue = false,
-  canInvoiceSend,
-  canPaymentView,
-  canPaymentRecord,
-  canRefundIssue,
-  csrfReady,
-  openOrder,
-  openCustomer,
-}: Readonly<{
+type FinanceWorkspaceProps = Readonly<{
   mode: "invoices" | "ledger";
   organizationId: string;
   sessionScope: string;
@@ -311,8 +350,49 @@ export const FinanceWorkspace = ({
   csrfReady: boolean;
   openOrder: (orderId: string) => void;
   openCustomer: (customerId: string) => void;
-}>) => {
+}>;
+
+export const FinanceWorkspace = (props: FinanceWorkspaceProps) => {
   const client = useQueryClient();
+  const bootstrap = client.getQueryData<UiBootstrap>(["v2", props.sessionScope, props.organizationId, "ui-bootstrap"]);
+  const verifiedUserId = bootstrap?.organizationId === props.organizationId && bootstrap.sessionScope === props.sessionScope && bootstrap.userId
+    ? bootstrap.userId : undefined;
+  return <FinanceWorkspaceBody key={JSON.stringify([verifiedUserId ?? null, props.organizationId, props.sessionScope])} verifiedUserId={verifiedUserId} {...props} />;
+};
+
+type FinanceWorkspaceBodyProps = FinanceWorkspaceProps & Readonly<{ verifiedUserId?: string }>;
+type FinanceRequestRecoveryState = FinanceRequestRecovery | Readonly<{ status: "loading" }>;
+const FinanceWorkspaceBody = ({
+  verifiedUserId,
+  mode,
+  organizationId,
+  sessionScope,
+  invoiceId,
+  onSelectInvoice,
+  backToInvoices,
+  canInvoiceView,
+  canInvoiceIssue = false,
+  canInvoiceSend,
+  canPaymentView,
+  canPaymentRecord,
+  canRefundIssue,
+  csrfReady,
+  openOrder,
+  openCustomer,
+}: FinanceWorkspaceBodyProps) => {
+  const client = useQueryClient();
+  const recoveryIdentity: FinanceRequestRecoveryIdentity = { organizationId, ...(verifiedUserId ? { verifiedUserId } : {}), sessionScope };
+  const [financeRecovery, setFinanceRecovery] = useState<FinanceRequestRecoveryState>({ status: "loading" });
+  const financeRecoveryRef = useRef<FinanceRequestRecoveryState>(financeRecovery);
+  financeRecoveryRef.current = financeRecovery;
+  const financeRequests = financeRecovery.status === "stored" ? financeRecovery.requests : [];
+  const financeRecoveryAvailable = financeRecovery.status === "empty" || financeRecovery.status === "stored";
+  const [authorityLease] = useState(() => ++nextFinanceAuthorityLease);
+  const grantEpoch = useRef(0);
+  const previousPaymentRecordGrant = useRef<boolean | undefined>(undefined);
+  const [financialDialogContext, setFinancialDialogContext] = useState<FinanceDialogContext | null>(null);
+  const [stripeResponse, setStripeResponse] = useState<BoundStripePaymentResult | null>(null);
+  const [stripeElementVisible, setStripeElementVisible] = useState(false);
   const [selected, setSelected] = useState(invoiceId);
   const [selectedSource, setSelectedSource] = useState<"v2" | "legacy">("v2");
   const [autoSelectInvoice, setAutoSelectInvoice] = useState(true);
@@ -340,6 +420,23 @@ export const FinanceWorkspace = ({
   const [emailSelection, setEmailSelection] = useState<InvoiceEmailSelection | null>(null);
   const isEmailDialog = dialog === "invoiceEmail";
   const isFinancialDialog = dialog === "payment" || dialog === "refund" || dialog === "stripePayment" || dialog === "stripeRefund";
+  const currentContextRef = useRef({ organizationId, sessionScope, verifiedUserId, authorityLease, grantEpoch: grantEpoch.current, invoiceId: selected, requestedInvoiceId: invoiceId, dialog, dialogContext: financialDialogContext, canPaymentRecord, canRefundIssue });
+  currentContextRef.current = { organizationId, sessionScope, verifiedUserId, authorityLease, grantEpoch: grantEpoch.current, invoiceId: selected, requestedInvoiceId: invoiceId, dialog, dialogContext: financialDialogContext, canPaymentRecord, canRefundIssue };
+  useEffect(() => {
+    const recovered = readFinanceRequestRecovery(recoveryIdentity);
+    financeRecoveryRef.current = recovered;
+    setFinanceRecovery(recovered);
+  }, [organizationId, sessionScope, verifiedUserId]);
+  useFinanceLayoutEffect(() => {
+    if (!organizationId) return;
+    if (previousPaymentRecordGrant.current !== undefined && previousPaymentRecordGrant.current !== canPaymentRecord) grantEpoch.current++;
+    previousPaymentRecordGrant.current = canPaymentRecord;
+    currentContextRef.current.grantEpoch = grantEpoch.current;
+    financeAuthorityFences.set(organizationId, { lease: authorityLease, grantEpoch: grantEpoch.current, verifiedUserId, sessionScope, canPaymentRecord, canRefundIssue });
+    return () => {
+      if (financeAuthorityFences.get(organizationId)?.lease === authorityLease) financeAuthorityFences.delete(organizationId);
+    };
+  }, [authorityLease, organizationId, verifiedUserId, sessionScope, canPaymentRecord, canRefundIssue]);
   const emailContextCurrent = Boolean(emailSelection && organizationId && sessionScope && canInvoiceSend && canPaymentView
     && emailSelection.organizationId === organizationId && emailSelection.sessionScope === sessionScope);
   const invoiceQuery: FinancialInvoiceQuery = { page, pageSize, ...(search ? { q: search } : {}), ...(lifecycleFilter ? { lifecycle: lifecycleFilter } : {}), ...(settlementFilter ? { settlement: settlementFilter } : {}), sort: invoiceSort, direction: invoiceSortDirection };
@@ -379,52 +476,143 @@ export const FinanceWorkspace = ({
     queryFn: () => selectedSource === "legacy" ? financeApi.legacyInvoice(organizationId, selected) : financeApi.invoice(organizationId, selected),
     enabled: Boolean(selected && canPaymentView),
   });
+  const invoice = detail.data?.invoice,
+    settlement = detail.data?.settlement;
+  const refundablePayments = (detail.data?.history ?? []).filter((payment) =>
+    payment.kind === "payment" && payment.amount.cents > (detail.data?.history ?? [])
+      .filter((refund) => refund.kind === "refund" && refund.paymentId === payment.id)
+      .reduce((total, refund) => total + refund.amount.cents, 0),
+  );
+  const paymentEligible = invoice?.source !== "legacy" && invoice?.lifecycle !== "void" && (settlement?.balance.cents ?? 0) > 0;
   const ledgerQuery: FinancialLedgerQuery = { page: ledgerPage, pageSize: ledgerPageSize, ...(ledgerSearch ? { q: ledgerSearch } : {}), ...(ledgerKind ? { kind: ledgerKind } : {}), ...(ledgerSource ? { recordSource: ledgerSource } : {}), sort: ledgerSort, direction: ledgerSortDirection };
   const ledger = useQuery({
     queryKey: ["v2", sessionScope, organizationId, "finance", "ledger", ledgerQuery],
     queryFn: () => financeApi.ledger(organizationId, ledgerQuery),
     enabled: Boolean(mode === "ledger" && canPaymentView),
   });
-  const refresh = async () => {
+  const refresh = async (targetOrganizationId = organizationId, targetSessionScope = sessionScope) => {
     await client.invalidateQueries({
-      queryKey: ["v2", sessionScope, organizationId, "finance"],
+      queryKey: ["v2", targetSessionScope, targetOrganizationId, "finance"],
     });
     await client.invalidateQueries({
-      queryKey: ["v2", sessionScope, organizationId, "billing"],
+      queryKey: ["v2", targetSessionScope, targetOrganizationId, "billing"],
     });
+  };
+  const updateFinanceRecovery = (recovery: FinanceRequestRecoveryState) => {
+    financeRecoveryRef.current = recovery;
+    setFinanceRecovery(recovery);
+  };
+  const persistFinanceRequestBeforePost = (request: PendingFinanceRequest): PendingFinanceRequest | undefined => {
+    const current = financeRecoveryRef.current;
+    if (current.status !== "empty" && current.status !== "stored") {
+      setNotice(current.status === "loading" ? "Finance request recovery is still loading; no request was sent." : "Finance request recovery is unavailable or inconsistent; no request was sent.");
+      return undefined;
+    }
+    const saved = persistFinanceRequestRecovery(recoveryIdentity, request);
+    if (saved.status !== "stored") {
+      updateFinanceRecovery(saved);
+      setNotice(saved.status === "blocked" || saved.status === "unavailable" ? saved.reason : "Finance request recovery could not be verified; no request was sent.");
+      return undefined;
+    }
+    updateFinanceRecovery(saved);
+    const persisted = saved.requests.find((entry) => sameFinanceRequest(entry, request));
+    if (!persisted || !sameFinanceRequestBody(persisted, request)) {
+      setNotice("The stored finance request does not exactly match this operation; no request was sent.");
+      return undefined;
+    }
+    return persisted;
+  };
+  const clearFinanceRequest = (request: PendingFinanceRequest) => {
+    if (!clearFinanceRequestRecovery(recoveryIdentity, request)) {
+      updateFinanceRecovery({ status: "blocked", reason: "The completed finance request could not be cleared from recovery storage; new requests are blocked." });
+      return false;
+    }
+    updateFinanceRecovery(readFinanceRequestRecovery(recoveryIdentity));
+    return true;
+  };
+  const dialogContextIsCurrent = (dialogKind: "payment" | "refund" | "stripePayment" | "stripeRefund", targetInvoiceId: string) => {
+    const current = currentContextRef.current;
+    return current.organizationId && current.sessionScope && current.invoiceId === targetInvoiceId
+      && (!current.requestedInvoiceId || current.requestedInvoiceId === targetInvoiceId)
+      && current.dialog === dialogKind && current.dialogContext?.organizationId === current.organizationId
+      && current.dialogContext.sessionScope === current.sessionScope && current.dialogContext.invoiceId === targetInvoiceId;
+  };
+  const requestCanRun = (request: PendingFinanceRequest, dialogKind: "payment" | "refund" | "stripePayment" | "stripeRefund") => {
+    const current = currentContextRef.current;
+    const recovery = financeRecoveryRef.current;
+    const storedRequest = recovery.status === "stored" ? recovery.requests.find((entry) => sameFinanceRequest(entry, request)) : undefined;
+    const durableRequest = readFinanceRequestRecovery(recoveryIdentity);
+    const isRefund = request.kind === "refund" || request.kind === "stripeRefund";
+    const authorized = isRefund ? current.canRefundIssue : current.canPaymentRecord;
+    const fence = financeAuthorityFences.get(request.organizationId);
+    const activeIdentity = Boolean(fence && fence.lease === current.authorityLease && fence.verifiedUserId === request.verifiedUserId
+      && fence.sessionScope === current.sessionScope && current.verifiedUserId === request.verifiedUserId
+      && (request.verifiedUserId !== undefined || request.submittedSessionScope === current.sessionScope)
+      && (isRefund ? fence.canRefundIssue : fence.canPaymentRecord));
+    return Boolean(authorized && storedRequest && sameFinanceRequestBody(storedRequest, request)
+      && durableRequest.status === "stored" && durableRequest.requests.some((entry) => sameFinanceRequest(entry, request) && sameFinanceRequestBody(entry, request))
+      && current.organizationId === request.organizationId && activeIdentity
+      && dialogContextIsCurrent(dialogKind, request.invoiceId));
+  };
+  const stripeSubmissionAuthorized = (submission: StripePaymentSubmission) => {
+    const { request, binding } = submission;
+    const current = currentContextRef.current;
+    const fence = financeAuthorityFences.get(request.organizationId);
+    return Boolean(requestCanRun(request, "stripePayment") && fence && fence.lease === binding.authorityLease
+      && fence.grantEpoch === binding.grantEpoch && fence.verifiedUserId === binding.verifiedUserId
+      && fence.sessionScope === binding.sessionScope && fence.canPaymentRecord
+      && current.authorityLease === binding.authorityLease && current.grantEpoch === binding.grantEpoch
+      && current.organizationId === binding.organizationId && current.verifiedUserId === binding.verifiedUserId
+      && current.sessionScope === binding.sessionScope && current.canPaymentRecord);
+  };
+  const stripeResponseAuthorized = (bound: BoundStripePaymentResult) => {
+    const current = currentContextRef.current;
+    const fence = financeAuthorityFences.get(bound.request.organizationId);
+    return Boolean(requestCanRun(bound.request, "stripePayment")
+      && fence && fence.lease === bound.binding.authorityLease && fence.grantEpoch === bound.binding.grantEpoch
+      && fence.verifiedUserId === bound.request.verifiedUserId && fence.sessionScope === bound.binding.sessionScope && fence.canPaymentRecord
+      && current.authorityLease === bound.binding.authorityLease && current.grantEpoch === bound.binding.grantEpoch
+      && current.organizationId === bound.request.organizationId
+      && current.verifiedUserId === bound.request.verifiedUserId && current.sessionScope === bound.binding.sessionScope
+      && current.invoiceId === bound.request.invoiceId && current.canPaymentRecord && current.dialog === "stripePayment"
+      && current.dialogContext?.organizationId === bound.request.organizationId && current.dialogContext.sessionScope === bound.binding.sessionScope
+      && current.dialogContext.invoiceId === bound.request.invoiceId);
   };
   const closeDialog = () => {
     setDialog("");
+    setFinancialDialogContext(null);
+    setStripeResponse(null);
+    setStripeElementVisible(false);
     setAmount("");
     setPaymentId("");
     setProviderRequestId("");
   };
+  const openFinancialDialog = (next: "payment" | "refund" | "stripePayment" | "stripeRefund", targetInvoiceId: string) => {
+    setFinancialDialogContext({ organizationId, sessionScope, invoiceId: targetInvoiceId });
+    setStripeResponse(null);
+    setStripeElementVisible(false);
+    setDialog(next);
+  };
   const payment = useMutation({
-    mutationFn: () => {
-      if (dialog !== "payment") throw new Error("The Payment dialog is not active.");
-      const parsed = centsFromInput(amount);
-      if (!parsed || !detail.data)
-        throw new Error(
-          "Enter a positive amount with no more than two decimal places.",
-        );
-      return financeApi.recordPayment(
-        organizationId,
-        detail.data.invoice.invoiceId,
-        newBusinessRequestId(),
-        {
-          amountCents: parsed,
-          currency: detail.data.invoice.currency,
-          method,
-          occurredAt: new Date().toISOString(),
-        },
-      );
+    retry: false,
+    mutationFn: (request: ManualPaymentRequest) => {
+      if (request.kind !== "payment" || !requestCanRun(request, "payment")) throw new Error("The original Payment request is not active in this authenticated Invoice context.");
+      return financeApi.recordPayment(request.organizationId, request.invoiceId, request.businessRequestId, request.input);
     },
-    onSuccess: async () => {
-      setNotice("Payment recorded as an immutable financial fact.");
-      closeDialog();
-      await refresh();
+    onSuccess: async (_result, request) => {
+      const cleared = clearFinanceRequest(request);
+      const current = currentContextRef.current;
+      if (current.organizationId === request.organizationId && current.verifiedUserId === request.verifiedUserId) {
+        setNotice(cleared ? "Payment recorded as an immutable financial fact." : "Payment recorded, but its recovery entry could not be cleared. No replacement request is allowed.");
+        if (current.dialogContext?.invoiceId === request.invoiceId && current.dialog === "payment") closeDialog();
+        await refresh(request.organizationId, current.sessionScope);
+      }
     },
-    onError: (error) => setNotice(errorText(error)),
+    onError: (error, request) => {
+      const current = currentContextRef.current;
+      if (current.organizationId === request.organizationId && current.verifiedUserId === request.verifiedUserId)
+        setNotice(`Payment outcome is unconfirmed. Retry the exact original request; do not create another Payment. ${errorText(error)}`);
+    },
   });
   const issueInvoice = useMutation({
     mutationFn: () => {
@@ -439,52 +627,90 @@ export const FinanceWorkspace = ({
     onError: (error) => setNotice(errorText(error)),
   });
   const refund = useMutation({
-    mutationFn: () => {
-      if (dialog !== "refund") throw new Error("The Refund dialog is not active.");
-      const parsed = centsFromInput(amount);
-      if (!parsed || !detail.data || !paymentId)
-        throw new Error(
-          "Choose an original Payment and enter a positive exact amount.",
-        );
-      return financeApi.recordRefund(
-        organizationId,
-        detail.data.invoice.invoiceId,
-        newBusinessRequestId(),
-        {
-          paymentId,
-          amountCents: parsed,
-          currency: detail.data.invoice.currency,
-          occurredAt: new Date().toISOString(),
-        },
-      );
+    retry: false,
+    mutationFn: (request: ManualRefundRequest) => {
+      if (request.kind !== "refund" || !requestCanRun(request, "refund")) throw new Error("The original Refund request is not active in this authenticated Invoice context.");
+      return financeApi.recordRefund(request.organizationId, request.invoiceId, request.businessRequestId, request.input);
     },
-    onSuccess: async () => {
-      setNotice(
-        "Refund recorded as a separate immutable financial fact; the original Payment remains unchanged.",
-      );
-      closeDialog();
-      await refresh();
+    onSuccess: async (_result, request) => {
+      const cleared = clearFinanceRequest(request);
+      const current = currentContextRef.current;
+      if (current.organizationId === request.organizationId && current.verifiedUserId === request.verifiedUserId) {
+        setNotice(cleared ? "Refund recorded as a separate immutable financial fact; the original Payment remains unchanged." : "Refund recorded, but its recovery entry could not be cleared. No replacement request is allowed.");
+        if (current.dialogContext?.invoiceId === request.invoiceId && current.dialog === "refund") closeDialog();
+        await refresh(request.organizationId, current.sessionScope);
+      }
     },
-    onError: (error) => setNotice(errorText(error)),
+    onError: (error, request) => {
+      const current = currentContextRef.current;
+      if (current.organizationId === request.organizationId && current.verifiedUserId === request.verifiedUserId)
+        setNotice(`Refund outcome is unconfirmed. Retry the exact original request; do not create another Refund. ${errorText(error)}`);
+    },
   });
   const stripePayment = useMutation({
-    mutationFn: () => {
-      if (dialog !== "stripePayment") throw new Error("The card Payment dialog is not active.");
-      const parsed = centsFromInput(amount);
-      if (!parsed || !detail.data || !providerRequestId) throw new Error("Enter a positive amount with no more than two decimal places.");
-      return financeApi.beginStripePayment(organizationId, detail.data.invoice.invoiceId, providerRequestId, { amountCents: parsed, currency: detail.data.invoice.currency });
+    retry: false,
+    mutationFn: async ({ request, binding }: StripePaymentSubmission) => {
+      if (request.kind !== "stripePayment" || request.submitted || !stripeSubmissionAuthorized({ request, binding })) throw new Error("The original card intent is not active in this authenticated Invoice context.");
+      const result = await financeApi.beginStripePayment(request.organizationId, request.invoiceId, request.businessRequestId, request.input);
+      if (!result.providerOperationId || !result.paymentIntentId || !result.clientSecret || !result.publishableKey || !result.stripeAccountId
+        || result.amountCents !== request.input.amountCents || result.currency !== request.input.currency)
+        throw new Error("Stripe returned an initiation response that does not match this card intent. The intent remains held for operator review.");
+      return result;
     },
-    onError: (error) => setNotice(errorText(error)),
+    onSuccess: (result, submission) => {
+      const { request, binding } = submission;
+      const recovery = financeRecoveryRef.current;
+      const currentRequest = recovery.status === "stored" ? recovery.requests.find((entry) => sameFinanceRequest(entry, request)) : undefined;
+      if (!sameFinanceRequest(currentRequest, request) || !stripeSubmissionAuthorized(submission)) return;
+      setStripeResponse({ request, binding, result });
+      setStripeElementVisible(false);
+    },
+    onError: (error, submission) => {
+      const { request } = submission;
+      const current = currentContextRef.current;
+      if (current.organizationId !== request.organizationId || current.verifiedUserId !== request.verifiedUserId || !requestCanRun(request, "stripePayment")) return;
+      const message = errorText(error);
+      const terminal = /already confirmed in Billing|terminally failed|was canceled and its Invoice reservation was released|Card payments in USD must be at least/u.test(message);
+      if (terminal) {
+        const cleared = clearFinanceRequest(request);
+        setNotice(cleared ? `The original card operation is terminal. ${message}` : "The terminal card operation could not be cleared from recovery storage; new requests remain blocked.");
+        if (cleared) void refresh(request.organizationId, current.sessionScope);
+      } else setNotice(`Card intent outcome is unconfirmed. Retry only this original intent; a replacement intent is blocked. ${message}`);
+    },
   });
+  const resetStripePaymentMutation = useRef(stripePayment.reset);
+  resetStripePaymentMutation.current = stripePayment.reset;
+  useEffect(() => () => resetStripePaymentMutation.current(), []);
+  const beginStripeRequest = (request: StripePaymentRequest) => {
+    if (!financeRecoveryAvailable) return;
+    const persisted = persistFinanceRequestBeforePost(request);
+    if (persisted?.kind !== "stripePayment") return;
+    const fence = financeAuthorityFences.get(request.organizationId);
+    if (!fence || !fence.canPaymentRecord || fence.verifiedUserId !== verifiedUserId || fence.sessionScope !== sessionScope) return;
+    const submission: StripePaymentSubmission = {
+      request: persisted,
+      binding: { organizationId, verifiedUserId, sessionScope, authorityLease, grantEpoch: fence.grantEpoch },
+    };
+    if (stripeSubmissionAuthorized(submission)) stripePayment.mutate(submission);
+  };
   const stripeRefund = useMutation({
-    mutationFn: () => {
-      if (dialog !== "stripeRefund") throw new Error("The card Refund dialog is not active.");
-      const parsed = centsFromInput(amount);
-      if (!parsed || !detail.data || !paymentId || !providerRequestId) throw new Error("Choose a Stripe Payment and enter a positive exact amount.");
-      return financeApi.beginStripeRefund(organizationId, detail.data.invoice.invoiceId, providerRequestId, { paymentId, amountCents: parsed, currency: detail.data.invoice.currency });
+    retry: false,
+    mutationFn: (request: StripeRefundRequest) => {
+      if (request.kind !== "stripeRefund" || request.submitted || !requestCanRun(request, "stripeRefund")) throw new Error("The original Stripe Refund request is not active in this authenticated Invoice context.");
+      return financeApi.beginStripeRefund(request.organizationId, request.invoiceId, request.businessRequestId, request.input);
     },
-    onSuccess: async () => { setNotice("Refund submitted to Stripe. The signed provider event will record the canonical V2 Refund."); closeDialog(); await refresh(); },
-    onError: (error) => setNotice(errorText(error)),
+    onSuccess: async (_result, request) => {
+      const recovery = financeRecoveryRef.current;
+      const current = recovery.status === "stored" ? recovery.requests.find((entry) => sameFinanceRequest(entry, request)) : undefined;
+      if (!sameFinanceRequest(current, request) || !requestCanRun(request, "stripeRefund")) return;
+      if (recovery.status === "stored") updateFinanceRecovery({ status: "stored", requests: recovery.requests.map((entry) => sameFinanceRequest(entry, request) ? Object.freeze({ ...request, submitted: true }) : entry) });
+      setNotice("Refund submitted to Stripe. The signed provider event will record the canonical V2 Refund.");
+      closeDialog();
+      await refresh(request.organizationId, currentContextRef.current.sessionScope);
+    },
+    onError: (error, request) => {
+      if (requestCanRun(request, "stripeRefund")) setNotice(`Stripe Refund outcome is unconfirmed. Retry only this original request. ${errorText(error)}`);
+    },
   });
   const emailPreview = useMutation({
     mutationFn: (selection: InvoiceEmailSelection) => invoiceApi.emailPreview(selection.organizationId, selection.invoiceIds),
@@ -502,6 +728,23 @@ export const FinanceWorkspace = ({
   });
   const emailAdmission = emailSelected.variables === emailSelection ? emailSelected.data : undefined;
   const emailAdmissionError = emailSelected.variables === emailSelection && emailSelected.isError ? errorText(emailSelected.error) : "";
+  const hadPaymentRecordGrant = useRef(canPaymentRecord);
+  useFinanceLayoutEffect(() => {
+    if (hadPaymentRecordGrant.current && !canPaymentRecord) {
+      setStripeResponse(null);
+      setStripeElementVisible(false);
+      if (dialog === "stripePayment") { setDialog(""); setFinancialDialogContext(null); }
+      stripePayment.reset();
+    }
+    hadPaymentRecordGrant.current = canPaymentRecord;
+  }, [canPaymentRecord, dialog, stripePayment]);
+  useEffect(() => {
+    if (!stripeResponse) return;
+    if (!stripeResponseAuthorized(stripeResponse)) {
+      setStripeResponse(null);
+      setStripeElementVisible(false);
+    }
+  }, [stripeResponse, organizationId, sessionScope, verifiedUserId, canPaymentRecord, invoiceId, selected, dialog]);
   useEffect(() => {
     setEmailSelection(null);
     setSelectedInvoiceIds(new Set());
@@ -534,6 +777,149 @@ export const FinanceWorkspace = ({
   const closeEmailDialog = () => {
     if (emailSelected.isPending) return;
     setDialog("");
+  };
+  const requestMatchesInvoice = (request: PendingFinanceRequest | undefined, targetInvoiceId = invoice?.invoiceId) =>
+    Boolean(request && targetInvoiceId && request.organizationId === organizationId
+      && request.verifiedUserId === verifiedUserId && (request.verifiedUserId !== undefined || request.submittedSessionScope === sessionScope)
+      && request.invoiceId === targetInvoiceId);
+  const requestForInvoice = <TKind extends PendingFinanceRequest["kind"],>(kind: TKind, targetInvoiceId = invoice?.invoiceId, paymentTargetId?: string): Extract<PendingFinanceRequest, { kind: TKind }> | undefined =>
+    financeRequests.find((request) => request.kind === kind && requestMatchesInvoice(request, targetInvoiceId)
+      && (paymentTargetId === undefined || ((request.kind === "refund" || request.kind === "stripeRefund") && request.input.paymentId === paymentTargetId))) as Extract<PendingFinanceRequest, { kind: TKind }> | undefined;
+  const requestForRefundAllocation = (targetInvoiceId: string, paymentTargetId: string) =>
+    financeRequests.find((request) => (request.kind === "refund" || request.kind === "stripeRefund")
+      && requestMatchesInvoice(request, targetInvoiceId) && request.input.paymentId === paymentTargetId);
+  const openPaymentDialog = () => {
+    if (!invoice || !financeRecoveryAvailable) return;
+    const existing = requestForInvoice("payment");
+    if (existing?.kind === "payment") {
+      setAmount(centsForInput(existing.input.amountCents));
+      setMethod(existing.input.method);
+    } else {
+      setAmount(centsForInput(settlement?.balance.cents ?? 0));
+      setMethod("check");
+    }
+    openFinancialDialog("payment", invoice.invoiceId);
+  };
+  const submitPayment = () => {
+    if (!invoice || !financeRecoveryAvailable || !csrfReady || !canPaymentRecord || !dialogContextIsCurrent("payment", invoice.invoiceId)) return;
+    const existing = requestForInvoice("payment");
+    if (existing?.kind === "payment") {
+      const persisted = persistFinanceRequestBeforePost(existing);
+      if (persisted?.kind === "payment") payment.mutate(persisted);
+      return;
+    }
+    const amountCents = centsFromInput(amount);
+    if (!amountCents) { setNotice("Enter a positive amount with no more than two decimal places."); return; }
+    const request: ManualPaymentRequest = Object.freeze({
+      kind: "payment", organizationId, ...(verifiedUserId ? { verifiedUserId } : {}), submittedSessionScope: sessionScope, invoiceId: invoice.invoiceId, businessRequestId: newBusinessRequestId(),
+      input: Object.freeze({ amountCents, currency: invoice.currency, method, occurredAt: new Date().toISOString() }),
+    });
+    const persisted = persistFinanceRequestBeforePost(request);
+    if (persisted?.kind === "payment") payment.mutate(persisted);
+  };
+  const openRefundDialog = () => {
+    if (!invoice || !financeRecoveryAvailable) return;
+    const existing = requestForInvoice("refund");
+    if (existing?.kind === "refund") {
+      setAmount(centsForInput(existing.input.amountCents));
+      setPaymentId(existing.input.paymentId);
+    } else {
+      setAmount("");
+      setPaymentId("");
+    }
+    openFinancialDialog("refund", invoice.invoiceId);
+  };
+  const submitRefund = () => {
+    if (!invoice || !financeRecoveryAvailable || !csrfReady || !canRefundIssue || !dialogContextIsCurrent("refund", invoice.invoiceId)) return;
+    const existing = requestForInvoice("refund");
+    if (existing?.kind === "refund") {
+      const persisted = persistFinanceRequestBeforePost(existing);
+      if (persisted?.kind === "refund") refund.mutate(persisted);
+      return;
+    }
+    const amountCents = centsFromInput(amount);
+    if (!amountCents || !paymentId) { setNotice("Choose an original Payment and enter a positive exact amount."); return; }
+    if (requestForRefundAllocation(invoice.invoiceId, paymentId)) { setNotice("An unresolved Refund already reserves this original Payment allocation."); return; }
+    const request: ManualRefundRequest = Object.freeze({
+      kind: "refund", organizationId, ...(verifiedUserId ? { verifiedUserId } : {}), submittedSessionScope: sessionScope, invoiceId: invoice.invoiceId, businessRequestId: newBusinessRequestId(),
+      input: Object.freeze({ paymentId, amountCents, currency: invoice.currency, occurredAt: new Date().toISOString() }),
+    });
+    const persisted = persistFinanceRequestBeforePost(request);
+    if (persisted?.kind === "refund") refund.mutate(persisted);
+  };
+  const openStripeRefundDialog = () => {
+    if (!invoice || !financeRecoveryAvailable) return;
+    const existing = requestForInvoice("stripeRefund", invoice.invoiceId, paymentId || undefined);
+    if (existing?.kind === "stripeRefund") {
+      setPaymentId(existing.input.paymentId);
+      setAmount(centsForInput(existing.input.amountCents));
+      setProviderRequestId(existing.businessRequestId);
+    } else {
+      setPaymentId("");
+      setAmount("");
+      setProviderRequestId("");
+    }
+    openFinancialDialog("stripeRefund", invoice.invoiceId);
+  };
+  const submitStripeRefund = () => {
+    if (!invoice || !financeRecoveryAvailable || !csrfReady || !canRefundIssue || !dialogContextIsCurrent("stripeRefund", invoice.invoiceId)) return;
+    const existing = requestForInvoice("stripeRefund", invoice.invoiceId, paymentId);
+    if (existing?.kind === "stripeRefund") {
+      if (!existing.submitted) {
+        const persisted = persistFinanceRequestBeforePost(existing);
+        if (persisted?.kind === "stripeRefund") stripeRefund.mutate(persisted);
+      }
+      return;
+    }
+    const amountCents = centsFromInput(amount);
+    if (!amountCents || !paymentId) { setNotice("Choose a Stripe Payment and enter a positive exact amount."); return; }
+    if (requestForRefundAllocation(invoice.invoiceId, paymentId)) { setNotice("An unresolved Refund already reserves this original Payment allocation."); return; }
+    const requestId = providerRequestId || newBusinessRequestId();
+    const request: StripeRefundRequest = Object.freeze({
+      kind: "stripeRefund", organizationId, ...(verifiedUserId ? { verifiedUserId } : {}), submittedSessionScope: sessionScope,
+      invoiceId: invoice.invoiceId, businessRequestId: requestId,
+      input: Object.freeze({ paymentId, amountCents, currency: invoice.currency }), submitted: false,
+    });
+    const persisted = persistFinanceRequestBeforePost(request);
+    if (persisted?.kind === "stripeRefund") stripeRefund.mutate(persisted);
+  };
+  const openStripePaymentDialog = () => {
+    if (!invoice || !financeRecoveryAvailable) return;
+    const existing = requestForInvoice("stripePayment");
+    if (existing?.kind === "stripePayment") {
+      setAmount(centsForInput(existing.input.amountCents));
+      setProviderRequestId(existing.businessRequestId);
+    } else {
+      setAmount(centsForInput(settlement?.balance.cents ?? 0));
+      setProviderRequestId(newBusinessRequestId());
+    }
+    openFinancialDialog("stripePayment", invoice.invoiceId);
+  };
+  const submitStripePayment = () => {
+    if (!invoice || !financeRecoveryAvailable || !csrfReady || !canPaymentRecord || !dialogContextIsCurrent("stripePayment", invoice.invoiceId)) return;
+    const existing = requestForInvoice("stripePayment");
+    if (existing?.kind === "stripePayment") {
+      if (!existing.submitted) beginStripeRequest(existing);
+      return;
+    }
+    const amountCents = centsFromInput(amount);
+    if (!amountCents || !providerRequestId) { setNotice("Enter a positive amount with no more than two decimal places."); return; }
+    const request: StripePaymentRequest = Object.freeze({
+      kind: "stripePayment", organizationId, ...(verifiedUserId ? { verifiedUserId } : {}), submittedSessionScope: sessionScope, invoiceId: invoice.invoiceId, businessRequestId: providerRequestId,
+      input: Object.freeze({ amountCents, currency: invoice.currency }), submitted: false,
+    });
+    beginStripeRequest(request);
+  };
+  const markStripePaymentSubmitted = (bound: BoundStripePaymentResult) => {
+    const recovery = financeRecoveryRef.current;
+    const current = recovery.status === "stored" ? recovery.requests.find((entry) => sameFinanceRequest(entry, bound.request)) : undefined;
+    const request = bound.request;
+    if (!sameFinanceRequest(current, request) || !requestCanRun(request, "stripePayment") || !stripeResponseAuthorized(bound)) return;
+    const submitted = Object.freeze({ ...request, submitted: true });
+    if (recovery.status === "stored") updateFinanceRecovery({ status: "stored", requests: recovery.requests.map((entry) => sameFinanceRequest(entry, request) ? submitted : entry) });
+    setNotice("Card confirmation was submitted. Wait for the signed provider event before starting another financial request.");
+    closeDialog();
+    void refresh(request.organizationId, currentContextRef.current.sessionScope);
   };
   const resetInvoicePage = (message = "Selection cleared because the invoice search or filters changed.") => {
     setPage(1);
@@ -572,14 +958,25 @@ export const FinanceWorkspace = ({
         )}
       </section>
     );
-  const invoice = detail.data?.invoice,
-    settlement = detail.data?.settlement;
-  const refundablePayments = (detail.data?.history ?? []).filter((payment) =>
-    payment.kind === "payment" && payment.amount.cents > (detail.data?.history ?? [])
-      .filter((refund) => refund.kind === "refund" && refund.paymentId === payment.id)
-      .reduce((total, refund) => total + refund.amount.cents, 0),
-  );
-  const paymentEligible = invoice?.source !== "legacy" && invoice?.lifecycle !== "void" && (settlement?.balance.cents ?? 0) > 0;
+  const currentInvoiceFinanceRequests = financeRequests.filter((request) => requestMatchesInvoice(request));
+  const manualPaymentForCurrentInvoice = requestForInvoice("payment");
+  const manualRefundForCurrentInvoice = requestForInvoice("refund");
+  const stripePaymentForCurrentInvoice = requestForInvoice("stripePayment");
+  const stripeRefundForCurrentInvoice = requestForInvoice("stripeRefund");
+  const currentDialogFinanceRequest = dialog === "payment" ? manualPaymentForCurrentInvoice
+    : dialog === "refund" ? requestForInvoice("refund", invoice?.invoiceId, paymentId || undefined)
+      : dialog === "stripePayment" ? stripePaymentForCurrentInvoice : requestForInvoice("stripeRefund", invoice?.invoiceId, paymentId || undefined);
+  const financeRequestBlocksCurrentAction = dialog === "stripePayment" ? Boolean(stripePaymentForCurrentInvoice?.submitted)
+    : dialog === "stripeRefund" ? Boolean(requestForInvoice("stripeRefund", invoice?.invoiceId, paymentId || undefined)?.submitted) : false;
+  const financialDialogContextCurrent = Boolean(financialDialogContext && financialDialogContext.organizationId === organizationId
+    && financialDialogContext.sessionScope === sessionScope && financialDialogContext.invoiceId === selected
+    && financialDialogContext.invoiceId === invoice?.invoiceId && (!invoiceId || financialDialogContext.invoiceId === invoiceId));
+  const stripeResponseForCurrentDialog = stripePaymentForCurrentInvoice && stripeResponse
+    && sameFinanceRequest(stripeResponse.request, stripePaymentForCurrentInvoice)
+    && stripeResponse.request.verifiedUserId === verifiedUserId && stripeResponseAuthorized(stripeResponse)
+    && stripeResponse.result.amountCents === stripePaymentForCurrentInvoice.input.amountCents
+    && stripeResponse.result.currency === stripePaymentForCurrentInvoice.input.currency
+    && financialDialogContextCurrent && dialog === "stripePayment" ? stripeResponse : null;
   const invoiceColumns: readonly GridColumn<FinancialInvoiceListItem>[] = [
     {
       id: "source",
@@ -865,32 +1262,30 @@ export const FinanceWorkspace = ({
               {!isEmailDialog && paymentEligible && canPaymentRecord && (
                 <button
                   className="v2-invoice-issue"
-                  disabled={!csrfReady}
-                  onClick={() => {
-                    setAmount(centsForInput(settlement.balance.cents));
-                    setDialog("payment");
-                  }}
+                  disabled={!financeRecoveryAvailable || !csrfReady}
+                  onClick={openPaymentDialog}
                 >
-                  Take Payment
+                  {manualPaymentForCurrentInvoice ? "Resume original Payment" : "Take Payment"}
                 </button>
               )}
               {!isEmailDialog && paymentEligible && canPaymentRecord && (
-                <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setAmount(centsForInput(settlement.balance.cents)); setProviderRequestId(newBusinessRequestId()); setDialog("stripePayment"); }}>Pay by Card</button>
+                <button className="v2-quiet-button" disabled={!financeRecoveryAvailable || !csrfReady} onClick={openStripePaymentDialog}>
+                  {stripePaymentForCurrentInvoice ? "Resume original card intent" : "Pay by Card"}
+                </button>
               )}
               {!isEmailDialog && invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.length > 0 && (
                 <button
                   className="v2-quiet-button"
-                  disabled={
-                    !csrfReady ||
-                    !refundablePayments.length
-                  }
-                  onClick={() => setDialog("refund")}
+                  disabled={!financeRecoveryAvailable || !csrfReady || !refundablePayments.length}
+                  onClick={openRefundDialog}
                 >
-                  Record Refund
+                  {manualRefundForCurrentInvoice ? "Resume original Refund" : "Record Refund"}
                 </button>
               )}
               {!isEmailDialog && invoice.source !== "legacy" && invoice.lifecycle !== "void" && canRefundIssue && refundablePayments.some((entry) => entry.source === "provider") && (
-                <button className="v2-quiet-button" disabled={!csrfReady} onClick={() => { setPaymentId(""); setAmount(""); setProviderRequestId(newBusinessRequestId()); setDialog("stripeRefund"); }}>Refund to Card</button>
+                <button className="v2-quiet-button" disabled={!financeRecoveryAvailable || !csrfReady} onClick={openStripeRefundDialog}>
+                  {stripeRefundForCurrentInvoice ? "Resume original Stripe Refund" : "Refund to Card"}
+                </button>
               )}
             </div>
           </header>
@@ -964,10 +1359,18 @@ export const FinanceWorkspace = ({
             </p>
             <HistoryTable history={detail.data?.history ?? []} />
           </section>
+          {currentInvoiceFinanceRequests.map((request) => <p className="v2-invoice-notice" role="status" key={`${request.kind}:${request.businessRequestId}`}>
+            {request.kind === "stripePayment"
+              ? request.submitted ? "Card confirmation is awaiting the signed provider event. Resume only this intent after re-authentication; do not create a replacement." : "A card intent is unresolved. Resume only this exact intent; replacement requests are blocked."
+              : request.kind === "stripeRefund"
+                ? request.submitted ? "Stripe Refund is awaiting the signed provider event. Resume only this intent after re-authentication." : "A Stripe Refund intent is unresolved. Resume only this exact request."
+                : `An original ${request.kind === "payment" ? "Payment" : "Refund"} request is unresolved. Retry its exact submitted identity before repeating the same financial action.`}
+          </p>)}
+          {(financeRecovery.status === "blocked" || financeRecovery.status === "unavailable") && <p className="v2-invoice-notice" role="alert">{financeRecovery.reason}</p>}
           {notice && <p className="v2-invoice-notice">{notice}</p>}
         </article>
       )}
-      {isFinancialDialog && invoice && (
+      {isFinancialDialog && invoice && financialDialogContextCurrent && (
         <div
           className="v2-finance-modal"
           role="dialog"
@@ -987,6 +1390,7 @@ export const FinanceWorkspace = ({
                 value={amount}
                 onChange={(event) => setAmount(event.target.value)}
                 placeholder="0.00"
+                disabled={Boolean(currentDialogFinanceRequest) || payment.isPending || refund.isPending || stripePayment.isPending || stripeRefund.isPending}
               />
             </label>
             {dialog === "payment" ? (
@@ -998,6 +1402,7 @@ export const FinanceWorkspace = ({
                   onChange={(event) =>
                     setMethod(event.target.value as typeof method)
                   }
+                  disabled={Boolean(manualPaymentForCurrentInvoice) || payment.isPending}
                 >
                   <option value="check">Check</option>
                   <option value="cash">Cash</option>
@@ -1011,6 +1416,7 @@ export const FinanceWorkspace = ({
                   aria-label="Original Payment"
                   value={paymentId}
                   onChange={(event) => setPaymentId(event.target.value)}
+                  disabled={Boolean(manualRefundForCurrentInvoice || stripeRefundForCurrentInvoice) || refund.isPending || stripeRefund.isPending}
                 >
                   <option value="">Select a Payment</option>
                   {refundablePayments
@@ -1028,22 +1434,37 @@ export const FinanceWorkspace = ({
                 ? "Manual methods only. Card and ACH collection remain deferred; no raw card data is accepted."
                 : dialog === "refund" ? "A Refund is a new immutable fact. It does not alter the original Payment." : dialog === "stripePayment" ? "Stripe confirmation never records a V2 Payment directly. The signed webhook completes the financial fact." : "Stripe will process the refund; its signed event records the separate V2 Refund."}
             </p>
-            {dialog === "stripePayment" && !stripePayment.data && <button
+            {dialog === "stripePayment" && stripePaymentForCurrentInvoice?.submitted && <p role="status">Card confirmation was submitted. Wait for the signed provider event; the intent cannot be replaced or resubmitted here.</p>}
+            {dialog === "stripeRefund" && stripeRefundForCurrentInvoice?.submitted && <p role="status">Stripe Refund was submitted. Wait for its signed provider event before starting another financial request.</p>}
+            {dialog === "stripePayment" && stripeResponseForCurrentDialog && !stripeElementVisible && <>
+              <p role="status">Stripe returned the initiation result for this exact Invoice, amount, currency, and request identity.</p>
+              <button className="v2-invoice-issue" disabled={!csrfReady || !canPaymentRecord || !stripeResponseAuthorized(stripeResponseForCurrentDialog)} onClick={() => setStripeElementVisible(true)}>Enter card details</button>
+            </>}
+            {dialog === "stripePayment" && stripeResponseForCurrentDialog && stripeElementVisible && <StripePaymentElement
+              publishableKey={stripeResponseForCurrentDialog.result.publishableKey}
+              stripeAccountId={stripeResponseForCurrentDialog.result.stripeAccountId}
+              clientSecret={stripeResponseForCurrentDialog.result.clientSecret}
+              authorized={() => stripeResponseForCurrentDialog ? stripeResponseAuthorized(stripeResponseForCurrentDialog) : false}
+              onSubmitted={() => markStripePaymentSubmitted(stripeResponseForCurrentDialog)}
+              onError={(message) => setNotice(message)}
+            />}
+            {dialog === "stripePayment" && !stripeResponseForCurrentDialog && !stripePaymentForCurrentInvoice?.submitted && <button
               className="v2-invoice-issue"
-              disabled={!csrfReady || stripePayment.isPending}
-              onClick={() => stripePayment.mutate()}
-            >{stripePayment.isPending ? "Preparing card payment…" : "Continue to card"}</button>}
-            {dialog === "stripePayment" && stripePayment.data && <StripePaymentElement publishableKey={stripePayment.data.publishableKey} stripeAccountId={stripePayment.data.stripeAccountId} clientSecret={stripePayment.data.clientSecret} onSubmitted={() => { setNotice("Payment submitted. Waiting for the signed Stripe confirmation before updating this Invoice."); closeDialog(); void refresh(); }} onError={(message) => setNotice(message)} />}
+              disabled={!financeRecoveryAvailable || !csrfReady || stripePayment.isPending || !canPaymentRecord}
+              onClick={submitStripePayment}
+            >{stripePayment.isPending ? "Checking original card intent…" : stripePaymentForCurrentInvoice ? "Retry original card intent" : "Continue to card"}</button>}
             {dialog !== "stripePayment" && <button
               className="v2-invoice-issue"
-              disabled={!csrfReady || payment.isPending || refund.isPending || stripeRefund.isPending}
+              disabled={!financeRecoveryAvailable || !csrfReady || payment.isPending || refund.isPending || stripeRefund.isPending || financeRequestBlocksCurrentAction}
               onClick={() => {
-                if (dialog === "payment") payment.mutate();
-                else if (dialog === "refund") refund.mutate();
-                else if (dialog === "stripeRefund") stripeRefund.mutate();
+                if (dialog === "payment") submitPayment();
+                else if (dialog === "refund") submitRefund();
+                else if (dialog === "stripeRefund") submitStripeRefund();
               }}
             >
-              {dialog === "payment" ? "Record Payment" : dialog === "refund" ? "Record Refund" : "Submit Stripe Refund"}
+              {dialog === "payment" ? manualPaymentForCurrentInvoice ? "Retry original Payment" : "Record Payment"
+                : dialog === "refund" ? manualRefundForCurrentInvoice ? "Retry original Refund" : "Record Refund"
+                  : stripeRefundForCurrentInvoice ? "Retry original Stripe Refund" : "Submit Stripe Refund"}
             </button>}
           </div>
         </div>

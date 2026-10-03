@@ -62,6 +62,7 @@ function fixture(browser = false) {
     },
     lockInvoices: async (org, ids) => org === "org-a" && ids.length === 1 && ids[0] === "invoice-a" ? [{ invoiceId: ids[0], customerId: "customer-a", currency: "USD", totalCents: state.balance, lifecycle: "issued" as const }] : [],
     settlement: async (_org, id, currency, gross) => ({ invoiceId: id, gross: money(currencyCode(currency), gross), successfulPayments: money(usd, state.paid), successfulRefunds: money(usd, 0), collectibleBalance: money(usd, gross - state.paid) }),
+    pendingProviderPaymentCents: async () => 0,
     recordPaymentAggregate: async (input) => {
       state.records++;
       state.paid += input.allocations.reduce((sum, allocation) => sum + allocation.amount.cents, 0);

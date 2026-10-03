@@ -193,6 +193,14 @@ export type BeginProviderPaymentAggregateInput = Readonly<{
   businessRequestId: BusinessRequestId;
 }>;
 export type ProviderPaymentAggregateOperation = Readonly<{ operation: ProviderFinancialOperation; allocations: readonly PaymentAllocationFact[] }>;
+export type TransitionProviderPaymentIntentInput = Readonly<{
+  organizationId: OrganizationId;
+  providerOperationId: ProviderFinancialOperationId;
+  providerTransactionId: string | null;
+  stripeAccountId: string;
+  state: "pending" | "failed";
+  allocations: readonly PaymentAllocationInput[];
+}>;
 export type ConfirmProviderPaymentAggregateInput = Readonly<{ organizationId: OrganizationId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;
 export type ProviderPaymentAggregateConfirmation = Readonly<{ payment: PaymentAggregateFact; materialized: boolean }>;
 export type ConfirmProviderPaymentInput = Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; businessRequestId: BusinessRequestId }>;

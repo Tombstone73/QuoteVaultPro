@@ -39,10 +39,8 @@ const groups = {
     ["<unresolved>","UNRESOLVED","98e3c8ed469d2df217d00ae234ff6e8471569ea2fd8f9ff300b4069eca6cde4b","SQL-DYNAMIC",1],
     ["<unresolved>","UNRESOLVED","5bbc40dfe20579312fff3f008df4ae25e68395e4fb452d665cb866c01a45b57a","SQL-DYNAMIC",1],
   ],
-  "infrastructure/billing/stripePaymentInitiation.ts": [
-    ["v2_billing_provider_financial_operations","UPDATE","afbd4a43b37c5c50109195b825321f6c15e3c62158e7597e1d2e9284b18fd780","OBSERVED",1],
-    ["v2_billing_provider_financial_operations","UPDATE","99c32dc6feb8d2f6c331bdf9aefa4f644179c1c67304da431163ac21e2537287","OBSERVED",1],
-  ],
+  // Wave 2: the two Stripe initiation writes were retired, not repinned.
+  // Billing's authorized transaction now owns provider-operation transitions.
   "infrastructure/communications/postgresEmailIntegration.ts": [
     ["email_settings","UPDATE","b72257ff3043bfba1d0127581c7b610c66ba6ab25e6eb7775a66a76a28d95765","LEGACY-COMPATIBILITY",1],
     ["email_settings","UPDATE","842b8d591e1402418514b90086ac661cb6f7f79757f6241f95582e1ebccf2a62","LEGACY-COMPATIBILITY",1],

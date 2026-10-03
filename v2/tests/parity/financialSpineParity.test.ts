@@ -55,6 +55,7 @@ class FinancialFixture implements BillingFinancialTransaction {
     const successfulRefunds = this.refunds.reduce((total, refund) => total + refund.amount.cents, 0);
     return { invoiceId, gross: money(usd, grossCents), successfulPayments: money(usd, successfulPayments), successfulRefunds: money(usd, successfulRefunds), collectibleBalance: money(usd, grossCents - successfulPayments + successfulRefunds) };
   }
+  async pendingProviderPaymentCents(): Promise<number> { return 0; }
 
   async recordPayment(input: Readonly<{ invoiceId: InvoiceId; amountCents: number; currency: string; method: string; occurredAt: string }>): Promise<PaymentFact> {
     const payment = Object.freeze({ paymentId: brandedId<"PaymentId">(`payment-${this.payments.length + 1}`), invoiceId: input.invoiceId, amount: money(usd, input.amountCents), method: input.method as PaymentFact["method"], source: "manual" as const, occurredAt: input.occurredAt });

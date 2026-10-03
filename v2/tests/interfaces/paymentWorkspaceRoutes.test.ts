@@ -23,6 +23,7 @@ function fixture() {
     lockInvoice: unsupported, recordPayment: unsupported, recordRefund: unsupported, confirmProviderPayment: unsupported, confirmProviderRefund: unsupported,
     lockInvoices: async (org, ids) => org === "org-a" ? ids.filter((id) => totals.has(id)).map((id) => ({ invoiceId: id, currency: "USD", customerId: "customer-a", totalCents: totals.get(id)!, lifecycle: "draft" as const })) : [],
     settlement: async (_org, id, currency, total) => ({ invoiceId: id, gross: money(currencyCode(currency), total), successfulPayments: money(usd, paid.get(id) ?? 0), successfulRefunds: money(usd, 0), collectibleBalance: money(usd, total - (paid.get(id) ?? 0)) }),
+    pendingProviderPaymentCents: async () => 0,
     reserve: async (input) => {
       const saved = requests.get(input.businessRequestId);
       if (saved && saved.fingerprint !== input.payloadFingerprint) throw new V2ApplicationError("IDEMPOTENCY_CONFLICT", "Existing request has different tender evidence.");
