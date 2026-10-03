@@ -1506,6 +1506,13 @@
       "when": 1788048000066,
       "tag": "0221_order_blind_shipping_address_source",
       "breakpoints": true
+    },
+    {
+      "idx": 221,
+      "version": "7",
+      "when": 1788048000067,
+      "tag": "0222_material_families_and_variants",
+      "breakpoints": true
     }
   ]
 }

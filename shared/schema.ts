@@ -6598,10 +6598,26 @@ export type QuoteWorkflowState = typeof quoteWorkflowStates.$inferSelect;
 // INVENTORY MANAGEMENT SYSTEM
 // ============================================================
 
+// A family is organizational only. It intentionally has no stock, purchasing,
+// or consumption fields: those always belong to a concrete Material row.
+export const materialFamilies = pgTable("material_families", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("material_families_organization_id_idx").on(table.organizationId),
+  uniqueIndex("material_families_org_name_uidx").on(table.organizationId, table.name),
+]);
+
 // Materials table - tracks all inventory items (sheets, rolls, inks, consumables)
 export const materials = pgTable("materials", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  materialFamilyId: varchar("material_family_id").references(() => materialFamilies.id, { onDelete: "set null" }),
   name: varchar("name", { length: 255 }).notNull(),
   sku: varchar("sku", { length: 100 }).notNull(),
   type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
@@ -6729,6 +6745,31 @@ const optionalMaterialVendorUrlSchema = z.any().transform((value, ctx) => {
   }
   return result.value;
 });
+
+export const materialFamilyVariantDimensions = pgTable("material_family_variant_dimensions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  materialFamilyId: varchar("material_family_id").notNull().references(() => materialFamilies.id, { onDelete: "cascade" }),
+  key: varchar("key", { length: 64 }).notNull(),
+  displayName: varchar("display_name", { length: 100 }).notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("material_family_variant_dimensions_family_key_uidx").on(table.materialFamilyId, table.key),
+  index("material_family_variant_dimensions_org_family_idx").on(table.organizationId, table.materialFamilyId),
+]);
+
+export const materialVariantValues = pgTable("material_variant_values", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: "cascade" }),
+  dimensionId: varchar("dimension_id").notNull().references(() => materialFamilyVariantDimensions.id, { onDelete: "cascade" }),
+  value: varchar("value", { length: 255 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("material_variant_values_material_dimension_uidx").on(table.materialId, table.dimensionId),
+  index("material_variant_values_org_material_idx").on(table.organizationId, table.materialId),
+]);
 const optionalMaterialDateSchema = z.any().transform((value, ctx) => {
   if (value === undefined) return undefined;
   if (value === null || value === "") return null;
