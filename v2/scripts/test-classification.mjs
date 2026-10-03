@@ -131,6 +131,7 @@ add('v2/tests/infrastructure/', 'tsx', [
   'orderWorkflowExceptions.persistence.pure.ts',
   'organizationLogoAdoption.pure.ts',
   'organizationSettingsContracts.pure.ts',
+  'prepressArtworkIdentity.pure.ts',
   'prepressProductionHandoff.pure.ts',
   'prepressProductionWorkConflict.pure.ts',
   'prepressQueueFilters.pure.ts',

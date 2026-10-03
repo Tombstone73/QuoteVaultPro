@@ -17,7 +17,7 @@ const preparedUnit = { id: "unit-a", organization_id: "org-a", order_document_id
 const predecessor = { id: "work-a", organization_id: "org-a", order_document_id: "order-a", order_line_id: "line-a", requirement_key: "front-layer", artwork_assignment_id: "art-a", artwork_file_id: "file-a", side: "front", source_page_index: 2, layer_key: "white", layer_order: 3, ordered_quantity: 10, replacement_obligation_id: null };
 const preparationInput = { ...actor, ...scope, reworkCycleId: "cycle-a", predecessorProductionWorkId: "work-a", artworkAssignmentId: "art-a", artworkFileId: "file-a", side: "front" as const, sourcePageIndex: 2, layerKey: "white", layerOrder: 3 };
 type Call = { sql: string; values: readonly unknown[] };
-type Options = { current?: string; destination?: "flatbed" | "roll" | null; blocker?: string; rework?: boolean; fail?: string; stale?: boolean; readiness?: "missing_unit" | "incomplete_unit" | "proof" | "artwork" };
+type Options = { current?: string; destination?: "flatbed" | "roll" | null; blocker?: string; rework?: boolean; fail?: string; stale?: boolean; ambiguousArtwork?: boolean; readiness?: "missing_unit" | "incomplete_unit" | "proof" | "artwork" };
 function fixture(options: Options = {}) {
   const calls: Call[] = [];
   let durable: string[] = [];
@@ -43,7 +43,7 @@ function fixture(options: Options = {}) {
     if (sql.startsWith("SELECT 1 FROM v2_production_works")) return { rows: [], rowCount: 0 };
     if (sql.includes(" count(*) = count(a.id) complete")) return { rows: [{ complete: true }] };
     if (sql.includes(") approved") || sql.includes(" required,")) return { rows: [{ required: true, approved: options.readiness !== "proof" }] };
-    if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return { rows: [{ assignment_id: options.readiness === "artwork" ? null : "art-a" }] };
+    if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return { rows: [{ assignment_id: options.readiness === "artwork" || options.ambiguousArtwork ? null : "art-a", assignment_count: options.ambiguousArtwork ? 2 : options.readiness === "artwork" ? 0 : 1 }] };
     if (sql.startsWith("SELECT id FROM v2_production_works")) return { rows: [{ id: "ordinary-a" }] };
     if (sql.startsWith("SELECT * FROM v2_production_works")) return { rows: [predecessor] };
     if (sql.includes(" station_key FROM v2_production_works work")) return { rows: [{ station_key: "roll" }] };
@@ -204,6 +204,17 @@ test.each(["missing_unit", "incomplete_unit", "proof", "artwork"] as const)("Pre
   const f = fixture({ readiness });
   await expect(new PostgresPrepressTransaction(f.client).handoffToProduction(handoffInput)).rejects.toThrow();
   expect(f.durable()).toHaveLength(0);
+});
+
+test("Prepress refuses ambiguous current Artwork assignments before route or Production mutation", async () => {
+  const f = fixture({ ambiguousArtwork: true });
+  await expect(new PostgresPrepressTransaction(f.client).handoffToProduction(handoffInput)).rejects.toThrow("Every required unit must have one exact current Production Artwork assignment");
+  expect(f.calls.some(call => call.sql.startsWith("UPDATE v2_route_instances"))).toBe(false);
+  expect(f.calls.some(call => call.sql.startsWith("INSERT INTO v2_production_works"))).toBe(false);
+  const selection = f.calls.find(call => call.sql.includes("FROM v2_sales_line_production_requirements requirement"));
+  expect(selection?.sql).toContain("count(DISTINCT a.id)");
+  expect(selection?.sql).toContain("a.layer_key IS NOT DISTINCT FROM requirement.layer_key AND a.layer_order IS NOT DISTINCT FROM requirement.layer_order");
+  expect(selection?.sql).toContain("NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor");
 });
 
 test("Prepress downstream Production failure rolls back Routing advance on the same client", async () => {

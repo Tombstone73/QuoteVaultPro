@@ -12,7 +12,7 @@ const client = { query: async (sql: string) => {
   if (sql.includes("FROM v2_route_instances ri LEFT JOIN")) return { rows:[{id:"route-a",current_step_id:"prepress-step",revision:"4",step_kind:"prepress"}] };
   if (sql.startsWith("SELECT id,position,step_kind,production_destination_station_key")) return { rows:[{id:"prepress-step",position:1,step_kind:"prepress",production_destination_station_key:null},{id:"production-step",position:2,step_kind:"production",production_destination_station_key:"flatbed"}] };
   if (sql.includes("EXISTS(SELECT 1 FROM v2_proof_works")) return { rows:[{required:true,approved:true}] };
-  if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return { rows:[{assignment_id:"assignment-a"}] };
+  if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return { rows:[{assignment_id:"assignment-a",assignment_count:1}] };
   if (sql.startsWith("SELECT id FROM v2_production_works")) return { rows:[{id:"work-a"}] };
   return { rows:[] };
 } } as unknown as PoolClient;

@@ -81,6 +81,51 @@ export type ProductionRequirementCoverage = Readonly<{
   productionArtworkCovered: boolean;
   prepressComplete: boolean;
 }>;
+
+type PrepressArtworkIdentityReference = Readonly<{
+  artworkAssignmentId: string;
+  purpose: "customer_supplied" | "production";
+  side?: ArtworkSide;
+  sourcePageIndex?: number;
+  layerKey?: string;
+  layerOrder?: number;
+}>;
+
+export type PrepressProductionArtworkSelection<T extends PrepressArtworkIdentityReference = PrepressArtworkReference> =
+  | Readonly<{ kind: "selected"; artwork: T }>
+  | Readonly<{ kind: "none" | "missing" | "ambiguous" | "identity_mismatch" }>;
+
+/** Resolve only the current Artwork assignment identities attached to this exact requirement. */
+export const resolvePrepressProductionArtwork = <T extends PrepressArtworkIdentityReference>(
+  coverage: Readonly<{ requirement: ProductionUnitRequirement; artworkAssignmentIds: readonly string[]; productionArtworkCovered: boolean }>,
+  artwork: readonly T[],
+): PrepressProductionArtworkSelection<T> => {
+  const requirement = coverage.requirement;
+  const sameIdentity = (reference: PrepressArtworkIdentityReference) =>
+    reference.purpose === "production" &&
+    reference.side === requirement.side &&
+    reference.sourcePageIndex === requirement.sourcePageIndex &&
+    reference.layerKey === requirement.layerKey &&
+    reference.layerOrder === requirement.layerOrder;
+  const assignmentIds = [...new Set(coverage.artworkAssignmentIds)];
+  const identityMatches = artwork.filter(sameIdentity);
+
+  if (!assignmentIds.length) {
+    if (coverage.productionArtworkCovered) return { kind: "missing" };
+    if (identityMatches.length > 1) return { kind: "ambiguous" };
+    return identityMatches.length ? { kind: "identity_mismatch" } : { kind: "none" };
+  }
+  if (assignmentIds.length > 1) return { kind: "ambiguous" };
+
+  const matches = artwork.filter((reference) => reference.artworkAssignmentId === assignmentIds[0]);
+  if (!matches.length) return { kind: "missing" };
+  if (matches.length > 1) return { kind: "ambiguous" };
+  if (!sameIdentity(matches[0]!) || identityMatches.some((reference) => reference.artworkAssignmentId !== assignmentIds[0])) {
+    return { kind: "identity_mismatch" };
+  }
+  return { kind: "selected", artwork: matches[0]! };
+};
+
 export type OrderLinePrepressCoverage =
   | Readonly<{ state:"unconfigured"; requirements:readonly []; productionArtworkComplete:false; allRequiredPrepressUnitsComplete:false }>
   | Readonly<{ state:"configured"; requirements:readonly ProductionRequirementCoverage[]; productionArtworkComplete:boolean; allRequiredPrepressUnitsComplete:boolean }>;
@@ -96,6 +141,8 @@ export type PrepressArtworkReference = Readonly<{
   purpose: "customer_supplied" | "production";
   side?: ArtworkSide;
   sourcePageIndex?: number;
+  layerKey?: string;
+  layerOrder?: number;
   detectedWidthMicrons?: number;
   detectedHeightMicrons?: number;
 }>;

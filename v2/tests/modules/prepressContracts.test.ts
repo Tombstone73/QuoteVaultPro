@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { capabilityIds } from "../../src/authorization/capabilities.js";
-import { prepressUnitState, type PrepressUnit } from "../../src/modules/prepress/contracts.js";
+import { prepressUnitState, resolvePrepressProductionArtwork, type PrepressArtworkReference, type PrepressUnit, type ProductionRequirementCoverage } from "../../src/modules/prepress/contracts.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 
 const unit:PrepressUnit={prepressUnitId:brandedId<"PrepressUnitId">("unit"),organizationId:brandedId<"OrganizationId">("org"),orderId:brandedId<"OrderId">("order"),orderLineId:brandedId<"OrderLineId">("line"),artworkAssignmentId:brandedId<"ArtworkAssignmentId">("front"),artworkFileId:brandedId<"ArtworkFileId">("file"),side:"front",sourcePageIndex:0,layerKey:"ink",layerOrder:0,createdAt:"2026-08-16T00:00:00.000Z",createdPrincipalKind:"staff",createdPrincipalSubject:"staff"};
@@ -11,4 +11,15 @@ assert.equal("routeState" in unit,false,"Routing remains the only owner of route
 assert.equal("proofApproved" in unit,false,"Proof approval remains a Proofing fact.");
 assert.equal("productionStartedAt" in unit,false,"Production execution is not Prepress state.");
 assert.deepEqual(["prepress.view","prepress.work","prepress.complete"].every((x)=>capabilityIds.includes(x as typeof capabilityIds[number])),true,"Prepress uses narrow Permission Set capabilities.");
-console.log("[m2.2] Prepress contract tests passed (7 assertions).");
+const inkCoverage:ProductionRequirementCoverage={requirement:{key:"front-ink",side:"front",sourcePageIndex:0,layerKey:"ink",layerOrder:0},artworkAssignmentIds:[brandedId<"ArtworkAssignmentId">("assignment-ink")],prepressUnits:[],productionArtworkCovered:true,prepressComplete:false};
+const inkArtwork:PrepressArtworkReference={artworkAssignmentId:brandedId<"ArtworkAssignmentId">("assignment-ink"),artworkFileId:brandedId<"ArtworkFileId">("file-ink"),filename:"ink.pdf",contentType:"application/pdf",purpose:"production",side:"front",sourcePageIndex:0,layerKey:"ink",layerOrder:0};
+const varnishArtwork:PrepressArtworkReference={...inkArtwork,artworkAssignmentId:brandedId<"ArtworkAssignmentId">("assignment-varnish"),artworkFileId:brandedId<"ArtworkFileId">("file-varnish"),filename:"varnish.pdf",layerKey:"varnish",layerOrder:1};
+const exact=resolvePrepressProductionArtwork(inkCoverage,[varnishArtwork,inkArtwork]);
+assert.equal(exact.kind,"selected");
+if(exact.kind==="selected")assert.equal(exact.artwork.artworkAssignmentId,inkCoverage.artworkAssignmentIds[0],"the matching side/page layer must preserve the exact assignment as preview and predecessor");
+assert.equal(resolvePrepressProductionArtwork({...inkCoverage,artworkAssignmentIds:[...inkCoverage.artworkAssignmentIds,varnishArtwork.artworkAssignmentId]},[inkArtwork,varnishArtwork]).kind,"ambiguous","multiple current assignments for one exact slot fail closed");
+assert.equal(resolvePrepressProductionArtwork(inkCoverage,[varnishArtwork]).kind,"missing","a missing exact assignment reference cannot fall back to side/page");
+assert.equal(resolvePrepressProductionArtwork({...inkCoverage,artworkAssignmentIds:[brandedId<"ArtworkAssignmentId">("replaced-old") ]},[inkArtwork]).kind,"missing","a replaced historical assignment cannot become a preview or predecessor");
+assert.equal(resolvePrepressProductionArtwork(inkCoverage,[{...inkArtwork,layerKey:"varnish",layerOrder:1}]).kind,"identity_mismatch","a same-side/page reference with a different layer fails closed");
+assert.equal(resolvePrepressProductionArtwork({...inkCoverage,artworkAssignmentIds:[],productionArtworkCovered:false},[]).kind,"none","a genuinely unassigned requirement remains available for initial Artwork");
+console.log("[m2.2] Prepress contracts and exact Artwork identity tests passed.");

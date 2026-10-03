@@ -39,7 +39,7 @@ const fixture = (initialWorks: Work[] = [], failInsert = false) => {
         { id: "production-step", position: 2, step_kind: "production", production_destination_station_key: "flatbed" },
       ] };
       if (sql.includes("EXISTS(SELECT 1 FROM v2_proof_works")) return { rows: [{ required: true, approved: true }] };
-      if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return { rows: [{ assignment_id: assignmentId }] };
+      if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return { rows: [{ assignment_id: assignmentId, assignment_count: 1 }] };
       if (sql.startsWith("UPDATE v2_route_instances")) { routeStep = "production"; return { rows: [] }; }
       if (sql.startsWith("INSERT INTO v2_production_works")) {
         assert.match(sql, /ON CONFLICT\(organization_id,artwork_assignment_id\) WHERE rework_cycle_id IS NULL AND replacement_obligation_id IS NULL DO NOTHING/);

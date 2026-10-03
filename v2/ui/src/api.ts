@@ -1416,8 +1416,8 @@ export type PrepressQueueItem = Readonly<{
   operational?: Readonly<{
     expectedDimensions?: Readonly<{ width: string; height: string; unit: "in" | "ft" | "mm" }>;
     materials: readonly string[];
-    sourceArtwork: readonly Readonly<{ artworkAssignmentId: string; artworkFileId: string; filename: string; contentType: string; purpose: "customer_supplied" | "production"; side?: "front" | "back"; sourcePageIndex?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number }>[];
-    productionArtwork: readonly Readonly<{ artworkAssignmentId: string; artworkFileId: string; filename: string; contentType: string; purpose: "customer_supplied" | "production"; side?: "front" | "back"; sourcePageIndex?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number }>[];
+    sourceArtwork: readonly Readonly<{ artworkAssignmentId: string; artworkFileId: string; filename: string; contentType: string; purpose: "customer_supplied" | "production"; side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number }>[];
+    productionArtwork: readonly Readonly<{ artworkAssignmentId: string; artworkFileId: string; filename: string; contentType: string; purpose: "customer_supplied" | "production"; side?: "front" | "back"; sourcePageIndex?: number; layerKey?: string; layerOrder?: number; detectedWidthMicrons?: number; detectedHeightMicrons?: number }>[];
     proof: Readonly<{ required: boolean; state: "not_required" | "pending" | "approved" | "revision_requested" }>;
     productionDestination?: "flatbed" | "roll";
     readiness: Readonly<{ ready: boolean; blockers: readonly string[] }>;

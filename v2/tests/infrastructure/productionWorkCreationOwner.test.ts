@@ -93,7 +93,7 @@ const handoffFixture = (isRework = false, failInsert = false) => {
     if (sql.includes("FROM v2_route_instances ri LEFT JOIN")) return [{ id: "route-a", current_step_id: "prepress-step", step_kind: "prepress" }];
     if (sql.startsWith("SELECT id,position")) return [{ id: "prepress-step", position: 1, step_kind: "prepress" }, { id: "production-step", position: 2, step_kind: "production", production_destination_station_key: "flatbed" }];
     if (sql.includes("EXISTS(SELECT 1 FROM v2_proof_works")) return [{ required: true, approved: true }];
-    if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return [{ assignment_id: "art-a" }];
+    if (sql.includes("FROM v2_sales_line_production_requirements requirement")) return [{ assignment_id: "art-a", assignment_count: 1 }];
     if (sql.includes("FROM v2_production_rework_cycles")) return [cycle];
     if (sql.includes(" current FROM v2_current_artwork_assignments")) return [{ current: true }];
     if (sql.startsWith("INSERT INTO v2_production_works")) { if (failInsert) throw new Error("insert failed"); return isRework ? [{ id: "successor-a" }] : []; }

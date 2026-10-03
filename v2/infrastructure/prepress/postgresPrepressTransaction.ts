@@ -23,7 +23,7 @@ type OperationalLineRow={
   step_kind:"proofing"|"prepress"|"production"|"fulfillment"|null;production_requirement_state:"configured"|"unconfigured";resolved_configuration:unknown;
   requires_proof:boolean;production_destination:"flatbed"|"roll"|null;
 };
-type ArtworkReferenceRow={order_line_id:string;assignment_id:string;artwork_file_id:string;display_filename:string;content_type:string;purpose:"customer_supplied"|"production";side:"front"|"back"|null;source_page_index:number|null;detected_width_microns:number|null;detected_height_microns:number|null};
+type ArtworkReferenceRow={order_line_id:string;assignment_id:string;artwork_file_id:string;display_filename:string;content_type:string;purpose:"customer_supplied"|"production";side:"front"|"back"|null;source_page_index:number|null;layer_key:string|null;layer_order:number|null;detected_width_microns:number|null;detected_height_microns:number|null};
 type ProofRow={order_line_id:string;state:"approved"|"revision_requested"|"pending"};
 type MaterialRow={order_line_id:string;material_name_snapshot:string;material_sku_snapshot:string|null};
 
@@ -35,7 +35,7 @@ const expectedDimensions=(value:unknown):PrepressQueueItem["operational"]["expec
 };
 const artworkReference=(row:ArtworkReferenceRow):PrepressArtworkReference=>({
   artworkAssignmentId:brandedId<"ArtworkAssignmentId">(row.assignment_id),artworkFileId:brandedId<"ArtworkFileId">(row.artwork_file_id),filename:row.display_filename,contentType:row.content_type,purpose:row.purpose,
-  ...(row.side?{side:row.side}:{}),...(row.source_page_index===null?{}:{sourcePageIndex:row.source_page_index}),...(row.detected_width_microns===null?{}:{detectedWidthMicrons:row.detected_width_microns}),...(row.detected_height_microns===null?{}:{detectedHeightMicrons:row.detected_height_microns}),
+  ...(row.side?{side:row.side}:{}),...(row.source_page_index===null?{}:{sourcePageIndex:row.source_page_index}),...(row.layer_key===null?{}:{layerKey:row.layer_key}),...(row.layer_order===null?{}:{layerOrder:row.layer_order}),...(row.detected_width_microns===null?{}:{detectedWidthMicrons:row.detected_width_microns}),...(row.detected_height_microns===null?{}:{detectedHeightMicrons:row.detected_height_microns}),
 });
 const unit = (r:UnitRow):PrepressUnit => ({
   prepressUnitId:brandedId<"PrepressUnitId">(r.id), organizationId:brandedId<"OrganizationId">(r.organization_id), orderId:brandedId<"OrderId">(r.order_document_id), orderLineId:brandedId<"OrderLineId">(r.order_line_id), artworkAssignmentId:brandedId<"ArtworkAssignmentId">(r.artwork_assignment_id), artworkFileId:brandedId<"ArtworkFileId">(r.artwork_file_id),
@@ -115,7 +115,7 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
         LEFT JOIN v2_prepress_units pu ON pu.organization_id=a.organization_id AND pu.artwork_assignment_id=a.id
         LEFT JOIN v2_production_rework_cycles cycle ON cycle.organization_id=pu.organization_id AND cycle.id=pu.rework_cycle_id
         WHERE r.organization_id=$1 AND r.order_line_id=ANY($2::text[])`,[org,lineIds]),
-      this.client.query<ArtworkReferenceRow>(`SELECT a.order_line_id,a.id assignment_id,a.artwork_file_id,f.display_filename,f.content_type,a.purpose,a.side,a.source_page_index,f.detected_width_microns,f.detected_height_microns
+      this.client.query<ArtworkReferenceRow>(`SELECT a.order_line_id,a.id assignment_id,a.artwork_file_id,f.display_filename,f.content_type,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,f.detected_width_microns,f.detected_height_microns
         FROM v2_current_artwork_assignments a JOIN v2_artwork_files f ON f.organization_id=a.organization_id AND f.id=a.artwork_file_id
         WHERE a.organization_id=$1 AND a.order_line_id=ANY($2::text[]) AND a.purpose IN ('customer_supplied','production')
           AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id)
@@ -188,11 +188,11 @@ export class PostgresPrepressTransaction implements PrepressTransaction {
         const successor=await new PostgresSuccessorWorkCreation(this.client).createPrepressReworkWork({...input,artworkAssignmentId:prepared.artworkAssignmentId,reworkCycleId:prepared.reworkCycleId});
         return {kind:"rework",value:{unit:prepared,destination:successor.destination,productionWorkIds:[successor.productionWorkId]}};
       }
-      const assignments=await this.client.query<{assignment_id:string|null}>(`SELECT current_assignment.id assignment_id
-        FROM v2_sales_line_production_requirements requirement
-        LEFT JOIN LATERAL (SELECT a.id FROM v2_current_artwork_assignments a JOIN v2_prepress_units completed ON completed.organization_id=a.organization_id AND completed.artwork_assignment_id=a.id AND completed.completed_at IS NOT NULL WHERE a.organization_id=requirement.organization_id AND a.order_line_id=requirement.order_line_id AND a.purpose='production' AND a.side IS NOT DISTINCT FROM requirement.side AND a.source_page_index IS NOT DISTINCT FROM requirement.source_page_index AND a.layer_key IS NOT DISTINCT FROM requirement.layer_key AND a.layer_order IS NOT DISTINCT FROM requirement.layer_order AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id) LIMIT 1) current_assignment ON true
-        WHERE requirement.organization_id=$1 AND requirement.order_line_id=$2 ORDER BY requirement.requirement_key`,[input.organizationId,prepared.orderLineId]);
-      if(!assignments.rows.length||assignments.rows.some((row)=>!row.assignment_id))throw new Error("Every required current Production Artwork assignment must have completed Prepress evidence.");
+       const assignments=await this.client.query<{assignment_id:string|null;assignment_count:number}>(`SELECT current_assignment.assignment_id,current_assignment.assignment_count
+         FROM v2_sales_line_production_requirements requirement
+         LEFT JOIN LATERAL (SELECT CASE WHEN count(DISTINCT a.id)=1 THEN min(a.id) FILTER(WHERE completed.completed_at IS NOT NULL) END assignment_id,count(DISTINCT a.id)::int assignment_count FROM v2_current_artwork_assignments a LEFT JOIN v2_prepress_units completed ON completed.organization_id=a.organization_id AND completed.artwork_assignment_id=a.id WHERE a.organization_id=requirement.organization_id AND a.order_line_id=requirement.order_line_id AND a.purpose='production' AND a.side IS NOT DISTINCT FROM requirement.side AND a.source_page_index IS NOT DISTINCT FROM requirement.source_page_index AND a.layer_key IS NOT DISTINCT FROM requirement.layer_key AND a.layer_order IS NOT DISTINCT FROM requirement.layer_order AND NOT EXISTS(SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id)) current_assignment ON true
+         WHERE requirement.organization_id=$1 AND requirement.order_line_id=$2 ORDER BY requirement.requirement_key`,[input.organizationId,prepared.orderLineId]);
+       if(!assignments.rows.length||assignments.rows.some((row)=>row.assignment_count!==1||!row.assignment_id))throw new Error("Every required unit must have one exact current Production Artwork assignment with completed Prepress evidence.");
       return {kind:"ordinary",createWork:async()=>({unit:prepared,destination,productionWorkIds:await new PostgresSuccessorWorkCreation(this.client).createOrReadCompletedPrepressWork({...input,orderLineId:prepared.orderLineId,artworkAssignmentIds:assignments.rows.map(row=>brandedId<"ArtworkAssignmentId">(row.assignment_id!))})})};
     });
     return handoff.value;
