@@ -86,6 +86,13 @@ describe("order detail action contracts", () => {
     expect(detail).not.toContain('Shipment administration');
   });
 
+  test("places totals before fulfillment on desktop while preserving the existing mobile source order", () => {
+    expect(detail).toContain('xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]');
+    expect(detail).toContain('className="xl:order-2"');
+    expect(detail).toContain('className="h-fit xl:order-1"');
+    expect(detail).toContain('className="space-y-2 xl:order-3"');
+  });
+
   test("keeps structured internal-note removal tenant-scoped and auditable", () => {
     expect(detail).toContain('internal-notes/${encodeURIComponent(noteId)}');
     expect(detail).toContain('Delete internal note?');

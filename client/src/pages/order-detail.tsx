@@ -3100,9 +3100,10 @@ export default function OrderDetail() {
           </div>
 
           {/* Inline fulfillment and lower-order utilities */}
-          <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(280px,1fr)_minmax(240px,0.75fr)_minmax(320px,1fr)]">
+          <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]">
             {/* Fulfillment stays in the Order flow; detailed shipment work lives in Fulfillment. */}
             <Collapsible
+              className="xl:order-2"
               open={isFulfillmentExpanded || isEditingFulfillment}
               onOpenChange={(open) => {
                 setIsFulfillmentExpanded(open);
@@ -3601,7 +3602,7 @@ export default function OrderDetail() {
 
             <div className="contents">
               {/* Totals */}
-              <Card className="h-fit">
+              <Card className="h-fit xl:order-1">
                 <CardHeader className="px-4 py-3">
                   <CardTitle className="text-base font-medium">Totals</CardTitle>
                 </CardHeader>
@@ -3617,7 +3618,7 @@ export default function OrderDetail() {
                 </CardContent>
               </Card>
 
-            <div className="space-y-2">
+            <div className="space-y-2 xl:order-3">
             <OrderUtilitySection title="Order Documents" icon={<FileText className="h-4 w-4 text-muted-foreground" />}>
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="outline" size="sm" className="h-8 px-2" onClick={() => void handleOrderPdfAction("preview")} disabled={!canUseOrderPdf || isOrderPdfBusy !== null} aria-label="Preview Order" title="Preview Order">
