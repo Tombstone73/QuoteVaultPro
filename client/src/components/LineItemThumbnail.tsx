@@ -7,6 +7,7 @@ import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachm
 import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { getLineItemThumbnailUrl } from "@/lib/lineItemThumbnailUrl";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 
 type LineItemThumbnailProps = {
   /** Either quoteId (for quotes) or orderId (for orders) */
@@ -134,13 +135,23 @@ export function LineItemThumbnail({
       className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0"
       title={devTitle}
     >
-      {thumbSrc ? (
-        <img
-          src={thumbSrc}
+      {first.fileRecordId ? (
+        <AuthenticatedArtworkThumbnail
+          fileRecordId={first.fileRecordId}
           alt=""
           className="h-full w-full object-cover"
-          onError={() => setImageError(true)}
+          fallback={thumbSrc ? (
+            <img src={thumbSrc} alt="" className="h-full w-full object-cover" onError={() => setImageError(true)} />
+          ) : (
+            <div className="h-full w-full flex items-center justify-center relative">
+              <FileText className="h-5 w-5 text-muted-foreground" />
+              {isPending ? <div className="absolute right-0.5 top-0.5 rounded-full bg-amber-500/90 p-0.5" title="Generating thumbnail..."><Loader2 className="h-2.5 w-2.5 animate-spin text-white" /></div> : null}
+              {isPdf ? <div className="absolute bottom-1 right-1 rounded-sm bg-background/70 px-1 py-0.5 text-[10px] font-semibold text-foreground">PDF</div> : null}
+            </div>
+          )}
         />
+      ) : thumbSrc ? (
+        <img src={thumbSrc} alt="" className="h-full w-full object-cover" onError={() => setImageError(true)} />
       ) : (
         <div className="h-full w-full flex items-center justify-center relative">
           <FileText className="h-5 w-5 text-muted-foreground" />

@@ -62,6 +62,10 @@ describe("order detail action contracts", () => {
     expect(actions).toContain('showIcon={false}');
   });
 
+  test("uses the shared dark-mode secondary-action surface for the Order header", () => {
+    expect(detail).toContain("ORDER_DETAIL_SECONDARY_ACTION_CLASS");
+  });
+
   test("keeps identity and action controls in one responsive header region", () => {
     expect(detail).toContain('className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center"');
     expect(detail).toContain('aria-label="Order controls"');

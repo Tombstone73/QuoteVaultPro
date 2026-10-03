@@ -1,11 +1,13 @@
 import { useEffect, useState, type MouseEvent, type PointerEvent } from "react";
 import { FileText } from "lucide-react";
 
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import type { OrdersArtworkViewerTarget } from "@/lib/ordersArtworkViewer";
 
 type OrderLineItemArtworkPreviewProps = {
   lineNumber: number;
   thumbnailUrl: string;
+  fileRecordId?: string | null;
   totalCount: number;
   target: OrdersArtworkViewerTarget;
   onOpenArtwork: (target: OrdersArtworkViewerTarget) => void;
@@ -16,6 +18,7 @@ type OrderLineItemArtworkPreviewProps = {
 export function OrderLineItemArtworkPreview({
   lineNumber,
   thumbnailUrl,
+  fileRecordId,
   totalCount,
   target,
   onOpenArtwork,
@@ -44,13 +47,18 @@ export function OrderLineItemArtworkPreview({
       aria-label={`View artwork for Line ${lineNumber}`}
       title={`View artwork for Line ${lineNumber}`}
     >
-      {imageFailed ? (
-        <div className="absolute inset-0 flex items-center justify-center text-muted-foreground" title="Thumbnail unavailable">
-          <FileText className="h-6 w-6" aria-hidden="true" />
-        </div>
-      ) : (
-        <img src={thumbnailUrl} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-contain pointer-events-none" onError={() => setImageFailed(true)} />
-      )}
+      <AuthenticatedArtworkThumbnail
+        fileRecordId={fileRecordId}
+        alt=""
+        className="absolute inset-0 h-full w-full object-contain pointer-events-none"
+        fallback={imageFailed || fileRecordId ? (
+          <div className="absolute inset-0 flex items-center justify-center text-muted-foreground" title="Thumbnail unavailable">
+            <FileText className="h-6 w-6" aria-hidden="true" />
+          </div>
+        ) : (
+          <img src={thumbnailUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-contain pointer-events-none" onError={() => setImageFailed(true)} />
+        )}
+      />
       {overflowCount > 0 ? (
         <div
           className="absolute -top-1 -right-1 h-5 min-w-5 px-1 rounded-full bg-background/90 border border-border text-[11px] text-foreground flex items-center justify-center"

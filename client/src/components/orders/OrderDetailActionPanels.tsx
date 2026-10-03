@@ -2,6 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CompleteOrderButton, CompleteProductionButton } from "@/components/StateTransitionButtons";
+import { ORDER_DETAIL_SECONDARY_ACTION_CLASS } from "@/components/orders/orderDetailActionStyles";
 
 type MaybePromise = void | Promise<void>;
 
@@ -115,7 +116,7 @@ export function OrderDetailPrimaryActions({
           type="button"
           variant="outline"
           size="sm"
-          className="h-10 rounded-md px-3 text-xs font-semibold"
+          className={ORDER_DETAIL_SECONDARY_ACTION_CLASS}
           onClick={onDuplicateOrder}
           disabled={isDuplicatingOrder}
           title="Creates a new order with the same commercial configuration. Historical operations are not copied."

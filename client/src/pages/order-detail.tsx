@@ -84,6 +84,7 @@ import {
   OrderDetailPrimaryActions,
   OrderDetailSecondaryActions,
 } from "@/components/orders/OrderDetailActionPanels";
+import { ORDER_DETAIL_SECONDARY_ACTION_CLASS } from "@/components/orders/orderDetailActionStyles";
 import { orchestrateOrderSave } from "@/pages/orderSaveOrchestration";
 import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
@@ -2293,7 +2294,7 @@ export default function OrderDetail() {
 
             <div className="flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto" aria-label="Order controls">
             {isOrderEditRoute && (
-              <Button asChild variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
+              <Button asChild variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS}>
                 <Link to={orderDetailPath} state={location.state}>
                   View Order
                 </Link>
@@ -2301,17 +2302,17 @@ export default function OrderDetail() {
             )}
 
             {!isInvoicesLoading && orderInvoices.length === 1 ? (
-              <Button asChild type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
+              <Button asChild type="button" variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS}>
                 <Link to={`/invoices/${orderInvoices[0].id}`}>
                   Invoice
                 </Link>
               </Button>
             ) : !isInvoicesLoading && orderInvoices.length > 1 ? (
-              <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={() => setOrderInvoiceSelectorOpen(true)}>
+              <Button type="button" variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS} onClick={() => setOrderInvoiceSelectorOpen(true)}>
                 Invoices
               </Button>
             ) : !isInvoicesLoading && isAdminOrOwner && canCreateInvoiceFromOrder ? (
-              <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
+              <Button type="button" variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS} onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
                 {createOrderInvoice.isPending ? "Creating…" : "Create Invoice"}
               </Button>
             ) : null}
@@ -2320,14 +2321,14 @@ export default function OrderDetail() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-10 rounded-md px-3 text-xs font-semibold"
+              className={ORDER_DETAIL_SECONDARY_ACTION_CLASS}
               onClick={() => guardedNavigate(ROUTES.fulfillment.order(order.id), {
                 state: { referrer: buildReferrer(location), orderReturnState: location.state },
               })}
             >
               Fulfillment
             </Button>
-            {!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler" showIcon={false} className="h-10 rounded-md px-3 text-xs font-semibold" />}
+            {!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler" showIcon={false} className={ORDER_DETAIL_SECONDARY_ACTION_CLASS} />}
 
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}

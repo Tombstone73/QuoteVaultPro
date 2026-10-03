@@ -3144,6 +3144,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     <OrderLineItemArtworkPreview
                       lineNumber={lineNumber}
                       thumbnailUrl={heroThumbUrls[0]}
+                      fileRecordId={previewTargets[0]?.fileRecordId ?? (attachmentsForThumb[0] as any)?.fileRecordId ?? null}
                       totalCount={heroTotalCount}
                       target={{
                         fileRecordId: previewTargets[0]?.fileRecordId ?? (attachmentsForThumb[0] as any)?.fileRecordId ?? null,
@@ -3198,6 +3199,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                             key={`${target.fileRecordId}-${index}`}
                             lineNumber={lineNumber}
                             thumbnailUrl={thumbnailUrl}
+                            fileRecordId={target.fileRecordId}
                             totalCount={1}
                             size="expanded"
                             target={{ fileRecordId: target.fileRecordId, artworkId: target.artworkId, thumbnailUrl }}

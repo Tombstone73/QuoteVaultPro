@@ -1,8 +1,13 @@
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { OrderLineItemArtworkPreview } from "./OrderLineItemArtworkPreview";
+
+jest.mock("@/components/artwork/AuthenticatedArtworkThumbnail", () => ({
+  AuthenticatedArtworkThumbnail: ({ fileRecordId, fallback }: { fileRecordId?: string | null; fallback: ReactNode }) =>
+    fileRecordId ? <img data-authenticated-file-record-id={fileRecordId} alt="" /> : <>{fallback}</>,
+}));
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,6 +26,7 @@ describe("OrderLineItemArtworkPreview", () => {
             <OrderLineItemArtworkPreview
               lineNumber={3}
               thumbnailUrl="https://signed.example.test/thumb?expires=old"
+              fileRecordId="canonical-file-3"
               totalCount={2}
               target={{ fileRecordId: "canonical-file-3", artworkId: "artwork-assignment-3", attachmentId: "legacy-attachment-3" }}
               onOpenArtwork={openArtwork}
@@ -40,13 +46,14 @@ describe("OrderLineItemArtworkPreview", () => {
         attachmentId: "legacy-attachment-3",
       });
       expect(navigateParent).not.toHaveBeenCalled();
+      expect(host.querySelector('[data-authenticated-file-record-id="canonical-file-3"]')).toBeTruthy();
     } finally {
       await act(async () => root.unmount());
       host.remove();
     }
   });
 
-  test("uses a lazy derivative image and falls back safely when it cannot render", async () => {
+  test("uses the authenticated thumbnail reader for a canonical file record", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -57,6 +64,7 @@ describe("OrderLineItemArtworkPreview", () => {
           <OrderLineItemArtworkPreview
             lineNumber={4}
             thumbnailUrl="/api/artwork/file-records/file-4/content?variant=thumbnail"
+            fileRecordId="file-4"
             totalCount={1}
             size="expanded"
             target={{ fileRecordId: "file-4" }}
@@ -65,15 +73,7 @@ describe("OrderLineItemArtworkPreview", () => {
         );
       });
 
-      const image = host.querySelector("img") as HTMLImageElement;
-      expect(image.getAttribute("loading")).toBe("lazy");
-      expect(image.src).toContain("variant=thumbnail");
-
-      await act(async () => {
-        image.dispatchEvent(new Event("error", { bubbles: true }));
-      });
-      expect(host.querySelector("img")).toBeNull();
-      expect(host.querySelector("svg")).toBeTruthy();
+      expect(host.querySelector('[data-authenticated-file-record-id="file-4"]')).toBeTruthy();
     } finally {
       await act(async () => root.unmount());
       host.remove();
