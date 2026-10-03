@@ -2255,8 +2255,8 @@ export default function OrderDetail() {
     <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
       <div className="w-full max-w-none">
         <header className="mb-5 border-b border-border/60 pb-3">
-          <div className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.65fr)_minmax(0,1.35fr)] xl:items-center">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 xl:shrink-0">
             <BackNavControls
               onBack={() => guardedNavigate(orderBackPath)}
               onSectionHome={() => guardedNavigate("/orders")}
@@ -2291,7 +2291,7 @@ export default function OrderDetail() {
             />
           </div>
 
-            <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:justify-end" aria-label="Order controls">
+            <div className="flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto" aria-label="Order controls">
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
                 <Link to={orderDetailPath} state={location.state}>
@@ -2303,18 +2303,15 @@ export default function OrderDetail() {
             {!isInvoicesLoading && orderInvoices.length === 1 ? (
               <Button asChild type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold">
                 <Link to={`/invoices/${orderInvoices[0].id}`}>
-                  <FileText className="mr-1.5 h-4 w-4" />
                   Invoice
                 </Link>
               </Button>
             ) : !isInvoicesLoading && orderInvoices.length > 1 ? (
               <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={() => setOrderInvoiceSelectorOpen(true)}>
-                <FileText className="mr-1.5 h-4 w-4" />
                 Invoices
               </Button>
             ) : !isInvoicesLoading && isAdminOrOwner && canCreateInvoiceFromOrder ? (
               <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>
-                <FileText className="mr-1.5 h-4 w-4" />
                 {createOrderInvoice.isPending ? "Creating…" : "Create Invoice"}
               </Button>
             ) : null}
@@ -2328,10 +2325,9 @@ export default function OrderDetail() {
                 state: { referrer: buildReferrer(location), orderReturnState: location.state },
               })}
             >
-              <Truck className="mr-1.5 h-4 w-4" />
               Fulfillment
             </Button>
-            {!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler" className="h-10 rounded-md px-3 text-xs font-semibold" />}
+            {!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler" showIcon={false} className="h-10 rounded-md px-3 text-xs font-semibold" />}
 
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}

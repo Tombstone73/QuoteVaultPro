@@ -2,7 +2,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CompleteOrderButton, CompleteProductionButton } from "@/components/StateTransitionButtons";
-import { Ban, Check, Copy } from "lucide-react";
 
 type MaybePromise = void | Promise<void>;
 
@@ -70,7 +69,7 @@ export function OrderDetailPrimaryActions({
             {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save Order"}
           </Button>
           <Button
-            variant="secondary"
+            variant="default"
             size="sm"
             onClick={() => void onSaveAndRoute()}
             disabled={isUpdatingOrder || isSavingOrder}
@@ -101,16 +100,15 @@ export function OrderDetailPrimaryActions({
           disabled={isTransitioningStatus}
             className="h-10 rounded-md bg-green-600 px-3 text-xs font-semibold text-white hover:bg-green-700"
         >
-          <Check className="w-4 h-4 mr-2" />
           Mark Completed
         </Button>
       )}
 
       {canCompleteProduction && (
-        <CompleteProductionButton orderId={orderId} className="h-10 rounded-md px-3 text-xs font-semibold" />
+        <CompleteProductionButton orderId={orderId} showIcon={false} className="h-10 rounded-md px-3 text-xs font-semibold" />
       )}
 
-      {canCompleteOrder && <CompleteOrderButton orderId={orderId} className="h-10 rounded-md px-3 text-xs font-semibold" />}
+      {canCompleteOrder && <CompleteOrderButton orderId={orderId} showIcon={false} className="h-10 rounded-md px-3 text-xs font-semibold" />}
 
       {canDuplicateOrder ? (
         <Button
@@ -122,7 +120,6 @@ export function OrderDetailPrimaryActions({
           disabled={isDuplicatingOrder}
           title="Creates a new order with the same commercial configuration. Historical operations are not copied."
         >
-          <Copy className="mr-1.5 h-4 w-4" />
           {isDuplicatingOrder ? "Duplicating..." : "Duplicate Order"}
         </Button>
       ) : null}
@@ -142,7 +139,6 @@ export function OrderDetailPrimaryActions({
               onClick={onCancelOrder}
               disabled
             >
-              <Ban className="mr-1.5 h-4 w-4" />
               Cancel Order
             </Button>
           </span>
@@ -155,7 +151,6 @@ export function OrderDetailPrimaryActions({
           onClick={onCancelOrder}
           disabled={isCancelingOrder}
         >
-          <Ban className="mr-1.5 h-4 w-4" />
           {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
         </Button>
         )

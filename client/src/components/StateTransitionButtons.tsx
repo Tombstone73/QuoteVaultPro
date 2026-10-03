@@ -27,9 +27,10 @@ interface CompleteProductionButtonProps {
   orderId: string;
   disabled?: boolean;
   className?: string;
+  showIcon?: boolean;
 }
 
-export function CompleteProductionButton({ orderId, disabled, className }: CompleteProductionButtonProps) {
+export function CompleteProductionButton({ orderId, disabled, className, showIcon = true }: CompleteProductionButtonProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [bypassConfirmation, setBypassConfirmation] = useState<Array<{ lineItemId: string; lineLabel: string; stages: string[] }> | null>(null);
   const queryClient = useQueryClient();
@@ -101,7 +102,7 @@ export function CompleteProductionButton({ orderId, disabled, className }: Compl
         variant="default"
         className={`bg-purple-600 hover:bg-purple-700 ${className ?? ""}`}
       >
-        <CheckCircle2 className="mr-2 h-4 w-4" />
+        {showIcon ? <CheckCircle2 className="mr-2 h-4 w-4" /> : null}
         {isProcessing ? 'Completing...' : 'Complete Production'}
       </Button>
       <Dialog open={bypassConfirmation !== null} onOpenChange={(open) => { if (!open && !isProcessing) setBypassConfirmation(null); }}>
@@ -147,9 +148,10 @@ interface CompleteOrderButtonProps {
   orderId: string;
   disabled?: boolean;
   className?: string;
+  showIcon?: boolean;
 }
 
-export function CompleteOrderButton({ orderId, disabled, className }: CompleteOrderButtonProps) {
+export function CompleteOrderButton({ orderId, disabled, className, showIcon = true }: CompleteOrderButtonProps) {
   const [showDialog, setShowDialog] = useState(false);
   const [notes, setNotes] = useState('');
   const completeOrder = useCompleteOrder(orderId);
@@ -157,7 +159,7 @@ export function CompleteOrderButton({ orderId, disabled, className }: CompleteOr
   return (
     <>
       <Button onClick={() => setShowDialog(true)} disabled={disabled} variant="default" className={className}>
-        <CheckCircle2 className="mr-2 h-4 w-4" />
+        {showIcon ? <CheckCircle2 className="mr-2 h-4 w-4" /> : null}
         Complete Order
       </Button>
       <Dialog open={showDialog} onOpenChange={setShowDialog}>

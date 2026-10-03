@@ -31,6 +31,8 @@ interface PrintTicketButtonBaseProps {
   asMenuItem?: boolean;
   /** Render an icon-only button (compact, for table row action cells). */
   iconOnly?: boolean;
+  /** Keep a text action visually compact when it sits in a shared action strip. */
+  showIcon?: boolean;
   className?: string;
 }
 
@@ -54,6 +56,7 @@ export function PrintTicketButton({
   label,
   asMenuItem = false,
   iconOnly = false,
+  showIcon = true,
   variant = "outline",
   size = "sm",
   className,
@@ -86,7 +89,7 @@ export function PrintTicketButton({
   }
 
   return <><Button variant={variant} size={size} className={className} onClick={open}>
-      <Ticket className="mr-1.5 h-4 w-4" />
+      {showIcon ? <Ticket className="mr-1.5 h-4 w-4" /> : null}
       {text}
     </Button>{orderId && <TravelerPrintDialog orderId={orderId} open={travelerOpen} onOpenChange={setTravelerOpen} />}</>;
 }

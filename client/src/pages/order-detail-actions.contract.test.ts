@@ -36,6 +36,7 @@ describe("order detail action contracts", () => {
   test("reuses one Traveler button before the fulfillment-method-specific content", () => {
     expect(detail.match(/<PrintTicketButton\b/g)).toHaveLength(1);
     expect(detail).toContain('{!orderIsCanceled && <PrintTicketButton orderId={order.id} label="Print Traveler"');
+    expect(detail).toContain('label="Print Traveler" showIcon={false}');
     expect(detail.indexOf("<PrintTicketButton")).toBeLessThan(detail.indexOf("currentFulfillmentMethod !== \"pickup\""));
   });
 
@@ -52,11 +53,20 @@ describe("order detail action contracts", () => {
     expect(detail).not.toContain('Take Payment');
   });
 
+  test("keeps header action controls text-first without inline action icons", () => {
+    const actionStart = detail.indexOf('aria-label="Order controls"');
+    const actionEnd = detail.indexOf('</header>', actionStart);
+    const actions = detail.slice(actionStart, actionEnd);
+    expect(actions).not.toContain('<FileText');
+    expect(actions).not.toContain('<Truck');
+    expect(actions).toContain('showIcon={false}');
+  });
+
   test("keeps identity and action controls in one responsive header region", () => {
-    expect(detail).toContain('className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.65fr)_minmax(0,1.35fr)] xl:items-center"');
+    expect(detail).toContain('className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center"');
     expect(detail).toContain('aria-label="Order controls"');
-    expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:justify-end"');
-    expect(detail).not.toContain('className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"');
+    expect(detail).toContain('className="flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto"');
+    expect(detail).not.toContain('xl:grid-cols-[minmax(0,0.65fr)_minmax(0,1.35fr)]');
   });
 
   test("keeps specialist Order controls reachable through compact disclosure", () => {
