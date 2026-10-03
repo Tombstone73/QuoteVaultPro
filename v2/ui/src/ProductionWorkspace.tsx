@@ -17,7 +17,178 @@ import { ProductionDailyReport } from "./ProductionDailyReport";
 
 type Station = "flatbed" | "roll";
 type ProductionView = "overview" | "board" | "calendar" | "stations" | "daily-report";
+type PendingProductionOutput = Readonly<{
+  organizationId: string;
+  sessionScope: string;
+  productionAttemptId: string;
+  businessRequestId: string;
+  submittedAt: string;
+  input: Readonly<{ goodQuantityDelta: number; wasteQuantityDelta: number }>;
+}>;
+type OutputRecoveryReason = "scope-mismatch" | "other-handler" | "other-organization" | "storage-unavailable" | "malformed" | "persist-failed" | "cleanup-failed" | "owner-refresh-failed";
+type OutputRecovery =
+  | Readonly<{ status: "ready"; organizationId: string; sessionScope: string }>
+  | Readonly<{ status: "pending"; organizationId: string; sessionScope: string; submission: PendingProductionOutput }>
+  | Readonly<{ status: "blocked"; organizationId: string; sessionScope: string; reason: OutputRecoveryReason }>;
 
+const outputPresenceKey = "ph.v2.production.pending-output-presence";
+const outputIntentChangedEvent = "ph.v2.production.output-intent-changed";
+const ordinaryOutputPrefix = "ph.v2.production.pending-output.";
+const runOutputPrefix = "ph.v2.production.pending-run-output.";
+type OutputFenceHost = typeof globalThis & { __phV2ProductionOutputFences?: Map<string, OutputRecoveryReason> };
+const outputFences = ((globalThis as OutputFenceHost).__phV2ProductionOutputFences ??= new Map());
+const outputFenceKey = (organizationId: string, sessionScope: string) => `${organizationId}\u0000${sessionScope}`;
+const outputFenceForOrganization = (organizationId: string) => [...outputFences].find(([key]) => key.startsWith(`${organizationId}\u0000`))?.[1];
+const clearOutputFencesForOrganization = (organizationId: string) => { for (const key of outputFences.keys()) if (key.startsWith(`${organizationId}\u0000`)) outputFences.delete(key); };
+const notifyOutputIntentChanged = () => { if (typeof window !== "undefined") window.dispatchEvent(new Event(outputIntentChangedEvent)); };
+const outputIntentKeys = () => {
+  const keys: string[] = [];
+  for (let index = 0; index < sessionStorage.length; index++) {
+    const key = sessionStorage.key(index);
+    if (key?.startsWith(ordinaryOutputPrefix) || key?.startsWith(runOutputPrefix)) keys.push(key);
+  }
+  return keys;
+};
+const outputIntentOrganization = (key: string) => {
+  const prefix = key.startsWith(ordinaryOutputPrefix) ? ordinaryOutputPrefix : key.startsWith(runOutputPrefix) ? runOutputPrefix : "";
+  return prefix ? key.slice(prefix.length).split(".", 1)[0] ?? "" : "";
+};
+const exactKeys = (value: unknown, keys: readonly string[]) => typeof value === "object" && value !== null && !Array.isArray(value) &&
+  Object.keys(value).sort().join("\u0000") === [...keys].sort().join("\u0000");
+const pendingProductionOutputKey = (organizationId: string, sessionScope: string) => `${ordinaryOutputPrefix}${organizationId}.${sessionScope}`;
+const parsePendingProductionOutput = (raw: string, organizationId: string, sessionScope: string): PendingProductionOutput | null => {
+  try {
+    const value = JSON.parse(raw) as Partial<PendingProductionOutput> | null;
+    if (!value || !exactKeys(value, ["organizationId", "sessionScope", "productionAttemptId", "businessRequestId", "submittedAt", "input"])) return null;
+    const input = value.input, good = input?.goodQuantityDelta, waste = input?.wasteQuantityDelta;
+    if (typeof value.organizationId !== "string" || value.organizationId !== organizationId || typeof value.sessionScope !== "string" || value.sessionScope !== sessionScope ||
+      typeof value.productionAttemptId !== "string" || !value.productionAttemptId || typeof value.businessRequestId !== "string" || !value.businessRequestId ||
+      typeof value.submittedAt !== "string" || !Number.isFinite(Date.parse(value.submittedAt)) || new Date(value.submittedAt).toISOString() !== value.submittedAt ||
+      !exactKeys(input, ["goodQuantityDelta", "wasteQuantityDelta"]) || typeof good !== "number" || !Number.isSafeInteger(good) || good < 0 ||
+      typeof waste !== "number" || !Number.isSafeInteger(waste) || waste < 0 || (good === 0 && waste === 0)) return null;
+    const canonical: PendingProductionOutput = Object.freeze({
+      organizationId, sessionScope, productionAttemptId: value.productionAttemptId, businessRequestId: value.businessRequestId,
+      submittedAt: value.submittedAt, input: Object.freeze({ goodQuantityDelta: good, wasteQuantityDelta: waste }),
+    });
+    return JSON.stringify(canonical) === raw ? canonical : null;
+  } catch { return null; }
+};
+const blockedOutputRecovery = (organizationId: string, sessionScope: string, reason: OutputRecoveryReason): OutputRecovery => ({ status: "blocked", organizationId, sessionScope, reason });
+const readPendingProductionOutput = (organizationId: string, sessionScope: string): OutputRecovery => {
+  const owner = { organizationId, sessionScope }, fenceKey = outputFenceKey(organizationId, sessionScope);
+  const fenced = outputFences.get(fenceKey) ?? outputFenceForOrganization(organizationId);
+  if (fenced) return blockedOutputRecovery(organizationId, sessionScope, fenced);
+  try {
+    const marker = sessionStorage.getItem(outputPresenceKey);
+    if (marker !== null && marker !== organizationId) return blockedOutputRecovery(organizationId, sessionScope, "other-organization");
+    const keys = outputIntentKeys();
+    if (keys.length === 0) {
+      if (marker === organizationId) return blockedOutputRecovery(organizationId, sessionScope, "malformed");
+      return { status: "ready", ...owner };
+    }
+    if (keys.length !== 1) return blockedOutputRecovery(organizationId, sessionScope, "malformed");
+    const key = keys[0]!;
+    const intentOrganization = outputIntentOrganization(key);
+    if (marker === null) {
+      if (!intentOrganization) return blockedOutputRecovery(organizationId, sessionScope, "malformed");
+      sessionStorage.setItem(outputPresenceKey, intentOrganization);
+      if (sessionStorage.getItem(outputPresenceKey) !== intentOrganization) return blockedOutputRecovery(organizationId, sessionScope, "storage-unavailable");
+    }
+    if (intentOrganization !== organizationId) return blockedOutputRecovery(organizationId, sessionScope, "other-organization");
+    if (key !== pendingProductionOutputKey(organizationId, sessionScope)) return blockedOutputRecovery(organizationId, sessionScope, key === `${runOutputPrefix}${organizationId}.${sessionScope}` ? "other-handler" : "scope-mismatch");
+    const raw = sessionStorage.getItem(key);
+    if (raw === null) return blockedOutputRecovery(organizationId, sessionScope, "malformed");
+    const submission = parsePendingProductionOutput(raw, organizationId, sessionScope);
+    if (!submission) return blockedOutputRecovery(organizationId, sessionScope, "malformed");
+    return { status: "pending", ...owner, submission };
+  } catch {
+    outputFences.set(fenceKey, "storage-unavailable");
+    return blockedOutputRecovery(organizationId, sessionScope, "storage-unavailable");
+  }
+};
+const persistPendingProductionOutput = (submission: PendingProductionOutput): PendingProductionOutput | null => {
+  const { organizationId, sessionScope } = submission, key = pendingProductionOutputKey(organizationId, sessionScope), fenceKey = outputFenceKey(organizationId, sessionScope);
+  try {
+    if (readPendingProductionOutput(organizationId, sessionScope).status !== "ready" || sessionStorage.getItem(outputPresenceKey) !== null || outputIntentKeys().length !== 0) throw Error("Existing or unreadable output intent.");
+    const serialized = JSON.stringify(submission);
+    sessionStorage.setItem(outputPresenceKey, organizationId);
+    if (sessionStorage.getItem(outputPresenceKey) !== organizationId) throw Error("Output presence marker readback failed.");
+    sessionStorage.setItem(key, serialized);
+    const readback = sessionStorage.getItem(key);
+    if (readback !== serialized || !readback || !parsePendingProductionOutput(readback, organizationId, sessionScope) || outputIntentKeys().length !== 1 || outputIntentKeys()[0] !== key) throw Error("Saved output request readback failed.");
+    const verified = parsePendingProductionOutput(readback, organizationId, sessionScope);
+    if (!verified) throw Error("Saved output request did not parse canonically.");
+    notifyOutputIntentChanged();
+    return verified;
+  } catch {
+    outputFences.set(fenceKey, "persist-failed");
+    notifyOutputIntentChanged();
+    return null;
+  }
+};
+const clearProductionOutputIntentsAfterRefresh = (organizationId: string): boolean => {
+  try {
+    const marker = sessionStorage.getItem(outputPresenceKey), keys = outputIntentKeys();
+    if (marker !== null && marker !== organizationId) return false;
+    if (keys.some(key => outputIntentOrganization(key) !== organizationId)) return false;
+    for (const key of keys) {
+      sessionStorage.removeItem(key);
+      if (sessionStorage.getItem(key) !== null) return false;
+    }
+    if (outputIntentKeys().length !== 0) return false;
+    if (marker === organizationId) {
+      sessionStorage.removeItem(outputPresenceKey);
+      if (sessionStorage.getItem(outputPresenceKey) !== null) return false;
+    }
+    return true;
+  } catch { return false; }
+};
+const clearConfirmedProductionOutput = (submission: PendingProductionOutput): boolean => {
+  try {
+    const key = pendingProductionOutputKey(submission.organizationId, submission.sessionScope), raw = sessionStorage.getItem(key);
+    if (sessionStorage.getItem(outputPresenceKey) !== submission.organizationId || !raw || JSON.stringify(parsePendingProductionOutput(raw, submission.organizationId, submission.sessionScope)) !== JSON.stringify(submission)) return false;
+    const keys = outputIntentKeys();
+    if (keys.length !== 1 || keys[0] !== key) return false;
+    sessionStorage.removeItem(key);
+    if (sessionStorage.getItem(key) !== null || outputIntentKeys().length !== 0) return false;
+    sessionStorage.removeItem(outputPresenceKey);
+    return sessionStorage.getItem(outputPresenceKey) === null;
+  } catch { return false; }
+};
+const refreshProductionOwnerViews = async (organizationId: string, exactWorkId?: string) => {
+  const stations = ["flatbed", "roll"] as const;
+  await Promise.all([
+    ...stations.map(async station => {
+      const first = await productionApi.queue(organizationId, station, { page: 1, pageSize: 100 });
+      await Promise.all(Array.from({ length: Math.max(0, first.pagination.totalPages - 1) }, (_, index) => productionApi.queue(organizationId, station, { page: index + 2, pageSize: 100 })));
+    }),
+    ...stations.map(station => productionApi.runs(organizationId, station)),
+    ...(exactWorkId ? [productionApi.get(organizationId, exactWorkId)] : []),
+  ]);
+};
+
+const productionErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error && typeof (error as { message?: unknown }).message === "string") return (error as { message: string }).message;
+  return "The output response could not be confirmed.";
+};
+const isDefiniteProductionOutputRejection = (error: unknown) => typeof error === "object" && error !== null && "code" in error &&
+  ["CONFLICT", "FORBIDDEN", "NOT_FOUND", "VALIDATION_ERROR"].includes(String((error as { code?: unknown }).code));
+const outputRecoveryMessage = (reason: OutputRecoveryReason) => reason === "other-organization"
+  ? "A saved Production output intent belongs to another organization. Its details are hidden; return to that owner scope before output can resume."
+  : reason === "other-handler"
+    ? "A Run output intent is pending. Use the Runs workspace to retry or reconcile; ordinary output is blocked."
+  : reason === "scope-mismatch"
+    ? "A saved Production output intent belongs to another session. Its details are hidden; refresh Production state to reconcile before output can resume."
+    : reason === "malformed"
+      ? "The saved Production output intent is missing or malformed. No new output was sent; refresh Production state to reconcile before output can resume."
+      : reason === "storage-unavailable"
+        ? "Session storage could not verify the Production output intent. No new output was sent; refresh Production state to reconcile before output can resume."
+        : reason === "persist-failed"
+          ? "The exact Production output request could not be saved and verified. No output request was sent; refresh Production state to reconcile before output can resume."
+          : reason === "owner-refresh-failed"
+            ? "Production owner state could not be refreshed. Output remains blocked until reconciliation succeeds."
+            : "The saved Production output intent could not be safely cleared. Output remains blocked until reconciliation succeeds.";
 const keys = {
   queue: (scope: string, organizationId: string, station: Station) =>
     ["v2", scope, organizationId, "production", station, "queue"] as const,
@@ -518,8 +689,20 @@ export const ProductionWorkspace = ({
   const [selectedWorkId, setSelectedWorkId] = useState("");
   const [goodQuantity, setGoodQuantity] = useState("1");
   const [wasteQuantity, setWasteQuantity] = useState("0");
+  const [outputRecovery, setOutputRecovery] = useState<OutputRecovery>(() => readPendingProductionOutput(organizationId, sessionScope));
+  const [outputRecoveryBusy, setOutputRecoveryBusy] = useState(false);
   const [queueState, setQueueState] = useState<Record<Station, { page: number; pageSize: 25 | 50 | 100; search: string }>>({ flatbed: { page: 1, pageSize: 25, search: "" }, roll: { page: 1, pageSize: 25, search: "" } });
   const queryClient = useQueryClient();
+  const outputRecoveryScopeMatches = outputRecovery.organizationId === organizationId && outputRecovery.sessionScope === sessionScope;
+  const outputRecoveryBlocked = !outputRecoveryScopeMatches || outputRecovery.status === "blocked" || outputRecovery.status === "pending";
+  const outputFieldsHidden = !outputRecoveryScopeMatches || outputRecovery.status === "blocked";
+  const pendingOutput = outputRecoveryScopeMatches && outputRecovery.status === "pending" ? outputRecovery.submission : null;
+  useEffect(() => {
+    const refreshRecovery = () => setOutputRecovery(readPendingProductionOutput(organizationId, sessionScope));
+    window.addEventListener(outputIntentChangedEvent, refreshRecovery);
+    refreshRecovery();
+    return () => window.removeEventListener(outputIntentChangedEvent, refreshRecovery);
+  }, [organizationId, sessionScope]);
   const canRead = Boolean(organizationId && sessionScope && canView);
   const canReadQueues = canRead && view !== "daily-report";
   const flatbedQueue = useQuery({
@@ -562,9 +745,12 @@ export const ProductionWorkspace = ({
       setSelectedWorkId(queue.data.items[0].work.productionWorkId);
   }, [queue.data, selectedWorkId, view]);
 
-  const work = routedProductionWorkId
+  const scopedWork = routedProductionWorkId
     ? routedWork.data
     : queue.data?.items.find((item) => item.work.productionWorkId === selectedWorkId);
+  const showRunRecovery = outputRecoveryScopeMatches && outputRecovery.status === "blocked" && outputRecovery.reason === "other-handler" && stationSurface === "runs";
+  const hideStationOutputDetails = outputFieldsHidden && !showRunRecovery;
+  const work = outputFieldsHidden ? undefined : scopedWork;
   const activeAttempt = work?.activeAttempt ?? work?.attempts.find((attempt) => !attempt.completedAt);
   const mostRecentAttempt = work?.attempts[work.attempts.length - 1];
   const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? station;
@@ -578,18 +764,16 @@ export const ProductionWorkspace = ({
   }, [activeAttempt?.productionAttemptId, remainingGoodQuantity]);
 
   const outputDeltas = () => {
-    const parsedGood = Number.parseInt(goodQuantity, 10);
-    const parsedWaste = Number.parseInt(wasteQuantity, 10);
     return {
-      goodQuantityDelta: Number.isSafeInteger(parsedGood) && parsedGood > 0 && remainingGoodQuantity > 0
-        ? Math.min(remainingGoodQuantity, parsedGood)
-        : 0,
-      wasteQuantityDelta: Number.isSafeInteger(parsedWaste) && parsedWaste > 0 ? parsedWaste : 0,
+      goodQuantityDelta: Number(goodQuantity),
+      wasteQuantityDelta: Number(wasteQuantity),
     };
   };
   const hasOutput = (() => {
     const input = outputDeltas();
-    return input.goodQuantityDelta > 0 || input.wasteQuantityDelta > 0;
+    return Number.isSafeInteger(input.goodQuantityDelta) && input.goodQuantityDelta >= 0 &&
+      Number.isSafeInteger(input.wasteQuantityDelta) && input.wasteQuantityDelta >= 0 &&
+      (input.goodQuantityDelta > 0 || input.wasteQuantityDelta > 0);
   })();
 
   const refresh = () =>
@@ -616,15 +800,67 @@ export const ProductionWorkspace = ({
     onSuccess: refresh,
   });
   const output = useMutation({
-    mutationFn: (attemptId: string) =>
+    mutationFn: (submission: PendingProductionOutput) =>
       productionApi.output(
-        organizationId,
-        attemptId,
-        newBusinessRequestId(),
-        outputDeltas(),
-      ),
-    onSuccess: refresh,
+        submission.organizationId,
+        submission.productionAttemptId,
+        submission.businessRequestId,
+        submission.input,
+    ),
+    onSuccess: async (_result, submission) => {
+      if (clearConfirmedProductionOutput(submission)) {
+        outputFences.delete(outputFenceKey(submission.organizationId, submission.sessionScope));
+        notifyOutputIntentChanged();
+        setOutputRecovery(readPendingProductionOutput(submission.organizationId, submission.sessionScope));
+      } else {
+        outputFences.set(outputFenceKey(submission.organizationId, submission.sessionScope), "cleanup-failed");
+        setOutputRecovery(blockedOutputRecovery(submission.organizationId, submission.sessionScope, "cleanup-failed"));
+      }
+      await refresh();
+    },
   });
+  const reconcileOutputRecovery = async () => {
+    if (!outputRecoveryScopeMatches || outputRecoveryBusy) return;
+    setOutputRecoveryBusy(true);
+    try {
+      const exactWorkId = pendingOutput && activeAttempt?.productionAttemptId === pendingOutput.productionAttemptId ? activeAttempt.productionWorkId : undefined;
+      await refreshProductionOwnerViews(organizationId, exactWorkId);
+      if (!clearProductionOutputIntentsAfterRefresh(organizationId)) throw Error("Saved output intent could not be reconciled in session storage.");
+      clearOutputFencesForOrganization(organizationId);
+      notifyOutputIntentChanged();
+      const nextRecovery = readPendingProductionOutput(organizationId, sessionScope);
+      setOutputRecovery(nextRecovery);
+      if (nextRecovery.status !== "ready") return;
+      output.reset();
+      await refresh();
+    } catch {
+      outputFences.set(outputFenceKey(organizationId, sessionScope), "owner-refresh-failed");
+      setOutputRecovery(blockedOutputRecovery(organizationId, sessionScope, "owner-refresh-failed"));
+    } finally {
+      setOutputRecoveryBusy(false);
+    }
+  };
+  const submitOutput = (attemptId: string) => {
+    if (!outputRecoveryScopeMatches || outputRecovery.status !== "ready" || !activeAttempt || activeAttempt.productionAttemptId !== attemptId || !hasOutput) return;
+    const freshRecovery = readPendingProductionOutput(organizationId, sessionScope);
+    if (freshRecovery.status !== "ready") { setOutputRecovery(freshRecovery); notifyOutputIntentChanged(); return; }
+    const submission: PendingProductionOutput = Object.freeze({
+      organizationId,
+      sessionScope,
+      productionAttemptId: attemptId,
+      businessRequestId: newBusinessRequestId(),
+      submittedAt: new Date().toISOString(),
+      input: Object.freeze(outputDeltas()),
+    });
+    const persisted = persistPendingProductionOutput(submission);
+    if (!persisted) {
+      setOutputRecovery(blockedOutputRecovery(organizationId, sessionScope, "persist-failed"));
+      return;
+    }
+    output.reset();
+    setOutputRecovery({ status: "pending", organizationId, sessionScope, submission: persisted });
+    output.mutate(persisted);
+  };
   const complete = useMutation({
     mutationFn: (attemptId: string) =>
       productionApi.complete(organizationId, attemptId, newBusinessRequestId()),
@@ -730,6 +966,23 @@ export const ProductionWorkspace = ({
           )}
         </div>
       </header>
+
+      {!outputRecoveryScopeMatches && <section className="v2-production-output-pending" role="alert" aria-label="Redacted Production output recovery">
+        <p>A saved Production output intent is fenced to another scope. Its request details are hidden; physical output is blocked.</p>
+        {outputRecovery.organizationId === organizationId && <button type="button" disabled={!outputRecoveryScopeMatches || outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}
+      </section>}
+      {outputRecoveryScopeMatches && outputRecovery.status === "blocked" && <section className="v2-production-output-pending" role="alert" aria-label="Blocked Production output recovery">
+        <p>{outputRecoveryMessage(outputRecovery.reason)} Details are hidden.</p>
+        {outputRecovery.reason !== "other-organization" && outputRecovery.reason !== "other-handler" && <button type="button" disabled={outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}
+      </section>}
+      {pendingOutput && <section className="v2-production-output-pending" role={output.isError ? "alert" : "status"} aria-label="Pending Production output">
+        <p>
+          {output.isError ? `Output response was not confirmed: ${productionErrorMessage(output.error)}. ` : "Output request is awaiting confirmation. "}
+          Original request {pendingOutput.businessRequestId} for attempt {pendingOutput.productionAttemptId} was submitted at {pendingOutput.submittedAt} with {pendingOutput.input.goodQuantityDelta} good and {pendingOutput.input.wasteQuantityDelta} waste.
+        </p>
+        {isDefiniteProductionOutputRejection(output.error) && <button type="button" disabled={outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}
+        <button type="button" disabled={output.isPending} onClick={() => output.mutate(pendingOutput)}>Retry original output</button>
+      </section>}
 
       {view !== "daily-report" && !!openable.length && <section className="v2-production-open-work"><h2>Ready to open</h2>{openable.map(({item,requirement,artworkAssignmentId})=><article key={artworkAssignmentId}><div><b>{item.orderNumber} · {item.lineDescription}</b><small>{item.quantity} ordered · {requirementLabel({work:{requirement:requirement.requirement} as ProductionWorkProjection["work"]} as ProductionWorkProjection)} · Prepress complete</small></div><button type="button" disabled={!canWork||open.isPending} onClick={()=>open.mutate(artworkAssignmentId)}>{open.isPending?"Opening…":"Open Production Work"}</button></article>)}{open.isError&&<p className="v2-product-version-message">{(open.error as Error).message}</p>}</section>}
 
@@ -930,7 +1183,7 @@ export const ProductionWorkspace = ({
             ))}
             <small>{activeAttempt ? "In Progress" : "Next up"}</small>
           </div>
-          {stationSurface === "runs" ? <ProductionRunWorkspace organizationId={organizationId} sessionScope={sessionScope} station={station} queue={queue.data?.items ?? []} canWork={canWork} onOpenArtwork={openArtwork} /> : station === "flatbed" && !routedProductionWorkId ? (
+          {hideStationOutputDetails ? <section className="v2-production-station" aria-label="Production output details hidden"><p>Production output details are hidden until the saved intent is reconciled.</p></section> : stationSurface === "runs" ? <ProductionRunWorkspace organizationId={organizationId} sessionScope={sessionScope} station={station} queue={queue.data?.items ?? []} canWork={canWork} onOpenArtwork={openArtwork} /> : station === "flatbed" && !routedProductionWorkId ? (
             <>
             <FlatbedStationPanel
               organizationId={organizationId}
@@ -940,14 +1193,15 @@ export const ProductionWorkspace = ({
               activeAttempt={activeAttempt}
               canWork={canWork}
               canComplete={canComplete}
-              goodQuantity={goodQuantity}
-              wasteQuantity={wasteQuantity}
-              busy={start.isPending || output.isPending || complete.isPending}
+              goodQuantity={outputFieldsHidden ? "" : goodQuantity}
+              wasteQuantity={outputFieldsHidden ? "" : wasteQuantity}
+              busy={start.isPending || output.isPending || complete.isPending || outputRecoveryBlocked}
+              outputLocked={outputRecoveryBlocked || output.isPending}
               onSelect={setSelectedWorkId}
               onGoodQuantityChange={setGoodQuantity}
               onWasteQuantityChange={setWasteQuantity}
               onStart={(kind) => start.mutate(kind)}
-              onRecordOutput={(attemptId) => output.mutate(attemptId)}
+              onRecordOutput={submitOutput}
               onCompleteAttempt={(attemptId) => complete.mutate(attemptId)}
               onOpenArtwork={(item) => openArtwork(item.work.artworkFileId)}
               onOpenTraveler={(item) => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/production/works/${encodeURIComponent(item.work.productionWorkId)}/traveler.pdf`, "_blank", "noopener,noreferrer")}
@@ -998,6 +1252,7 @@ export const ProductionWorkspace = ({
                           disabled={
                             !canWork ||
                             start.isPending ||
+                            outputRecoveryBlocked ||
                             work.unitQuantitySatisfied ||
                             work.state === "held" ||
                             work.state === "rework_requested"
@@ -1027,9 +1282,9 @@ export const ProductionWorkspace = ({
                             aria-label="Good output"
                             type="number"
                             min="0"
-                            max={Math.max(1, remainingGoodQuantity)}
                             step="1"
-                            value={goodQuantity}
+                            value={outputFieldsHidden ? "" : goodQuantity}
+                            disabled={outputRecoveryBlocked || output.isPending}
                             onChange={(event) =>
                               setGoodQuantity(event.target.value)
                             }
@@ -1042,7 +1297,8 @@ export const ProductionWorkspace = ({
                             type="number"
                             min="0"
                             step="1"
-                            value={wasteQuantity}
+                            value={outputFieldsHidden ? "" : wasteQuantity}
+                            disabled={outputRecoveryBlocked || output.isPending}
                             onChange={(event) => setWasteQuantity(event.target.value)}
                           />
                         </label>
@@ -1051,19 +1307,18 @@ export const ProductionWorkspace = ({
                           disabled={
                             !canWork ||
                             output.isPending ||
+                            outputRecoveryBlocked ||
                             work.state === "held" ||
                             work.state === "rework_requested" ||
                             !hasOutput
                           }
-                          onClick={() =>
-                            output.mutate(activeAttempt.productionAttemptId)
-                          }
+                          onClick={() => submitOutput(activeAttempt.productionAttemptId)}
                         >
                           Record output
                         </button>
                         <button
                           className="v2-production-rail-button neutral"
-                          disabled={!canComplete || complete.isPending || work.state === "held" || work.state === "rework_requested"}
+                          disabled={!canComplete || complete.isPending || outputRecoveryBlocked || work.state === "held" || work.state === "rework_requested"}
                           onClick={() =>
                             complete.mutate(activeAttempt.productionAttemptId)
                           }

@@ -19,7 +19,9 @@ const { QueryClient, QueryClientProvider } = require("@tanstack/react-query") as
 const { App } = require("./App") as typeof import("./App");
 const { defaultVisualAppearance } = require("./appearance") as typeof import("./appearance");
 const { ProductionWorkspace } = require("./ProductionWorkspace") as typeof import("./ProductionWorkspace");
-const { clearV2ApiSessionState, quoteApi, productionDailyReportApi } = require("./api") as typeof import("./api");
+const { ProductionRunWorkspace } = require("./ProductionRunWorkspace") as typeof import("./ProductionRunWorkspace");
+const apiModule = require("./api") as typeof import("./api");
+const { clearV2ApiSessionState, quoteApi, productionDailyReportApi } = apiModule;
 const org = "11111111-1111-4111-8111-111111111111", otherOrg = "22222222-2222-4222-8222-222222222222", user = "33333333-3333-4333-8333-333333333333";
 const workId = "44444444-4444-4444-8444-444444444444";
 const bootstrap: UiBootstrap = { organizationId: org, userId: user, sessionScope: "report-session-a", csrfToken: "report-csrf", capabilities: {
@@ -38,15 +40,24 @@ const data = (url: URL, label = "Current", tenant = org): ProductionDailyReport 
     rows: mode === "print" ? rows : rows.slice((page - 1) * pageSize, page * pageSize) };
 };
 type WireCall = { url: URL; init?: RequestInit };
-const calls: WireCall[] = [], deferred: { call: WireCall; resolve: (response: Response) => void }[] = [];
+const calls: WireCall[] = [], deferred: { call: WireCall; resolve: (response: Response) => void }[] = [], outputCalls: { call: WireCall; body: Record<string, unknown> }[] = [];
 let currentBootstrap = structuredClone(bootstrap), reportMode: "success" | "error" | "defer-page" | "defer-print" = "success", prints = 0;
 let denyPageReads = false, reportLabel = "Current";
+let outputMode: "none" | "ordinary" | "run" = "none", outputFailuresRemaining = 0, activeRunResponse: unknown;
+let operationalProjection = projection, operationalQueue = queue;
 const deniedPageCalls: WireCall[] = [];
 const originalFetch = globalThis.fetch, originalPrint = window.print;
 const response = (payload: unknown, status = 200, scope = currentBootstrap.sessionScope) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json", "x-v2-session-scope": scope } });
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input), "https://ui.invalid"); const call = { url, init }; calls.push(call);
-  assert.ok((init?.method ?? "GET") === "GET", `Report integration unexpectedly attempted a mutation: ${url}`);
+  if ((init?.method ?? "GET") === "POST") {
+    assert.notEqual(outputMode, "none", `Unexpected Production mutation: ${url}`);
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    outputCalls.push({ call, body });
+    if (outputFailuresRemaining > 0) { outputFailuresRemaining--; return response({ ok: false, error: { code: "RETRYABLE_FAILURE", message: "The Production output response was lost." } }, 503); }
+    return response({ ok: true, data: outputMode === "run" ? activeRunResponse : { accepted: true } });
+  }
+  assert.equal(init?.method ?? "GET", "GET", `Report integration unexpectedly attempted a non-GET request: ${url}`);
   if (url.pathname.endsWith("/ui-bootstrap")) return response({ ok: true, data: currentBootstrap });
   if (url.pathname.endsWith("/production/daily-report")) {
     if (denyPageReads && url.searchParams.get("mode") === "page") {
@@ -57,8 +68,9 @@ globalThis.fetch = async (input, init) => {
     if ((reportMode === "defer-print" && url.searchParams.get("mode") === "print") || (reportMode === "defer-page" && url.searchParams.get("mode") === "page")) return new Promise(resolve => deferred.push({ call, resolve }));
     return response({ ok: true, data: data(url, reportLabel, currentBootstrap.organizationId) });
   }
-  if (/\/production\/stations\/(?:roll|flatbed)\/queue$/.test(url.pathname)) return response({ ok: true, data: queue });
-  if (url.pathname.endsWith(`/production/works/${workId}`)) return response({ ok: true, data: projection });
+  if (/\/production\/stations\/(?:roll|flatbed)\/queue$/.test(url.pathname)) return response({ ok: true, data: url.pathname.endsWith("/flatbed/queue") ? operationalQueue : queue });
+  if (url.pathname.endsWith(`/production/works/${workId}`)) return response({ ok: true, data: operationalProjection });
+  if (url.pathname.endsWith("/production/runs")) return response({ ok: true, data: activeRunResponse && (activeRunResponse as { stationKey?: string }).stationKey === url.searchParams.get("station") ? [activeRunResponse] : [] });
   if (url.pathname.endsWith("/prepress")) return response({ ok: false, error: { code: "FORBIDDEN", message: "Prepress permission is not granted." } }, 403);
   throw Error(`Unexpected authenticated API request: ${url}`);
 };
@@ -73,16 +85,83 @@ const button = (label: string) => {
 const settle = async (predicate: () => boolean = () => true) => { for (let index = 0; index < 100; index++) { await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); }); if (predicate()) return; } assert.ok(predicate(), "Expected mounted report state"); };
 const click = async (label: string) => { await act(async () => button(label).click()); await settle(); };
 const reportCalls = () => calls.filter(call => call.url.pathname.endsWith("/production/daily-report"));
+const setInputValue = async (selector: string, value: string) => {
+  const input = document.querySelector<HTMLInputElement>(selector); assert.ok(input, `Input ${selector}`);
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set; assert.ok(setter);
+  await act(async () => { setter.call(input, value); input.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
+  assert.equal(input.value, value);
+};
+const withStorageMethodThrowing = async (method: "getItem" | "setItem", work: () => Promise<void>) => {
+  const prototype = dom.window.Storage.prototype, descriptor = Object.getOwnPropertyDescriptor(prototype, method); assert.ok(descriptor);
+  Object.defineProperty(prototype, method, { ...descriptor, value: () => { throw new Error(`Injected sessionStorage ${method} failure`); } });
+  try { await work(); } finally { Object.defineProperty(prototype, method, descriptor); }
+};
+const withStorageReadbackMismatch = async (key: string, work: () => Promise<void>) => {
+  const prototype = dom.window.Storage.prototype, descriptor = Object.getOwnPropertyDescriptor(prototype, "getItem"); assert.ok(descriptor);
+  const original = descriptor.value as (this: Storage, key: string) => string | null;
+  Object.defineProperty(prototype, "getItem", { ...descriptor, value: function(this: Storage, requestedKey: string) {
+    const raw = original.call(this, requestedKey);
+    if (requestedKey !== key || raw === null) return raw;
+    const record = JSON.parse(raw) as Record<string, unknown>; return JSON.stringify({ ...record, businessRequestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+  } });
+  try { await work(); } finally { Object.defineProperty(prototype, "getItem", descriptor); }
+};
+const withRequestIdCounter = async (work: (count: () => number) => Promise<void>) => {
+  const cryptoObject = globalThis.crypto, descriptor = Object.getOwnPropertyDescriptor(cryptoObject, "randomUUID"), original = cryptoObject.randomUUID.bind(cryptoObject);
+  let count = 0;
+  Object.defineProperty(cryptoObject, "randomUUID", { configurable: true, writable: true, value: () => { count++; return original(); } });
+  try { await work(() => count); } finally { if (descriptor) Object.defineProperty(cryptoObject, "randomUUID", descriptor); else Reflect.deleteProperty(cryptoObject, "randomUUID"); }
+};
 const baseCallCount = () => calls.filter(call => /\/production\/stations\/|\/prepress$/.test(call.url.pathname)).length;
 const reset = async (path = "/production") => {
   await act(async () => root.unmount()); cache.clear(); root = createRoot(document.getElementById("root")!); cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-  clearV2ApiSessionState(); currentBootstrap = structuredClone(bootstrap); reportMode = "success"; calls.length = 0; deferred.length = 0; prints = 0;
-  denyPageReads = false; reportLabel = "Current"; deniedPageCalls.length = 0;
+  clearV2ApiSessionState(); (globalThis as typeof globalThis & { __phV2ProductionOutputFences?: Map<string, string> }).__phV2ProductionOutputFences?.clear(); currentBootstrap = structuredClone(bootstrap); reportMode = "success"; calls.length = 0; deferred.length = 0; prints = 0;
+  denyPageReads = false; reportLabel = "Current"; deniedPageCalls.length = 0; outputMode = "none"; outputFailuresRemaining = 0; outputCalls.length = 0; activeRunResponse = undefined; operationalProjection = projection; operationalQueue = queue;
   window.history.replaceState({}, "", path); sessionStorage.clear(); sessionStorage.setItem("ph.v2.organization-id", org);
 };
 const mountApp = async (path = "/production") => { await reset(path); await act(async () => root.render(React.createElement(QueryClientProvider, { client: cache }, React.createElement(App, { appearance: defaultVisualAppearance, setAppearance: () => {} })))); await settle(() => Boolean(document.querySelector('[aria-label="Production view"]'))); };
-const renderWorkspace = async (organizationId: string, sessionScope: string, canView = true) => {
-  await act(async () => root.render(React.createElement(QueryClientProvider, { client: cache }, React.createElement(ProductionWorkspace, { organizationId, sessionScope, canView, canWork: false, canComplete: false, onStationChange: () => {}, onSelectWork: () => {}, openOrder: () => { throw Error("Report must not navigate an operational Order"); }, openCustomer: () => { throw Error("Report must not edit a Customer"); }, openArtwork: () => { throw Error("Report must not mutate Artwork"); } })))); await settle();
+const renderWorkspace = async (organizationId: string, sessionScope: string, canView = true, canWork = false) => {
+  await act(async () => root.render(React.createElement(QueryClientProvider, { client: cache }, React.createElement(ProductionWorkspace, { organizationId, sessionScope, canView, canWork, canComplete: canWork, onStationChange: () => {}, onSelectWork: () => {}, openOrder: () => { throw Error("Report must not navigate an operational Order"); }, openCustomer: () => { throw Error("Report must not edit a Customer"); }, openArtwork: () => { throw Error("Report must not mutate Artwork"); } })))); await settle();
+};
+const renderRunWorkspace = async (organizationId: string, sessionScope: string) => {
+  await act(async () => root.render(React.createElement(QueryClientProvider, { client: cache }, React.createElement(ProductionRunWorkspace, { organizationId, sessionScope, station: "flatbed", queue: [], canWork: true, onOpenArtwork: () => {} })))); await settle();
+};
+const openDirectRunOutput = async (organizationId: string, sessionScope: string) => {
+  await renderRunWorkspace(organizationId, sessionScope);
+  await settle(() => Boolean(document.querySelector(".v2-production-run-row")));
+  await act(async () => document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());
+  await settle(() => Boolean(document.querySelector('[aria-label="Run good output"]')));
+};
+const remountWorkspace = async (organizationId: string, sessionScope: string, canWork = true) => {
+  await act(async () => root.unmount()); root = createRoot(document.getElementById("root")!);
+  await renderWorkspace(organizationId, sessionScope, true, canWork);
+};
+const remountRunWorkspace = async (organizationId: string, sessionScope: string) => {
+  await act(async () => root.unmount()); root = createRoot(document.getElementById("root")!);
+  await renderRunWorkspace(organizationId, sessionScope);
+};
+const prepareOrdinaryOutput = () => {
+  outputMode = "ordinary"; outputFailuresRemaining = 1;
+  const attempt = { productionAttemptId: "55555555-5555-4555-8555-555555555555", productionWorkId: workId, sequence: 1, kind: "initial", stationKey: "flatbed", goodQuantity: 0, wasteQuantity: 0, startedAt: "2026-10-02T10:00:00.000Z", startedPrincipalKind: "staff", startedPrincipalSubject: user };
+  operationalProjection = { ...projection, attempts: [attempt], activeAttempt: attempt, recordedGoodQuantity: 0, remainingGoodQuantity: 5, state: "active" } as unknown as ProductionWorkProjection;
+  operationalQueue = { items: [operationalProjection], pagination: { page: 1, pageSize: 25, totalCount: 1, totalPages: 1 }, counts: { total: 1 } } as unknown as typeof queue;
+  return attempt;
+};
+const prepareRunOutput = () => {
+  outputMode = "run"; outputFailuresRemaining = 1;
+  const runId = "66666666-6666-4666-8666-666666666666", allocationId = "77777777-7777-4777-8777-777777777777";
+  activeRunResponse = { productionRunId: runId, organizationId: org, stationKey: "flatbed", state: "active", revision: 2, materialFingerprint: null, layoutMetadata: {}, allocations: [{ productionRunAllocationId: allocationId, productionWorkId: workId, allocatedQuantity: 10, goodQuantity: 0, wasteQuantity: 0, artworkAssignmentId: workId, artworkFileId: workId, artworkIdentityFingerprint: `sha256:${"a".repeat(64)}`, artworkObjectVersion: "version-a", productionAttemptId: "88888888-8888-4888-8888-888888888888", position: 0 }], events: [] };
+  return { runId, allocationId };
+};
+const openOutputSurface = async (mode: "ordinary" | "run", organizationId: string, sessionScope: string) => {
+  await renderWorkspace(organizationId, sessionScope, true, true);
+  if (mode === "ordinary") {
+    await click("Stations"); await settle(() => Boolean(document.querySelector('[aria-label="Flatbed good output"]')));
+  } else {
+    await click("Board"); await click("Runs"); await click("Stations"); await settle(() => Boolean(document.querySelector(".v2-production-run-row")));
+    await act(async () => document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());
+    await settle(() => Boolean(document.querySelector('[aria-label="Run good output"]')));
+  }
 };
 let cases = 0;
 const check = async (name: string, work: () => Promise<void>) => { await work(); cases++; console.log(`PASS ${name}`); };
@@ -213,6 +292,148 @@ try {
     // Evaluate every denial/recovery boundary, even if the first one leaks, so
     // one permanent regression records both Ctrl+P data and late auto-print risk.
     assert.deepEqual(observed, expected, "same-session FORBIDDEN must erase protected print documents and invalidate pending/prepared snapshots until a new explicit print");
+  });
+  await check("sessionStorage setter failures fail closed for ordinary and Run output handlers", async () => {
+    for (const mode of ["ordinary", "run"] as const) {
+      await reset(); await quoteApi.bootstrap(org);
+      if (mode === "ordinary") prepareOrdinaryOutput(); else prepareRunOutput();
+      await openOutputSurface(mode, org, bootstrap.sessionScope);
+      await setInputValue(mode === "ordinary" ? '[aria-label="Flatbed good output"]' : '[aria-label="Run good output"]', mode === "ordinary" ? "7" : "8");
+      await withStorageMethodThrowing("setItem", async () => {
+        await click("Record output");
+        const alert = document.querySelector('[role="alert"]'); assert.ok(alert);
+        assert.match(alert.textContent ?? "", /could not be saved and verified|saved Production output intent/);
+        assert.equal(outputCalls.length, 0, `${mode} output POST must not run when storage persistence fails`);
+        assert.doesNotMatch(alert.textContent ?? "", /55555555|66666666|77777777|7 good|8 good/);
+      });
+    }
+  });
+  await check("sessionStorage getter failures block mounted ordinary and Run output surfaces", async () => {
+    for (const mode of ["ordinary", "run"] as const) {
+      await reset(); await quoteApi.bootstrap(org);
+      if (mode === "ordinary") prepareOrdinaryOutput(); else prepareRunOutput();
+      await withStorageMethodThrowing("getItem", async () => {
+        if (mode === "ordinary") { await renderWorkspace(org, bootstrap.sessionScope, true, true); await click("Stations"); }
+        else await renderRunWorkspace(org, bootstrap.sessionScope);
+        const alert = document.querySelector('[role="alert"]'); assert.ok(alert);
+        assert.match(alert.textContent ?? "", /could not verify the Production output intent/);
+        assert.equal(outputCalls.length, 0, `${mode} output POST must not run when storage reads fail`);
+        assert.doesNotMatch(alert.textContent ?? "", /55555555|66666666|77777777|88888888|7 good|8 good/);
+      });
+    }
+  });
+  await check("mismatched canonical readback blocks both output APIs before submission", async () => {
+    for (const mode of ["ordinary", "run"] as const) {
+      await reset(); await quoteApi.bootstrap(org);
+      if (mode === "ordinary") prepareOrdinaryOutput(); else prepareRunOutput();
+      await openOutputSurface(mode, org, bootstrap.sessionScope);
+      await setInputValue(mode === "ordinary" ? '[aria-label="Flatbed good output"]' : '[aria-label="Run good output"]', mode === "ordinary" ? "7" : "8");
+      const key = mode === "ordinary" ? `ph.v2.production.pending-output.${org}.${bootstrap.sessionScope}` : `ph.v2.production.pending-run-output.${org}.${bootstrap.sessionScope}`;
+      await withStorageReadbackMismatch(key, async () => {
+        await click("Record output");
+        const alert = document.querySelector('[role="alert"]'); assert.ok(alert);
+        assert.match(alert.textContent ?? "", /could not be saved and verified|saved Production output intent/);
+        assert.equal(outputCalls.length, 0, `${mode} mismatched readback must not submit`);
+        assert.doesNotMatch(alert.textContent ?? "", /aaaaaaaa-aaaa|55555555|66666666|77777777|7 good|8 good/);
+      });
+    }
+  });
+  await check("canonical but malformed saved intents block remount and preflight without generating a new ID", async () => {
+    for (const mode of ["ordinary", "run"] as const) {
+      await reset(); await quoteApi.bootstrap(org);
+      if (mode === "ordinary") prepareOrdinaryOutput(); else prepareRunOutput();
+      await openOutputSurface(mode, org, bootstrap.sessionScope);
+      if (mode === "run") await setInputValue('[aria-label="Run good output"]', "8");
+      const key = mode === "ordinary" ? `ph.v2.production.pending-output.${org}.${bootstrap.sessionScope}` : `ph.v2.production.pending-run-output.${org}.${bootstrap.sessionScope}`;
+      const malformed = mode === "ordinary"
+        ? { organizationId: org, sessionScope: bootstrap.sessionScope, productionAttemptId: "55555555-5555-4555-8555-555555555555", businessRequestId: "99999999-9999-4999-8999-999999999999", submittedAt: "2026-10-02T11:00:00.000Z", input: { goodQuantityDelta: "7", wasteQuantityDelta: 0 } }
+        : { organizationId: org, sessionScope: bootstrap.sessionScope, productionRunId: "66666666-6666-4666-8666-666666666666", allocationId: "77777777-7777-4777-8777-777777777777", businessRequestId: "99999999-9999-4999-8999-999999999999", submittedAt: "2026-10-02T11:00:00.000Z", input: { goodQuantityDelta: "8", wasteQuantityDelta: 0 } };
+      sessionStorage.setItem("ph.v2.production.pending-output-presence", org);
+      sessionStorage.setItem(key, JSON.stringify(malformed));
+      await withRequestIdCounter(async count => {
+        await click("Record output");
+        assert.equal(count(), 0, `${mode} malformed intent must be rejected before businessRequestId generation`);
+        assert.equal(outputCalls.length, 0);
+      });
+      const alert = document.querySelector(mode === "ordinary" ? '[aria-label="Blocked Production output recovery"]' : '[aria-label="Blocked Production Run output recovery"]'); assert.ok(alert); assert.match(alert.textContent ?? "", /malformed/);
+      assert.doesNotMatch(document.body.textContent ?? "", /99999999|55555555|66666666|77777777|7 good|8 good/);
+      if (mode === "ordinary") await remountWorkspace(org, bootstrap.sessionScope); else await remountRunWorkspace(org, bootstrap.sessionScope);
+      assert.ok(document.querySelector('[role="alert"]'), `${mode} malformed recovery stays blocked after remount`);
+      assert.equal(outputCalls.length, 0);
+    }
+  });
+  await check("scope changes redact and fence both pending output intents until owner reconciliation", async () => {
+    await reset(); await quoteApi.bootstrap(org);
+    const attempt = prepareOrdinaryOutput(); await openOutputSurface("ordinary", org, bootstrap.sessionScope);
+    await setInputValue('[aria-label="Flatbed good output"]', "7"); await click("Record output"); await settle(() => outputCalls.length === 1);
+    const ordinaryRequestId = outputCalls[0]!.body.businessRequestId as string;
+    clearV2ApiSessionState(); currentBootstrap = { ...currentBootstrap, sessionScope: "report-session-b" }; await quoteApi.bootstrap(org); operationalQueue = queue;
+    await renderWorkspace(org, "report-session-b", true, true); await click("Stations");
+    let recovery = document.querySelector('[role="alert"][aria-label*="Production output recovery"]'); assert.ok(recovery);
+    assert.doesNotMatch(recovery.textContent ?? "", new RegExp(`${ordinaryRequestId}|${attempt.productionAttemptId}|7 good|0 waste`));
+    assert.equal(outputCalls.length, 1); assert.ok(sessionStorage.getItem(`ph.v2.production.pending-output.${org}.${bootstrap.sessionScope}`));
+    await click("Refresh Production state to reconcile"); await settle(() => sessionStorage.getItem("ph.v2.production.pending-output-presence") === null);
+    assert.equal(outputCalls.length, 1, "owner reconciliation clears the fenced intent without submitting a new request");
+
+    await reset(); await quoteApi.bootstrap(org);
+    const { runId, allocationId } = prepareRunOutput(); await openDirectRunOutput(org, bootstrap.sessionScope);
+    await setInputValue('[aria-label="Run good output"]', "8"); await click("Record output"); await settle(() => outputCalls.length === 1);
+    const runRequestId = outputCalls[0]!.body.businessRequestId as string;
+    clearV2ApiSessionState(); currentBootstrap = { ...currentBootstrap, organizationId: otherOrg, sessionScope: "other-org-session" }; await quoteApi.bootstrap(otherOrg); activeRunResponse = undefined;
+    await renderRunWorkspace(otherOrg, "other-org-session"); await settle(() => Boolean(document.querySelector('[aria-label="Redacted Production Run output recovery"], [aria-label="Blocked Production Run output recovery"]')));
+    recovery = document.querySelector('[aria-label="Redacted Production Run output recovery"], [aria-label="Blocked Production Run output recovery"]'); assert.ok(recovery);
+    assert.doesNotMatch(recovery.textContent ?? "", new RegExp(`${runRequestId}|${runId}|${allocationId}|88888888|8 good|0 waste`));
+    assert.equal(document.querySelector('[aria-label="Run good output"]'), null);
+    assert.equal(outputCalls.length, 1); assert.equal(sessionStorage.getItem("ph.v2.production.pending-output-presence"), org);
+    assert.ok(sessionStorage.getItem(`ph.v2.production.pending-run-output.${org}.${bootstrap.sessionScope}`), "a different organization cannot silently clear the old intent");
+  });
+  await check("uncertain ordinary output retry reuses the exact attempt, quantities, timestamp and business request without clamping", async () => {
+    await reset(); await quoteApi.bootstrap(org);
+    const attempt = prepareOrdinaryOutput();
+    await openOutputSurface("ordinary", org, bootstrap.sessionScope);
+    await setInputValue('[aria-label="Flatbed good output"]', "7");
+    await click("Record output"); await settle(() => outputCalls.length === 1 && Boolean(document.querySelector('[role="alert"]')));
+    const first = outputCalls[0]!; const originalNotice = document.querySelector('[role="alert"]')?.textContent ?? "";
+    assert.match(originalNotice, /The Production output response was lost/);
+    assert.equal(first.call.url.pathname, `/v2/organizations/${org}/production/attempts/${attempt.productionAttemptId}/output`);
+    assert.deepEqual(first.body, { goodQuantityDelta: 7, wasteQuantityDelta: 0, businessRequestId: first.body.businessRequestId });
+    assert.match(String(first.body.businessRequestId), /^[0-9a-f-]{36}$/i); assert.match(originalNotice, /\d{4}-\d\d-\d\dT.*Z/); assert.match(originalNotice, /7 good and 0 waste/);
+    const submittedAt = originalNotice.match(/\d{4}-\d\d-\d\dT[^ ]+Z/)?.[0];
+    await remountWorkspace(org, bootstrap.sessionScope); await click("Stations");
+    const recoveredNotice = document.querySelector(".v2-production-output-pending")?.textContent ?? "";
+    assert.ok(recoveredNotice.includes(String(first.body.businessRequestId)) && submittedAt && recoveredNotice.includes(submittedAt));
+    await click("Retry original output"); await settle(() => outputCalls.length === 2);
+    const second = outputCalls[1]!;
+    assert.equal(second.call.url.href, first.call.url.href); assert.deepEqual(second.body, first.body);
+    assert.equal(sessionStorage.getItem(`ph.v2.production.pending-output.${org}.${bootstrap.sessionScope}`), null);
+    assert.equal(sessionStorage.getItem("ph.v2.production.pending-output-presence"), null);
+    assert.doesNotMatch(originalNotice, /remainingGoodQuantity/);
+    assert.equal(outputCalls.some(({ call }) => call.url.pathname.endsWith(`/works/${workId}/attempts`)), false, "retry never starts another physical attempt");
+  });
+  await check("uncertain Run output retry reuses the exact allocation, quantities, timestamp and business request", async () => {
+    await reset(); await quoteApi.bootstrap(org);
+    const { runId, allocationId } = prepareRunOutput();
+    await openOutputSurface("run", org, bootstrap.sessionScope);
+    await setInputValue('[aria-label="Run good output"]', "8");
+    await click("Record output"); await settle(() => outputCalls.length === 1 && Boolean(document.querySelector('[aria-label="Pending Production Run output"][role="alert"]')));
+    const first = outputCalls[0]!; const originalNotice = document.querySelector('[aria-label="Pending Production Run output"]')?.textContent ?? "";
+    assert.match(originalNotice, /The Production output response was lost/);
+    assert.equal(first.call.url.pathname, `/v2/organizations/${org}/production/runs/${runId}/allocations/${allocationId}/output`);
+    assert.deepEqual(first.body, { goodQuantityDelta: 8, wasteQuantityDelta: 0, businessRequestId: first.body.businessRequestId });
+    assert.match(String(first.body.businessRequestId), /^[0-9a-f-]{36}$/i); assert.match(originalNotice, /\d{4}-\d\d-\d\dT.*Z/); assert.match(originalNotice, /8 good and 0 waste/);
+    const submittedAt = originalNotice.match(/\d{4}-\d\d-\d\dT[^ ]+Z/)?.[0];
+    await remountWorkspace(org, bootstrap.sessionScope); await click("Board"); await click("Runs"); await click("Stations");
+    await settle(() => Boolean(document.querySelector(".v2-production-run-row")));
+    await act(async () => document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());
+    await settle(() => Boolean(document.querySelector('[aria-label="Pending Production Run output"]')));
+    const recoveredNotice = document.querySelector('[aria-label="Pending Production Run output"]')?.textContent ?? "";
+    assert.ok(recoveredNotice.includes(String(first.body.businessRequestId)) && submittedAt && recoveredNotice.includes(submittedAt));
+    await click("Retry original output"); await settle(() => outputCalls.length === 2);
+    const second = outputCalls[1]!;
+    assert.equal(second.call.url.href, first.call.url.href); assert.deepEqual(second.body, first.body);
+    assert.equal(sessionStorage.getItem(`ph.v2.production.pending-run-output.${org}.${bootstrap.sessionScope}`), null);
+    assert.equal(sessionStorage.getItem("ph.v2.production.pending-output-presence"), null);
+    assert.equal(outputCalls.some(({ call }) => call.url.pathname.endsWith(`/runs/${runId}/transitions`)), false, "retry never starts, completes or cancels the Run");
   });
   console.log(`Production daily report actual App/workspace/API integration: ${cases} cases passed. Bootstrap and operational/report wire DTOs are intercepted fixtures; actual API generation, query signals, renderer and print guards execute. No browser print-layout/provider proof.`);
 } finally { await act(async () => root.unmount()); cache.clear(); clearV2ApiSessionState(); globalThis.fetch = originalFetch; window.print = originalPrint; if (oldCss) require.extensions[".css"] = oldCss; else delete require.extensions[".css"]; if (oldReact) Object.assign(globalThis, { React: oldReact }); else delete (globalThis as { React?: typeof React }).React; dom.window.close(); }

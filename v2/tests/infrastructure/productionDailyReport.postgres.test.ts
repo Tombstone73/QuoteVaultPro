@@ -4,7 +4,9 @@ import { PGlite } from "@electric-sql/pglite";
 import type { Pool, PoolClient } from "pg";
 import { PostgresProductionDailyReport, productionDailyReportCandidateLimit, type ProductionDailyReportReadDependencies } from "../../infrastructure/production/postgresProductionDailyReport.js";
 import { PostgresProductionTransaction } from "../../infrastructure/production/postgresProductionTransaction.js";
+import { PostgresProductionRunTransaction, PostgresProductionRunTransactionRunner } from "../../infrastructure/production/postgresProductionRunTransaction.js";
 import { PostgresProductionCompletionProjection } from "../../infrastructure/production/postgresProductionCompletionProjection.js";
+import { ProductionApplicationService } from "../../src/modules/production/productionApplication.js";
 import { normalizeProductionDailyReportRequest, summarizeProductionDailyReport, type ProductionDailyReportScope } from "../../src/modules/production/productionDailyReport.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 
@@ -110,7 +112,7 @@ try {
   };
   const work = async (id: string, orderId: string, lineId: string, options: { org?: string; quantity?: number; replacement?: string; origin?: string; cycle?: string; predecessor?: string } = {}) => {
     const tenant = options.org ?? "org-a";
-    await db.query("INSERT INTO v2_artwork_assignments VALUES($1,$2,$3)", [`art-${id}`, tenant, `file-${id}`]);
+    await db.query("INSERT INTO v2_artwork_assignments(id,organization_id,artwork_file_id) VALUES($1,$2,$3)", [`art-${id}`, tenant, `file-${id}`]);
     await db.query(`INSERT INTO v2_production_works(id,organization_id,order_document_id,order_line_id,requirement_key,artwork_assignment_id,artwork_file_id,ordered_quantity,created_principal_kind,created_principal_subject,replacement_obligation_id,replacement_origin_production_work_id,rework_cycle_id,predecessor_production_work_id)
       VALUES($1,$2,$3,$4,'unit',$5,$6,$7,'staff','staff-a',$8,$9,$10,$11)`, [id, tenant, orderId, lineId, `art-${id}`, `file-${id}`, options.quantity ?? 10, options.replacement ?? null, options.origin ?? null, options.cycle ?? null, options.predecessor ?? null]);
   };
@@ -335,6 +337,96 @@ try {
     SELECT 'cap-work-'||n,'org-a','cap','cap','unit','cap-art-'||n,'cap-file-'||n,10,'staff','staff-a' FROM generate_series(1,1001) n;`);
   const capped = await read({ pageSize: 2 });
   assert.equal(capped.rows.length, 2); assert.equal(capped.summary.totalActive, 1_000); assert.equal(capped.coverage.truncated, true); assert.equal(capped.coverage.countsComplete, false);
+
+  // Execute Production Run SQL in memory; this does not prove native lock contention.
+  const runMigration = await migration("0279_v2_canonical_production_runs.sql");
+  await db.exec(`ALTER TABLE v2_artwork_assignments ADD COLUMN identity_fingerprint text NOT NULL DEFAULT 'sha256:${"a".repeat(64)}';
+    CREATE TABLE v2_artwork_files(id varchar,organization_id varchar,object_version text,PRIMARY KEY(id,organization_id));
+    CREATE TABLE v2_order_line_material_requirements(organization_id varchar,order_line_id varchar,material_id varchar,unit varchar);`);
+  await db.exec(runMigration.slice(runMigration.indexOf("CREATE TABLE v2_production_run_events"), runMigration.indexOf("\n\nINSERT INTO v2_permission_capabilities")));
+  const runPool = { connect: async () => { connections++; return client; } } as Pick<Pool, "connect">;
+  const runRunner = new PostgresProductionRunTransactionRunner(runPool as Pool);
+  const runWork = async (id: string, destination: string | null = "roll", quantity = 10) => {
+    await order(`order-${id}`, "2026-10-12"); await line(`line-${id}`, `order-${id}`, destination); await work(id, `order-${id}`, `line-${id}`, { quantity });
+    await db.query("INSERT INTO v2_artwork_files VALUES($1,'org-a','version-a')", [`file-${id}`]);
+  };
+  const createRun = async (runId: string, workId: string, attemptId: string | null, state: "draft" | "active", station: "flatbed" | "roll" = "roll") => {
+    await db.query("INSERT INTO v2_production_runs(id,organization_id,station_key,state,created_principal_kind,created_principal_subject,started_at) VALUES($1,'org-a',$2,$3,'staff','staff-a',CASE WHEN $3::varchar='active' THEN now() ELSE NULL END)", [runId, station, state]);
+    await db.query(`INSERT INTO v2_production_run_allocations(id,organization_id,production_run_id,production_work_id,allocated_quantity,artwork_assignment_id,artwork_file_id,artwork_identity_fingerprint,artwork_object_version,position,production_attempt_id)
+      VALUES($1,'org-a',$2,$3,5,$4,$5,$6,$7,0,$8)`, [`${runId}-allocation`, runId, workId, `art-${workId}`, `file-${workId}`, `sha256:${"a".repeat(64)}`, "version-a", attemptId]);
+    return `${runId}-allocation`;
+  };
+  const runValues = (runId: string, allocationId: string, goodQuantityDelta = 1) => ({ organizationId: org, productionRunId: brandedId<"ProductionRunId">(runId), productionRunAllocationId: allocationId, goodQuantityDelta, wasteQuantityDelta: 0, principalKind: "staff" as const, principalSubject: "staff-a" });
+
+  await runWork("run-reservation");
+  const candidateId = brandedId<"ProductionWorkId">("run-reservation");
+  const candidate = (await runRunner.transaction(tx => tx.lockCandidates(org, [candidateId])))[0]!;
+  assert.equal(candidate.stationKey, "roll");
+  assert.match(queries.slice().reverse().find(sql => sql.includes("FROM v2_production_works w") && sql.includes("FOR UPDATE OF w")) ?? "", /FOR UPDATE OF w$/);
+  await assert.rejects(() => runRunner.transaction(tx => tx.create({ id: brandedId<"ProductionRunId">("reservation-run"), organizationId: org, stationKey: "roll", materialFingerprint: candidate.materialFingerprint, layoutMetadata: {}, members: [candidate], quantities: new Map([[candidateId, 6]]), principalKind: "staff", principalSubject: "staff-a" })), /exclusive membership.*native two-client/i);
+  assert.deepEqual((await db.query("SELECT id FROM v2_production_runs WHERE id='reservation-run'")).rows, [], "Run creation remains fail-closed without native exclusivity proof");
+  await db.query("INSERT INTO v2_production_runs(id,organization_id,station_key,state,created_principal_kind,created_principal_subject) VALUES('existing-reservation','org-a','roll','draft','staff','staff-a')");
+  await db.query(`INSERT INTO v2_production_run_allocations(id,organization_id,production_run_id,production_work_id,allocated_quantity,artwork_assignment_id,artwork_file_id,artwork_identity_fingerprint,artwork_object_version,position)
+    VALUES('existing-reservation-allocation','org-a','existing-reservation',$1,6,$2,$3,$4,$5,0)`, [candidateId, candidate.artworkAssignmentId, candidate.artworkFileId, candidate.artworkIdentityFingerprint, candidate.artworkObjectVersion]);
+  await runRunner.transaction(async tx => {
+    const candidates = await tx.lockCandidates(org, [candidateId]);
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0]!.reservedByOtherRuns, 6, "the adapter reads existing reservations after the Production work-row lock");
+  });
+  const ordinaryOwner = new PostgresProductionTransaction(client);
+  assert.ok(await ordinaryOwner.lockWork(org, candidateId), "ordinary Production commands lock the same owner work row");
+  assert.match(queries.at(-1)!, /FROM v2_production_works WHERE organization_id=\$1 AND id=\$2 FOR UPDATE$/);
+
+  await runWork("run-unknown-destination", null);
+  assert.deepEqual(await runRunner.transaction(tx => tx.lockCandidates(org, [brandedId<"ProductionWorkId">("run-unknown-destination")])), [], "an unknown destination is not silently assigned to Flatbed");
+  await runWork("run-active-attempt"); await attempt("run-active-attempt-row", "run-active-attempt", 0, false, "roll");
+  assert.deepEqual(await runRunner.transaction(tx => tx.lockCandidates(org, [brandedId<"ProductionWorkId">("run-active-attempt")])), [], "an active ordinary attempt cannot be reserved by a Run");
+
+  const linkedWork = "run-linked-work", linkedAttempt = "run-linked-attempt";
+  await runWork(linkedWork); await attempt(linkedAttempt, linkedWork, 0, false, "roll");
+  const linkedAllocation = await createRun("linked-run", linkedWork, linkedAttempt, "active");
+  const beforeLinkedOutput = Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [linkedAttempt])).rows[0]!.good_quantity);
+  const linkedContext = { organizationId: org, operationId: "ordinary-linked-output", businessRequest: { id: "ordinary-linked-output", payloadFingerprint: "ordinary-linked-output" }, principal: { kind: "staff" as const, organizationId: org, userId: "staff-a", authority: { membershipId: "membership-a", capabilities: ["production.work"] } } };
+  const ordinaryService = new ProductionApplicationService({ transaction: async operation => operation({
+    reserve: async (input: { businessRequestId: string }) => ({ kind: "new" as const, request: { id: input.businessRequestId, resultJson: null } }),
+    lockAttempt: ordinaryOwner.lockAttempt.bind(ordinaryOwner), findWork: ordinaryOwner.findWork.bind(ordinaryOwner), readWork: ordinaryOwner.readWork.bind(ordinaryOwner), recordOutput: ordinaryOwner.recordOutput.bind(ordinaryOwner),
+    attribute: async () => undefined, audit: async () => undefined, succeed: async () => undefined,
+  } as never) });
+  const blockedOrdinaryOutput = await ordinaryService.recordOutput(linkedContext, { businessRequestId: "ordinary-linked-output", productionAttemptId: brandedId<"ProductionAttemptId">(linkedAttempt), goodQuantityDelta: 1 });
+  assert.equal(blockedOrdinaryOutput.ok, false, "ordinary Production cannot mutate an attempt owned by a Run");
+  assert.equal(Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [linkedAttempt])).rows[0]!.good_quantity), beforeLinkedOutput);
+  await assert.rejects(() => ordinaryOwner.startAttempt({ id: brandedId<"ProductionAttemptId">("ordinary-reserved-start"), organizationId: org, productionWorkId: brandedId<"ProductionWorkId">("run-reservation"), stationKey: "roll", kind: "initial", principalKind: "staff", principalSubject: "staff-a" }), /Run/);
+  assert.deepEqual((await db.query("SELECT id FROM v2_production_attempts WHERE id='ordinary-reserved-start'")).rows, []);
+  const runOwner = new PostgresProductionRunTransaction(client);
+  await assert.rejects(() => runOwner.output(runValues("linked-run", "not-a-member")), /not executable/);
+  assert.equal(Number((await db.query("SELECT good_quantity FROM v2_production_run_allocations WHERE id=$1", [linkedAllocation])).rows[0]!.good_quantity), 0);
+
+  const outputWork = "run-output-work", outputAttempt = "run-output-attempt";
+  await runWork(outputWork); await attempt(outputAttempt, outputWork, 0, false, "roll");
+  const outputAllocation = await createRun("valid-output-run", outputWork, outputAttempt, "active");
+  const recordedRun = await runRunner.transaction(tx => tx.output(runValues("valid-output-run", outputAllocation)));
+  assert.equal(recordedRun.allocations[0]!.goodQuantity, 1);
+  assert.equal(Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [outputAttempt])).rows[0]!.good_quantity), 1);
+  assert.equal(recordedRun.events.at(-1)?.kind, "good_output");
+
+  const heldWork = "run-held-work", heldAttempt = "run-held-attempt";
+  await runWork(heldWork); await attempt(heldAttempt, heldWork, 0, false, "roll"); await event("run-work-hold", heldWork, "hold");
+  const heldAllocation = await createRun("held-run", heldWork, heldAttempt, "active");
+  const heldBefore = Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [heldAttempt])).rows[0]!.good_quantity);
+  await assert.rejects(() => runOwner.output(runValues("held-run", heldAllocation)), /held/i);
+  assert.equal(Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [heldAttempt])).rows[0]!.good_quantity), heldBefore);
+
+  const movedWork = "run-moved-work", movedAttempt = "run-moved-attempt";
+  await runWork(movedWork); await attempt(movedAttempt, movedWork, 0, false, "roll");
+  const movedAllocation = await createRun("moved-run", movedWork, movedAttempt, "active");
+  await db.query("UPDATE v2_route_instance_steps SET production_destination_station_key='flatbed' WHERE id=$1", [`step-line-${movedWork}`]);
+  await assert.rejects(() => runOwner.output(runValues("moved-run", movedAllocation)), /destination/i, "Run execution preserves its frozen Production station when the current destination changes");
+
+  const wrongAttemptWork = "run-wrong-attempt-work", wrongAttempt = "run-wrong-attempt";
+  await runWork(wrongAttemptWork); await runWork("run-attempt-owner"); await attempt(wrongAttempt, "run-attempt-owner", 0, false, "roll");
+  const wrongAttemptAllocation = await createRun("wrong-attempt-run", wrongAttemptWork, wrongAttempt, "active");
+  await assert.rejects(() => runOwner.output(runValues("wrong-attempt-run", wrongAttemptAllocation)), /attempt.*work|work.*attempt/i);
+  assert.equal(Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [wrongAttempt])).rows[0]!.good_quantity), 0, "a run allocation cannot execute another work item's attempt");
   assert.equal(connections, releases, "every committed and rolled-back read releases its scoped client");
-  console.log("productionDailyReport.postgres: embedded source-DDL query semantics, split stations, exclusions, rework/replacement, zero remaining, cap, readonly, tenant and print/page equality PASS");
+  console.log("productionDailyReport.postgres: report semantics, executable Run lock SQL, fail-closed creation, existing output/hold/destination/exact-attempt regressions PASS");
 } finally { await db.close(); }

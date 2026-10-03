@@ -77,6 +77,7 @@ export const FlatbedStationPanel = ({
   goodQuantity,
   wasteQuantity,
   busy,
+  outputLocked = false,
   onSelect,
   onGoodQuantityChange,
   onWasteQuantityChange,
@@ -96,6 +97,7 @@ export const FlatbedStationPanel = ({
   goodQuantity: string;
   wasteQuantity: string;
   busy?: boolean;
+  outputLocked?: boolean;
   onSelect: (workId: string) => void;
   onGoodQuantityChange: (value: string) => void;
   onWasteQuantityChange: (value: string) => void;
@@ -188,9 +190,9 @@ export const FlatbedStationPanel = ({
         <section className="v2-flatbed-action-list">
           <button type="button" disabled={!onOpenTraveler} onClick={() => onOpenTraveler?.(selected)}>Open Traveler</button>
           {!activeAttempt ? <button className="go" type="button" disabled={!canWork || busy || selected.unitQuantitySatisfied || selected.state === "held" || selected.state === "rework_requested"} onClick={() => onStart(selected.attempts.length ? "reprint" : "initial")}>{selected.attempts.length ? "Start reprint" : "Start production"}</button> : <>
-            <label>Good output<input aria-label="Flatbed good output" type="number" min="0" max={Math.max(1, selectedRemaining)} step="1" value={goodQuantity} onChange={(event) => onGoodQuantityChange(event.target.value)} /></label>
-            <label>Waste output<input aria-label="Flatbed waste output" type="number" min="0" step="1" value={wasteQuantity} onChange={(event) => onWasteQuantityChange(event.target.value)} /></label>
-            <button className="go" type="button" disabled={!canWork || busy || selected.state === "held" || selected.state === "rework_requested" || (!validGoodOutput && !validWasteOutput)} onClick={() => onRecordOutput(activeAttempt.productionAttemptId)}>Record output</button>
+            <label>Good output<input aria-label="Flatbed good output" type="number" min="0" step="1" value={goodQuantity} disabled={outputLocked} onChange={(event) => onGoodQuantityChange(event.target.value)} /></label>
+            <label>Waste output<input aria-label="Flatbed waste output" type="number" min="0" step="1" value={wasteQuantity} disabled={outputLocked} onChange={(event) => onWasteQuantityChange(event.target.value)} /></label>
+            <button className="go" type="button" disabled={!canWork || busy || outputLocked || selected.state === "held" || selected.state === "rework_requested" || (!validGoodOutput && !validWasteOutput)} onClick={() => onRecordOutput(activeAttempt.productionAttemptId)}>Record output</button>
             <button type="button" disabled={!canComplete || busy || selected.state === "held" || selected.state === "rework_requested"} onClick={() => onCompleteAttempt(activeAttempt.productionAttemptId)}>Complete attempt</button>
           </>}
           {selected.unitQuantitySatisfied && <p className="v2-flatbed-complete">Production quantity is satisfied. Fulfillment remains a separate authority.</p>}
