@@ -3907,27 +3907,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         />
                                         <Label htmlFor={`line-taxable-${item.id}`}>Taxable</Label>
                                       </div>
-                                      {(item as any).taxabilityOverride != null ? (
-                                        <Button
-                                          type="button"
-                                          variant="link"
-                                          size="sm"
-                                          className="h-auto p-0 text-[11px]"
-                                          disabled={updateLineItemTaxability.isPending}
-                                          onClick={() => {
-                                            void (async () => {
-                                              try {
-                                                await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
-                                                await onAfterLineItemsChange?.();
-                                              } catch {
-                                                // The mutation owns the user-safe error toast.
-                                              }
-                                            })();
-                                          }}
-                                        >
-                                          Reset
-                                        </Button>
-                                      ) : null}
                                     </div>
                                   ) : undefined
                                 }
@@ -4456,7 +4435,31 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 </div>
                               ) : null}
                                 </>}
-                                advancedControlsSlot={isExpanded && (canSeeDebug || (import.meta.env.DEV && expandedProductIsPbv2)) ? <>
+                                advancedControlsSlot={isExpanded && (canSeeDebug || (import.meta.env.DEV && expandedProductIsPbv2) || (item as any).taxabilityOverride != null) ? <>
+                                    {(item as any).taxabilityOverride != null ? (
+                                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/30 p-2 text-xs">
+                                        <span>Taxability override is active.</span>
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-7"
+                                          disabled={updateLineItemTaxability.isPending}
+                                          onClick={() => {
+                                            void (async () => {
+                                              try {
+                                                await updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null });
+                                                await onAfterLineItemsChange?.();
+                                              } catch {
+                                                // The mutation owns the user-safe error toast.
+                                              }
+                                            })();
+                                          }}
+                                        >
+                                          Reset taxability
+                                        </Button>
+                                      </div>
+                                    ) : null}
                                     {isExpanded && expandedItem && expandedItem.id === item.id && false && (
                                       <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
                                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">

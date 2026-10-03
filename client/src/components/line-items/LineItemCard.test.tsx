@@ -511,7 +511,7 @@ describe("Order workspace composition", () => {
     await cleanup();
   });
 
-  it("keeps dimensions separate from centered pricing controls in the compact editor", async () => {
+  it("keeps taxability in the compact line-action row instead of the pricing controls", async () => {
     const { container, cleanup } = await renderInteractiveLineItemCard({
       isExpanded: true,
       compactExpandedLayout: true,
@@ -530,9 +530,11 @@ describe("Order workspace composition", () => {
     expect(pricing.textContent).toContain("Unit price");
     expect(pricing.textContent).toContain("Line total");
     expect(pricing.textContent).toContain("Override");
-    expect(pricing.textContent).toContain("Taxable");
+    expect(pricing.textContent).not.toContain("Taxable");
     expect(pricing.querySelectorAll("label.text-center")).toHaveLength(1);
     expect(pricing.querySelector('button[aria-label="Pricing details"]')).not.toBeNull();
+    const actionRow = container.querySelector('[data-testid="line-item-actions"]')!;
+    expect(actionRow.textContent).toContain("Taxable");
     await cleanup();
   });
 

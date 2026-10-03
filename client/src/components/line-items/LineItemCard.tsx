@@ -494,8 +494,8 @@ export function LineItemCard({
 
   const actionsRow = (
     <>
-      {(!readOnly && (onSave || onDuplicate || onRemove || relationshipActionsSlot)) || lineHistoryControl || diagnosticsControl ? (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm">
+      {(!readOnly && (onSave || onDuplicate || onRemove || relationshipActionsSlot || taxControlSlot)) || lineHistoryControl || diagnosticsControl ? (
+        <div data-testid="line-item-actions" className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             {!readOnly && onSave && isDirty && (
               <Button
@@ -539,6 +539,7 @@ export function LineItemCard({
             {!readOnly && onRemove && <RemoveLineItemButton onRemove={onRemove} />}
             {!readOnly ? relationshipActionsSlot : null}
             {!readOnly ? routingControls : null}
+            {!readOnly ? taxControlSlot : null}
             {lineHistoryControl}
             {diagnosticsControl}
           </div>
@@ -615,7 +616,6 @@ export function LineItemCard({
           </div>
           {priceOverride != null && <div className="flex items-center justify-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
         </div>
-        {taxControlSlot ? <div className="flex min-w-0 items-center self-end pb-0.5">{taxControlSlot}</div> : null}
         <div className="col-span-full flex items-center text-[11px]">
           {isCalculating ? <div className="text-muted-foreground">Calculating…</div> : null}
           {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" ? <div className="font-medium text-amber-600 dark:text-amber-500">⚠️ Outdated PBV2 config</div> : null}

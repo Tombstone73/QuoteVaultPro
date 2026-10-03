@@ -2255,7 +2255,7 @@ export default function OrderDetail() {
     <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
       <div className="w-full max-w-none">
         <header className="mb-5 border-b border-border/60 pb-3">
-          <div className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-center">
+          <div className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.65fr)_minmax(0,1.35fr)] xl:items-center">
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             <BackNavControls
               onBack={() => guardedNavigate(orderBackPath)}
@@ -2310,7 +2310,7 @@ export default function OrderDetail() {
             ) : !isInvoicesLoading && orderInvoices.length > 1 ? (
               <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={() => setOrderInvoiceSelectorOpen(true)}>
                 <FileText className="mr-1.5 h-4 w-4" />
-                Invoice
+                Invoices
               </Button>
             ) : !isInvoicesLoading && isAdminOrOwner && canCreateInvoiceFromOrder ? (
               <Button type="button" variant="outline" size="sm" className="h-10 rounded-md px-3 text-xs font-semibold" onClick={handleCreateInvoice} disabled={createOrderInvoice.isPending}>

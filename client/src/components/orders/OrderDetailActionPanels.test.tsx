@@ -25,7 +25,7 @@ jest.mock("@/components/StateTransitionButtons", () => ({
 const noop = () => undefined;
 
 describe("Order detail action layout", () => {
-  it("renders save, workflow routing, dirty discard, and compact overflow as recognizable controls", () => {
+  it("renders save, workflow routing, dirty discard, duplicate, and cancel as recognizable controls", () => {
     const html = renderToStaticMarkup(
       <OrderDetailPrimaryActions
         canEditOrder
@@ -40,6 +40,8 @@ describe("Order detail action layout", () => {
         isUpdatingOrder={false}
         isTransitioningStatus={false}
         isCancelingOrder={false}
+        canDuplicateOrder
+        isDuplicatingOrder={false}
         hasDirtyLineItem={false}
         cancelOrderUnavailableReason={null}
         onSaveOrder={noop}
@@ -54,7 +56,9 @@ describe("Order detail action layout", () => {
     expect(html).toContain("Save &amp; Route Jobs");
     expect(html).toContain("moves eligible line items to Design, Proofing, or Prepress");
     expect(html).toContain(">Discard<");
-    expect(html).toContain("More order actions");
+    expect(html).toContain("Duplicate Order");
+    expect(html).toContain("Cancel Order");
+    expect(html).not.toContain("More order actions");
     expect(html).not.toContain("Edit Order");
     expect(html).not.toContain("Bypass Proof");
   });
@@ -74,6 +78,8 @@ describe("Order detail action layout", () => {
         isUpdatingOrder={false}
         isTransitioningStatus={false}
         isCancelingOrder={false}
+        canDuplicateOrder={false}
+        isDuplicatingOrder={false}
         hasDirtyLineItem={false}
         cancelOrderUnavailableReason={null}
         onSaveOrder={noop}
@@ -84,7 +90,8 @@ describe("Order detail action layout", () => {
       />,
     );
 
-    expect(html).toContain("More order actions");
+    expect(html).toContain("Cancel Order");
+    expect(html).not.toContain("More order actions");
     expect(html).not.toContain("disabled=\"\"");
   });
 
@@ -103,6 +110,8 @@ describe("Order detail action layout", () => {
         isUpdatingOrder={false}
         isTransitioningStatus={false}
         isCancelingOrder={false}
+        canDuplicateOrder={false}
+        isDuplicatingOrder={false}
         hasDirtyLineItem={false}
         cancelOrderUnavailableReason="Cannot cancel because a payment has been recorded. Use the refund workflow."
         onSaveOrder={noop}
@@ -113,7 +122,8 @@ describe("Order detail action layout", () => {
       />,
     );
 
-    expect(html).toContain("More order actions");
+    expect(html).toContain("Cancel Order");
+    expect(html).not.toContain("More order actions");
   });
 
   it("does not offer another cancellation action for an already cancelled order", () => {
@@ -131,6 +141,8 @@ describe("Order detail action layout", () => {
         isUpdatingOrder={false}
         isTransitioningStatus={false}
         isCancelingOrder={false}
+        canDuplicateOrder={false}
+        isDuplicatingOrder={false}
         hasDirtyLineItem={false}
         cancelOrderUnavailableReason={null}
         onSaveOrder={noop}
@@ -175,6 +187,8 @@ describe("Order detail action layout", () => {
         isUpdatingOrder={false}
         isTransitioningStatus={false}
         isCancelingOrder={false}
+        canDuplicateOrder={false}
+        isDuplicatingOrder={false}
         hasDirtyLineItem={false}
         cancelOrderUnavailableReason={null}
         onSaveOrder={noop}

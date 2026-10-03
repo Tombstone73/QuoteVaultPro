@@ -425,15 +425,8 @@ function removeCustomerFromEditor(container: HTMLElement) {
   expect(remove).toBeTruthy();
   act(() => remove.click());
 }
-function openMoreOrderActions(container: HTMLElement) {
-  const trigger = container.querySelector('[aria-label="More order actions"]') as HTMLButtonElement;
-  expect(trigger).toBeTruthy();
-  act(() => {
-    Simulate.pointerDown(trigger, { button: 0, ctrlKey: false } as any);
-  });
-}
-function cancelOrderMenuItem() {
-  return Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((node) => node.textContent?.includes("Cancel Order")) as HTMLElement | undefined;
+function cancelOrderButton(container: HTMLElement) {
+  return Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Cancel Order")) as HTMLButtonElement | undefined;
 }
 function useRealPickerRequests() {
   mockExecutePickerRequests = true;
@@ -713,7 +706,7 @@ describe("OrderDetail cancellation action rendering", () => {
 
     expect(container.textContent).toContain("Save Order");
     expect(container.textContent).toContain("Save & Route Jobs");
-    expect(container.querySelector('[aria-label="More order actions"]')).toBeTruthy();
+    expect(cancelOrderButton(container)).toBeTruthy();
 
     act(() => root.unmount());
   });
@@ -722,13 +715,13 @@ describe("OrderDetail cancellation action rendering", () => {
     mockOrder = baseOrder();
     mockUser = { role: "admin", isAdmin: true };
     let rendered = renderOrderDetail();
-    expect(rendered.container.querySelector('[aria-label="More order actions"]')).toBeTruthy();
+    expect(cancelOrderButton(rendered.container)).toBeTruthy();
     act(() => rendered.root.unmount());
 
     document.body.innerHTML = "";
     mockUser = { role: "owner", isAdmin: true };
     rendered = renderOrderDetail();
-    expect(rendered.container.querySelector('[aria-label="More order actions"]')).toBeTruthy();
+    expect(cancelOrderButton(rendered.container)).toBeTruthy();
     act(() => rendered.root.unmount());
   });
 
@@ -742,11 +735,10 @@ describe("OrderDetail cancellation action rendering", () => {
     };
 
     const { container, root } = renderOrderDetail();
-    openMoreOrderActions(container);
-    const button = cancelOrderMenuItem();
+    const button = cancelOrderButton(container);
     expect(button).toBeTruthy();
-    expect(button?.getAttribute("data-disabled")).not.toBeNull();
-    expect(document.body.textContent).toContain("Cannot cancel because payment has been recorded.");
+    expect(button?.disabled).toBe(true);
+    expect(button?.parentElement?.getAttribute("title")).toContain("Cannot cancel because payment has been recorded.");
 
     act(() => root.unmount());
   });
@@ -772,8 +764,7 @@ describe("OrderDetail cancellation action rendering", () => {
     mockOrder = baseOrder();
 
     const { container, root } = renderOrderDetail();
-    openMoreOrderActions(container);
-    const button = cancelOrderMenuItem();
+    const button = cancelOrderButton(container);
     expect(button).toBeTruthy();
     act(() => button?.click());
 
@@ -787,8 +778,7 @@ describe("OrderDetail cancellation action rendering", () => {
     mockOrder = baseOrder();
 
     const { container, root } = renderOrderDetail();
-    openMoreOrderActions(container);
-    const button = cancelOrderMenuItem();
+    const button = cancelOrderButton(container);
     act(() => button?.click());
     const dialogButton = Array.from(document.body.querySelectorAll("button")).filter((node) => node.textContent?.includes("Cancel Order")).at(-1);
 

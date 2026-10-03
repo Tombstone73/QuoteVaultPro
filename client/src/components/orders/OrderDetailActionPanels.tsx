@@ -2,15 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CompleteOrderButton, CompleteProductionButton } from "@/components/StateTransitionButtons";
-import { Ban, Check, Copy, MoreHorizontal } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Ban, Check, Copy } from "lucide-react";
 
 type MaybePromise = void | Promise<void>;
 
@@ -120,42 +112,53 @@ export function OrderDetailPrimaryActions({
 
       {canCompleteOrder && <CompleteOrderButton orderId={orderId} className="h-10 rounded-md px-3 text-xs font-semibold" />}
 
-      {(canShowCancelOrder || canDuplicateOrder) ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" size="icon" className="h-10 w-10 rounded-md" aria-label="More order actions">
-              <MoreHorizontal className="h-4 w-4" />
+      {canDuplicateOrder ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-10 rounded-md px-3 text-xs font-semibold"
+          onClick={onDuplicateOrder}
+          disabled={isDuplicatingOrder}
+          title="Creates a new order with the same commercial configuration. Historical operations are not copied."
+        >
+          <Copy className="mr-1.5 h-4 w-4" />
+          {isDuplicatingOrder ? "Duplicating..." : "Duplicate Order"}
+        </Button>
+      ) : null}
+
+      {canShowCancelOrder ? (
+        !canCancelOrder ? (
+          <span
+            tabIndex={0}
+            title={cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order."}
+            className="inline-flex cursor-not-allowed"
+          >
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              className="h-10 rounded-md px-3 text-xs font-semibold"
+              onClick={onCancelOrder}
+              disabled
+            >
+              <Ban className="mr-1.5 h-4 w-4" />
+              Cancel Order
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[210px]">
-            <DropdownMenuLabel>Order actions</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {canDuplicateOrder ? (
-              <DropdownMenuItem
-                onSelect={onDuplicateOrder}
-                disabled={isDuplicatingOrder}
-                title="Creates a new order with the same commercial configuration. Historical operations are not copied."
-              >
-                <Copy className="mr-2 h-4 w-4" />
-                {isDuplicatingOrder ? "Duplicating..." : "Duplicate Order"}
-              </DropdownMenuItem>
-            ) : null}
-            {canShowCancelOrder ? (
-              <DropdownMenuItem
-                onSelect={onCancelOrder}
-                disabled={!canCancelOrder || isCancelingOrder}
-                className="text-destructive focus:text-destructive"
-                title={!canCancelOrder ? cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order." : undefined}
-              >
-                <Ban className="mr-2 h-4 w-4" />
-                {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
-              </DropdownMenuItem>
-            ) : null}
-            {!canCancelOrder && cancelOrderUnavailableReason ? (
-              <p className="px-2 pb-1.5 text-xs leading-snug text-muted-foreground">{cancelOrderUnavailableReason}</p>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </span>
+        ) : (
+        <Button
+          type="button"
+          variant="destructive"
+          size="sm"
+          className="h-10 rounded-md px-3 text-xs font-semibold"
+          onClick={onCancelOrder}
+          disabled={isCancelingOrder}
+        >
+          <Ban className="mr-1.5 h-4 w-4" />
+          {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
+        </Button>
+        )
       ) : null}
     </>
   );

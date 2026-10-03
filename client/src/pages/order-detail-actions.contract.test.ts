@@ -53,7 +53,7 @@ describe("order detail action contracts", () => {
   });
 
   test("keeps identity and action controls in one responsive header region", () => {
-    expect(detail).toContain('className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-center"');
+    expect(detail).toContain('className="grid min-w-0 items-start gap-3 xl:grid-cols-[minmax(0,0.65fr)_minmax(0,1.35fr)] xl:items-center"');
     expect(detail).toContain('aria-label="Order controls"');
     expect(detail).toContain('className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:justify-end"');
     expect(detail).not.toContain('className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"');
