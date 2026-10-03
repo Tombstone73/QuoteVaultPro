@@ -353,6 +353,7 @@ add('v2/tests/persistence/', 'psql', ['artworkAdditiveAssignments.postgres.sql',
 add('v2/tests/fixtures/', 'none', ['p7-qa-artwork.pdf'], 'manual', 'Binary artwork fixture consumed by QA; asset, not an executable test.');
 add('v2/tests/parity/', 'none', ['harness.ts'], 'safe-deterministic', 'Helper imported and exercised by the explicitly listed parity Jest suites; not an independent self-executing suite.');
 add('v2/tests/', 'node-test', ['architectureGuardrails.test.mjs'], 'safe-deterministic', 'Dedicated node:test negative architecture fixtures; separately executed canonical architecture-tests gate.');
+add('v2/tests/', 'node-test', ['ciValidationSummary.test.mjs'], 'safe-deterministic', 'Pure canonical-report fixtures verify public CI diagnostics redact arbitrary text and retain failures; imports Node built-ins, the inert summary helper and this static reviewed manifest, without database, network or application initialization.');
 add('v2/ui/src/', 'tsx', [
   'OrderLineArtwork.test.tsx',
   'ProductBuilderReference.hydration.test.ts',

@@ -54,6 +54,13 @@ jobs:
       - run: npm ci --include=dev --include=optional
       # No secrets, database services, dotenv, or deployment credentials here.
       - run: npm run v2:validate
+      - name: Collect canonical gate diagnostics
+        id: validation_report
+        if: always()
+        run: node v2/scripts/ci-validation-summary.mjs
+      - name: 'Canonical result: ${{ steps.validation_report.outputs.summary }}'
+        if: always()
+        run: echo 'The canonical command above remains the validation gate.'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
