@@ -749,6 +749,26 @@ export default function OrderDetail() {
     },
   });
 
+  const deleteOrderInternalNoteMutation = useMutation({
+    mutationFn: async (noteId: string) => {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId ?? "")}/internal-notes/${encodeURIComponent(noteId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.message || "Failed to delete order internal note");
+      return payload.data as { id: string };
+    },
+    onSuccess: async () => {
+      setOrderInternalNoteToDelete(null);
+      await queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
+      await queryClient.invalidateQueries({ queryKey: ["orders", orderId, "audit"] });
+      toast({ title: "Internal note removed" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to remove internal note", description: error.message, variant: "destructive" });
+    },
+  });
+
   const inventoryQuery = useQuery({
     queryKey: ["/api/orders", orderId, "inventory"],
     enabled: Boolean(orderId) && inventoryReservationsEnabled,
@@ -2026,25 +2046,6 @@ export default function OrderDetail() {
     invoices: orderInvoices,
   });
 
-  const deleteOrderInternalNoteMutation = useMutation({
-    mutationFn: async (noteId: string) => {
-      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId ?? "")}/internal-notes/${encodeURIComponent(noteId)}`, {
-        method: "DELETE",
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(payload?.message || "Failed to delete order internal note");
-      return payload.data as { id: string };
-    },
-    onSuccess: async () => {
-      setOrderInternalNoteToDelete(null);
-      await queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
-      await queryClient.invalidateQueries({ queryKey: ["orders", orderId, "audit"] });
-      toast({ title: "Internal note removed" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to remove internal note", description: error.message, variant: "destructive" });
-    },
-  });
   const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
   const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
   const billingLineItems = order.lineItems ?? [];
