@@ -246,6 +246,58 @@
     "nextCampaign": "Remaining L0 Gate Resolution and Targeted DEV Validation: resolve the three explicit business decisions, provide a disposable native PostgreSQL environment for Run/conversion acceptance, finish existing physical recovery/blind sender and V2-only accounting boundary gaps, then validate the landed slices in DEV. No Storefront or broad L2/L3 expansion.",
     "delivery": "Final documentation commit must receive exact-tip canonical validation/builds and fresh DEV ancestry verification; push only that SHA to refs/heads/dev and verify the remote receipt. No deployment polling. Completion report records the final SHA."
   },
+  "remainingL0Campaign": {
+    "startingDev": "42b05955c68dd8ae168e67c97a713cfc4d792086",
+    "oldPinnedV1": "d4f4c6b8706f0f7a2768d77054efb9b2dc28633e",
+    "CURRENT_V1_MAIN": "fc46a73f6af7bb485e6dbc309175c7c80dec8771",
+    "scope": ["SALE-08", "SALE-09", "OPS-09", "OPS-12", "FUL-11", "FUL-26", "BILL-16", "PAY-22", "ACCESS-05", "ACCESS-12"],
+    "termination": "Complete only these ten L0s or explicitly identify unavailable external validation after all safe source work. No L1 implementation, Storefront, architecture redesign or V1/MAIN/PROD change.",
+    "approvedPolicies": {
+      "BILL-16": "Issued Invoice PDF represents immutable historical issue evidence. Later payment/refund/credit/balance changes never change it; current financial UI/account views remain separate.",
+      "ACCESS-05": "Ordinary Team/Access mutation cannot remove or demote the last active structural Owner/Admin recovery authority. Custom capability roles cannot substitute. Preserve Owner and Platform Developer recovery paths.",
+      "ACCESS-12": "Sales owns explicit publication. Portal consumes the last explicitly sent/published immutable Quote revision; newer unsent Staff edits remain internal. Explicit resend advances visibility without rewriting old evidence."
+    },
+    "v1NarrowDelta": {
+      "method": "Read-only Git diff of d4f4c6b8 to exact current MAIN; no V1 tests/builds, no full parity audit. Both reference worktrees remain detached and read-only.",
+      "FUL-11": "Material delta in server/services/fulfillment/shippingContext.ts: Order override may enable/disable blind shipping independently of Customer default; explicit sender source Customer resolves tenant-scoped billing address, Custom uses complete stored sender and never falls back if incomplete. Combined Orders reject different sender details/sources. Existing historical Orders without explicit source retain Customer fallback. Destination remains distinct. Evidence: current MAIN shippingContext.ts and shipmentShippingContext.test.ts; shared/schema.ts declares new override/source fields.",
+      "otherRows": "Inspected Quote/Portal/Production/Billing/QuickBooks authority paths have no source delta. Orders route change adds internal-note delete; presentation/attachment/badge/editor deltas do not alter the remaining ten owner-level requirements. Each lane verifies only its affected V1 paths before implementation.",
+      "constraints": "V2 does not import or modify new V1 schema/writers, does not merge MAIN. Reconstruct required behavior through settled V2 owner contracts."
+    },
+    "ownership": "Lane A Sales/publication including PortalApp and Quote routes/UI. Lane B Production operations/adapters/UI. Lane C Fulfillment/Shipping operations/adapters/UI/documents. Lane D Billing Invoice documents/Finance and V2 accounting recovery. Lane E Auth/Team mutations/UI. Coordinator exclusively owns shared api.ts, App.tsx, operation-request contracts, deployment composition, migration SQL/journal/integrity, guard registrations/baselines and parity artifacts; workers submit specific patches/contracts for these files rather than edit them.",
+    "models": "Catalog resolved GPT-6.1 Sol/openai/high workers and GPT-6 Astra/openai/high independent reviewers. No global xhigh override.",
+    "migrationFrontier": "0299, journal idx300/when1790827200003, 295 protected entries. New numbers assigned only by coordinator; existing migration SQL/metadata immutable.",
+    "scopeReview": {
+      "reviewer": "ses_efde9f04dffexplG4F2jy62IY1",
+      "disposition": "Approved user policies are consistent with ownership; eight restrictive clarifications adopted. This is scope review, not final implementation acceptance.",
+      "restrictions": [
+        "OPS-09/FUL-26 reuse M0 receipts through domain operations. Durable key is tenant+operation+business request, not actor. Fresh current authority/tenant/resource checks precede receipt disclosure or replay; fingerprints still conflict. Missing browser data or a refreshed projection never proves noncommit. Preserve replacement-removal replay grants.",
+        "ACCESS-05 counts active structural Owner/Admin within the affected tenant. Global Platform Developer/other-tenant administrators/custom capability roles do not satisfy its floor. Preserve separately authorized existing recovery without self-promotion/new bootstrap/cross-tenant grants; serialize all decreasing floor mutations.",
+        "Publication is Sales-owned committed explicit evidence, not a Portal identity decision. Failed/uncertain resend never advances visibility; read/download/accept stays bound to authorized immutable publication. No invite/rebind/identity expansion; BDR-3 otherwise remains open.",
+        "BILL-16 historical rendering freezes issuer/customer/contact/address, number/date, lines/financial facts and identity-bearing branding. No current CRM/company substitution or fabricated legacy issue evidence; existing owner corrections/release/credit policy remain separate.",
+        "Blind sender fallback applies only to blind shipping; ordinary company sender remains. No expansion into shipping economics, multi-origin or financial release, and no V1 schema/write authority.",
+        "OPS-12 native proof exercises real owner/adapter paths with independent connections, membership/rollback/replay. Guarded Sales conversion is its own acceptance gate. Existing Run output and legitimate nonproduction fulfillment are not disabled by these gates.",
+        "A-E source lanes and F validation support remain exclusive; coordinator shared/API/kernel/migration/metadata changes respond only to concrete dependencies, no unrequested generic framework or new boundary-debt permission.",
+        "External-only termination requires safe implemented/reviewed source and applicable passing gates. Incomplete/disabled code or failed validation is not an external-only closure. All BDR/financial exclusions persist; no L1/Storefront/new row authorization."
+      ]
+    },
+    "baseline": { "countedIntents": 277, "remainingL0": 10, "importInstances": 81, "importFingerprints": 81, "sqlInstances": 191, "sqlFingerprints": 171 },
+    "lanes": [
+      { "lane": "A", "session": "ses_efded2157ffeCfYIqZDn96Dkse", "worktree": ".kilo/worktrees/l0-sales-publication", "rows": ["SALE-08", "SALE-09", "ACCESS-12"], "owner": "Sales / Portal publication consumption", "model": "GPT-6.1 Sol", "reasoning": "high" },
+      { "lane": "B", "session": "ses_efded2061ffepu1ecIHJQ0bTwo", "worktree": ".kilo/worktrees/l0-production-recovery", "rows": ["OPS-09", "OPS-12"], "owner": "Production recovery and Run membership", "model": "GPT-6.1 Sol", "reasoning": "high" },
+      { "lane": "C", "session": "ses_efded1ff3ffea5vME0ImDlC7Dn", "worktree": ".kilo/worktrees/l0-shipping-recovery", "rows": ["FUL-11", "FUL-26"], "owner": "Shipping / Fulfillment", "model": "GPT-6.1 Sol", "reasoning": "high" },
+      { "lane": "D", "session": "ses_efded1fa6ffeSIHMiQ9HlUCwGX", "worktree": ".kilo/worktrees/l0-billing-accounting", "rows": ["BILL-16", "PAY-22"], "owner": "Billing documents / Integrations accounting", "model": "GPT-6.1 Sol", "reasoning": "high" },
+      { "lane": "E", "session": "ses_efded1e80ffe1pGxpPeHdjZUF1", "worktree": ".kilo/worktrees/l0-structural-floor", "rows": ["ACCESS-05"], "owner": "Auth structural recovery floor", "model": "GPT-6.1 Sol", "reasoning": "high" },
+      { "lane": "F", "session": "ses_efded1e7effee7jr1lXXccXqXZ", "worktree": ".kilo/worktrees/l0-validation-support", "rows": [], "owner": "Disposable native DB and targeted DEV validation support only", "model": "GPT-6.1 Sol", "reasoning": "high" }
+    ],
+    "validationSupport": {
+      "discoverySession": "ses_efded1e7effee7jr1lXXccXqXZ",
+      "baselineDev": { "commit": "42b05955c68dd8ae168e67c97a713cfc4d792086", "versionAt": "2026-10-03T14:04:21.483Z", "versionHttp": 200, "healthHttp": 200, "readyHttp": 200, "tls": "certificate verification enabled; NODE_TLS_REJECT_UNAUTHORIZED=1", "scope": "Anonymous liveness/version only, not authenticated workflow or database-proof acceptance." },
+      "nativeDiscovery": "No command/binary/service/process/listener/container/WSL distribution verified for native PostgreSQL. Existing TEST_DATABASE_URL presence is being classified through safety/provenance checks without connecting or logging secrets before final environment disposition.",
+      "qaManifest": ".kilo/worktrees/l0-validation-support/.cache/v2-validation/lane-f-qa-manifest.json; ignored prepared artifact with execution disabled until coordinator exact flow and REQUIRED_COMMIT approval.",
+      "offlineManifestTests": "5/5 node:test passed; no fixtures, credentials or provider calls."
+    },
+    "status": "Frozen scope and approved policy recorded before domain implementation; six isolated lanes launched. Native/QA support initially characterized and candidate URL safety evaluation pending. No row transition or new milestone live-validation claim yet."
+  },
   "wave2DependencyUpdates": {
     "ART-04": "No remaining gap in its preauthorization intent. ART-10 exact-layer selection is now closed; intake-format breadth and production-art replacement remain separate open rows. No live storage validation.",
     "FUL-25": "No remaining gap in its replacement capability gate. FUL-09 prepared-revision recovery is now closed; FUL-26 broader physical retry and general successor/readiness policy remain open. Native/live fulfillment is unverified.",

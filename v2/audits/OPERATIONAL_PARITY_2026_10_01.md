@@ -1,5 +1,69 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+## Remaining L0 Campaign: October 3, 2026
+
+The campaign starts from delivered DEV
+`42b05955c68dd8ae168e67c97a713cfc4d792086`. The four committed parity artifacts
+remain the frozen starting evidence; no full audit, new row, L1 implementation,
+Storefront or V1 modification is authorized.
+
+After read-only fetch, **CURRENT_V1_MAIN** is
+`fc46a73f6af7bb485e6dbc309175c7c80dec8771`. The old audited V1 remains
+`d4f4c6b8706f0f7a2768d77054efb9b2dc28633e`. Both detached reference worktrees
+are read-only and pristine. A narrow Git delta, not a 277-intent re-audit,
+identified a material FUL-11 change in `shippingContext.ts`: an Order can override
+the Customer blind-shipping default; explicit Customer or Custom sender source
+is distinct from Ship To, incomplete Custom never falls back, and combined Orders
+with incompatible sender details/sources fail. Historical unspecified sender
+source preserves the Customer fallback. The inspected Quote, Portal, Production,
+Billing and accounting owner paths have no delta. Presentation/note changes are
+not new L0 requirements.
+
+The user has approved three former decision gates:
+
+- BILL-16: issued Invoice PDFs represent historical issued evidence; subsequent
+  payments/refunds/credits/balance never rewrite the document. Current financial
+  UI/account views remain separate. No Statement L1 work is included.
+- ACCESS-05: ordinary mutation cannot remove/demote the last active structural
+  Owner/Admin recovery authority. Capability roles cannot substitute. Preserve
+  Owner and Platform Developer recovery paths without a custom-role backdoor.
+- ACCESS-12: Sales owns publication; Portal shows the last explicitly
+  sent/published immutable Quote revision. Staff edits to a newer internal
+  revision do not leak; explicit resend advances visibility and retains history.
+
+Six isolated Sol High lanes are assigned in the reconciliation ledger. Astra
+High nonauthor reviewers must attempt to disprove every substantive package.
+Shared API/composition, operation-request contracts, migrations and all audit
+accounting remain coordinator-owned. No xhigh override is applied globally.
+
+Source closures require focused negative, authorization, tenant, replay and
+rollback evidence, independent review and full canonical/build gates. New Run
+creation requires a genuine two-independent-connection native PostgreSQL proof;
+PGlite alone is insufficient. Lane F is checking safely available disposable
+infrastructure and starts with read-only deployed version/health/readiness.
+Targeted writes require an approved disposable-QA manifest and deployed
+REQUIRED_COMMIT (or verified descendant). QuickBooks stays disconnected; no
+carrier purchase, real admin damage or valuable prior fixture mutation.
+
+Polling after reviewed DEV milestones is no faster than once per minute; other
+source work continues while deployment is pending. Until the relevant exact
+workflow is checked, each source milestone is **Deployable but not yet
+live-validated**. Stop once these ten rows are closed or all safe source is
+complete with only genuinely unavailable external validation remaining. Do not
+continue into L1.
+
+Independent scope review `ses_efde9f04dffexplG4F2jy62IY1` confirmed the approved
+policies and constrained their interpretation in the ledger. Receipt keys remain
+tenant/operation/request, not actor-scoped; each owner reauthorizes disclosure
+and replay. The structural floor is tenant-specific, not satisfied by a global
+developer or cloned capability role. Publication never broadens Portal identity
+and uncertain send cannot advance customer visibility. Historical Invoice identity,
+addresses and branding are frozen along with money, with no fabricated legacy
+evidence. Native proof and Sales conversion acceptance are workflow-specific and
+do not disable unrelated accepted fulfillment or existing Run output. Disabled or
+incomplete source is not an external-only closure. These are restrictive scope
+clarifications, not implementation acceptance or additional feature authority.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit
