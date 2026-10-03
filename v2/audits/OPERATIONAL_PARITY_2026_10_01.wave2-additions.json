@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "status": "coordinator-approved-targeted-wave2-coverage",
+  "wave1RawInventory": "OPERATIONAL_PARITY_2026_10_01.inventory.json",
+  "wave1RawInventorySha256": "dfdea7c58a5c3f1abdacf73e1458d6d624eb22e7507a55b3f4b85a3cc83e9681",
+  "startingCountedDenominator": 273,
+  "additionCount": 4,
+  "countedDenominator": 277,
+  "startCommit": "02bd97641f2d1815c28339fbfd82cd570b910461",
+  "v1Main": "d4f4c6b8706f0f7a2768d77054efb9b2dc28633e",
+  "v2DevBaseline": "02bd97641f2d1815c28339fbfd82cd570b910461",
+  "inventoryCoverageSession": "ses_f038e77dcffeGcPfb22fWa17n1",
+  "independentSourceOverlapReview": "ses_f037d3b5effeXKkLE1nXlWPHy1",
+  "sourceReviewLimits": "Characterization/source inventory only. No V1/V2 tests, DB, provider, or live operations were run. Review confirms scope separation and operator-facing V1 evidence; exact V1 file/line positions follow the lane's pinned MAIN checkout and are medium confidence in the separate reviewer.",
+  "rules": [
+    "These four rows are targeted additions, not part of Wave 1's historical 273-row scorecard or raw inventory checksum.",
+    "No new Inventory/Materials write, BD-6 cutover, Procurement implementation, or Inbound transport/provider integration is authorized by adding rows.",
+    "Nesting is a consumption dependency only and is not counted separately. Material definitions PRODDEF-16 and Production material consumption OPS-21 are not duplicated.",
+    "Classes/priorities below are coordinator-approved from current mounted V1 workflows and absent/partial V2 equivalents; validation remains source inspection only."
+  ],
+  "records": [
+    {
+      "id": "INV-01",
+      "domain": "Inventory/Materials",
+      "capability": "Record a physical material count and append a stock adjustment",
+      "v1Behavior": "Mounted Materials staff workflow edits counted quantity and records a stock-adjustment history entry; Inventory adjusts the persisted material stock balance.",
+      "v2Behavior": "Inventory lists balances and receives generic stock, but no operator physical-count/adjustment workflow was found.",
+      "candidateClass": "D",
+      "candidatePriority": "L1",
+      "v1Evidence": [
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "client/src/App.tsx", "lines": "320-322", "qualification": "Materials list/detail routes mounted." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "client/src/pages/materials.tsx", "lines": "page inspected; operator count/edit and adjustment UI", "qualification": "Line range was not captured in the lane result; file-level reference only." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "server/storage/inventory.repo.ts", "lines": "141-163", "qualification": "Adjustment history and stock quantity update." }
+      ],
+      "v2Evidence": [
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/ui/src/InventoryWorkspace.tsx", "lines": "12-29", "qualification": "Balances and generic receive workflow." },
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/src/interfaces/http/inventoryRoutes.ts", "lines": "23-31", "qualification": "Balance and receipt routes; no physical count command found in bounded lane inspection." }
+      ],
+      "testEvidence": [
+        { "source": "Wave 2 Lane 6 + independent coverage reviewer", "evidence": "Source inspection only; tests not run." }
+      ],
+      "gap": "A V1 operator physical-count and reasoned stock-adjustment workflow has no identified V2 equivalent. This is distinct from material definition administration (PRODDEF-16) and Production consumption/reconciliation (OPS-21).",
+      "requiredAction": "Characterize Inventory-owned count/adjustment command, physical ledger and correction/reconciliation semantics before implementation; preserve BD-6 and existing stock authority, do not create cross-module writes or change material requirement sources.",
+      "owner": "Inventory/Materials; Settings/UI may consume only its public operation.",
+      "validationStatus": "Pinned source inventory only; no application tests or database validation run.",
+      "liveValidationStatus": "Not live-validated.",
+      "decisionDependencies": ["BD-6 stock-authority/coexistence boundary; BDR-2 only if material-source policy is changed."],
+      "confidence": "High on mounted V1/source path and V2 missing workflow; medium on exact V1 UI line range.",
+      "coordinatorStatus": "approved-wave2-addition"
+    },
+    {
+      "id": "PROC-01",
+      "domain": "Procurement",
+      "capability": "Create and receive vendor purchase orders including partial quantities",
+      "v1Behavior": "Mounted Staff can manage Vendors/Purchase Orders and receive issued or partially received PO lines using purchase-to-inventory unit conversion; receipt updates Inventory and vendor cost facts.",
+      "v2Behavior": "No mounted Procurement workspace/route or PO-linked partial receive operation found. Generic Inventory receipt is not a purchase-order lifecycle.",
+      "candidateClass": "D",
+      "candidatePriority": "L1",
+      "v1Evidence": [
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "client/src/App.tsx", "lines": "325-332", "qualification": "Vendor and purchase-order pages mounted." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "server/routes/procurement.routes.ts", "lines": "360-382", "qualification": "PO receive accepts quantities for issued/partially received POs." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "server/storage/accounting.repo.ts", "lines": "359-394", "qualification": "Partial quantity conversion, inventory receipt, vendor cost update." }
+      ],
+      "v2Evidence": [
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/ui/src/InventoryWorkspace.tsx", "lines": "12-29", "qualification": "Generic receipt does not reference purchase orders." },
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md", "lines": "272-281", "qualification": "Procurement owns purchase/replenishment and requests stock receipt from Inventory; this is ownership evidence, not an implementation." }
+      ],
+      "testEvidence": [
+        { "source": "Wave 2 Lane 6 + independent coverage reviewer", "evidence": "Source inspection only; tests not run." }
+      ],
+      "gap": "The pinned V1 has a mounted Vendor/PO and partial-receiving workflow; no V2 Procurement workflow exists in the bounded current UI/route inspection.",
+      "requiredAction": "Scope Procurement-owned vendor/PO lifecycle and Inventory-owned receipt contract in a separate reviewed wave; preserve partial quantities, UOM conversion, durable receipt identity, vendor-cost attribution, and fail-closed recovery. No new provider or schema is implied here.",
+      "owner": "Procurement for vendors/POs; Inventory owns stock receipt and balance.",
+      "validationStatus": "Pinned source inventory only; no application tests or database validation run.",
+      "liveValidationStatus": "Not live-validated.",
+      "decisionDependencies": ["No BDR-2 dependency for basic purchasing/receipt; source-authority/cutover and Nesting remain out of scope."],
+      "confidence": "High on V1 mounted route and V2 bounded absence; no operational frequency/live use quantified.",
+      "coordinatorStatus": "approved-wave2-addition"
+    },
+    {
+      "id": "INB-01",
+      "domain": "Inbound",
+      "capability": "Ingest manual and email-sourced customer work with durable source evidence",
+      "v1Behavior": "Mounted staff Inbound supports manual intake and pulling latest customer/order email into a reviewable source record.",
+      "v2Behavior": "V2 workspace supports review, but the only HTTP ingress located is a development-QA synthetic route; no normal manual/email ingress is exposed.",
+      "candidateClass": "D",
+      "candidatePriority": "L1",
+      "v1Evidence": [
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "client/src/App.tsx", "lines": "311", "qualification": "Inbound page mounted." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "client/src/pages/inbound-orders.tsx", "lines": "10303-10305", "qualification": "Manual-intake page call." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "client/src/pages/inbound-orders.tsx", "lines": "11430-11450", "qualification": "Mounted Pull Latest Emails action." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "server/routes/inboundOrders.routes.ts", "lines": "397", "qualification": "Email pull endpoint." }
+      ],
+      "v2Evidence": [
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/src/interfaces/http/inboundRoutes.ts", "lines": "112-124", "qualification": "Only development-QA synthetic ingress route located." },
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/infrastructure/inbound/postgresInboundIntakeStore.ts", "lines": "135-153,211-222", "qualification": "Existing durable source identity and conversion-request idempotency; no source ingress by itself." }
+      ],
+      "testEvidence": [
+        { "source": "Wave 2 Lane 6 + independent coverage reviewer", "evidence": "Source inspection only; tests not run." }
+      ],
+      "gap": "Normal operator source ingress and source evidence creation are absent from the identified V2 route; the QA-only synthetic endpoint is not production intake parity.",
+      "requiredAction": "Define Inbound-owned normal manual intake and an approved Communications/Integrations email transport contract with idempotent source identity and useful provider failure state. Do not connect or invoke email providers in this campaign.",
+      "owner": "Inbound owns source evidence/intake; Communications/Integrations own any provider transport through explicit contract.",
+      "validationStatus": "Pinned source inventory only; no application tests, provider operations, or DB validation run.",
+      "liveValidationStatus": "Not live-validated; no email provider calls.",
+      "decisionDependencies": ["Existing tenant/source-id idempotency is credited; no Pricing/Product or BDR-2 change."],
+      "confidence": "High on V1 mounted workflow/V2 synthetic-only route; provider readiness not tested.",
+      "coordinatorStatus": "approved-wave2-addition"
+    },
+    {
+      "id": "INB-02",
+      "domain": "Inbound",
+      "capability": "Correct and review inbound work, then submit as Quote or Order with replay-safe result",
+      "v1Behavior": "Staff review/correct intake and can create a Quote draft or an Order; repeating a completed Order submission returns the already-linked Order.",
+      "v2Behavior": "V2 supports operator review/draft edits and durable Order conversion, but no canonical Quote conversion endpoint was found. Existing Order outcome is credited; whole workflow is partial.",
+      "candidateClass": "C",
+      "candidatePriority": "L1",
+      "v1Evidence": [
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "server/routes/inboundOrders.routes.ts", "lines": "2239-2269,2271-2298", "qualification": "Separate Quote draft and Order conversion paths." },
+        { "version": "V1 MAIN d4f4c6b8706f0f7a2768d77054efb9b2dc28633e", "path": "server/services/inboundOrders/InboundOrderService.ts", "lines": "3281-3285,3905-3918", "qualification": "Order replay returns already-linked canonical Order." }
+      ],
+      "v2Evidence": [
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/ui/src/InboundOrdersWorkspace.tsx", "lines": "31-35,78-105", "qualification": "Operator queue review/draft editing and Order submission." },
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "v2/src/interfaces/http/inboundRoutes.ts", "lines": "128-140", "qualification": "Order conversion endpoint; no Quote conversion endpoint found." },
+        { "version": "V2 DEV baseline 02bd97641f2d1815c28339fbfd82cd570b910461", "path": "docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md", "lines": "189-200", "qualification": "Inbound owns pre-submission evidence/correction/submission identity; Sales owns canonical Quote/Order." }
+      ],
+      "testEvidence": [
+        { "source": "Wave 2 Lane 6 + independent coverage reviewer", "evidence": "Source inspection only; tests not run." }
+      ],
+      "gap": "Inbound review and replay-safe Order conversion exist; the distinct V1 Quote-draft outcome is absent. Existing partial V2 behavior must not be recounted as wholly missing.",
+      "requiredAction": "After the L0 swarm, characterize an Inbound-owned Quote submission operation that delegates to Sales' canonical Quote-draft operation, and retain exact intake-request replay/error evidence. Do not create Quotes/Orders through foreign table writes.",
+      "owner": "Inbound coordinates reviewed evidence and durable submission intent; Sales owns canonical Quote/Order creation.",
+      "validationStatus": "Pinned source inventory only; no application tests or database validation run.",
+      "liveValidationStatus": "Not live-validated.",
+      "decisionDependencies": ["No additional BDR identified for Quote draft submission; Portal lifecycle/publishing is not implied."],
+      "confidence": "High on current mounted V2 review/Order path and missing Quote route in bounded inventory; no source tests run.",
+      "coordinatorStatus": "approved-wave2-addition"
+    }
+  ]
+}

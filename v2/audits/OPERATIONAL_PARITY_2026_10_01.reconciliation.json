@@ -95,7 +95,7 @@
   "wave2L0Triage": {
     "startingDev": "02bd97641f2d1815c28339fbfd82cd570b910461",
     "pinnedV1Main": "d4f4c6b8706f0f7a2768d77054efb9b2dc28633e",
-    "matrixAuthority": "273 counted intent rows and their exact Wave 1 evidence in OPERATIONAL_PARITY_2026_10_01.md/inventory.json. No broad audit or denominator rewrite authorized.",
+    "matrixAuthority": "The Wave 1 raw inventory and 273-row scorecard remain immutable historical starting truth. This targeted L0/coverage campaign explicitly adds four separately evidenced rows in OPERATIONAL_PARITY_2026_10_01.wave2-additions.json; cumulative denominator is 277, not a silent rewrite or broad audit.",
     "statusCounts": {
       "IMPLEMENT NOW": 12,
       "DECISION REQUIRED": 3,
@@ -103,15 +103,20 @@
       "INTENTIONAL EXCLUSION / RECLASSIFY": 0,
       "BLOCKED BY EXTERNAL ENVIRONMENT": 0
     },
+    "independentReview": {
+      "reviewSession": "ses_f038bd24effe294e7IgAvM5qpz",
+      "result": "Conditional pass; dispositions unchanged. Three bounded-contract clarifications incorporated before implementation: OPS-12 separates PGlite query execution from native two-client contention; OPS-13 explicitly gates new BDR-4 lineage, quantity, cancellation and readiness; FUL-11 limits the billing-address sender default to blind shipping and preserves non-blind company sender behavior.",
+      "reviewedBaseline": "14b4fd17777f03213d667bd030736c49ed40b6e5"
+    },
     "rows": {
       "SALE-08": { "status": "IMPLEMENT NOW", "owner": "Sales", "contract": "Accept/convert only the exact immutable sent Quote checkpoint; post-send mutable edits must not replace the delivered proposal. Keep all Sales/Billing/Artwork/Products/Materials/Routing work in the existing owner transaction and preserve frozen financial evidence.", "evidence": "Matrix row SALE-08 plus SALE-09; ownership contract docs/architecture/v2/V2_MODULE_OWNERSHIP_BOUNDARIES.md Sales §current state and history (immutable quote-sent checkpoint)." },
       "SALE-09": { "status": "IMPLEMENT NOW", "owner": "Sales; Communications for delivery evidence", "contract": "Retain sent proposal and its exact checkpoint immutably; any permitted new version must be a distinct draft/revision and acceptance must bind to what was actually sent. First implement fail-closed correspondence, not speculative revision history/UI breadth.", "evidence": "Matrix row SALE-09; current V1 Revise clones rather than unlocks sent original; authoritative Sales checkpoints freeze what was sent." },
       "ART-10": { "status": "IMPLEMENT NOW", "owner": "Prepress consumes; Artwork owns source/assignment identity", "contract": "Resolve preview, production designation and predecessor by exact persisted assignment/source/version/layer identity. Zero or multiple candidates fail visibly; never choose first side/page match or relax historical supersession constraints.", "evidence": "Matrix row ART-10; assignment IDs already exist in current Prepress/Artwork contracts." },
       "OPS-09": { "status": "IMPLEMENT NOW", "owner": "Production UI/application", "contract": "Preserve the full submitted quantity/reason/time/request identity on uncertain or failed output mutation. Exact retry reuses the same operation identity/payload; a changed physical report requires explicit reconciliation/new intent. Surface owner errors; never clamp quantities or assume timeout means no commit.", "evidence": "Matrix row OPS-09; existing Production owner idempotency/fingerprint contract." },
-      "OPS-12": { "status": "IMPLEMENT NOW", "owner": "Production", "contract": "First reproduce exact candidate SQL, then lock only the justified Production-owned base rows and prove query execution plus competing candidate/create serialization with actual query/PGlite. Do not claim lock sufficiency from parser acceptance; no run can be advertised usable if exclusive membership is not preserved.", "evidence": "Matrix row OPS-12; Wave 1 actual query had SQLSTATE 0A000 on nullable outer joins; lock variants were diagnostics only." },
-      "OPS-13": { "status": "IMPLEMENT NOW", "owner": "Production; Routing supplies frozen destination", "contract": "Enforce one execution controller per exact existing Production attempt/work scope; reject ordinary commands against run-controlled work and make Run commands honor existing holds, lineage and frozen destination. If correctness needs new successor/quantity/cancellation authority under BDR-4, fail closed and return only that subdecision; do not decide BDR-4.", "evidence": "Matrix row OPS-13; Production owns attempts and Run facts, Routing owns transitions/destination decisions; existing approved original/replacement isolation remains." },
+      "OPS-12": { "status": "IMPLEMENT NOW", "owner": "Production", "contract": "First reproduce exact candidate SQL and verify parsing/query execution with actual query/PGlite; lock only justified Production-owned base rows. Query execution and exclusive-membership concurrency proof are separate: before claiming the race is closed require a dedicated native PostgreSQL two-client contention check. Do not claim lock sufficiency from parser acceptance; keep run creation fail-closed if exclusive membership is not preserved.", "evidence": "Matrix row OPS-12; Wave 1 actual query had SQLSTATE 0A000 on nullable outer joins; lock variants were diagnostics only; native multi-client contention was not run." },
+      "OPS-13": { "status": "IMPLEMENT NOW", "owner": "Production; Routing supplies frozen destination", "contract": "Enforce one execution controller only for exact existing Production work/attempt identity; reject ordinary commands against run-controlled attempts and ensure Run commands honor existing holds and the already-frozen route/destination. Do not implement or assert new successor lineage, quantity aggregation, cancellation or readiness semantics; those remain BDR-4. If the invariant needs any of those, fail closed for that subfeature and return its exact decision request.", "evidence": "Matrix row OPS-13; Production owns existing attempts/Run facts, Routing owns transitions/frozen destination; ownership doc explicitly leaves successor lineage unresolved under BDR-4; preserve existing original/replacement isolation." },
       "FUL-09": { "status": "IMPLEMENT NOW", "owner": "Shipping/UI", "contract": "Restore the complete persisted prepared revision including every allocation and revision identity. Any dirty local edits disable finalize/ship until explicit Save/Cancel; stale revision receives a useful refresh/conflict, never silent partial save or persisted-old versus displayed-new finalization.", "evidence": "Matrix row FUL-09; Shipping owns preparation revisions and application already exposes correction/void." },
-      "FUL-11": { "status": "IMPLEMENT NOW", "owner": "Shipping; Customers supplies canonical addresses; document rendering consumes snapshot", "contract": "Use V1's latest MAIN billing-address sender default for blind shipment, require explicit canonical sender identity/address completion, and freeze sender/recipient/document identity in the Shipping handoff snapshot. No Ship-To, tenant branding or mixed-source fallback; carrier provider remains untouched.", "evidence": "Matrix row FUL-11 and pinned V1 shippingContext.ts lines 48-113; Shipping owns shipment facts and preserves handoff snapshot." },
+      "FUL-11": { "status": "IMPLEMENT NOW", "owner": "Shipping; Customers supplies canonical addresses; document rendering consumes snapshot", "contract": "For blind shipment only, use V1's latest MAIN billing-address sender default, require complete sender identity/address, and freeze sender/recipient/document identity in the Shipping handoff snapshot. No Ship-To, tenant branding or mixed-source fallback for blind sender. Preserve existing non-blind company/organization-branded sender behavior unchanged; carrier provider remains untouched.", "evidence": "Matrix row FUL-11 and pinned V1 shippingContext.ts lines 48-113; V1 shippingDocumentService.ts lines 68-86 preserves non-blind company sender; Shipping owns shipment facts and handoff snapshot." },
       "FUL-26": { "status": "IMPLEMENT NOW", "owner": "Fulfillment and Shipping operation owners; UI retains intent", "contract": "On unknown physical-operation outcome, retain exact request key and immutable body until owner confirms success or failure. Retry same intent/key only; owner replay must return original result without repeating Pickup/Shipment/replacement effects. Changed selection requires explicit resolution; never mint a second key on timeout.", "evidence": "Matrix row FUL-26; existing owner durable request identities/replay; V1 pickup retry behavior is row evidence." },
       "BILL-16": { "status": "DECISION REQUIRED", "owner": "Billing document authority", "question": "For a PDF reproducing an issued Invoice whose Billing revisions changed after issue, should the PDF remain a historical issued-document rendering with no claimed current balance, or preserve that immutable issued body and append a separately labelled, canonical-current settlement balance? If the latter, what as-of/provenance label is required? Until answered, never label checkpoint-total-minus-current-payments as current balance and never rewrite issued evidence.", "evidence": "Matrix row BILL-16 and Wave 1 actual reader/document/PGlite reproduction: canonical current balance 1,000 cents; PDF's current-labelled balance 0." },
       "PAY-08": { "status": "IMPLEMENT NOW", "owner": "Payments; Finance UI integrates owner request/replay", "contract": "Capture amount, tender, allocation, occurrence timestamp, Invoice/tenant/session and business request identity as one immutable submitted intent. Unknown response retains same key/body/time for exact retry/reconciliation; cannot silently create a new payment/refund intent. No claim of reload durability unless implemented/tested.", "evidence": "Matrix row PAY-08; PaymentsWorkspace is existing safe exact-retry example, distinct from older Invoice Finance mutations." },
@@ -120,8 +125,228 @@
       "ACCESS-05": { "status": "DECISION REQUIRED", "owner": "Auth/Team business authority", "question": "Which protected invariant defines a surviving administrator for disable/revoke: a structurally authorized Owner/Admin/Platform Developer able to administer Team Access, or a holder of permissions.manageSets + permissions.assignStaff? Should both models be required conjunctively, and what safe bootstrap/recovery rule applies when either count is zero? Freeze the counted authority and transaction lockout behavior before changing grants, floor checks or revocation.", "evidence": "Matrix row ACCESS-05; current structural Team-management checks conflict with legacy capability floor; no live lockout was established." },
       "ACCESS-12": { "status": "DECISION REQUIRED", "owner": "Sales owns publication/commercial facts; Portal consumes safe projection", "question": "What exact Sales-owned predicate publishes a Quote to the existing Portal, and on revision does Portal show the last sent immutable checkpoint while hiding unsent edits, or hide the Quote until a new send? Define treatment of never-sent draft, sent/open, revised-unsent, accepted and converted Quotes. Until frozen, block/customer-safe reads of ambiguous internal drafts; do not infer that Customer binding or sent-only state alone is the approved complete lifecycle.", "evidence": "Matrix row ACCESS-12; V1 visibleInCustomerPortal and sent lifecycle may be independent; V2 current scoped query lacks explicit visibility condition." }
     },
-    "nonL0FDependencies": "BDR-1 pricing authoring, BDR-2 material-source policy, BDR-3 general Portal identity lifecycle, BDR-4 general successor/quantity/cancellation remain unchanged. L0 implementation work may proceed only within existing settled owner contracts; any package encountering a required unresolved decision stops that subfeature and continues its independent safe work.",
-    "externalBlockers": "None of the 15 frozen L0 rows is classified as externally blocked. PAY-22 source closure uses inert QuickBooks objects; provider-live validation remains unrun and is not claimed."
+    "nonL0FDependencies": "BDR-1 pricing authoring, BDR-2 material-source policy, BDR-3 general Portal identity lifecycle, BDR-4 successor lineage/quantity/cancellation/readiness remain unchanged. L0 implementation work may proceed only within existing settled owner contracts; any package encountering a required unresolved decision stops that subfeature and continues its independent safe work.",
+    "externalBlockers": "None of the 15 frozen L0 rows is classified as externally blocked. PAY-22 provider-live validation is unrun and is not claimed.",
+    "coordinatorMigrationReservations": [
+      {
+        "tag": "0299_v2_sales_quote_delivery_prepared_evidence",
+        "idx": 300,
+        "scope": "Nullable prepared semantic snapshot on existing v2_sales_quote_delivery_attempts, if Lane1 final contract and independent review confirm required.",
+        "reason": "Delivery attempt currently stores request, recipient, PDF hash, provider result, but no immutable prepared Quote/customer/document projection for provider-success/current-Quote-race recovery.",
+        "frontierObserved": { "protectedCount": 294, "latestTag": "0298_v2_workspace_maintenance_expiry_index", "latestIdx": 299, "latestWhen": 1790827200002, "preflight": "PASS", "manifestChanged": false },
+        "status": "Completed by coordinator during recovery, independently reviewed and integrated in 535de86069721bf96c9b25f7440a79a467210ffb. Historical NULL evidence is not backfilled; new evidence is required and immutable. V2 readiness fails closed if the schema guard is missing.",
+        "when": 1790827200003
+      }
+    ]
+  },
+  "wave2LaneAssignments": {
+    "base": "14b4fd17777f03213d667bd030736c49ed40b6e5",
+    "coordinator": "Parent integration worktree kilo/v2-ordering-campaign; owns all matrix/ledger, shared files, final review, commits and DEV delivery.",
+    "lanes": [
+      { "lane": 1, "taskID": "ses_f038e7cc6ffehUR1n9oXT2xGWh", "worktree": ".kilo/worktrees/wave2-sales-portal", "branch": "kilo/wave2-sales-portal", "scope": ["SALE-08", "SALE-09", "ACCESS-12 decision characterization"], "sharedFiles": "Quote UI/App and Sales only; PortalApp visibility edits forbidden while ACCESS-12 is undecided." },
+      { "lane": 2, "taskID": "ses_f038e7c4effeAY5gvRHQtq4POy", "worktree": ".kilo/worktrees/wave2-artwork-prepress", "branch": "kilo/wave2-artwork-prepress", "scope": ["ART-10", "safe Artwork/Prepress L1 only after L0"], "sharedFiles": "Prepress projection/workspace/tests only; Wave1 Artwork authorization files excluded." },
+      { "lane": 3, "taskID": "ses_f038e7a0dffezRrb2milhYb5bR", "worktree": ".kilo/worktrees/wave2-production-routing", "branch": "kilo/wave2-production-routing", "scope": ["OPS-09", "OPS-12", "OPS-13 exact-attempt scope"], "sharedFiles": "Production operation/adapters/workspaces/tests only; BDR-4 broader policy excluded." },
+      { "lane": 4, "taskID": "ses_f038e7931ffessDAIK8OthHLuJ", "worktree": ".kilo/worktrees/wave2-fulfillment-shipping", "branch": "kilo/wave2-fulfillment-shipping", "scope": ["FUL-09", "FUL-11", "FUL-26"], "sharedFiles": "ShipmentBuilder/FulfillmentWorkspace and owner contracts/tests; Wave1 shipment-container authorization adapter excluded." },
+      { "lane": 5, "taskID": "ses_f038e77e9ffeTnYXFxogjF8NhC", "worktree": ".kilo/worktrees/wave2-billing-payments", "branch": "kilo/wave2-billing-payments", "scope": ["PAY-08", "PAY-09", "PAY-22", "BILL-16 decision characterization"], "sharedFiles": "FinanceWorkspace exclusively owned by this lane; BILL-16 presentation change remains gated." },
+      { "lane": 6, "taskID": "ses_f038e77dcffeGcPfb22fWa17n1", "worktree": ".kilo/worktrees/wave2-access-coverage", "branch": "kilo/wave2-access-coverage", "scope": ["ACCESS-05 decision characterization", "targeted Inventory/Materials/Inbound coverage", "safe Access L1 only after L0"], "sharedFiles": "Auth/Team owner paths and tests only; PortalApp/Sales files and inventory business state edits excluded." }
+    ],
+    "status": "All six isolated characterization/implementation lanes launched from the committed L0 triage. No lane is permitted to stage, commit, push or edit the authoritative matrix/ledger."
+  },
+  "wave2CoverageAdditions": {
+    "independentReviewSession": "ses_f037d3b5effeXKkLE1nXlWPHy1",
+    "reviewResult": "PASS: four are the minimal distinct workflows; no overlap with PRODDEF-16 material definition, OPS-21 material use, BDR-2 source policy, or separate Nesting intent. V1 references use pinned MAIN per lane; reviewer confidence in exact V1 line positions medium.",
+    "startingCountedDenominator": 273,
+    "addedCount": 4,
+    "currentCountedDenominator": 277,
+    "rows": ["INV-01", "PROC-01", "INB-01", "INB-02"],
+    "startingCountsRemainFrozen": { "A": 13, "B": 44, "C": 126, "D": 46, "E": 9, "F": 35 },
+    "currentCountsBeforeClosures": { "A": 13, "B": 44, "C": 127, "D": 49, "E": 9, "F": 35 },
+    "currentPriorityTotalsBeforeClosures": { "L0": 18, "L1": 186, "L2": 62, "L3": 2, "L4": 9 },
+    "remainingBeforeClosures": { "L0": 15, "L1": 135, "L2": 60, "L3": 1, "L4": 0 },
+    "addedRows": "Full eleven-column records, pinned V1/V2 evidence, ownership, class/priority, test/live status and limitations are in OPERATIONAL_PARITY_2026_10_01.wave2-additions.json. No tests or data/provider/live validation were performed for these four characterization rows.",
+    "limits": "INB-02 is partial, not wholly missing: existing V2 review and Order submission are credited; the separate Quote draft outcome is absent. INV-01 is stock count/adjustment only, not Material CRUD or consumption. PROC-01 is PO/vendor lifecycle and partial receipt, not generic stock receipt. INB-01 identifies normal ingress; no Gmail provider was called."
+  },
+  "wave2Recovery": {
+    "mode": "Finish existing packages only; no new L1 implementation, no restart or broad audit.",
+    "recoveredCoordinatorHead": "14b4fd17777f03213d667bd030736c49ed40b6e5",
+    "startingDev": "02bd97641f2d1815c28339fbfd82cd570b910461",
+    "pinnedV1": "d4f4c6b8706f0f7a2768d77054efb9b2dc28633e",
+    "externalMainMovement": "Fresh recovery verification reports origin/main at fc46a73f6af7bb485e6dbc309175c7c80dec8771. This campaign did not modify or push MAIN; the audited detached V1 reference remains pinned to d4f4c6b8.",
+    "packagesAtRecovery": {
+      "sales": "11 implemented files awaiting final acceptance and reserved prepared-evidence schema; prior review rejections/corrections preserved.",
+      "artwork": "8-file implementation independently accepted; one unregistered deterministic test and three adjacent fixture shapes required coordinator integration fixes.",
+      "production": "8-file bounded implementation returned for storage/scope corrections, present on disk; final re-review required. New Run creation intentionally blocked pending native exclusivity proof.",
+      "fulfillment": "5-file bounded package independently accepted; exact review SHA-256 values matched recovered files. FUL-11 unimplemented; FUL-26 has cross-session/tab limitations.",
+      "billing": "13-file implementation awaiting final review. Stripe minimum correction already present; Refund Invoice lock-order correction remained unfinished after interrupted prompt.",
+      "access": "Clean read-only characterization branch. ACCESS-05 remains decision-gated; no Access L1 implementation. Four targeted coverage additions already drafted and independently scoped."
+    },
+    "notStarted": "BILL-16/ACCESS-05/ACCESS-12 policy-dependent implementation; blind sender FUL-11; Products/CRM/Statements/Dashboard follow-on L1 implementation; four targeted coverage-row implementations. No such new package was started during recovery.",
+    "environmentLimits": "No docker, psql, postgres, initdb or pg_ctl command was found during recovery. No native disposable database was provisioned. PGlite evidence is not native two-client locking, deployment or provider evidence.",
+    "reviewedPartialScopes": {
+      "OPS-09": "Keep C/L0: mandatory storage persistence/readback and synchronous scope fencing are accepted improvements, but owner-view refresh is not a request-result lookup and cross-tab intent coordination remains absent.",
+      "OPS-12": "Keep C/L0: executable Work-only candidate lock query verified in PGlite; native two-client exclusivity unproven, so new Run creation remains server-disabled and transactions roll back.",
+      "FUL-26": "Keep C/L0: exact-body sessionStorage retry and stale/malformed/scope guards accepted; cross-session/tab loss and operation-result reconciliation are not fully closed.",
+      "SALE-08/SALE-09": "Prepared/new-delivery correspondence and fresh replay authorization improved; historical null evidence fails closed and guarded deployment/integration checks remain unrun. No full-row closure inferred from source changes alone.",
+      "PAY-22": "Keep C/L0: proposed V1 QuickBooks bridge edits were removed before recovery; no V2 source-safe provider candidate port was implemented and no provider call occurred."
+    },
+    "sourceOnlyAcceptance": "Accepted packages are delivered as bounded safety improvements even where their full parity row stays open. Native/provider/live gaps are not converted into successful validation or lower priorities."
+  },
+  "wave2Outcome": {
+    "startingDev": "02bd97641f2d1815c28339fbfd82cd570b910461",
+    "integratedSourceCommit": "be11ae6b07ff80b44800e6c1ff40c50fbc03e7d1",
+    "scope": "Existing five implementation packages completed and integrated; sixth lane was Access/coverage characterization. No new L1 implementation package was started during recovery.",
+    "startingDenominator": 273,
+    "endingDenominator": 277,
+    "startingClasses": { "A": 13, "B": 44, "C": 126, "D": 46, "E": 9, "F": 35 },
+    "endingClasses": { "A": 13, "B": 49, "C": 122, "D": 49, "E": 9, "F": 35 },
+    "endingPriorityTotals": { "L0": 18, "L1": 186, "L2": 62, "L3": 2, "L4": 9 },
+    "startingRemaining": { "L0": 15, "L1": 131, "L2": 60, "L3": 1, "L4": 0 },
+    "endingRemaining": { "L0": 10, "L1": 135, "L2": 60, "L3": 1, "L4": 0 },
+    "fullyClosedL0": ["ART-10", "OPS-13", "FUL-09", "PAY-08", "PAY-09"],
+    "partialL0": ["SALE-08", "SALE-09", "OPS-09", "OPS-12", "FUL-26"],
+    "l1Closed": [],
+    "priorityChanges": [],
+    "accountingReview": "ses_f038bd24effe294e7IgAvM5qpz independently adjudicated closure granularity against the frozen rows. PAY-08 closure is the original retained-tab same-intent retry, not global/cross-tab exactly-once. No priority was reduced to improve the L0 count.",
+    "remainingL0": {
+      "SALE-08": "C/L0: legacy NULL prepared evidence fails closed; guarded full conversion/deployment acceptance remains unrun. Source/local new-delivery integrity is improved.",
+      "SALE-09": "C/L0: full revise/resend/history and legacy handling remain incomplete; no general publication policy inferred.",
+      "OPS-09": "C/L0: owner-view refresh is not an operation-result lookup; broader cross-session/tab recovery remains incomplete.",
+      "OPS-12": "C/L0: new Run creation is server-disabled pending native two-client exclusivity verification and reviewed enabling work.",
+      "FUL-11": "D/L0: blind sender flag, canonical sender snapshot and associated workflow were not implemented. This is a remaining implementation gap, not a new policy decision.",
+      "FUL-26": "C/L0: physical-operation cross-session/tab recovery and definitive request-result reconciliation remain incomplete.",
+      "BILL-16": "C/L0 decision gate: choose historical-only issued PDF versus separately identified canonical-current balance; never rewrite issued evidence or mislabel a historical calculation current.",
+      "PAY-22": "C/L0 scope/owner-boundary gate: recovery matching still uses the legacy provider bridge. Prohibited V1 edits were removed; a V2-owned extraction/read port needs separate bounded scope. No QuickBooks connection or provider validation.",
+      "ACCESS-05": "F/L0 decision gate: define the structural/capability administrator floor and zero-floor recovery rule.",
+      "ACCESS-12": "C/L0 decision gate: define the Sales-owned publication predicate and last-sent versus unsent revision visibility for Portal."
+    },
+    "unmergedPackages": [],
+    "unimplementedScopes": ["FUL-11", "PAY-22", "BILL-16 decision", "ACCESS-05 decision", "ACCESS-12 decision", "Inventory/Procurement/Inbound addition implementations", "Products/Pricing L1", "Customers/Contacts L1", "Statements L1", "UTIL-03 eligibility/freshness"],
+    "codeIntegration": "All 59 unique implementation/test/metadata files match the accepted source-package commits, except the intentional union of two independently reviewed test-classification registrations. No implementation package was discarded or left stranded.",
+    "validation": {
+      "sourceCommit": "be11ae6b07ff80b44800e6c1ff40c50fbc03e7d1",
+      "command": "npm run v2:validate",
+      "gatesPassed": 11,
+      "jestSuites": 99,
+      "jestTests": 1121,
+      "jestPassed": 1121,
+      "jestPendingOrSkipped": 0,
+      "coreEntries": 288,
+      "uiEntries": 98,
+      "assertionCount": "No global expect/assert-call total is instrumented; test cases and runner entries are not additive. The actual migration suite separately reports 29 assertions; independent schema probe reports 60 checks.",
+      "builds": "Foundation, deployment server and production UI passed with sanitized environment; builds explicitly set NODE_ENV=production.",
+      "actualSql": "Actual 0229/0299 migrations, prepared-evidence persistence/catalog checks, Production adapter and Payments adapter fixtures executed in isolated PGlite. This is not native multi-client contention or full deployed-schema acceptance.",
+      "unrun": "Five DB-guarded suites, four QA rehearsals and one manual category; no V1 tests/builds, native two-client PostgreSQL, provider/physical-printer or broad DEV-live acceptance. The guarded deployment test attempt stopped at the intentional dotenv guard before any tests and was not relabelled or bypassed."
+    },
+    "migration": { "tag": "0299_v2_sales_quote_delivery_prepared_evidence", "idx": 300, "when": 1790827200003, "protectedBefore": 294, "protectedAfter": 295, "historicalDigestPreserved": "ed5e8ad402ba094a4cfa8973e84c5ec71da2bf197ef7c70ed2b6f22ec8b5c5e3", "backfill": false, "appliedToSharedDatabaseByThisCampaign": false },
+    "importDebt": { "beforeInstances": 81, "afterInstances": 81, "fingerprints": 81 },
+    "sqlDebt": { "beforeInstances": 193, "afterInstances": 191, "beforeFingerprints": 173, "afterFingerprints": 171, "reason": "Two direct Stripe-adapter UPDATE statements were genuinely retired into Billing-owned transactions. Refund response binding was restored through Billing rather than silently dropping the write. No guardrail/scanner weakening or new exception." },
+    "verdict": "NO",
+    "deploymentStatus": "Deployable but not yet live-validated",
+    "liveStatus": "No new DEV data/provider/browser/physical acceptance and no MAIN/PROD change. Historical Wave 1 live results remain limited to their original exact workflows.",
+    "nextCampaign": "Remaining L0 Gate Resolution and Targeted DEV Validation: resolve the three explicit business decisions, provide a disposable native PostgreSQL environment for Run/conversion acceptance, finish existing physical recovery/blind sender and V2-only accounting boundary gaps, then validate the landed slices in DEV. No Storefront or broad L2/L3 expansion.",
+    "delivery": "Final documentation commit must receive exact-tip canonical validation/builds and fresh DEV ancestry verification; push only that SHA to refs/heads/dev and verify the remote receipt. No deployment polling. Completion report records the final SHA."
+  },
+  "wave2DependencyUpdates": {
+    "ART-04": "No remaining gap in its preauthorization intent. ART-10 exact-layer selection is now closed; intake-format breadth and production-art replacement remain separate open rows. No live storage validation.",
+    "FUL-25": "No remaining gap in its replacement capability gate. FUL-09 prepared-revision recovery is now closed; FUL-26 broader physical retry and general successor/readiness policy remain open. Native/live fulfillment is unverified.",
+    "OPS-15": "UI grant/control alignment remains partial. Existing Run execution-controller safety is closed as OPS-13; new Run creation remains blocked as OPS-12.",
+    "BILL-22": "No remaining gap in dialog isolation and preview recovery. PAY-08/PAY-09 narrow Finance scopes are now closed; broader email composition/history/admission recovery and cross-tab financial recovery guarantees remain outside these closures."
+  },
+  "wave2Transitions": {
+    "ART-10": {
+      "before": { "classification": "C", "priority": "L0" },
+      "classification": "B", "priority": "L0",
+      "behavior": "Prepress consumes Artwork-owned layer key/order and exact assignment identity. Preview and replacement predecessor resolve the same persisted assignment; missing, mismatched or multiple current candidates fail visibly. Handoff requires exactly one assignment before Routing/Production writes.",
+      "remainingGap": "None in the exact-selection safety intent. Production replacement constraints and unrelated proof/lineage decisions remain separate open rows; no physical output or provider validation.",
+      "requiredAction": "Retain exact-layer, unlayered/multipage, stale and ambiguous selection regressions; include this change in later coordinated DEV validation.",
+      "summary": "Wave 2 narrow row closure; independent review found Artwork remains authoritative and historical supersession constraints are unchanged.",
+      "validation": "Independent review ses_f03684017ffeaVGDAUIiRFu8om PASS; actual handoff-selection SQL PGlite cases plus focused owner/consumer/UI tests. Coordinator aligned three stale fixture assignment_count fields without removing assertions, independently re-reviewed. Full isolated v2:validate passed all 11 gates.",
+      "commit": "01867b48293579dccb1651eb22cc20a20e6396c0",
+      "devPush": "Included in the DEV-only recovery candidate; exact validated remote receipt recorded in final report."
+    },
+    "OPS-09": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "C", "priority": "L0",
+      "behavior": "Ordinary and Run output capture exact request/body/attempt or allocation identity. Storage persistence and canonical readback are required before mutation; failures, malformed state and scope mismatch fail closed and hide prior details. Explicit same-scope replay preserves identity.",
+      "remainingGap": "Owner-view refresh is not an operation-result lookup. Cross-tab/session recovery and replacement of an unresolved intent after manual reconciliation remain incomplete; client submission time is UI metadata, not the persisted occurrence timestamp.",
+      "requiredAction": "Complete request-result reconciliation and shared durable recovery before claiming full physical-output retry parity. Do not infer original failure from a refreshed projection.",
+      "summary": "Reviewed safety subset only; C/L0 retained with no priority downgrade.",
+      "validation": "Review ses_f02d7cad8ffet3Gao6DWu8upt9 PASS for bounded package after storage/scope findings were corrected. Fifteen mounted cases exited cleanly; actual adapter PGlite and full isolated canonical gates passed. No native contention or physical printer test.",
+      "commit": "5416103eded5330fd6818b85ed86c61d90adac81", "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "OPS-12": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "C", "priority": "L0",
+      "behavior": "The candidate query now locks Production Work rows and executes in PGlite. New Run creation is explicitly server-disabled with a conflict pending native exclusivity proof. Existing Run output remains functional; attempted request reservation and transient locks roll back on failed creation.",
+      "remainingGap": "No usable new Run creation path is delivered. Native two-client contention and an accepted exclusive-membership contract are unverified.",
+      "requiredAction": "Provision an authorized disposable native PostgreSQL clone; prove competing create/member exclusivity and then review enabling creation. SQL parsing or PGlite serialization alone is insufficient.",
+      "summary": "Containment, not parity closure. C/L0 retained; no claim of zero DML before denial, only no durable Run/request/allocation on rollback.",
+      "validation": "Exact adapter SQL/PGlite reproduction and rollback cases pass; independent review ses_f02d7cad8ffet3Gao6DWu8upt9. Native PostgreSQL tooling/clone unavailable and not provisioned.",
+      "commit": "5416103eded5330fd6818b85ed86c61d90adac81", "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "OPS-13": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "B", "priority": "L0",
+      "behavior": "Existing exact Work/attempt and Run allocation identity govern execution. Ordinary start/output/complete reject Run-controlled execution; existing Run commands honor Work/Run holds and frozen destination, and valid ordinary work and existing Run output remain supported.",
+      "remainingGap": "None in the frozen existing-controller scope. New Run creation remains blocked in OPS-12; generalized successor lineage, quantity aggregation and cancellation remain BDR-4, not a part of this closure.",
+      "requiredAction": "Preserve exact member/nonmember, hold/destination and original/replacement regressions; complete the separate Run-creation gate before claiming overall Run readiness.",
+      "summary": "Bounded row closure independently adjudicated by ses_f038bd24effe294e7IgAvM5qpz; no new successor policy.",
+      "validation": "Independent source review ses_f02d7cad8ffet3Gao6DWu8upt9 PASS. Actual adapter PGlite covers denied ordinary Run-controlled operations, held/foreign attempts, changed destination, valid existing Run output and ordinary replacement work. Full isolated canonical gates passed.",
+      "commit": "5416103eded5330fd6818b85ed86c61d90adac81", "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "FUL-26": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "C", "priority": "L0",
+      "behavior": "Physical-operation intents retain request IDs and exact payloads in tab storage before POST. Operation-specific validation rejects corrupt/malformed commands; current scope fences display/retry. Stale shipment revisions remain mutation-blocked until authoritative reload.",
+      "remainingGap": "Cross-session/tab loss and general owner request-result lookup remain incomplete. Current operator refresh/manual reconciliation is not proof the earlier mutation did not commit.",
+      "requiredAction": "Complete durable operation-result recovery before full Pickup/Shipment/replacement exactly-once or cross-session claims. Preserve Wave 1 replacement authorization and original/replacement isolation.",
+      "summary": "Reviewed same-tab safety improvement, not full FUL-26 closure; remains C/L0.",
+      "validation": "Review ses_f02d94bb6ffeJ5WvdRsW2q45PF PASS for bounded five-file package after failed-reload, invalid-payload and transient-scope findings were fixed. Mounted tests and all isolated canonical gates passed; no physical or provider actions.",
+      "commit": "6ecda161f78466701e17c11b09c9a88b569da871", "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "SALE-08": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "C", "priority": "L0",
+      "behavior": "New deliveries persist exact prepared commercial, party, recipient, organization, document number/date and PDF hash evidence before provider invocation. Acceptance binds the immutable sent checkpoint; conversion uses its Contact/commercial evidence. Replays reauthorize before returning results.",
+      "remainingGap": "Legacy attempts without prepared evidence fail closed. Guarded deployment and full native conversion acceptance remain unrun; no broad historical-Quote recovery or original PDF-byte archival is claimed.",
+      "requiredAction": "Run guarded disposable-clone deployment/conversion acceptance and define safe legacy handling without fabricating sent evidence or rewriting history.",
+      "summary": "Bounded new-delivery integrity improvement, not full SALE-08 closure. Accepted conversion preserves the frozen Job Label, including historical unset, even if the current operational header differs; unaccepted drift still fails.",
+      "validation": "Review ses_f037adb67ffemP1xciiBWodyKY PASS; unfiltered three-suite 78-test Sales/M7/parity verification; full isolated canonical gates passed. Migration/readiness review ses_f0007c8c3ffe8WT9xVcuvGsRYv PASS with 29 actual-migration PGlite assertions plus 60 independent checks. Five DB-guarded suites remain unrun.",
+      "commit": "535de86069721bf96c9b25f7440a79a467210ffb", "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "SALE-09": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "C", "priority": "L0",
+      "behavior": "Prepared evidence survives provider success followed by Quote revision failure as an uncertain attempt with provider identity. Unresolved attempts block another send; sent PDF projection does not reconstruct legacy evidence from mutable CRM or branding. Initial acceptance rejects changed sent content.",
+      "remainingGap": "Full Revise/resend/history UI and safe legacy recovery are not delivered. Historical PDFs reconstruct frozen semantics rather than retrieve archived original attachment bytes. General Portal publication remains ACCESS-12.",
+      "requiredAction": "Complete accepted revision/resend and legacy handling contracts without altering the immutable sent record. Validate guarded integration separately.",
+      "summary": "Preserved correspondence and fail-closed recovery do not make the complete revision workflow equivalent; C/L0 retained.",
+      "validation": "Independent Sales/source/schema final-byte reviews passed after replay, prepared-evidence and historical fallback findings were corrected. Canonical Job Label regression was preserved, not removed. Full isolated canonical gates passed; no provider/live/native acceptance.",
+      "commit": "535de86069721bf96c9b25f7440a79a467210ffb", "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "PAY-08": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "B", "priority": "L0",
+      "behavior": "The same verified actor/organization retains exact submitted Payment/Refund request identity, body, tender/allocation and occurrence time for explicit replay. Tab storage is persisted and round-trip validated before POST; unavailable/corrupt storage fails closed. Retained-tab reload and same-actor re-authentication recover the original intent.",
+      "remainingGap": "Closure is the original bounded retry intent, not global exactly-once or cross-tab takeover. Closing/losing tab storage loses local recovery; without a stable bootstrapped userId, the fallback is session-scoped. No client secret is persisted.",
+      "requiredAction": "Retain actual mounted retry/storage/scope tests and owner receipt semantics. Broader owner-request discovery and cross-tab recovery need separately scoped work, not an assumed guarantee.",
+      "summary": "C to B for the frozen same-intent retry requirement, independently adjudicated by ses_f038bd24effe294e7IgAvM5qpz. No L0 priority downgrade or claim of arbitrary cross-session exactly-once behavior.",
+      "validation": "Financial review ses_f02de428effeNa7pQPkOyFmBuP PASS after same-actor re-auth, grant revocation, minimum reservation, Refund lock-order and lost provider Refund-ID findings were corrected. Final 79-test owner suite, 15 PGlite scenarios, mounted Finance/session tests and full isolated canonical gates passed.",
+      "commit": "be11ae6b07ff80b44800e6c1ff40c50fbc03e7d1", "relatedCommits": ["ac554d0c5decbd5ce7588519ac2bdf15337f8d02"], "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "PAY-09": {
+      "before": { "classification": "C", "priority": "L0" }, "classification": "B", "priority": "L0",
+      "behavior": "Stripe responses are bound to captured actor/org/session/Invoice/amount/currency/request, cleared on grant loss and fenced after async work. Secret retrieval reauthorizes and checks the initiating principal. Billing locks Invoices before new pending-intent checks, preserves exact replay and sequential partial payments, and owns provider binding transitions.",
+      "remainingGap": "No real Stripe validation or native concurrent lock test. The bounded guard rejects another unresolved provider intent on an overlapping Invoice; manual tender respects reserved amounts. Confirmed provider facts remain canonical even if balance changes.",
+      "requiredAction": "Run separately authorized provider/native acceptance before a live claim; preserve owner-backed Refund ID binding and webhook-only Refund materialization.",
+      "summary": "Closes the frozen response/intent isolation row without touching V1. Refund provider IDs are durably bound through Billing before return; replay returns the bound ID and only signed confirmation creates Refund facts.",
+      "validation": "Independent final financial review passed source, actor/account/amount/identity, minimum and lock-order checks. Inert Stripe objects only; mounted tests assert zero actual Stripe.js/network activity. Two observed Stripe direct writes legitimately retired, not repinned.",
+      "commit": "be11ae6b07ff80b44800e6c1ff40c50fbc03e7d1", "relatedCommits": ["ac554d0c5decbd5ce7588519ac2bdf15337f8d02"], "devPush": "DEV-only recovery candidate; final exact receipt in completion report."
+    },
+    "FUL-09": {
+      "before": { "classification": "C", "priority": "L0" },
+      "classification": "B", "priority": "L0",
+      "behavior": "Prepared recovery restores every persisted allocation and exact revision, including unloaded Orders. Dirty edits cannot finalize old data. A stale conflict keeps all shipment mutations blocked through failed reloads until authoritative refresh succeeds.",
+      "remainingGap": "None in complete prepared-revision recovery and dirty/stale guards. Broader cross-session physical-operation identity remains open as FUL-26; blind sender remains FUL-11.",
+      "requiredAction": "Preserve mounted complete-restoration, failed-reload, wrong-scope, malformed-intent and original/replacement isolation regressions.",
+      "summary": "Wave 2 narrow row closure; no Shipping/Fulfillment owner writes or replacement authorization were changed by this UI package.",
+      "validation": "Independent corrected review ses_f02d94bb6ffeJ5WvdRsW2q45PF PASS; all five recovered SHA-256 hashes matched; three focused mounted scripts and full isolated 11-gate v2:validate passed.",
+      "commit": "6ecda161f78466701e17c11b09c9a88b569da871",
+      "devPush": "Included in the DEV-only recovery candidate; exact validated remote receipt recorded in final report."
+    }
   },
   "closures": {
     "ART-04": {
