@@ -10,12 +10,23 @@ import type * as AdapterExports from "../../infrastructure/billing/postgresFinan
 import * as commercialValues from "../../src/modules/shared/commercialValues.js";
 import * as applicationError from "../../src/errors/applicationError.js";
 import * as reusableTaxEvidenceExports from "../../infrastructure/billing/postgresReusableInvoiceTaxEvidence.js";
+import { PDFDocument } from "pdf-lib";
+import * as ownerRenderer from "../../infrastructure/documents/ownerPdfRenderer.js";
+import type { PostgresInvoiceDocumentService } from "../../infrastructure/billing/postgresInvoiceDocuments.js";
+import type { PostgresInvoiceEmailSender } from "../../infrastructure/communications/invoiceEmailSender.js";
+import express from "express";
+import request from "supertest";
+import { createInvoiceRouter } from "../../src/interfaces/http/invoiceRoutes.js";
 
 const workspaceRoot = path.resolve(process.cwd());
 const adapterPath = path.join(workspaceRoot, "v2/infrastructure/billing/postgresFinancialRead.ts");
 const draftAdapterPath = path.join(workspaceRoot, "v2/infrastructure/billing/postgresBillingDraftInvoiceTransaction.ts");
-const adapterSources = new Set([adapterPath, draftAdapterPath]);
-const moduleContext = createContext({});
+const documentsPath = path.join(workspaceRoot, "v2/infrastructure/billing/postgresInvoiceDocuments.ts");
+const readRunnerPath = path.join(workspaceRoot, "v2/infrastructure/billing/postgresBillingRead.ts");
+const emailSenderPath = path.join(workspaceRoot, "v2/infrastructure/communications/invoiceEmailSender.ts");
+const adapterSources = new Set([adapterPath, draftAdapterPath, documentsPath, readRunnerPath, emailSenderPath]);
+const messages: string[] = [];
+const moduleContext = createContext({ Buffer, Date, process: { env: { GOOGLE_CLIENT_ID: "inert-fixture", GOOGLE_CLIENT_SECRET: "inert-fixture" } } });
 const rejectQuickBooks = () => { throw new Error("QuickBooks writes are outside this read-only regression."); };
 // Both readers are evaluated from actual source. Only the unused write-side
 // QuickBooks seam is replaced, with a failure rather than simulated success.
@@ -28,11 +39,26 @@ const dependencies = new Map<string, Map<string, object>>([
     ["../accounting/quickBooksBillingQueue.js", { enqueueV2QuickBooksAutoSync: rejectQuickBooks }],
     ["./postgresReusableInvoiceTaxEvidence.js", reusableTaxEvidenceExports],
   ])],
+  [documentsPath, new Map<string, object>([
+    ["pdf-lib", { PDFDocument }],
+    ["../../src/errors/applicationError.js", applicationError],
+    ["../documents/ownerPdfRenderer.js", ownerRenderer],
+    ["../documents/postgresTenantBranding.js", { readTenantBranding: () => { throw new Error("Issued PDF cannot read current branding"); } }],
+  ])],
+  [emailSenderPath, new Map<string, object>([
+    ["node:crypto", { randomUUID }],
+    ["../../src/errors/applicationError.js", applicationError],
+    ["./postgresEmailIntegration.js", { PostgresEmailIntegrationService: class {} }],
+    ["googleapis", { google: { auth: { OAuth2: class { setCredentials() {} } }, gmail: () => ({ users: { messages: { send: async ({ requestBody }: { requestBody: { raw: string } }) => { messages.push(requestBody.raw); return { data: { id: "inert-message" } }; } } } }) } }],
+  ])],
 ]);
 const modules = new Map<string, Module>();
 const linkDependency = async (specifier: string, parent: Module): Promise<Module> => {
   if (!adapterSources.has(parent.identifier)) throw new Error("Unexpected adapter parent.");
   if (parent.identifier === adapterPath && specifier === "./postgresBillingDraftInvoiceTransaction.js") return sourceModule(draftAdapterPath);
+  if (parent.identifier === documentsPath && specifier === "./postgresBillingRead.js") return linkedSource(readRunnerPath);
+  if (parent.identifier === readRunnerPath && specifier === "./postgresBillingDraftInvoiceTransaction.js") return sourceModule(draftAdapterPath);
+  if (parent.identifier === emailSenderPath && specifier === "../billing/postgresInvoiceDocuments.js") return linkedSource(documentsPath);
   const exports = dependencies.get(parent.identifier)?.get(specifier);
   if (!exports) throw new Error(`Unexpected adapter dependency: ${specifier}`);
   const key = `${parent.identifier}:${specifier}`;
@@ -47,6 +73,10 @@ const sourceModule = async (filename: string) => {
   const source = await readFile(filename, "utf8");
   const { outputText } = ts.transpileModule(source, { fileName: filename, compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
   return new SourceTextModule(outputText, { identifier: filename, context: moduleContext, importModuleDynamically: rejectDynamicImport });
+};
+const linkedSource = async (filename: string): Promise<Module> => {
+  if (!modules.has(filename)) modules.set(filename, await sourceModule(filename));
+  return modules.get(filename)!;
 };
 const evaluateAdapter = async (filename: string) => {
   const module = await sourceModule(filename);
@@ -91,7 +121,7 @@ describe("Invoice presentation through the actual page mapper", () => {
   });
 
   test.each(["../../../server/db.js", "../../../server/services/billing.js", "dotenv", "pg", "node:net", "node:fs", "./unreviewed.js", "../../deployment/server.js"])("rejects unsafe or unexpected imports before either adapter evaluates: %s", async (specifier) => {
-    for (const identifier of adapterSources) {
+    for (const identifier of [adapterPath, draftAdapterPath]) {
       const context = createContext({ reachedEvaluation: false });
       const probe = new SourceTextModule(`import ${JSON.stringify(specifier)}; globalThis.reachedEvaluation = true;`, { identifier, context });
       await expect(probe.link(linkDependency)).rejects.toThrow("Unexpected adapter dependency");
@@ -189,6 +219,75 @@ describe("Invoice presentation through the actual page mapper", () => {
       const foreign = commercialValues.brandedId<"OrganizationId">("org-c");
       expect(await reader.readFinancialInvoice(foreign, commercialValues.brandedId<"InvoiceId">("original"))).toBeNull();
       expect(await reader.readLegacyFinancialInvoice(foreign, commercialValues.brandedId<"InvoiceId">("legacy-missing"))).toBeNull();
+
+      // BILL-16: real document/reader/renderer and email attachment paths, with
+      // settlement/revision fixtures only in memory. No invented issue-time tender.
+      const checkpoint = (number: string) => ({ schemaVersion: 1, invoiceNumber: number, occurredAt: "2026-01-01T12:34:56Z", customerPresentation: { customerDisplayName: "Customer at issue", contactDisplayName: "Contact at issue", billingAddress: { lines: ["2 Customer Historic St"], city: "Historic City", region: "CA", postalCode: "90001", countryCode: "US" } }, organizationPresentation: { name: "Brand at issue", address: "1 Historic St", phone: "555-0100", email: "issued@example.test", website: "https://issued.example.test", footerNote: "Footer at issue", paymentInstructions: "Original remittance", checksPayableTo: "Issuer at issue", remittanceAddress: "3 Historic Remittance St" }, commercial: { currency: "USD", purchaseOrderNumber: "PO at issue", subtotal: { currency: "USD", cents: 600 }, taxTotal: { currency: "USD", cents: 0 }, total: { currency: "USD", cents: 600 } }, lines: [{ description: "Items at issue", quantity: 1, unitAmount: { currency: "USD", cents: 600 }, lineAmount: { currency: "USD", cents: 600 } }] });
+      await db.query("INSERT INTO v2_billing_invoice_checkpoints VALUES ($1,$2,$3::jsonb),($1,$4,$5::jsonb)", [org,"original",JSON.stringify(checkpoint("ORD-1010")),"replacement",JSON.stringify(checkpoint("ORD-1010-B"))]);
+      const frozen = await db.query("SELECT checkpoint_json FROM v2_billing_invoice_checkpoints ORDER BY invoice_id");
+      const pool = { connect: async () => ({ query: (sql: string, values: readonly unknown[] = []) => db.query(sql, [...values]), release() {} }), query: (sql: string, values: readonly unknown[] = []) => db.query(sql, [...values]) };
+      const docModule = await linkedSource(documentsPath);
+      if (docModule.status === "unlinked") await docModule.link(linkDependency);
+      await docModule.evaluate();
+      const DocumentService = (docModule.namespace as unknown as { PostgresInvoiceDocumentService: typeof PostgresInvoiceDocumentService }).PostgresInvoiceDocumentService;
+      const documents = new DocumentService(pool as never);
+      const original = commercialValues.brandedId<"InvoiceId">("original"), replacement = commercialValues.brandedId<"InvoiceId">("replacement");
+      const baseline = Buffer.from(await documents.pdf(org, original));
+      const replacementBaseline = Buffer.from(await documents.pdf(org, replacement));
+      const download = express().use("/v2/organizations/:organizationId/invoices",createInvoiceRouter({documents,service:{readInvoice:async()=>({ok:true,value:{}})} as never,principals:{principal:async()=>({kind:"staff",organizationId:org,userId:"fixture",authority:{membershipId:"fixture",capabilities:["invoice.view"]}} as never)}}));
+      const initialDownload = await request(download).get("/v2/organizations/org-a/invoices/original/document.pdf");
+      expect(initialDownload.status).toBe(200); expect(Buffer.from(initialDownload.body)).toEqual(baseline);
+      expect(baseline.subarray(0,5).toString()).toBe("%PDF-");
+      const issuedDocument = await documents.document(org, original);
+      expect(issuedDocument.number).toBe("ORD-1010");
+      expect(issuedDocument.organization.name).toBe("Brand at issue");
+      expect(issuedDocument.organization).toEqual(checkpoint("ORD-1010").organizationPresentation);
+      expect(issuedDocument.issuedAt).toBe("2026-01-01");
+      expect(issuedDocument.sections[0]!.entries).toContainEqual({label:"Customer",value:"Customer at issue"});
+      expect(issuedDocument.sections[0]!.entries).toContainEqual({label:"Contact",value:"Contact at issue"});
+      expect(issuedDocument.sections[0]!.entries).toContainEqual({label:"Billing address",value:"2 Customer Historic St, Historic City, CA, 90001, US"});
+      expect(JSON.stringify(issuedDocument)).not.toMatch(/Paid \(current\)|Refunded \(current\)|Balance due|Credit \/ refund due/);
+      await db.exec("INSERT INTO v2_billing_payment_allocations VALUES ('org-a','payment-a','original',600)");
+      expect(Buffer.from(await documents.pdf(org, original))).toEqual(baseline);
+      await db.exec("INSERT INTO v2_billing_refund_allocation_evidence VALUES ('org-a','refund-allocation','payment-a','original',50)");
+      expect(Buffer.from(await documents.pdf(org, original))).toEqual(baseline);
+      await db.exec("UPDATE v2_billing_invoices SET total_cents=750,subtotal_cents=750,synchronization_version='2',invoice_display_number='CURRENT-NUMBER',purchase_order_number='CURRENT-PO' WHERE organization_id='org-a' AND id='original'; UPDATE v2_sales_documents SET display_number='CURRENT-ORDER' WHERE organization_id='org-a'; UPDATE customers SET display_name='Current customer' WHERE organization_id='org-a'; UPDATE v2_billing_invoice_lines SET description='Current revised item' WHERE organization_id='org-a' AND invoice_id='original'");
+      await db.exec("INSERT INTO v2_billing_invoice_additional_charges VALUES ('org-a','original','shipping',150,0,'Later shipping','2026-01-02','charge-a')");
+      expect(Buffer.from(await documents.pdf(org, original))).toEqual(baseline);
+      expect((await reader.readFinancialInvoice(org,original))?.settlement).toEqual({gross:commercialValues.money(commercialValues.currencyCode("USD"),750),paid:commercialValues.money(commercialValues.currencyCode("USD"),600),refunded:commercialValues.money(commercialValues.currencyCode("USD"),50),balance:commercialValues.money(commercialValues.currencyCode("USD"),200)});
+      await db.exec("UPDATE v2_billing_invoices SET total_cents=400,subtotal_cents=600,sales_adjustment_cents=-200,sales_adjustment_reason='Credit correction',synchronization_version='3' WHERE organization_id='org-a' AND id='original'");
+      await new Promise(resolve => setTimeout(resolve,1100)); // Cross a render timestamp boundary.
+      expect(Buffer.from(await documents.pdf(org, original))).toEqual(baseline);
+      expect((await reader.readFinancialInvoice(org,original))?.settlement.balance.cents).toBe(-150);
+      const laterDownload = await request(download).get("/v2/organizations/org-a/invoices/original/document.pdf");
+      expect(laterDownload.status).toBe(200); expect(Buffer.from(laterDownload.body)).toEqual(baseline);
+      expect(laterDownload.headers["content-disposition"]).toContain("Invoice_ORD-1010.pdf");
+      expect(Buffer.from(await documents.pdf(org,replacement))).toEqual(replacementBaseline);
+      expect((await db.query("SELECT checkpoint_json FROM v2_billing_invoice_checkpoints ORDER BY invoice_id")).rows).toEqual(frozen.rows);
+      expect(await documents.filename(org,original)).toBe("Invoice_ORD-1010.pdf");
+      const emailModule = await sourceModule(emailSenderPath);
+      await emailModule.link(linkDependency); await emailModule.evaluate();
+      const EmailSender = (emailModule.namespace as unknown as { PostgresInvoiceEmailSender: typeof PostgresInvoiceEmailSender }).PostgresInvoiceEmailSender;
+      const mailPool = { query: async (sql: string, values: readonly unknown[]) => sql.startsWith("INSERT INTO v2_audit_events") ? {rows:[]} : db.query(sql,[...values]) };
+      const sender = new EmailSender(mailPool as never,documents,{requireReady:async()=>({displayName:"Fixture",sendingAddress:"fixture@example.test",refreshToken:"inert"})} as never);
+      let attempts=0;
+      await sender.send({organizationId:org,recipient:"customer@example.test",invoiceIds:[original],beforeProviderAttempt:async()=>{attempts++;},audit:{operation:"fixture",principalKind:"staff",principalSubject:"fixture"}});
+      const mime = Buffer.from(messages.at(-1)!,"base64url").toString();
+      const attachment = mime.match(/Content-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=]+)\r\n/)!;
+      expect(Buffer.from(attachment[1]!,"base64")).toEqual(baseline);
+      expect(mime).toContain("Invoice_ORD-1010.pdf");
+      expect(mime).toContain("-$1.50"); // Email's separate current settlement, not a PDF balance.
+      expect(attempts).toBe(1);
+      await db.exec("UPDATE v2_billing_invoices SET invoice_state='void',issued_at='2026-01-01' WHERE organization_id='org-a' AND id='original'");
+      expect(Buffer.from(await documents.pdf(org,original))).toEqual(baseline);
+      await db.exec("DELETE FROM v2_billing_invoice_checkpoints WHERE organization_id='org-a' AND invoice_id='original'");
+      await expect(documents.pdf(org,original)).rejects.toThrow("Issued Invoice checkpoint is unavailable");
+      await db.query("INSERT INTO v2_billing_invoice_checkpoints VALUES ($1,$2,$3::jsonb)",[org,original,JSON.stringify({...checkpoint("ORD-1010"),organizationPresentation:undefined})]);
+      await expect(documents.pdf(org,original)).rejects.toThrow("Historical Invoice presentation is unavailable");
+      for (const missing of [{invoiceNumber:undefined},{customerPresentation:{}},{organizationPresentation:{name:""}},{occurredAt:"not-a-date"}]) {
+        await db.query("UPDATE v2_billing_invoice_checkpoints SET checkpoint_json=$3::jsonb WHERE organization_id=$1 AND invoice_id=$2",[org,original,JSON.stringify({...checkpoint("ORD-1010"),...missing})]);
+        await expect(documents.pdf(org,original)).rejects.toThrow("Historical Invoice presentation is unavailable");
+      }
     } finally { await db.close(); }
   });
 });

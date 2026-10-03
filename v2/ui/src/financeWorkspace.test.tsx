@@ -52,9 +52,10 @@ const renderInvoice = (
   canInvoiceIssue = true,
   balanceCents = 600,
   paidCents = 0,
+  current?: FinancialInvoiceRead,
 ) => {
   const client = new QueryClient();
-  const value = read(lifecycle, balanceCents, paidCents);
+  const value = current ?? read(lifecycle, balanceCents, paidCents);
   client.setQueryData(
     [
       "v2",
@@ -103,8 +104,19 @@ assert.match(draft, />Issue Invoice</);
 assert.match(draft, /Order ORD-1010/);
 assert.doesNotMatch(draft, /Order invoice-draft/);
 const issued = renderInvoice("issued");
-assert.match(issued, />Preview PDF</);
-assert.match(issued, /Issued Billing checkpoint; commercial content is immutable/);
+assert.match(issued, />Preview issued PDF</);
+assert.match(issued, /Current Billing projection and settlement/);
+assert.match(issued, /later payments, refunds, credits and revisions do not change it/);
+assert.match(issued, /Total \(current\)/);
+assert.match(issued, /Paid \(current\)/);
+assert.match(issued, /Refunded \(current\)/);
+assert.match(issued, /Balance \(current\)/);
+const creditRead = read("issued", -150, 600);
+const currentCredit = renderInvoice("issued", true, true, -150, 600, { ...creditRead, invoice: { ...creditRead.invoice, total: money(400) }, settlement: { gross: money(400), paid: money(600), refunded: money(50), balance: money(-150) } });
+assert.match(currentCredit, /Total \(current\)<\/small><strong>\$4\.00/);
+assert.match(currentCredit, /Paid \(current\)<\/small><strong>\$6\.00/);
+assert.match(currentCredit, /Refunded \(current\)<\/small><strong>\$0\.50/);
+assert.match(currentCredit, /Credit \/ refund due \(current\)<\/small><strong>\$1\.50/);
 assert.match(issued, />Take Payment</);
 assert.doesNotMatch(issued, />Sync to QuickBooks</);
 assert.doesNotMatch(issued, />Issue Invoice</);

@@ -621,7 +621,7 @@ const FinanceWorkspaceBody = ({
       return invoiceApi.issue(organizationId, detail.data.invoice.invoiceId, newBusinessRequestId());
     },
     onSuccess: async () => {
-      setNotice("Invoice issued. Its commercial content is now immutable.");
+      setNotice("Invoice issued. Its historical PDF is backed by an immutable Billing checkpoint.");
       await refresh();
     },
     onError: (error) => setNotice(errorText(error)),
@@ -1258,7 +1258,7 @@ const FinanceWorkspaceBody = ({
                     )
                   }
                 >
-                  Preview PDF
+                   {invoice.lifecycle === "issued" || invoice.issuedAt ? "Preview issued PDF" : "Preview PDF"}
                 </button>
               )}
               {!isEmailDialog && invoice.source !== "legacy" && invoice.lifecycle === "draft" && canInvoiceIssue && (
@@ -1301,7 +1301,7 @@ const FinanceWorkspaceBody = ({
               <h2>Invoice</h2>
               <p>
                 {invoice.source === "legacy" ? "Legacy financial record; read-only in V2." : invoice.lifecycle === "issued"
-                  ? "Issued Billing checkpoint; commercial content is immutable."
+                  ? "Current Billing projection and settlement. The issued PDF preserves the historical Invoice; later payments, refunds, credits and revisions do not change it."
                   : "Current payable Billing projection from the source Order. Payments and Refunds remain immutable."}
               </p>
             </div>
@@ -1342,19 +1342,19 @@ const FinanceWorkspaceBody = ({
           </section>
           <div className="v2-finance-metrics">
             <div>
-              <small>Total</small>
+              <small>Total (current)</small>
               <strong>{money(settlement.gross)}</strong>
             </div>
             <div>
-              <small>Paid</small>
+              <small>Paid (current)</small>
               <strong>{money(settlement.paid)}</strong>
             </div>
             <div>
-              <small>Refunded</small>
+              <small>Refunded (current)</small>
               <strong>{money(settlement.refunded)}</strong>
             </div>
             <div>
-              <small>{settlement.balance.cents < 0 ? "Credit / refund due" : "Balance"}</small>
+              <small>{settlement.balance.cents < 0 ? "Credit / refund due (current)" : "Balance (current)"}</small>
               <strong>{money(settlement.balance.cents < 0 ? { ...settlement.balance, cents: Math.abs(settlement.balance.cents) } : settlement.balance)}</strong>
             </div>
           </div>
