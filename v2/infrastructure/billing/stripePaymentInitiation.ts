@@ -125,13 +125,15 @@ export class StripePaymentInitiation {
     if (!operation.ok) return operation;
     const existing = await this.assertInitiatingPrincipal(context, input.organizationId, operation.value.providerOperationId);
     this.assertStripeAccount(existing, payment.stripe_account_id);
-    if (existing.provider_transaction_id) return { ok: true as const, value: { providerOperationId: operation.value.providerOperationId, refundId: existing.provider_transaction_id } };
+    if (existing.provider_transaction_id) return { ok: true as const, value: { providerOperationId: operation.value.providerOperationId, refundId: existing.provider_transaction_id, confirmed: existing.reconciliation_state === "succeeded" } };
     this.assertStripeAccount(await this.assertInitiatingPrincipal(context, input.organizationId, operation.value.providerOperationId), payment.stripe_account_id);
     const created = await this.provider.createRefund({ paymentIntentId: payment.provider_transaction_id, amountCents: input.amountCents, currency:input.currency, organizationId: input.organizationId, invoiceId: input.invoiceId, paymentId: input.paymentId, providerOperationId: operation.value.providerOperationId, providerIdempotencyKey: operation.value.providerIdempotencyKey, stripeAccountId:payment.stripe_account_id });
+    const binding = await this.payments.bindProviderRefund(context, { organizationId: brandedId<"OrganizationId">(input.organizationId), providerOperationId: operation.value.providerOperationId, providerTransactionId: created.providerTransactionId, stripeAccountId: payment.stripe_account_id, paymentId: brandedId<"PaymentId">(input.paymentId), invoiceId: brandedId<"InvoiceId">(input.invoiceId), amountCents: input.amountCents, currency: input.currency });
+    if (!binding.ok) throw binding.error;
+    if (binding.value.providerTransactionId !== created.providerTransactionId) throw new V2ApplicationError("CONFLICT", "Stripe returned a Refund that does not match the Billing operation.");
     const owner = await this.assertInitiatingPrincipal(context, input.organizationId, operation.value.providerOperationId);
     this.assertStripeAccount(owner, payment.stripe_account_id);
-    if (owner.provider_transaction_id && owner.provider_transaction_id !== created.providerTransactionId) throw new V2ApplicationError("CONFLICT", "Stripe returned a Refund that does not match the Billing operation.");
-    return { ok: true as const, value: { providerOperationId: operation.value.providerOperationId, refundId: created.providerTransactionId } };
+    return { ok: true as const, value: { providerOperationId: operation.value.providerOperationId, refundId: created.providerTransactionId, confirmed: binding.value.reconciliationState === "succeeded" } };
   }
 
   private async transitionProviderIntent(context: OperationContext, input: TransitionProviderPaymentIntentInput): Promise<ProviderFinancialOperation> {

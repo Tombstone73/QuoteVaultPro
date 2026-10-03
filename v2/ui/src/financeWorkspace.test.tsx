@@ -689,6 +689,19 @@ try {
     stripeRefundCalls[1]!.result.resolve({ providerOperationId: "refund-op-a", refundId: "refund-a" }); await flush();
     assert.match(stripeRefundRecoveryView.container.textContent!, /Refund submitted to Stripe/u);
   } finally { await stripeRefundRecoveryView.close(); }
+  const confirmedStripeRefundView = await mount({ organizationId: "org-refund", sessionScope: "scope-refund-confirmed", invoiceId: "invoice-original" }, invoicePage, "verified-refund-actor");
+  try {
+    await confirmedStripeRefundView.resolve(0, providerInvoice);
+    assert.equal(stripeRefundCalls.length, 2, "confirmed Refund recovery remains explicit after reload");
+    await confirmedStripeRefundView.click("Resume original Stripe Refund");
+    await confirmedStripeRefundView.clickDialog("Retry original Stripe Refund");
+    assert.equal(stripeRefundCalls.length, 3);
+    assert.equal(stripeRefundCalls[2]!.requestId, stripeRefundCalls[0]!.requestId);
+    stripeRefundCalls[2]!.result.resolve({ providerOperationId: "refund-op-a", refundId: "refund-a", confirmed: true } as StripeRefundResult);
+    await flush();
+    assert.equal(storedRequestById(stripeRefundCalls[0]!.requestId), undefined, "signed provider success clears only the completed Refund slot");
+    assert.ok(confirmedStripeRefundView.button("Refund to Card"), "canonical confirmation releases the same-actor Refund slot for remaining refundable balance");
+  } finally { await confirmedStripeRefundView.close(); }
   financeApi.beginStripeRefund = originalApi.beginStripeRefund;
 
   type StripePaymentResult = Awaited<ReturnType<typeof financeApi.beginStripePayment>>;

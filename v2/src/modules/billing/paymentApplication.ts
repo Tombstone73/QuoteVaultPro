@@ -4,11 +4,11 @@ import { requireOperationPrincipalScope } from "../../application/operation.js";
 import { AuthorityPolicy } from "../../authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
-import { brandedId, canonicalJson, money, type InvoiceId, type OrganizationId, type PaymentId, type ProviderFinancialOperationId } from "../shared/commercialValues.js";
+import { brandedId, canonicalJson, currencyCode, money, type InvoiceId, type OrganizationId, type PaymentId, type ProviderFinancialOperationId } from "../shared/commercialValues.js";
 import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
 import { previewPaymentTender } from "./paymentWorkspace.js";
 import type { ManualPaymentAllocationsResult } from "./contracts.js";
-import type { BeginProviderFinancialOperationInput, BeginProviderPaymentAggregateInput, ConfirmProviderPaymentAggregateInput, ConfirmProviderPaymentInput, ConfirmProviderRefundInput, InvoiceSettlement, PaymentAggregateFact, PaymentAllocationFact, PaymentAllocationInput, PaymentFact, ProviderFinancialOperation, ProviderPaymentAggregateConfirmation, ProviderPaymentAggregateOperation, RecordManualPaymentAllocationsInput, RecordManualPaymentInput, RecordRefundAllocationsInput, RecordRefundInput, RefundAggregateFact, RefundAllocationFact, RefundAllocationInput, RefundFact, TransitionProviderPaymentIntentInput } from "./contracts.js";
+import type { BeginProviderFinancialOperationInput, BeginProviderPaymentAggregateInput, BindProviderRefundInput, ConfirmProviderPaymentAggregateInput, ConfirmProviderPaymentInput, ConfirmProviderRefundInput, InvoiceSettlement, PaymentAggregateFact, PaymentAllocationFact, PaymentAllocationInput, PaymentFact, ProviderFinancialOperation, ProviderPaymentAggregateConfirmation, ProviderPaymentAggregateOperation, RecordManualPaymentAllocationsInput, RecordManualPaymentInput, RecordRefundAllocationsInput, RecordRefundInput, RefundAggregateFact, RefundAllocationFact, RefundAllocationInput, RefundFact, TransitionProviderPaymentIntentInput } from "./contracts.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
@@ -43,6 +43,7 @@ export interface BillingFinancialTransaction {
   recordRefundAggregate?(input: Readonly<{ organizationId: OrganizationId; paymentId: PaymentId; allocations: readonly RefundAllocationFact[]; currency: string; occurredAt: string; operationRequestId: string }> & Actor): Promise<RefundAggregateFact>;
   beginProvider(input: Readonly<{ organizationId: OrganizationId; invoiceId: InvoiceId; kind: "payment" | "refund"; paymentId?: PaymentId; amountCents: number; currency: string; provider: string; providerIdempotencyKey: string; providerAccountId?: string; operationRequestId: string }>): Promise<ProviderFinancialOperation>;
   transitionProviderPaymentIntent(input: Readonly<Omit<TransitionProviderPaymentIntentInput, "allocations"> & { allocations: readonly PaymentAllocationFact[]; operationRequestId: string }> & Actor): Promise<ProviderFinancialOperation>;
+  bindProviderRefund(input: Readonly<BindProviderRefundInput & { operationRequestId: string }> & Actor): Promise<ProviderFinancialOperation>;
   beginProviderPaymentAggregate?(input: Readonly<{ organizationId: OrganizationId; allocations: readonly PaymentAllocationFact[]; currency: string; provider: string; providerIdempotencyKey: string; providerAccountId?: string; operationRequestId: string }>): Promise<ProviderPaymentAggregateOperation>;
   loadProviderPaymentAggregate?(input: Readonly<{ organizationId: OrganizationId; providerOperationId: ProviderFinancialOperationId }>): Promise<ProviderPaymentAggregateOperation | null>;
   confirmProviderPaymentAggregate?(input: Readonly<{ organizationId: OrganizationId; providerOperationId: ProviderFinancialOperationId; providerEventId: string; providerTransactionId: string; occurredAt: string; operationRequestId: string }> & Actor): Promise<ProviderPaymentAggregateConfirmation>;
@@ -146,6 +147,29 @@ export class BillingPaymentsApplicationService {
       });
     } catch (error) {
       return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Stripe PaymentIntent transition conflicts with Billing-owned allocation or principal evidence."));
+    }
+  }
+  /** Binds a provider Refund identifier without materializing a Refund fact. */
+  async bindProviderRefund(context: OperationContext, input: BindProviderRefundInput): Promise<ApplicationResult<ProviderFinancialOperation>> {
+    try {
+      requireOperationPrincipalScope(context);
+      const amount = money(currencyCode(input.currency), input.amountCents);
+      assertMoney(amount);
+      const ownerFingerprint = fingerprint({ principalKind: context.principal.kind, principalSubject: principalSubject(context.principal) });
+      const businessRequestId = brandedId<"BusinessRequestId">(`stripe-provider-refund-bind:${input.providerOperationId}:${input.providerTransactionId}:${ownerFingerprint}`);
+      const payload = { ...input, amount, businessRequestId };
+      const bindContext: OperationContext = { ...context, businessRequest: { id: businessRequestId, payloadFingerprint: fingerprint(payload) } };
+      return await this.withInvoice(bindContext, payload, "billing.provider.refund.intent.bind.v1", "refund.issue", async (tx, invoice, requestId) => {
+        this.assertFinanciallyActive(invoice, amount);
+        const bind = tx.bindProviderRefund;
+        if (!bind) throw new V2ApplicationError("CONFLICT", "This Billing runtime cannot durably bind a provider Refund.");
+        const operation = await bind.call(tx, { ...input, operationRequestId: requestId, ...actor(context) });
+        const eventType = operation.reconciliationState === "succeeded" ? "provider_refund_already_succeeded" : "provider_refund_intent_bound";
+        await this.finish(tx, bindContext, requestId, "billing.provider.refund.intent.bind.v1", eventType, "provider_financial_operation", operation.providerOperationId, { state: operation.reconciliationState, kind: "refund" }, operation);
+        return operation;
+      });
+    } catch (error) {
+      return failure(error instanceof V2ApplicationError ? error : new V2ApplicationError("CONFLICT", "Provider Refund binding conflicts with Billing payment, Invoice, or principal evidence."));
     }
   }
   /** Materializes one provider-settled Payment and all of its previously durable allocations atomically. */

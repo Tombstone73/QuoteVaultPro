@@ -697,12 +697,19 @@ const FinanceWorkspaceBody = ({
     retry: false,
     mutationFn: (request: StripeRefundRequest) => {
       if (request.kind !== "stripeRefund" || request.submitted || !requestCanRun(request, "stripeRefund")) throw new Error("The original Stripe Refund request is not active in this authenticated Invoice context.");
-      return financeApi.beginStripeRefund(request.organizationId, request.invoiceId, request.businessRequestId, request.input);
+      return financeApi.beginStripeRefund(request.organizationId, request.invoiceId, request.businessRequestId, request.input) as Promise<Awaited<ReturnType<typeof financeApi.beginStripeRefund>> & { confirmed?: boolean }>;
     },
-    onSuccess: async (_result, request) => {
+    onSuccess: async (result, request) => {
       const recovery = financeRecoveryRef.current;
       const current = recovery.status === "stored" ? recovery.requests.find((entry) => sameFinanceRequest(entry, request)) : undefined;
       if (!sameFinanceRequest(current, request) || !requestCanRun(request, "stripeRefund")) return;
+      if (result.confirmed === true) {
+        const cleared = clearFinanceRequest(request);
+        setNotice(cleared ? "The Stripe Refund is already canonical in Billing; the Invoice has been refreshed." : "Refund is confirmed, but its recovery entry could not be cleared; new requests remain blocked.");
+        if (cleared) await refresh(request.organizationId, currentContextRef.current.sessionScope);
+        closeDialog();
+        return;
+      }
       if (recovery.status === "stored") updateFinanceRecovery({ status: "stored", requests: recovery.requests.map((entry) => sameFinanceRequest(entry, request) ? Object.freeze({ ...request, submitted: true }) : entry) });
       setNotice("Refund submitted to Stripe. The signed provider event will record the canonical V2 Refund.");
       closeDialog();

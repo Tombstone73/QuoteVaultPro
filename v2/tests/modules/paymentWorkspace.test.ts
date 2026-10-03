@@ -599,7 +599,7 @@ describe("Billing-owned tender and canonical recording", () => {
  * execution/QuickBooks transport are fake; BEGIN/ROLLBACK restore all effects. */
 function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: OrderAutomaticLifecycle["reconcileInvoice"]) {
   type Row = Record<string, unknown>;
-  let state = { requests: new Map<string, Row>(), payments: [] as Row[], allocations: [] as Row[], providerOperations: [] as Row[], events: 0, attributions: 0, audits: [] as unknown[], outbox: [] as Row[], quickBooks: [] as unknown[] };
+  let state = { requests: new Map<string, Row>(), payments: [] as Row[], allocations: [] as Row[], refunds: [] as Row[], refundAllocations: [] as Row[], refundEvidence: [] as Row[], providerOperations: [] as Row[], events: 0, attributions: 0, audits: [] as unknown[], outbox: [] as Row[], quickBooks: [] as unknown[] };
   let snapshot: typeof state | undefined, releases = 0;
   const statements: { sql: string; values: readonly unknown[] }[] = [];
   const fixedNow = new Date("2026-10-01T05:00:00.000Z");
@@ -611,13 +611,20 @@ function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: Order
       if (sql === "BEGIN") { expect(snapshot).toBeUndefined(); snapshot = structuredClone(state); return result(); }
       if (sql === "COMMIT") { snapshot = undefined; return result(); }
       if (sql === "ROLLBACK") { if (snapshot) state = snapshot; snapshot = undefined; return result(); }
+      if (sql.startsWith("SELECT id,customer_id,currency,total_cents,invoice_state FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 FOR UPDATE")) {
+        const invoiceId = String(values[1]);
+        return result(values[0] === "org-a" && (invoiceId === "invoice-a" || invoiceId === "invoice-b")
+          ? [{ id: invoiceId, customer_id: "customer-a", currency: "USD", total_cents: invoiceId === "invoice-a" ? "5000" : "3750", invoice_state: invoiceId === "invoice-a" ? "draft" : "issued" }]
+          : []);
+      }
       if (sql.startsWith("SELECT id,customer_id,currency,total_cents,invoice_state")) {
         expect(values[0]).toBe("org-a");
         return result((values[1] as string[]).map((id) => ({ id, customer_id: "customer-a", currency: "USD", total_cents: id === "invoice-a" ? "5000" : "3750", invoice_state: "draft" })));
       }
       if (sql.startsWith("SELECT COALESCE((SELECT sum(amount_cents)")) {
         const paid = state.allocations.filter((row) => row.organization_id === values[0] && row.invoice_id === values[1]).reduce((sum, row) => sum + Number(row.amount_cents), 0);
-        return result([{ paid: String(paid), refunded: "0" }]);
+        const refunded = state.refundEvidence.filter((row) => row.organization_id === values[0] && row.invoice_id === values[1]).reduce((sum, row) => sum + Number(row.amount_cents), 0);
+        return result([{ paid: String(paid), refunded: String(refunded) }]);
       }
       if (sql.startsWith("SELECT COALESCE(SUM(")) {
         const cents = state.providerOperations.filter((row) => row.organization_id === values[0] && row.operation_kind === "payment" && ["pending", "uncertain"].includes(String(row.reconciliation_state)))
@@ -632,6 +639,19 @@ function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: Order
         const row = state.requests.get(values.slice(0, 3).join(":"));
         return result(row ? [row] : []);
       }
+      if (sql.startsWith("SELECT provider_transaction_id,stripe_account_id,source FROM v2_billing_payments")) return result(state.payments.filter((row) => row.organization_id === values[0] && row.id === values[1] && row.invoice_id === values[2]).map((row) => ({ provider_transaction_id: row.provider_transaction_id, stripe_account_id: row.stripe_account_id, source: row.source })));
+      if (sql.startsWith("SELECT provider_operation_id FROM v2_billing_payments")) return result(state.payments.filter((row) => row.organization_id === values[0] && row.id === values[1]).map((row) => ({ provider_operation_id: row.provider_operation_id })));
+      if (sql.startsWith("SELECT invoice_id,currency,provider_transaction_id,stripe_account_id,source FROM v2_billing_payments")) return result(state.payments.filter((row) => row.organization_id === values[0] && row.id === values[1] && row.invoice_id === values[2]).map((row) => ({ invoice_id: row.invoice_id, currency: row.currency, provider_transaction_id: row.provider_transaction_id, stripe_account_id: row.stripe_account_id, source: row.source })));
+      if (sql.startsWith("SELECT count(*)::text count,min(invoice_id) invoice_id FROM v2_billing_payment_allocations")) {
+        const allocations = state.allocations.filter((row) => row.organization_id === values[0] && row.payment_id === values[1]);
+        return result([{ count: String(allocations.length), invoice_id: allocations.map((row) => String(row.invoice_id)).sort()[0] ?? null }]);
+      }
+      if (sql.startsWith("SELECT invoice_id,currency,amount_cents,stripe_account_id FROM v2_billing_payments")) return result(state.payments.filter((row) => row.organization_id === values[0] && row.id === values[1]).map((row) => ({ invoice_id: row.invoice_id, currency: row.currency, amount_cents: String(row.amount_cents), stripe_account_id: row.stripe_account_id })));
+      if (sql.startsWith("SELECT amount_cents FROM v2_billing_refund_allocations")) return result(state.refundAllocations.filter((row) => row.organization_id === values[0] && row.payment_id === values[1]).map((row) => ({ amount_cents: String(row.amount_cents) })));
+      if (sql.startsWith("SELECT amount_cents FROM v2_billing_provider_financial_operations WHERE organization_id=$1 AND payment_id=$2")) return result(state.providerOperations.filter((row) => row.organization_id === values[0] && row.payment_id === values[1] && row.operation_kind === "refund" && ["pending", "uncertain"].includes(String(row.reconciliation_state)) && row.provider_idempotency_key !== values[2]).map((row) => ({ amount_cents: String(row.amount_cents) })));
+      if (sql.startsWith("SELECT r.id,r.amount_cents,a.payment_id,r.provider_transaction_id,r.occurred_at")) return result(state.refunds.filter((row) => row.organization_id === values[0] && row.provider_operation_id === values[1]).map((row) => ({ id: row.id, amount_cents: String(row.amount_cents), payment_id: row.payment_id, provider_transaction_id: row.provider_transaction_id, occurred_at: row.occurred_at })));
+      if (sql.startsWith("SELECT invoice_id,currency,amount_cents FROM v2_billing_payments")) return result(state.payments.filter((row) => row.organization_id === values[0] && row.id === values[1]).map((row) => ({ invoice_id: row.invoice_id, currency: row.currency, amount_cents: String(row.amount_cents) })));
+      if (sql.startsWith("SELECT COALESCE(sum(amount_cents),0)::text amount FROM v2_billing_refund_allocations")) return result([{ amount: String(state.refundAllocations.filter((row) => row.organization_id === values[0] && row.payment_id === values[1]).reduce((sum, row) => sum + Number(row.amount_cents), 0)) }]);
       if (sql.startsWith("INSERT INTO v2_operation_requests")) {
         const row: Row = { id: `operation-${state.requests.size}`, organization_id: values[0], operation: values[1], business_request_id: values[2], payload_fingerprint: values[3], initiated_principal_kind: values[4], initiated_principal_subject: values[5], staff_actor_user_id: values[6], status: "in_progress", result_json: null, created_at: fixedNow, updated_at: fixedNow, completed_at: null };
         state.requests.set(values.slice(0, 3).join(":"), row); return result([row]);
@@ -647,6 +667,17 @@ function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: Order
         state.payments.push({ id: values[0], organization_id: values[1], invoice_id: values[2], source: manual ? "manual" : "provider", amount_cents: String(values[manual ? 4 : 3]), currency: values[manual ? 5 : 4], occurred_at: new Date(String(values[manual ? 6 : 8])), ...(manual ? {} : { provider_operation_id: values[5] }) });
         return result();
       }
+      if (sql.startsWith("INSERT INTO v2_billing_refunds(")) {
+        state.refunds.push({ id: values[0], organization_id: values[1], invoice_id: values[2], source: sql.includes("'provider'") ? "provider" : "manual", amount_cents: Number(values[3]), currency: values[4], provider_operation_id: values[5] ?? null, provider_transaction_id: values[6] ?? null, stripe_account_id: values[7] ?? null, occurred_at: new Date(String(values[8])), principal_kind: values[9], principal_subject: values[10], operation_request_id: values[12] });
+        return result();
+      }
+      if (sql.startsWith("SELECT id FROM v2_billing_payment_allocations WHERE organization_id=$1 AND payment_id=$2 AND invoice_id=$3")) return result(state.allocations.filter((row) => row.organization_id === values[0] && row.payment_id === values[1] && row.invoice_id === values[2]).map((row) => ({ id: row.id })));
+      if (sql.startsWith("INSERT INTO v2_billing_refund_allocations")) {
+        state.refundAllocations.push({ id: values[0], organization_id: values[1], refund_id: values[2], payment_id: values[3], amount_cents: Number(values[4]) }); return result();
+      }
+      if (sql.startsWith("INSERT INTO v2_billing_refund_allocation_evidence")) {
+        state.refundEvidence.push({ refund_allocation_id: values[0], organization_id: values[1], refund_id: values[2], payment_id: values[3], payment_allocation_id: values[4], invoice_id: values[5], amount_cents: Number(values[6]) }); return result();
+      }
       if (sql.startsWith("INSERT INTO v2_billing_payment_allocations(")) {
         state.allocations.push({ id: values[0], organization_id: values[1], payment_id: values[2], invoice_id: values[3], amount_cents: Number(values[4]) }); return result();
       }
@@ -658,8 +689,20 @@ function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: Order
         state.outbox.push(row); return result([row]);
       }
       if (sql.startsWith("INSERT INTO v2_billing_provider_financial_operations")) {
-        const row = { id: values[0], organization_id: values[1], invoice_id: values[2], operation_kind: "payment", provider: values[3], provider_idempotency_key: values[4], stripe_account_id: values[5], amount_cents: String(values[6]), currency: values[7], operation_request_id: values[8], provider_transaction_id: null, reconciliation_state: "uncertain", allocation_intent: JSON.parse(String(values[9])) };
+        const row = sql.includes(",allocation_intent)")
+          ? { id: values[0], organization_id: values[1], invoice_id: values[2], payment_id: null, operation_kind: "payment", provider: values[3], provider_idempotency_key: values[4], stripe_account_id: values[5], amount_cents: String(values[6]), currency: values[7], operation_request_id: values[8], provider_transaction_id: null, reconciliation_state: "uncertain", allocation_intent: JSON.parse(String(values[9])) }
+          : { id: values[0], organization_id: values[1], invoice_id: values[2], payment_id: values[3], operation_kind: values[4], provider: values[5], provider_idempotency_key: values[6], stripe_account_id: values[7], amount_cents: String(values[8]), currency: values[9], operation_request_id: values[10], provider_transaction_id: null, reconciliation_state: "uncertain", allocation_intent: [] };
         state.providerOperations.push(row); return result([row]);
+      }
+      if (sql.startsWith("SELECT operation.id,operation.invoice_id,operation.payment_id,operation.operation_kind")) {
+        const row = state.providerOperations.find((entry) => entry.organization_id === values[0] && entry.id === values[1]);
+        const owner = row && [...state.requests.values()].find((entry) => entry.organization_id === row.organization_id && entry.id === row.operation_request_id);
+        return result(row && owner ? [{ ...row, initiated_principal_kind: owner.initiated_principal_kind, initiated_principal_subject: owner.initiated_principal_subject }] : []);
+      }
+      if (sql.startsWith("SELECT operation.provider_transaction_id")) {
+        const row = state.providerOperations.find((entry) => entry.organization_id === values[0] && entry.id === values[1]);
+        const owner = row && [...state.requests.values()].find((entry) => entry.organization_id === row.organization_id && entry.id === row.operation_request_id);
+        return result(row && owner ? [{ ...row, initiated_principal_kind: owner.initiated_principal_kind, initiated_principal_subject: owner.initiated_principal_subject }] : []);
       }
       if (sql.startsWith("SELECT operation.id,operation.invoice_id,operation.operation_kind")) {
         const row = state.providerOperations.find((entry) => entry.organization_id === values[0] && entry.id === values[1]);
@@ -673,7 +716,7 @@ function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: Order
         const row = state.providerOperations.find((entry) => entry.organization_id === values[0] && entry.id === values[1]);
         if (row) {
           row.provider_transaction_id ??= values[2];
-          row.reconciliation_state = values[3] === "failed" ? "failed" : row.reconciliation_state === "uncertain" ? "pending" : row.reconciliation_state;
+          row.reconciliation_state = values.length > 3 && values[3] === "failed" ? "failed" : row.reconciliation_state === "uncertain" ? "pending" : row.reconciliation_state;
         }
         return result(row ? [{ provider_transaction_id: row.provider_transaction_id, reconciliation_state: row.reconciliation_state }] : []);
       }
@@ -689,7 +732,13 @@ function postgresRecorderFixture(hooks: PersistenceHooks = {}, reconcile?: Order
   const pool = { connect: async () => pgClient } as unknown as Pool;
   const reconciliations: string[] = [];
   const lifecycle: OrderAutomaticLifecycle = { reconcileOrder: async () => { throw Error("Only existing Invoice reconciliation is expected"); }, reconcileInvoice: async (org, id) => { expect(statements.at(-1)?.sql).toBe("COMMIT"); reconciliations.push(`${org}:${id}`); await reconcile?.(org, id); } };
-  return { service: new BillingPaymentsApplicationService(new PostgresBillingPaymentsTransactionRunner(pool, hooks), undefined, lifecycle), client: pgClient, reconciliations, statements, state: () => ({ ...state, releases }) };
+  const seedProviderPayment = (input: Readonly<{ organizationId: string; paymentId: string; invoiceId: string; amountCents: number; paymentTransactionId: string; providerOperationId: string; operationRequestId: string; principalKind: string; principalSubject: string; stripeAccountId: string }>) => {
+    state.requests.set(`${input.organizationId}:seed:${input.operationRequestId}`, { id: input.operationRequestId, organization_id: input.organizationId, operation: "billing.provider.payment.begin.v1", business_request_id: input.operationRequestId, payload_fingerprint: "seed", initiated_principal_kind: input.principalKind, initiated_principal_subject: input.principalSubject, status: "succeeded", result_json: null });
+    state.providerOperations.push({ id: input.providerOperationId, organization_id: input.organizationId, invoice_id: input.invoiceId, payment_id: null, operation_kind: "payment", provider: "stripe", provider_idempotency_key: `key-${input.providerOperationId}`, stripe_account_id: input.stripeAccountId, amount_cents: String(input.amountCents), currency: "USD", operation_request_id: input.operationRequestId, provider_transaction_id: input.paymentTransactionId, reconciliation_state: "succeeded", allocation_intent: [] });
+    state.payments.push({ id: input.paymentId, organization_id: input.organizationId, invoice_id: input.invoiceId, source: "provider", method: "card", amount_cents: input.amountCents, currency: "USD", provider_operation_id: input.providerOperationId, provider_transaction_id: input.paymentTransactionId, stripe_account_id: input.stripeAccountId, occurred_at: new Date("2026-10-01T05:00:00.000Z"), principal_kind: input.principalKind, principal_subject: input.principalSubject });
+    state.allocations.push({ id: "payment-allocation-original", organization_id: input.organizationId, payment_id: input.paymentId, invoice_id: input.invoiceId, amount_cents: input.amountCents });
+  };
+  return { service: new BillingPaymentsApplicationService(new PostgresBillingPaymentsTransactionRunner(pool, hooks), undefined, lifecycle), client: pgClient, reconciliations, statements, seedProviderPayment, state: () => ({ ...state, releases }) };
 }
 
 describe("Stripe operation initiator ownership", () => {
@@ -721,6 +770,84 @@ describe("Stripe operation initiator ownership", () => {
       expect(f.stripeCalls.retrieves).toHaveLength(0);
       expect(f.stripeCalls.refunds).toHaveLength(0);
     }
+  });
+
+  test("Billing-owned Stripe Refund binding persists providerRefundID before response and leaves Refund facts webhook-only", async () => {
+    fakeStripeCalls.refunds.length = 0;
+    const f = postgresRecorderFixture();
+    f.seedProviderPayment({ organizationId: "org-a", paymentId: "payment-origin", invoiceId: "invoice-a", amountCents: 3000, paymentTransactionId: "pi-origin", providerOperationId: "provider-payment-origin", operationRequestId: "request-payment-origin", principalKind: "staff", principalSubject: "staff-a", stripeAccountId: "acct-a" });
+    const accounts = { assertOperationAccount: async () => {} };
+    const stripe = new StripePaymentInitiation(f.client, f.service, accounts);
+    const input = { organizationId: "org-a", invoiceId: "invoice-a", paymentId: "payment-origin", amountCents: 500, currency: "USD", businessRequestId: "stripe-refund-original" };
+    const initiatingContext = context("stripe-refund-original", ["refund.issue"], "staff-a");
+
+    const initiated = await stripe.beginRefund(initiatingContext, input);
+    if (!initiated.ok) throw initiated.error;
+    expect(initiated).toMatchObject({ ok: true, value: { refundId: "refund-created-1", confirmed: false } });
+    const providerRefund = f.state().providerOperations.find((row) => row.operation_kind === "refund");
+    expect(providerRefund).toMatchObject({ payment_id: "payment-origin", invoice_id: "invoice-a", provider_transaction_id: "refund-created-1", stripe_account_id: "acct-a", reconciliation_state: "pending" });
+    expect(f.state().refunds).toHaveLength(0, "Stripe initiation binds provider identity only; no Refund/payment fact is created");
+    expect(fakeStripeCalls.refunds).toHaveLength(1);
+
+    const replay = await stripe.beginRefund(initiatingContext, input);
+    expect(replay).toMatchObject({ ok: true, value: { refundId: "refund-created-1", confirmed: false } });
+    expect(fakeStripeCalls.refunds).toHaveLength(1, "same-request replay returns the Billing-bound ID without another Stripe create");
+    await expect(stripe.beginRefund(context("stripe-refund-original", ["refund.issue"], "staff-b"), input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(fakeStripeCalls.refunds).toHaveLength(1, "a different initiating principal cannot replay the provider Refund");
+
+    const confirmed = await f.service.confirmProviderRefund(context("stripe-refund-event", ["refund.issue"], "staff-a"), { organizationId: brandedId<"OrganizationId">("org-a"), invoiceId: brandedId<"InvoiceId">("invoice-a"), paymentId: brandedId<"PaymentId">("payment-origin"), providerOperationId: brandedId<"ProviderFinancialOperationId">(String(providerRefund!.id)), providerEventId: "stripe-refund-event", providerTransactionId: "refund-created-1", occurredAt: "2026-10-01T06:00:00.000Z", businessRequestId: brandedId<"BusinessRequestId">("stripe-refund-event") });
+    expect(confirmed).toMatchObject({ ok: true, value: { source: "provider", providerTransactionId: "refund-created-1" } });
+    expect(f.state().refunds).toHaveLength(1, "only the provider-confirmation Billing operation materializes the Refund fact");
+    const lateReplay = await stripe.beginRefund(initiatingContext, input);
+    expect(lateReplay).toMatchObject({ ok: true, value: { refundId: "refund-created-1", confirmed: true } });
+    expect(fakeStripeCalls.refunds).toHaveLength(1);
+    expect(f.state().refunds).toHaveLength(1, "late replay preserves canonical owner state");
+  });
+});
+
+describe("Billing-owned Stripe Refund binding", () => {
+  test("initiation durably binds the original providerRefundID without a Refund fact, and webhook success remains canonical", async () => {
+    fakeStripeCalls.refunds.length = 0;
+    const f = postgresRecorderFixture();
+    f.seedProviderPayment({ organizationId: "org-a", paymentId: "payment-origin", invoiceId: "invoice-a", amountCents: 3000, paymentTransactionId: "pi-origin", providerOperationId: "provider-payment-origin", operationRequestId: "request-payment-origin", principalKind: "staff", principalSubject: "staff-a", stripeAccountId: "acct-a" });
+    const accounts = { requireReadyAccount: async () => ({ accountId: "acct-a" }), assertOperationAccount: async () => {} };
+    const stripe = new StripePaymentInitiation(f.client, f.service, accounts);
+    const input = { organizationId: "org-a", invoiceId: "invoice-a", paymentId: "payment-origin", amountCents: 500, currency: "USD", businessRequestId: "refund-request-a" };
+    const initiatingContext = context("refund-request-a", ["refund.issue"], "staff-a");
+
+    const initiated = await stripe.beginRefund(initiatingContext, input);
+    if (!initiated.ok) throw new Error(`${initiated.error.message}; SQL=${f.statements.slice(-8).map((entry) => entry.sql).join(" | ")}`);
+    expect(initiated).toMatchObject({ ok: true, value: { refundId: "refund-created-1", confirmed: false } });
+    const operation = f.state().providerOperations.find((row) => row.operation_kind === "refund");
+    expect(operation).toMatchObject({ payment_id: "payment-origin", invoice_id: "invoice-a", provider_transaction_id: "refund-created-1", stripe_account_id: "acct-a", reconciliation_state: "pending" });
+    expect(f.state().refunds).toHaveLength(0, "initiation only binds provider operation state; it does not materialize a Refund fact");
+    expect(fakeStripeCalls.refunds).toHaveLength(1);
+    const refundOperationLockIndex = f.statements.findIndex((entry) => entry.sql.startsWith("SELECT operation.id,operation.invoice_id,operation.payment_id,operation.operation_kind"));
+    const providerBindingWriteIndex = f.statements.findIndex((entry) => entry.sql.startsWith("UPDATE v2_billing_provider_financial_operations SET provider_transaction_id=COALESCE"));
+    if (refundOperationLockIndex < 0) throw new Error(`Refund bind SQL trace: ${JSON.stringify(f.statements.map((entry) => entry.sql))}`);
+    const invoiceLockIndex = f.statements.map((entry, index) => entry.sql.startsWith("SELECT id,customer_id,currency,total_cents,invoice_state FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 FOR UPDATE") ? index : -1).filter((index) => index >= 0 && index < refundOperationLockIndex).at(-1)!;
+    const paymentLockIndex = f.statements.map((entry, index) => entry.sql.startsWith("SELECT invoice_id,currency,provider_transaction_id,stripe_account_id,source FROM v2_billing_payments WHERE organization_id=$1 AND id=$2 AND invoice_id=$3 FOR UPDATE") ? index : -1).filter((index) => index >= 0 && index < refundOperationLockIndex).at(-1)!;
+    assert.ok(invoiceLockIndex >= 0);
+    expect(invoiceLockIndex).toBeLessThan(paymentLockIndex);
+    expect(paymentLockIndex).toBeLessThan(refundOperationLockIndex);
+    expect(refundOperationLockIndex).toBeLessThan(providerBindingWriteIndex);
+    expect(await f.service.bindProviderRefund(initiatingContext, { organizationId: brandedId<"OrganizationId">("org-a"), providerOperationId: brandedId<"ProviderFinancialOperationId">(String(operation!.id)), providerTransactionId: "refund-mismatch", stripeAccountId: "acct-a", paymentId: brandedId<"PaymentId">("payment-origin"), invoiceId: brandedId<"InvoiceId">("invoice-a"), amountCents: 500, currency: "USD" })).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(f.state().providerOperations.find((row) => row.id === operation!.id)?.provider_transaction_id).toBe("refund-created-1", "a different provider ID cannot overwrite the bound Refund operation");
+
+    const replay = await stripe.beginRefund(initiatingContext, input);
+    expect(replay).toMatchObject({ ok: true, value: { refundId: "refund-created-1", confirmed: false } });
+    expect(fakeStripeCalls.refunds).toHaveLength(1, "same original request replays its Billing-bound ID without another Stripe create");
+    await expect(stripe.beginRefund(context("refund-request-a", ["refund.issue"], "staff-b"), input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(fakeStripeCalls.refunds).toHaveLength(1, "another principal cannot replay the existing provider Refund");
+    expect(f.state().refunds).toHaveLength(0);
+
+    const confirmed = await f.service.confirmProviderRefund(context("refund-webhook-a", ["refund.issue"], "staff-a"), { organizationId: brandedId<"OrganizationId">("org-a"), invoiceId: brandedId<"InvoiceId">("invoice-a"), paymentId: brandedId<"PaymentId">("payment-origin"), providerOperationId: brandedId<"ProviderFinancialOperationId">(String(operation!.id)), providerEventId: "stripe-refund-event-a", providerTransactionId: "refund-created-1", occurredAt: "2026-10-01T06:00:00.000Z", businessRequestId: brandedId<"BusinessRequestId">("refund-webhook-a") });
+    expect(confirmed).toMatchObject({ ok: true, value: { source: "provider", providerTransactionId: "refund-created-1" } });
+    expect(f.state().refunds).toHaveLength(1, "only the signed provider-confirmation owner operation materializes a Refund fact");
+    const lateReplay = await stripe.beginRefund(initiatingContext, input);
+    expect(lateReplay).toMatchObject({ ok: true, value: { refundId: "refund-created-1", confirmed: true } });
+    expect(fakeStripeCalls.refunds).toHaveLength(1);
+    expect(f.state().refunds).toHaveLength(1, "late initiation replay preserves the canonical confirmed Refund");
   });
 });
 
