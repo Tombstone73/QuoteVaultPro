@@ -23,6 +23,7 @@ import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
+import { resolveExplicitCreationEntity } from "./materialEntityIntent";
 import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
@@ -851,6 +852,23 @@ export class AssistantService {
     if (!conversation) throw this.notFound();
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
+    const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
+    if (explicitCreationEntity === "material") {
+      const response = "I’ll keep this in Material Inventory, not Product Builder. Material variants require a dedicated Material workflow; no product draft or unresolved-material placeholder was created.";
+      return this.persistOperatorResponse(input, {
+        response,
+        status: "responded",
+        errorCode: null,
+        audits: [],
+        cards: [{
+          kind: "notice",
+          title: "Material creation",
+          body: "Create and manage this inventory material in Inventory & Procurement. Product Builder is reserved for explicit product requests.",
+          tone: "info",
+          sourceLinks: [{ label: "Open Material Inventory", href: "/settings/inventory", entityType: "material" }],
+        }],
+      });
+    }
     const activeResourceContext = persistedActiveResourceContext(task.semanticChanges);
     const pendingAction = derivePendingOperatorActionContext({
       message: request.message,
