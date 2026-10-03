@@ -20,20 +20,21 @@ const replacement = (id: string, quantity: number, remainingProduction: number, 
     successorProductionWorkIds: [], createdAt: "2026-10-01T00:00:00.000Z", createdPrincipalKind: "staff", createdPrincipalSubject: "synthetic-operator" },
   remainingProductionQuantity: remainingProduction, remainingFulfillmentQuantity: remainingFulfillment, availableFulfillmentQuantity: available,
   billingPending: false, events: [] });
-const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>");
+const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { url: "http://localhost" });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
   HTMLElement: dom.window.HTMLElement, Event: dom.window.Event, IS_REACT_ACT_ENVIRONMENT: true });
 const { createRoot } = await import("react-dom/client");
 const root = createRoot(document.getElementById("root")!);
 const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
 const replacementKey = ["v2", "m5-ui-scope", "m5-ui-org", "fulfillment", "replacements", order.orderId] as const;
-const requests: { url: string; method: string; body?: unknown }[] = [];
+const requests: { url: string; method: string; body?: unknown; rawBody?: string }[] = [];
 const originalFetch = globalThis.fetch;
 let items: readonly ReplacementFulfillmentProjection[] = [];
 globalThis.fetch = async (input, init) => {
   const url = String(input), method = init?.method ?? "GET";
-  const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-  requests.push({ url, method, body });
+  const rawBody = init?.body ? String(init.body) : undefined;
+  const body = rawBody ? JSON.parse(rawBody) : undefined;
+  requests.push({ url, method, body, rawBody });
   assert.ok(url.startsWith("/v2/organizations/m5-ui-org/fulfillment/"), "UI must use canonical Fulfillment routes only");
   let data: unknown;
   if (method === "POST") {
@@ -125,6 +126,7 @@ try {
   assert.ok(payload.businessRequestId);
   assert.equal(payload.replacementObligationId, "m5-A", "canonical backend receives A, never a line-only or B handoff");
   assert.deepEqual(payload.allocations, [{ orderLineId: "m5-ui-line", quantity: 1 }]);
+  assert.equal(mutations[0].rawBody, JSON.stringify({ businessRequestId: payload.businessRequestId, allocations: [{ orderLineId: "m5-ui-line", quantity: 1 }], replacementObligationId: "m5-A" }), "replacement pickup request bytes retain the original canonical body ordering");
   assert.match(document.body.textContent ?? "", /Original pickup history and Invoice\/payment records remain unchanged/);
   assert.match(document.body.textContent ?? "", /Ordered 2.*Produced 2.*Available 0.*Fulfilled 2/);
   assert.ok(requests.every(request => !/billing|invoice|payment|refund|pricing|product/i.test(request.url)));
