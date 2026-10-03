@@ -36,14 +36,21 @@ const send = delivery.slice(delivery.indexOf("async send("), delivery.indexOf("p
 const prepare = delivery.slice(delivery.indexOf("private async prepare("), delivery.indexOf("private async routability("));
 assert.ok(send.indexOf("requireRoutability") < send.indexOf("integrations.requireReady"), "send must reject unroutable Product lines before email readiness/provider preparation");
 assert.ok(send.indexOf("requireRoutability") < send.indexOf("this.prepare"), "send must reject unroutable Product lines before commercial freeze");
-assert.ok(prepare.indexOf("requireRoutability") < prepare.indexOf("quoteInTransaction"), "the locked send preparation must recheck routability before PDF rendering");
-assert.match(delivery, /quoteInTransaction\(/);
+assert.ok(prepare.indexOf("requireRoutability") >= 0 && prepare.indexOf("requireRoutability") < prepare.indexOf("quoteDeliveryInTransaction"), "the locked send preparation must recheck routability before PDF rendering");
+assert.match(prepare, /quoteDeliveryInTransaction\(/);
 assert.match(delivery, /frozenTaxComposition: prepared\.frozenTaxComposition/);
+let preparationCursor = -1;
+const preparationSteps = ["freezeTaxComposition(", "quoteDeliveryInTransaction(", "renderCustomerSalesPdf(", "await persistPreparedQuoteDeliveryAttempt(", 'client.query("COMMIT")'].map(step => {
+  preparationCursor = prepare.indexOf(step, preparationCursor + 1);
+  return preparationCursor;
+});
 assert.ok(
-  delivery.indexOf("freezeTaxComposition(") < delivery.indexOf("quoteInTransaction(") &&
-    delivery.indexOf("quoteInTransaction(") < delivery.indexOf("INSERT INTO v2_sales_quote_delivery_attempts"),
+  preparationSteps.every((position, index) => position >= 0 && (index === 0 || position > preparationSteps[index - 1]!)),
   "delivery must freeze tax, render the exact transactional customer document, then reserve its provider attempt",
 );
+const persistAttempt = delivery.slice(delivery.indexOf("export const persistPreparedQuoteDeliveryAttempt"), delivery.indexOf("export class PostgresQuoteDeliveryService"));
+assert.match(persistAttempt, /INSERT INTO v2_sales_quote_delivery_attempts\([^)]*prepared_evidence_json/);
+assert.ok(persistAttempt.indexOf("serializePreparedQuoteDeliveryEvidence(") >= 0 && persistAttempt.indexOf("serializePreparedQuoteDeliveryEvidence(") < persistAttempt.indexOf("INSERT INTO v2_sales_quote_delivery_attempts"), "the owner persistence helper validates prepared evidence before insertion");
 assert.match(delivery, /markPermanentFailure/);
 assert.match(delivery, /automatic retry is disabled/);
 assert.match(delivery, /recordDelivered\(context, committed\)/);

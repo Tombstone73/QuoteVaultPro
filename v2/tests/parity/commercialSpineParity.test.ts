@@ -6,7 +6,7 @@ import { QuoteApplicationService, type QuoteReadModel } from "../../src/modules/
 import { composeSalesTax } from "../../src/modules/sales/taxComposition";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter";
 import { brandedId, currencyCode, decimalText, type OrganizationId } from "../../src/modules/shared/commercialValues";
-import type { QuoteCheckpoint, QuoteCurrentState, SalesLineSnapshot } from "../../src/modules/sales/contracts";
+import { quoteCommercialSnapshot, type QuoteCheckpoint, type QuoteCurrentState, type SalesLineSnapshot } from "../../src/modules/sales/contracts";
 import { compareParity, normalizeParityValue, requireParity } from "./harness";
 
 const organizationId = brandedId<"OrganizationId">("m5-commercial-org");
@@ -19,6 +19,20 @@ const usd = currencyCode("USD");
 const allCommercialCapabilities = ["quote.create", "quote.send", "quote.edit", "quote.convert", "quote.overridePrice"] as const;
 const principal = { kind: "staff" as const, organizationId, userId: "staff-alex", authority: { membershipId: "membership-alex", capabilities: allCommercialCapabilities } };
 const context = (request: string): OperationContext => ({ principal, organizationId, operationId: `m5-${request}`, businessRequest: { id: request, payloadFingerprint: `fixture-${request}` } });
+const preparedEvidence = (read: QuoteReadModel, recipientEmail: string, documentSha256: string, customerDisplayName = "Acme") => ({
+  schemaVersion: 1 as const,
+  organizationId,
+  quoteId: read.quote.quoteId,
+  expectedRevision: read.revision,
+  customerContact: read.quote.customerContact,
+  commercial: quoteCommercialSnapshot(read.quote),
+  customerPresentation: { customerDisplayName, contactDisplayName: "Alex", email: recipientEmail },
+  organizationPresentation: { name: "Acme Print" },
+  recipientEmail,
+  documentSha256,
+  documentNumber: read.number.display,
+  documentDate: "2026-08-17",
+});
 
 const productInput = (productId: string, quantity: number, selections: Readonly<Record<string, unknown>> = {}, dimensions?: Readonly<{ width: string; height: string; unit: "in" }>) => {
   const isBanner = productId === "banner";
@@ -232,7 +246,7 @@ describe("M5 commercial spine parity baseline", () => {
     ] });
     expect(created.ok).toBe(true);
     if (!created.ok) throw created.error;
-    const sent = await runtime.quote.recordDelivered(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-1", providerMessageId: "fixture-message-1" });
+    const sent = await runtime.quote.recordDelivered(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-1", providerMessageId: "fixture-message-1", preparedSnapshot: preparedEvidence(created.value.quote, "alex@example.test", `sha256:${"1".repeat(64)}`) });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
     runtime.setCurrentPolicies();
@@ -290,9 +304,10 @@ describe("M5 commercial spine parity baseline", () => {
     const sent = await runtime.quote.recordDelivered(context("unconfigured-send"), {
       businessRequestId: "unconfigured-send", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-2", providerMessageId: "fixture-message-2",
+      preparedSnapshot: preparedEvidence(created.value.quote, "alex@example.test", `sha256:${"2".repeat(64)}`),
     });
-    expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
+    expect(sent.ok).toBe(true);
     const accepted = await runtime.conversion.accept(context("unconfigured-accept"), {
       businessRequestId: "unconfigured-accept", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: sent.value.quote.revision,
@@ -313,9 +328,10 @@ describe("M5 commercial spine parity baseline", () => {
     const sent = await runtime.quote.recordDelivered(context("unroutable-send"), {
       businessRequestId: "unroutable-send", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-unroutable", providerMessageId: "fixture-message-unroutable",
+      preparedSnapshot: preparedEvidence(created.value.quote, "alex@example.test", `sha256:${"3".repeat(64)}`),
     });
-    expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
+    expect(sent.ok).toBe(true);
     const accepted = await runtime.conversion.accept(context("unroutable-accept"), {
       businessRequestId: "unroutable-accept", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: sent.value.quote.revision,

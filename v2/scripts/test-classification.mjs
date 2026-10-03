@@ -29,6 +29,8 @@ add('v2/tests/', 'jest', [
 ], 'safe-deterministic', 'Disposable in-memory PGlite executes actual Sales/Artwork owner operations and forward DDL. Canonical adapters with V1 dependencies use bounded VM import allowlists that reject every unknown import; no connection URL, root setup, credentials or external provider.');
 add('v2/tests/persistence/', 'jest', ['salesWorkspace.postgres.test.ts'],
   'safe-deterministic', 'Actual forward DDL and persistence transactions execute in disposable in-memory PostgreSQL via PGlite, without a connection URL, network, or shared database.');
+add('v2/tests/persistence/', 'tsx', ['quoteDeliveryPreparedEvidence.postgres.test.ts'],
+  'safe-deterministic', 'Actual Quote delivery migrations and catalog postconditions run in disposable in-memory PGlite with synthetic referenced keys; no connection URL, provider, V1 initialization or external I/O.');
 add('v2/tests/', 'tsx', [
   'infrastructure/workspaceArtwork.test.ts',
   'infrastructure/workspaceMaintenance.test.ts',

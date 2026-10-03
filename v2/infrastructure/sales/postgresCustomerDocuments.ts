@@ -1,15 +1,17 @@
 import type { Pool, PoolClient } from "pg";
 import { salesConfigurationPresentation } from "../../src/modules/sales/configurationPresentation.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
-import type { OrganizationId, OrderId, QuoteId } from "../../src/modules/shared/commercialValues.js";
+import { canonicalJson, type OrganizationId, type OrderId, type QuoteId } from "../../src/modules/shared/commercialValues.js";
 import { renderCustomerSalesPdf, type CustomerSalesDocument } from "./customerDocumentRenderer.js";
 import { readTenantBranding } from "../documents/postgresTenantBranding.js";
 import type { TenantBranding } from "../documents/ownerPdfRenderer.js";
 import type { DocumentOrganizationIdentity } from "../../src/modules/organization/businessProfile.js";
+import { parsePreparedQuoteDeliveryEvidence } from "./preparedQuoteDeliveryEvidence.js";
 
 type HeaderRow = { id: string; display_number: string; currency: string; purchase_order_number: string | null; requested_due_date: Date | null; commercial_notes: string | null; customer_name: string | null; customer_email: string | null; contact_id: string | null; contact_exists: string | null; contact_name: string | null; contact_email: string | null; requested_fulfillment_method: string | null; selling_adjustment_cents: string; selling_adjustment_reason: string | null; commercial_charge: unknown; tax_composition: unknown; delivery_state?: "not_sent" | "sent"; };
 type LineRow = { description: string; quantity: number; selling_unit_cents: string; selling_line_cents: string; resolved_configuration: unknown };
 type CheckpointRow = { payload: unknown; occurred_at: Date };
+type DeliveryAttemptEvidenceRow = { id: string; organization_id: string; quote_document_id: string; operation_request_id: string; recipient_email: string; document_sha256: string; prepared_evidence_json: unknown | null; delivery_state: "pending" | "succeeded" | "failed" | "uncertain"; quote_checkpoint_id: string | null; provider_message_id: string | null };
 type AnyRecord = Record<string, unknown>;
 const record = (value: unknown): AnyRecord => value && typeof value === "object" && !Array.isArray(value) ? value as AnyRecord : {};
 const integer = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) ? value : typeof value === "string" && /^-?\d+$/.test(value) ? Number(value) : 0;
@@ -37,13 +39,25 @@ export class PostgresCustomerDocumentService {
   async quoteInTransaction(client: PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
     return this.quoteFrom(client, organizationId, quoteId);
   }
-  private async quoteFrom(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
-    const [header, branding, sent] = await Promise.all([
-      this.quoteHeader(queryable, organizationId, quoteId), this.branding(queryable, organizationId),
-      queryable.query<CheckpointRow>("SELECT payload,occurred_at FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 AND checkpoint_kind='quote_sent' ORDER BY checkpoint_sequence DESC LIMIT 1", [organizationId, quoteId]),
+  /** Captures recipient and rendered customer facts from one Quote/CRM header read. */
+  async quoteDeliveryInTransaction(client: PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<Readonly<{ document: CustomerSalesDocument; recipientEmail?: string }>> {
+    const [header, branding] = await Promise.all([
+      this.quoteHeader(client, organizationId, quoteId), this.branding(client, organizationId),
     ]);
     if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
-    if (sent.rows[0]) return this.fromCheckpoint("quote", header, branding, sent.rows[0]);
+    const lines = await this.lines(client, organizationId, quoteId);
+    return { document: this.current("quote", header, branding, lines), recipientEmail: text(header.contact_email) };
+  }
+  private async quoteFrom(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
+    const [header, branding, sent, unresolved] = await Promise.all([
+      this.quoteHeader(queryable, organizationId, quoteId), this.branding(queryable, organizationId),
+      queryable.query<CheckpointRow>("SELECT payload,occurred_at FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 AND checkpoint_kind='quote_sent' ORDER BY checkpoint_sequence DESC LIMIT 1", [organizationId, quoteId]),
+      queryable.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain') LIMIT 1", [organizationId, quoteId]),
+    ]);
+    if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+    if (sent.rows[0]) return this.fromCheckpoint(queryable, organizationId, quoteId, sent.rows[0]);
+    if (header.delivery_state === "sent" || unresolved.rows[0])
+      throw new V2ApplicationError("CONFLICT", "This Quote has unresolved delivery evidence and cannot be rendered as a known sent document.");
     const lines = await this.lines(queryable, organizationId, quoteId);
     return this.current("quote", header, branding, lines);
   }
@@ -110,8 +124,32 @@ export class PostgresCustomerDocumentService {
       currency: header.currency, lineSubtotalCents, adjustmentCents, ...(text(header.selling_adjustment_reason) ? { adjustmentReason: header.selling_adjustment_reason! } : {}), chargeCents, ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind)! } : {}), taxCents, totalCents, ...(text(header.requested_fulfillment_method) ? { fulfillment: header.requested_fulfillment_method! } : {}), ...(text(header.commercial_notes) ? { notes: header.commercial_notes! } : {}),
     };
   }
-  private fromCheckpoint(kind: "quote", header: HeaderRow, branding: TenantBranding, checkpoint: CheckpointRow): CustomerSalesDocument {
-    const payload = record(checkpoint.payload); const commercial = record(payload.commercial); const presentation = record(payload.customerPresentation); const tax = record(commercial.taxComposition); const adjustment = record(commercial.sellingAdjustment); const charge = record(commercial.commercialCharge);
+  private async fromCheckpoint(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId, checkpoint: CheckpointRow): Promise<CustomerSalesDocument> {
+    const payload = record(checkpoint.payload); const commercial = record(payload.commercial); const presentation = record(payload.customerPresentation); const sentEvidence = record(payload.sentEvidence); const tax = record(commercial.taxComposition); const adjustment = record(commercial.sellingAdjustment); const charge = record(commercial.commercialCharge);
+    const attemptId = text(sentEvidence.deliveryAttemptId);
+    const attempt = attemptId ? await queryable.query<DeliveryAttemptEvidenceRow>("SELECT id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state,quote_checkpoint_id,provider_message_id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND id=$2", [organizationId, attemptId]) : { rows: [] as DeliveryAttemptEvidenceRow[] };
+    const prepared = attempt.rows[0] && parsePreparedQuoteDeliveryEvidence(attempt.rows[0].prepared_evidence_json);
+    const organization = organizationIdentity(payload.organizationPresentation);
+    if (!attempt.rows[0] || !prepared || !organization || !attempt.rows[0].operation_request_id
+      || attempt.rows[0].quote_document_id !== quoteId || attempt.rows[0].id !== attemptId
+      || attempt.rows[0].delivery_state !== "succeeded" && attempt.rows[0].delivery_state !== "uncertain"
+      || attempt.rows[0].quote_checkpoint_id && attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId)
+      || attempt.rows[0].delivery_state === "succeeded" && attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId)
+      || attempt.rows[0].provider_message_id !== text(sentEvidence.providerMessageId)
+      || attempt.rows[0].recipient_email !== text(sentEvidence.recipientEmail)
+      || attempt.rows[0].document_sha256 !== text(sentEvidence.documentSha256)
+      || prepared.organizationId !== organizationId || prepared.quoteId !== quoteId
+      || canonicalJson(prepared.customerContact) !== canonicalJson(sentEvidence.customerContact)
+      || canonicalJson(prepared.commercial) !== canonicalJson(commercial)
+      || canonicalJson(prepared.customerPresentation) !== canonicalJson(presentation)
+      || canonicalJson(prepared.organizationPresentation) !== canonicalJson(payload.organizationPresentation)
+      || prepared.recipientEmail !== text(sentEvidence.recipientEmail)
+      || prepared.documentSha256 !== text(sentEvidence.documentSha256)
+      || prepared.documentNumber !== text(sentEvidence.documentNumber)
+      || prepared.documentDate !== text(sentEvidence.documentDate)
+      || prepared.documentSha256 !== attempt.rows[0].document_sha256
+      || prepared.recipientEmail !== attempt.rows[0].recipient_email)
+      throw new V2ApplicationError("CONFLICT", "The sent Quote document has no complete, matching prepared evidence.");
     if (tax.status === "unresolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
     const rawLines = Array.isArray(commercial.lines) ? commercial.lines : [];
     const lines = rawLines.map((entry) => { const line = record(entry); const decision = record(line.sellingPriceDecision); return { description: text(line.description) ?? "Line item", quantity: integer(line.quantity), configuration: salesConfigurationPresentation(record(line.resolvedConfiguration)), unitCents: integer(record(decision.resultingUnitAmount).cents), totalCents: integer(record(line.sellingLineAmount).cents) }; });
@@ -120,6 +158,6 @@ export class PostgresCustomerDocumentService {
     const chargeCents = integer(charge.cents);
     const taxCents = integer(tax.taxCents);
     const totalCents = text(tax.status) === "resolved" ? integer(tax.finalTotalCents) : lineSubtotalCents + adjustmentCents + chargeCents;
-    return { kind, number: header.display_number, issuedAt: date(checkpoint.occurred_at), organization: organizationIdentity(payload.organizationPresentation) ?? branding, customer: { displayName: text(presentation.customerDisplayName) ?? text(presentation.companyName) ?? "Customer", ...(text(presentation.contactDisplayName) ? { contactName: text(presentation.contactDisplayName)! } : {}), ...(text(presentation.email) ? { email: text(presentation.email)! } : {}), ...(text(commercial.purchaseOrderNumber) ? { purchaseOrderNumber: text(commercial.purchaseOrderNumber)! } : {}), ...(text(commercial.requestedDueDate) ? { requestedDueDate: text(commercial.requestedDueDate)! } : {}) }, lines, currency: text(commercial.currency) ?? header.currency, lineSubtotalCents, adjustmentCents, ...(text(adjustment.reason) ? { adjustmentReason: text(adjustment.reason)! } : {}), chargeCents, ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind)! } : {}), taxCents, totalCents, ...(text(record(commercial.requestedFulfillment).method) ? { fulfillment: text(record(commercial.requestedFulfillment).method)! } : {}), ...(text(record(commercial.terms).commercialNotes) ? { notes: text(record(commercial.terms).commercialNotes)! } : {}) };
+    return { kind: "quote", number: prepared.documentNumber, issuedAt: prepared.documentDate, organization, customer: { displayName: prepared.customerPresentation.customerDisplayName!, ...(prepared.customerPresentation.contactDisplayName ? { contactName: prepared.customerPresentation.contactDisplayName! } : {}), ...(prepared.customerPresentation.email ? { email: prepared.customerPresentation.email! } : {}), ...(text(commercial.purchaseOrderNumber) ? { purchaseOrderNumber: text(commercial.purchaseOrderNumber)! } : {}), ...(text(commercial.requestedDueDate) ? { requestedDueDate: text(commercial.requestedDueDate)! } : {}) }, lines, currency: text(commercial.currency)!, lineSubtotalCents, adjustmentCents, ...(text(adjustment.reason) ? { adjustmentReason: text(adjustment.reason)! } : {}), chargeCents, ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind)! } : {}), taxCents, totalCents, ...(text(record(commercial.requestedFulfillment).method) ? { fulfillment: text(record(commercial.requestedFulfillment).method)! } : {}), ...(text(record(commercial.terms).commercialNotes) ? { notes: text(record(commercial.terms).commercialNotes)! } : {}) };
   }
 }

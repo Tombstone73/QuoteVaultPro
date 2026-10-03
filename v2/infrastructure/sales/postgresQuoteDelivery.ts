@@ -7,7 +7,8 @@ import { AuthorityPolicy } from "../../src/authorization/authorityPolicy.js";
 import { principalSubject, staffActorId } from "../../src/authorization/principals.js";
 import { failure, success, type ApplicationResult, V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { QuoteDeliveredInput, QuoteLifecycleInput, QuoteOperationResult, QuoteApplicationService } from "../../src/modules/sales/quoteApplication.js";
-import { brandedId, canonicalJson, type OrganizationId, type QuoteId } from "../../src/modules/shared/commercialValues.js";
+import { brandedId, canonicalJson, type QuoteId } from "../../src/modules/shared/commercialValues.js";
+import { quoteCommercialSnapshot, type PreparedQuoteDeliveryEvidence } from "../../src/modules/sales/contracts.js";
 import type { ProductsReadPort } from "../../src/modules/products/contracts.js";
 import { PostgresProductsCompatibilityReader } from "../compatibility/postgresProductsRead.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
@@ -15,23 +16,74 @@ import type { CustomerSalesDocument } from "./customerDocumentRenderer.js";
 import { customerDocumentFilename, renderCustomerSalesPdf } from "./customerDocumentRenderer.js";
 import { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
 import { PostgresQuoteTransaction } from "./postgresQuoteTransaction.js";
+import { parsePreparedQuoteDeliveryEvidence, serializePreparedQuoteDeliveryEvidence } from "./preparedQuoteDeliveryEvidence.js";
 import type { SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
-import type { DocumentOrganizationIdentity } from "../../src/modules/organization/businessProfile.js";
 import { PostgresEmailIntegrationService, type EmailReadiness, type ReadyGmailIntegration } from "../communications/postgresEmailIntegration.js";
 
-type AttemptRow = { id: string; delivery_state: "pending" | "succeeded" | "failed" | "uncertain"; };
+type AttemptRow = {
+  id: string;
+  organization_id: string;
+  quote_document_id: string;
+  operation_request_id: string;
+  recipient_email: string;
+  document_sha256: string;
+  prepared_evidence_json: unknown | null;
+  delivery_state: "pending" | "succeeded" | "failed" | "uncertain";
+};
 type PreparedDelivery = Readonly<{
   requestId: string;
   attemptId: string;
   recipient: string;
   document: CustomerSalesDocument;
   pdf: Uint8Array;
+  preparedEvidence: PreparedQuoteDeliveryEvidence;
   frozenTaxComposition: SalesTaxComposition;
-  documentOrganizationIdentity: DocumentOrganizationIdentity;
   integration: ReadyGmailIntegration;
 }> | Readonly<{ requestId: string; replay: QuoteOperationResult }>;
 const fingerprint = (value: unknown): string => `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 const email = (value: string | undefined): string | null => value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value : null;
+const preparedEvidenceMatchesAttempt = (row: AttemptRow, evidence: PreparedQuoteDeliveryEvidence): boolean =>
+  row.organization_id === evidence.organizationId && row.quote_document_id === evidence.quoteId
+  && row.recipient_email === evidence.recipientEmail && row.document_sha256 === evidence.documentSha256
+  && canonicalJson(parsePreparedQuoteDeliveryEvidence(row.prepared_evidence_json)) === canonicalJson(evidence);
+
+export const loadPreparedQuoteDeliveryEvidenceFromAttempt = (row: AttemptRow): PreparedQuoteDeliveryEvidence | null => {
+  const evidence = parsePreparedQuoteDeliveryEvidence(row.prepared_evidence_json);
+  return evidence && preparedEvidenceMatchesAttempt(row, evidence) ? evidence : null;
+};
+
+export const canRetryPreparedQuoteDeliveryAttempt = (row: AttemptRow, evidence: PreparedQuoteDeliveryEvidence): boolean =>
+  row.delivery_state === "failed"
+  && canonicalJson(loadPreparedQuoteDeliveryEvidenceFromAttempt(row)) === canonicalJson(evidence);
+
+export const persistPreparedQuoteDeliveryAttempt = async (
+  client: Pick<PoolClient, "query">,
+  input: Readonly<{
+    organizationId: string;
+    quoteId: QuoteId;
+    requestId: string;
+    recipientEmail: string;
+    preparedEvidence: PreparedQuoteDeliveryEvidence;
+    principalKind: string;
+    principalSubject: string;
+    staffActorUserId?: string;
+  }>,
+): Promise<AttemptRow> => {
+  const evidenceJson = serializePreparedQuoteDeliveryEvidence(input.preparedEvidence);
+  if (input.preparedEvidence.organizationId !== input.organizationId || input.preparedEvidence.quoteId !== input.quoteId
+    || input.preparedEvidence.recipientEmail !== input.recipientEmail)
+    throw new V2ApplicationError("VALIDATION_ERROR", "Prepared Quote attempt identity does not match its evidence.");
+  const result = await client.query<AttemptRow>(
+    "INSERT INTO v2_sales_quote_delivery_attempts(organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,initiated_principal_kind,initiated_principal_subject,initiated_staff_actor_user_id) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9) RETURNING id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state",
+    [input.organizationId, input.quoteId, input.requestId, input.recipientEmail, input.preparedEvidence.documentSha256, evidenceJson, input.principalKind, input.principalSubject, input.staffActorUserId ?? null],
+  );
+  const row = result.rows[0];
+  if (!row || row.delivery_state !== "pending" || !loadPreparedQuoteDeliveryEvidenceFromAttempt(row)
+    || canonicalJson(loadPreparedQuoteDeliveryEvidenceFromAttempt(row)) !== canonicalJson(input.preparedEvidence))
+    throw new V2ApplicationError("CONFLICT", "Prepared Quote evidence could not be durably stored.");
+  return row;
+};
+
 const providerDefinitelyRejected = (cause: unknown): boolean => {
   const status = typeof cause === "object" && cause && "response" in cause
     ? Number((cause as { response?: { status?: unknown } }).response?.status)
@@ -131,18 +183,24 @@ export class PostgresQuoteDeliveryService {
         throw new V2ApplicationError("CONFLICT", "Quote delivery outcome is unknown. The Quote was not marked sent; reconcile delivery before trying again.");
       }
 
-      const committed: QuoteDeliveredInput = { ...input, deliveryAttemptId: prepared.attemptId, providerMessageId, frozenTaxComposition: prepared.frozenTaxComposition, documentOrganizationIdentity: prepared.documentOrganizationIdentity };
+      const committed: QuoteDeliveredInput = {
+        ...input,
+        deliveryAttemptId: prepared.attemptId,
+        providerMessageId,
+        preparedSnapshot: prepared.preparedEvidence,
+        frozenTaxComposition: prepared.frozenTaxComposition,
+      };
       const transitioned = await this.quoteService.recordDelivered(context, committed);
       if (!transitioned.ok) {
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery but the Quote lifecycle transition requires reconciliation; automatic retry is disabled.", providerMessageId);
-        return transitioned;
+        return failure(new V2ApplicationError("CONFLICT", "The provider accepted delivery; Quote state needs reconciliation."));
       }
       if (!transitioned.value.checkpointId) {
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery but immutable Quote evidence was not confirmed; automatic retry is disabled.", providerMessageId);
         throw new V2ApplicationError("CONFLICT", "Quote delivery requires reconciliation before it can be retried.");
       }
       try {
-        await this.succeeded(context, prepared.requestId, prepared.attemptId, input.quoteId, transitioned.value.checkpointId, providerMessageId, transitioned.value);
+        await this.succeeded(context, prepared.requestId, prepared.attemptId, input.quoteId, transitioned.value.checkpointId, providerMessageId, prepared.recipient, prepared.preparedEvidence.documentSha256, serializePreparedQuoteDeliveryEvidence(prepared.preparedEvidence), transitioned.value);
       } catch {
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery and Quote state changed, but delivery evidence could not be finalized; automatic retry is disabled.", providerMessageId);
         throw new V2ApplicationError("CONFLICT", "Quote delivery evidence requires reconciliation before it can be retried.");
@@ -178,24 +236,61 @@ export class PostgresQuoteDeliveryService {
       const frozenTaxComposition = frozen.quote.taxComposition;
       if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
       await this.requireRoutability(context.organizationId, frozen.quote.lines, new PostgresProductsCompatibilityReader(client));
-      const [recipientValue, document] = await Promise.all([
-        this.documents.quoteRecipientInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId),
-        this.documents.quoteInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId),
-      ]);
-      const recipient = email(recipientValue);
+      const preparedDocument = await this.documents.quoteDeliveryInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId);
+      const document = preparedDocument.document;
+      const recipient = email(preparedDocument.recipientEmail);
       if (!recipient) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Quote contact needs a valid email address before sending.");
       const pdf = await renderCustomerSalesPdf(document);
       const sha = `sha256:${createHash("sha256").update(pdf).digest("hex")}`;
+      const customerPresentation: PreparedQuoteDeliveryEvidence["customerPresentation"] = {
+        customerDisplayName: document.customer.displayName,
+        ...(document.customer.contactName ? { contactDisplayName: document.customer.contactName } : {}),
+        ...(document.customer.email ? { email: document.customer.email } : {}),
+      };
+      const preparedEvidence: PreparedQuoteDeliveryEvidence = {
+        schemaVersion: 1,
+        organizationId: brandedId<"OrganizationId">(context.organizationId),
+        quoteId: input.quoteId,
+        expectedRevision: frozen.revision,
+        customerContact: frozen.quote.customerContact,
+        commercial: quoteCommercialSnapshot(frozen.quote),
+        customerPresentation,
+        organizationPresentation: document.organization,
+        recipientEmail: recipient,
+        documentSha256: sha,
+        documentNumber: document.number,
+        documentDate: document.issuedAt,
+      };
+      const preparedEvidenceJson = serializePreparedQuoteDeliveryEvidence(preparedEvidence);
       const uncertain = await client.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain') LIMIT 1 FOR UPDATE", [context.organizationId, input.quoteId]);
       if (uncertain.rows[0]) throw new V2ApplicationError("CONFLICT", "A previous Quote delivery is still unresolved. Reconcile it before sending again.");
-      const existing = await client.query<AttemptRow>("SELECT id,delivery_state FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND operation_request_id=$2 FOR UPDATE", [context.organizationId, reservation.request.id]);
+      const existing = await client.query<AttemptRow>("SELECT id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND operation_request_id=$2 FOR UPDATE", [context.organizationId, reservation.request.id]);
       let attemptId = existing.rows[0]?.id;
-      if (attemptId) await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='pending',recipient_email=$3,document_sha256=$4,failure_message=NULL,completed_at=NULL,attempted_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='failed'", [context.organizationId, attemptId, recipient, sha]);
-      else {
-        const row = await client.query<{ id: string }>("INSERT INTO v2_sales_quote_delivery_attempts(organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject,initiated_staff_actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id", [context.organizationId, input.quoteId, reservation.request.id, recipient, sha, context.principal.kind, principalSubject(context.principal), staffActorId(context.principal) ?? null]);
-        attemptId = row.rows[0]!.id;
+      let persistedEvidence = preparedEvidence;
+      if (attemptId) {
+        if (existing.rows[0]!.delivery_state !== "failed") throw new V2ApplicationError("CONFLICT", "This Quote delivery request cannot be retried from its current attempt state.");
+        const priorEvidence = loadPreparedQuoteDeliveryEvidenceFromAttempt(existing.rows[0]!);
+        if (!priorEvidence || !canRetryPreparedQuoteDeliveryAttempt(existing.rows[0]!, preparedEvidence))
+          throw new V2ApplicationError("CONFLICT", "The failed Quote request cannot retry with different or unavailable prepared evidence.");
+        const retried = await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='pending',failure_message=NULL,completed_at=NULL,attempted_at=now() WHERE organization_id=$1 AND id=$2 AND quote_document_id=$3 AND operation_request_id=$4 AND delivery_state='failed' AND recipient_email=$5 AND document_sha256=$6 AND prepared_evidence_json=$7::jsonb", [context.organizationId, attemptId, input.quoteId, reservation.request.id, recipient, sha, preparedEvidenceJson]);
+        if (retried.rowCount !== 1) throw new V2ApplicationError("CONFLICT", "The failed Quote delivery attempt could not be safely retried.");
+        persistedEvidence = priorEvidence;
+      } else {
+        if (reservation.kind === "resumed") throw new V2ApplicationError("CONFLICT", "The failed Quote request has no prepared evidence and cannot be retried safely.");
+        const inserted = await persistPreparedQuoteDeliveryAttempt(client, {
+          organizationId: context.organizationId,
+          quoteId: input.quoteId,
+          requestId: reservation.request.id,
+          recipientEmail: recipient,
+          preparedEvidence,
+          principalKind: context.principal.kind,
+          principalSubject: principalSubject(context.principal),
+          ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal)! } : {}),
+        });
+        attemptId = inserted.id;
+        persistedEvidence = loadPreparedQuoteDeliveryEvidenceFromAttempt(inserted)!;
       }
-      await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, frozenTaxComposition, documentOrganizationIdentity: document.organization, integration };
+      await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, preparedEvidence: persistedEvidence, frozenTaxComposition, integration };
     } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
   }
   private async routability(organizationId: string, lines: readonly Readonly<{ productId: string; resolvedConfiguration: Readonly<{ pricingConfigurationId: string }> }>[], products: ProductsReadPort = this.products): Promise<QuoteSendReadiness["routability"]> {
@@ -212,7 +307,26 @@ export class PostgresQuoteDeliveryService {
   }
   private async failed(org: string, requestId: string, attemptId: string, message: string): Promise<void> { const client = await this.pool.connect(); try { await client.query("BEGIN"); await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='failed',failure_message=$3,completed_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='pending'", [org, attemptId, message]); await this.requests.markRetryableFailure(client, org, requestId); await client.query("COMMIT"); } catch { await client.query("ROLLBACK"); } finally { client.release(); } }
   private async uncertain(org: string, requestId: string, attemptId: string, message: string, providerMessageId?: string): Promise<void> { const client = await this.pool.connect(); try { await client.query("BEGIN"); await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='uncertain',failure_message=$3,provider_message_id=$4,completed_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='pending'", [org, attemptId, message, providerMessageId ?? null]); await this.requests.markPermanentFailure(client, org, requestId); await client.query("COMMIT"); } catch { await client.query("ROLLBACK"); } finally { client.release(); } }
-  private async succeeded(context: OperationContext, requestId: string, attemptId: string, quoteId: QuoteId, checkpointId: string, providerMessageId: string, result: QuoteOperationResult): Promise<void> { const client = await this.pool.connect(); try { await client.query("BEGIN"); await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='succeeded',quote_checkpoint_id=$3,provider_message_id=$4,completed_at=now() WHERE organization_id=$1 AND id=$2 AND delivery_state='pending'", [context.organizationId, attemptId, checkpointId, providerMessageId]); await this.requests.recordAttribution(client, { organizationId: context.organizationId, operationRequestId: requestId, operation: "sales.quote.delivery.v1", resourceType: "quote", resourceId: quoteId, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) }); await client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,'sales.quote.delivery.v1','quote_delivered','quote',$3,$4,$5,$6,$7::jsonb)", [context.organizationId, requestId, quoteId, context.principal.kind, principalSubject(context.principal), staffActorId(context.principal) ?? null, JSON.stringify([{ kind: "quote_delivered", checkpointId, deliveryAttemptId: attemptId }])]); await this.requests.succeed(client, context.organizationId, requestId, { resourceType: "quote", resourceId: quoteId, resultJson: result }); await client.query("COMMIT"); } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); } }
+  private async succeeded(context: OperationContext, requestId: string, attemptId: string, quoteId: QuoteId, checkpointId: string, providerMessageId: string, recipientEmail: string, documentSha256: string, preparedEvidenceJson: string, result: QuoteOperationResult): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const linked = await client.query(
+        "UPDATE v2_sales_quote_delivery_attempts SET delivery_state='succeeded',quote_checkpoint_id=$5,provider_message_id=$6,completed_at=now() WHERE organization_id=$1 AND id=$2 AND quote_document_id=$3 AND operation_request_id=$4 AND delivery_state='pending' AND recipient_email=$7 AND document_sha256=$8 AND prepared_evidence_json=$9::jsonb",
+        [context.organizationId, attemptId, quoteId, requestId, checkpointId, providerMessageId, recipientEmail, documentSha256, preparedEvidenceJson],
+      );
+      if (linked.rowCount !== 1) throw new V2ApplicationError("CONFLICT", "Quote delivery attempt could not be linked to its exact sent checkpoint.");
+      await this.requests.recordAttribution(client, { organizationId: context.organizationId, operationRequestId: requestId, operation: "sales.quote.delivery.v1", resourceType: "quote", resourceId: quoteId, principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
+      await client.query("INSERT INTO v2_audit_events(organization_id,operation_request_id,operation,event_type,resource_type,resource_id,principal_kind,principal_subject,staff_actor_user_id,changes) VALUES($1,$2,'sales.quote.delivery.v1','quote_delivered','quote',$3,$4,$5,$6,$7::jsonb)", [context.organizationId, requestId, quoteId, context.principal.kind, principalSubject(context.principal), staffActorId(context.principal) ?? null, JSON.stringify([{ kind: "quote_delivered", checkpointId, deliveryAttemptId: attemptId }])]);
+      await this.requests.succeed(client, context.organizationId, requestId, { resourceType: "quote", resourceId: quoteId, resultJson: result });
+      await client.query("COMMIT");
+    } catch (cause) {
+      await client.query("ROLLBACK");
+      throw cause;
+    } finally {
+      client.release();
+    }
+  }
   private async deliver(integration: ReadyGmailIntegration, recipient: string, document: CustomerSalesDocument, pdf: Uint8Array): Promise<string> {
     const clientId = process.env.GOOGLE_CLIENT_ID, clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     if (!clientId || !clientSecret) throw new V2ApplicationError("RETRYABLE_FAILURE", "The platform Gmail delivery connection is unavailable.");

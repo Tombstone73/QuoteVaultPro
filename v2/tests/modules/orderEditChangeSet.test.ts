@@ -1,9 +1,10 @@
 import { describe, expect, jest, test } from "@jest/globals";
+import { createHash } from "node:crypto";
 import type { OperationContext } from "../../src/application/operation.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { V2PricingParityAdapter } from "../../src/modules/pricing/v2PricingAdapter.js";
 import type { ResolveActivePricingInput, ResolvedPricingInput } from "../../src/modules/products/contracts.js";
-import { normalizeSalesJobLabel, type SalesLineSnapshot } from "../../src/modules/sales/contracts.js";
+import { normalizeSalesJobLabel, type QuoteCheckpoint, type QuoteSentDeliveryEvidence, type SalesLineSnapshot } from "../../src/modules/sales/contracts.js";
 import {
   OrderApplicationService, summarizeOrderTotals, type OrderOperationResult, type OrderReadModel,
   type OrderTransaction, type OrderTransactionRunner, type UpdateOrderInput,
@@ -14,7 +15,7 @@ import {
 } from "../../src/modules/sales/quoteApplication.js";
 import { QuoteConversionApplicationService } from "../../src/modules/sales/quoteConversionApplication.js";
 import { toQuoteCheckpointPersistenceEnvelope, toSalesDocumentTermsPersistence } from "../../src/modules/sales/persistenceContracts.js";
-import { brandedId, currencyCode } from "../../src/modules/shared/commercialValues.js";
+import { brandedId, canonicalJson, currencyCode, freezeCheckpoint, type QuoteCheckpointId } from "../../src/modules/shared/commercialValues.js";
 
 const organizationId = brandedId<"OrganizationId">("edit-org");
 const orderId = brandedId<"OrderId">("edit-order");
@@ -440,13 +441,52 @@ describe("canonical Job Label", () => {
     const checkpoint = createQuoteLifecycleCheckpoint(current!.quote, "accept", brandedId<"QuoteCheckpointId">("accepted"), { customerDisplayName: "Fixture Customer" }, context("quote-update"));
     expect(JSON.parse(toQuoteCheckpointPersistenceEnvelope(checkpoint).canonicalPayload).commercial).toMatchObject({ jobLabel: "Converted job", terms: { commercialNotes: "Separate notes" } });
     for (const historicalUnset of [false, true]) {
-      const commercial = { ...checkpoint.commercial };
-      if (historicalUnset) delete commercial.jobLabel;
-      const accepted = { ...checkpoint, kind: "quote_accepted" as const, commercial };
-      current = { ...current!, quote: { ...current!.quote, jobLabel: "Current must not substitute", deliveryState: "sent", acceptanceState: "accepted" } };
+      const sentQuote = historicalUnset ? { ...current!.quote, jobLabel: undefined } : current!.quote;
+      const sentCheckpointId = brandedId<"QuoteCheckpointId">(`sent-${historicalUnset}`);
+      const acceptedCheckpointId = brandedId<"QuoteCheckpointId">(`accepted-${historicalUnset}`);
+      const sentEvidence: QuoteSentDeliveryEvidence = {
+        customerContact: current!.quote.customerContact,
+        deliveryAttemptId: `fixture-delivery-${historicalUnset}`,
+        recipientEmail: "contact@example.test",
+        documentSha256: `sha256:${"a".repeat(64)}`,
+        documentNumber: current!.number.display,
+        documentDate: "2026-10-02",
+        providerMessageId: `provider-${historicalUnset}`,
+      };
+      const sent = createQuoteLifecycleCheckpoint(
+        sentQuote,
+        "send",
+        sentCheckpointId,
+        { customerDisplayName: "Fixture Customer" },
+        context(`quote-send-${historicalUnset}`),
+        undefined,
+        { name: "Fixture Organization" },
+        sentEvidence,
+      ) as Extract<QuoteCheckpoint, { kind: "quote_sent" }>;
+      const acceptedRaw = {
+        ...sent,
+        checkpointId: acceptedCheckpointId,
+        evidenceFingerprint: "",
+        occurredAt: "2026-10-02T00:00:01.000Z",
+        principal: { principalKind: "staff" as const, subjectId: "edit-staff" },
+        sourceCheckpointId: sent.checkpointId,
+        kind: "quote_accepted" as const,
+      };
+      const accepted = freezeCheckpoint({
+        ...acceptedRaw,
+        evidenceFingerprint: `sha256:${createHash("sha256").update(canonicalJson(acceptedRaw)).digest("hex")}`,
+      }) as Extract<QuoteCheckpoint, { kind: "quote_accepted" }>;
+      current = {
+        ...current!,
+        quote: { ...current!.quote, jobLabel: "Current must not substitute", deliveryState: "sent", acceptanceState: "accepted" },
+        checkpoints: [
+          { checkpointId: sent.checkpointId, kind: sent.kind, occurredAt: sent.occurredAt },
+          { checkpointId: accepted.checkpointId, kind: accepted.kind, occurredAt: accepted.occurredAt },
+        ],
+      };
       const conversion = new QuoteConversionApplicationService({ transaction: async (work) => work({
         order: r.tx,
-        quote: { ...quoteTx, readCheckpoint: async () => accepted, appendConvertedCheckpoint: async () => undefined, createConversionLineage: async () => undefined, succeedConversion: async () => undefined } as never,
+        quote: { ...quoteTx, readCheckpoint: async (_organizationId: unknown, _quoteId: unknown, checkpointId: QuoteCheckpointId) => checkpointId === sent.checkpointId ? sent : checkpointId === accepted.checkpointId ? accepted : null, appendConvertedCheckpoint: async () => undefined, createConversionLineage: async () => undefined, succeedConversion: async () => undefined } as never,
         artwork: { snapshotAccepted: async () => undefined, carryAcceptedToOrder: async () => undefined },
       }) }, r.service);
       expect(await conversion.convert(context(`convert-${historicalUnset}`), { organizationId, quoteId: current!.quote.quoteId, sourceCheckpointId: accepted.checkpointId, businessRequestId: brandedId<"BusinessRequestId">(`convert-${historicalUnset}`), expectedStateToken: current!.revision })).toMatchObject({ ok: true });

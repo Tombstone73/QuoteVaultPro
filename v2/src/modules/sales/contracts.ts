@@ -140,13 +140,51 @@ type QuoteCheckpointBase = Readonly<{
   organizationPresentation?: DocumentOrganizationIdentity;
   commercial: Readonly<{ jobLabel?: string; purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
   sourceCheckpointId?: QuoteCheckpointId;
+  sentEvidence?: QuoteSentDeliveryEvidence;
+}>;
+export type QuoteSentDeliveryEvidence = Readonly<{
+  customerContact: CustomerContactReference;
+  deliveryAttemptId: string;
+  recipientEmail: string;
+  documentSha256: string;
+  documentNumber: string;
+  documentDate: string;
+  providerMessageId: string;
 }>;
 export type QuoteCheckpoint =
-  | Readonly<QuoteCheckpointBase & { kind: "quote_sent"; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
+  | Readonly<QuoteCheckpointBase & { kind: "quote_sent"; sentEvidence: QuoteSentDeliveryEvidence; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
   | Readonly<QuoteCheckpointBase & { kind: "quote_accepted"; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
   | Readonly<QuoteCheckpointBase & { kind: "quote_converted"; sourceDocument: Readonly<{ quoteId: QuoteId; orderId: OrderId }> }>
   | Readonly<QuoteCheckpointBase & { kind: "quote_declined"; reason: string; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
   | Readonly<QuoteCheckpointBase & { kind: "quote_voided"; reason: string; sourceDocument: Readonly<{ quoteId: QuoteId }> }>;
+
+export type PreparedQuoteDeliveryEvidence = Readonly<{
+  schemaVersion: 1;
+  organizationId: OrganizationId;
+  quoteId: QuoteId;
+  expectedRevision: string;
+  customerContact: CustomerContactReference;
+  commercial: QuoteCheckpoint["commercial"];
+  customerPresentation: CustomerPresentationIdentity;
+  organizationPresentation: DocumentOrganizationIdentity;
+  recipientEmail: string;
+  documentSha256: string;
+  documentNumber: string;
+  documentDate: string;
+}>;
+
+export const quoteCommercialSnapshot = (quote: QuoteCurrentState): QuoteCheckpoint["commercial"] => ({
+  currency: quote.currency,
+  terms: quote.terms,
+  lines: quote.lines,
+  ...(quote.jobLabel !== undefined ? { jobLabel: quote.jobLabel } : {}),
+  ...(quote.purchaseOrderNumber ? { purchaseOrderNumber: quote.purchaseOrderNumber } : {}),
+  ...(quote.requestedDueDate ? { requestedDueDate: quote.requestedDueDate } : {}),
+  ...(quote.requestedFulfillment ? { requestedFulfillment: quote.requestedFulfillment } : {}),
+  ...(quote.sellingAdjustment ? { sellingAdjustment: quote.sellingAdjustment } : {}),
+  ...(quote.commercialCharge ? { commercialCharge: quote.commercialCharge } : {}),
+  ...(quote.taxComposition ? { taxComposition: quote.taxComposition } : {}),
+});
 
 export type CreateQuoteCommand = Readonly<{ organizationId: OrganizationId; businessRequestId: BusinessRequestId; current: Omit<SalesDocumentCurrentState, "organizationId" | "lines"> & Readonly<{ lines: readonly SalesLineInput[] }> }>;
 export type SalesDocumentPatch = Readonly<{

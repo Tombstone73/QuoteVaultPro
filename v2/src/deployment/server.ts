@@ -17,6 +17,7 @@ import {
   type StandaloneStaffAuthentication,
 } from "../../infrastructure/authentication/standaloneStaffAuth.js";
 import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/authenticatedQuoteRuntime.js";
+import { assertPreparedQuoteDeliverySchema } from "../../infrastructure/sales/commercialPhysicalPostconditions.js";
 import { createSalesWorkspaceDependencies } from "../../infrastructure/sales/authenticatedSalesWorkspaceRuntime.js";
 import { SupabaseArtworkBinaryStorage } from "../../infrastructure/artwork/artworkBinaryStorage.js";
 import { PostgresWorkspaceArtwork } from "../../infrastructure/artwork/postgresWorkspaceArtwork.js";
@@ -160,7 +161,7 @@ export const createV2DeploymentApp = (
     logger,
     async () => {
       try {
-        await pool.query("SELECT 1");
+        await assertPreparedQuoteDeliverySchema(pool);
         return { ready: true };
       } catch {
         return { ready: false };

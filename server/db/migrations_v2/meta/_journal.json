@@ -2059,6 +2059,13 @@
       "when": 1790827200002,
       "tag": "0298_v2_workspace_maintenance_expiry_index",
       "breakpoints": true
+    },
+    {
+      "idx": 300,
+      "version": "7",
+      "when": 1790827200003,
+      "tag": "0299_v2_sales_quote_delivery_prepared_evidence",
+      "breakpoints": true
     }
   ]
 }

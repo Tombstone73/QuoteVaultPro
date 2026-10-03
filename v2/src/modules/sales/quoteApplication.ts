@@ -43,10 +43,13 @@ import {
   type CommercialTerms,
   type DuplicateQuoteCommand,
   type MeaningfulAuditChange,
+  type PreparedQuoteDeliveryEvidence,
   type QuoteCheckpoint,
   type QuoteCurrentState,
+  type QuoteSentDeliveryEvidence,
   type SalesLineSnapshot,
   type SellingPriceDecision,
+  quoteCommercialSnapshot,
 } from "./contracts.js";
 import type { DocumentOrganizationIdentity } from "../organization/businessProfile.js";
 import type { CommercialCharge, SalesTaxComposition } from "./taxComposition.js";
@@ -126,12 +129,12 @@ export type QuoteLifecycleInput = Readonly<{
 export type QuoteDeliveredInput = QuoteLifecycleInput & Readonly<{
   deliveryAttemptId: string;
   providerMessageId: string;
+  /** Immutable pre-provider facts from the same prepared Quote and document. */
+  preparedSnapshot: PreparedQuoteDeliveryEvidence;
   /** Captured by the delivery adapter before provider invocation. It is
    * persisted atomically with the pending attempt and must be the exact
    * composition recorded in the immutable sent checkpoint. */
   frozenTaxComposition?: SalesTaxComposition;
-  /** Trusted only from the V2 delivery adapter's already-rendered document. */
-  documentOrganizationIdentity?: DocumentOrganizationIdentity;
 }>;
 export type QuoteTerminalInput = QuoteLifecycleInput & Readonly<{ reason: string }>;
 export type QuoteReadModel = Readonly<{
@@ -331,6 +334,7 @@ export const createQuoteLifecycleCheckpoint = (
   context: OperationContext,
   reason?: string,
   organizationPresentation?: DocumentOrganizationIdentity,
+  sentEvidence?: QuoteSentDeliveryEvidence,
 ): QuoteCheckpoint => {
   const raw = {
     schemaVersion: 1 as const,
@@ -341,22 +345,8 @@ export const createQuoteLifecycleCheckpoint = (
     principal: toAttribution(context),
     customerPresentation: presentation,
     ...(organizationPresentation ? { organizationPresentation } : {}),
-    commercial: {
-      currency: quote.currency,
-      terms: quote.terms,
-      lines: quote.lines,
-      ...(quote.jobLabel !== undefined ? { jobLabel: quote.jobLabel } : {}),
-      ...(quote.purchaseOrderNumber
-        ? { purchaseOrderNumber: quote.purchaseOrderNumber }
-        : {}),
-      ...(quote.requestedDueDate
-        ? { requestedDueDate: quote.requestedDueDate }
-        : {}),
-      ...(quote.requestedFulfillment ? { requestedFulfillment: quote.requestedFulfillment } : {}),
-      ...(quote.sellingAdjustment ? { sellingAdjustment: quote.sellingAdjustment } : {}),
-      ...(quote.commercialCharge ? { commercialCharge: quote.commercialCharge } : {}),
-      ...(quote.taxComposition ? { taxComposition: quote.taxComposition } : {}),
-    },
+    ...(kind === "send" && sentEvidence ? { sentEvidence } : {}),
+    commercial: quoteCommercialSnapshot(quote),
     kind: kind === "send" ? ("quote_sent" as const) : kind === "accept" ? ("quote_accepted" as const) : kind === "decline" ? ("quote_declined" as const) : ("quote_voided" as const),
     ...((kind === "decline" || kind === "void") ? { reason: reason ?? "" } : {}),
     sourceDocument: { quoteId: quote.quoteId },
@@ -862,6 +852,16 @@ export class QuoteApplicationService {
   ): Promise<ApplicationResult<QuoteOperationResult>> {
     if (!input.deliveryAttemptId.trim() || !input.providerMessageId.trim())
       return failure(new V2ApplicationError("VALIDATION_ERROR", "Provider delivery evidence is required before recording a sent Quote."));
+    const prepared = input.preparedSnapshot as PreparedQuoteDeliveryEvidence | undefined;
+    if (!prepared || prepared.schemaVersion !== 1
+      || !prepared.quoteId || !prepared.organizationId || !prepared.expectedRevision
+      || !prepared.customerContact || !prepared.customerPresentation || !prepared.commercial
+      || typeof prepared.recipientEmail !== "string" || !prepared.recipientEmail.trim()
+      || typeof prepared.documentNumber !== "string" || !prepared.documentNumber.trim()
+      || typeof prepared.documentDate !== "string" || !prepared.documentDate.trim()
+      || !prepared.organizationPresentation || typeof prepared.organizationPresentation.name !== "string" || !prepared.organizationPresentation.name.trim()
+      || typeof prepared.documentSha256 !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(prepared.documentSha256))
+      return failure(new V2ApplicationError("VALIDATION_ERROR", "Prepared Quote document evidence is required before recording a sent Quote."));
     return this.lifecycle(
       context,
       input,
@@ -902,10 +902,19 @@ export class QuoteApplicationService {
     capability: "quote.send",
     operation: string,
   ): Promise<ApplicationResult<QuoteOperationResult>> {
+    const requestCommand = {
+      businessRequestId: input.businessRequestId,
+      quoteId: input.quoteId,
+      expectedRevision: input.expectedRevision,
+      deliveryAttemptId: input.deliveryAttemptId,
+      providerMessageId: input.providerMessageId,
+      ...(input.frozenTaxComposition ? { frozenTaxComposition: input.frozenTaxComposition } : {}),
+      preparedSnapshot: input.preparedSnapshot,
+    };
     return this.mutate(
       context,
       operation,
-      input,
+      requestCommand,
       capability,
       async (tx, request) => {
         const current = await tx.read(
@@ -930,6 +939,14 @@ export class QuoteApplicationService {
             "STALE_STATE",
             "Quote has changed; reload before transition.",
           );
+        if (input.preparedSnapshot.organizationId !== context.organizationId
+          || input.preparedSnapshot.quoteId !== input.quoteId
+          || input.preparedSnapshot.expectedRevision !== input.expectedRevision
+          || current.quote.quoteId !== input.preparedSnapshot.quoteId
+          || current.quote.organizationId !== input.preparedSnapshot.organizationId
+          || canonicalJson(current.quote.customerContact) !== canonicalJson(input.preparedSnapshot.customerContact)
+          || canonicalJson(quoteCommercialSnapshot(current.quote)) !== canonicalJson(input.preparedSnapshot.commercial))
+          throw new V2ApplicationError("STALE_STATE", "The Quote changed after its customer document was prepared.");
         if (kind === "send" && current.quote.deliveryState !== "not_sent")
           throw new V2ApplicationError(
             "CONFLICT",
@@ -938,22 +955,27 @@ export class QuoteApplicationService {
         const frozenTaxComposition = input.frozenTaxComposition ?? current.quote.taxComposition;
         if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved")
           throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
-        const presentation = await tx.customers.getPresentationIdentity(
-          current.quote.customerContact,
-        );
+        if (canonicalJson(frozenTaxComposition) !== canonicalJson(input.preparedSnapshot.commercial.taxComposition))
+          throw new V2ApplicationError("STALE_STATE", "Prepared Quote tax evidence no longer matches the Quote.");
         const checkpointId = brandedId<"QuoteCheckpointId">(randomUUID());
-        const checkpointQuote = {
-          ...current.quote,
-          taxComposition: frozenTaxComposition,
+        const sentEvidence: QuoteSentDeliveryEvidence = {
+          customerContact: input.preparedSnapshot.customerContact,
+          deliveryAttemptId: input.deliveryAttemptId,
+          recipientEmail: input.preparedSnapshot.recipientEmail,
+          documentSha256: input.preparedSnapshot.documentSha256,
+          documentNumber: input.preparedSnapshot.documentNumber,
+          documentDate: input.preparedSnapshot.documentDate,
+          providerMessageId: input.providerMessageId,
         };
         const checkpoint = createQuoteLifecycleCheckpoint(
-          checkpointQuote,
+          current.quote,
           kind,
           checkpointId,
-          presentation,
+          input.preparedSnapshot.customerPresentation,
           context,
           undefined,
-          input.documentOrganizationIdentity,
+          input.preparedSnapshot.organizationPresentation,
+          sentEvidence,
         );
         const applied = await tx.transition({
           organizationId: brandedId<"OrganizationId">(context.organizationId),

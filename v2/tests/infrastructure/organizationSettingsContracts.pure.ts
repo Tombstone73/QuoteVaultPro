@@ -20,9 +20,10 @@ assert.ok(!adapter.includes("UPDATE company_settings SET") || adapter.includes("
 assert.match(documentBranding, /physical_address/u);
 assert.match(documentBranding, /remittance_address/u);
 assert.match(salesDocuments, /readTenantBranding/u);
-assert.match(salesDocuments, /organizationIdentity\(payload\.organizationPresentation\) \?\? branding/u);
-assert.match(quoteDelivery, /documentOrganizationIdentity: document\.organization/u);
-assert.match(quoteApplication, /documentOrganizationIdentity/u);
+assert.match(salesDocuments, /const organization = organizationIdentity\(payload\.organizationPresentation\)/u);
+assert.match(salesDocuments, /sent Quote document has no complete, matching prepared evidence/u);
+assert.match(quoteDelivery, /organizationPresentation: document\.organization/u);
+assert.match(quoteApplication, /preparedSnapshot\.organizationPresentation/u);
 assert.match(quoteApplication, /organizationPresentation/u);
 assert.match(invoiceTransaction, /readTenantBranding/u);
 assert.match(invoiceTransaction, /organizationPresentation:input\.organizationPresentation/u);

@@ -88,6 +88,23 @@ describe("V2 deployment wiring", () => {
     expect(v1Vercel).not.toContain('"/v2/:path*"');
   });
 
+  test("readiness requires the prepared Quote evidence schema, not just connectivity", async () => {
+    const authentication = createStandaloneStaffAuthentication({
+      verifier: { authenticate: async () => null, currentStaff: async () => null, eligibleOrganizations: async () => [] },
+      config: loadV2StandaloneAuthConfig({ SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" }),
+      sessionMiddleware: session({ name: "v2.sid", secret: "x".repeat(32), resave: false, saveUninitialized: false }),
+    });
+    for (const ready of [false, true]) {
+      const queries: string[] = [];
+      const pool = { query: async (sql: string) => { queries.push(sql); return { rows: [{ ready }], rowCount: 1 }; } };
+      const app = createV2DeploymentApp(loadV2RuntimeConfig({ V2_SERVICE_NAME: "schema-readiness" }), pool as never, logger, authentication);
+      await request(app).get("/ready").expect(ready ? 200 : 503);
+      expect(queries).toHaveLength(1);
+      expect(queries[0]).toContain("prepared_evidence_json");
+      expect(queries[0]).toContain("v2_sales_quote_delivery_prepared_evidence_immutable");
+    }
+  });
+
   test("does not make the browser fixture flag part of the deployed runtime", () => {
     const deploymentSource = fs.readFileSync(path.join(repoRoot, "v2", "src", "deployment", "server.ts"), "utf8");
     const authSource = fs.readFileSync(path.join(repoRoot, "v2", "infrastructure", "authentication", "standaloneStaffAuth.ts"), "utf8");

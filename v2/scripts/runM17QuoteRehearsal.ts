@@ -26,6 +26,7 @@ import {
   type CreateQuoteInput,
 } from "../src/modules/sales/quoteApplication.js";
 import { brandedId } from "../src/modules/shared/commercialValues.js";
+import { quoteCommercialSnapshot } from "../src/modules/sales/contracts.js";
 
 const migrationsFolder = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -341,12 +342,29 @@ async function main() {
       !stale.ok && stale.error.code === "STALE_STATE",
       "Stale update overwrote Quote.",
     );
+    const prepared = await service.read(ctx(staff, f.org, "m17-prepare"), quoteId);
+    assert(prepared.ok, "Prepared Quote read failed.");
+    if (!prepared.ok) return;
     const sent = await service.recordDelivered(ctx(staff, f.org, "m17-send"), {
       businessRequestId: "m17-send",
       quoteId,
       expectedRevision: "2",
       deliveryAttemptId: "fixture-m17-delivery",
       providerMessageId: "fixture-m17-message",
+      preparedSnapshot: {
+        schemaVersion: 1 as const,
+        organizationId: brandedId<"OrganizationId">(f.org),
+        quoteId: prepared.value.quote.quoteId,
+        expectedRevision: prepared.value.revision,
+        customerContact: prepared.value.quote.customerContact,
+        commercial: quoteCommercialSnapshot(prepared.value.quote),
+        customerPresentation: { customerDisplayName: "Customer", contactDisplayName: "Good Contact" },
+        organizationPresentation: { name: "M17" },
+        recipientEmail: "good-contact@example.test",
+        documentSha256: `sha256:${"1".repeat(64)}`,
+        documentNumber: prepared.value.number.display,
+        documentDate: new Date().toISOString().slice(0, 10),
+      },
     });
     assert(sent.ok && sent.value.checkpointId, "Send checkpoint failed.");
     const checkpoint = sent.ok ? sent.value.checkpointId! : "";
