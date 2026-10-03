@@ -58,9 +58,11 @@ describe("Order detail action layout", () => {
     expect(html).toContain(">Discard<");
     expect(html).toContain("Duplicate Order");
     expect(html).toContain("Cancel Order");
-    expect(html).toContain("dark:bg-muted");
-    expect(html).toContain("dark:hover:bg-muted/80");
-    expect(html).toContain("dark:border-border");
+    expect(html).toContain("dark:bg-secondary");
+    expect(html).toContain("dark:border-secondary-border");
+    expect(html).toContain("dark:hover:bg-accent");
+    expect(html).toContain("dark:focus-visible:ring-2");
+    expect(html).toContain("dark:disabled:bg-secondary/60");
     expect(html).not.toContain("<svg");
     expect(html).not.toContain("More order actions");
     expect(html).not.toContain("Edit Order");
