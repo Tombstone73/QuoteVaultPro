@@ -1,6 +1,7 @@
 import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../services/orderCreditHoldService";
 import { materialFamilyAssignmentService, MaterialFamilyAssignmentError } from "../services/materialFamilyAssignment.service";
 import { materialFamilyLifecycleService, MaterialFamilyLifecycleError } from "../services/materialFamilyLifecycle.service";
+import { materialMutationService, MaterialMutationError } from "../services/materialMutation.service";
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
@@ -6007,36 +6008,9 @@ export async function registerOrderRoutes(
             const { organizationId: _orgId, linkedProductIds: rawLinkedProductIds = [], ...materialData } =
                 parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
             const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
-            if ((materialData as any).materialFamilyId) {
-                const [family] = await db.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, (materialData as any).materialFamilyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
-                if (!family) return res.status(400).json({ error: 'Material family was not found in this organization' });
-                if (!family.isActive) return res.status(409).json({ error: 'Cannot assign a Material to an inactive Material Family' });
-            }
-
-            const normalizedName = String(materialData.name || '').trim().toLowerCase();
-            if (normalizedName) {
-                const [existing] = await db
-                    .select()
-                    .from(materials)
-                    .where(
-                        and(
-                            eq(materials.organizationId, organizationId),
-                            sql`lower(trim(${materials.name})) = ${normalizedName}`
-                        )
-                    )
-                    .limit(1);
-
-                if (existing) {
-                    return res.json({
-                        success: true,
-                        data: toPublicMaterial(existing),
-                        created: false,
-                        duplicate: true,
-                    });
-                }
-            }
-
-            const created = await storage.createMaterial(organizationId, materialData);
+            const creation = await materialMutationService.create({ organizationId, material: materialData });
+            if (!creation.created) return res.json({ success: true, data: toPublicMaterial(creation.material), created: false, duplicate: true });
+            const created = creation.material;
             const warnings: any[] = [];
             let finalLinkedProductIds: string[] = [];
             if (linkedProductIds.length > 0) {
@@ -6065,6 +6039,7 @@ export async function registerOrderRoutes(
                 warnings,
             });
         } catch (err) {
+            if (err instanceof MaterialMutationError) return res.status(err.statusCode).json({ error: err.message, ...(err.code === "MATERIAL_DUPLICATE" ? { duplicate: true, data: err.data } : {}), code: err.code });
             if ((err as any)?.code === '23505') {
                 try {
                     const organizationId = getRequestOrganizationId(req);
@@ -6113,41 +6088,10 @@ export async function registerOrderRoutes(
                 parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
             const currentMaterial = await storage.getMaterialById(organizationId, req.params.id);
             if (!currentMaterial) return res.status(404).json({ error: 'Material not found' });
-            if ((materialData as any).materialFamilyId) {
-                const [family] = await db.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, (materialData as any).materialFamilyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
-                if (!family) return res.status(400).json({ error: 'Material family was not found in this organization' });
-                if (!family.isActive) return res.status(409).json({ error: 'Cannot assign a Material to an inactive Material Family' });
-            }
-            // PATCH validation is performed against the resulting configuration, not just the sparse payload.
-            insertMaterialSchema.parse({ ...toOperationalMaterialConfig(currentMaterial), ...materialData, type: (materialData as any).materialForm ?? currentMaterial.type });
             const shouldReplaceLinkedProducts = Array.isArray(rawLinkedProductIds);
             const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
 
-            if (typeof (materialData as any).name === 'string') {
-                const normalizedName = String((materialData as any).name || '').trim().toLowerCase();
-                if (normalizedName) {
-                    const [existing] = await db
-                        .select({ id: materials.id, name: materials.name })
-                        .from(materials)
-                        .where(
-                            and(
-                                eq(materials.organizationId, organizationId),
-                                sql`lower(trim(${materials.name})) = ${normalizedName}`,
-                                sql`${materials.id} <> ${req.params.id}`
-                            )
-                        )
-                        .limit(1);
-                    if (existing) {
-                        return res.status(409).json({
-                            error: 'Material name already exists in this organization',
-                            duplicate: true,
-                            data: existing,
-                        });
-                    }
-                }
-            }
-
-            const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
+            const updated = await materialMutationService.update({ organizationId, materialId: req.params.id, material: materialData, current: toOperationalMaterialConfig(currentMaterial) });
             const warnings: any[] = [];
             let finalLinkedProductIds: string[] | undefined;
             if (shouldReplaceLinkedProducts) {
@@ -6173,6 +6117,7 @@ export async function registerOrderRoutes(
             }
             res.json({ success: true, data: { ...toPublicMaterial(updated), linkedProductIds: finalLinkedProductIds || [] }, warnings });
         } catch (err) {
+            if (err instanceof MaterialMutationError) return res.status(err.statusCode).json({ error: err.message, ...(err.code === "MATERIAL_DUPLICATE" ? { duplicate: true, data: err.data } : {}), code: err.code });
             if ((err as any)?.code === '23505') {
                 return res.status(409).json({
                     error: 'Material name already exists in this organization',
