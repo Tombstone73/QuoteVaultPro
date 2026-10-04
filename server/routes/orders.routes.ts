@@ -2,6 +2,7 @@ import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../servi
 import { materialFamilyAssignmentService, MaterialFamilyAssignmentError } from "../services/materialFamilyAssignment.service";
 import { materialFamilyLifecycleService, MaterialFamilyLifecycleError } from "../services/materialFamilyLifecycle.service";
 import { materialMutationService, MaterialMutationError } from "../services/materialMutation.service";
+import { materialFamilyCreationService } from "../services/materialFamilyCreation.service";
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
@@ -6797,11 +6798,7 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const created = await db.transaction(async (tx) => {
-                const [family] = await tx.insert(materialFamilies).values({ organizationId, name: input.name, description: input.description ?? null }).returning();
-                const dimensions = input.dimensions.length ? await tx.insert(materialFamilyVariantDimensions).values(input.dimensions.map((dimension, sortOrder) => ({ organizationId, materialFamilyId: family.id, ...dimension, sortOrder }))).returning() : [];
-                return { ...family, dimensions, variants: [] };
-            });
+            const created = await materialFamilyCreationService.createFamily({ organizationId, ...input });
             return res.status(201).json({ success: true, data: created });
         } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); console.error('Error creating material family', error); return res.status(500).json({ error: 'Failed to create material family' }); }
     });
@@ -6862,20 +6859,8 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const material = insertMaterialSchema.parse(input.material);
-            const result = await db.transaction(async (tx) => {
-                const [family] = await tx.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).limit(1);
-                if (!family) throw Object.assign(new Error('Material family not found'), { statusCode: 404 });
-                if (!family.isActive) throw Object.assign(new Error('Cannot add a variant to an inactive material family'), { statusCode: 409 });
-                const dimensionIds = input.values.map((value) => value.dimensionId);
-                const dimensions = dimensionIds.length ? await tx.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.organizationId, organizationId), eq(materialFamilyVariantDimensions.materialFamilyId, family.id), inArray(materialFamilyVariantDimensions.id, dimensionIds))) : [];
-                if (dimensions.length !== new Set(dimensionIds).size) throw Object.assign(new Error('A variant value does not belong to this material family'), { statusCode: 400 });
-                const { linkedProductIds: _ignored, ...fields } = material as any;
-                const [created] = await tx.insert(materials).values({ ...fields, materialFamilyId: family.id, organizationId, type: fields.materialForm }).returning();
-                const values = input.values.length ? await tx.insert(materialVariantValues).values(input.values.map((value) => ({ organizationId, materialId: created.id, ...value }))).returning() : [];
-                return { material: toPublicMaterial(created), variantValues: values };
-            });
-            return res.status(201).json({ success: true, data: result });
+            const result = await materialFamilyCreationService.createVariant({ organizationId, familyId: req.params.id, ...input });
+            return res.status(201).json({ success: true, data: { material: toPublicMaterial(result.material), variantValues: result.variantValues } });
         } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ error: (error as Error).message }); return res.status(500).json({ error: 'Failed to create material variant' }); }
     });
 

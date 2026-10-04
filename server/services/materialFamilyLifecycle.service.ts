@@ -14,9 +14,10 @@ export class MaterialFamilyLifecycleService {
     if (!family) throw new MaterialFamilyLifecycleError("FAMILY_NOT_FOUND", "Material family not found", 404);
     return family;
   }
-  async createDimension(input: { organizationId: string; familyId: string; key: string; displayName: string; sortOrder?: number }) {
-    await this.requireFamily(input.organizationId, input.familyId);
-    const [dimension] = await db.insert(materialFamilyVariantDimensions).values({ organizationId: input.organizationId, materialFamilyId: input.familyId, key: input.key, displayName: input.displayName, sortOrder: input.sortOrder ?? 0 }).returning();
+  async createDimension(input: { organizationId: string; familyId: string; key: string; displayName: string; sortOrder?: number; executor?: any }) {
+    const executor = input.executor ?? db;
+    await this.requireFamily(executor, input.organizationId, input.familyId);
+    const [dimension] = await executor.insert(materialFamilyVariantDimensions).values({ organizationId: input.organizationId, materialFamilyId: input.familyId, key: input.key, displayName: input.displayName, sortOrder: input.sortOrder ?? 0 }).returning();
     return dimension;
   }
   async updateDimension(input: { organizationId: string; familyId: string; dimensionId: string; displayName?: string; sortOrder?: number }) {
@@ -31,8 +32,8 @@ export class MaterialFamilyLifecycleService {
     if (value) throw new MaterialFamilyLifecycleError("DIMENSION_IN_USE", "A dimension with persisted variant values cannot be removed", 409);
     await db.delete(materialFamilyVariantDimensions).where(eq(materialFamilyVariantDimensions.id, dimension.id));
   }
-  private async requireFamily(organizationId: string, familyId: string) {
-    const [family] = await db.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, familyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
+  private async requireFamily(executor: any, organizationId: string, familyId: string) {
+    const [family] = await executor.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, familyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
     if (!family) throw new MaterialFamilyLifecycleError("FAMILY_NOT_FOUND", "Material family not found", 404);
     return family;
   }

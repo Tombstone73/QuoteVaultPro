@@ -10,8 +10,8 @@ export class MaterialFamilyAssignmentError extends Error {
 /** Atomic organizational assignment only. Concrete materials remain the sole
  * inventory identity; this service never creates, deletes, or replaces one. */
 export class MaterialFamilyAssignmentService {
-  async assign(input: { organizationId: string; materialId: string; familyId: string | null; values: readonly MaterialFamilyAssignmentValue[] }) {
-    return db.transaction(async (tx) => {
+  async assign(input: { organizationId: string; materialId: string; familyId: string | null; values: readonly MaterialFamilyAssignmentValue[]; executor?: any }) {
+    const assign = async (tx: any) => {
       const [material] = await tx.select().from(materials).where(and(eq(materials.id, input.materialId), eq(materials.organizationId, input.organizationId))).limit(1);
       if (!material) throw new MaterialFamilyAssignmentError("MATERIAL_NOT_FOUND", "Material not found", 404);
       if (!input.familyId) {
@@ -32,7 +32,8 @@ export class MaterialFamilyAssignmentService {
       const variantValues = input.values.length ? await tx.insert(materialVariantValues).values(input.values.map((value) => ({ organizationId: input.organizationId, materialId: material.id, ...value }))).returning() : [];
       const [updated] = await tx.update(materials).set({ materialFamilyId: family.id, updatedAt: new Date() }).where(eq(materials.id, material.id)).returning();
       return { material: updated, variantValues };
-    });
+    };
+    return input.executor ? assign(input.executor) : db.transaction(assign);
   }
 }
 export const materialFamilyAssignmentService = new MaterialFamilyAssignmentService();

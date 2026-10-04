@@ -10,6 +10,7 @@ describe("material family integrity contracts", () => {
   const assignmentService = read("server/services/materialFamilyAssignment.service.ts");
   const lifecycleService = read("server/services/materialFamilyLifecycle.service.ts");
   const materialService = read("server/services/materialMutation.service.ts");
+  const familyCreationService = read("server/services/materialFamilyCreation.service.ts");
 
   test("keeps concrete Materials as the optional Family children", () => {
     const familyDeclaration = schema.slice(schema.indexOf('export const materialFamilies'), schema.indexOf('// Materials table'));
@@ -58,5 +59,18 @@ describe("material family integrity contracts", () => {
     expect(materialService).toContain('insertMaterialSchema.parse');
     expect(materialService).toContain('storage.createMaterial');
     expect(materialService).toContain('storage.updateMaterial');
+  });
+
+  test("creates organizational Families and atomic concrete variants through canonical services", () => {
+    expect(routes).toContain('materialFamilyCreationService.createFamily');
+    expect(routes).toContain('materialFamilyCreationService.createVariant');
+    expect(familyCreationService).toContain('tx.insert(materialFamilies)');
+    expect(familyCreationService).toContain('materialFamilyLifecycleService.createDimension');
+    expect(familyCreationService).toContain('materialMutationService.create');
+    expect(familyCreationService).toContain('materialFamilyAssignmentService.assign');
+    expect(familyCreationService).toContain('executor: tx');
+    expect(familyCreationService).toContain('familyId: input.familyId');
+    expect(familyCreationService).toContain('materialFamilyId: null');
+    expect(familyCreationService).not.toContain('tx.insert(materials)');
   });
 });
