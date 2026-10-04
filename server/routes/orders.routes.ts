@@ -6006,8 +6006,9 @@ export async function registerOrderRoutes(
                 parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
             const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
             if ((materialData as any).materialFamilyId) {
-                const [family] = await db.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, (materialData as any).materialFamilyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
+                const [family] = await db.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, (materialData as any).materialFamilyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
                 if (!family) return res.status(400).json({ error: 'Material family was not found in this organization' });
+                if (!family.isActive) return res.status(409).json({ error: 'Cannot assign a Material to an inactive Material Family' });
             }
 
             const normalizedName = String(materialData.name || '').trim().toLowerCase();
@@ -6111,8 +6112,9 @@ export async function registerOrderRoutes(
             const currentMaterial = await storage.getMaterialById(organizationId, req.params.id);
             if (!currentMaterial) return res.status(404).json({ error: 'Material not found' });
             if ((materialData as any).materialFamilyId) {
-                const [family] = await db.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, (materialData as any).materialFamilyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
+                const [family] = await db.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, (materialData as any).materialFamilyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
                 if (!family) return res.status(400).json({ error: 'Material family was not found in this organization' });
+                if (!family.isActive) return res.status(409).json({ error: 'Cannot assign a Material to an inactive Material Family' });
             }
             // PATCH validation is performed against the resulting configuration, not just the sparse payload.
             insertMaterialSchema.parse({ ...toOperationalMaterialConfig(currentMaterial), ...materialData, type: (materialData as any).materialForm ?? currentMaterial.type });
@@ -6912,8 +6914,9 @@ export async function registerOrderRoutes(
                 const [material] = await tx.select().from(materials).where(and(eq(materials.id, req.params.id), eq(materials.organizationId, organizationId))).limit(1);
                 if (!material) throw Object.assign(new Error('Material not found'), { statusCode: 404 });
                 if (!input.familyId) { await tx.delete(materialVariantValues).where(and(eq(materialVariantValues.materialId, material.id), eq(materialVariantValues.organizationId, organizationId))); const [updated] = await tx.update(materials).set({ materialFamilyId: null, updatedAt: new Date() }).where(eq(materials.id, material.id)).returning(); return { material: toPublicMaterial(updated), variantValues: [] }; }
-                const [family] = await tx.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, input.familyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
+                const [family] = await tx.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, input.familyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
                 if (!family) throw Object.assign(new Error('Material family not found'), { statusCode: 400 });
+                if (!family.isActive) throw Object.assign(new Error('Cannot assign a Material to an inactive Material Family'), { statusCode: 409 });
                 const ids = input.values.map((value) => value.dimensionId); const dimensions = ids.length ? await tx.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.organizationId, organizationId), eq(materialFamilyVariantDimensions.materialFamilyId, family.id), inArray(materialFamilyVariantDimensions.id, ids))) : [];
                 if (dimensions.length !== new Set(ids).size) throw Object.assign(new Error('A variant value does not belong to this material family'), { statusCode: 400 });
                 await tx.delete(materialVariantValues).where(and(eq(materialVariantValues.materialId, material.id), eq(materialVariantValues.organizationId, organizationId)));
