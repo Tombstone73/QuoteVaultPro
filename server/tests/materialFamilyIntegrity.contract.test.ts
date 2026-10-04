@@ -27,8 +27,13 @@ describe("material family integrity contracts", () => {
     expect(routes).toContain('Cannot assign a Material to an inactive Material Family');
   });
 
-  test("does not add Family identifiers to production or PBV2 Material references", () => {
+  test("keeps Family identifiers out of production and PBV2 Material references", () => {
     expect(schema).toContain('materialId: varchar("material_id").notNull().references(() => materials.id');
-    expect(schema).not.toContain('materialFamilyId: varchar("material_family_id").notNull()');
+    // A Family identifier is legitimate on the organizational dimension table;
+    // it must not leak into operational Material-reference tables.
+    const familyIdFields = schema.match(/materialFamilyId: varchar\("material_family_id"\)/g) ?? [];
+    expect(familyIdFields).toHaveLength(2);
+    expect(schema).toContain('export const materialFamilyVariantDimensions = pgTable("material_family_variant_dimensions"');
+    expect(schema).toContain('export const materials = pgTable("materials"');
   });
 });
