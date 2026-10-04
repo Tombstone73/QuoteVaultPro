@@ -34,6 +34,7 @@ import {
     auditLogs,
     assets,
     assetLinks,
+    assetLinkParentTypeEnum,
     type Order,
     type InsertOrder,
     type OrderWithRelations,
@@ -382,7 +383,18 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
-export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval'> & {
+export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval' | 'status' | 'workflowState' | 'designStatus' | 'width' | 'height' | 'sqft' | 'unitPrice' | 'totalPrice' | 'flatFeeAmountSnapshot' | 'hourlyRateSnapshot' | 'overageRateSnapshot' | 'internalLaborRateSnapshot' | 'taxAmount'> &
+    Partial<Pick<InsertOrderLineItem, 'status' | 'workflowState' | 'designStatus'>> & {
+    width?: number | string | null;
+    height?: number | string | null;
+    sqft?: number | string | null;
+    unitPrice: number | string;
+    totalPrice: number | string;
+    flatFeeAmountSnapshot?: number | string | null;
+    hourlyRateSnapshot?: number | string | null;
+    overageRateSnapshot?: number | string | null;
+    internalLaborRateSnapshot?: number | string | null;
+    taxAmount?: number | string;
     requiresProofApproval?: boolean;
     variantId?: string | null;
     productName?: string | null;
@@ -392,6 +404,9 @@ export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 're
     line_price?: number | string | null;
     priceOverride?: any;
 };
+
+type OrdersTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type OrdersExecutor = typeof db | OrdersTransaction;
 
 function formatProductionStationLabel(value: unknown): string {
     const normalized = String(value ?? "").trim().toLowerCase();
@@ -410,12 +425,12 @@ function formatProductionStationLabel(value: unknown): string {
 
 export class OrdersRepository {
     constructor(
-        private readonly dbInstance = db,
+        private readonly dbInstance: OrdersExecutor = db,
         private readonly atomicConversionScoped = false,
     ) { }
 
-    withExecutor(executor: any, atomicConversionScoped = false): OrdersRepository {
-        return new OrdersRepository(executor as typeof db, atomicConversionScoped);
+    withExecutor(executor: OrdersExecutor, atomicConversionScoped = false): OrdersRepository {
+        return new OrdersRepository(executor, atomicConversionScoped);
     }
 
     private normalizeWorkflowStateForSummary(value: unknown): string {
@@ -714,7 +729,7 @@ export class OrdersRepository {
         return { orderSummaries, lineItemSummaries };
     }
 
-    private async getDesignConfigMap(organizationId: string, productIds: string[], executor: any = this.dbInstance) {
+    private async getDesignConfigMap(organizationId: string, productIds: string[], executor: OrdersExecutor = this.dbInstance) {
         const configs = await productDesignConfigRepository.listByProductIds(organizationId, Array.from(new Set(productIds)), executor);
         return new Map(configs.map((config) => [config.productId, config]));
     }
@@ -727,7 +742,7 @@ export class OrdersRepository {
         return thumbAccess.url ?? null;
     }
 
-    private async generateNextOrderNumber(organizationId: string, tx?: any): Promise<{ jobNumber: number; orderNumber: string; displayNumber: string; numberCore: number }> {
+    private async generateNextOrderNumber(organizationId: string, tx?: OrdersExecutor): Promise<{ jobNumber: number; orderNumber: string; displayNumber: string; numberCore: number }> {
         const executor = tx || this.dbInstance;
         const jobNumber = await allocateJobNumber(organizationId, executor);
         return { jobNumber, orderNumber: jobNumber.toString(), displayNumber: String(jobNumber), numberCore: jobNumber };
@@ -756,6 +771,7 @@ export class OrdersRepository {
                 id: orderAttachments.id,
                 fileRecordId: orderAttachments.fileRecordId,
                 orderId: orderAttachments.orderId,
+                orderLineItemId: orderAttachments.orderLineItemId,
                 fileName: orderAttachments.fileName,
                 originalFilename: orderAttachments.originalFilename,
                 mimeType: orderAttachments.mimeType,
@@ -2136,7 +2152,7 @@ export class OrdersRepository {
         // a concurrent production insert from appearing between the history
         // check and the hard delete, which could otherwise reintroduce the
         // cascade-loss race this policy is meant to prevent.
-        await this.dbInstance.transaction(async (tx: any) => {
+        await this.dbInstance.transaction(async (tx) => {
             const [order] = await tx.select({ id: orders.id }).from(orders).where(and(
                 eq(orders.id, id),
                 eq(orders.organizationId, organizationId),
@@ -2542,7 +2558,7 @@ export class OrdersRepository {
         // Copy asset links through the transaction-bound executor.
         {
             const transactionAssets = {
-                listAssetsForParents: async (tenantId: string, parentType: string, parentIds: string[]) => {
+                listAssetsForParents: async (tenantId: string, parentType: typeof assetLinkParentTypeEnum.enumValues[number], parentIds: string[]) => {
                     const rows = await this.dbInstance
                         .select({ asset: assets, role: assetLinks.role, parentId: assetLinks.parentId })
                         .from(assetLinks)

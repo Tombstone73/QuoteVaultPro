@@ -368,7 +368,7 @@ export function registerOrderLineItemFileRoutes(
       } : null;
       if (!artwork) {
         const [attachment] = await db.select().from(orderAttachments)
-          .where(and(eq(orderAttachments.id, fileId), eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId), eq(orderAttachments.organizationId, organizationId)))
+          .where(and(eq(orderAttachments.id, fileId), eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)))
           .limit(1);
         if (attachment) {
           artwork = attachment.fileRecordId

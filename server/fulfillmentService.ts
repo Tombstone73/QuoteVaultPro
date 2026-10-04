@@ -140,10 +140,15 @@ export async function sendShipmentEmail(
   )).limit(1);
   if (!shipmentOrder) throw new Error('Shipment does not belong to order');
 
-  const lineItems = await db.select().from(orderLineItems).where(and(
-    eq(orderLineItems.orderId, orderId),
-    eq(orderLineItems.organizationId, organizationId),
-  ));
+  const lineItems = await db.select({
+    description: orderLineItems.description,
+    quantity: orderLineItems.quantity,
+  }).from(orderLineItems)
+    .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+    .where(and(
+      eq(orderLineItems.orderId, orderId),
+      eq(orders.organizationId, organizationId),
+    ));
 
   const trackingNumber = shipment.trackingNumber || null;
 

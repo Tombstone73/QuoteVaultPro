@@ -815,7 +815,7 @@ export class ShipmentRepo {
       }
       const reversalMaps = terminalReversalQuantitiesByLine(matchingEvents, lineIds);
       const reversedByLine = input.sourceType === 'SHIPMENT' ? reversalMaps.shipment : reversalMaps.pickup;
-      for (const [lineItemId, quantity] of requested) {
+      for (const [lineItemId, quantity] of Array.from(requested)) {
         const source = sourceByLine.get(lineItemId)!;
         if (!canAppendTerminalFulfillmentReversal({ originalQuantity: source.quantity, alreadyReversedQuantity: reversedByLine.get(lineItemId) ?? 0, requestedQuantity: quantity })) {
           return { ok: false as const, code: 'QTY_EXCEEDS_TERMINAL_FULFILLMENT', message: 'Reversal quantity exceeds the unreversed terminal fulfillment quantity.' };
@@ -1708,7 +1708,7 @@ export class FulfillmentDashboardRepo {
       const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedPickupByLine.get(row.lineItemId) ?? 0))]));
       const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversalQuantities.administrative.get(row.lineItemId) ?? 0)]));
       const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number }> = [];
-      for (const [lineItemId, quantityDelta] of requested) {
+      for (const [lineItemId, quantityDelta] of Array.from(requested)) {
         const line = lineById.get(lineItemId)!;
         const current = readyByLine.get(lineItemId) ?? 0;
         const fulfilled = (shippedByLine.get(lineItemId) ?? 0) + (pickedByLine.get(lineItemId) ?? 0) + (administrativelyReconciledByLine.get(lineItemId) ?? 0);

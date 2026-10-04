@@ -93,7 +93,7 @@ export async function duplicateOrder(input: {
       childCalculatedTotalCents: line.childCalculatedTotalCents,
       taxAmount: line.taxAmount,
       isTaxableSnapshot: line.isTaxableSnapshot,
-    } as CreateOrderLineItemInput));
+    }));
 
     // Use the same repository create path as normal orders: new document
     // number, new line IDs, standard draft invoice, and normal job intake.
@@ -241,7 +241,7 @@ export async function duplicateOrder(input: {
       entityName: duplicateNumber,
       description: `Duplicated order ${sourceNumber} as ${duplicateNumber}.`,
       newValues: auditMetadata,
-    } as any);
+    });
     await tx.insert(orderAuditLog).values({
       orderId: duplicated.id,
       userId: input.actorUserId,
@@ -251,7 +251,7 @@ export async function duplicateOrder(input: {
       toStatus: "new",
       note: `Duplicated from order ${sourceNumber}. Historical invoices, payments, production, fulfillment, proofs, and audit records were not copied.`,
       metadata: auditMetadata,
-    } as any);
+    });
 
     return duplicated;
   });

@@ -925,7 +925,7 @@ async function evaluatePbv2SnapshotForProduct(args: {
     const evaluatedAt = new Date().toISOString();
 
     let pricing;
-    let materials;
+    let materialEffects;
     let childItems;
     try {
         const pricingRes = pbv2ToPricingAddons(treeVersion.treeJson as any, explicitSelections, env as any, {
@@ -976,7 +976,7 @@ async function evaluatePbv2SnapshotForProduct(args: {
             allowRotation,
         });
         const childItemsRes = pbv2ToChildItemProposals(treeVersion.treeJson as any, explicitSelections, env as any);
-        materials = enrichedMaterials.effects;
+        materialEffects = enrichedMaterials.effects;
         childItems = childItemsRes.childItems;
         pricing = { addOnCents: pricingRes.addOnCents, breakdown: pricingRes.breakdown };
         const snapshotJson: Pbv2OrderLineItemSnapshot = {
@@ -991,7 +991,7 @@ async function evaluatePbv2SnapshotForProduct(args: {
             env,
             runtimeSelectionContext,
             pricing,
-            materials,
+            materials: materialEffects,
             materialWarnings: enrichedMaterials.warnings,
             childItems,
         };
@@ -1480,33 +1480,42 @@ export async function registerOrderRoutes(
         });
     };
 
-    const getPendingOrderArtworkUploads = (lineItem: any): Array<{
+    const getPendingOrderArtworkUploads = (lineItem: {
+        pendingOrderAttachmentUploadIds?: unknown;
+        pendingOrderAttachments?: unknown;
+        pendingOrderArtworkAllocations?: unknown;
+        quantity?: unknown;
+    }): Array<{
         uploadId: string;
         productionQuantity: number | null;
         productionGroupId: string | null;
         allocationSource: "automatic" | "manual";
     }> => {
-        const raw = Array.isArray(lineItem?.pendingOrderAttachmentUploadIds)
+        const raw: unknown[] = Array.isArray(lineItem.pendingOrderAttachmentUploadIds)
             ? lineItem.pendingOrderAttachmentUploadIds
-            : Array.isArray(lineItem?.pendingOrderAttachments)
-                ? lineItem.pendingOrderAttachments.map((attachment: any) => attachment?.uploadId)
+            : Array.isArray(lineItem.pendingOrderAttachments)
+                ? lineItem.pendingOrderAttachments.map((attachment) => asRecordOrEmpty(attachment).uploadId)
                 : [];
-        const allocationByUploadId = new Map(
-            (Array.isArray(lineItem?.pendingOrderArtworkAllocations) ? lineItem.pendingOrderArtworkAllocations : [])
-                .filter((allocation: any) => typeof allocation?.uploadId === "string" && allocation.uploadId.trim().length > 0)
-                .map((allocation: any) => [
-                    allocation.uploadId.trim(),
-                    {
-                        productionQuantity: allocation.productionQuantity == null || allocation.productionQuantity === ""
-                            ? null
-                            : Number(allocation.productionQuantity),
-                        productionGroupId: typeof allocation.productionGroupId === "string" && allocation.productionGroupId.trim()
-                            ? allocation.productionGroupId.trim()
-                            : null,
-                        allocationSource: allocation.allocationSource === "manual" ? "manual" as const : "automatic" as const,
-                    },
-                ]),
-        );
+        const allocationByUploadId = new Map<string, {
+            productionQuantity: number | null;
+            productionGroupId: string | null;
+            allocationSource: "automatic" | "manual";
+        }>();
+        if (Array.isArray(lineItem.pendingOrderArtworkAllocations)) {
+            for (const value of lineItem.pendingOrderArtworkAllocations) {
+                const allocation = asRecordOrEmpty(value);
+                if (typeof allocation.uploadId !== "string" || !allocation.uploadId.trim()) continue;
+                allocationByUploadId.set(allocation.uploadId.trim(), {
+                    productionQuantity: allocation.productionQuantity == null || allocation.productionQuantity === ""
+                        ? null
+                        : Number(allocation.productionQuantity),
+                    productionGroupId: typeof allocation.productionGroupId === "string" && allocation.productionGroupId.trim()
+                        ? allocation.productionGroupId.trim()
+                        : null,
+                    allocationSource: allocation.allocationSource === "manual" ? "manual" : "automatic",
+                });
+            }
+        }
 
         const uploads = Array.from(new Set(
             raw
@@ -1523,7 +1532,7 @@ export async function registerOrderRoutes(
         // authority boundary. Reapply only safe automatic defaults here so a
         // stale client cannot leave a single artwork allocation blank.
         return reconcileStagedArtworkAllocations({
-            lineQuantity: lineItem?.quantity,
+            lineQuantity: lineItem.quantity,
             attachments: uploads,
         }).map((upload) => ({
             ...upload,
@@ -2839,6 +2848,7 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ message: "User not authenticated" });
             const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
 
             // Safe per-order billing readiness policy updates
@@ -3582,7 +3592,7 @@ export async function registerOrderRoutes(
                 ].includes(String(line.workflowState || "").toLowerCase()) && ![
                     "complete", "completed", "canceled", "cancelled",
                 ].includes(String(line.status || "").toLowerCase()));
-                const productionIncomplete = historicalOverridePreview?.remainingProductionQuantity > 0 || productionIncompleteByLineState;
+                const productionIncomplete = (historicalOverridePreview?.remainingProductionQuantity ?? 0) > 0 || productionIncompleteByLineState;
                 const activeProductionOwners = productionIncomplete
                     ? await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
                         eq(productionJobs.organizationId, organizationId),
@@ -5646,7 +5656,7 @@ export async function registerOrderRoutes(
             const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 20;
 
             let list = await storage.getAllMaterials(organizationId);
-            const familyIds = [...new Set(list.map((material: any) => String(material.materialFamilyId || '')).filter(Boolean))];
+            const familyIds = Array.from(new Set(list.map((material: any) => String(material.materialFamilyId || '')).filter(Boolean)));
             const familyNames = familyIds.length
                 ? new Map((await db.select({ id: materialFamilies.id, name: materialFamilies.name }).from(materialFamilies).where(and(eq(materialFamilies.organizationId, organizationId), inArray(materialFamilies.id, familyIds)))).map((family) => [family.id, family.name]))
                 : new Map<string, string>();
@@ -6859,7 +6869,7 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const result = await materialFamilyCreationService.createVariant({ organizationId, familyId: req.params.id, ...input });
+            const result = await materialFamilyCreationService.createVariant({ organizationId, familyId: req.params.id, material: input.material, values: input.values });
             return res.status(201).json({ success: true, data: { material: toPublicMaterial(result.material), variantValues: result.variantValues } });
         } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ error: (error as Error).message }); return res.status(500).json({ error: 'Failed to create material variant' }); }
     });

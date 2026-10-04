@@ -710,7 +710,7 @@ export class FulfillmentService {
     const byId = new Map(lines.map((line) => [line.id, line]));
     const quantityByLine = new Map<string, number>();
     for (const item of items) quantityByLine.set(item.orderLineItemId, (quantityByLine.get(item.orderLineItemId) ?? 0) + Number(item.quantity));
-    for (const [lineItemId, quantity] of quantityByLine) {
+    for (const [lineItemId, quantity] of Array.from(quantityByLine)) {
       const line = byId.get(lineItemId);
       if (!line || line.orderId !== items.find((item) => item.orderLineItemId === lineItemId)?.orderId || !line.projection.requiresFulfillment) {
         throw new FulfillmentHttpError(409, 'Shipment quantities require a physical fulfillment line item.', 'LINE_NOT_FULFILLABLE');
