@@ -1,4 +1,5 @@
 import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../services/orderCreditHoldService";
+import { materialFamilyAssignmentService, MaterialFamilyAssignmentError } from "../services/materialFamilyAssignment.service";
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
@@ -6910,20 +6911,9 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const result = await db.transaction(async (tx) => {
-                const [material] = await tx.select().from(materials).where(and(eq(materials.id, req.params.id), eq(materials.organizationId, organizationId))).limit(1);
-                if (!material) throw Object.assign(new Error('Material not found'), { statusCode: 404 });
-                if (!input.familyId) { await tx.delete(materialVariantValues).where(and(eq(materialVariantValues.materialId, material.id), eq(materialVariantValues.organizationId, organizationId))); const [updated] = await tx.update(materials).set({ materialFamilyId: null, updatedAt: new Date() }).where(eq(materials.id, material.id)).returning(); return { material: toPublicMaterial(updated), variantValues: [] }; }
-                const [family] = await tx.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, input.familyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
-                if (!family) throw Object.assign(new Error('Material family not found'), { statusCode: 400 });
-                if (!family.isActive) throw Object.assign(new Error('Cannot assign a Material to an inactive Material Family'), { statusCode: 409 });
-                const ids = input.values.map((value) => value.dimensionId); const dimensions = ids.length ? await tx.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.organizationId, organizationId), eq(materialFamilyVariantDimensions.materialFamilyId, family.id), inArray(materialFamilyVariantDimensions.id, ids))) : [];
-                if (dimensions.length !== new Set(ids).size) throw Object.assign(new Error('A variant value does not belong to this material family'), { statusCode: 400 });
-                await tx.delete(materialVariantValues).where(and(eq(materialVariantValues.materialId, material.id), eq(materialVariantValues.organizationId, organizationId)));
-                const values = input.values.length ? await tx.insert(materialVariantValues).values(input.values.map((value) => ({ organizationId, materialId: material.id, ...value }))).returning() : [];
-                const [updated] = await tx.update(materials).set({ materialFamilyId: family.id, updatedAt: new Date() }).where(eq(materials.id, material.id)).returning(); return { material: toPublicMaterial(updated), variantValues: values };
-            }); return res.json({ success: true, data: result });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ error: (error as Error).message }); return res.status(500).json({ error: 'Failed to update material family assignment' }); }
+            const result = await materialFamilyAssignmentService.assign({ organizationId, materialId: req.params.id, ...input });
+            return res.json({ success: true, data: { material: toPublicMaterial(result.material), variantValues: result.variantValues } });
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if (error instanceof MaterialFamilyAssignmentError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); return res.status(500).json({ error: 'Failed to update material family assignment' }); }
     });
 
     app.post('/api/material-families/:id/variants', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
