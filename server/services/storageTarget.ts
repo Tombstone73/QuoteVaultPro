@@ -13,7 +13,7 @@ export type StorageTarget = "supabase" | "local_dev";
  */
 export function assertDurableCanonicalStorageTarget(
   storageTarget: StorageTarget,
-  environment: Pick<NodeJS.ProcessEnv, "NODE_ENV"> = process.env,
+  environment: NodeJS.ProcessEnv | { NODE_ENV?: string } = process.env,
 ): void {
   if (storageTarget !== "local_dev" || environment.NODE_ENV !== "production") return;
 
@@ -121,7 +121,7 @@ export function decideStorageTarget(args: {
   organizationId?: string | null;
   context?: string;
   providerConfigJson?: unknown;
-  environment?: Pick<NodeJS.ProcessEnv, "NODE_ENV">;
+  environment?: NodeJS.ProcessEnv | { NODE_ENV?: string };
 }): StorageTarget {
   const fileSizeBytes = Number.isFinite(args.fileSizeBytes) && args.fileSizeBytes > 0 ? args.fileSizeBytes : 0;
   const requestedTarget = (args.requestedTarget ?? "").toString() || null;

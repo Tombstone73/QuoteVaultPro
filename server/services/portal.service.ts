@@ -1248,6 +1248,11 @@ export function getPortalScope(req: Request): PortalScope {
   return { userId, organizationId, customerId, contactId, customer };
 }
 
+function requirePortalUserId(scope: PortalScope): string {
+  if (scope.userId === null) throw new PortalAccessError(403, "Portal user context is required");
+  return scope.userId;
+}
+
 function staffPreviewPaymentEvidence(req: Request) {
   const preview = req.staffPortalPreview;
   if (!preview) return null;
@@ -1278,6 +1283,7 @@ async function findPortalContactName(scope: PortalScope, email: string | null): 
 
 export async function getPortalSession(req: Request): Promise<PortalSessionDto> {
   const scope = getPortalScope(req);
+  const userId = requirePortalUserId(scope);
   const staffPreview = (req as any).staffPortalPreview ?? null;
   const portalEmail = String((req as any).user?.email || scope.customer.email || "").trim() || null;
   const userName = `${(req as any).user?.firstName || ""} ${(req as any).user?.lastName || ""}`.trim();
@@ -1285,7 +1291,7 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
   const canExecutePreviewPayments = staffPreview ? await canExecuteStaffPortalPreviewPayment(req) : false;
 
   return {
-    userId: scope.userId,
+    userId,
     customerId: scope.customerId,
     customerName: scope.customer.companyName,
     portalContactName: contactName || userName || null,
@@ -4876,6 +4882,7 @@ async function getRequiredPortalQuoteActionResult(
 
 export async function approvePortalQuote(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
   const scope = getPortalScope(req);
+  const actorUserId = requirePortalUserId(scope);
   const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.customerNotes);
 
   return db.transaction(async (tx) => {
@@ -4907,7 +4914,7 @@ export async function approvePortalQuote(req: Request, quoteId: string): Promise
     try {
       const order = await canonicalOrderOperations.convertQuoteToOrder({
         organizationId: scope.organizationId,
-        actorUserId: scope.userId,
+        actorUserId,
         quoteId: quote.id,
       });
       createdOrder = {

@@ -361,10 +361,11 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       const resolved = await getCanonicalPickupActivity(organizationId, resource.id);
       if (!resolved) return [];
       const snapshot = toPickupActivityInvestigationSnapshot(resolved.detail, resolved.activity);
-      return [
+      const events: InvestigationHistoryEvent[] = [
         { eventId: `pickup_handoff:${resolved.activity.handoffId}`, occurredAt: resolved.activity.occurredAt, kind: "recorded_event" as const, summary: `Pickup recorded: ${resolved.activity.recordedQuantity}`, resource: snapshot.resource, provenance: { source: "pickup_handoffs" as const, recorded: true } },
-        ...resolved.activity.reversals.map((reversal) => ({ eventId: `fulfillment_event:${reversal.id}`, occurredAt: reversal.occurredAt ?? resolved.activity.occurredAt, kind: "recorded_event" as const, summary: `Pickup reversal: ${reversal.quantity}`, resource: snapshot.resource, provenance: { source: "fulfillment_events" as const, recorded: true } })),
-      ].sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)).slice(0, limit);
+        ...resolved.activity.reversals.map((reversal): InvestigationHistoryEvent => ({ eventId: `fulfillment_event:${reversal.id}`, occurredAt: reversal.occurredAt ?? resolved.activity.occurredAt, kind: "recorded_event", summary: `Pickup reversal: ${reversal.quantity}`, resource: snapshot.resource, provenance: { source: "fulfillment_events", recorded: true } })),
+      ];
+      return events.sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)).slice(0, limit);
     }
     if (resource.type === "fulfillment") {
       const detail = await getCanonicalFulfillmentDetail(organizationId, resource.id);

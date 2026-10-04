@@ -506,7 +506,7 @@ export async function mergeDuplicateCustomers(input: {
         .where(and(
           eq(externalIdentityMappings.organizationId, input.organizationId),
           eq(externalIdentityMappings.entityType, "customer"),
-          inArray(externalIdentityMappings.id, retiredQuickBooksIdentityMappings.map((identity) => identity.id)),
+          inArray(externalIdentityMappings.id, retiredQuickBooksIdentityMappings.map((identity: ExternalIdentityMapping) => identity.id)),
         ));
     }
     counts.externalIdentitiesMoved = identitiesMoved;

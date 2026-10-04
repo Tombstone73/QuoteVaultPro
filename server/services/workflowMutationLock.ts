@@ -3,7 +3,7 @@ import { orderLineItems, orders, lineItemProofVersions, proofVersionLineItems } 
 
 /** Transaction-only: serialize decisions before reading mutable workflow/proof authority. */
 export async function lockWorkflowLines(tx: any, organizationId: string, lineItemIds: string[]) {
-  const ids = [...new Set(lineItemIds)].sort();
+  const ids = Array.from(new Set(lineItemIds)).sort();
   if (!ids.length) return;
   const rows = await tx.select({ id: orderLineItems.id }).from(orderLineItems)
     .innerJoin(orders, eq(orders.id, orderLineItems.orderId))

@@ -39,9 +39,11 @@ export async function updateCustomersCommercialConfiguration(input: {
 
     const now = new Date();
     if (input.update.operation === "set_payment_terms") {
+      const paymentTerms = input.update.paymentTerms;
+      const newValues = { paymentTerms: input.update.paymentTerms, bulk: true };
       await tx
         .update(customers)
-        .set({ paymentTerms: input.update.paymentTerms, updatedAt: now })
+        .set({ paymentTerms, updatedAt: now })
         .where(and(eq(customers.organizationId, input.organizationId), inArray(customers.id, customerIds)));
       await tx.insert(auditLogs).values(selectedCustomers.map((customer) => ({
         organizationId: input.organizationId,
@@ -51,16 +53,18 @@ export async function updateCustomersCommercialConfiguration(input: {
         entityId: customer.id,
         entityName: customer.companyName,
         description: "Updated customer payment terms in a bulk customer action.",
-        oldValues: { paymentTerms: customer.paymentTerms } as any,
-        newValues: { paymentTerms: input.update.paymentTerms, bulk: true } as any,
-      } as any)));
-      return { updatedCount: selectedCustomers.length, customerIds, operation: input.update.operation, paymentTerms: input.update.paymentTerms };
+        oldValues: { paymentTerms: customer.paymentTerms },
+        newValues,
+      })));
+      return { updatedCount: selectedCustomers.length, customerIds, operation: input.update.operation, paymentTerms };
     }
 
     if (input.update.operation === "set_tax_status") {
+      const isTaxExempt = input.update.isTaxExempt;
+      const newValues = { isTaxExempt: input.update.isTaxExempt, bulk: true };
       await tx
         .update(customers)
-        .set({ isTaxExempt: input.update.isTaxExempt, updatedAt: now })
+        .set({ isTaxExempt, updatedAt: now })
         .where(and(eq(customers.organizationId, input.organizationId), inArray(customers.id, customerIds)));
       await tx.insert(auditLogs).values(selectedCustomers.map((customer) => ({
         organizationId: input.organizationId,
@@ -70,10 +74,10 @@ export async function updateCustomersCommercialConfiguration(input: {
         entityId: customer.id,
         entityName: customer.companyName,
         description: "Updated customer tax status in a bulk customer action.",
-        oldValues: { isTaxExempt: customer.isTaxExempt } as any,
-        newValues: { isTaxExempt: input.update.isTaxExempt, bulk: true } as any,
-      } as any)));
-      return { updatedCount: selectedCustomers.length, customerIds, operation: input.update.operation, isTaxExempt: input.update.isTaxExempt };
+        oldValues: { isTaxExempt: customer.isTaxExempt },
+        newValues,
+      })));
+      return { updatedCount: selectedCustomers.length, customerIds, operation: input.update.operation, isTaxExempt };
     }
 
     const creditLimit = input.update.creditLimit;
@@ -91,9 +95,9 @@ export async function updateCustomersCommercialConfiguration(input: {
       entityId: customer.id,
       entityName: customer.companyName,
       description: creditLimit === null ? "Cleared customer credit limit in a bulk customer action." : "Updated customer credit limit in a bulk customer action.",
-      oldValues: { creditLimit: customer.creditLimit, creditLimitConfiguredAt: customer.creditLimitConfiguredAt } as any,
-      newValues: { creditLimit: persistedCreditLimit, creditLimitConfiguredAt: configuredAt, bulk: true } as any,
-    } as any)));
+      oldValues: { creditLimit: customer.creditLimit, creditLimitConfiguredAt: customer.creditLimitConfiguredAt },
+      newValues: { creditLimit: persistedCreditLimit, creditLimitConfiguredAt: configuredAt, bulk: true },
+    })));
     return { updatedCount: selectedCustomers.length, customerIds, operation: input.update.operation, creditLimit: creditLimit === null ? null : persistedCreditLimit };
   });
 }

@@ -76,7 +76,11 @@ async function inspect(runner: Runner, organizationId: string, orderId: string, 
     ? await runner.select({ customerName: customers.companyName }).from(customers).where(eq(customers.id, order.customerId)).limit(1)
     : [null];
 
-  const [events, audits, lineRows] = await Promise.all([
+  const [events, audits, lineRows]: [
+    Array<Pick<typeof fulfillmentEvents.$inferSelect, "id" | "actorUserId" | "eventType" | "payloadJson">>,
+    Array<Pick<typeof auditLogs.$inferSelect, "id" | "actionType" | "entityType">>,
+    Array<Pick<typeof orderLineItems.$inferSelect, "id" | "description" | "quantity">>,
+  ] = await Promise.all([
     runner.select({ id: fulfillmentEvents.id, actorUserId: fulfillmentEvents.actorUserId, eventType: fulfillmentEvents.eventType, payloadJson: fulfillmentEvents.payloadJson })
       .from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, organizationId), eq(fulfillmentEvents.entityType, "ORDER"), eq(fulfillmentEvents.entityId, orderId))),
     runner.select({ id: auditLogs.id, actionType: auditLogs.actionType, entityType: auditLogs.entityType })
@@ -84,13 +88,14 @@ async function inspect(runner: Runner, organizationId: string, orderId: string, 
     runner.select({ id: orderLineItems.id, description: orderLineItems.description, quantity: orderLineItems.quantity })
       .from(orderLineItems).where(eq(orderLineItems.orderId, orderId)),
   ]);
-  const pairedAudit = audits.find((audit: any) => audit.actionType === "ORDER_HISTORICAL_FULFILLMENT_RECONCILED" && audit.entityType === "order") ?? null;
-  const evidenceEvent = events.find((event: any) => isProvenLegacyCloseJobOverrideEvidence({ event, audit: pairedAudit })) ?? null;
-  const repairAudit = audits.find((audit: any) => audit.actionType === REPAIR_AUDIT_ACTION) ?? null;
+  const pairedAudit = audits.find((audit) => audit.actionType === "ORDER_HISTORICAL_FULFILLMENT_RECONCILED" && audit.entityType === "order") ?? null;
+  const evidenceEvent = events.find((event) => isProvenLegacyCloseJobOverrideEvidence({ event, audit: pairedAudit })) ?? null;
+  const repairAudit = audits.find((audit) => audit.actionType === REPAIR_AUDIT_ACTION) ?? null;
   const repository = new FulfillmentDashboardRepo(runner as any);
   const projections = await repository.listLineEligibility(organizationId, { orderIds: [orderId] }, runner as any);
   const candidateProjection = projections.filter((line) => line.projection.productionRequired && line.projection.productionCompleteQuantity < line.projection.orderedQuantity);
-  const lineById = new Map(lineRows.map((line: any) => [line.id, line]));
+  const lineById = new Map<string, (typeof lineRows)[number]>();
+  for (const line of lineRows) lineById.set(line.id, line);
   const targetLines = candidateProjection.map((line) => ({
     lineItemId: line.id,
     description: lineById.get(line.id)?.description ?? line.id,
@@ -200,7 +205,7 @@ export async function applyHistoricalCloseJobProductionRepair(database: Runner, 
       organizationId: input.organizationId, userId: preview.originalEvidence.actorUserId, actionType: REPAIR_AUDIT_ACTION, entityType: "order", entityId: input.orderId,
       entityName: preview.orderNumber, description: "Historical Close Job Override production repair completed without reopening the parent order.",
       newValues: { source: "close_job_override_production_bootstrap", historicalRepair: true, originalEvidence: preview.originalEvidence, targetLines: preview.targetLines, completedJobIds },
-    } as any);
+    });
     return { status: "applied" as const, preview, completedJobIds };
   });
 }

@@ -362,18 +362,20 @@ export async function getDashboardSummary(organizationId: string, now = new Date
   try {
     summary.fulfillmentFinance.readyToShip = await new FulfillmentDashboardRepo(db).countReadyForFulfillment(organizationId);
 
-    summary.fulfillmentFinance.shippedToday = await countFrom(
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(orders)
-        .where(
-          and(
-            eq(orders.organizationId, organizationId),
-            gte(orders.shippedAt, shipmentToday.start!),
-            lt(orders.shippedAt, shipmentToday.endExclusive!),
+    if (shipmentToday.start && shipmentToday.endExclusive) {
+      summary.fulfillmentFinance.shippedToday = await countFrom(
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(orders)
+          .where(
+            and(
+              eq(orders.organizationId, organizationId),
+              gte(orders.shippedAt, shipmentToday.start.toISOString()),
+              lt(orders.shippedAt, shipmentToday.endExclusive.toISOString()),
+            ),
           ),
-        ),
-    );
+      );
+    }
 
     // A/R owns approved/open eligibility, partial payments, credits, voids,
     // and the current remaining balance. Do not use stale invoice.balanceDue.
