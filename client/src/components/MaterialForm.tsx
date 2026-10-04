@@ -193,9 +193,13 @@ interface Props {
   material?: Material;
   /** When true, we are creating a copy of the material */
   isDuplicate?: boolean;
+  /** Family metadata is assigned only after the canonical Material create succeeds. */
+  familyAssignment?: { familyId: string; values: Array<{ dimensionId: string; value: string }> } | null;
+  initialValues?: Partial<MaterialFormValues>;
+  onCreated?: () => void;
 }
 
-export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Props) {
+export function MaterialForm({ open, onOpenChange, material, isDuplicate, familyAssignment, initialValues, onCreated }: Props) {
   const { toast } = useToast();
   const createMutation = useCreateMaterial();
   const updateMutation = useUpdateMaterial(material?.id || "");
@@ -313,6 +317,10 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     if (!open) form.reset();
   }, [open]);
 
+  useEffect(() => {
+    if (open && initialValues && isCreateMode) form.reset({ ...form.getValues(), ...initialValues });
+  }, [open, initialValues, isCreateMode]);
+
   async function onSubmit(values: MaterialFormValues) {
     const payload: any = {
       ...values,
@@ -354,6 +362,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       let result: any;
       if (isCreateMode) {
         result = await createMutation.mutateAsync(payload);
+        const createdId = result?.data?.id ?? result?.id;
+        if (familyAssignment && createdId) {
+          const assigned = await fetch(`/api/materials/${createdId}/family`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ familyId: familyAssignment.familyId, values: familyAssignment.values }) });
+          if (!assigned.ok) { const error = await assigned.json().catch(() => null); throw new Error(error?.error || "Material was created but could not be assigned to its family"); }
+        }
         toast({ title: isDuplicate ? "Material duplicated" : "Material created" });
       } else {
         result = await updateMutation.mutateAsync(payload);
@@ -369,6 +382,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
         });
       }
       onOpenChange(false);
+      if (isCreateMode) onCreated?.();
     } catch (e:any) {
       toast({ title:"Error", description: e.message, variant:"destructive" });
     }

@@ -6,6 +6,9 @@ import type { MaterialInventoryStatus, MaterialReorderRequestStatus } from "@sha
 export interface Material {
   id: string;
   name: string;
+  materialFamilyId?: string | null;
+  familyName?: string | null;
+  displayLabel?: string;
   sku: string;
   type: string;
   materialForm?: "roll" | "sheet" | "liquid" | "each" | "bulk_weight" | null;
@@ -50,6 +53,17 @@ export interface Material {
   linkedProductIds?: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export type MaterialFamilyDimension = { id: string; key: string; displayName: string; sortOrder: number };
+export type MaterialFamily = { id: string; name: string; description?: string | null; isActive: boolean; dimensions: MaterialFamilyDimension[]; variants: Material[] };
+
+export function useMaterialFamilies() {
+  return useQuery<MaterialFamily[]>({ queryKey: ["/api/material-families"], queryFn: async () => {
+    const response = await fetch("/api/material-families", { credentials: "include" });
+    if (!response.ok) throw new Error("Failed to fetch material families");
+    const json = await response.json(); return json.data ?? [];
+  }});
 }
 
 // Helper function to calculate roll derived values (mirrors shared/schema.ts)

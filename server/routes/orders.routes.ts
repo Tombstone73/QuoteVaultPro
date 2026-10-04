@@ -5642,6 +5642,10 @@ export async function registerOrderRoutes(
             const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 20;
 
             let list = await storage.getAllMaterials(organizationId);
+            const familyIds = [...new Set(list.map((material: any) => String(material.materialFamilyId || '')).filter(Boolean))];
+            const familyNames = familyIds.length
+                ? new Map((await db.select({ id: materialFamilies.id, name: materialFamilies.name }).from(materialFamilies).where(and(eq(materialFamilies.organizationId, organizationId), inArray(materialFamilies.id, familyIds)))).map((family) => [family.id, family.name]))
+                : new Map<string, string>();
             const materialIds = list.map((material: any) => String(material.id)).filter(Boolean);
             const linkRows = materialIds.length > 0
                 ? await db
@@ -5665,6 +5669,8 @@ export async function registerOrderRoutes(
             }
             list = list.map((material: any) => ({
                 ...toPublicMaterial(material),
+                familyName: material.materialFamilyId ? familyNames.get(material.materialFamilyId) ?? null : null,
+                displayLabel: material.materialFamilyId && familyNames.get(material.materialFamilyId) ? `${familyNames.get(material.materialFamilyId)} / ${material.name}` : material.name,
                 linkedProductIds: linkedProductIdsByMaterialId.get(String(material.id)) || [],
             }));
 
@@ -5688,6 +5694,7 @@ export async function registerOrderRoutes(
                     .map((m: any) => ({
                         id: m.id,
                         name: m.name,
+                        displayLabel: m.displayLabel || m.name,
                         materialForm: m.materialForm,
                         inventoryUnit: m.inventoryUnit,
                         consumptionUnit: m.consumptionUnit,
@@ -6848,6 +6855,94 @@ export async function registerOrderRoutes(
             });
             return res.status(201).json({ success: true, data: created });
         } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); console.error('Error creating material family', error); return res.status(500).json({ error: 'Failed to create material family' }); }
+    });
+
+    app.patch('/api/material-families/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        const schema = z.object({ name: z.string().trim().min(1).max(255).optional(), description: z.string().trim().max(4000).nullable().optional(), isActive: z.boolean().optional() }).refine((value) => Object.keys(value).length > 0);
+        try {
+            const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const input = schema.parse(req.body);
+            const [updated] = await db.update(materialFamilies).set({ ...input, updatedAt: new Date() }).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).returning();
+            if (!updated) return res.status(404).json({ error: 'Material family not found' });
+            return res.json({ success: true, data: updated });
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); return res.status(500).json({ error: 'Failed to update material family' }); }
+    });
+
+    app.post('/api/material-families/:id/dimensions', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        const schema = z.object({ key: z.string().trim().regex(/^[a-z][a-z0-9_]{0,63}$/), displayName: z.string().trim().min(1).max(100), sortOrder: z.number().int().min(0).max(1000).optional() });
+        try {
+            const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const input = schema.parse(req.body);
+            const [family] = await db.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).limit(1);
+            if (!family) return res.status(404).json({ error: 'Material family not found' });
+            const [dimension] = await db.insert(materialFamilyVariantDimensions).values({ organizationId, materialFamilyId: family.id, ...input, sortOrder: input.sortOrder ?? 0 }).returning();
+            return res.status(201).json({ success: true, data: dimension });
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'That variant dimension already exists for this family' }); return res.status(500).json({ error: 'Failed to create variant dimension' }); }
+    });
+
+    app.patch('/api/material-families/:familyId/dimensions/:dimensionId', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        const schema = z.object({ displayName: z.string().trim().min(1).max(100).optional(), sortOrder: z.number().int().min(0).max(1000).optional() }).refine((value) => Object.keys(value).length > 0);
+        try {
+            const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const input = schema.parse(req.body);
+            const [dimension] = await db.update(materialFamilyVariantDimensions).set(input).where(and(eq(materialFamilyVariantDimensions.id, req.params.dimensionId), eq(materialFamilyVariantDimensions.materialFamilyId, req.params.familyId), eq(materialFamilyVariantDimensions.organizationId, organizationId))).returning();
+            if (!dimension) return res.status(404).json({ error: 'Variant dimension not found' });
+            return res.json({ success: true, data: dimension });
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); return res.status(500).json({ error: 'Failed to update variant dimension' }); }
+    });
+
+    app.delete('/api/material-families/:familyId/dimensions/:dimensionId', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const [dimension] = await db.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.id, req.params.dimensionId), eq(materialFamilyVariantDimensions.materialFamilyId, req.params.familyId), eq(materialFamilyVariantDimensions.organizationId, organizationId))).limit(1);
+            if (!dimension) return res.status(404).json({ error: 'Variant dimension not found' });
+            const [value] = await db.select({ id: materialVariantValues.id }).from(materialVariantValues).where(and(eq(materialVariantValues.dimensionId, dimension.id), eq(materialVariantValues.organizationId, organizationId))).limit(1);
+            if (value) return res.status(409).json({ error: 'A dimension with persisted variant values cannot be removed' });
+            await db.delete(materialFamilyVariantDimensions).where(eq(materialFamilyVariantDimensions.id, dimension.id));
+            return res.json({ success: true });
+        } catch { return res.status(500).json({ error: 'Failed to remove variant dimension' }); }
+    });
+
+    app.put('/api/materials/:id/family', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        const schema = z.object({ familyId: z.string().min(1).nullable(), values: z.array(z.object({ dimensionId: z.string().min(1), value: z.string().trim().min(1).max(255) })).max(8).default([]) });
+        try {
+            const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const input = schema.parse(req.body);
+            const result = await db.transaction(async (tx) => {
+                const [material] = await tx.select().from(materials).where(and(eq(materials.id, req.params.id), eq(materials.organizationId, organizationId))).limit(1);
+                if (!material) throw Object.assign(new Error('Material not found'), { statusCode: 404 });
+                if (!input.familyId) { await tx.delete(materialVariantValues).where(and(eq(materialVariantValues.materialId, material.id), eq(materialVariantValues.organizationId, organizationId))); const [updated] = await tx.update(materials).set({ materialFamilyId: null, updatedAt: new Date() }).where(eq(materials.id, material.id)).returning(); return { material: toPublicMaterial(updated), variantValues: [] }; }
+                const [family] = await tx.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, input.familyId), eq(materialFamilies.organizationId, organizationId))).limit(1);
+                if (!family) throw Object.assign(new Error('Material family not found'), { statusCode: 400 });
+                const ids = input.values.map((value) => value.dimensionId); const dimensions = ids.length ? await tx.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.organizationId, organizationId), eq(materialFamilyVariantDimensions.materialFamilyId, family.id), inArray(materialFamilyVariantDimensions.id, ids))) : [];
+                if (dimensions.length !== new Set(ids).size) throw Object.assign(new Error('A variant value does not belong to this material family'), { statusCode: 400 });
+                await tx.delete(materialVariantValues).where(and(eq(materialVariantValues.materialId, material.id), eq(materialVariantValues.organizationId, organizationId)));
+                const values = input.values.length ? await tx.insert(materialVariantValues).values(input.values.map((value) => ({ organizationId, materialId: material.id, ...value }))).returning() : [];
+                const [updated] = await tx.update(materials).set({ materialFamilyId: family.id, updatedAt: new Date() }).where(eq(materials.id, material.id)).returning(); return { material: toPublicMaterial(updated), variantValues: values };
+            }); return res.json({ success: true, data: result });
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ error: (error as Error).message }); return res.status(500).json({ error: 'Failed to update material family assignment' }); }
+    });
+
+    app.post('/api/material-families/:id/variants', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        const schema = z.object({ material: z.unknown(), values: z.array(z.object({ dimensionId: z.string().min(1), value: z.string().trim().min(1).max(255) })).max(8).default([]) });
+        try {
+            const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const input = schema.parse(req.body);
+            const material = insertMaterialSchema.parse(input.material);
+            const result = await db.transaction(async (tx) => {
+                const [family] = await tx.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).limit(1);
+                if (!family) throw Object.assign(new Error('Material family not found'), { statusCode: 404 });
+                if (!family.isActive) throw Object.assign(new Error('Cannot add a variant to an inactive material family'), { statusCode: 409 });
+                const dimensionIds = input.values.map((value) => value.dimensionId);
+                const dimensions = dimensionIds.length ? await tx.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.organizationId, organizationId), eq(materialFamilyVariantDimensions.materialFamilyId, family.id), inArray(materialFamilyVariantDimensions.id, dimensionIds))) : [];
+                if (dimensions.length !== new Set(dimensionIds).size) throw Object.assign(new Error('A variant value does not belong to this material family'), { statusCode: 400 });
+                const { linkedProductIds: _ignored, ...fields } = material as any;
+                const [created] = await tx.insert(materials).values({ ...fields, materialFamilyId: family.id, organizationId, type: fields.materialForm }).returning();
+                const values = input.values.length ? await tx.insert(materialVariantValues).values(input.values.map((value) => ({ organizationId, materialId: created.id, ...value }))).returning() : [];
+                return { material: toPublicMaterial(created), variantValues: values };
+            });
+            return res.status(201).json({ success: true, data: result });
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ error: (error as Error).message }); return res.status(500).json({ error: 'Failed to create material variant' }); }
     });
 
     app.delete('/api/orders/:orderId/internal-notes/:noteId', isAuthenticated, tenantContext, async (req: any, res) => {

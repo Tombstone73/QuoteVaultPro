@@ -1,7 +1,7 @@
 import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { useDuplicateMaterial, useMaterials, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
+import { useDuplicateMaterial, useMaterials, useMaterialFamilies, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useVendors } from "@/hooks/useVendors";
 import { MaterialForm } from "@/components/MaterialForm";
 import { AdjustInventoryForm } from "@/components/AdjustInventoryForm";
@@ -14,6 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Copy, Pencil, Boxes, Plus, ChevronDown, ChevronUp, ClipboardCheck, Eye, Printer, Save, X } from "lucide-react";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
+import { materialFamilyActionLabel } from "@/lib/materialFamilyAssignment";
 import {
   Page,
   PageHeader,
@@ -225,6 +226,25 @@ export default function MaterialsListPage() {
   const [countOriginals, setCountOriginals] = useState<Record<string, InventoryCountDraft>>({});
   const [countMaterialNames, setCountMaterialNames] = useState<Record<string, string>>({});
   const { data: materials, isLoading } = useMaterials({ search, type: typeFilter, lowStockOnly });
+  const { data: materialFamilies = [] } = useMaterialFamilies();
+  const [variantFamily, setVariantFamily] = useState<(typeof materialFamilies)[number] | null>(null);
+  const [variantValues, setVariantValues] = useState<Record<string, string>>({});
+  const [variantMaterialFormOpen, setVariantMaterialFormOpen] = useState(false);
+  const [familyCreateOpen, setFamilyCreateOpen] = useState(false);
+  const [familyName, setFamilyName] = useState("");
+  const [familyDimension, setFamilyDimension] = useState("Color");
+  const [familyVariantNames, setFamilyVariantNames] = useState("Cyan\nMagenta\nYellow\nBlack\nWhite");
+  const [familySupplier, setFamilySupplier] = useState("");
+  const [familyCost, setFamilyCost] = useState("0");
+  const [createdFamily, setCreatedFamily] = useState<any>(null);
+  const [familyVariantIndex, setFamilyVariantIndex] = useState(0);
+  const [familyCreateError, setFamilyCreateError] = useState<string | null>(null);
+  const [familyAssignmentMaterial, setFamilyAssignmentMaterial] = useState<Material | null>(null);
+  const [familyAssignmentId, setFamilyAssignmentId] = useState("");
+  const [familyAssignmentValues, setFamilyAssignmentValues] = useState<Record<string, string>>({});
+  const [removingFamilyMaterial, setRemovingFamilyMaterial] = useState<Material | null>(null);
+  const [familyMutationError, setFamilyMutationError] = useState<string | null>(null);
+  const [familyMutationPending, setFamilyMutationPending] = useState(false);
   const { data: vendors = [] } = useVendors();
   const duplicateMaterialMutation = useDuplicateMaterial();
   
@@ -509,6 +529,8 @@ export default function MaterialsListPage() {
       setDuplicateMaterialInFlight(false);
     }
   };
+  const refreshFamilyData = async () => { await queryClient.invalidateQueries({ queryKey: ["/api/materials"] }); await queryClient.invalidateQueries({ queryKey: ["/api/material-families"] }); };
+  const selectedAssignmentFamily = materialFamilies.find((family) => family.id === familyAssignmentId) ?? null;
 
   const renderSortIcon = (columnId: SortableColumnId) => {
     if (sortKey !== columnId) return null;
@@ -559,7 +581,7 @@ export default function MaterialsListPage() {
 
     switch (columnId) {
       case "name":
-        return <span className="font-medium text-titan-text-primary">{m.name}</span>;
+        return <span className="font-medium text-titan-text-primary">{m.displayLabel || m.name}</span>;
       case "sku":
         return <span className="text-titan-text-secondary">{m.sku}</span>;
       case "type":
@@ -660,6 +682,10 @@ export default function MaterialsListPage() {
             <Button size="sm" variant="outline" onClick={() => setAdjustMaterialId(m.id)}>
               Adjust
             </Button>
+            <Button size="sm" variant="outline" onClick={() => { setFamilyAssignmentMaterial(m); setFamilyAssignmentId(m.materialFamilyId || ""); setFamilyAssignmentValues({}); setFamilyMutationError(null); }}>
+              {materialFamilyActionLabel(m.materialFamilyId)}
+            </Button>
+            {m.materialFamilyId ? <Button size="sm" variant="ghost" onClick={() => { setRemovingFamilyMaterial(m); setFamilyMutationError(null); }}>Remove Family</Button> : null}
           </div>
         );
       default:
@@ -710,6 +736,7 @@ export default function MaterialsListPage() {
                     <Plus className="w-4 h-4 mr-2" />
                     New Material
                   </Button>
+                  <Button variant="outline" onClick={() => { setFamilyCreateError(null); setFamilyCreateOpen(true); }}>New Material Family</Button>
                 </>
               )}
             </div>
@@ -723,6 +750,17 @@ export default function MaterialsListPage() {
       />
 
       <ContentLayout>
+        {materialFamilies.length > 0 && !search && typeFilter === "all" && !lowStockOnly ? (
+          <DataCard>
+            <div className="mb-3"><h2 className="text-base font-semibold">Material Families</h2><p className="text-sm text-titan-text-muted">Families organize variants. Inventory, reorder levels, and stock remain on each Material variant.</p></div>
+            <div className="space-y-3">
+              {materialFamilies.map((family) => <div key={family.id} className="rounded border border-titan-border p-3">
+                <div className="flex items-center justify-between"><div><span className="font-medium">{family.name}</span>{!family.isActive && <span className="ml-2 text-xs text-titan-text-muted">Inactive</span>}</div><div className="flex items-center gap-2"><span className="text-xs text-titan-text-muted">{family.dimensions.map((dimension) => dimension.displayName).join(", ") || "No dimensions"}</span><Button size="sm" variant="outline" disabled={!family.isActive} onClick={() => { setVariantFamily(family); setVariantValues({}); }}>Add Variant</Button></div></div>
+                <div className="mt-2 grid gap-1 text-sm">{family.variants.map((variant) => <button key={variant.id} type="button" className="text-left text-titan-text-secondary hover:text-titan-text-primary" onClick={() => navigate(`/materials/${variant.id}`)}>↳ {variant.displayLabel || `${family.name} / ${variant.name}`} · {variant.sku} · {variant.stockQuantity} {variant.inventoryUnit}</button>)}{family.variants.length === 0 && <span className="text-sm text-titan-text-muted">No variants assigned.</span>}</div>
+              </div>)}
+            </div>
+          </DataCard>
+        ) : null}
         {/* Filters */}
         <DataCard>
           <div className="flex gap-4 flex-wrap">
@@ -823,6 +861,21 @@ export default function MaterialsListPage() {
       </ContentLayout>
 
       <MaterialForm open={showCreate} onOpenChange={setShowCreate} />
+      <Dialog open={Boolean(familyAssignmentMaterial)} onOpenChange={(open) => !open && setFamilyAssignmentMaterial(null)}><DialogContent><DialogHeader><DialogTitle>Assign Material to Family</DialogTitle><DialogDescription>This keeps the Material, inventory, history, and all existing references unchanged.</DialogDescription></DialogHeader><Select value={familyAssignmentId} onValueChange={(value) => { setFamilyAssignmentId(value); setFamilyAssignmentValues({}); }}><SelectTrigger><SelectValue placeholder="Select Family" /></SelectTrigger><SelectContent>{materialFamilies.filter((family) => family.isActive).map((family) => <SelectItem key={family.id} value={family.id}>{family.name}</SelectItem>)}</SelectContent></Select>{selectedAssignmentFamily?.dimensions.map((dimension) => <div key={dimension.id}><label className="text-sm font-medium">{dimension.displayName}</label><Input value={familyAssignmentValues[dimension.id] ?? ""} onChange={(event) => setFamilyAssignmentValues((current) => ({ ...current, [dimension.id]: event.target.value }))} /></div>)}{familyMutationError && <p className="text-sm text-destructive">{familyMutationError}</p>}<DialogFooter><Button variant="outline" onClick={() => setFamilyAssignmentMaterial(null)}>Cancel</Button><Button disabled={!familyAssignmentId || familyMutationPending || Boolean(selectedAssignmentFamily?.dimensions.some((dimension) => !(familyAssignmentValues[dimension.id] ?? "").trim()))} onClick={async () => { if (!familyAssignmentMaterial || !selectedAssignmentFamily) return; try { setFamilyMutationPending(true); const response = await fetch(`/api/materials/${familyAssignmentMaterial.id}/family`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ familyId: selectedAssignmentFamily.id, values: selectedAssignmentFamily.dimensions.map((dimension) => ({ dimensionId: dimension.id, value: familyAssignmentValues[dimension.id].trim() })) }) }); const json = await response.json(); if (!response.ok) throw new Error(json.error || "Failed to assign family"); await refreshFamilyData(); setFamilyAssignmentMaterial(null); } catch (error) { setFamilyMutationError(error instanceof Error ? error.message : "Failed to assign family"); } finally { setFamilyMutationPending(false); } }}>Assign Family</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={Boolean(removingFamilyMaterial)} onOpenChange={(open) => !open && setRemovingFamilyMaterial(null)}><DialogContent><DialogHeader><DialogTitle>Remove from Family?</DialogTitle><DialogDescription>Removing from the Family does not delete this Material or its inventory, history, purchasing, PBV2, or production references.</DialogDescription></DialogHeader>{familyMutationError && <p className="text-sm text-destructive">{familyMutationError}</p>}<DialogFooter><Button variant="outline" onClick={() => setRemovingFamilyMaterial(null)}>Cancel</Button><Button variant="destructive" disabled={familyMutationPending} onClick={async () => { if (!removingFamilyMaterial) return; try { setFamilyMutationPending(true); const response = await fetch(`/api/materials/${removingFamilyMaterial.id}/family`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ familyId: null, values: [] }) }); const json = await response.json(); if (!response.ok) throw new Error(json.error || "Failed to remove family"); await refreshFamilyData(); setRemovingFamilyMaterial(null); } catch (error) { setFamilyMutationError(error instanceof Error ? error.message : "Failed to remove family"); } finally { setFamilyMutationPending(false); } }}>Remove from Family</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={familyCreateOpen} onOpenChange={(open) => { setFamilyCreateOpen(open); if (!open) { setCreatedFamily(null); setFamilyVariantIndex(0); } }}>
+        <DialogContent><DialogHeader><DialogTitle>Create Material Family</DialogTitle><DialogDescription>Family defaults are copied into each concrete Material; the Family itself has no inventory.</DialogDescription></DialogHeader>
+          {!createdFamily ? <div className="space-y-3"><Input placeholder="Family name" value={familyName} onChange={(e) => setFamilyName(e.target.value)} /><Input placeholder="Variant dimension (for example Color)" value={familyDimension} onChange={(e) => setFamilyDimension(e.target.value)} /><Input placeholder="Supplier" value={familySupplier} onChange={(e) => setFamilySupplier(e.target.value)} /><Input type="number" min="0" placeholder="Cost per inventory unit" value={familyCost} onChange={(e) => setFamilyCost(e.target.value)} /><textarea className="min-h-28 w-full rounded border p-2 text-sm" value={familyVariantNames} onChange={(e) => setFamilyVariantNames(e.target.value)} placeholder="One variant per line" />{familyCreateError && <p className="text-sm text-destructive">{familyCreateError}</p>}<DialogFooter><Button variant="outline" onClick={() => setFamilyCreateOpen(false)}>Cancel</Button><Button disabled={!familyName.trim() || !familyDimension.trim() || !familyVariantNames.trim()} onClick={async () => { try { setFamilyCreateError(null); const key = familyDimension.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "variant"; const response = await fetch("/api/material-families", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: familyName.trim(), dimensions: [{ key, displayName: familyDimension.trim() }] }) }); const json = await response.json(); if (!response.ok) throw new Error(json.error || "Failed to create family"); setCreatedFamily(json.data); setFamilyVariantIndex(0); } catch (error) { setFamilyCreateError(error instanceof Error ? error.message : "Failed to create family"); } }}>Create family and variants</Button></DialogFooter></div> : <p className="text-sm">Creating variant {familyVariantIndex + 1} of {familyVariantNames.split(/\r?\n/).filter(Boolean).length} with the canonical Material form.</p>}
+        </DialogContent>
+      </Dialog>
+      {createdFamily && (() => { const names = familyVariantNames.split(/\r?\n/).map((value) => value.trim()).filter(Boolean); const dimension = createdFamily.dimensions?.[0]; const name = names[familyVariantIndex]; return name && dimension ? <MaterialForm open onOpenChange={(open) => { if (!open) setCreatedFamily(null); }} initialValues={{ name: `${familyName.trim()} - ${name}`, sku: `${familyName.trim().replace(/[^A-Za-z0-9]+/g, "-").toUpperCase()}-${name.replace(/[^A-Za-z0-9]+/g, "-").toUpperCase()}`, preferredVendorName: familySupplier || "", costPerUnit: Number(familyCost) || 0 }} familyAssignment={{ familyId: createdFamily.id, values: [{ dimensionId: dimension.id, value: name }] }} onCreated={() => { if (familyVariantIndex + 1 < names.length) setFamilyVariantIndex((index) => index + 1); else { setCreatedFamily(null); setFamilyCreateOpen(false); } }} /> : null; })()}
+      <Dialog open={Boolean(variantFamily) && !variantMaterialFormOpen} onOpenChange={(open) => !open && setVariantFamily(null)}>
+        <DialogContent><DialogHeader><DialogTitle>Add variant to {variantFamily?.name}</DialogTitle><DialogDescription>Set family dimensions, then complete the normal Material form. Stock, cost, supplier, SKU, and reorder values remain on the new Material.</DialogDescription></DialogHeader>
+          <div className="space-y-3">{variantFamily?.dimensions.map((dimension) => <div key={dimension.id}><label className="text-sm font-medium">{dimension.displayName}</label><Input value={variantValues[dimension.id] ?? ""} onChange={(event) => setVariantValues((current) => ({ ...current, [dimension.id]: event.target.value }))} /></div>)}</div>
+          <DialogFooter><Button variant="outline" onClick={() => setVariantFamily(null)}>Cancel</Button><Button disabled={Boolean(variantFamily?.dimensions.some((dimension) => !(variantValues[dimension.id] ?? "").trim()))} onClick={() => setVariantMaterialFormOpen(true)}>Continue to Material details</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {variantFamily && <MaterialForm open={variantMaterialFormOpen} onOpenChange={(open) => { setVariantMaterialFormOpen(open); if (!open) setVariantFamily(null); }} familyAssignment={{ familyId: variantFamily.id, values: variantFamily.dimensions.map((dimension) => ({ dimensionId: dimension.id, value: variantValues[dimension.id]!.trim() })) }} />}
       {editMaterial && (
         <MaterialForm
           open={!!editMaterial}
