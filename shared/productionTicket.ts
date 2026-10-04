@@ -530,7 +530,7 @@ export function buildOrderTravelerData(
     travelerTemplate,
     headerValue,
     isRush,
-    new Set(["poNumber", "jobLabel"]),
+    new Set<TicketFieldKey>(["poNumber", "jobLabel"]),
   );
 
   const lineItems: TravelerLineItem[] = (src.lineItems || []).map((li, idx) => ({

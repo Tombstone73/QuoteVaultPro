@@ -44,7 +44,7 @@ const productMutationGrants = [
 ] as const;
 
 function normalizedGrants(grants: readonly string[]): readonly string[] {
-  return Object.freeze([...new Set(grants)].sort());
+  return Object.freeze(Array.from(new Set(grants)).sort());
 }
 
 export function normalizeOrganizationRole(role: unknown): OrganizationRole | null {

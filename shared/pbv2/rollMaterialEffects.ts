@@ -2,6 +2,7 @@ import { normalizeMaterialUnit, roundMaterialQuantity } from "../materialUnits";
 import {
   calculateRollMediaLayout,
   deriveRollPrintableWidth,
+  RollMediaLayoutError,
 } from "./rollMediaLayout";
 
 export type RollMaterialEffect = {
@@ -50,8 +51,8 @@ export function enrichRollLinearFootMaterialEffects(input: {
   effects: RollMaterialEffect[];
   materials: RollMaterialRecord[];
   env: Record<string, unknown>;
-  formulaVariables?: Record<string, unknown>;
-  allowRotation?: unknown;
+  formulaVariables?: Record<string, number>;
+  allowRotation?: boolean | null;
 }): { effects: RollMaterialEffect[]; warnings: RollMaterialEffectEnrichmentWarning[] } {
   const warnings: RollMaterialEffectEnrichmentWarning[] = [];
   const materialById = new Map(
@@ -130,10 +131,12 @@ export function enrichRollLinearFootMaterialEffects(input: {
           qtyMeaning: uom === "linear_foot" ? "tree_linear_foot" : "tree_material_effect",
         },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const code = error instanceof RollMediaLayoutError ? error.code : "ROLL_LAYOUT_FAILED";
+      const message = error instanceof Error ? error.message : "";
       warnings.push({
-        code: error?.code || "ROLL_LAYOUT_FAILED",
-        message: error?.message || "Roll material layout could not be calculated.",
+        code,
+        message: message || "Roll material layout could not be calculated.",
         materialId,
       });
       return effect;

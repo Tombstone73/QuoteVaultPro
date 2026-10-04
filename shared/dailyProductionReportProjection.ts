@@ -165,14 +165,14 @@ export function buildDailyProductionReport(input: {
   let unclassifiedProductionLines = 0;
   let nonstandardFulfillmentOrders = 0;
 
-  for (const order of ordersById.values()) {
+  for (const order of Array.from<OrderSource>(ordersById.values())) {
     const orderStations = new Set<Station>();
     let hasUnclassified = false;
     let quantity = 0;
     let rollQuantity = 0;
     let flatbedQuantity = 0;
 
-    for (const line of order.lines.values()) {
+    for (const line of Array.from<LineSource>(order.lines.values())) {
       const isProduction = !line.productionBypassed
         && !line.isService
         && line.workflowIntent !== "fulfillment_only"
@@ -191,11 +191,11 @@ export function buildDailyProductionReport(input: {
         continue;
       }
 
-      for (const station of line.stations) {
+      line.stations.forEach((station) => {
         orderStations.add(station);
         if (station === "roll") rollQuantity += line.quantity;
         if (station === "flatbed") flatbedQuantity += line.quantity;
-      }
+      });
     }
 
     const base: DailyProductionReportRow = {

@@ -29,7 +29,7 @@ export type RollMediaReservationContext = {
   registrationWasteIn?: string | number | null;
   billingWidthIncrementIn?: string | number | null;
   billingLengthIncrementIn?: string | number | null;
-  allowRotation?: unknown;
+  allowRotation?: boolean | number | null;
 };
 
 type MaterialReservationFailureCode =
@@ -159,12 +159,13 @@ export function normalizeMaterialReservation(args: {
         method: "roll_layout",
         rollLayout: layout,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "";
       return failure({
         material: args.material,
         requestedUom: args.requestedUom,
         code: "invalid_roll_layout",
-        detail: error?.message || "Roll layout could not be calculated for linear-foot reservation.",
+        detail: message || "Roll layout could not be calculated for linear-foot reservation.",
       });
     }
   }
@@ -257,12 +258,13 @@ export function normalizeMaterialReservation(args: {
         equivalentPieceQuantity: Math.ceil(equivalentPieceQuantity),
       },
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
     return failure({
       material: args.material,
       requestedUom: args.requestedUom,
       code: "invalid_sheet_layout",
-      detail: error?.message || "The finished piece cannot be laid out on the configured sheet.",
+      detail: message || "The finished piece cannot be laid out on the configured sheet.",
     });
   }
 }
