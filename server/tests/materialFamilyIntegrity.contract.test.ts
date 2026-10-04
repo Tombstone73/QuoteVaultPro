@@ -8,6 +8,7 @@ describe("material family integrity contracts", () => {
   const schema = read("shared/schema.ts");
   const routes = read("server/routes/orders.routes.ts");
   const assignmentService = read("server/services/materialFamilyAssignment.service.ts");
+  const lifecycleService = read("server/services/materialFamilyLifecycle.service.ts");
 
   test("keeps concrete Materials as the optional Family children", () => {
     const familyDeclaration = schema.slice(schema.indexOf('export const materialFamilies'), schema.indexOf('// Materials table'));
@@ -38,5 +39,15 @@ describe("material family integrity contracts", () => {
     expect(familyIdFields).toHaveLength(2);
     expect(schema).toContain('export const materialFamilyVariantDimensions = pgTable("material_family_variant_dimensions"');
     expect(schema).toContain('export const materials = pgTable("materials"');
+  });
+
+  test("delegates lifecycle and safe dimension mutations to the canonical service", () => {
+    expect(routes).toContain('materialFamilyLifecycleService.updateLifecycle');
+    expect(routes).toContain('materialFamilyLifecycleService.createDimension');
+    expect(routes).toContain('materialFamilyLifecycleService.updateDimension');
+    expect(routes).toContain('materialFamilyLifecycleService.removeDimension');
+    expect(lifecycleService).toContain('materialVariantValues.dimensionId');
+    expect(lifecycleService).toContain('DIMENSION_IN_USE');
+    expect(lifecycleService).not.toContain('update(materials)');
   });
 });

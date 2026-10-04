@@ -1,5 +1,6 @@
 import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../services/orderCreditHoldService";
 import { materialFamilyAssignmentService, MaterialFamilyAssignmentError } from "../services/materialFamilyAssignment.service";
+import { materialFamilyLifecycleService, MaterialFamilyLifecycleError } from "../services/materialFamilyLifecycle.service";
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import type { Express } from "express";
@@ -6865,10 +6866,12 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const [updated] = await db.update(materialFamilies).set({ ...input, updatedAt: new Date() }).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).returning();
+            const updated = input.isActive !== undefined && Object.keys(input).length === 1
+                ? await materialFamilyLifecycleService.updateLifecycle({ organizationId, familyId: req.params.id, isActive: input.isActive })
+                : await db.update(materialFamilies).set({ ...input, updatedAt: new Date() }).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).returning().then(([family]) => family);
             if (!updated) return res.status(404).json({ error: 'Material family not found' });
             return res.json({ success: true, data: updated });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); return res.status(500).json({ error: 'Failed to update material family' }); }
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if (error instanceof MaterialFamilyLifecycleError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); return res.status(500).json({ error: 'Failed to update material family' }); }
     });
 
     app.post('/api/material-families/:id/dimensions', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
@@ -6876,11 +6879,9 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const [family] = await db.select({ id: materialFamilies.id }).from(materialFamilies).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).limit(1);
-            if (!family) return res.status(404).json({ error: 'Material family not found' });
-            const [dimension] = await db.insert(materialFamilyVariantDimensions).values({ organizationId, materialFamilyId: family.id, ...input, sortOrder: input.sortOrder ?? 0 }).returning();
+            const dimension = await materialFamilyLifecycleService.createDimension({ organizationId, familyId: req.params.id, ...input });
             return res.status(201).json({ success: true, data: dimension });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'That variant dimension already exists for this family' }); return res.status(500).json({ error: 'Failed to create variant dimension' }); }
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if (error instanceof MaterialFamilyLifecycleError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'That variant dimension already exists for this family' }); return res.status(500).json({ error: 'Failed to create variant dimension' }); }
     });
 
     app.patch('/api/material-families/:familyId/dimensions/:dimensionId', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
@@ -6888,22 +6889,17 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
-            const [dimension] = await db.update(materialFamilyVariantDimensions).set(input).where(and(eq(materialFamilyVariantDimensions.id, req.params.dimensionId), eq(materialFamilyVariantDimensions.materialFamilyId, req.params.familyId), eq(materialFamilyVariantDimensions.organizationId, organizationId))).returning();
-            if (!dimension) return res.status(404).json({ error: 'Variant dimension not found' });
+            const dimension = await materialFamilyLifecycleService.updateDimension({ organizationId, familyId: req.params.familyId, dimensionId: req.params.dimensionId, ...input });
             return res.json({ success: true, data: dimension });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); return res.status(500).json({ error: 'Failed to update variant dimension' }); }
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if (error instanceof MaterialFamilyLifecycleError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); return res.status(500).json({ error: 'Failed to update variant dimension' }); }
     });
 
     app.delete('/api/material-families/:familyId/dimensions/:dimensionId', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-            const [dimension] = await db.select({ id: materialFamilyVariantDimensions.id }).from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.id, req.params.dimensionId), eq(materialFamilyVariantDimensions.materialFamilyId, req.params.familyId), eq(materialFamilyVariantDimensions.organizationId, organizationId))).limit(1);
-            if (!dimension) return res.status(404).json({ error: 'Variant dimension not found' });
-            const [value] = await db.select({ id: materialVariantValues.id }).from(materialVariantValues).where(and(eq(materialVariantValues.dimensionId, dimension.id), eq(materialVariantValues.organizationId, organizationId))).limit(1);
-            if (value) return res.status(409).json({ error: 'A dimension with persisted variant values cannot be removed' });
-            await db.delete(materialFamilyVariantDimensions).where(eq(materialFamilyVariantDimensions.id, dimension.id));
+            await materialFamilyLifecycleService.removeDimension({ organizationId, familyId: req.params.familyId, dimensionId: req.params.dimensionId });
             return res.json({ success: true });
-        } catch { return res.status(500).json({ error: 'Failed to remove variant dimension' }); }
+        } catch (error) { if (error instanceof MaterialFamilyLifecycleError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); return res.status(500).json({ error: 'Failed to remove variant dimension' }); }
     });
 
     app.put('/api/materials/:id/family', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
