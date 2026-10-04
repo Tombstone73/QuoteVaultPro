@@ -14,6 +14,7 @@ const genericActionCommands = new Set([
   "billing.create_invoice", "billing.update_invoice_draft", "billing.send_invoice", "billing.add_invoice_note",
   "payments.record_manual_payment", "payments.add_payment_note",
   "products.update_existing_product",
+  "materials.create", "materials.create_family", "materials.create_variant", "materials.assign_family",
 ] as const);
 
 export type GenericActionProposal = {
@@ -53,7 +54,7 @@ export function toGenericActionProposal(card: unknown, supportingCards: unknown[
   const proposal = record(cardRecord.proposal) ?? record(cardRecord.plan) ?? cardRecord;
   const command = text(proposal.action); const turnId = text(proposal.turnId) ?? text(cardRecord.turnId);
   if (!command || !turnId || !genericActionCommands.has(command as never)) return null;
-  const sessionKey = command === "products.update_existing_product" ? "productId" : command.startsWith("customers.") || command.startsWith("contacts.") ? "crmIntakeSessionId" : command.startsWith("orders.") || command === "quotes.convert_to_order" ? "orderIntakeSessionId" : command.startsWith("production.") ? "productionIntakeSessionId" : command.startsWith("fulfillment.") ? "fulfillmentIntakeSessionId" : command.startsWith("billing.") ? "billingIntakeSessionId" : "paymentIntakeSessionId";
+  const sessionKey = command === "products.update_existing_product" ? "productId" : command.startsWith("materials.") ? "proposalFingerprint" : command.startsWith("customers.") || command.startsWith("contacts.") ? "crmIntakeSessionId" : command.startsWith("orders.") || command === "quotes.convert_to_order" ? "orderIntakeSessionId" : command.startsWith("production.") ? "productionIntakeSessionId" : command.startsWith("fulfillment.") ? "fulfillmentIntakeSessionId" : command.startsWith("billing.") ? "billingIntakeSessionId" : "paymentIntakeSessionId";
   const fingerprint = text(proposal.proposalFingerprint);
   if (!text(proposal[sessionKey]) || !fingerprint || !/^[a-f0-9]{64}$/i.test(fingerprint)) return null;
   const related = proposalDetails(command, supportingCards); const details = record(cardRecord.details) ?? related?.details ?? null;

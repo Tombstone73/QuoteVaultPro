@@ -111,6 +111,7 @@ function domainForCommand(command: string): OperatorDomain {
   if (command.startsWith("production.")) return "production";
   if (command.startsWith("fulfillment.")) return "fulfillment";
   if (command.startsWith("billing.")) return "invoicing";
+  if (command.startsWith("materials.")) return "materials";
   return "payments";
 }
 function skillForDomain(domain: OperatorDomain): string {
@@ -153,13 +154,13 @@ const commandCapabilities: readonly CanonicalCapabilityDescriptor[] = assistantP
     id: `capability.command.${command}`, domain, version: "v1", purpose: `Reviewed confirmation-bound ${command} command.`, mode: "mutation",
     source: "command", sourceId: command, inputSchemaReference: "server/services/assistant/execution/*Command.ts",
     outputSchemaReference: "server/services/assistant/execution/*Command.ts", requiredGrant,
-    allowedOrganizationRoles: command.startsWith("products.") ? adminRoles : operationalRoles,
+    allowedOrganizationRoles: command.startsWith("products.") || command.startsWith("materials.") ? adminRoles : operationalRoles,
     tenantScope: "organization", confirmation: "go_required", idempotency: "server_generated_with_request_hash", risk: "high",
     lifecycleValidationReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations + CanonicalProductLifecycleOperations + CanonicalProductPublishOperations + CanonicalProductPricingEngineConfigurationOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations" : sharedOperationalReference(command) ?? "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations; CanonicalPbv2OptionConfigurationOperations; CanonicalProductMaterialOperations; CanonicalProductLifecycleOperations; CanonicalProductPublishOperations; CanonicalProductPricingEngineConfigurationOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations with compatibility command adapter" : sharedOperationalReference(command) ?? "AssistantCommandDefinition.adapter",
     auditReference: "ExecutionPlanningService + canonical domain audit", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft; POST /api/pbv2/tree-versions/:id/publish" : sharedPricingCommands.has(command) ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : sharedOperationalUiSurface(command), aiExposure: "existing",
-    migrationStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) || sharedOperationalCommands.has(command) ? "shared_canonical" : "wrapped_existing",
-    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1; products.update_lifecycle.v1; products.publish_configuration.v1; products.update_pricing_engine_configuration.v1" : command === "products.replace_inactive_matrix" ? "products.replace_pricing_matrix.v1" : command === "products.replace_inactive_quantity_tiers" ? "products.replace_quantity_tiers.v1" : sharedPricingCommands.has(command) ? "products.update_pricing.v1" : sharedOperationalCanonicalName(command),
-    parityStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) || sharedOperationalCommands.has(command) ? "shared_canonical" : "ai_specific",
+    migrationStatus: command.startsWith("materials.") || command === "products.update_existing_product" || sharedPricingCommands.has(command) || sharedOperationalCommands.has(command) ? "shared_canonical" : "wrapped_existing",
+    canonicalOperationReference: command.startsWith("materials.") ? "MaterialMutationService; MaterialFamilyCreationService; MaterialFamilyAssignmentService" : command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1; products.update_lifecycle.v1; products.publish_configuration.v1; products.update_pricing_engine_configuration.v1" : command === "products.replace_inactive_matrix" ? "products.replace_pricing_matrix.v1" : command === "products.replace_inactive_quantity_tiers" ? "products.replace_quantity_tiers.v1" : sharedPricingCommands.has(command) ? "products.update_pricing.v1" : sharedOperationalCanonicalName(command),
+    parityStatus: command.startsWith("materials.") || command === "products.update_existing_product" || sharedPricingCommands.has(command) || sharedOperationalCommands.has(command) ? "shared_canonical" : "ai_specific",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });

@@ -24,6 +24,7 @@ import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
 import { resolveExplicitCreationEntity } from "./materialEntityIntent";
+import { assistantMaterialActionService, AssistantMaterialActionError } from "./materialActionService";
 import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
@@ -853,22 +854,10 @@ export class AssistantService {
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
     const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
-    if (explicitCreationEntity === "material") {
-      const response = "I’ll keep this in Material Inventory, not Product Builder. Material variants require a dedicated Material workflow; no product draft or unresolved-material placeholder was created.";
-      return this.persistOperatorResponse(input, {
-        response,
-        status: "responded",
-        errorCode: null,
-        audits: [],
-        cards: [{
-          kind: "notice",
-          title: "Material creation",
-          body: "Create and manage this inventory material in Inventory & Procurement. Product Builder is reserved for explicit product requests.",
-          tone: "info",
-          sourceLinks: [{ label: "Open Material Inventory", href: "/settings/inventory", entityType: "material" }],
-        }],
-      });
-    }
+    // A follow-up may only contain the requested Material details. Retain the
+    // initial explicit entity unless the user explicitly switches to Product.
+    const materialCreationRequest = explicitCreationEntity === "product" ? false
+      : explicitCreationEntity === "material" || resolveExplicitCreationEntity(task.goal) === "material";
     const activeResourceContext = persistedActiveResourceContext(task.semanticChanges);
     const pendingAction = derivePendingOperatorActionContext({
       message: request.message,
@@ -883,12 +872,12 @@ export class AssistantService {
     const fallbackWebTools = !providerCapabilities.nativeWebSearch && isPublicWebResearchConfigured()
       ? createPublicWebResearchTools()
       : [];
-    const mayBeginProductDraft = hasPermission(actor, "assistant.products.create_inactive_draft");
-    const mayApplyProductOperations = mayBeginProductDraft
+    const mayBeginProductDraft = !materialCreationRequest && hasPermission(actor, "assistant.products.create_inactive_draft");
+    const mayApplyProductOperations = !materialCreationRequest && (mayBeginProductDraft
       || hasPermission(actor, "assistant.products.update_inactive_draft")
-      || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
+      || hasPermission(actor, "assistant.products.update_inactive_draft_batch"));
     const existingProductId = existingProductIdForMutation({ context: request.context, task });
-    const mayEditExistingProduct = hasPermission(actor, "assistant.products.update_existing_product");
+    const mayEditExistingProduct = !materialCreationRequest && hasPermission(actor, "assistant.products.update_existing_product");
     const existingProduct = existingProductId && mayEditExistingProduct
       ? await existingProductEditService.trustedContext({ organizationId: scope.organizationId, productId: existingProductId }).catch(() => null)
       : null;
@@ -1111,7 +1100,40 @@ export class AssistantService {
         }
       },
     }] : [];
-    const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const materialProposalTools: AssistantOperatorSemanticTool[] = materialCreationRequest && hasPermission(actor, "assistant.materials.create") ? [{
+      name: "materials.lookup",
+      description: "Resolve an exact current-tenant Material and/or Material Family before preparing a Material action. Use this for an existing Family variant or assignment. It is read-only and returns only canonical identifiers, active state, dimensions, and concrete variant labels.",
+      inputSchema: { type: "object", additionalProperties: false, properties: { materialName: { type: "string" }, familyName: { type: "string" } } },
+      execute: async ({ arguments: args, context }) => ({ status: "succeeded" as const, result: { status: "succeeded", data: await assistantMaterialActionService.lookup(context.scope.organizationId, { materialName: typeof args.materialName === "string" ? args.materialName : undefined, familyName: typeof args.familyName === "string" ? args.familyName : undefined }) } as any }),
+    }, {
+      name: "materials.prepare_action",
+      description: "Prepare one review-only Material action. Use only for an explicit Material, Material Family, variant, or Family-assignment request. Supply a complete canonical Material payload, never product fields, database IDs except existing Material/Family/dimension IDs returned by trusted Material reads, SQL, or routes. This prepares a protected GO plan and never writes a Material.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["action"], properties: {
+        action: { enum: ["materials.create", "materials.create_family", "materials.create_variant", "materials.assign_family"] },
+        material: {
+          type: "object",
+          description: "Canonical Material fields. Include name and all fields the normal Material form requires. For liquid purchase language such as '$130 per liter', use materialForm 'liquid', purchaseUnit 'liter', and costPerPurchaseUnit 130; this is normalized to the existing milliliter model before review.",
+          properties: { name: { type: "string" }, sku: { type: "string" }, materialForm: { enum: ["sheet", "roll", "liquid", "each", "bulk_weight"] }, inventoryUnit: { type: "string" }, consumptionUnit: { type: "string" }, vendorCostPerUnit: { type: "number" }, purchaseUnit: { type: "string" }, costPerPurchaseUnit: { type: "number" }, preferredVendorName: { type: "string" } },
+        },
+        family: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, dimensions: { type: "array", description: "Dynamic Family dimensions as { key, displayName }; do not hard-code a fixed set." } } }, familyId: { type: "string" }, materialId: { type: "string" }, values: { type: "array" }, variants: { type: "array", description: "For family creation, each item has canonical material fields plus values keyed by the submitted Family dimension key." },
+      } },
+      execute: async ({ arguments: args, context }) => {
+        try {
+          const prepared = await assistantMaterialActionService.prepare(context.scope.organizationId, args);
+          const fingerprint = assistantMaterialActionService.fingerprint(prepared);
+          const name = prepared.action === "materials.create" ? String((prepared.material as any).name) : prepared.action === "materials.create_family" ? prepared.family.name : prepared.action === "materials.create_variant" ? String((prepared.material as any).name) : "existing Material";
+          const title = ({ "materials.create": `Create Material: ${name}`, "materials.create_family": `Create Material Family: ${name}`, "materials.create_variant": `Create Material variant: ${name}`, "materials.assign_family": "Assign Material to Family" } as const)[prepared.action];
+          const summary = prepared.action === "materials.create_family"
+            ? `Review creating ${prepared.family.name} with ${prepared.variants.length} concrete Material variant${prepared.variants.length === 1 ? "" : "s"}. The Family has no inventory.`
+            : `Review ${title.toLocaleLowerCase()}. No Product Builder draft will be created.`;
+          return { status: "succeeded" as const, result: { status: "succeeded", data: { response: `${summary} GO is required before any Material mutation.`, taskDomain: "materials" } } as any, presentation: { cards: [{ kind: "action_proposal", title, summary, sourceLinks: [{ label: "Open Material Inventory", href: "/settings/inventory", entityType: "material" }], plan: { action: prepared.action, arguments: prepared, proposalFingerprint: fingerprint } } as any] } };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "The Material action could not be prepared.";
+          return { status: "rejected" as const, failureCategory: "business_validation", failureCode: error instanceof AssistantMaterialActionError ? error.code : "material_action_invalid", warning: `${message} No Product Builder draft was created.` };
+        }
+      },
+    }] : [];
+    const semanticTools: AssistantOperatorSemanticTool[] = [...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {

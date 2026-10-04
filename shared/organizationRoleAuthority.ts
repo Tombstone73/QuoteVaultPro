@@ -39,6 +39,8 @@ const productMutationGrants = [
   "assistant.products.update_existing_product", "assistant.products.adjust_pricing",
   "assistant.products.clone_to_inactive_draft", "assistant.products.replace_inactive_matrix",
   "assistant.products.replace_inactive_quantity_tiers",
+  // Material mutations match the existing Material HTTP routes: owner/admin only.
+  "assistant.materials.create", "assistant.materials.create_family", "assistant.materials.create_variant", "assistant.materials.assign_family",
 ] as const;
 
 function normalizedGrants(grants: readonly string[]): readonly string[] {

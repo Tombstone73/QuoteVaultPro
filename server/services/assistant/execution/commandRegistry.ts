@@ -70,6 +70,10 @@ export const assistantProductionCommandAllowlist = [
   "billing.add_invoice_note",
   "payments.record_manual_payment",
   "payments.add_payment_note",
+  "materials.create",
+  "materials.create_family",
+  "materials.create_variant",
+  "materials.assign_family",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;

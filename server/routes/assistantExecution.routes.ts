@@ -62,6 +62,7 @@ import { paymentOperationCommandNames, paymentOperationsService } from "../servi
 import { CompositeExecutionPlanningService } from "../services/assistant/execution/compositeExecutionPlanningService";
 import { createQuoteInternalNoteCompositeExecutionService } from "../services/assistant/execution/quoteInternalNoteCompositeTool";
 import { createPaymentOperationCommandDefinition, createPaymentOperationExecutionCommand } from "../services/assistant/execution/paymentOperationsCommands";
+import { assistantMaterialActionCommandNames, createMaterialActionCommandDefinition, createMaterialActionExecutionCommand } from "../services/assistant/execution/materialActionsCommands";
 import { legacyExecutionSyntheticPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
 import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, emitAssistantCommandRegistryShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
 
@@ -202,6 +203,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...fulfillmentOperationCommandNames.map((name) => createFulfillmentOperationCommandDefinition(name, fulfillmentOperationsService)),
     ...billingInvoiceOperationCommandNames.map((name) => createBillingInvoiceOperationCommandDefinition(name, billingInvoiceOperationsService)),
     ...paymentOperationCommandNames.map((name) => createPaymentOperationCommandDefinition(name, paymentOperationsService)),
+    ...assistantMaterialActionCommandNames.map((name) => createMaterialActionCommandDefinition(name)),
   );
   emitAssistantCommandRegistryShadowDiagnostic(metadataRegistry.list());
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
@@ -228,6 +230,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...fulfillmentOperationCommandNames.map((name) => [name, createFulfillmentOperationExecutionCommand(name, fulfillmentOperationsService)] as [string, ExecutionCommandDefinition]),
     ...billingInvoiceOperationCommandNames.map((name) => [name, createBillingInvoiceOperationExecutionCommand(name, billingInvoiceOperationsService)] as [string, ExecutionCommandDefinition]),
     ...paymentOperationCommandNames.map((name) => [name, createPaymentOperationExecutionCommand(name, paymentOperationsService)] as [string, ExecutionCommandDefinition]),
+    ...assistantMaterialActionCommandNames.map((name) => [name, createMaterialActionExecutionCommand(name)] as [string, ExecutionCommandDefinition]),
   ]);
   const withCommandAuthority = (name: string): ExecutionCommandDefinition | undefined => {
     const execution = executionCommands.get(name);
@@ -336,6 +339,14 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const paymentProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && typeof card?.plan?.action === "string" && paymentOperationCommandNames.includes(card.plan.action) && typeof card?.plan?.paymentIntakeSessionId === "string" && typeof card?.plan?.proposalFingerprint === "string")?.plan
         : null;
+      const materialProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && typeof card?.plan?.action === "string" && assistantMaterialActionCommandNames.includes(card.plan.action) && card?.plan?.arguments && typeof card.plan.arguments === "object")?.plan
+        : null;
+      if (materialProposal) {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: materialProposal.action, arguments: materialProposal.arguments, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
       if (paymentProposal) { const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: paymentProposal.action, arguments: { paymentIntakeSessionId: paymentProposal.paymentIntakeSessionId, proposalFingerprint: paymentProposal.proposalFingerprint }, context: input.context }); const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } }); }
       if (billingProposal) { const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: billingProposal.action, arguments: { billingIntakeSessionId: billingProposal.billingIntakeSessionId, proposalFingerprint: billingProposal.proposalFingerprint }, context: input.context }); const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } }); }
       if (fulfillmentProposal) { const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: fulfillmentProposal.action, arguments: { fulfillmentIntakeSessionId: fulfillmentProposal.fulfillmentIntakeSessionId, proposalFingerprint: fulfillmentProposal.proposalFingerprint }, context: input.context }); const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } }); }

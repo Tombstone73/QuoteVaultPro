@@ -11,6 +11,9 @@ export class MaterialMutationError extends Error {
 /** Canonical simple Material create/update boundary. Inventory-repository
  * normalization remains the sole owner of cost/unit persistence rules. */
 export class MaterialMutationService {
+  async findByExactName(organizationId: string, name: string) {
+    return this.findByName(db, organizationId, name);
+  }
   async create(input: { organizationId: string; material: unknown; executor?: any; allowDuplicateName?: boolean }) {
     const material = insertMaterialSchema.parse(input.material) as InsertMaterial;
     const executor = input.executor ?? db;

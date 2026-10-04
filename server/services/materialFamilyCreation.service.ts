@@ -1,5 +1,6 @@
 import { db } from "../db";
-import { materialFamilies } from "@shared/schema";
+import { and, eq } from "drizzle-orm";
+import { materialFamilies, materialFamilyVariantDimensions, materialVariantValues, materials } from "@shared/schema";
 import { materialMutationService } from "./materialMutation.service";
 import { materialFamilyAssignmentService, type MaterialFamilyAssignmentValue } from "./materialFamilyAssignment.service";
 import { materialFamilyLifecycleService } from "./materialFamilyLifecycle.service";
@@ -11,6 +12,32 @@ export type MaterialFamilyInitialDimension = { key: string; displayName: string 
  * orchestration. Families never receive a Material row or inventory identity.
  */
 export class MaterialFamilyCreationService {
+  async findFamilyByExactName(organizationId: string, name: string) {
+    const [family] = await db.select().from(materialFamilies).where(and(
+      eq(materialFamilies.organizationId, organizationId),
+      eq(materialFamilies.name, name.trim()),
+    )).limit(1);
+    return family ?? null;
+  }
+
+  async getFamilyContext(organizationId: string, familyId: string) {
+    const [family] = await db.select().from(materialFamilies).where(and(
+      eq(materialFamilies.organizationId, organizationId), eq(materialFamilies.id, familyId),
+    )).limit(1);
+    if (!family) return null;
+    const [dimensions, variants] = await Promise.all([
+      db.select().from(materialFamilyVariantDimensions).where(and(eq(materialFamilyVariantDimensions.organizationId, organizationId), eq(materialFamilyVariantDimensions.materialFamilyId, family.id))).orderBy(materialFamilyVariantDimensions.sortOrder),
+      db.select().from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.materialFamilyId, family.id))),
+    ]);
+    return { family, dimensions, variants };
+  }
+
+  async getVariantValues(organizationId: string, materialId: string) {
+    return db.select().from(materialVariantValues).where(and(
+      eq(materialVariantValues.organizationId, organizationId),
+      eq(materialVariantValues.materialId, materialId),
+    ));
+  }
   async createFamily(input: { organizationId: string; name: string; description?: string | null; dimensions: readonly MaterialFamilyInitialDimension[] }) {
     return db.transaction(async (tx) => {
       const [family] = await tx.insert(materialFamilies).values({
