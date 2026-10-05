@@ -2,7 +2,7 @@
 // Registered from the unchanged Payment fixture at 121b0df; no result status is pinned.
 export default Object.freeze({
   sourcePath: 'v2/tests/modules/paymentWorkspace.test.ts',
-  sourceHash: 'aa6b9206be5ed28615a5608b0debf75c7a4eac838adeb53a6fc498099046ee42',
+  sourceHash: '1b5b4242a33ac8051497c144cb42ce271eef4179a2e520af01807dc6c2eb0572',
   cases: Object.freeze([
     ['54b3f82151e0e5d14a5ad33f45fbc56baf0adb284f7f5079273a2848a6ae8b31', 140],
     ['5de1fee62aaf425457b836a4205e6f072fa512b5b706e67b9cce203d92728793', 140],

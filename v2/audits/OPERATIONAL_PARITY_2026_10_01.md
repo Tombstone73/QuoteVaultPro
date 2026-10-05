@@ -124,6 +124,40 @@ sleep/poll/retry/skip/deadline change. Independent review accepted blob
 A new follow-up commit and complete exact-SHA rerun are required before DEV push;
 the failed receipt is retained and is not overridden or labelled flaky.
 
+Follow-up `1f102f9ae85edb0f609195ec10e0eadbe870d19f` passed all eleven canonical
+gates and all three builds on its exact clean SHA, then fast-forwarded DEV from
+`121b0df1`; the remote was reverified and MAIN was unchanged. This delivers the
+reviewed source assembly and test prerequisite correction, not held Sales/Auth
+business changes. It is **Deployable but not yet live-validated**. The new
+Production-only CI attempt requires deterministic CI success; native receipt and
+exact deployment observation remain pending. Team stays NULL/OFF, Run creation
+default-disabled, no provider/new-fixture writes, no row/count transition.
+
+Public run `37270956486` at exact delivered 1f102f9a subsequently failed hosted
+deterministic core: Payment79 executed /63passed /16failed /0pending, childexit1
+without timeout. First coded failure hash
+`54b3f82151e0e5d14a5ad33f45fbc56baf0adb284f7f5079273a2848a6ae8b31`
+maps to source line140; fifteen additional failure hashes were not exposed.
+This is actual case-result evidence, not a suite-load failure or a flaky label.
+The dependent Production native job correctly skipped with zero steps: **NOT
+RUN**, no PG16/PID/wait/cleanup receipt. Local PASS does not override this failure.
+Anonymous DEV observations at 06:13:56-06:14:16 and 06:18:54-06:18:55 UTC on
+October5 returned exactSHA/version, health and ready HTTP200, spaced overone
+minute. No business, accounting/email credential-readiness or provider request
+was made. Deployment observation is partial evidence, not a row closure.
+
+The unchanged Payment fixture independently reproduced 79/63/16/0 under the
+already-installed WindowsNode22.17.1: all sixteen negative-import probes rejected
+correctly but their retained `errored` assertion saw `linking`. Async linker
+controls reached `errored`, denied evaluation and had zero effects on both
+installed runtimes. The one-line async wrapper plus exact-source hash refresh
+passed independent review, preserving all79 registrations/order/coordinates and
+security assertions. Actual full79/79 passed on WindowsNode20.18.1 and22.17.1;
+all31 diagnostics passed and the old pin remained fail-closed. This is a bounded
+harness correction, not a domain/assertion/Node-version change or confirmation of
+the old Ubuntu artifact's root cause. Exact new source gates and hosted/native
+confirmation remain required before further success claims.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

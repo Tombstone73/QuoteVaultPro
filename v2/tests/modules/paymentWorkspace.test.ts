@@ -144,7 +144,7 @@ describe("actual Payments fixture has a closed current-context import boundary",
   ])("rejects forbidden or unknown dependency before evaluation: %s", async (specifier) => {
     const calls = quickBooks.mock.calls.length;
     const probe = new SourceTextModule(`import ${JSON.stringify(specifier)};`, { identifier: paymentAdapterPath, importModuleDynamically: denyDynamicImport });
-    await expect(probe.link(linkFixtureImport)).rejects.toThrow(/Forbidden|Unexpected/);
+    await expect(probe.link(async (specifier,parent)=>linkFixtureImport(specifier,parent))).rejects.toThrow(/Forbidden|Unexpected/);
     expect(probe.status).toBe("errored"); expect(quickBooks.mock.calls).toHaveLength(calls);
   });
   test.each([
