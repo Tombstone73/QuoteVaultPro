@@ -1,4 +1,7 @@
-import { resolveLineItemEffectivePricing } from "./lineItemPriceOverrides";
+import {
+  resolveLineItemEffectivePricing,
+  type LineItemPriceOverrideMode,
+} from "./lineItemPriceOverrides";
 
 export const inboundPriceOverrideModes = [
   "override_unit_after_margin",
@@ -67,7 +70,7 @@ export function resolveInboundLineEffectivePricing(
     quantity,
     override: mode && valueCents !== null
       ? {
-          mode,
+          mode: mode as LineItemPriceOverrideMode,
           valueCents,
           valuePercent: null,
         }
@@ -82,34 +85,11 @@ export function hasUsableInboundLinePrice(
   return resolveInboundLineEffectivePricing(review, quantity).effectiveTotalCents > 0;
 }
 
-type InboundPricingReviewResolutionResult<T extends InboundPricingReviewLike> = Omit<
-  T,
-  | "status"
-  | "acknowledged"
-  | "resolution"
-  | "resolutionNote"
-  | "priceOverrideMode"
-  | "priceOverrideValueCents"
-  | "priceOverrideSource"
-  | "effectiveUnitPriceCents"
-  | "effectiveTotalCents"
-> & {
-  status?: T["status"] | "resolved";
-  acknowledged?: T["acknowledged"] | true;
-  resolution?: T["resolution"];
-  resolutionNote?: T["resolutionNote"] | null;
-  priceOverrideMode: T["priceOverrideMode"] | null;
-  priceOverrideValueCents: T["priceOverrideValueCents"] | null;
-  priceOverrideSource: T["priceOverrideSource"] | null;
-  effectiveUnitPriceCents: number;
-  effectiveTotalCents: number;
-};
-
 export function preserveInboundPricingResolution<T extends InboundPricingReviewLike>(
   previous: T | null | undefined,
   next: T,
   quantity: unknown,
-): InboundPricingReviewResolutionResult<T> {
+): T {
   const withOverride = {
     ...next,
     priceOverrideMode: previous?.priceOverrideMode ?? null,
@@ -122,17 +102,17 @@ export function preserveInboundPricingResolution<T extends InboundPricingReviewL
     effectiveUnitPriceCents: effective.effectiveUnitPriceCents,
     effectiveTotalCents: effective.effectiveTotalCents,
   };
-  if (!previous?.acknowledged || !previous.resolution) return withEffective;
+  if (!previous?.acknowledged || !previous.resolution) return withEffective as T;
   const sameComparison = previous.poPriceCents === next.poPriceCents
     && previous.systemPriceCents === next.systemPriceCents
     && previous.differenceCents === next.differenceCents
     && previous.comparisonType === next.comparisonType;
-  if (!sameComparison) return withEffective;
+  if (!sameComparison) return withEffective as T;
   return {
     ...withEffective,
     status: next.status === "mismatch" ? "resolved" : next.status,
     acknowledged: true,
     resolution: previous.resolution,
     resolutionNote: previous.resolutionNote ?? null,
-  };
+  } as T;
 }

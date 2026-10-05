@@ -1,5 +1,5 @@
 const QUICKBOOKS_PROVIDER_UNIT_PRICE_DECIMALS = 7;
-const QUICKBOOKS_PROVIDER_CENTS_SCALE = 100_000n;
+const QUICKBOOKS_PROVIDER_CENTS_SCALE = BigInt(100_000);
 const TOTAL_OVERRIDE_MODES = new Set([
   'total',
   'override_total_before_margin',
@@ -55,7 +55,7 @@ function quickBooksUnitPriceForTotalOverride(totalCents: number, quantity: numbe
   const safeTotalCents = BigInt(Math.max(0, Math.round(totalCents)));
   const safeQuantity = BigInt(Math.max(1, Math.round(quantity)));
   const numerator = safeTotalCents * QUICKBOOKS_PROVIDER_CENTS_SCALE;
-  const roundedProviderUnits = (numerator + (safeQuantity / 2n)) / safeQuantity;
+  const roundedProviderUnits = (numerator + (safeQuantity / BigInt(2))) / safeQuantity;
   return Number(roundedProviderUnits) / (10 ** QUICKBOOKS_PROVIDER_UNIT_PRICE_DECIMALS);
 }
 
