@@ -42,6 +42,7 @@ import {
 import { useGeneratePackingSlip } from "@/hooks/useShipments";
 import { PackingSlipModal } from "@/components/PackingSlipModal";
 import { PrintTicketButton } from "@/components/production/PrintTicketButton";
+import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNowStrict } from "date-fns";

@@ -322,10 +322,10 @@ export default function InvoicesListPage() {
           stickySortingAndFilters: true,
           sortKey: nextState.sortKey,
           sortDir: nextState.sortDir,
-          pageSize: nextState.pageSize as InvoiceListPreferences["pageSize"],
+          pageSize: nextState.pageSize,
           filters: toStickyFilters(nextState),
         }
-      : { ...existing, stickySortingAndFilters: false, pageSize: nextState.pageSize as InvoiceListPreferences["pageSize"] };
+      : { ...existing, stickySortingAndFilters: false, pageSize: nextState.pageSize };
     persistInvoiceListPreferences(user.id, user.lastActiveOrgId ?? null, nextPreferences);
     setPreferencesRevision((current) => current + 1);
   };
@@ -418,8 +418,8 @@ export default function InvoicesListPage() {
   const isInvoiceSelectable = (invoice: InvoiceListItem) => {
     const status = String(invoice.status || "").toLowerCase();
     return !["void", "canceled", "cancelled"].includes(status)
-      && String((invoice as any).importSource || "").toLowerCase() !== "quickbooks"
-      && !(invoice as any).isHistorical;
+      && String(invoice.importSource || "").toLowerCase() !== "quickbooks"
+      && !invoice.isHistorical;
   };
   const accountingApprovableInvoices = filteredInvoices.filter(isInvoiceSelectable);
   const invoiceSelectionScope = useMemo(() => JSON.stringify({
@@ -448,8 +448,13 @@ export default function InvoicesListPage() {
   // form while restoring a deterministic set for the selectors and chips.
   const includedCustomerIds = discreteValues([customerIds, customerId].filter(Boolean).join(","));
   const excludedCustomerIds = discreteValues([columnFilters.excludeCustomerIds, columnFilters.excludeCustomerId].filter(Boolean).join(","));
-  const activeColumnFilters = (Object.entries(columnFilters) as Array<[keyof InvoiceListColumnFilterQuery, string | undefined]>)
-    .filter(([key, value]) => Boolean(value) && key !== "excludeCustomerId" && key !== "excludeCustomerIds");
+  const activeColumnFilters = Object.keys(columnFilters).reduce<Array<[keyof InvoiceListColumnFilterQuery, string]>>((result, key) => {
+    const filterKey = INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.find((candidate) => candidate === key);
+    if (!filterKey || filterKey === "excludeCustomerId" || filterKey === "excludeCustomerIds") return result;
+    const value = columnFilters[filterKey];
+    if (value) result.push([filterKey, value]);
+    return result;
+  }, []);
   const activeFilters = [
     search ? { key: "search", label: "Search", value: search } : null,
     statusFilter !== "all" ? { key: "status", label: "Status", value: labelDiscreteValues(statusFilter, INVOICE_STATUS_OPTIONS) } : null,
@@ -457,7 +462,7 @@ export default function InvoicesListPage() {
     includedCustomerIds.length ? { key: "customerIds", label: "Include Customers", value: `${includedCustomerIds.length} selected` } : null,
     excludedCustomerIds.length ? { key: "excludeCustomerIds", label: "Exclude Customers", value: `${excludedCustomerIds.length} selected` } : null,
     ...activeColumnFilters.map(([key, value]) => ({ key, label: columnFilterLabels[key], value: formatColumnFilterValue(key, String(value)) })),
-  ].filter(Boolean) as Array<{ key: string; label: string; value: string }>;
+  ].filter((filter): filter is { key: string; label: string; value: string } => filter !== null);
 
   const setColumnFilter = (key: keyof InvoiceListColumnFilterQuery, value: string) => {
     updateListState({
@@ -575,7 +580,8 @@ export default function InvoicesListPage() {
     if (key === "includeCanceled") return updateListState({ includeCanceled: undefined }, true);
     if (key === "customerIds") return updateListState({ customerId: undefined, customerIds: undefined, customerName: undefined }, true);
     if (key === "excludeCustomerIds") return updateListState({ excludeCustomerId: undefined, excludeCustomerIds: undefined, excludeCustomerName: undefined }, true);
-    setColumnFilter(key as keyof InvoiceListColumnFilterQuery, "");
+    const columnKey = INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS.find((candidate) => candidate === key);
+    if (columnKey) setColumnFilter(columnKey, "");
   };
 
   const setIncludedCustomerIds = (ids: string[]) => {
@@ -659,13 +665,13 @@ export default function InvoicesListPage() {
           stickySortingAndFilters: true,
           sortKey,
           sortDir,
-          pageSize: pageSize as InvoiceListPreferences["pageSize"],
+          pageSize,
           filters: toStickyFilters(effectiveListState),
         }
       : {
           ...existing,
           stickySortingAndFilters: false,
-          pageSize: pageSize as InvoiceListPreferences["pageSize"],
+          pageSize,
         });
     setPreferencesRevision((current) => current + 1);
   };
@@ -796,7 +802,7 @@ export default function InvoicesListPage() {
   };
 
   const renderInvoiceEmailButton = (invoice: InvoiceListItem) => {
-    if (!isAdminOrOwner || String((invoice as any).importSource || "").toLowerCase() === "quickbooks") return null;
+    if (!isAdminOrOwner || String(invoice.importSource || "").toLowerCase() === "quickbooks") return null;
     const action = getInvoiceEmailActionState(invoice);
     const isActiveDelivery = action.disabled;
     return <Button
@@ -835,7 +841,7 @@ export default function InvoicesListPage() {
     }
   };
 
-  const approvalState = (invoice: any) => {
+  const approvalState = (invoice: InvoiceListItem) => {
     const currentVersion = Number(invoice.invoiceVersion || 1);
     if (invoice.accountingApprovedAt && !invoice.accountingApprovalRevokedAt && Number(invoice.accountingApprovedVersion || 0) === currentVersion) return 'Approved for Accounting';
     if (invoice.accountingApprovalRevokedAt || (invoice.accountingApprovedAt && Number(invoice.accountingApprovedVersion || 0) !== currentVersion)) return 'Needs Reapproval';
@@ -901,7 +907,7 @@ export default function InvoicesListPage() {
       case "jobName": return <TitanTableCell key={column.id} className="max-w-[240px]"><div className="truncate" title={textOrEmpty(invoice.jobName || invoice.orderName)}>{textOrEmpty(invoice.jobName || invoice.orderName)}</div></TitanTableCell>;
       case "purchaseOrderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.purchaseOrderNumber)}>{textOrEmpty(invoice.purchaseOrderNumber)}</div></TitanTableCell>;
       case "orderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.orderNumber)}><OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} /></div></TitanTableCell>;
-      case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={invoiceDetailPath(invoice)} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: (invoice as any).displayNumber, numberCore: (invoice as any).numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
+      case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={invoiceDetailPath(invoice)} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: invoice.displayNumber, numberCore: invoice.numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
       case "issueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.issueDate)}</TitanTableCell>;
       case "dueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.dueDate)}</TitanTableCell>;
       case "status": return <TitanTableCell key={column.id}><StatusPill variant={getStatusVariant(invoice.status)}>{invoice.displayStatus || statusLabels[invoice.status] || invoice.status}</StatusPill></TitanTableCell>;
@@ -968,7 +974,7 @@ export default function InvoicesListPage() {
       />
 
       <ContentLayout>
-        <MultiInvoicePaymentDialog open={customerPaymentOpen} onOpenChange={setCustomerPaymentOpen} invoiceIds={[...selectedInvoiceIds]} onSuccess={() => setSelectedInvoiceIds(new Set())} />
+        <MultiInvoicePaymentDialog open={customerPaymentOpen} onOpenChange={setCustomerPaymentOpen} invoiceIds={Array.from(selectedInvoiceIds)} onSuccess={() => setSelectedInvoiceIds(new Set())} />
         {showTotals && (
           <div className="grid divide-y rounded-titan-lg border border-titan-border-subtle bg-titan-bg-card shadow-titan-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4" data-testid="invoice-summary-strip">
             <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Total Outstanding</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary ? formatCurrency(summary.totalOutstandingCents / 100) : EMPTY_VALUE}</div></div>
@@ -978,8 +984,8 @@ export default function InvoicesListPage() {
           </div>
         )}
         {isError && (
-          <DataCard className="border-destructive/40 text-sm text-destructive" role="alert">
-            {error instanceof Error ? error.message : "Invoice dashboard data could not be loaded."}
+          <DataCard className="border-destructive/40 text-sm text-destructive">
+            <div role="alert">{error instanceof Error ? error.message : "Invoice dashboard data could not be loaded."}</div>
           </DataCard>
         )}
 
@@ -1165,7 +1171,7 @@ export default function InvoicesListPage() {
                   <TitanTableCell onClick={(e) => e.stopPropagation()}>
                     <Checkbox
                       checked={selectedInvoiceIds.has(invoice.id)}
-                      disabled={["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()) || String((invoice as any).importSource || "").toLowerCase() === "quickbooks" || Boolean((invoice as any).isHistorical)}
+                      disabled={["void", "canceled", "cancelled"].includes(String(invoice.status || "").toLowerCase()) || String(invoice.importSource || "").toLowerCase() === "quickbooks" || Boolean(invoice.isHistorical)}
                       onCheckedChange={(checked) => toggleSelected(invoice.id, checked === true)}
                       aria-label={`Select invoice ${invoice.invoiceNumber}`}
                     />
@@ -1207,8 +1213,8 @@ export default function InvoicesListPage() {
                       onClick={(e) => e.stopPropagation()}
                     >
                       {resolveDocumentDisplayNumber({
-                        displayNumber: (invoice as any).displayNumber,
-                        numberCore: (invoice as any).numberCore,
+                        displayNumber: invoice.displayNumber,
+                        numberCore: invoice.numberCore,
                         legacyNumber: invoice.invoiceNumber,
                       }) || invoice.invoiceNumber}
                     </Link>

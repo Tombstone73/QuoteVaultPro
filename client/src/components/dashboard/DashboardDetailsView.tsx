@@ -6,13 +6,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ROUTES } from "@/config/routes";
-import { useOrders } from "@/hooks/useOrders";
+import { ordersListQueryKey, type OrdersQueryParams } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
 import { useFulfillmentQueueQuery } from "@/hooks/useFulfillment";
 import { DASHBOARD_PANELS, getPanelOpenTarget, type DashboardPanel } from "@/components/dashboard/dashboardPanels";
 import { buildReferrer } from "@/lib/nav/smartBack";
+import { apiFetch } from "@/lib/queryClient";
 import { formatOrderDate } from "@/lib/orderDate";
 import type { AccountsReceivableRow } from "@shared/accountsReceivableReport";
+import type { Order } from "@shared/schema";
+
+type DashboardOrder = Pick<Order, "id" | "orderNumber" | "status" | "canonicalState" | "dueDate" | "shippedAt" | "total"> & {
+  customer?: { companyName?: string | null } | null;
+  customerName?: string | null;
+};
+
+type DashboardOrdersResponse = DashboardOrder[] | { items: DashboardOrder[] };
 
 type QuoteRow = {
   id: string;
@@ -42,9 +51,9 @@ type LowInventoryResponse = {
 };
 type OverdueInvoicesResponse = { pageRows?: AccountsReceivableRow[]; totalCount?: number };
 
-function formatDate(value?: string | null) {
+function formatDate(value?: string | Date | null) {
   if (!value) return "—";
-  const date = new Date(value);
+  const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
@@ -93,11 +102,32 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
     : panel === "orders_due_tomorrow"
       ? "tomorrow"
       : undefined;
-  // Due panels use the same server-side tenant-calendar predicate as the
-  // dashboard counts. Other dashboard panels retain their existing list flow.
-  const ordersQuery = useOrders(dueFilter
+  // Keep the due panels on the paginated tenant-timezone query and other panels
+  // on the existing unpaged list endpoint.
+  const orderFilters: OrdersQueryParams | undefined = dueFilter
     ? { due: dueFilter, page: 1, pageSize: 200, includeThumbnails: false, sortBy: "dueDate", sortDir: "asc" }
-    : undefined);
+    : undefined;
+  const ordersQuery = useQuery<DashboardOrdersResponse>({
+    queryKey: ordersListQueryKey(orderFilters),
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (orderFilters?.due) params.append("due", orderFilters.due);
+      if (orderFilters?.page !== undefined) params.append("page", String(orderFilters.page));
+      if (orderFilters?.pageSize !== undefined) params.append("pageSize", String(orderFilters.pageSize));
+      if (orderFilters?.includeThumbnails !== undefined) params.append("includeThumbnails", orderFilters.includeThumbnails ? "true" : "false");
+      if (orderFilters?.sortBy) params.append("sortBy", orderFilters.sortBy);
+      if (orderFilters?.sortDir) params.append("sortDir", orderFilters.sortDir);
+
+      const query = params.toString();
+      const response = await apiFetch(`/api/orders${query ? `?${query}` : ""}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch orders");
+      const data: DashboardOrdersResponse = await response.json();
+      return data;
+    },
+    staleTime: 60_000,
+    refetchOnMount: "always",
+    placeholderData: (previous) => previous,
+  });
   const invoicesQuery = useInvoices();
   const overdueInvoicesQuery = useQuery<OverdueInvoicesResponse>({
     queryKey: ["dashboard", "invoices", "overdue"],
@@ -144,10 +174,8 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
   });
 
   const filteredOrders = useMemo(() => {
-    const paginated = ordersQuery.data && !Array.isArray(ordersQuery.data) && "items" in ordersQuery.data
-      ? ordersQuery.data
-      : null;
-    const list = paginated?.items ?? (Array.isArray(ordersQuery.data) ? ordersQuery.data : []);
+    const data = ordersQuery.data;
+    const list = data ? (Array.isArray(data) ? data : data.items) : [];
     if (dueFilter) return list;
     const now = new Date();
     const today = new Date(now);
@@ -155,7 +183,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    return list.filter((o: any) => {
+    return list.filter((o) => {
       const canonical = String(o?.canonicalState || "").toLowerCase();
       const status = String(o?.status || "").toLowerCase();
 
@@ -183,7 +211,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
     if (panel === "invoices_overdue") return overdueInvoicesQuery.data?.pageRows ?? [];
     const list = Array.isArray(invoicesQuery.data) ? invoicesQuery.data : [];
 
-    return list.filter((inv: any) => {
+    return list.filter((inv) => {
       const status = String(inv?.status || "").toLowerCase();
       switch (panel) {
         case "invoices_unpaid":
@@ -211,18 +239,18 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
 
   const errorMessage =
     panel === "quotes_pending"
-      ? (quotesQuery.error as Error | null)?.message
+      ? quotesQuery.error?.message
       : panel === "low_inventory_items"
-        ? (lowInventoryQuery.error as Error | null)?.message
+        ? lowInventoryQuery.error?.message
       : panel === "invoices_overdue"
-        ? (overdueInvoicesQuery.error as Error | null)?.message
+        ? overdueInvoicesQuery.error?.message
         : panel === "invoices_unpaid"
-          ? (invoicesQuery.error as Error | null)?.message
+          ? invoicesQuery.error?.message
         : panel === "ready_to_ship"
-          ? (fulfillmentQueueQuery.error as Error | null)?.message
+          ? fulfillmentQueueQuery.error?.message
         : panel === "my_work"
           ? null
-          : (ordersQuery.error as Error | null)?.message;
+          : ordersQuery.error?.message;
 
   if (panel === "my_work") {
     return (
@@ -391,13 +419,13 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
             <TableBody>
               {filteredInvoices.length === 0 ? (
                 <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No results.</TableCell></TableRow>
-              ) : filteredInvoices.map((inv: any) => (
+              ) : filteredInvoices.map((inv) => (
                 <TableRow key={inv.id} className="cursor-pointer" onClick={() => navigate(ROUTES.invoices.detail(inv.id), { state: { referrer: buildReferrer(location) } })}>
                   <TableCell className="font-medium">#{inv.invoiceNumber ?? "—"}</TableCell>
-                  <TableCell>{inv.invoiceStatus || inv.displayStatus || inv.status || "—"}</TableCell>
+                  <TableCell>{("invoiceStatus" in inv ? inv.invoiceStatus : inv.displayStatus || inv.status) || "—"}</TableCell>
                   <TableCell>{formatDate(inv.dueDate)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(inv.totalCents != null ? inv.totalCents / 100 : inv.displayTotal ?? inv.total)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(inv.remainingCents != null ? inv.remainingCents / 100 : inv.displayRemaining ?? inv.balanceDue ?? (Number(inv.total || 0) - Number(inv.amountPaid || 0)))}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(inv.totalCents / 100)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(inv.remainingCents / 100)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -431,7 +459,7 @@ export default function DashboardDetailsView({ panel }: { panel: DashboardPanel 
           <TableBody>
             {filteredOrders.length === 0 ? (
               <TableRow><TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No results.</TableCell></TableRow>
-            ) : filteredOrders.map((o: any) => (
+            ) : filteredOrders.map((o) => (
               <TableRow key={o.id} className="cursor-pointer" onClick={() => navigate(ROUTES.orders.detail(o.id), { state: { referrer: buildReferrer(location) } })}>
                 <TableCell className="font-medium">{o.orderNumber || "—"}</TableCell>
                 <TableCell>{o.status === "operationally_complete" ? "Operationally Complete" : o.status || "—"}</TableCell>

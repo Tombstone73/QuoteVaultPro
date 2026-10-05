@@ -30,6 +30,11 @@ describe("customer search ranking", () => {
     expect(getCustomerSearchRank(graphicSolutions, "graphic sol")).toBe(1);
   });
 
+  test("treats BMP and supplementary Unicode letters as word characters", () => {
+    expect(getCustomerSearchRank({ id: "greek", companyName: "Acme Ωmega Displays" }, "ωmega")).toBe(2);
+    expect(getCustomerSearchRank({ id: "deseret", companyName: "Acme 𐐀lpha Prints" }, "𐐨lpha")).toBe(2);
+  });
+
   test("preserves customer email and linked contact matches below direct company-name matches", () => {
     const contactMatch: CustomerSearchCandidate = {
       id: "contact-match",

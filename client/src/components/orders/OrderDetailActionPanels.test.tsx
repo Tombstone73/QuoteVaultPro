@@ -7,10 +7,8 @@ import {
   OrderDetailSecondaryActions,
 } from "@/components/orders/OrderDetailActionPanels";
 
-(globalThis as any).TextEncoder = TextEncoder;
-(globalThis as any).TextDecoder = TextDecoder;
-
-const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
+Object.assign(globalThis, { TextEncoder, TextDecoder });
+const { renderToStaticMarkup } = jest.requireActual<typeof import("react-dom/server")>("react-dom/server");
 
 jest.mock("@/hooks/useOrderStatusPills", () => ({
   useOrderStatusPills: () => ({ data: [], isLoading: false }),
@@ -48,6 +46,7 @@ describe("Order detail action layout", () => {
         onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onCancelOrder={noop}
+        onDuplicateOrder={noop}
         onMarkCompleted={noop}
       />,
     );
@@ -93,6 +92,7 @@ describe("Order detail action layout", () => {
         onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onCancelOrder={noop}
+        onDuplicateOrder={noop}
         onMarkCompleted={noop}
       />,
     );
@@ -125,6 +125,7 @@ describe("Order detail action layout", () => {
         onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onCancelOrder={noop}
+        onDuplicateOrder={noop}
         onMarkCompleted={noop}
       />,
     );
@@ -156,6 +157,7 @@ describe("Order detail action layout", () => {
         onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onCancelOrder={noop}
+        onDuplicateOrder={noop}
         onMarkCompleted={noop}
       />,
     );
@@ -202,6 +204,7 @@ describe("Order detail action layout", () => {
         onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onCancelOrder={noop}
+        onDuplicateOrder={noop}
         onMarkCompleted={noop}
       />,
     );

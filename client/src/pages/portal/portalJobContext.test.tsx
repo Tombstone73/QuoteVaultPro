@@ -6,11 +6,11 @@ import type { PortalOrderListDto, PortalQuoteListDto } from "@/hooks/usePortal";
 jest.mock("@/hooks/usePortalDownload", () => ({ usePortalDownload: jest.fn() }));
 
 Object.assign(globalThis, { TextDecoder, TextEncoder });
-const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
-const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
-const { OrderRow } = require("./my-orders") as typeof import("./my-orders");
-const { QuoteRow } = require("./my-quotes") as typeof import("./my-quotes");
-const { OrderItem } = require("./dashboard") as typeof import("./dashboard");
+const { renderToStaticMarkup } = jest.requireActual<typeof import("react-dom/server")>("react-dom/server");
+const { MemoryRouter } = jest.requireActual<typeof import("react-router-dom")>("react-router-dom");
+const { OrderRow } = jest.requireActual<typeof import("./my-orders")>("./my-orders");
+const { QuoteRow } = jest.requireActual<typeof import("./my-quotes")>("./my-quotes");
+const { OrderItem } = jest.requireActual<typeof import("./dashboard")>("./dashboard");
 
 const quote = (overrides: Partial<PortalQuoteListDto> = {}): PortalQuoteListDto => ({
   id: "quote-1",
@@ -24,6 +24,7 @@ const quote = (overrides: Partial<PortalQuoteListDto> = {}): PortalQuoteListDto 
   displayStatus: "Sent",
   total: 426.58,
   itemCount: 3,
+  customerNotes: null,
   customerVisibleActions: { canView: true, canApprove: true, canDecline: true, canRequestRevision: true, disabledReason: null },
   ...overrides,
 });

@@ -829,3 +829,17 @@ test("Customer selection exposes indeterminate state and restricts Merge to exac
   act(() => Simulate.change(rowCheckboxes[2], { target: { checked: true } } as any));
   expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Merge")).toBe(false);
 });
+
+test("commercial bulk selection does not expose Merge without a merge handler", () => {
+  mockCustomerListQuery();
+  act(() => {
+    root.render(<CustomerList onSelectCustomer={jest.fn()} onNewCustomer={jest.fn()} search="" viewMode="enhanced" canManageCommercialConfiguration />);
+  });
+
+  const rowCheckboxes = Array.from(container.querySelectorAll("input[aria-label^='Select Customer']")) as HTMLInputElement[];
+  act(() => rowCheckboxes[0].click());
+  act(() => rowCheckboxes[1].click());
+
+  expect(container.textContent).toContain("2 selected");
+  expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Merge")).toBe(false);
+});

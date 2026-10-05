@@ -57,21 +57,38 @@ export function getArReportPreferenceStorageKey(userId: string, organizationId: 
   return `titanos:accounts-receivable-report:columns:v1:${organizationId}:${userId}`;
 }
 
+type SavedArReportColumn = Partial<ArReportColumn> & { id: string };
+
+function isSavedArReportColumn(value: unknown): value is SavedArReportColumn {
+  return typeof value === "object"
+    && value !== null
+    && "id" in value
+    && typeof value.id === "string";
+}
+
 export function normalizeArReportColumns(value: unknown): ArReportColumn[] {
-  const saved = Array.isArray(value) ? value : [];
-  const savedById = new Map(saved.filter((column): column is Partial<ArReportColumn> & { id: string } => Boolean(column && typeof column === "object" && typeof (column as any).id === "string")).map((column) => [column.id, column]));
-  const orderedKnownIds = saved.map((column: any) => column?.id).filter((id: unknown): id is string => arReportDefaultColumns.some((column) => column.id === id));
-  const allIds = [...new Set([...orderedKnownIds, ...arReportDefaultColumns.map((column) => column.id)])];
-  return allIds.map((id) => {
-    const defaults = arReportDefaultColumns.find((column) => column.id === id)!;
+  const saved: unknown[] = Array.isArray(value) ? value : [];
+  const savedById = new Map<string, SavedArReportColumn>();
+  saved.forEach((column) => {
+    if (isSavedArReportColumn(column)) savedById.set(column.id, column);
+  });
+  const orderedKnownIds = saved
+    .filter(isSavedArReportColumn)
+    .map((column) => column.id)
+    .filter((id) => arReportDefaultColumns.some((column) => column.id === id));
+  const allIds = Array.from(new Set([...orderedKnownIds, ...arReportDefaultColumns.map((column) => column.id)]));
+  return allIds.reduce<ArReportColumn[]>((columns, id) => {
+    const defaults = arReportDefaultColumns.find((column) => column.id === id);
+    if (!defaults) return columns;
     const savedColumn = savedById.get(id);
     const width = Number(savedColumn?.width);
-    return {
+    columns.push({
       ...defaults,
       enabled: typeof savedColumn?.enabled === "boolean" ? savedColumn.enabled : defaults.enabled,
       width: Number.isFinite(width) ? Math.min(defaults.maxWidth, Math.max(defaults.minWidth, width)) : defaults.width,
-    };
-  });
+    });
+    return columns;
+  }, []);
 }
 
 export function defaultArReportTablePreferences(): ArReportTablePreferences {

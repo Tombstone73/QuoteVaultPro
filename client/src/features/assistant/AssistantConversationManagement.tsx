@@ -230,7 +230,7 @@ export function AssistantConversationSidebar({
 
   React.useEffect(() => {
     const activeIds = new Set(conversations.map((conversation) => conversation.id));
-    setSelectedConversationIds((current) => new Set([...current].filter((conversationId) => activeIds.has(conversationId))));
+    setSelectedConversationIds((current) => new Set(Array.from(current).filter((conversationId) => activeIds.has(conversationId))));
   }, [conversations]);
 
   const toggleCollapsed = () => {
@@ -266,7 +266,7 @@ export function AssistantConversationSidebar({
   };
 
   const archiveSelected = async () => {
-    const conversationIds = [...selectedConversationIds];
+    const conversationIds = Array.from(selectedConversationIds);
     if (!conversationIds.length || bulkArchiving) return;
     setBulkError(null);
     setBulkArchiving(true);

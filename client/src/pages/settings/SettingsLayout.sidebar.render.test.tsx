@@ -6,8 +6,8 @@ import { SettingsLayout } from "./SettingsLayout";
 let mockLocationPath = "/settings/company";
 
 jest.mock("react-router-dom", () => ({
-  Link: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a>,
-  NavLink: ({ to, children, ...props }: any) => <a href={to} {...props} onClick={(event) => { event.preventDefault(); mockLocationPath = to; }}>{children}</a>,
+  Link: ({ to, children, ...props }: Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & { to: string; children?: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
+  NavLink: ({ to, children, ...props }: Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & { to: string; children?: React.ReactNode }) => <a href={to} {...props} onClick={(event) => { event.preventDefault(); mockLocationPath = to; }}>{children}</a>,
   Outlet: () => <div>{
     mockLocationPath === "/settings/customer-portal" ? "Customer Portal route content"
       : mockLocationPath === "/settings/users" ? "Users route content"
@@ -27,7 +27,7 @@ jest.mock("@/lib/api/me", () => ({ fetchMyOrgs: jest.fn() }));
 jest.mock("@/lib/apiConfig", () => ({ getApiUrl: (path: string) => path }));
 
 jest.mock("@tanstack/react-query", () => ({
-  ...jest.requireActual("@tanstack/react-query"),
+  ...jest.requireActual<typeof import("@tanstack/react-query")>("@tanstack/react-query"),
   useQuery: () => ({
     data: { data: { orgs: [{ id: "org-1", role: "owner" }], lastActiveOrgId: "org-1" } },
     isLoading: false,
@@ -35,8 +35,8 @@ jest.mock("@tanstack/react-query", () => ({
 }));
 
 jest.mock("@/components/titan", () => ({
-  TitanCard: ({ children, className, ...props }: any) => <section className={className} {...props}>{children}</section>,
-  PageHeader: ({ title, subtitle }: any) => <header><h1>{title}</h1><p>{subtitle}</p></header>,
+  TitanCard: ({ children, className, ...props }: React.PropsWithChildren<React.HTMLAttributes<HTMLElement>>) => <section className={className} {...props}>{children}</section>,
+  PageHeader: ({ title, subtitle }: { title: string; subtitle: string }) => <header><h1>{title}</h1><p>{subtitle}</p></header>,
 }));
 
 jest.mock("@/features/materials/MaterialsSettingsPanel", () => ({ MaterialsSettingsPanel: () => null }));
@@ -77,7 +77,7 @@ function navigateByLabel(label: string, expectedContent: string) {
 }
 
 beforeEach(() => {
-  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   window.localStorage.clear();
 });
 

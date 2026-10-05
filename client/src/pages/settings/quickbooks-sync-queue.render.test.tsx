@@ -1,11 +1,11 @@
-import React, { act } from 'react';
+import React, { act, type AnchorHTMLAttributes, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import QuickBooksSyncQueuePage from './quickbooks-sync-queue';
 
 jest.mock('react-router-dom', () => ({
-  Link: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a>,
+  Link: ({ to, children, ...props }: Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'> & { to: string; children?: ReactNode }) => <a href={to} {...props}>{children}</a>,
 }));
 
 jest.mock('@/hooks/useAuth', () => ({
@@ -21,6 +21,8 @@ jest.mock('@/hooks/use-toast', () => ({
 }));
 
 type QueueState = 'unsynced' | 'queued' | 'failed' | 'synced';
+type QueueFetchResponse = { ok: boolean; json: () => Promise<unknown> };
+type QueueFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<QueueFetchResponse>;
 
 const fixture = [
   { id: 'synced-invoice', resourceType: 'invoice', displayNumber: 'INV-100', queueState: 'synced', eligibility: 'blocked' },
@@ -45,9 +47,15 @@ const fixture = [
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
-let fetchMock: jest.Mock;
+let fetchMock: jest.MockedFunction<QueueFetch>;
+const originalFetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
 
-const response = (body: unknown) => ({ ok: true, json: async () => body }) as Response;
+const response = (body: unknown): QueueFetchResponse => ({ ok: true, json: async () => body });
+
+function queueView(value: string): 'all' | QueueState {
+  if (value === 'unsynced' || value === 'queued' || value === 'failed' || value === 'synced') return value;
+  return 'all';
+}
 
 async function settle() {
   await act(async () => {
@@ -76,16 +84,16 @@ async function chooseTab(label: string, expectedRecord: string) {
 }
 
 beforeEach(async () => {
-  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   window.localStorage.clear();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  fetchMock = jest.fn(async (input: RequestInfo | URL) => {
+  fetchMock = jest.fn<QueueFetch>(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost');
     if (url.pathname.endsWith('/queue/items')) {
-      const view = (url.searchParams.get('view') || 'all') as 'all' | QueueState;
+      const view = queueView(url.searchParams.get('view') || 'all');
       const items = view === 'all' ? fixture : fixture.filter((item) => item.queueState === view);
       return response({ success: true, data: { items, total: items.length, totalCount: items.length, totalPages: items.length ? 1 : 0, page: 1, pageSize: 25 } });
     }
@@ -97,7 +105,7 @@ beforeEach(async () => {
     }
     throw new Error(`Unexpected request: ${url.pathname}`);
   });
-  (globalThis as any).fetch = fetchMock;
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, writable: true, value: fetchMock });
 
   await act(async () => {
     root.render(<QueryClientProvider client={queryClient}><QuickBooksSyncQueuePage /></QueryClientProvider>);
@@ -109,7 +117,8 @@ afterEach(() => {
   act(() => root.unmount());
   queryClient.clear();
   container.remove();
-  delete (globalThis as any).fetch;
+  if (originalFetchDescriptor) Object.defineProperty(globalThis, 'fetch', originalFetchDescriptor);
+  else Reflect.deleteProperty(globalThis, 'fetch');
   jest.clearAllMocks();
 });
 

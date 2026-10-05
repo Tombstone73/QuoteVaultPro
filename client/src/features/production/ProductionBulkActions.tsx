@@ -107,7 +107,7 @@ export function ProductionBulkActions({
   const toggleAllVisible = (checked: boolean) => {
     onSelectedJobIdsChange(new Set(
       checked
-        ? [...selectedJobIds, ...visibleIds]
+        ? Array.from(selectedJobIds).concat(visibleIds)
         : Array.from(selectedJobIds).filter((id) => !visibleIds.includes(id)),
     ));
   };

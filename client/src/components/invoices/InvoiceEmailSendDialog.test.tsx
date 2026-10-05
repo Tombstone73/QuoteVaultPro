@@ -1,12 +1,41 @@
-import React, { act } from "react";
+import React, { act, type InputHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
-const mockUseInvoiceEmailRecipients = jest.fn();
-const mockUseInvoiceEmailDraft = jest.fn();
-const mockUseSendInvoice = jest.fn();
-const mockToast = jest.fn();
-let selectRecipient = (_email: string) => undefined;
+type Recipient = { name: string; email: string; source: "billing_contact" };
+type RecipientsQuery = {
+  data: { recipients: Recipient[]; defaultRecipient: Recipient | null } | undefined;
+  isLoading: boolean;
+  isError: boolean;
+};
+type DraftQuery = {
+  data: { subject: string; message: string } | undefined;
+  isFetching: boolean;
+  isError: boolean;
+  refetch: () => Promise<unknown>;
+};
+type SendInvoicePayload = {
+  id: string;
+  recipientEmails?: string[];
+  allowUnapproved?: boolean;
+  subject?: string;
+  message?: string;
+  idempotencyKey?: string;
+};
+type SendInvoiceMutation = {
+  mutateAsync: (payload: SendInvoicePayload) => Promise<unknown>;
+  isPending: boolean;
+};
+type CheckboxMockProps = Omit<InputHTMLAttributes<HTMLInputElement>, "checked" | "onChange"> & {
+  checked?: boolean;
+  onCheckedChange: (checked: boolean) => void;
+};
+
+const mockUseInvoiceEmailRecipients = jest.fn<(_invoiceId?: string, _enabled?: boolean) => RecipientsQuery>();
+const mockUseInvoiceEmailDraft = jest.fn<(_invoiceId?: string, _enabled?: boolean) => DraftQuery>();
+const mockUseSendInvoice = jest.fn<() => SendInvoiceMutation>();
+const mockToast = jest.fn<(options: { title: string; description?: string; variant?: string }) => void>();
+let selectRecipient: (email: string) => void = () => undefined;
 
 jest.mock("@/hooks/useInvoices", () => ({
   useInvoiceEmailRecipients: mockUseInvoiceEmailRecipients,
@@ -15,33 +44,32 @@ jest.mock("@/hooks/useInvoices", () => ({
 }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: mockToast }) }));
 jest.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ children }: any) => <div>{children}</div>,
-  DialogClose: ({ children }: any) => <>{children}</>,
-  DialogContent: ({ children }: any) => <section>{children}</section>,
-  DialogFooter: ({ children }: any) => <footer>{children}</footer>,
-  DialogHeader: ({ children }: any) => <header>{children}</header>,
-  DialogTitle: ({ children }: any) => <h2>{children}</h2>,
-  DialogTrigger: ({ children }: any) => <>{children}</>,
+  Dialog: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  DialogClose: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  DialogContent: ({ children }: { children?: ReactNode }) => <section>{children}</section>,
+  DialogFooter: ({ children }: { children?: ReactNode }) => <footer>{children}</footer>,
+  DialogHeader: ({ children }: { children?: ReactNode }) => <header>{children}</header>,
+  DialogTitle: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
+  DialogTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 jest.mock("@/components/ui/select", () => ({
-  Select: ({ children, onValueChange }: any) => {
+  Select: ({ children, onValueChange }: { children?: ReactNode; onValueChange: (value: string) => void }) => {
     selectRecipient = onValueChange;
     return <div data-testid="customer-email-select">{children}</div>;
   },
-  SelectContent: ({ children }: any) => <div>{children}</div>,
-  SelectItem: ({ children }: any) => <div>{children}</div>,
-  SelectTrigger: ({ children, id }: any) => <div id={id}>{children}</div>,
-  SelectValue: ({ placeholder }: any) => <span>{placeholder}</span>,
+  SelectContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SelectItem: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SelectTrigger: ({ children, id }: { children?: ReactNode; id?: string }) => <div id={id}>{children}</div>,
+  SelectValue: ({ placeholder }: { placeholder?: string }) => <span>{placeholder}</span>,
 }));
 jest.mock("@/components/ui/checkbox", () => ({
-  Checkbox: ({ checked, onCheckedChange, ...props }: any) => (
+  Checkbox: ({ checked, onCheckedChange, ...props }: CheckboxMockProps) => (
     <input type="checkbox" checked={checked} onChange={(event) => onCheckedChange(event.target.checked)} {...props} />
   ),
 }));
 
 import { InvoiceEmailSendDialog } from "./InvoiceEmailSendDialog";
 
-type Recipient = { name: string; email: string; source: "billing_contact" };
 const recipients: Recipient[] = [
   { name: "Jessica Selzer", email: "jess@brainstormprint.com", source: "billing_contact" },
   { name: "John Smith", email: "john@brainstormprint.com", source: "billing_contact" },
@@ -50,7 +78,7 @@ const recipients: Recipient[] = [
 
 let container: HTMLDivElement;
 let root: Root;
-let sendMutation: ReturnType<typeof jest.fn>;
+let sendMutation: jest.MockedFunction<(payload: SendInvoicePayload) => Promise<unknown>>;
 
 function configureRecipients(items: Recipient[], options: { loading?: boolean; error?: boolean } = {}) {
   mockUseInvoiceEmailRecipients.mockReturnValue({
@@ -69,7 +97,8 @@ async function renderDialog() {
 }
 
 async function changeManualEmail(value: string) {
-  const input = container.querySelector("#invoice-other-email") as HTMLInputElement;
+  const input = container.querySelector<HTMLInputElement>("#invoice-other-email");
+  if (!input) throw new Error("Manual recipient input was not rendered");
   await act(async () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     setter?.call(input, value);
@@ -79,7 +108,8 @@ async function changeManualEmail(value: string) {
 }
 
 async function changeComposeField(id: string, value: string) {
-  const input = container.querySelector(`#${id}`) as HTMLInputElement | HTMLTextAreaElement;
+  const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${id}`);
+  if (!input) throw new Error(`Compose field ${id} was not rendered`);
   await act(async () => {
     const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
@@ -89,27 +119,40 @@ async function changeComposeField(id: string, value: string) {
 }
 
 async function toggleConfiguredRecipient(email: string) {
-  const checkbox = container.querySelector(`[aria-label="Send invoice to ${email}"]`) as HTMLInputElement;
+  const checkbox = container.querySelector<HTMLInputElement>(`[aria-label="Send invoice to ${email}"]`);
+  if (!checkbox) throw new Error(`Recipient checkbox for ${email} was not rendered`);
   await act(async () => {
     checkbox.click();
     await Promise.resolve();
   });
 }
 
+function sendButton(): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Send");
+  if (!button) throw new Error("Send button was not rendered");
+  return button;
+}
+
+function buttonByText(text: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === text);
+  if (!button) throw new Error(`Button ${text} was not rendered`);
+  return button;
+}
+
 beforeEach(() => {
-  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  sendMutation = jest.fn().mockResolvedValue({});
+  sendMutation = jest.fn<(payload: SendInvoicePayload) => Promise<unknown>>().mockResolvedValue({});
   mockUseSendInvoice.mockReturnValue({ mutateAsync: sendMutation, isPending: false });
   mockUseInvoiceEmailRecipients.mockReset();
   mockUseInvoiceEmailDraft.mockReset();
   mockUseInvoiceEmailDraft.mockReturnValue({
     data: { subject: "Invoice #20469 from Titan Graphics", message: "Dear Brainstorm Print,\n\nPlease find attached Invoice #20469." },
-    isLoading: false,
+    isFetching: false,
     isError: false,
-    refetch: jest.fn(),
+    refetch: jest.fn<() => Promise<unknown>>().mockResolvedValue(undefined),
   });
   mockToast.mockReset();
   selectRecipient = () => undefined;
@@ -126,11 +169,11 @@ describe("InvoiceEmailSendDialog recipients", () => {
     configureRecipients(recipients.slice(0, 1));
     await renderDialog();
 
-    expect((container.querySelector("#invoice-email-subject") as HTMLInputElement).value).toBe("Invoice #20469 from Titan Graphics");
-    expect((container.querySelector("#invoice-email-message") as HTMLTextAreaElement).value).toContain("Dear Brainstorm Print");
+    expect(container.querySelector<HTMLInputElement>("#invoice-email-subject")?.value).toBe("Invoice #20469 from Titan Graphics");
+    expect(container.querySelector<HTMLTextAreaElement>("#invoice-email-message")?.value).toContain("Dear Brainstorm Print");
     await changeComposeField("invoice-email-subject", "Paid Invoice #20469 for your records");
     await changeComposeField("invoice-email-message", "Thank you for your payment.\nThis copy is for your records.");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
 
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({
       id: "invoice-1",
@@ -165,10 +208,10 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await renderDialog();
     const targets = container.querySelector('[data-testid="invoice-send-targets"]')?.textContent || "";
     expect(targets).toContain("2 configured invoice recipients selected");
-    expect((container.querySelector('[aria-label="Send invoice to jess@brainstormprint.com"]') as HTMLInputElement).checked).toBe(true);
-    expect((container.querySelector('[aria-label="Send invoice to john@brainstormprint.com"]') as HTMLInputElement).checked).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Send invoice to jess@brainstormprint.com"]')?.checked).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Send invoice to john@brainstormprint.com"]')?.checked).toBe(true);
 
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ id: "invoice-1", recipientEmails: ["jess@brainstormprint.com", "john@brainstormprint.com"] }));
   });
 
@@ -193,7 +236,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await renderDialog();
     await toggleConfiguredRecipient("john@brainstormprint.com");
 
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["jess@brainstormprint.com"] }));
   });
 
@@ -203,7 +246,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await toggleConfiguredRecipient("jess@brainstormprint.com");
     await toggleConfiguredRecipient("john@brainstormprint.com");
 
-    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    const send = sendButton();
     expect(send.disabled).toBe(true);
     send.click();
     expect(sendMutation).not.toHaveBeenCalled();
@@ -216,7 +259,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await toggleConfiguredRecipient("john@brainstormprint.com");
     await changeManualEmail("one-time@example.com");
 
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["one-time@example.com"] }));
   });
 
@@ -225,7 +268,7 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await renderDialog();
     await changeManualEmail("  individual@example.com  ");
 
-    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    const send = sendButton();
     expect(send.disabled).toBe(false);
     await act(async () => { send.click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["individual@example.com"] }));
@@ -235,14 +278,14 @@ describe("InvoiceEmailSendDialog recipients", () => {
     configureRecipients([], { loading: true });
     await renderDialog();
     await changeManualEmail("individual@example.com");
-    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    const send = sendButton();
     expect(send.disabled).toBe(false);
   });
 
   test("rejects an invalid one-time address and no recipient at all", async () => {
     configureRecipients([]);
     await renderDialog();
-    const send = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement;
+    const send = sendButton();
     expect(send.disabled).toBe(true);
     await changeManualEmail("invalid-address");
     expect(send.disabled).toBe(true);
@@ -255,14 +298,14 @@ describe("InvoiceEmailSendDialog recipients", () => {
     await renderDialog();
     await changeManualEmail("JESS@brainstormprint.com");
 
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ recipientEmails: ["jess@brainstormprint.com", "john@brainstormprint.com"] }));
   });
 
   test("keeps the all-configured recipient send payload unchanged", async () => {
     configureRecipients(recipients.slice(0, 2));
     await renderDialog();
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenCalledWith(expect.objectContaining({ id: "invoice-1", allowUnapproved: false }));
   });
 
@@ -283,20 +326,20 @@ describe("InvoiceEmailSendDialog recipients", () => {
     sendMutation.mockRejectedValueOnce(approvalError).mockResolvedValueOnce({});
     await renderDialog();
     await changeComposeField("invoice-email-message", "Custom approval-safe note");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
     expect(container.textContent).toContain("Send Unapproved Invoice?");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send Anyway") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { buttonByText("Send Anyway").click(); await Promise.resolve(); });
     expect(sendMutation).toHaveBeenLastCalledWith(expect.objectContaining({ allowUnapproved: true, message: "Custom approval-safe note" }));
     expect(sendMutation.mock.calls[1][0].idempotencyKey).toBe(sendMutation.mock.calls[0][0].idempotencyKey);
   });
 
   test("shows a retryable compose error instead of a blank email", async () => {
     configureRecipients(recipients.slice(0, 1));
-    const refetch = jest.fn();
-    mockUseInvoiceEmailDraft.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch });
+    const refetch = jest.fn<() => Promise<unknown>>().mockResolvedValue(undefined);
+    mockUseInvoiceEmailDraft.mockReturnValue({ data: undefined, isFetching: false, isError: true, refetch });
     await renderDialog();
     expect(container.textContent).toContain("Unable to prepare invoice email");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { buttonByText("Retry").click(); await Promise.resolve(); });
     expect(refetch).toHaveBeenCalled();
   });
 
@@ -305,9 +348,9 @@ describe("InvoiceEmailSendDialog recipients", () => {
     sendMutation.mockRejectedValueOnce(new Error("Provider unavailable"));
     await renderDialog();
     await changeComposeField("invoice-email-message", "Please keep this note for the retry.");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Send") as HTMLButtonElement).click(); await Promise.resolve(); });
+    await act(async () => { sendButton().click(); await Promise.resolve(); });
 
     expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Invoice send failed" }));
-    expect((container.querySelector("#invoice-email-message") as HTMLTextAreaElement).value).toBe("Please keep this note for the retry.");
+    expect(container.querySelector<HTMLTextAreaElement>("#invoice-email-message")?.value).toBe("Please keep this note for the retry.");
   });
 });

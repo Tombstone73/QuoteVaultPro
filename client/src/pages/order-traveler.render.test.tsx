@@ -1,18 +1,21 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
-import { useQuery } from "@tanstack/react-query";
-
 let mockSearchParams = new URLSearchParams();
-const mockUseStationPrinter = jest.fn();
-const mockApiFetch = jest.fn();
+type TravelerTestPayload = OrderTravelerSource & { internalNotes?: string };
+type TravelerQueryOptions = { queryKey: readonly unknown[]; queryFn: () => Promise<OrderTravelerSource> };
+type TravelerQueryResult = { data: TravelerTestPayload | undefined; isLoading: boolean; error: Error | null };
+type TravelerFetchResponse = { ok: boolean; json: () => Promise<unknown> };
+const mockUseQuery = jest.fn<(options: TravelerQueryOptions) => TravelerQueryResult>();
+const mockUseStationPrinter = jest.fn<() => { profiles: never[]; selectedProfile: null }>();
+const mockApiFetch = jest.fn<(url: string) => Promise<TravelerFetchResponse>>();
 
 jest.mock("react-router-dom", () => ({
   useParams: () => ({ orderId: "order-xyz" }),
   useSearchParams: () => [mockSearchParams],
 }));
 
-jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn() }));
+jest.mock("@tanstack/react-query", () => ({ useQuery: mockUseQuery }));
 jest.mock("qrcode", () => ({ __esModule: true, default: { toDataURL: jest.fn(async () => "data:image/png;base64,qr") } }));
 jest.mock("@/hooks/useStationPrinter", () => ({ useStationPrinter: mockUseStationPrinter }));
 jest.mock("@/hooks/usePrinterProfiles", () => ({ markPrinterProfileUsed: jest.fn() }));
@@ -22,11 +25,12 @@ jest.mock("@/components/production/PrinterPicker", () => ({ PrinterPicker: () =>
 jest.mock("@/lib/queryClient", () => ({ apiFetch: mockApiFetch }));
 
 import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
+import type { OrderTravelerSource } from "@shared/productionTicket";
 import OrderTravelerPage from "./order-traveler";
 import { travelerBrowserPrintUrl } from "@/components/production/TravelerPrintDialog";
 
-const useQueryMock = jest.mocked(useQuery);
-const travelerSource = {
+const useQueryMock = mockUseQuery;
+const travelerSource: OrderTravelerSource = {
   orderId: "order-xyz",
   orderNumber: "SO-1042",
   poNumber: "PO-7788",
@@ -43,7 +47,7 @@ let root: Root;
 
 async function renderTraveler(params = new URLSearchParams()) {
   mockSearchParams = params;
-  useQueryMock.mockReturnValue({ data: travelerSource, isLoading: false, error: null } as any);
+  useQueryMock.mockReturnValue({ data: travelerSource, isLoading: false, error: null });
   await act(async () => {
     root.render(<OrderTravelerPage />);
     await Promise.resolve();
@@ -51,7 +55,7 @@ async function renderTraveler(params = new URLSearchParams()) {
 }
 
 beforeEach(() => {
-  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -71,7 +75,7 @@ describe("OrderTravelerPage print-only notes", () => {
       data: { ...travelerSource, internalNotes: "CUSTOMER MUST NEVER SEE THIS" },
       isLoading: false,
       error: null,
-    } as any);
+    });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.textContent).not.toContain("CUSTOMER MUST NEVER SEE THIS");
     expect(container.textContent).toContain("Grommets");
@@ -105,7 +109,7 @@ describe("OrderTravelerPage print-only notes", () => {
 
     const noteElement = container.querySelector('[data-testid="traveler-print-note"]');
     expect(noteElement?.textContent).toContain(note);
-    expect(Array.from(noteElement?.querySelectorAll("div") ?? []).some((element) => (element as HTMLElement).style.whiteSpace === "pre-wrap")).toBe(true);
+    expect(Array.from(noteElement?.querySelectorAll("div") ?? []).some((element) => element instanceof HTMLElement && element.style.whiteSpace === "pre-wrap")).toBe(true);
     expect(container.querySelector('[data-traveler-ready="true"]')).toBeTruthy();
     expect(container.textContent).toContain("Scan to open order in Printers Hero");
     expect(container.textContent).not.toContain("Print Traveler");
@@ -116,14 +120,15 @@ describe("OrderTravelerPage print-only notes", () => {
     const params = new URLSearchParams({ directPrintJobId: "job-1" });
     await renderTraveler(params);
 
-    const queryOptions = useQueryMock.mock.calls[0][0] as any;
+    const queryOptions = useQueryMock.mock.calls[0]?.[0];
+    if (!queryOptions) throw new Error("Traveler query was not registered");
     mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({ data: travelerSource }) });
     await expect(queryOptions.queryFn()).resolves.toEqual(travelerSource);
     expect(mockApiFetch).toHaveBeenCalledWith("/api/local-bridge/direct-print/jobs/job-1/traveler");
     expect(queryOptions.queryKey).toEqual(["/api/orders", "order-xyz", "traveler", "job-1"]);
     expect(mockUseStationPrinter).not.toHaveBeenCalled();
 
-    useQueryMock.mockReturnValue({ data: undefined, isLoading: true, error: null } as any);
+    useQueryMock.mockReturnValue({ data: undefined, isLoading: true, error: null });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelector('[data-traveler-ready="true"]')).toBeNull();
   });
@@ -134,17 +139,22 @@ describe("OrderTravelerPage print-only notes", () => {
     ["50", "88.1mm"],
   ])("adds %s mm job feed to the standard direct-print spacer", async (feedMm, expectedSpacer) => {
     await renderTraveler(new URLSearchParams({ directPrintJobId: "job-feed", feedMm }));
-    const directArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
-    const directSpacer = directArea.querySelector('[data-traveler-feed-spacer="true"]') as HTMLElement;
+    const directArea = container.querySelector<HTMLElement>('[data-traveler-ready="true"]');
+    if (!directArea) throw new Error("Direct-print traveler was not rendered");
+    const directSpacer = directArea.querySelector<HTMLElement>('[data-traveler-feed-spacer="true"]');
+    if (!directSpacer) throw new Error("Direct-print feed spacer was not rendered");
     expect(directArea.style.getPropertyValue("--thermal-feed-spacer")).toBe(expectedSpacer);
     expect(directSpacer.dataset.effectiveFeedMm).toBe(expectedSpacer.replace("mm", ""));
   });
 
   test("renders a dark feed sentinel inside the direct-print spacer without extending it", async () => {
     await renderTraveler(new URLSearchParams({ directPrintJobId: "job-feed", feedMm: "20" }));
-    const directArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
-    const directSpacer = directArea.querySelector('[data-traveler-feed-spacer="true"]') as HTMLElement;
-    const sentinel = directSpacer.querySelector('[data-traveler-feed-sentinel="true"]') as HTMLElement;
+    const directArea = container.querySelector<HTMLElement>('[data-traveler-ready="true"]');
+    if (!directArea) throw new Error("Direct-print traveler was not rendered");
+    const directSpacer = directArea.querySelector<HTMLElement>('[data-traveler-feed-spacer="true"]');
+    if (!directSpacer) throw new Error("Direct-print feed spacer was not rendered");
+    const sentinel = directSpacer.querySelector<HTMLElement>('[data-traveler-feed-sentinel="true"]');
+    if (!sentinel) throw new Error("Direct-print feed sentinel was not rendered");
 
     expect(sentinel).toBeTruthy();
     expect(directSpacer.contains(sentinel)).toBe(true);
@@ -156,7 +166,8 @@ describe("OrderTravelerPage print-only notes", () => {
 
   test("keeps browser-print Travelers free of the direct-print endpoint sentinel", async () => {
     await renderTraveler();
-    const browserArea = container.querySelector('[data-traveler-ready="true"]') as HTMLElement;
+    const browserArea = container.querySelector<HTMLElement>('[data-traveler-ready="true"]');
+    if (!browserArea) throw new Error("Browser-print traveler was not rendered");
     expect(browserArea.style.getPropertyValue("--thermal-feed-spacer")).toBe("1.5in");
     expect(browserArea.querySelector('[data-traveler-feed-sentinel="true"]')).toBeNull();
   });
@@ -169,7 +180,7 @@ describe("OrderTravelerPage print-only notes", () => {
         pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 8, lineQuantities: [{ orderLineItemId: "line-1", quantity: 250 }] },
         lineItems: [{ ...travelerSource.lineItems[0], orderLineItemId: "line-1", quantity: 250 }],
       }, isLoading: false, error: null,
-    } as any);
+    });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(8);
     expect(container.textContent).toContain("BOX 1 of 8");
@@ -180,7 +191,7 @@ describe("OrderTravelerPage print-only notes", () => {
   });
 
   test("keeps a feed sentinel on every direct-print pickup tag", async () => {
-    useQueryMock.mockReturnValue({ data: { ...travelerSource, pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 2, lineQuantities: [{ orderLineItemId: "line-1", quantity: 250 }] }, lineItems: [{ ...travelerSource.lineItems[0], quantity: 250 }] }, isLoading: false, error: null } as any);
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 2, lineQuantities: [{ orderLineItemId: "line-1", quantity: 250 }] }, lineItems: [{ ...travelerSource.lineItems[0], quantity: 250 }] }, isLoading: false, error: null });
     mockSearchParams = new URLSearchParams({ directPrintJobId: "pickup-job", feedMm: "20" });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-feed-sentinel="true"]')).toHaveLength(2);
@@ -189,12 +200,13 @@ describe("OrderTravelerPage print-only notes", () => {
 
 
 describe("Pickup Traveler planned progress", () => {
-  test.each([
-    ["full", 250, 0, 250, 250, 0],
-    ["first", 500, 0, 250, 250, 250],
-    ["second", 500, 250, 150, 400, 100],
-    ["final", 500, 400, 100, 500, 0],
-  ])("renders %s pickup with truthful labels and intact QR", async (_, ordered, previous, current, after, remaining) => {
+  const progressCases = [
+    { label: "full", ordered: 250, previous: 0, current: 250, after: 250, remaining: 0 },
+    { label: "first", ordered: 500, previous: 0, current: 250, after: 250, remaining: 250 },
+    { label: "second", ordered: 500, previous: 250, current: 150, after: 400, remaining: 100 },
+    { label: "final", ordered: 500, previous: 400, current: 100, after: 500, remaining: 0 },
+  ];
+  test.each(progressCases)("renders $label pickup with truthful labels and intact QR", async ({ ordered, previous, current, after, remaining }) => {
     const lineQuantities = [{ orderLineItemId: "line-1", quantity: current }];
     const snapshot = buildPickupTravelerProgressSnapshot([{ id: "line-1", production: {
       orderedQuantity: ordered, pickedUpQuantity: previous, remainingQuantity: ordered - previous,
@@ -202,7 +214,7 @@ describe("Pickup Traveler planned progress", () => {
     useQueryMock.mockReturnValue({ data: { ...travelerSource,
       pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 3, lineQuantities, progressSnapshot: snapshot },
       lineItems: [{ ...travelerSource.lineItems[0], quantity: current, pickupProgress: snapshot.lines[0] }],
-    }, isLoading: false, error: null } as any);
+    }, isLoading: false, error: null });
     mockSearchParams = new URLSearchParams({ directPrintJobId: "prepared-pickup" });
     await act(async () => root.render(<OrderTravelerPage />));
     const sections = container.querySelectorAll('[data-testid="pickup-quantity-progress"]');
@@ -230,17 +242,19 @@ describe("Pickup Traveler planned progress", () => {
     ];
     const lineQuantities = [{ orderLineItemId: "signs", quantity: 250 }, { orderLineItemId: "stakes", quantity: 50 }];
     const snapshot = buildPickupTravelerProgressSnapshot(lines, lineQuantities, "2026-09-25T12:00:00Z");
-    const data = { ...travelerSource,
+    const data: OrderTravelerSource = { ...travelerSource,
       pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 1, lineQuantities, progressSnapshot: snapshot },
       lineItems: snapshot.lines.map(pickupProgress => ({ ...travelerSource.lineItems[0], pickupProgress })),
     };
-    useQueryMock.mockReturnValue({ data, isLoading: false, error: null } as any);
+    const pickupContext = data.pickupPrintContext;
+    if (!pickupContext) throw new Error("Pickup test context was not created");
+    useQueryMock.mockReturnValue({ data, isLoading: false, error: null });
     await act(async () => root.render(<OrderTravelerPage />));
     const sections = container.querySelectorAll('[data-testid="pickup-quantity-progress"]');
     expect(sections[0].textContent).toContain("After pickup: 400 / 500Remaining after pickup: 100");
     expect(sections[1].textContent).toContain("After pickup: 50 / 50Remaining after pickup: 0");
-    useQueryMock.mockReturnValue({ data: { ...data, pickupPrintContext: { ...data.pickupPrintContext, progressSnapshot: undefined },
-      lineItems: [{ ...travelerSource.lineItems[0], quantity: 250 }] }, isLoading: false, error: null } as any);
+    useQueryMock.mockReturnValue({ data: { ...data, pickupPrintContext: { ...pickupContext, progressSnapshot: undefined },
+      lineItems: [{ ...travelerSource.lineItems[0], quantity: 250 }] }, isLoading: false, error: null });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.textContent).toContain("Progress unavailable for this older Traveler.");
     expect(container.textContent).not.toContain("After pickup:");
@@ -248,19 +262,24 @@ describe("Pickup Traveler planned progress", () => {
 });
 
 describe("Pickup Traveler optional boxes and reversal status", () => {
-  test.each([
-    [null, undefined, ""],
-    [{ current: 1, total: 1 }, undefined, "BOX 1 of 1"],
-    [{ current: 2, total: 5 }, "COMPLETED", "BOX 2 of 5"],
-    [null, "REVERSED", "REVERSED"],
-    [{ current: 2, total: 3 }, "PARTIALLY_REVERSED", "PARTIALLY REVERSED"],
-  ])("renders saved label %j and status %s", async (box, pickupStatus, expected) => {
+  const savedBoxCases: Array<{
+    box: { current: number; total: number } | null;
+    pickupStatus: OrderTravelerSource["pickupStatus"];
+    expected: string;
+  }> = [
+    { box: null, pickupStatus: undefined, expected: "" },
+    { box: { current: 1, total: 1 }, pickupStatus: undefined, expected: "BOX 1 of 1" },
+    { box: { current: 2, total: 5 }, pickupStatus: "COMPLETED", expected: "BOX 2 of 5" },
+    { box: null, pickupStatus: "REVERSED", expected: "REVERSED" },
+    { box: { current: 2, total: 3 }, pickupStatus: "PARTIALLY_REVERSED", expected: "PARTIALLY REVERSED" },
+  ];
+  test.each(savedBoxCases)("renders saved label $expected", async ({ box, pickupStatus, expected }) => {
     const lineQuantities = [{ orderLineItemId: "line-1", quantity: 150 }];
     const progressSnapshot = buildPickupTravelerProgressSnapshot([{ id: "line-1", production: { orderedQuantity: 500, pickedUpQuantity: 250, remainingQuantity: 250 } }], lineQuantities, "2026-09-25T12:00:00Z");
     useQueryMock.mockReturnValue({ data: { ...travelerSource, pickupStatus,
       pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 1, box, lineQuantities, progressSnapshot },
       lineItems: [{ ...travelerSource.lineItems[0], quantity: 150, pickupProgress: progressSnapshot.lines[0] }],
-    }, isLoading: false, error: null } as any);
+    }, isLoading: false, error: null });
     mockSearchParams = new URLSearchParams({ directPrintJobId: "saved-pickup" });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(1);
@@ -275,19 +294,20 @@ describe("Pickup Traveler optional boxes and reversal status", () => {
     expect(container.textContent).toContain("Front Lobby Signs");
     expect(container.textContent).toContain("Acme Signs Inc.");
     expect(container.querySelector('img[alt="Order QR code"]')).toBeTruthy();
-    expect((container.querySelector('[data-traveler-ready]') as HTMLElement).style.breakBefore).toBe("");
+    expect(container.querySelector<HTMLElement>('[data-traveler-ready]')?.style.breakBefore).toBe("");
   });
 
-  test.each([
-    [false, ""],
-    [true, "BOX ____ of ____"],
-  ])("renders saved blank-fields choice %s without changing pickup progress", async (printBlankBoxFields, expected) => {
+  const blankBoxCases = [
+    { printBlankBoxFields: false, expected: "" },
+    { printBlankBoxFields: true, expected: "BOX ____ of ____" },
+  ];
+  test.each(blankBoxCases)("renders saved blank-fields choice $printBlankBoxFields without changing pickup progress", async ({ printBlankBoxFields, expected }) => {
     const lineQuantities = [{ orderLineItemId: "line-1", quantity: 150 }];
     const progressSnapshot = buildPickupTravelerProgressSnapshot([{ id: "line-1", production: { orderedQuantity: 500, pickedUpQuantity: 250, remainingQuantity: 250 } }], lineQuantities, "2026-09-25T12:00:00Z");
     useQueryMock.mockReturnValue({ data: { ...travelerSource,
       pickupPrintContext: { fulfillmentMode: "pickup", boxCount: 1, box: null, printBlankBoxFields, lineQuantities, progressSnapshot },
       lineItems: [{ ...travelerSource.lineItems[0], quantity: 150, pickupProgress: progressSnapshot.lines[0] }],
-    }, isLoading: false, error: null } as any);
+    }, isLoading: false, error: null });
     mockSearchParams = new URLSearchParams({ directPrintJobId: "saved-pickup" });
     await act(async () => root.render(<OrderTravelerPage />));
     expect(container.querySelectorAll('[data-traveler-ready="true"]')).toHaveLength(1);

@@ -20,12 +20,15 @@ type PaymentData = { rows: PaymentRow[]; summary: { totalPayments: number; total
 
 function formatCurrency(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
 function formatMethod(value: string | null) { return value ? value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "—"; }
+function isSortKey(value: string | null): value is SortKey { return SORT_KEYS.some((key) => key === value); }
 
 export default function FinancePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const datePreset = DATE_PRESETS.has(searchParams.get("datePreset") || "") ? searchParams.get("datePreset")! : "all";
+  const requestedDatePreset = searchParams.get("datePreset");
+  const datePreset = requestedDatePreset && DATE_PRESETS.has(requestedDatePreset) ? requestedDatePreset : "all";
   const page = Math.max(1, Number(searchParams.get("page") || "1") || 1);
-  const sortBy = SORT_KEYS.includes(searchParams.get("sortBy") as SortKey) ? searchParams.get("sortBy") as SortKey : "paymentDate";
+  const requestedSortBy = searchParams.get("sortBy");
+  const sortBy = isSortKey(requestedSortBy) ? requestedSortBy : "paymentDate";
   const sortDir = searchParams.get("sortDir") === "asc" ? "asc" : "desc";
   const updateParams = (changes: Record<string, string | null>, resetPage = true) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
@@ -42,7 +45,7 @@ export default function FinancePage() {
     queryKey: ["payments", queryString],
     queryFn: async () => {
       const response = await apiFetch(`/api/payments?${queryString}`);
-      const payload = await response.json() as { success: boolean; data: PaymentData };
+      const payload: { success: boolean; data: PaymentData } = await response.json();
       if (!response.ok || !payload.success) throw new Error("Unable to load payments");
       return payload.data;
     },
@@ -52,7 +55,7 @@ export default function FinancePage() {
   const sortLabel = (label: string, key: SortKey) => <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort(key)}>{label}{sortBy === key && (sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}</button>;
 
   return <Page>
-    <PageHeader title="Payments" description="Canonical successful payments for the selected organization and date range." />
+    <PageHeader title="Payments" />
     <ContentLayout className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <DataCard title="Total Payments"><p className="text-2xl font-semibold">{data?.summary.totalPayments ?? "—"}</p></DataCard>

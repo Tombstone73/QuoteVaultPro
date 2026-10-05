@@ -18,7 +18,7 @@ export type ReminderListStatus =
 
 interface InvoiceCustomerVisibility { customerVisible?: boolean; customerReleaseEligible?: boolean; }
 
-export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay, InvoiceCustomerVisibility {
+export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt' | 'lastSentVia'>, InvoiceAccountingDisplay, InvoiceCustomerVisibility {
   customerName: string | null;
   companyName: string | null;
   contactName: string | null;
@@ -33,7 +33,7 @@ export interface InvoiceListItem extends Omit<Invoice, 'lastSentAt'>, InvoiceAcc
   orderFulfillmentStatus: string | null;
   // Canonical customer-send checkpoint (email, manual acknowledgement, or portal delivery).
   lastSentAt: string | null;
-  lastSentVia?: 'email' | 'manual' | 'portal' | null;
+  lastSentVia: 'email' | 'manual' | 'portal' | null;
   lastInvoiceEmailRecipient: string | null;
   /** Customer send state may be satisfied by email, manual acknowledgement, or portal delivery. */
   customerSendStatus?: InvoiceEmailStatus;
@@ -115,9 +115,11 @@ export type InvoiceListColumnFilterQuery = {
   excludeCustomerIds?: string;
 };
 
-export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt'>, InvoiceAccountingDisplay, InvoiceCustomerVisibility {
-  lastSentAt?: string | null;
-  lastSentVia?: 'email' | 'manual' | 'portal' | null;
+export interface InvoiceWithEmailTracking extends Omit<Invoice, 'lastSentAt' | 'lastSentVia'>, InvoiceAccountingDisplay, InvoiceCustomerVisibility {
+  lastSentAt: string | null;
+  lastSentVia: 'email' | 'manual' | 'portal' | null;
+  lastInvoiceEmailRecipient: string | null;
+  lastSuccessfulEmailAt: string | null;
   customerSendStatus?: InvoiceEmailStatus;
   emailStatus?: InvoiceEmailStatus;
 }

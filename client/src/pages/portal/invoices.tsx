@@ -161,7 +161,7 @@ export function PortalInvoiceDesktopTable({ invoices, columns = DEFAULT_PORTAL_I
   const selectable = invoices.filter(isPortalInvoiceSelectable);
   const allSelected = selectable.length > 0 && selectable.every((invoice) => selectedIds.has(invoice.id));
   const someSelected = selectable.some((invoice) => selectedIds.has(invoice.id));
-  const toggleAll = () => onSelectionChange(allSelected ? new Set([...selectedIds].filter((id) => !selectable.some((invoice) => invoice.id === id))) : new Set([...selectedIds, ...selectable.map((invoice) => invoice.id)]));
+  const toggleAll = () => onSelectionChange(allSelected ? new Set(Array.from(selectedIds).filter((id) => !selectable.some((invoice) => invoice.id === id))) : new Set([...Array.from(selectedIds), ...selectable.map((invoice) => invoice.id)]));
   const toggle = (invoiceId: string) => { const next = new Set(selectedIds); next.has(invoiceId) ? next.delete(invoiceId) : next.add(invoiceId); onSelectionChange(next); };
   return <div className="hidden 2xl:block"><table className="w-full min-w-[72rem] table-fixed" aria-label="Customer invoices">
     <colgroup><col className="w-[4%]" /><col className="w-[8%]" />{infoColumns.map((column) => <col key={column} className={columnMeta[column].width} />)}<col className="w-[10%]" /></colgroup>
@@ -172,7 +172,7 @@ export function PortalInvoiceDesktopTable({ invoices, columns = DEFAULT_PORTAL_I
 
 export function sanitizePortalInvoiceSelection(invoices: PortalInvoiceDto[], selectedIds: Set<string>) {
   const selectableIds = new Set(invoices.filter(isPortalInvoiceSelectable).map((invoice) => invoice.id));
-  return new Set([...selectedIds].filter((id) => selectableIds.has(id)));
+  return new Set(Array.from(selectedIds).filter((id) => selectableIds.has(id)));
 }
 export function portalInvoiceSelectionTotal(invoices: PortalInvoiceDto[], selectedIds: Set<string>) {
   return invoices.filter((invoice) => isPortalInvoiceSelectable(invoice) && selectedIds.has(invoice.id)).reduce((sum, invoice) => sum + Number(invoice.amountDue || 0), 0);
@@ -250,7 +250,7 @@ export default function PortalInvoicesPage() {
   if (invoicesLoading || sessionLoading) return <div className="flex min-h-[360px] items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
   const error = invoicesError || sessionError;
   return <div className="mx-auto w-full max-w-screen-2xl space-y-6"><div><h1 className="text-2xl font-semibold tracking-normal">Invoices</h1><p className="mt-1 text-sm text-muted-foreground">Review balances, payment history, and available invoice documents.</p></div>
-    {error || !session ? <Card><CardContent className="py-10 text-center"><p className="font-medium text-destructive">Could not load invoices</p><p className="mt-1 text-sm text-muted-foreground">{(error as Error | undefined)?.message || "Portal session unavailable."}</p></CardContent></Card>
+    {error || !session ? <Card><CardContent className="py-10 text-center"><p className="font-medium text-destructive">Could not load invoices</p><p className="mt-1 text-sm text-muted-foreground">{error?.message || "Portal session unavailable."}</p></CardContent></Card>
       : invoices.length === 0 ? <Card><CardContent className="flex flex-col items-center justify-center py-14 text-center"><FileText className="mb-3 h-9 w-9 text-muted-foreground" /><p className="font-medium">No invoices yet</p><p className="mt-1 text-sm text-muted-foreground">Invoices will appear here when they are ready for you.</p></CardContent></Card>
       : <PortalInvoicesContent key={`${session.userId}:${session.customerId}`} invoices={invoices} userId={session.userId} portalCustomerId={session.customerId} staffPreview={Boolean(session.staffPreview?.active)} previewPaymentAuthorized={Boolean(session.staffPreview?.canExecutePayments)} />}
   </div>;

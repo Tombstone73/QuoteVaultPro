@@ -13,6 +13,8 @@ export type CustomerSearchCandidate = {
   }>;
 };
 
+const customerSearchWordSeparators = new RegExp("[^\\p{L}\\p{N}]+", "u");
+
 function normalizeSearchValue(value: string | null | undefined): string {
   return value?.trim().replace(/\s+/g, " ").toLocaleLowerCase() ?? "";
 }
@@ -39,7 +41,7 @@ export function getCustomerSearchRank(customer: CustomerSearchCandidate, query: 
   const companyName = normalizeSearchValue(customer.companyName);
   if (companyName === normalizedQuery) return 0;
   if (companyName.startsWith(normalizedQuery)) return 1;
-  if (companyName.split(/[^\p{L}\p{N}]+/u).some((word) => word.startsWith(normalizedQuery))) return 2;
+  if (companyName.split(customerSearchWordSeparators).some((word) => word.startsWith(normalizedQuery))) return 2;
   if (companyName.includes(normalizedQuery)) return 3;
   if (normalizeSearchValue(customer.email).includes(normalizedQuery)) return 4;
 
@@ -52,7 +54,7 @@ function getContactSearchRank(contact: NonNullable<CustomerSearchCandidate["cont
   const contactName = normalizeSearchValue(`${contact.firstName ?? ""} ${contact.lastName ?? ""}`);
   if (contactName === normalizedQuery) return 0;
   if (contactName.startsWith(normalizedQuery)) return 1;
-  if (contactName.split(/[^\p{L}\p{N}]+/u).some((word) => word.startsWith(normalizedQuery))) return 2;
+  if (contactName.split(customerSearchWordSeparators).some((word) => word.startsWith(normalizedQuery))) return 2;
   if (contactName.includes(normalizedQuery)) return 3;
   if ([contact.email, contact.phone, contact.mobile].map(normalizeSearchValue).some((value) => value.includes(normalizedQuery))) return 4;
   return 5;

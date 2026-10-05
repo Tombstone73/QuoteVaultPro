@@ -84,6 +84,7 @@ import {
   type InboundProductSearchResult,
   type InboundMatchedContactSummary,
   type InboundMatchedCustomerSummary,
+  type InboundOrderLinePricingReview,
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
@@ -982,7 +983,7 @@ function inboundLinePricingDependenciesChanged(
 function markInboundLinePricingNeedsRecalculation(
   review: ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"],
   quantity: number | null,
-): ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"] {
+): InboundOrderLinePricingReview {
   const effective = resolveInboundLineEffectivePricing(review, quantity ?? 1);
   return {
     status: "not_available",

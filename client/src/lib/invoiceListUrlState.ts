@@ -1,5 +1,6 @@
 import type { InvoiceListColumnFilterQuery } from "@/hooks/useInvoices";
 import { getDefaultInvoiceSortDir, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
+import type { InvoiceListPageSize } from "@/lib/invoiceListPreferences";
 
 export const INVOICE_LIST_COLUMN_FILTER_PARAM_KEYS: Array<keyof InvoiceListColumnFilterQuery> = [
   "customer", "contact", "jobName", "purchaseOrderNumber", "columnOrderNumber", "invoiceNumber",
@@ -17,6 +18,14 @@ const SORT_KEYS: InvoiceSortKey[] = [
   "invoiceNumber", "customer", "contact", "orderNumber", "purchaseOrderNumber", "issueDate", "dueDate",
   "lastSentAt", "status", "approval", "jobStatus", "total", "paid", "balance", "jobName",
 ];
+
+function isInvoiceSortKey(value: string | undefined): value is InvoiceSortKey {
+  return SORT_KEYS.some((key) => key === value);
+}
+
+function isInvoiceListPageSize(value: number): value is InvoiceListPageSize {
+  return value === 25 || value === 50 || value === 100;
+}
 
 const DISCRETE_MULTI_VALUE_PARAM_KEYS = new Set<string>([
   "status", "accountingApproval", "sendStatus", "jobStatus", "customerIds", "excludeCustomerIds",
@@ -36,7 +45,7 @@ export type InvoiceListUrlState = {
   sortKey: InvoiceSortKey;
   sortDir: InvoiceSortDir;
   page: number;
-  pageSize: number;
+  pageSize: InvoiceListPageSize;
   columnFilters: InvoiceListColumnFilterQuery;
 };
 
@@ -46,7 +55,7 @@ const read = (params: URLSearchParams, key: string) => params.get(key)?.trim() |
  * remain unchanged; blank segments and duplicate selections are removed. */
 export function normalizeInvoiceListDiscreteFilter(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const values = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+  const values = Array.from(new Set(value.split(",").map((item) => item.trim()).filter(Boolean)));
   return values.length ? values.join(",") : undefined;
 }
 
@@ -54,7 +63,7 @@ export function normalizeInvoiceListDiscreteFilter(value: string | undefined): s
  * sticky preferences stable regardless of the order in which pages were read. */
 export function normalizeInvoiceListCustomerIds(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const values = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))]
+  const values = Array.from(new Set(value.split(",").map((item) => item.trim()).filter(Boolean)))
     .sort((left, right) => left.localeCompare(right));
   return values.length ? values.join(",") : undefined;
 }
@@ -81,13 +90,15 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
       : DISCRETE_MULTI_VALUE_PARAM_KEYS.has(key)
         ? normalizeInvoiceListDiscreteFilter(read(params, key))
       : read(params, key);
-    if (value) result[key] = value as never;
+    if (value) Object.assign(result, { [key]: value });
     return result;
   }, {});
   const requestedSort = read(params, "sortBy");
-  const hasExplicitSort = SORT_KEYS.includes(requestedSort as InvoiceSortKey);
-  const sortKey = hasExplicitSort ? requestedSort as InvoiceSortKey : "issueDate";
+  const resolvedSortKey = isInvoiceSortKey(requestedSort) ? requestedSort : undefined;
+  const hasExplicitSort = resolvedSortKey !== undefined;
+  const sortKey = resolvedSortKey ?? "issueDate";
   const requestedPageSize = positiveInteger(read(params, "pageSize"), 50);
+  const requestedSortDir = read(params, "sortDir");
 
   return {
     search: params.get("search") ?? "",
@@ -101,11 +112,11 @@ export function parseInvoiceListUrlState(params: URLSearchParams): InvoiceListUr
     issueDatePreset: read(params, "issueDatePreset") === "custom" ? "custom" : undefined,
     hasExplicitSort,
     sortKey,
-    sortDir: hasExplicitSort && (read(params, "sortDir") === "asc" || read(params, "sortDir") === "desc")
-      ? read(params, "sortDir") as InvoiceSortDir
+    sortDir: hasExplicitSort && (requestedSortDir === "asc" || requestedSortDir === "desc")
+      ? requestedSortDir
       : getDefaultInvoiceSortDir(sortKey),
     page: positiveInteger(read(params, "page"), 1),
-    pageSize: [25, 50, 100].includes(requestedPageSize) ? requestedPageSize : 50,
+    pageSize: isInvoiceListPageSize(requestedPageSize) ? requestedPageSize : 50,
     columnFilters,
   };
 }

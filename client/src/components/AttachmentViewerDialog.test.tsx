@@ -1,11 +1,43 @@
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "node:util";
 
-const getDocument = jest.fn();
-const apiFetchBlob = jest.fn();
-const downloadFileFromUrl = jest.fn();
+type CanvasContextMock = {
+  setTransform: jest.MockedFunction<(a: number, b: number, c: number, d: number, e: number, f: number) => void>;
+  clearRect: jest.MockedFunction<(x: number, y: number, width: number, height: number) => void>;
+  fillRect: jest.MockedFunction<(x: number, y: number, width: number, height: number) => void>;
+  fillStyle: string;
+};
+type PdfViewport = { width: number; height: number };
+type PdfRenderTask = { promise: Promise<void>; cancel: () => void };
+type PdfRenderParameters = { canvasContext: CanvasContextMock; viewport: PdfViewport; transform?: number[] };
+type PdfPage = {
+  rotate: number;
+  getViewport: (parameters: { scale: number; rotation?: number }) => PdfViewport;
+  render: (parameters: PdfRenderParameters) => PdfRenderTask;
+};
+type PdfDocument = {
+  numPages: number;
+  getPage: (pageNumber: number) => Promise<PdfPage>;
+  getMetadata: () => Promise<{ info: Record<string, unknown> }>;
+  destroy: () => Promise<void>;
+};
+type PdfLoadingTask = { promise: Promise<PdfDocument> };
+type PdfDocumentOptions = {
+  data: Uint8Array;
+  cMapUrl?: string;
+  cMapPacked?: boolean;
+  standardFontDataUrl?: string;
+  useWorkerFetch?: boolean;
+  isEvalSupported?: boolean;
+  stopAtErrors?: boolean;
+};
+type TestBlob = Blob & { arrayBuffer: () => Promise<ArrayBuffer> };
+
+const getDocument = jest.fn<(options: PdfDocumentOptions) => PdfLoadingTask>();
+const apiFetchBlob = jest.fn<(url: string, options?: RequestInit) => Promise<TestBlob>>();
+const downloadFileFromUrl = jest.fn<(url: string, fileName: string) => void>();
 
 jest.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: {},
@@ -27,14 +59,53 @@ jest.mock("@/lib/artworkAccess", () => ({
 }));
 jest.mock("@/components/AttachmentPreviewMeta", () => ({ AttachmentPreviewMeta: () => null }));
 jest.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ children }: any) => <div>{children}</div>,
-  DialogContent: ({ children }: any) => <div>{children}</div>,
-  DialogDescription: ({ children }: any) => <div>{children}</div>,
-  DialogHeader: ({ children }: any) => <div>{children}</div>,
-  DialogTitle: ({ children }: any) => <div>{children}</div>,
+  Dialog: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  DialogContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  DialogDescription: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  DialogHeader: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  DialogTitle: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 
-import { AttachmentViewerDialog } from "./AttachmentViewerDialog";
+import { AttachmentViewerDialog, type AttachmentData } from "./AttachmentViewerDialog";
+
+function findButton(host: HTMLElement, predicate: (button: HTMLButtonElement) => boolean): HTMLButtonElement {
+  const button = Array.from(host.querySelectorAll("button")).find(predicate);
+  if (!button) throw new Error("Expected button was not rendered");
+  return button;
+}
+
+class TestResizeObserver implements ResizeObserver {
+  observe(_target: Element, _options?: ResizeObserverOptions) {}
+  unobserve(_target: Element) {}
+  disconnect() {}
+}
+
+const previewStates: Array<{
+  status: NonNullable<AttachmentData["thumbStatus"]>;
+  error: string | null;
+  message: string;
+}> = [
+  { status: "thumb_pending", error: null, message: "Generating preview..." },
+  { status: "thumb_failed", error: "preview_unsupported_postscript", message: "Preview unavailable for this Illustrator/EPS file." },
+  { status: "thumb_failed", error: "preview_render_failed", message: "Preview generation failed. Download the original file." },
+];
+
+const viewerBounds: DOMRect = {
+  x: 0,
+  y: 0,
+  width: 800,
+  height: 600,
+  top: 0,
+  right: 800,
+  bottom: 600,
+  left: 0,
+  toJSON: () => ({}),
+};
+
+function testBlob(bytes: Uint8Array, type: string): TestBlob {
+  const copy = Uint8Array.from(bytes);
+  return Object.assign(new Blob([new TextDecoder().decode(copy)], { type }), { arrayBuffer: async () => copy.buffer });
+}
 
 describe('Illustrator derivative viewer', () => {
   test('EPS shows its original-download fallback immediately for generic MIME', async () => {
@@ -47,7 +118,7 @@ describe('Illustrator derivative viewer', () => {
     expect(host.textContent).not.toContain('Generating preview');
     expect(host.querySelector('img[alt="logo.eps"]')).toBeNull();
     expect(apiFetchBlob).not.toHaveBeenCalled();
-    const download = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.includes('Download original'))!;
+    const download = findButton(host, (button) => button.textContent?.includes("Download original") === true);
     await act(async () => { download.click(); });
     expect(downloadFileFromUrl).toHaveBeenCalledWith('/api/artwork/file-records/eps-original/content?variant=original', 'logo.eps');
     act(() => root.unmount()); host.remove();
@@ -55,25 +126,21 @@ describe('Illustrator derivative viewer', () => {
   test('PDF MIME Illustrator uses only its ready image derivative, and downloads original', async () => {
     jest.clearAllMocks();
     URL.createObjectURL = jest.fn(() => 'blob:ai-preview'); URL.revokeObjectURL = jest.fn();
-    apiFetchBlob.mockImplementation(async () => new Blob(['image'], { type: 'image/png' }));
+    apiFetchBlob.mockImplementation(async () => testBlob(new TextEncoder().encode('image'), 'image/png'));
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host);
     await act(async () => { root.render(<AttachmentViewerDialog open onOpenChange={() => {}} attachment={{ id:'ai', fileName:'logo.ai', mimeType:'application/pdf', fileRecordId:'source-ai', thumbStatus:'thumb_ready' }} />); await flush(); });
     expect(apiFetchBlob).toHaveBeenCalledWith('/api/artwork/file-records/source-ai/content?variant=preview', expect.anything());
     expect(getDocument).not.toHaveBeenCalled();
     expect(host.querySelector('img[alt="logo.ai"]')?.getAttribute('src')).toBe('blob:ai-preview');
-    const download = Array.from(host.querySelectorAll('button')).find(x => x.textContent?.includes('Download original'))!;
+    const download = findButton(host, (button) => button.textContent?.includes("Download original") === true);
     await act(async () => { download.click(); });
     expect(downloadFileFromUrl).toHaveBeenCalledWith('/api/artwork/file-records/source-ai/content?variant=original', 'logo.ai');
     act(() => root.unmount()); host.remove();
   });
-  test.each([
-    ['thumb_pending',null,'Generating preview...'],
-    ['thumb_failed','preview_unsupported_postscript','Preview unavailable for this Illustrator/EPS file.'],
-    ['thumb_failed','preview_render_failed','Preview generation failed. Download the original file.'],
-  ])('state %s leaves original available without attempting native source rendering', async (status,error,message) => {
+  test.each(previewStates)("state $status leaves original available without attempting native source rendering", async ({ status, error, message }) => {
     jest.clearAllMocks();
     const host = document.createElement('div'); document.body.appendChild(host); const root=createRoot(host);
-    await act(async () => root.render(<AttachmentViewerDialog open onOpenChange={() => {}} attachment={{ id:'ai', fileName:'logo.ai', mimeType:'application/octet-stream', fileRecordId:'ai', thumbStatus:status as any, thumbError:error }} />));
+    await act(async () => root.render(<AttachmentViewerDialog open onOpenChange={() => {}} attachment={{ id:'ai', fileName:'logo.ai', mimeType:'application/octet-stream', fileRecordId:'ai', thumbStatus:status, thumbError:error }} />));
     expect(host.textContent).toContain(message);
     expect(host.textContent).toContain('Download original');
     expect(apiFetchBlob).not.toHaveBeenCalled(); expect(getDocument).not.toHaveBeenCalled();
@@ -81,9 +148,7 @@ describe('Illustrator derivative viewer', () => {
   });
 });
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-(globalThis as any).TextEncoder = TextEncoder;
-(globalThis as any).TextDecoder = TextDecoder;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, TextEncoder, TextDecoder });
 
 const visiblePdfBytes = new TextEncoder().encode(`%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
@@ -105,42 +170,37 @@ describe("AttachmentViewerDialog PDF rendering", () => {
   });
 
   test("renders visible PDF page pixels after the loading placeholder mounts the canvas", async () => {
-    const canvasContext = {
-      setTransform: jest.fn(),
-      clearRect: jest.fn(),
-      fillRect: jest.fn(),
+    const canvasContext: CanvasContextMock = {
+      setTransform: jest.fn<(a: number, b: number, c: number, d: number, e: number, f: number) => void>(),
+      clearRect: jest.fn<(x: number, y: number, width: number, height: number) => void>(),
+      fillRect: jest.fn<(x: number, y: number, width: number, height: number) => void>(),
       fillStyle: "",
-    };
-    const render = jest.fn(({ canvasContext: context }: any) => {
+};
+
+    const render = jest.fn((parameters: PdfRenderParameters): PdfRenderTask => {
+      const { canvasContext: context } = parameters;
       context.fillStyle = "#0088ff";
       context.fillRect(0, 0, 50, 50);
-      return { promise: Promise.resolve(), cancel: jest.fn() };
+      return { promise: Promise.resolve(), cancel: () => undefined };
     });
-    const page = {
+    const page: PdfPage = {
       rotate: 0,
-      getViewport: ({ scale }: any) => ({ width: 200 * scale, height: 200 * scale }),
+      getViewport: ({ scale }: { scale: number }) => ({ width: 200 * scale, height: 200 * scale }),
       render,
     };
-    const pdfDocument = {
+    const pdfDocument: PdfDocument = {
       numPages: 1,
-      getPage: jest.fn().mockResolvedValue(page),
-      getMetadata: jest.fn().mockResolvedValue({ info: {} }),
-      destroy: jest.fn().mockResolvedValue(undefined),
+      getPage: jest.fn<(pageNumber: number) => Promise<PdfPage>>().mockResolvedValue(page),
+      getMetadata: jest.fn<() => Promise<{ info: Record<string, unknown> }>>().mockResolvedValue({ info: {} }),
+      destroy: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
     };
     getDocument.mockReturnValue({ promise: Promise.resolve(pdfDocument) });
-    apiFetchBlob.mockResolvedValue({
-      type: "application/pdf",
-      arrayBuffer: async () => visiblePdfBytes.buffer.slice(visiblePdfBytes.byteOffset, visiblePdfBytes.byteOffset + visiblePdfBytes.byteLength),
-    } as Blob);
+    apiFetchBlob.mockResolvedValue(testBlob(visiblePdfBytes, "application/pdf"));
 
-    const resizeObserver = class {
-      observe() {}
-      disconnect() {}
-    };
-    (globalThis as any).ResizeObserver = resizeObserver;
-    const rect = { width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600, x: 0, y: 0, toJSON: () => ({}) };
-    const rectSpy = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(rect as DOMRect);
-    const contextSpy = jest.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(canvasContext as any);
+    Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: TestResizeObserver });
+    const rectSpy = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(viewerBounds);
+    const contextDescriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => canvasContext });
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -153,7 +213,8 @@ describe("AttachmentViewerDialog PDF rendering", () => {
         await flush();
       });
 
-      const canvas = host.querySelector('[data-testid="attachment-viewer-pdf-canvas"]') as HTMLCanvasElement;
+      const canvas = host.querySelector<HTMLCanvasElement>('[data-testid="attachment-viewer-pdf-canvas"]');
+      if (!canvas) throw new Error("Expected PDF canvas was not rendered");
       expect(apiFetchBlob).toHaveBeenCalledWith("/api/artwork/file-records/canonical-file-id/content?variant=original", expect.objectContaining({ credentials: "include" }));
       expect(getDocument).toHaveBeenCalledWith(expect.objectContaining({ data: expect.any(Uint8Array) }));
       expect(pdfDocument.getPage).toHaveBeenCalledWith(1);
@@ -163,9 +224,10 @@ describe("AttachmentViewerDialog PDF rendering", () => {
       expect(canvasContext.fillRect).toHaveBeenCalledWith(0, 0, 50, 50);
       expect(host.textContent).not.toContain("PDF preview unavailable");
 
-      const fitWidth = host.querySelector('[title="Fit width"]') as HTMLButtonElement;
-      const zoomIn = host.querySelector('[title="Zoom in"]') as HTMLButtonElement;
-      const rotateRight = host.querySelector('[title="Rotate right"]') as HTMLButtonElement;
+      const fitWidth = host.querySelector<HTMLButtonElement>('[title="Fit width"]');
+      const zoomIn = host.querySelector<HTMLButtonElement>('[title="Zoom in"]');
+      const rotateRight = host.querySelector<HTMLButtonElement>('[title="Rotate right"]');
+      if (!fitWidth || !zoomIn || !rotateRight) throw new Error("Expected PDF controls were not rendered");
       await act(async () => {
         fitWidth.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await flush();
@@ -180,14 +242,15 @@ describe("AttachmentViewerDialog PDF rendering", () => {
       });
       expect(render.mock.calls.length).toBeGreaterThanOrEqual(3);
 
-      const download = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes("Download")) as HTMLButtonElement;
+      const download = findButton(host, (button) => button.textContent?.includes("Download") === true);
       await act(async () => download.dispatchEvent(new MouseEvent("click", { bubbles: true })));
       expect(downloadFileFromUrl).toHaveBeenCalledWith("/api/artwork/file-records/canonical-file-id/content?variant=original", "visible.pdf");
     } finally {
       await act(async () => root.unmount());
       host.remove();
       rectSpy.mockRestore();
-      contextSpy.mockRestore();
+      if (contextDescriptor) Object.defineProperty(HTMLCanvasElement.prototype, "getContext", contextDescriptor);
+      else Reflect.deleteProperty(HTMLCanvasElement.prototype, "getContext");
     }
   });
 
@@ -198,7 +261,7 @@ describe("AttachmentViewerDialog PDF rendering", () => {
     const revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
-    apiFetchBlob.mockResolvedValue(new Blob(["fixture-image"], { type: "image/png" }));
+    apiFetchBlob.mockResolvedValue(testBlob(new TextEncoder().encode("fixture-image"), "image/png"));
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -210,7 +273,8 @@ describe("AttachmentViewerDialog PDF rendering", () => {
         await flush();
       });
 
-      const image = host.querySelector('img[alt="artwork.png"]') as HTMLImageElement;
+      const image = host.querySelector<HTMLImageElement>('img[alt="artwork.png"]');
+      if (!image) throw new Error("Expected image preview was not rendered");
       expect(apiFetchBlob).toHaveBeenLastCalledWith("/api/artwork/file-records/image-file/content?variant=preview", expect.objectContaining({ credentials: "include" }));
       expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
       expect(image.src).toBe("blob:fixture-image");
@@ -225,27 +289,33 @@ describe("AttachmentViewerDialog PDF rendering", () => {
   });
 
   test("renders again after navigating from a PDF to an image and back", async () => {
-    const canvasContext = { setTransform: jest.fn(), clearRect: jest.fn(), fillRect: jest.fn(), fillStyle: "" };
-    const render = jest.fn(() => ({ promise: Promise.resolve(), cancel: jest.fn() }));
-    const pdfDocument = {
+    const canvasContext: CanvasContextMock = {
+      setTransform: jest.fn<(a: number, b: number, c: number, d: number, e: number, f: number) => void>(),
+      clearRect: jest.fn<(x: number, y: number, width: number, height: number) => void>(),
+      fillRect: jest.fn<(x: number, y: number, width: number, height: number) => void>(),
+      fillStyle: "",
+    };
+    const render = jest.fn((_parameters: PdfRenderParameters): PdfRenderTask => ({ promise: Promise.resolve(), cancel: () => undefined }));
+    const pdfDocument: PdfDocument = {
       numPages: 1,
-      getPage: jest.fn().mockResolvedValue({ rotate: 0, getViewport: ({ scale }: any) => ({ width: 200 * scale, height: 200 * scale }), render }),
-      getMetadata: jest.fn().mockResolvedValue({ info: {} }),
-      destroy: jest.fn().mockResolvedValue(undefined),
+      getPage: jest.fn<(pageNumber: number) => Promise<PdfPage>>().mockResolvedValue({ rotate: 0, getViewport: ({ scale }) => ({ width: 200 * scale, height: 200 * scale }), render }),
+      getMetadata: jest.fn<() => Promise<{ info: Record<string, unknown> }>>().mockResolvedValue({ info: {} }),
+      destroy: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
     };
     getDocument.mockReturnValue({ promise: Promise.resolve(pdfDocument) });
     apiFetchBlob.mockImplementation((url: string) => Promise.resolve(url.includes("pdf-file")
-      ? { type: "application/pdf", arrayBuffer: async () => visiblePdfBytes.buffer.slice(visiblePdfBytes.byteOffset, visiblePdfBytes.byteOffset + visiblePdfBytes.byteLength) } as Blob
-      : new Blob(["fixture-image"], { type: "image/png" })));
+      ? testBlob(visiblePdfBytes, "application/pdf")
+      : testBlob(new TextEncoder().encode("fixture-image"), "image/png")));
     const createObjectUrl = jest.fn(() => "blob:navigation-image");
     const revokeObjectUrl = jest.fn();
     const createObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
     const revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
-    (globalThis as any).ResizeObserver = class { observe() {} disconnect() {} };
-    const rectSpy = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600, x: 0, y: 0, toJSON: () => ({}) } as DOMRect);
-    const contextSpy = jest.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(canvasContext as any);
+    Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: TestResizeObserver });
+    const rectSpy = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(viewerBounds);
+    const contextDescriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => canvasContext });
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -284,7 +354,8 @@ describe("AttachmentViewerDialog PDF rendering", () => {
       await act(async () => root.unmount());
       host.remove();
       rectSpy.mockRestore();
-      contextSpy.mockRestore();
+      if (contextDescriptor) Object.defineProperty(HTMLCanvasElement.prototype, "getContext", contextDescriptor);
+      else Reflect.deleteProperty(HTMLCanvasElement.prototype, "getContext");
       if (createObjectUrlDescriptor) Object.defineProperty(URL, "createObjectURL", createObjectUrlDescriptor);
       else Reflect.deleteProperty(URL, "createObjectURL");
       if (revokeObjectUrlDescriptor) Object.defineProperty(URL, "revokeObjectURL", revokeObjectUrlDescriptor);
@@ -299,10 +370,7 @@ describe("AttachmentViewerDialog PDF rendering", () => {
         return Promise.reject(new Error("fixture PDF cannot be parsed"));
       },
     });
-    apiFetchBlob.mockResolvedValue({
-      type: "application/pdf",
-      arrayBuffer: async () => visiblePdfBytes.buffer.slice(visiblePdfBytes.byteOffset, visiblePdfBytes.byteOffset + visiblePdfBytes.byteLength),
-    } as Blob);
+    apiFetchBlob.mockResolvedValue(testBlob(visiblePdfBytes, "application/pdf"));
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);

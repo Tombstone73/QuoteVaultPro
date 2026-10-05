@@ -252,7 +252,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).not.toContain('flex min-w-max flex-wrap items-center justify-start gap-1');
     expect(invoicesPageSource).toContain(">$</Button>");
     expect(invoicesPageSource).toContain("Invoice ${invoice.invoiceNumber} email is ${action.label.toLowerCase()}");
-    expect(invoicesPageSource).toContain('!isAdminOrOwner || String((invoice as any).importSource || "").toLowerCase() === "quickbooks"');
+    expect(invoicesPageSource).toContain('!isAdminOrOwner || String(invoice.importSource || "").toLowerCase() === "quickbooks"');
     expect(invoicesPageSource).not.toContain("getInvoiceListSendPath");
   });
 

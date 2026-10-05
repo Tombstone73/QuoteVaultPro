@@ -182,10 +182,10 @@ function formatCurrency(amount: string | number): string {
   }).format(num || 0);
 }
 
-function formatDate(dateString: string | null | undefined): string {
-  if (!dateString) return "-";
+function formatDate(value: string | Date | null | undefined): string {
+  if (!value) return "-";
   try {
-    return format(new Date(dateString), "MMM d, yyyy");
+    return format(value instanceof Date ? value : new Date(value), "MMM d, yyyy");
   } catch {
     return "-";
   }

@@ -644,7 +644,7 @@ export default function CustomerList({
             <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("credit")}>Set Credit Limit</Button>
           </>}
           {canSetCustomerTaxStatus && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openBulkDialog("tax")}>Set Tax Status</Button>}
-          {selectedCustomerIds.size === 2 && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onMergeCustomers(Array.from(selectedCustomerIds))}><GitMerge className="w-3.5 h-3.5 mr-1" />Merge</Button>}
+          {onMergeCustomers && selectedCustomerIds.size === 2 && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onMergeCustomers(Array.from(selectedCustomerIds))}><GitMerge className="w-3.5 h-3.5 mr-1" />Merge</Button>}
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setSelectedCustomerIds(new Set())}>Clear Selection</Button>
         </>}
       </div>}

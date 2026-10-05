@@ -12,7 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, Download, RotateCcw, Ban } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
+import { useOrders, type OrderRow, type OrdersFilterParams, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/queryClient";
 import { OrderPriorityBadge } from "@/components/order-status-badge";
@@ -55,6 +55,7 @@ import {
   persistOrdersListPreferences,
   readPersistedOrdersListPreferences,
   resolveOrdersListViewPreferences,
+  type OrdersListPageSize,
   type OrdersListSortKey,
 } from "@/lib/ordersListPreferences";
 import { resolveOrdersColumnWidths } from "@/lib/ordersTableLayout";
@@ -64,6 +65,7 @@ type SortKey = OrdersListSortKey;
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
 type ProofFilterValue = "all" | "needs_action";
 type InvoiceFilterValue = "all" | "no_invoice" | "has_invoice";
+const ORDER_PAGE_SIZES: OrdersListPageSize[] = [10, 25, 50, 100, 200];
 
 function useDebouncedValue<T>(value: T, delayMs = 300): T {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -212,7 +214,7 @@ export default function Orders() {
   const { onSmartBack } = useSmartBack();
   
   const [search, setSearch] = useState("");
-  const dueFilter = useMemo(() => {
+  const dueFilter = useMemo<OrdersFilterParams["due"]>(() => {
     const value = new URLSearchParams(location.search).get("due");
     return value === "today" || value === "tomorrow" || value === "overdue" ? value : undefined;
   }, [location.search]);
@@ -252,7 +254,7 @@ export default function Orders() {
   // Pagination + performance controls. Page size is persisted independently
   // from sorting; the current page intentionally remains session-only.
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
+  const [pageSize, setPageSize] = useState<OrdersListPageSize>(25);
   const [includeThumbnails, setIncludeThumbnails] = useState(false);
   
   // Artwork viewer state. The Preview column never opens the generic Attachments modal.
@@ -1261,7 +1263,10 @@ export default function Orders() {
               </Badge>
             </div>
             <Label className="text-sm text-muted-foreground">Rows per page</Label>
-            <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
+            <Select value={String(pageSize)} onValueChange={(value) => {
+              const nextPageSize = ORDER_PAGE_SIZES.find((candidate) => String(candidate) === value);
+              if (nextPageSize !== undefined) setPageSize(nextPageSize);
+            }}>
               <SelectTrigger className="w-[100px] h-9">
                 <SelectValue />
               </SelectTrigger>
