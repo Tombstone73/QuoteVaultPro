@@ -187,7 +187,7 @@ async function sendReminderForInvoice(opts: {
 
   const orderContext = await getInvoiceOrderContext({
     organizationId,
-    orderId: (fullInv as any).orderId,
+    orderId: fullInv.orderId,
   });
   const job = orderContext
     ? { poNumber: orderContext.poNumber, jobNumber: orderContext.orderNumber, jobLabel: orderContext.jobLabel }
@@ -216,16 +216,22 @@ async function sendReminderForInvoice(opts: {
       organizationId,
       lineItems: lineItems as any,
     });
+    const pdfCompanySettings = orgCompany ? {
+      ...orgCompany,
+      remittanceAddress: orgCompany.remittanceAddress
+        ? { ...orgCompany.remittanceAddress, enabled: orgCompany.remittanceAddress.enabled === true }
+        : null,
+    } : null;
     pdfBytes = await deps.generatePdf({
-      invoice: fullInv as any,
+      invoice: fullInv,
       customer: inv.customer ?? null,
-      companySettings: (orgCompany as any) || null,
+      companySettings: pdfCompanySettings,
       paymentSummary: {
         amountPaidCents: rollup.amountPaidCents,
         amountDueCents: rollup.amountDueCents,
         statusLabel,
       },
-      lineItems: pdfLineItems as any,
+      lineItems: pdfLineItems,
       job,
     });
   } catch (pdfErr: any) {

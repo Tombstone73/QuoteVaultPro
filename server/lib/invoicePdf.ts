@@ -91,7 +91,7 @@ type InvoicePdfParams = {
   customer: CustomerLike;
   companySettings: CompanySettingsLike;
   paymentSummary: {
-    totalCents: number;
+    totalCents?: number | null;
     amountPaidCents: number;
     amountDueCents: number;
     statusLabel?: string | null;
@@ -277,6 +277,10 @@ function tryDecodeDataUrl(dataUrl: string): { mime: 'png' | 'jpeg'; bytes: Uint8
   }
 }
 
+function isInvoicePdfParams(input: InvoicePdfParams | InvoiceLike): input is InvoicePdfParams {
+  return input !== null && typeof input === 'object' && 'paymentSummary' in input && 'lineItems' in input;
+}
+
 export async function generateInvoicePdfBytes(invoice: InvoiceLike, theme?: InvoicePdfTheme): Promise<Uint8Array>;
 export async function generateInvoicePdfBytes(params: InvoicePdfParams, theme?: InvoicePdfTheme): Promise<Uint8Array>;
 export async function generateInvoicePdfBytes(
@@ -284,13 +288,13 @@ export async function generateInvoicePdfBytes(
   theme: InvoicePdfTheme = DEFAULT_INVOICE_PDF_THEME
 ): Promise<Uint8Array> {
   const params: InvoicePdfParams =
-    arg1 && typeof arg1 === 'object' && 'paymentSummary' in (arg1 as any) && 'lineItems' in (arg1 as any)
-      ? (arg1 as InvoicePdfParams)
+    isInvoicePdfParams(arg1)
+      ? arg1
       : {
-          invoice: arg1 as InvoiceLike,
+          invoice: arg1,
           customer: null,
           companySettings: null,
-          paymentSummary: resolveInvoicePdfFinancialSummary(arg1 as InvoiceLike),
+          paymentSummary: resolveInvoicePdfFinancialSummary(arg1 ?? {}),
           lineItems: [],
         };
 

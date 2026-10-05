@@ -13,9 +13,9 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
 }): Promise<Array<T & { productName: string | null }>> {
   if (!input.lineItems.length) return input.lineItems.map((line) => ({ ...line, productName: line.productName ?? null }));
 
-  const orderLineItemIds = [...new Set(input.lineItems
+  const orderLineItemIds = Array.from(new Set(input.lineItems
     .map((line) => typeof line.orderLineItemId === 'string' ? line.orderLineItemId : null)
-    .filter((id): id is string => Boolean(id)))];
+    .filter((id): id is string => Boolean(id))));
   const sourceLines = orderLineItemIds.length
     ? await db.select({ id: orderLineItems.id, productId: orderLineItems.productId })
       .from(orderLineItems)
@@ -23,9 +23,9 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
       .where(and(eq(orders.organizationId, input.organizationId), inArray(orderLineItems.id, orderLineItemIds)))
     : [];
   const sourceLineById = new Map(sourceLines.map((line) => [line.id, line]));
-  const productIds = [...new Set(input.lineItems
-    .flatMap((line) => [line.productId, sourceLineById.get(line.orderLineItemId)?.productId])
-    .filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  const productIds = Array.from(new Set(input.lineItems
+    .flatMap((line) => [line.productId, typeof line.orderLineItemId === 'string' ? sourceLineById.get(line.orderLineItemId)?.productId : undefined])
+    .filter((id): id is string => typeof id === 'string' && id.length > 0)));
   const productRows = productIds.length
     ? await db.select({ id: products.id, name: products.name })
       .from(products)
@@ -34,9 +34,11 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
   const productNameById = new Map(productRows.map((product) => [product.id, product.name]));
 
   return input.lineItems.map((line) => {
-    const sourceLine = sourceLineById.get(line.orderLineItemId);
+    const sourceLine = typeof line.orderLineItemId === 'string'
+      ? sourceLineById.get(line.orderLineItemId)
+      : undefined;
     const productName = productNameById.get(line.productId)
-      || productNameById.get(sourceLine?.productId)
+      || (sourceLine ? productNameById.get(sourceLine.productId) : undefined)
       || line.name
       || null;
     return { ...line, productName };

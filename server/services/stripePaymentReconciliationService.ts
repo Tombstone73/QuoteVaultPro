@@ -215,7 +215,7 @@ export async function captureAndApply(input: StripePaymentObservationInput): Pro
 export async function retryByEvent(eventId: string): Promise<StripePaymentReconciliationResult> {
   const normalizedEventId = required(textOrNull(eventId), "STRIPE_EVENT_ID_REQUIRED", "Stripe event id is required.");
   try {
-    const result = await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx): Promise<StripePaymentReconciliationResult> => {
       await lock(tx, `stripe-webhook:${normalizedEventId}`);
       const [event] = await tx.select().from(paymentWebhookEvents).where(and(
         eq(paymentWebhookEvents.provider, "stripe"),

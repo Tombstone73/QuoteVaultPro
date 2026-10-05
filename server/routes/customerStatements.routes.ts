@@ -24,7 +24,7 @@ function userId(req: any): string | null { return req.user?.claims?.sub || req.u
 function userName(req: any): string | null { return req.user?.claims?.name || req.user?.name || null; }
 function escapeHtml(value: string): string { return value.replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[character] || character)); }
 
-async function sendFrozenCustomerStatement(input: { organizationId: string; statementSnapshotId: string; userId: string | null; userName: string | null; toEmail: string; deliveryJobId: string; subject?: string | null; message?: string | null }): Promise<{ messageId: string | null }> {
+async function sendFrozenCustomerStatement(input: { organizationId: string; statementSnapshotId: string; userId?: string | null; userName?: string | null; toEmail: string; deliveryJobId: string; subject?: string | null; message?: string | null }): Promise<{ messageId: string | null }> {
   const [snapshot] = await db.select().from(customerStatementSnapshots).where(and(
     eq(customerStatementSnapshots.id, input.statementSnapshotId),
     eq(customerStatementSnapshots.organizationId, input.organizationId),

@@ -19,7 +19,7 @@ export async function approveInvoicesForAccounting(input: {
   actorUserName?: string | null;
   source?: "manual" | "invoice_delivery_automation";
 }, options?: { tx?: any }) {
-  const uniqueIds = [...new Set(input.invoiceIds.map(String).filter(Boolean))];
+  const uniqueIds = Array.from(new Set(input.invoiceIds.map(String).filter(Boolean)));
   const approve = async (tx: any) => {
     await lockInvoicePaymentContext(tx, input.organizationId, uniqueIds);
     const [organization] = await tx

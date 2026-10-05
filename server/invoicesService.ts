@@ -520,7 +520,7 @@ export async function listInvoicesPageForOrganization(
   const paidHistoricalState = sql`lower(coalesce(${invoices.status}, '')) = 'paid'
     and lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'
     and coalesce(${invoices.isHistorical}, false)`;
-  const requestedStatuses = opts.statuses?.length ? [...new Set(opts.statuses)] : opts.status ? [opts.status] : [];
+  const requestedStatuses = opts.statuses?.length ? Array.from(new Set(opts.statuses)) : opts.status ? [opts.status] : [];
   const explicitlyFilteringPaidHistorical = requestedStatuses.includes('paid_historical');
   const statusPredicates = requestedStatuses.map((status) => {
     if (status === 'paid_historical') return paidHistoricalState;
@@ -546,8 +546,8 @@ export async function listInvoicesPageForOrganization(
   // Order-backed invoice belongs to its Order's current customer. Exclusion
   // wins for manually composed or legacy URLs that contain an ID in both
   // lists, matching the selector's conflict-resolution behavior.
-  const excludedCustomerIds = [...new Set([...(columnFilters.excludeCustomerIds ?? []), ...(columnFilters.excludeCustomerId ? [columnFilters.excludeCustomerId] : [])].filter(Boolean))];
-  const customerIds = [...new Set([...(opts.customerIds ?? []), ...(opts.customerId ? [opts.customerId] : [])].filter(Boolean))]
+  const excludedCustomerIds = Array.from(new Set([...(columnFilters.excludeCustomerIds ?? []), ...(columnFilters.excludeCustomerId ? [columnFilters.excludeCustomerId] : [])].filter(Boolean)));
+  const customerIds = Array.from(new Set([...(opts.customerIds ?? []), ...(opts.customerId ? [opts.customerId] : [])].filter(Boolean)))
     .filter((id) => !excludedCustomerIds.includes(id));
   if (customerIds.length === 1) whereClauses.push(eq(canonicalInvoiceCustomerId, customerIds[0]!));
   if (customerIds.length > 1) whereClauses.push(inArray(canonicalInvoiceCustomerId, customerIds));
@@ -556,7 +556,7 @@ export async function listInvoicesPageForOrganization(
   if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
   if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
-  const categoricalValues = <T,>(value: T | readonly T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? [...new Set(value)] : [value];
+  const categoricalValues = <T,>(value: T | readonly T[] | undefined): T[] => value == null ? [] : Array.isArray(value) ? Array.from(new Set(value)) : [value];
   if (excludedCustomerIds.length === 1) whereClauses.push(or(isNull(canonicalInvoiceCustomerId), ne(canonicalInvoiceCustomerId, excludedCustomerIds[0]!))!);
   if (excludedCustomerIds.length > 1) whereClauses.push(or(isNull(canonicalInvoiceCustomerId), notInArray(canonicalInvoiceCustomerId, excludedCustomerIds))!);
   // This is the same order lifecycle boundary shown by Job Status: an open

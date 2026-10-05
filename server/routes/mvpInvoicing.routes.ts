@@ -37,7 +37,7 @@ import { issueGuestInvoicePaymentToken } from "../services/guestInvoicePayment.s
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { approveInvoicesForAccounting } from "../services/invoiceAccountingApproval.service";
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
-import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
+import { canonicalManualPaymentMethodValues, canonicalPaymentOperations, type CanonicalManualPaymentMethod } from "../services/billing/canonicalPaymentOperations";
 import { listPayments, normalizePaymentListSort, type PaymentDatePreset } from "../services/paymentListService";
 import { customerPaymentAllocationModes } from "../../shared/customerPaymentAllocation";
 import { applyCustomerCredit, previewCustomerCreditApplication } from "../services/billing/customerAccountCreditOperations";
@@ -86,6 +86,11 @@ function getUserId(user: any): string | undefined {
 
 function getRequestOrganizationId(req: any): string | undefined {
   return req.organizationId || (req.headers["x-organization-id"] as string);
+}
+
+function findCanonicalManualPaymentMethod(value: unknown): CanonicalManualPaymentMethod | undefined {
+  const method = String(value);
+  return canonicalManualPaymentMethodValues.find((candidate) => candidate === method);
 }
 
 function paymentsDebugLogsEnabled(): boolean {
@@ -225,9 +230,9 @@ function invoiceListQueryText(value: unknown): string | undefined {
  * an empty IN() predicate downstream. */
 function invoiceListQueryValues(value: unknown, allowed: readonly string[], label: string): string[] | undefined {
   const rawValues = Array.isArray(value) ? value : [value];
-  const values = [...new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
+  const values = Array.from(new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
     .map((item) => item.trim())
-    .filter(Boolean))];
+    .filter(Boolean)));
   if (values.some((item) => !allowed.includes(item))) {
     throw Object.assign(new Error(`Invalid ${label} filter`), { statusCode: 400 });
   }
@@ -236,8 +241,8 @@ function invoiceListQueryValues(value: unknown, allowed: readonly string[], labe
 
 function invoiceListQueryIds(value: unknown): string[] | undefined {
   const rawValues = Array.isArray(value) ? value : [value];
-  const values = [...new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
-    .map((item) => item.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const values = Array.from(new Set(rawValues.flatMap((item) => typeof item === 'string' ? item.split(',') : [])
+    .map((item) => item.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right));
   return values.length ? values : undefined;
 }
 
@@ -450,6 +455,10 @@ export async function registerMvpInvoicingRoutes(
     };
   }
 
+  type InvoiceEmailOperationsResult =
+    | { recipientEmail: string | null; recipientEmails: string[]; deliveries: InvoiceEmailOperationsResult[]; messageId?: string | null }
+    | { invoiceId: string; invoiceNumber: string; recipientEmail: string; messageId: string | null; status: string };
+
   async function sendInvoiceEmailForOperations(input: {
     organizationId: string;
     invoiceId: string;
@@ -461,7 +470,7 @@ export async function registerMvpInvoicingRoutes(
     allowUnapproved?: boolean;
     subject?: unknown;
     message?: unknown;
-  }) {
+  }): Promise<InvoiceEmailOperationsResult> {
     const logQueueDeliveryStage = async (stage: string, detail: Record<string, unknown> = {}) => {
       if (!input.deliveryJobId) return;
       console.log("[InvoiceEmailQueue]", { stage, jobId: input.deliveryJobId, invoiceId: input.invoiceId, organizationId: input.organizationId, ...detail });
@@ -585,7 +594,7 @@ export async function registerMvpInvoicingRoutes(
       .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, input.organizationId)))
       .orderBy(desc(payments.createdAt));
 
-    const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
+    const paymentSummary = resolveInvoicePdfFinancialSummary(inv, toInvoiceAccountingPayments(paymentRows));
     await logQueueDeliveryStage("invoice_data_loading_completed", { lineItemCount: lineItems.length });
 
     await logQueueDeliveryStage("invoice_rendering_started");
@@ -596,12 +605,18 @@ export async function registerMvpInvoicingRoutes(
     }), 10_000);
     await logQueueDeliveryStage("invoice_artwork_preparation_completed");
     await logQueueDeliveryStage("invoice_pdf_generation_started");
+    const pdfCompanySettings = orgCompany ? {
+      ...orgCompany,
+      remittanceAddress: orgCompany.remittanceAddress
+        ? { ...orgCompany.remittanceAddress, enabled: orgCompany.remittanceAddress.enabled === true }
+        : null,
+    } : null;
     const pdfBytes = await withInvoiceEmailPreparationTimeout("Invoice PDF generation", generateInvoicePdfBytes({
-      invoice: invoiceForCustomerDelivery as any,
+      invoice: invoiceForCustomerDelivery,
       customer: toInvoicePdfBillingParty(cust),
-      companySettings: (orgCompany as any) || null,
+      companySettings: pdfCompanySettings,
       paymentSummary,
-      lineItems: pdfLineItems as any,
+      lineItems: pdfLineItems,
       job,
     }), 15_000);
     await logQueueDeliveryStage("invoice_pdf_generation_completed", { pdfBytes: pdfBytes.length });
@@ -1623,18 +1638,24 @@ export async function registerMvpInvoicingRoutes(
         .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .orderBy(desc(payments.createdAt));
 
-      const paymentSummary = resolveInvoicePdfFinancialSummary(inv as any, toInvoiceAccountingPayments(paymentRows));
+      const paymentSummary = resolveInvoicePdfFinancialSummary(inv, toInvoiceAccountingPayments(paymentRows));
 
       const pdfLineItems = await hydrateInvoicePdfLineItemsWithArtwork({
         organizationId,
         lineItems: lineItems as any,
       });
+      const pdfCompanySettings = orgCompany ? {
+        ...orgCompany,
+        remittanceAddress: orgCompany.remittanceAddress
+          ? { ...orgCompany.remittanceAddress, enabled: orgCompany.remittanceAddress.enabled === true }
+          : null,
+      } : null;
       const pdfBytes = await generateInvoicePdfBytes({
-        invoice: inv as any,
+        invoice: inv,
         customer: cust,
-        companySettings: (orgCompany as any) || null,
+        companySettings: pdfCompanySettings,
         paymentSummary,
-        lineItems: pdfLineItems as any,
+        lineItems: pdfLineItems,
         job,
       });
 
@@ -1666,7 +1687,28 @@ export async function registerMvpInvoicingRoutes(
     catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer payment.', code: error.code }); }
   });
   app.post('/api/invoices/customer-payment', isAuthenticated, tenantContext, async (req: any, res) => {
-    try { const organizationId = getRequestOrganizationId(req); const actorUserId = getUserId(req.user); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); if (!actorUserId) return res.status(401).json({ error: 'Missing user' }); const body = customerPaymentSchema.extend({ method: manualPaymentMethodSchema }).parse(req.body || {}); const appliedAt = body.appliedAt ? new Date(body.appliedAt) : new Date(); if (Number.isNaN(appliedAt.getTime())) return res.status(400).json({ error: 'Invalid appliedAt' }); const idempotencyKey = String(req.headers['idempotency-key'] || '').trim(); if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' }); if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(body.method)) return res.status(400).json({ error: 'Unsupported manual payment method' }); return res.json({ success: true, data: await canonicalPaymentOperations.recordCustomerPayment({ organizationId, actorUserId, ...body, appliedAt, staffSelection: true, idempotencyKey: `ui:${idempotencyKey}` }) }); }
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      if (!actorUserId) return res.status(401).json({ error: 'Missing user' });
+      const body = customerPaymentSchema.extend({ method: manualPaymentMethodSchema }).parse(req.body || {});
+      const appliedAt = body.appliedAt ? new Date(body.appliedAt) : new Date();
+      if (Number.isNaN(appliedAt.getTime())) return res.status(400).json({ error: 'Invalid appliedAt' });
+      const idempotencyKey = String(req.headers['idempotency-key'] || '').trim();
+      if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' });
+      const method = findCanonicalManualPaymentMethod(body.method);
+      if (!method) return res.status(400).json({ error: 'Unsupported manual payment method' });
+      return res.json({ success: true, data: await canonicalPaymentOperations.recordCustomerPayment({
+        organizationId,
+        actorUserId,
+        ...body,
+        method,
+        appliedAt,
+        staffSelection: true,
+        idempotencyKey: `ui:${idempotencyKey}`,
+      }) });
+    }
     catch (error: any) { const notFound = error?.code === 'INVOICE_NOT_FOUND' || error?.code === 'ORDER_NOT_FOUND'; return res.status(notFound ? 404 : error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to record customer payment.', code: error.code }); }
   });
 
@@ -1722,7 +1764,8 @@ export async function registerMvpInvoicingRoutes(
         });
       }
 
-      if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(body.method)) {
+      const method = findCanonicalManualPaymentMethod(body.method);
+      if (!method) {
         return res.status(400).json({ error: 'Unsupported manual payment method' });
       }
       const idempotencyKey = String(req.headers['idempotency-key'] || req.body?.idempotencyKey || '').trim();
@@ -1733,7 +1776,7 @@ export async function registerMvpInvoicingRoutes(
         actorUserId: userId,
         invoiceId: inv.id,
         amountCents,
-        method: body.method,
+        method,
         appliedAt,
         notes: body.notes,
         reference: body.reference,
@@ -2152,88 +2195,6 @@ export async function registerMvpInvoicingRoutes(
           occurredAt: receivedAt,
         });
         return res.json({ received: true });
-
-        const matches = await db
-          .select()
-          .from(payments)
-          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)))
-          .limit(2);
-
-        const paymentRow: any = matches[0];
-
-        if (!paymentRow) {
-          // Recovery path: insert succeeded payment row if missing
-          const [inv] = await db.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId))).limit(1);
-          if (!inv) {
-            console.error('[StripeWebhook] invoice not found for succeeded intent', {
-              eventId,
-              type,
-              organizationId,
-              invoiceId,
-              hasStripePaymentIntentId: !!intentId,
-            });
-            throw new Error('Invoice not found for webhook metadata');
-          }
-
-          try {
-            await db.insert(payments).values({
-              organizationId,
-              invoiceId,
-              provider: 'stripe',
-              status: 'succeeded',
-              amount: (amountCents / 100).toFixed(2),
-              amountCents,
-              currency,
-              stripePaymentIntentId: intentId,
-              method: 'credit_card',
-              paidAt: now,
-              succeededAt: now,
-              metadata: { paymentIntent: { id: intentId }, stripeAccountId },
-              createdByUserId: null,
-              syncStatus: 'pending',
-              createdAt: now,
-              updatedAt: now,
-            } as any);
-          } catch (insertErr: any) {
-            console.error('[StripeWebhook] recovery insert failed', {
-              eventId,
-              type,
-              organizationId,
-              invoiceId,
-              hasStripePaymentIntentId: !!intentId,
-              message: String(insertErr?.message || insertErr),
-            });
-            throw insertErr;
-          }
-        } else {
-          // Idempotent transition
-          const currentStatus = String(paymentRow.status || '').toLowerCase();
-          if (currentStatus !== 'succeeded') {
-            await db
-              .update(payments)
-              .set({ status: 'succeeded', paidAt: now, succeededAt: now, updatedAt: now } as any)
-              .where(eq(payments.id, paymentRow.id));
-          }
-        }
-
-        // Refresh invoice rollup (status-aware)
-        await refreshInvoiceStatus(invoiceId);
-
-        // Best-effort audit
-        try {
-          await db.insert(auditLogs).values({
-            organizationId,
-            userId: null,
-            userName: 'stripe_webhook',
-            actionType: 'payment_succeeded',
-            entityType: 'invoice',
-            entityId: invoiceId,
-            entityName: String(invoiceId),
-            description: 'Stripe payment succeeded (webhook)',
-            newValues: { stripePaymentIntentId: intentId, amountCents } as any,
-            createdAt: now,
-          } as any);
-        } catch {}
       } else if (type === 'payment_intent.payment_failed') {
         const pi: any = obj;
         const intentId = String(pi.id);
@@ -2272,11 +2233,6 @@ export async function registerMvpInvoicingRoutes(
           occurredAt: now,
         });
         return res.json({ received: true });
-
-        await db
-          .update(payments)
-          .set({ status: 'failed', failedAt: now, updatedAt: now } as any)
-          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
       } else if (type === 'payment_intent.canceled') {
         const pi: any = obj;
         const intentId = String(pi.id);
@@ -2315,11 +2271,6 @@ export async function registerMvpInvoicingRoutes(
           occurredAt: now,
         });
         return res.json({ received: true });
-
-        await db
-          .update(payments)
-          .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
-          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
       } else if (type === "refund.created" || type === "refund.updated") {
         const refund: any = obj;
         const organizationId = refund?.metadata?.organizationId ? String(refund.metadata.organizationId) : resolvedOrganizationId;
@@ -3191,10 +3142,11 @@ export async function registerMvpInvoicingRoutes(
       const amt = amountCents !== undefined ? Number(amountCents) / 100 : Number(amount);
       if (!amt || !method) return res.status(400).json({ error: "amountCents/amount and method required" });
 
-      if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(String(method))) return res.status(400).json({ error: "Unsupported manual payment method" });
+      const canonicalMethod = findCanonicalManualPaymentMethod(method);
+      if (!canonicalMethod) return res.status(400).json({ error: "Unsupported manual payment method" });
       const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
       if (!idempotencyKey) return res.status(400).json({ error: "Idempotency-Key header is required", code: "IDEMPOTENCY_KEY_REQUIRED" });
-      const result = await canonicalPaymentOperations.recordManualPayment({ organizationId, actorUserId: userId, invoiceId: inv.id, amountCents: Math.round(amt * 100), method, notes: note ?? notes, idempotencyKey: `ui:${idempotencyKey}`, source: "ui" });
+      const result = await canonicalPaymentOperations.recordManualPayment({ organizationId, actorUserId: userId, invoiceId: inv.id, amountCents: Math.round(amt * 100), method: canonicalMethod, notes: note ?? notes, idempotencyKey: `ui:${idempotencyKey}`, source: "ui" });
       res.json({ success: true, data: result.payment });
     } catch (error: any) {
       console.error("Error recording payment:", error);
@@ -3470,7 +3422,7 @@ export async function registerMvpInvoicingRoutes(
       const statusCode = Number(error.statusCode || error.status || 500);
       console.error("[Invoice Email Draft] failed", {
         invoiceId: String(req.params.id || ""),
-        organizationId,
+        organizationId: getRequestOrganizationId(req),
         statusCode,
         code: error?.code,
         message: error?.message,
@@ -3747,7 +3699,7 @@ export async function registerMvpInvoicingRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);
-      const invoiceIds = Array.isArray(req.body?.invoiceIds)
+      const invoiceIds: string[] = Array.isArray(req.body?.invoiceIds)
         ? Array.from(new Set(req.body.invoiceIds.map((id: unknown) => String(id || "").trim()).filter(Boolean)))
         : [];
       if (!organizationId || !userId) return res.status(401).json({ success: false, error: "Missing organization or user context" });
@@ -3864,11 +3816,12 @@ export async function registerMvpInvoicingRoutes(
       if (!userId) return res.status(401).json({ error: 'Missing user' });
       const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(rel.invoice as any, rel.payments as any);
       if (importedPaymentBlockReason) return res.status(409).json({ error: importedPaymentBlockReason, code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED' });
-      if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(String(method))) return res.status(400).json({ error: 'Unsupported manual payment method' });
+      const canonicalMethod = findCanonicalManualPaymentMethod(method);
+      if (!canonicalMethod) return res.status(400).json({ error: 'Unsupported manual payment method' });
       const amountCents = Math.round(Number(amount) * 100);
       const idempotencyKey = String(req.headers['idempotency-key'] || req.body?.idempotencyKey || '').trim();
       if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' });
-      const result = await canonicalPaymentOperations.recordManualPayment({ organizationId, actorUserId: userId, invoiceId, amountCents, method, notes, idempotencyKey: `ui:${idempotencyKey}`, source: 'ui' });
+      const result = await canonicalPaymentOperations.recordManualPayment({ organizationId, actorUserId: userId, invoiceId, amountCents, method: canonicalMethod, notes, idempotencyKey: `ui:${idempotencyKey}`, source: 'ui' });
       res.json({ success: true, data: result.payment });
     } catch (error: any) {
       console.error('Error applying payment:', error);
