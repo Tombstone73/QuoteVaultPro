@@ -1,0 +1,18 @@
+import React, { useState } from "react";
+import { useFulfillmentIntent } from "./ShipmentBuilder";
+import { fulfillmentOwnerApi } from "./fulfillmentOwnerApi";
+import type { PhysicalOperation } from "../../src/modules/fulfillment/physicalOperationRecovery";
+
+const recoveredHandoffId=(value:unknown):string|undefined=>{if(!value||typeof value!=="object"||Array.isArray(value))return undefined;const handoff=(value as {handoff?:unknown}).handoff;if(!handoff||typeof handoff!=="object")return undefined;const id=(handoff as {handoffId?:unknown}).handoffId;return typeof id==="string"&&id?id:undefined;};
+
+/** Receipt recovery is a read, not a second handoff. Different actors never see submitted bodies. */
+export const PhysicalRecoveryPanel=({organizationId,sessionScope,csrfReady}:{organizationId:string;sessionScope:string;csrfReady:boolean})=>{
+  const intent=useFulfillmentIntent(organizationId,sessionScope),[busy,setBusy]=useState(false),[notice,setNotice]=useState("");
+  const withdraw=async(operation:PhysicalOperation,id:string)=>{
+    if(busy||!csrfReady)return;
+    setBusy(true);
+    try{const result=await fulfillmentOwnerApi.withdraw(organizationId,operation,id);if(result.organizationId!==organizationId||result.operation!==operation||result.businessRequestId!==id||result.status==="pending")throw new Error("Withdrawal did not return an exact terminal owner identity.");setNotice(result.status==="succeeded"?"The owner confirms that this operation already committed. Review its exact result; no new handoff was made.":result.status==="withdrawn"?"This exact intent was explicitly withdrawn under the owner execution lock. Late execution is blocked; this is not an inference of failure from missing browser data.":"The owner returned an already-recorded terminal failure receipt. Browser absence did not establish this outcome.");intent.refreshOwnerResults();}
+    catch{setNotice("Owner reconciliation failed. Do not assume the handoff failed or submit a changed intent.");}finally{setBusy(false);}
+  };
+  return <section className="v2-fulfillment-history"><h2>Durable physical-operation recovery</h2><button type="button" disabled={busy} onClick={intent.refreshOwnerResults}>Read durable owner results</button>{intent.state.kind==="checking"&&<p>Checking owner receipts before another physical operation...</p>}{intent.state.kind==="blocked"&&<p role="alert">{intent.state.message}</p>}{intent.ownerResults.map(item=><article key={`${item.operation}:${item.businessRequestId}`}><b>{item.operation} · {item.status}</b><small>Request {item.businessRequestId}</small>{item.status==="succeeded"&&<><pre aria-label="Exact owner result">{JSON.stringify(item.result,null,2)}</pre>{recoveredHandoffId(item.result)&&<a href={`/v2/organizations/${encodeURIComponent(organizationId)}/fulfillment/handoffs/${encodeURIComponent(recoveredHandoffId(item.result)!)}/document.pdf`} target="_blank" rel="noreferrer">Open recovered handoff document</a>}</>}{item.status==="pending"&&<button type="button" disabled={busy||!csrfReady} onClick={()=>void withdraw(item.operation,item.businessRequestId)}>Withdraw exact intent and block late execution</button>}{item.status==="pending"&&item.anotherActor&&<p>Another actor's submitted details are not disclosed. Receipt identity is tenant, operation and request, not actor. Withdrawal requires fresh owner authorization.</p>}</article>)}{Boolean(intent.ownerResults.length)&&intent.ownerResults.every(item=>item.status!=="pending")&&<button type="button" onClick={intent.acknowledgeOwnerResults}>Acknowledge these owner results before new physical intent</button>}{notice&&<p role="status">{notice}</p>}</section>;
+};

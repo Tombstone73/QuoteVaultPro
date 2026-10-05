@@ -6,11 +6,15 @@ import { failure, success, type ApplicationResult, V2ApplicationError } from "..
 import { brandedId, canonicalJson, type FulfillmentHandoffId, type FulfillmentHandoffLineId, type OrderId, type OrganizationId } from "../shared/commercialValues.js";
 import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
 import type { CompleteFulfillmentInput, FulfillmentAvailability, FulfillmentHandoff, FulfillmentHandoffLine, FulfillmentMethod, FulfillmentTerminalResult, ReplacementFulfillmentAvailability } from "./contracts.js";
+import type { PhysicalOperation } from "./physicalOperationRecovery.js";
+import type { ShipmentSenderSnapshot } from "./shipmentSender.js";
+import type { ManualCarrierShipment } from "./carrierShipment.js";
 
 type Actor=Readonly<{principalKind:OperationContext["principal"]["kind"];principalSubject:string;staffActorUserId?:string}>;
 type Reservation=Readonly<{kind:"new"|"resumed"|"replay";request:Readonly<{id:string;resultJson:unknown|null}>}>;
 type ScopedAvailability=Readonly<{customerId?: string;contactId?: string;availability:readonly FulfillmentAvailability[]}>;
 export interface FulfillmentTransaction {
+ claimPhysicalIntent?(context:OperationContext,operation:PhysicalOperation,input:unknown):Promise<void>;
  reserve(input:Readonly<{organizationId:string;operation:string;businessRequestId:string;payloadFingerprint:string}&Actor>):Promise<Reservation>;
  succeed(organizationId:string,requestId:string,result:FulfillmentTerminalResult):Promise<void>;
  attribute(input:Readonly<{organizationId:string;requestId:string;operation:string;resourceId:string}&Actor>):Promise<void>;
@@ -19,7 +23,7 @@ export interface FulfillmentTransaction {
  lockReplacementAvailability(organizationId:OrganizationId,orderId:OrderId,replacementObligationId:string):Promise<ReplacementFulfillmentAvailability|null>;
  createHandoff(input:Readonly<{id:FulfillmentHandoffId;organizationId:OrganizationId;orderId:OrderId;method:FulfillmentMethod;customerId?:string;contactId?:string;replacementObligationId?:string}&Actor>):Promise<FulfillmentHandoff>;
  createAllocations(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId;orderId:OrderId;allocations:readonly Readonly<{id:FulfillmentHandoffLineId;orderLineId:string;quantity:number}>[]}>):Promise<readonly FulfillmentHandoffLine[]>;
- writeDocumentSnapshot(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId}>):Promise<void>;
+ writeDocumentSnapshot(input:Readonly<{organizationId:OrganizationId;handoffId:FulfillmentHandoffId;method?:FulfillmentMethod;orderId?:OrderId;senderSnapshot?:ShipmentSenderSnapshot;shipment?:Readonly<{shipmentId:string;carrier:ManualCarrierShipment}>}>):Promise<void>;
  readAvailability(organizationId:OrganizationId,orderId:OrderId):Promise<ScopedAvailability|null>;
 }
 export interface FulfillmentTransactionRunner { transaction<T>(action:(tx:FulfillmentTransaction)=>Promise<T>):Promise<T>; }
@@ -42,9 +46,11 @@ export class FulfillmentApplicationService {
    requireOperationPrincipalScope(c); this.validate(c,input);
    const result=await this.runner.transaction(async tx=>{
     const org=brandedId<"OrganizationId">(c.organizationId), initial=await tx.readAvailability(org,input.orderId);
-    if(!initial)throw new V2ApplicationError("NOT_FOUND","Order was not found."); this.require(c,cap,initial.customerId);
-    const r=await tx.reserve({organizationId:c.organizationId,operation,businessRequestId:input.businessRequestId,payloadFingerprint:fingerprint(input),...actor(c)});
-    if(r.kind==="replay")return r.request.resultJson as FulfillmentTerminalResult;
+     if(!initial)throw new V2ApplicationError("NOT_FOUND","Order was not found."); this.require(c,cap,initial.customerId);
+     if(input.replacementObligationId)this.require(c,"fulfillment.replace",initial.customerId);
+     await tx.claimPhysicalIntent?.(c,operation as PhysicalOperation,input);
+     const r=await tx.reserve({organizationId:c.organizationId,operation,businessRequestId:input.businessRequestId,payloadFingerprint:fingerprint(input),...actor(c)});
+     if(r.kind==="replay"){const saved=r.request.resultJson as FulfillmentTerminalResult|null;if(!saved||saved.handoff?.organizationId!==org||saved.handoff.orderId!==input.orderId||saved.handoff.replacementObligationId!==input.replacementObligationId)throw new V2ApplicationError("STALE_STATE","The physical operation has no matching successful receipt.");return saved;}
     const locked=await tx.lockAvailability(org,input.orderId,input.allocations.map(x=>x.orderLineId));
     if(!locked||locked.availability.length!==input.allocations.length)throw new V2ApplicationError("CONFLICT","The Order is cancelled or one or more requested OrderLines are not fulfillable.");
     this.require(c,cap,locked.customerId);
@@ -58,7 +64,7 @@ export class FulfillmentApplicationService {
     }
     const handoff=await tx.createHandoff({id:brandedId<"FulfillmentHandoffId">(randomUUID()),organizationId:org,orderId:input.orderId,method,...(locked.customerId?{customerId:locked.customerId}:{}),...(locked.contactId?{contactId:locked.contactId}:{}),...(input.replacementObligationId?{replacementObligationId:input.replacementObligationId}:{}),...actor(c)});
     const allocations=await tx.createAllocations({organizationId:org,handoffId:handoff.handoffId,orderId:input.orderId,allocations:input.allocations.map(x=>({id:brandedId<"FulfillmentHandoffLineId">(randomUUID()),...x}))});
-    await tx.writeDocumentSnapshot({organizationId:org,handoffId:handoff.handoffId});
+     await tx.writeDocumentSnapshot({organizationId:org,handoffId:handoff.handoffId,method,orderId:input.orderId});
     const after=await tx.readAvailability(org,input.orderId); if(!after)throw new V2ApplicationError("NOT_FOUND","Order was not found.");
     const result={handoff,allocations,availability:after.availability};
     await tx.attribute({organizationId:c.organizationId,requestId:r.request.id,operation,resourceId:handoff.handoffId,...actor(c)});

@@ -18,6 +18,10 @@ import {
 } from "../../infrastructure/authentication/standaloneStaffAuth.js";
 import { composeAuthenticatedQuoteRuntime } from "../../infrastructure/sales/authenticatedQuoteRuntime.js";
 import { assertPreparedQuoteDeliverySchema } from "../../infrastructure/sales/commercialPhysicalPostconditions.js";
+import { assertShipmentSenderSchema } from "../../infrastructure/fulfillment/shipmentSenderPhysicalPostconditions.js";
+import { assertQuickBooksRecoveryPhysicalPostconditions } from "../../infrastructure/accounting/quickBooksRecoveryPhysicalPostconditions.js";
+import { assertQuotePublicationSchema } from "../../infrastructure/sales/quotePublicationPhysicalPostconditions.js";
+import { assertProductionExclusiveMembershipSchema } from "../../infrastructure/production/productionExclusiveMembershipPhysicalPostconditions.js";
 import { createSalesWorkspaceDependencies } from "../../infrastructure/sales/authenticatedSalesWorkspaceRuntime.js";
 import { SupabaseArtworkBinaryStorage } from "../../infrastructure/artwork/artworkBinaryStorage.js";
 import { PostgresWorkspaceArtwork } from "../../infrastructure/artwork/postgresWorkspaceArtwork.js";
@@ -162,6 +166,10 @@ export const createV2DeploymentApp = (
     async () => {
       try {
         await assertPreparedQuoteDeliverySchema(pool);
+        await assertShipmentSenderSchema(pool);
+        await assertQuickBooksRecoveryPhysicalPostconditions(pool);
+        await assertQuotePublicationSchema(pool);
+        await assertProductionExclusiveMembershipSchema(pool);
         return { ready: true };
       } catch {
         return { ready: false };

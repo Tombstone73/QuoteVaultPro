@@ -12,6 +12,8 @@ const preload = path.join(root, 'v2/scripts/validation-preload.cjs');
 const separatelyGated = new Set(['v2/tests/architectureGuardrails.test.mjs']);
 const nonExecutable = new Map([
   ['v2/tests/parity/harness.ts', 'safe-deterministic'],
+  ['v2/tests/infrastructure/productionExclusiveMembership.request.sql', 'safe-deterministic'],
+  ['v2/tests/infrastructure/productionRecoveryFixture.ts', 'safe-deterministic'],
   ['v2/tests/fixtures/p7-qa-artwork.pdf', 'manual'],
 ]);
 export function cleanEnvironment(source = process.env, mode = 'deterministic') {

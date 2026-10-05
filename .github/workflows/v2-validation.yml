@@ -37,6 +37,10 @@ on:
         description: Run separate QA against an ephemeral dedicated CI PostgreSQL database
         type: boolean
         default: false
+      production_native:
+        description: Run reviewed Production28 proof on the exact DEV commit in disposable PostgreSQL
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -67,6 +71,55 @@ jobs:
           name: v2-validation-evidence
           path: .cache/v2-validation/*.json
           if-no-files-found: ignore
+  production-native:
+    needs: deterministic
+    if: >-
+      needs.deterministic.result == 'success' && github.ref == 'refs/heads/dev' &&
+      ((github.event_name == 'push' && github.event.after == github.sha && github.event.deleted == false) ||
+      (github.event_name == 'workflow_dispatch' && inputs.production_native == true))
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: v2_native_b_ci_test
+          POSTGRES_USER: native_ci
+          POSTGRES_PASSWORD: ephemeral-native-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U native_ci -d v2_native_b_ci_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://native_ci:ephemeral-native-ci-only@127.0.0.1:5432/v2_native_b_ci_test
+      V2_M0_POSTGRES_INTEGRATION: '1'
+      V2_L0_LANE_F_NATIVE_APPROVED: '1'
+      V2_L0_LANE_F_APPROVED_NAME: v2_native_b_ci_test
+      V2_L0_NATIVE_EXPECTED_COMMIT: ${{ github.sha }}
+      V2_NATIVE_OWNER_EVENT_AFTER: ${{ github.event.after }}
+      V2_NATIVE_OWNER_MANUAL_OPT_IN: ${{ github.event_name == 'workflow_dispatch' && inputs.production_native == true && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --include=dev --include=optional
+      - name: Validate selected Production native proof
+        id: production_proof
+        run: node v2/scripts/native-owner-entry.mjs --lane production --expected-commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: success() && steps.production_proof.outputs.receiptValid == 'true' && steps.production_proof.outputs.coverageAdjudicated == 'true'
+        with:
+          name: v2-production-native-evidence
+          path: .cache/v2-validation/native-owner/production.json
+          if-no-files-found: error
   guarded-qa:
     if: github.event_name == 'workflow_dispatch' && inputs.guarded_qa
     runs-on: ubuntu-latest

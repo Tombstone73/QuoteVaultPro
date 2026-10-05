@@ -1,0 +1,4 @@
+DROP INDEX v2_sales_quote_delivery_attempts_one_success_uidx;
+CREATE UNIQUE INDEX v2_sales_quote_delivery_attempts_checkpoint_success_uidx
+  ON v2_sales_quote_delivery_attempts (organization_id, quote_document_id, quote_checkpoint_id)
+  WHERE delivery_state='succeeded';

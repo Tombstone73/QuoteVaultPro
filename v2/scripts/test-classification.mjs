@@ -31,6 +31,18 @@ add('v2/tests/persistence/', 'jest', ['salesWorkspace.postgres.test.ts'],
   'safe-deterministic', 'Actual forward DDL and persistence transactions execute in disposable in-memory PostgreSQL via PGlite, without a connection URL, network, or shared database.');
 add('v2/tests/persistence/', 'tsx', ['quoteDeliveryPreparedEvidence.postgres.test.ts'],
   'safe-deterministic', 'Actual Quote delivery migrations and catalog postconditions run in disposable in-memory PGlite with synthetic referenced keys; no connection URL, provider, V1 initialization or external I/O.');
+add('v2/tests/persistence/', 'tsx', ['quickBooksRecoveryContext.postgres.test.ts'],
+  'safe-deterministic', 'Actual accounting recovery migrations and catalog guards execute in isolated in-memory PGlite; no provider transport, external database URL, V1 runtime or network.');
+add('v2/tests/persistence/', 'tsx', ['quoteDeliveryCheckpointSuccess.postgres.test.ts'],
+  'safe-deterministic', 'Actual Quote publication migrations and catalog probes execute in isolated in-memory PGlite; the composed deployment readiness route uses exact fail-fast doubles for unused V1 DB/provider bridges and forbids dotenv, connection and provider execution. Route handlers are invoked without sockets; non-Sales catalog responses are explicitly mocked for the integrated union.');
+add('v2/tests/deployment/', 'tsx', ['v2ReadinessUnion.test.ts'],
+  'safe-deterministic', 'Extracts the actual deployment readiness callback without importing its runtime, binds the five real read-only owner helpers to synthetic query responses and invokes the actual HTTP readiness handler without sockets. Checks callback and route results, exact query order and fail-closed short-circuiting; no dotenv, database URL, native connection, worker or provider initialization.');
+add('v2/tests/modules/', 'tsx', ['shipmentSender.pure.ts'],
+  'safe-deterministic', 'Pure Shipping sender selection and snapshot validation use synthetic owner facts with no persistence, credentials, provider or network initialization.');
+add('v2/tests/infrastructure/', 'tsx', ['shipmentSenderSchema.postgres.test.ts'],
+  'safe-deterministic', 'Actual Shipping migrations and exact protected catalog readiness run in disposable in-memory PGlite with declared minimal referenced schemas; no connection URL, V1 initialization, provider or external I/O.');
+add('v2/ui/src/', 'tsx', ['physicalRecovery.test.tsx'],
+  'safe-deterministic', 'Mounted JSDOM recovery uses an injected scoped owner transport, synthetic receipts and canonical fingerprints; no live database, carrier, provider or physical effect.');
 add('v2/tests/', 'tsx', [
   'infrastructure/workspaceArtwork.test.ts',
   'infrastructure/workspaceMaintenance.test.ts',
@@ -61,6 +73,18 @@ add('v2/tests/interfaces/', 'tsx', ['productionDailyReportRoutes.test.ts'],
   'safe-deterministic', 'Local HTTP report contract executes scoped authority and injected reads without external services.');
 add('v2/tests/infrastructure/', 'tsx', ['productionDailyReport.postgres.test.ts', 'productionReportDependencies.postgres.test.ts'],
   'safe-deterministic', 'In-memory PGlite executes report SQL, actual owner projections and canonical replacement triggers; no database URL, provider, or externally mutating runtime.');
+add('v2/tests/infrastructure/', 'tsx', ['productionRecovery.postgres.test.ts'],
+  'safe-deterministic', 'Actual Production recovery and Run owner/HTTP operations execute in disposable in-memory PGlite with declared read schemas and local mocked HTTP authority; no connection URL, V1 initialization, provider or external I/O.');
+add('v2/tests/modules/', 'tsx', ['productionRecovery.pure.ts'],
+  'safe-deterministic', 'Fresh Production authority and exact-intent contracts use injected immutable owner receipts without persistence, credentials or network initialization.');
+add('v2/ui/src/', 'tsx', ['productionRecoveryApi.test.ts'],
+  'safe-deterministic', 'Injected central-transport contracts exercise exact Production admission, replay and scope rejection without fetch, provider or physical effects.');
+add('v2/tests/infrastructure/', 'none', ['productionExclusiveMembership.request.sql', 'productionRecoveryFixture.ts'],
+  'safe-deterministic', 'Unapplied SQL proposal and declared minimal read-schema helper are imported/exercised by the separately registered PGlite suite; neither is independently executable or automatically migrated.');
+add('v2/tests/infrastructure/', 'tsx', ['productionRunExclusive.native.ts'],
+  'safe-db-guarded', 'Owner-native PostgreSQL suite is excluded from canonical. It requires additional explicit Lane F clone approval and the exact safe test database name before pg import; the ordinary guarded DB environment does not forward these approvals and cannot authorize native execution. Accepted native coverage additionally requires the reviewed closed launcher, exact clean source SHA, fixed case manifest and verified receipt. No native execution is implied by registration.');
+add('v2/tests/infrastructure/persistence/', 'tsx', ['productionExclusiveMembershipSchema.test.ts'],
+  'safe-deterministic', 'Actual forward Production membership SQL and exact catalog postconditions execute in isolated in-memory PGlite, including corruption/rollback and historical-overlap checks; no native connection URL, V1 initialization, provider or external I/O.');
 add('v2/tests/', 'tsx', ['interfaces/productionDailyReportMount.test.ts', 'infrastructure/productionDailyReportClock.postgres.test.ts'],
   'safe-deterministic', 'Actual Production composition, Passport binding, fresh permission issuance and Settings clock use local HTTP, in-memory PGlite and bounded operational read fixtures; no credentials, provider or live database.');
 add('v2/tests/infrastructure/', 'jest', ['financialInvoicePresentation.test.ts'],
@@ -75,6 +99,8 @@ add('v2/tests/infrastructure/', 'jest', [
   'productionWorkCreationOwner.test.ts',
   'routingPrepressOwnership.test.ts',
 ], 'safe-deterministic', 'Production-owned work creation and caller-transaction regressions use explicit fake PoolClient/Pool; no database initialization or provider effects.');
+add('v2/tests/infrastructure/', 'jest', ['quickBooksPaymentRecovery.test.ts'],
+  'safe-deterministic', 'Closed exact-source Accounting fixtures use a fail-closed import allowlist, actual protected SQL in isolated in-memory PGlite and inert provider responses; no V1 runtime initialization, connection URL, credentials or external provider/network execution.');
 add('v2/tests/', 'tsx', [
   'aiSafeToolPlane.test.ts',
   'artworkAiCommand.test.ts',
@@ -353,7 +379,8 @@ add('v2/tests/persistence/', 'psql', ['artworkAdditiveAssignments.postgres.sql',
 add('v2/tests/fixtures/', 'none', ['p7-qa-artwork.pdf'], 'manual', 'Binary artwork fixture consumed by QA; asset, not an executable test.');
 add('v2/tests/parity/', 'none', ['harness.ts'], 'safe-deterministic', 'Helper imported and exercised by the explicitly listed parity Jest suites; not an independent self-executing suite.');
 add('v2/tests/', 'node-test', ['architectureGuardrails.test.mjs'], 'safe-deterministic', 'Dedicated node:test negative architecture fixtures; separately executed canonical architecture-tests gate.');
-add('v2/tests/', 'node-test', ['ciValidationSummary.test.mjs'], 'safe-deterministic', 'Pure canonical-report fixtures verify public CI diagnostics redact arbitrary text and retain failures; imports Node built-ins, the inert summary helper and this static reviewed manifest, without database, network or application initialization.');
+add('v2/tests/', 'node-test', ['ciValidationSummary.test.mjs'], 'safe-deterministic', 'Pure canonical-report fixtures verify public CI diagnostics redact arbitrary text and retain failures; imports Node built-ins, the inert summary helper, static manifest/case map and TypeScript for syntax-only Payment registration verification, without executing application or Payment fixtures or initializing database/network services.');
+add('v2/tests/', 'node-test', ['nativeOwnerEntry.test.mjs'], 'safe-deterministic', 'Reviewed native-launcher safety fixtures use synthetic source checkouts, inert hooks and owned subprocess/filesystem/network refusal probes; no approved owner-native database connection, provider or live application execution. Real coverage contracts remain separately fail-closed.');
 add('v2/ui/src/', 'tsx', [
   'OrderLineArtwork.test.tsx',
   'ProductBuilderReference.hydration.test.ts',

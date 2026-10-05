@@ -31,6 +31,31 @@ test('a timed-out process cannot pass even if its termination handler exits zero
   assert.equal(result.timedOut, true);
   assert.equal(result.status, 1);
 });
+test('only the two declared Production data/helper assets can use their non-executable registration', () => {
+  const assets = ['v2/tests/infrastructure/productionExclusiveMembership.request.sql', 'v2/tests/infrastructure/productionRecoveryFixture.ts']
+    .map(file => ({ ...row, path: file, runner: 'none' }));
+  for (const entry of assets) {
+    assert.doesNotThrow(() => checkCompleteness([entry.path], [entry]));
+    assert.throws(() => checkCompleteness([entry.path], [{ ...entry, category: 'manual' }]), /malformed/);
+  }
+  assert.deepEqual(selectSuites('safe-deterministic', 'v2/tests/', assets), []);
+  for (const file of ['v2/tests/infrastructure/newFixture.ts', 'v2/tests/infrastructure/productionRecovery.postgres.test.ts']) {
+    assert.throws(() => checkCompleteness([file], [{ ...row, path: file, runner: 'none' }]), /malformed/);
+  }
+});
+test('Production native registration never enters canonical or inherits native approval through the ordinary environment', () => {
+  const native = { ...row, path: 'v2/tests/infrastructure/productionRunExclusive.native.ts', category: 'safe-db-guarded' };
+  assert.doesNotThrow(() => checkCompleteness([native.path], [native]));
+  assert.deepEqual(selectSuites('safe-deterministic', 'v2/tests/', [native]), []);
+  const env = cleanEnvironment({ ...process.env, V2_L0_LANE_F_NATIVE_APPROVED: '1', V2_L0_LANE_F_APPROVED_NAME: 'v2_native_b_ci_test',
+    TEST_DATABASE_URL: 'postgresql://fixture:fixture@127.0.0.1:5432/v2_native_b_ci_test' }, 'db');
+  for (const name of ['V2_L0_LANE_F_NATIVE_APPROVED', 'V2_L0_LANE_F_APPROVED_NAME', 'TEST_DATABASE_URL']) assert.equal(env[name], undefined);
+  const require = createRequire(import.meta.url);
+  const result = spawnSync(process.execPath, [require.resolve('tsx/cli'), native.path], { cwd: root, env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Lane F native clone approval is required/);
+  assert.doesNotMatch(result.stderr, /fixture:fixture|connect ECONNREFUSED/);
+});
 test('timeout cleanup also terminates an owned grandchild that ignores graceful termination', async () => {
   const source = `const c=require('node:child_process').spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000);"],{stdio:'ignore'});console.log('owned-child:'+c.pid);process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`;
   const result = await run('timeout tree fixture', ['-e', source], cleanEnvironment(), true, process.execPath, { timeoutMs: 500, printFailure: false });

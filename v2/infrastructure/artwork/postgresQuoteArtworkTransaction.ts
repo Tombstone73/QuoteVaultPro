@@ -37,6 +37,35 @@ export class PostgresQuoteArtworkTransactionRunner implements QuoteArtworkTransa
 /** Conversion-only adapter sharing the caller's Quote→Order transaction. */
 export class PostgresQuoteArtworkConversionPort {
   constructor(private readonly client: PoolClient) {}
-  async snapshotAccepted(org:string, quoteId:string, checkpointId:string):Promise<void>{await this.client.query(`INSERT INTO v2_quote_accepted_artwork_snapshots(id,organization_id,quote_document_id,acceptance_checkpoint_id,quote_line_id,quote_artwork_assignment_id,artwork_file_id,purpose,side,source_page_index,layer_key,layer_order,evidence_fingerprint) SELECT gen_random_uuid()::text,a.organization_id,a.quote_document_id,$3,a.quote_line_id,a.id,a.artwork_file_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,'sha256:'||encode(digest(concat_ws('|',a.id,a.artwork_file_id,a.quote_line_id,coalesce(a.side,''),coalesce(a.source_page_index::text,''),coalesce(a.layer_key,''),coalesce(a.layer_order::text,'')),'sha256'),'hex') FROM v2_quote_artwork_assignments a WHERE a.organization_id=$1 AND a.quote_document_id=$2 ON CONFLICT(organization_id,acceptance_checkpoint_id,quote_artwork_assignment_id) DO NOTHING`,[org,quoteId,checkpointId]);}
+  async snapshotAccepted(org:string, quoteId:string, checkpointId:string):Promise<void>{await this.snapshotCurrentAssignments(org,quoteId,checkpointId,null);}
+  async snapshotPublished(org:string, quoteId:string, checkpointId:string, lineIds:readonly string[]):Promise<void>{
+    if(!Array.isArray(lineIds)||lineIds.some(id=>typeof id!=="string"||!id.trim())||new Set(lineIds).size!==lineIds.length)
+      throw new V2ApplicationError("VALIDATION_ERROR","Published Artwork line IDs must be distinct valid identities.");
+    const checkpoint=await this.client.query<{payload:{schemaVersion?:unknown;organizationId?:unknown;checkpointId?:unknown;kind?:unknown;sourceDocument?:{quoteId?:unknown};commercial?:{lines?:readonly {lineId?:unknown}[]}}}>("SELECT c.payload FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.organization_id=d.organization_id AND q.document_id=d.id JOIN v2_sales_quote_checkpoints c ON c.organization_id=d.organization_id AND c.quote_document_id=d.id WHERE d.organization_id=$1 AND d.id=$2 AND d.document_kind='quote' AND c.id=$3 AND c.checkpoint_kind='quote_accepted' FOR UPDATE OF d,q",[org,quoteId,checkpointId]);
+    const accepted=checkpoint.rows.length===1?checkpoint.rows[0]!.payload:null;
+    if(!accepted||accepted.schemaVersion!==1||accepted.organizationId!==org||accepted.checkpointId!==checkpointId
+      ||accepted.kind!=="quote_accepted"||accepted.sourceDocument?.quoteId!==quoteId||!Array.isArray(accepted.commercial?.lines))
+      throw new V2ApplicationError("CONFLICT","Published Artwork requires the exact tenant-scoped accepted Quote checkpoint.");
+    const authorized=accepted.commercial.lines.map(line=>line?.lineId);
+    const identities=new Set(authorized);
+    if(authorized.some(id=>typeof id!=="string"||!id.trim())||identities.size!==authorized.length
+      ||authorized.length!==lineIds.length||lineIds.some(id=>!identities.has(id)))
+      throw new V2ApplicationError("CONFLICT","Published Artwork line IDs do not match the immutable accepted Quote line set.");
+    // Accepted Sales evidence authorizes historical line identities even when
+    // a current line/usage was removed. A surviving foreign identity is never
+    // treated as that historical Quote line or selected by first-match fallback.
+    const current=await this.client.query<{id:string;organization_id:string;document_id:string}>("SELECT id,organization_id,document_id FROM v2_sales_document_lines WHERE id=ANY($1::varchar[])",[lineIds]);
+    if(current.rows.some(line=>line.organization_id!==org||line.document_id!==quoteId))
+      throw new V2ApplicationError("CONFLICT","Published Artwork line identity belongs to a different tenant or document.");
+    const existing=await this.client.query<{quote_line_id:string}>("SELECT quote_line_id FROM v2_quote_accepted_artwork_snapshots WHERE organization_id=$1 AND quote_document_id=$2 AND acceptance_checkpoint_id=$3",[org,quoteId,checkpointId]);
+    if(existing.rows.some(snapshot=>!identities.has(snapshot.quote_line_id)))
+      throw new V2ApplicationError("CONFLICT","Accepted Artwork evidence is outside the authorized published line scope.");
+    if(existing.rows.length)return;
+    // This is CURRENT operational Artwork at acceptance, not an Artwork
+    // manifest approved by the commercial PDF. Missing/deleted usages stay
+    // absent; draft-only lines never acquire accepted or Order provenance.
+    await this.snapshotCurrentAssignments(org,quoteId,checkpointId,lineIds);
+  }
+  private async snapshotCurrentAssignments(org:string, quoteId:string, checkpointId:string, lineIds:readonly string[]|null):Promise<void>{await this.client.query(`INSERT INTO v2_quote_accepted_artwork_snapshots(id,organization_id,quote_document_id,acceptance_checkpoint_id,quote_line_id,quote_artwork_assignment_id,artwork_file_id,purpose,side,source_page_index,layer_key,layer_order,evidence_fingerprint) SELECT gen_random_uuid()::text,a.organization_id,a.quote_document_id,$3,a.quote_line_id,a.id,a.artwork_file_id,a.purpose,a.side,a.source_page_index,a.layer_key,a.layer_order,'sha256:'||encode(digest(concat_ws('|',a.id,a.artwork_file_id,a.quote_line_id,coalesce(a.side,''),coalesce(a.source_page_index::text,''),coalesce(a.layer_key,''),coalesce(a.layer_order::text,'')),'sha256'),'hex') FROM v2_quote_artwork_assignments a WHERE a.organization_id=$1 AND a.quote_document_id=$2 AND ($4::varchar[] IS NULL OR a.quote_line_id=ANY($4::varchar[])) ON CONFLICT(organization_id,acceptance_checkpoint_id,quote_artwork_assignment_id) DO NOTHING`,[org,quoteId,checkpointId,lineIds]);}
   async carryAcceptedToOrder(input:Readonly<{organizationId:string;quoteId:string;acceptanceCheckpointId:string;orderId:string;lineMap:ReadonlyMap<string,string>}>):Promise<void>{const rows=await this.client.query<{id:string;quote_line_id:string}>("SELECT id,quote_line_id FROM v2_quote_accepted_artwork_snapshots WHERE organization_id=$1 AND quote_document_id=$2 AND acceptance_checkpoint_id=$3 ORDER BY id",[input.organizationId,input.quoteId,input.acceptanceCheckpointId]);for(const snapshot of rows.rows){const orderLineId=input.lineMap.get(snapshot.quote_line_id);if(!orderLineId)throw new V2ApplicationError("CONFLICT","Accepted Quote artwork could not be mapped to the Order line.");await this.client.query(`INSERT INTO v2_artwork_assignments(id,organization_id,artwork_file_id,order_document_id,order_line_id,purpose,side,source_page_index,layer_key,layer_order,identity_fingerprint,source_quote_accepted_artwork_snapshot_id) SELECT gen_random_uuid()::text,s.organization_id,s.artwork_file_id,$4,$5,'customer_supplied',s.side,s.source_page_index,s.layer_key,s.layer_order,'sha256:'||encode(digest(concat_ws('|',s.id,$4::varchar,$5::varchar),'sha256'),'hex'),s.id FROM v2_quote_accepted_artwork_snapshots s WHERE s.organization_id=$1 AND s.id=$2 AND s.quote_document_id=$3 ON CONFLICT(organization_id,source_quote_accepted_artwork_snapshot_id) WHERE source_quote_accepted_artwork_snapshot_id IS NOT NULL DO NOTHING`,[input.organizationId,snapshot.id,input.quoteId,input.orderId,orderLineId]);}}
 }

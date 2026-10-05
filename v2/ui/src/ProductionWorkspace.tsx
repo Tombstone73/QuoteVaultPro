@@ -1,5 +1,5 @@
 import { OperationalQueuePager } from "./OperationalQueuePager";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   newBusinessRequestId,
@@ -14,6 +14,7 @@ import { RollStationPanel } from "./RollStationPanel";
 import { FlatbedStationPanel } from "./FlatbedStationPanel";
 import { ProductionRunWorkspace } from "./ProductionRunWorkspace";
 import { ProductionDailyReport } from "./ProductionDailyReport";
+import { discoverProductionOutput, prepareProductionOutput, executeProductionOutput } from "./productionRecoveryApi";
 
 type Station = "flatbed" | "roll";
 type ProductionView = "overview" | "board" | "calendar" | "stations" | "daily-report";
@@ -146,6 +147,7 @@ const clearProductionOutputIntentsAfterRefresh = (organizationId: string): boole
 const clearConfirmedProductionOutput = (submission: PendingProductionOutput): boolean => {
   try {
     const key = pendingProductionOutputKey(submission.organizationId, submission.sessionScope), raw = sessionStorage.getItem(key);
+    if(raw===null&&sessionStorage.getItem(outputPresenceKey)===null&&outputIntentKeys().length===0)return true;
     if (sessionStorage.getItem(outputPresenceKey) !== submission.organizationId || !raw || JSON.stringify(parsePendingProductionOutput(raw, submission.organizationId, submission.sessionScope)) !== JSON.stringify(submission)) return false;
     const keys = outputIntentKeys();
     if (keys.length !== 1 || keys[0] !== key) return false;
@@ -693,10 +695,14 @@ export const ProductionWorkspace = ({
   const [outputRecoveryBusy, setOutputRecoveryBusy] = useState(false);
   const [queueState, setQueueState] = useState<Record<Station, { page: number; pageSize: 25 | 50 | 100; search: string }>>({ flatbed: { page: 1, pageSize: 25, search: "" }, roll: { page: 1, pageSize: 25, search: "" } });
   const queryClient = useQueryClient();
+  const currentScope=useRef(`${organizationId}:${sessionScope}`);currentScope.current=`${organizationId}:${sessionScope}`;
+  const admissionEpoch=useRef(0);
+  useEffect(()=>{currentScope.current=`${organizationId}:${sessionScope}`;return()=>{currentScope.current="";admissionEpoch.current++;};},[organizationId,sessionScope]);
+  const durableOutput = useQuery({queryKey:["v2",sessionScope,organizationId,"production","output-recovery"],queryFn:({signal})=>discoverProductionOutput(organizationId,sessionScope,"production.attempt.output.v1",undefined,signal),enabled:Boolean(organizationId&&sessionScope&&canView&&canWork),retry:false});
+  const [reviewedReceipt,setReviewedReceipt]=useState("");
   const outputRecoveryScopeMatches = outputRecovery.organizationId === organizationId && outputRecovery.sessionScope === sessionScope;
-  const outputRecoveryBlocked = !outputRecoveryScopeMatches || outputRecovery.status === "blocked" || outputRecovery.status === "pending";
   const outputFieldsHidden = !outputRecoveryScopeMatches || outputRecovery.status === "blocked";
-  const pendingOutput = outputRecoveryScopeMatches && outputRecovery.status === "pending" ? outputRecovery.submission : null;
+  const pendingOutput = canView&&canWork&&!durableOutput.isError&&outputRecoveryScopeMatches && outputRecovery.status === "pending" ? outputRecovery.submission : null;
   useEffect(() => {
     const refreshRecovery = () => setOutputRecovery(readPendingProductionOutput(organizationId, sessionScope));
     window.addEventListener(outputIntentChangedEvent, refreshRecovery);
@@ -748,6 +754,10 @@ export const ProductionWorkspace = ({
   const scopedWork = routedProductionWorkId
     ? routedWork.data
     : queue.data?.items.find((item) => item.work.productionWorkId === selectedWorkId);
+  const latestReceipt=canView&&canWork&&!durableOutput.isError?durableOutput.data?.find(receipt=>receipt.productionWorkId===scopedWork?.work.productionWorkId&&Boolean(scopedWork?.attempts.some(attempt=>attempt.productionAttemptId===receipt.productionAttemptId))):undefined;
+  const durableOutputBlocked=canWork&&(durableOutput.isPending||durableOutput.isError||Boolean(latestReceipt&&reviewedReceipt!==`${organizationId}:${sessionScope}:${latestReceipt.businessRequestId}`));
+  const outputRecoveryBlocked=durableOutputBlocked||!outputRecoveryScopeMatches||outputRecovery.status!=="ready";
+  useEffect(()=>{const receipt=latestReceipt;if(!receipt?.intent||receipt.intentRedacted||receipt.status!=="pending"||!receipt.productionAttemptId||outputRecovery.status!=="ready"||!outputRecoveryScopeMatches)return;setOutputRecovery({status:"pending",organizationId,sessionScope,submission:{organizationId,sessionScope,productionAttemptId:receipt.productionAttemptId,businessRequestId:receipt.businessRequestId,submittedAt:receipt.submittedAt,input:{goodQuantityDelta:receipt.intent.goodQuantityDelta,wasteQuantityDelta:receipt.intent.wasteQuantityDelta??0}}});},[latestReceipt,organizationId,sessionScope,outputRecovery.status,outputRecoveryScopeMatches]);
   const showRunRecovery = outputRecoveryScopeMatches && outputRecovery.status === "blocked" && outputRecovery.reason === "other-handler" && stationSurface === "runs";
   const hideStationOutputDetails = outputFieldsHidden && !showRunRecovery;
   const work = outputFieldsHidden ? undefined : scopedWork;
@@ -800,14 +810,16 @@ export const ProductionWorkspace = ({
     onSuccess: refresh,
   });
   const output = useMutation({
-    mutationFn: (submission: PendingProductionOutput) =>
-      productionApi.output(
-        submission.organizationId,
-        submission.productionAttemptId,
-        submission.businessRequestId,
-        submission.input,
-    ),
-    onSuccess: async (_result, submission) => {
+    mutationFn: async (submission: PendingProductionOutput) => {
+      const epoch=admissionEpoch.current,scope=`${submission.organizationId}:${submission.sessionScope}`;
+      const assertCurrent=()=>{if(currentScope.current!==scope||admissionEpoch.current!==epoch)throw Error("Production output admission is inactive. The original intent remains pending.");};
+      assertCurrent();
+      const prepared=await prepareProductionOutput(submission.organizationId,submission.sessionScope,"production.attempt.output.v1",{...submission.input,businessRequestId:submission.businessRequestId,productionAttemptId:submission.productionAttemptId},assertCurrent);
+      const value=await executeProductionOutput(submission.organizationId,submission.sessionScope,"production.attempt.output.v1",{productionAttemptId:submission.productionAttemptId},submission.businessRequestId,prepared.input,assertCurrent);return {value,epoch};},
+    onSuccess: async (result, submission) => {
+      if(currentScope.current!==`${submission.organizationId}:${submission.sessionScope}`||result.epoch!==admissionEpoch.current)return;
+      await durableOutput.refetch();
+      if(currentScope.current!==`${submission.organizationId}:${submission.sessionScope}`||result.epoch!==admissionEpoch.current)return;
       if (clearConfirmedProductionOutput(submission)) {
         outputFences.delete(outputFenceKey(submission.organizationId, submission.sessionScope));
         notifyOutputIntentChanged();
@@ -823,7 +835,11 @@ export const ProductionWorkspace = ({
     if (!outputRecoveryScopeMatches || outputRecoveryBusy) return;
     setOutputRecoveryBusy(true);
     try {
-      const exactWorkId = pendingOutput && activeAttempt?.productionAttemptId === pendingOutput.productionAttemptId ? activeAttempt.productionWorkId : undefined;
+      if(!pendingOutput)throw Error("The exact original intent must be recovered before it can be cleared.");
+      const [receipt]=await discoverProductionOutput(organizationId,sessionScope,"production.attempt.output.v1",pendingOutput.businessRequestId);
+      if(currentScope.current!==`${organizationId}:${sessionScope}`)return;
+      if(!receipt?.intent||receipt.status==="pending"||receipt.productionAttemptId!==pendingOutput.productionAttemptId||receipt.intent.goodQuantityDelta!==pendingOutput.input.goodQuantityDelta||(receipt.intent.wasteQuantityDelta??0)!==pendingOutput.input.wasteQuantityDelta)throw Error("The original output result is not confirmed.");
+      const exactWorkId = receipt.productionWorkId;
       await refreshProductionOwnerViews(organizationId, exactWorkId);
       if (!clearProductionOutputIntentsAfterRefresh(organizationId)) throw Error("Saved output intent could not be reconciled in session storage.");
       clearOutputFencesForOrganization(organizationId);
@@ -832,6 +848,8 @@ export const ProductionWorkspace = ({
       setOutputRecovery(nextRecovery);
       if (nextRecovery.status !== "ready") return;
       output.reset();
+      setReviewedReceipt(`${organizationId}:${sessionScope}:${receipt.businessRequestId}`);
+      await durableOutput.refetch();
       await refresh();
     } catch {
       outputFences.set(outputFenceKey(organizationId, sessionScope), "owner-refresh-failed");
@@ -841,7 +859,7 @@ export const ProductionWorkspace = ({
     }
   };
   const submitOutput = (attemptId: string) => {
-    if (!outputRecoveryScopeMatches || outputRecovery.status !== "ready" || !activeAttempt || activeAttempt.productionAttemptId !== attemptId || !hasOutput) return;
+    if (durableOutputBlocked || !outputRecoveryScopeMatches || outputRecovery.status !== "ready" || !activeAttempt || activeAttempt.productionAttemptId !== attemptId || !hasOutput) return;
     const freshRecovery = readPendingProductionOutput(organizationId, sessionScope);
     if (freshRecovery.status !== "ready") { setOutputRecovery(freshRecovery); notifyOutputIntentChanged(); return; }
     const submission: PendingProductionOutput = Object.freeze({
@@ -860,6 +878,31 @@ export const ProductionWorkspace = ({
     output.reset();
     setOutputRecovery({ status: "pending", organizationId, sessionScope, submission: persisted });
     output.mutate(persisted);
+  };
+  const recoverOwnerReceipt=async()=>{
+    if(!latestReceipt||outputRecoveryBusy)return;setOutputRecoveryBusy(true);
+    try{
+      const [receipt]=await discoverProductionOutput(organizationId,sessionScope,"production.attempt.output.v1",latestReceipt.businessRequestId);
+      if(currentScope.current!==`${organizationId}:${sessionScope}`)return;
+      if(!receipt?.intent||!receipt.productionAttemptId)throw Error("Historical exact output intent is unavailable.");
+      const marker=sessionStorage.getItem(outputPresenceKey),savedKeys=outputIntentKeys();
+      if(marker!==null&&marker!==organizationId||savedKeys.length>1)throw Error("Another output intent remains fenced.");
+      if(savedKeys.length){
+        const savedKey=savedKeys[0]!,raw=sessionStorage.getItem(savedKey),scope=raw?JSON.parse(raw).sessionScope:undefined;
+        const saved=raw&&typeof scope==="string"?parsePendingProductionOutput(raw,organizationId,scope):null;
+        if(!saved||savedKey!==pendingProductionOutputKey(organizationId,saved.sessionScope)||saved.businessRequestId!==receipt.businessRequestId||saved.productionAttemptId!==receipt.productionAttemptId||saved.input.goodQuantityDelta!==receipt.intent.goodQuantityDelta||saved.input.wasteQuantityDelta!==(receipt.intent.wasteQuantityDelta??0))throw Error("The stored intent does not match this authorized owner receipt.");
+        sessionStorage.removeItem(savedKey);if(sessionStorage.getItem(savedKey)!==null)throw Error("Exact intent cleanup failed.");
+      }else if(marker!==null)throw Error("Unidentified output presence cannot be reconciled from another receipt.");
+      sessionStorage.removeItem(outputPresenceKey);if(sessionStorage.getItem(outputPresenceKey)!==null)throw Error("Exact marker cleanup failed.");
+      clearOutputFencesForOrganization(organizationId);
+      if(receipt.status==="pending"){
+        const submission:PendingProductionOutput={organizationId,sessionScope,productionAttemptId:receipt.productionAttemptId,businessRequestId:receipt.businessRequestId,submittedAt:receipt.submittedAt,input:{goodQuantityDelta:receipt.intent.goodQuantityDelta,wasteQuantityDelta:receipt.intent.wasteQuantityDelta??0}};
+        const persisted=persistPendingProductionOutput(submission);if(!persisted)throw Error("Recovered intent persistence failed.");
+        setOutputRecovery({status:"pending",organizationId,sessionScope,submission:persisted});
+      }else{setOutputRecovery(readPendingProductionOutput(organizationId,sessionScope));setReviewedReceipt(`${organizationId}:${sessionScope}:${receipt.businessRequestId}`);}
+      notifyOutputIntentChanged();await durableOutput.refetch();
+    }catch{outputFences.set(outputFenceKey(organizationId,sessionScope),"owner-refresh-failed");setOutputRecovery(blockedOutputRecovery(organizationId,sessionScope,"owner-refresh-failed"));}
+    finally{setOutputRecoveryBusy(false);}
   };
   const complete = useMutation({
     mutationFn: (attemptId: string) =>
@@ -967,6 +1010,9 @@ export const ProductionWorkspace = ({
         </div>
       </header>
 
+      {canWork&&durableOutput.isError&&<p role="alert">Durable Production recovery is unavailable. No new physical output can be submitted.</p>}
+      {latestReceipt&&<p>Owner receipt binding: Work {latestReceipt.productionWorkId??"not retained"}; Attempt {latestReceipt.productionAttemptId??"not retained"}.</p>}
+      {latestReceipt&&<section aria-label="Durable Production output receipt"><p>Original request {latestReceipt.businessRequestId}: {latestReceipt.intent?`${latestReceipt.intent.goodQuantityDelta} good / ${latestReceipt.intent.wasteQuantityDelta??0} waste.`:latestReceipt.intentRedacted?"Submitted input is private to its initiating actor. Only protected status is shown; pending status is not a commitment.":latestReceipt.historicalIntentUnavailable?"Historical committed result recovered; exact submitted quantities were not retained and cannot be replayed.":"Exact input is unavailable; no commitment is inferred."} Owner recorded {latestReceipt.submittedAt}. Result: {latestReceipt.status}. {latestReceipt.rejection?.message}</p>{latestReceipt.intent&&<button type="button" disabled={outputRecoveryBusy} onClick={()=>void recoverOwnerReceipt()}>Recover this owner request</button>}{latestReceipt.status!=="pending"&&<button type="button" onClick={()=>setReviewedReceipt(`${organizationId}:${sessionScope}:${latestReceipt.businessRequestId}`)}>I reviewed the owner output result</button>}</section>}
       {!outputRecoveryScopeMatches && <section className="v2-production-output-pending" role="alert" aria-label="Redacted Production output recovery">
         <p>A saved Production output intent is fenced to another scope. Its request details are hidden; physical output is blocked.</p>
         {outputRecovery.organizationId === organizationId && <button type="button" disabled={!outputRecoveryScopeMatches || outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}
@@ -980,7 +1026,7 @@ export const ProductionWorkspace = ({
           {output.isError ? `Output response was not confirmed: ${productionErrorMessage(output.error)}. ` : "Output request is awaiting confirmation. "}
           Original request {pendingOutput.businessRequestId} for attempt {pendingOutput.productionAttemptId} was submitted at {pendingOutput.submittedAt} with {pendingOutput.input.goodQuantityDelta} good and {pendingOutput.input.wasteQuantityDelta} waste.
         </p>
-        {isDefiniteProductionOutputRejection(output.error) && <button type="button" disabled={outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}
+        <button type="button" disabled={outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Look up original output result</button>
         <button type="button" disabled={output.isPending} onClick={() => output.mutate(pendingOutput)}>Retry original output</button>
       </section>}
 

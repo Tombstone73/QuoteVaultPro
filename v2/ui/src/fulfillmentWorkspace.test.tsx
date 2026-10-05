@@ -9,6 +9,8 @@ import { fulfillmentApi, type FulfillmentShipmentContainer, type FulfillmentShip
 import type { ReplacementFulfillmentProjection } from "../../src/modules/fulfillment/contracts";
 import { FulfillmentWorkspace, preferredHandoffMethod } from "./FulfillmentWorkspace";
 import { canonicalFulfillmentIntentBody, validateFulfillmentIntentRecord } from "./ShipmentBuilder";
+import { installFulfillmentOwnerTestTransport,recordFulfillmentOwnerTestResult } from "./fulfillmentOwnerTestHarness";
+installFulfillmentOwnerTestTransport();
 
 const order={orderId:"order-anomaly",number:"ORD-1000",commercialState:"open" as const,customerName:"3 Alarm Graphics",customerId:"customer-a",lines:[{orderId:"order-anomaly",orderLineId:"line-anomaly",description:"Retractable Banner",orderedQuantity:1,completedPickupQuantity:1,completedShipmentQuantity:0,completedFulfillmentQuantity:1,completedProductionQuantity:0,productionRequired:true,availableFulfillmentQuantity:0,remainingProductionQuantity:1,remainingFulfillmentQuantity:0,physicalIntegrityAnomaly:{code:"FULFILLMENT_HISTORY_EXCEEDS_RECORDED_PRODUCTION" as const,completedProductionQuantity:0,completedFulfillmentQuantity:1,excessFulfillmentQuantity:1}}],handoffs:[{handoff:{handoffId:"handoff-a",method:"pickup" as const,completedAt:"2026-08-20T16:32:52.000Z",completedPrincipalSubject:"operator"},allocations:[{orderLineId:"line-anomaly",quantity:1}]}]};
 const client=new QueryClient();
@@ -63,6 +65,7 @@ const runUnknownPickupRecovery = async () => {
   const complete = async (...args: Parameters<typeof fulfillmentApi.complete>) => {
     calls.push(args);
     if (calls.length === 1) throw new TypeError("network response was lost after submission");
+    recordFulfillmentOwnerTestResult(args[0],args[2]==="pickup"?"fulfillment.pickup.complete.v1":"fulfillment.shipment.complete.v1",args[3]);
     return {} as Awaited<ReturnType<typeof fulfillmentApi.complete>>;
   };
   Object.assign(fulfillmentApi, {
@@ -99,6 +102,7 @@ const runUnknownPickupRecovery = async () => {
     assert.equal(calls.length, 1, "remount recovery never automatically creates another Pickup");
     assert.ok(findButton("Retry exact Pickup request"));
     flushSync(() => findButton("Retry exact Pickup request")!.click()); await flush();
+    for(let attempt=0;attempt<25&&dom.window.sessionStorage.getItem(storageKey)!==null;attempt++)await flush();
     assert.equal(calls.length, 2);
     assert.equal(calls[1]![3], firstRequestId, "owner retry reuses the exact durable request identity");
     assert.deepEqual(calls[1]![4], calls[0]![4], "owner retry reuses the exact allocation body");

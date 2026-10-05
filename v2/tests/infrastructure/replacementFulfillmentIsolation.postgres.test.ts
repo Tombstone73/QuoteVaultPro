@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import type { OperationContext } from "../../src/application/operation.js";
-import { brandedId } from "../../src/modules/shared/commercialValues.js";
+import { brandedId,canonicalJson } from "../../src/modules/shared/commercialValues.js";
 import { FulfillmentApplicationService } from "../../src/modules/fulfillment/fulfillmentApplication.js";
 import { PostgresFulfillmentTransaction, PostgresFulfillmentTransactionRunner } from "../../infrastructure/fulfillment/postgresFulfillmentTransaction.js";
 import { PostgresFulfillmentWorkspaceReads } from "../../infrastructure/fulfillment/postgresFulfillmentWorkspaceReads.js";
@@ -12,12 +12,23 @@ import { PostgresFulfillmentCompletionProjection } from "../../infrastructure/fu
 import { PostgresReplacementObligationService } from "../../infrastructure/fulfillment/postgresReplacementObligations.js";
 import { PostgresShipmentContainerRunner, PostgresShipmentContainerTransaction } from "../../infrastructure/fulfillment/postgresShipmentContainerTransaction.js";
 import { ShipmentContainerApplicationService } from "../../src/modules/fulfillment/shipmentContainerApplication.js";
-import type { ApplicationResult } from "../../src/errors/applicationError.js";
+import { V2ApplicationError, type ApplicationResult } from "../../src/errors/applicationError.js";
 import { PostgresOrderAutomaticLifecycle } from "../../infrastructure/sales/postgresOrderAutomaticLifecycle.js";
 import { PostgresProductionCompletionProjection } from "../../infrastructure/production/postgresProductionCompletionProjection.js";
 import { createOrReadReplacementInvoice } from "../../infrastructure/billing/postgresReplacementInvoice.js";
 import type { ReplacementFulfillmentProjection } from "../../src/modules/fulfillment/contracts.js";
 import type { ShipmentPreparedAllocation } from "../../src/modules/fulfillment/shipmentContainer.js";
+import { PostgresPhysicalOperationRecovery } from "../../infrastructure/fulfillment/postgresPhysicalOperationRecovery.js";
+import { PostgresFulfillmentDocumentService } from "../../infrastructure/fulfillment/postgresFulfillmentDocuments.js";
+import { createHash,webcrypto } from "node:crypto";
+import React from "react";
+import { JSDOM } from "jsdom";
+import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
+import { canonicalFulfillmentIntentBody,useFulfillmentIntent,validateFulfillmentIntentRecord,submittedPhysicalFingerprint } from "../../ui/src/ShipmentBuilder.js";
+import { PhysicalRecoveryPanel } from "../../ui/src/PhysicalRecoveryPanel.js";
+import { configureFulfillmentOwnerTransport } from "../../ui/src/fulfillmentOwnerApi.js";
+import type { PhysicalOperation,PhysicalRecoveryResult } from "../../src/modules/fulfillment/physicalOperationRecovery.js";
 
 // All identities and rows below are synthetic and exist only in this embedded database.
 const org = brandedId<"OrganizationId">("m5-isolation-org"), foreignOrg = brandedId<"OrganizationId">("m5-foreign-org");
@@ -118,6 +129,18 @@ async function setup() {
   await db.query("INSERT INTO organizations VALUES($1),($2)", [org, foreignOrg]);
   await db.query("INSERT INTO users VALUES('m5-user')");
   await db.query("INSERT INTO customers VALUES('m5-customer',$1,'Synthetic Customer',NULL)", [org]);
+  await db.exec(`ALTER TABLE customers ADD COLUMN blind_shipping boolean DEFAULT false;
+    ALTER TABLE organizations ADD COLUMN name text DEFAULT 'Organization';
+    CREATE TABLE company_settings(organization_id text PRIMARY KEY,company_name text,company_display_name text,address text,physical_address jsonb,remittance_address jsonb,phone text,email text,website text,invoice_footer_note text,invoice_payment_instructions text,checks_payable_to text);
+    ALTER TABLE customers ADD COLUMN billing_street1 text DEFAULT 'Return Way';
+    ALTER TABLE customers ADD COLUMN billing_street2 text;
+    ALTER TABLE customers ADD COLUMN billing_city text DEFAULT 'Return City';
+    ALTER TABLE customers ADD COLUMN billing_state text DEFAULT 'FL';
+    ALTER TABLE customers ADD COLUMN billing_postal_code text DEFAULT '12345';
+    ALTER TABLE customers ADD COLUMN billing_country text DEFAULT 'US';
+    ALTER TABLE customers ADD COLUMN phone text;
+    ALTER TABLE customers ADD COLUMN email text;`);
+  await db.exec(sql("0301_v2_shipment_sender_snapshot.sql"));
 }
 
 let sequence = 0;
@@ -549,7 +572,7 @@ cases.push(["P2 actual application locks and gates mixed/removal scope, replays 
   const finalized = accepted(await service.finalize(caller("p2-final"), finalizeInput));
   assert.equal(finalized.status, "shipped"); assert.deepEqual(reconciled, [f.orderId]);
   start = statements.length; assert.deepEqual(accepted(await service.finalize(caller("p2-final"), finalizeInput)), finalized); noDomainWork(start, true);
-  assert.deepEqual(reconciled, [f.orderId], "replay does not reconcile lifecycle");
+   assert.deepEqual(reconciled, [f.orderId,f.orderId], "exact replay repairs postcommit lifecycle interruption without new handoffs");
   start = statements.length; denied(await service.createPrepared(caller("p2-prepare"), prepareInput)); noDomainWork(start, true);
   start = statements.length; assert.deepEqual(accepted(await service.createPrepared(caller("p2-prepare", true), prepareInput)), prepared); noDomainWork(start, true);
   assert.deepEqual(await shipping(transaction => transaction.getPreparedRevision(org, prepared.shipmentId, prepared.preparedRevisionId!)), prepared.currentPreparedRevision);
@@ -614,6 +637,161 @@ cases.push(["billable quantity1 uses frozen875 cents through existing Billing ow
   assert.deepEqual(await financialHistory(f.orderId), before);
   assert.deepEqual((await db.query("SELECT quantity,selling_unit_cents::text unit,selling_line_cents::text total,sales_pricing_evidence_fingerprint FROM v2_billing_invoice_lines WHERE invoice_id=$1", [repeated.invoiceId])).rows,
     [{ quantity: 1, unit: "875", total: "875", sales_pricing_evidence_fingerprint: "frozen-m5-price" }]);
+}]);
+
+cases.push(["FUL26 durable admission, timeout after commit, tab/session loss and fresh scoped receipt recovery",async()=>{
+  const f=await fixture(4);await f.work("front",{orderedQuantity:4,producedQuantity:4});
+  const recovery=new PostgresPhysicalOperationRecovery(pool),id="l0-pickup-unknown",input={businessRequestId:id,orderId:f.orderId,allocations:[{orderLineId:f.lineId,quantity:1}]};
+  const admitted=await recovery.admit(context(id),{businessRequestId:id,operation:"fulfillment.pickup.complete.v1",input});assert.ok(admitted.ok);assert.equal(admitted.value.status,"pending");
+  const different={...context("fresh-read"),principal:{...context().principal,userId:"another-user"}} as OperationContext;
+  const before=await recovery.discover(different);assert.ok(before.ok);const hidden=before.value.find(item=>item.businessRequestId===id)!;assert.equal(hidden.status,"pending");assert.equal(hidden.input,undefined,"another actor never receives admitted payload");
+  const secondInput={...input,businessRequestId:"l0-blind-second"};const second=await fulfillment.recordPickup(context(secondInput.businessRequestId),secondInput);assert.equal(second.ok,false,"fresh ID cannot bypass unresolved physical authority");
+  const lost=new FulfillmentApplicationService(new PostgresFulfillmentTransactionRunner(pool),undefined,{reconcileOrder:async()=>{throw Error("timeout after committed owner result");},reconcileInvoice:async()=>undefined});
+  const unknown=await lost.recordPickup(context(id),input);assert.equal(unknown.ok,false);
+  const receipt=await recovery.discover(context("new-session-read"));assert.ok(receipt.ok);const exact=receipt.value.find(item=>item.businessRequestId===id)!;assert.equal(exact.status,"succeeded");assert.equal(exact.input,undefined);assert.equal((exact.result as any).allocations[0].quantity,1);
+  const other=await recovery.discover(different);assert.ok(other.ok);assert.deepEqual(other.value.find(item=>item.businessRequestId===id)?.result,exact.result,"fresh authorized read can recover historical domain result without original actor's submitted payload");
+  const denied={...context("revoked"),principal:{...context().principal,authority:{membershipId:"m",capabilities:[]}}} as OperationContext;assert.equal((await recovery.discover(denied)).ok,false);
+  const foreign=await recovery.discover(context("foreign",foreignOrg));assert.ok(foreign.ok);assert.equal(foreign.value.length,0);
+  const retry=await fulfillment.recordPickup(context(id),input);assert.ok(retry.ok);assert.deepEqual(retry.value,exact.result);assert.equal((await db.query("SELECT COUNT(*)::integer n FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2",[org,f.orderId])).rows[0].n,1);
+  assert.equal((await fulfillment.recordPickup(context(id),{...input,allocations:[{orderLineId:f.lineId,quantity:2}]})).ok,false,"same identity cannot change quantity");
+}]);
+cases.push(["FUL26 explicit withdrawal proof prevents late execution; replacement and original admissions remain authority-isolated",async()=>{
+  const f=await fixture(3);await f.work("front",{orderedQuantity:3,producedQuantity:3});const a=await f.replacement(1),b=await f.replacement(1);await f.work("front",{orderedQuantity:1,producedQuantity:1},a);await f.work("front",{orderedQuantity:1,producedQuantity:1},b);
+  const recovery=new PostgresPhysicalOperationRecovery(pool),id="l0-replacement-pending",input={businessRequestId:id,orderId:f.orderId,replacementObligationId:a,allocations:[{orderLineId:f.lineId,quantity:1}]};
+  assert.ok((await recovery.admit(context(id),{businessRequestId:id,operation:"fulfillment.pickup.complete.v1",input})).ok);
+  const originalId="l0-original-independent",original={businessRequestId:originalId,orderId:f.orderId,allocations:[{orderLineId:f.lineId,quantity:1}]};assert.ok((await fulfillment.recordPickup(context(originalId),original)).ok,"replacement admission cannot consume original authority");
+  const siblingId="l0-sibling-independent",sibling={...input,businessRequestId:siblingId,replacementObligationId:b};assert.ok((await fulfillment.recordPickup(context(siblingId),sibling)).ok);
+  const noReplace={...context("no-replace"),principal:{...context().principal,authority:{membershipId:"m",capabilities:["fulfillment.view","fulfillment.pickup"]}}} as OperationContext;
+  const hidden=await recovery.discover(noReplace);assert.ok(hidden.ok);assert.ok(!hidden.value.some(item=>item.businessRequestId===id));
+  const otherOperator={...context(id),principal:{...context().principal,userId:"replacement-withdrawing-operator"}} as OperationContext;
+  const resolved=await recovery.withdraw(otherOperator,"fulfillment.pickup.complete.v1",id);assert.ok(resolved.ok);assert.equal(resolved.value.status,"withdrawn");assert.equal(resolved.value.input,undefined);
+  const proof=(await db.query<{initiated_principal_subject:string;result_json:any}>("SELECT initiated_principal_subject,result_json FROM v2_operation_requests WHERE organization_id=$1 AND operation=$2 AND business_request_id=$3",[org,"fulfillment.physical-intent.withdraw.v1:fulfillment.pickup.complete.v1",id])).rows[0];assert.equal(proof.initiated_principal_subject,"replacement-withdrawing-operator","positive withdrawal receipt attributes the actual fresh operator, not the admitting actor");assert.deepEqual(proof.result_json,{organizationId:org,operation:"fulfillment.pickup.complete.v1",businessRequestId:id,status:"withdrawn",submittedPayloadFingerprint:`sha256:${createHash("sha256").update(canonicalJson(input)).digest("hex")}`});assert.equal(resolved.value.submittedPayloadFingerprint,proof.result_json.submittedPayloadFingerprint);
+  const late=await fulfillment.recordPickup(context(id),input);assert.equal(late.ok,false,"explicit durable withdrawal fences a late same-key request without declaring an unknown mutation failed");
+  assert.equal((await db.query("SELECT COUNT(*)::integer n FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND replacement_obligation_id=$2",[org,a])).rows[0].n,0);
+  const nextId="l0-replacement-next",next={...input,businessRequestId:nextId};assert.ok((await fulfillment.recordPickup(context(nextId),next)).ok,"explicit resolved/new intent can use remaining replacement output");
+}]);
+cases.push(["FUL26 Shipment prepare/correction/finalize exact receipts survive unknown response and preserve historical replacement authority",async()=>{
+  const f=await fixture(4);await f.work("front",{orderedQuantity:4,producedQuantity:4});const a=await f.replacement(1);await f.work("front",{orderedQuantity:1,producedQuantity:1},a);
+  const recovery=new PostgresPhysicalOperationRecovery(pool),runner=new PostgresShipmentContainerRunner(pool),service=new ShipmentContainerApplicationService(runner);
+  const prepareId="l0-admitted-prepare",input={allocations:[{orderId:f.orderId,orderLineId:f.lineId,quantity:1},{orderId:f.orderId,orderLineId:f.lineId,quantity:1,replacementObligationId:a}]};
+  assert.ok((await recovery.admit(context(prepareId),{businessRequestId:prepareId,operation:"fulfillment.shipment-container.prepare.v1",input})).ok);
+  const prepared=await service.createPrepared(context(prepareId),input);assert.ok(prepared.ok);
+  const correctionId="l0-admitted-correction",correction={shipmentId:prepared.value.shipmentId,allocations:[input.allocations[0]],reason:"Remove replacement from this exact shipment"};
+  assert.ok((await recovery.admit(context(correctionId),{businessRequestId:correctionId,operation:"fulfillment.shipment-container.correct.v1",input:correction})).ok);
+  const lost=new ShipmentContainerApplicationService({transaction:async work=>{await runner.transaction(work);throw new V2ApplicationError("INTERNAL_ERROR","Response lost after commit");}});
+  assert.equal((await lost.correctPrepared(context(correctionId),correction)).ok,false);
+  const discovered=await recovery.discover(context("l0-correction-read"));assert.ok(discovered.ok,discovered.ok?"":discovered.error.publicMessage);const exact=discovered.value.find(item=>item.businessRequestId===correctionId)!;assert.equal(exact.status,"succeeded");assert.equal((exact.result as any).currentPreparedRevision.allocations.length,1);
+  const shipOnly={...context("l0-historical-revoked"),principal:{...context().principal,authority:{membershipId:"m",capabilities:["fulfillment.ship","fulfillment.view"]}}} as OperationContext;
+  const redacted=await recovery.discover(shipOnly);assert.ok(redacted.ok);assert.ok(!redacted.value.some(item=>item.businessRequestId===correctionId),"removed replacement still requires fresh replacement history authority");
+  const deniedReceipt=await recovery.receipt(shipOnly,"fulfillment.shipment-container.correct.v1",correctionId);assert.equal(deniedReceipt.ok,false,"exact receipt lookup retains replacement-removal authorization after the original-only result");
+  const anotherReader={...context("fresh-authorized-correction-reader"),principal:{...context().principal,userId:"correction-history-reader"}} as OperationContext;
+  const approvedReceipt=await recovery.receipt(anotherReader,"fulfillment.shipment-container.correct.v1",correctionId);assert.ok(approvedReceipt.ok);assert.deepEqual(approvedReceipt.value.result,exact.result,"fresh authorized different actor reads the same canonical result");
+  assert.equal((await service.correctPrepared({...shipOnly,businessRequest:context(correctionId).businessRequest},correction)).ok,false,"saved correction replay retains Wave1 prior scope gate");
+  const finalId="l0-admitted-finalize",finalInput={shipmentId:prepared.value.shipmentId,expectedPreparedRevisionId:(exact.result as any).preparedRevisionId};
+  assert.ok((await recovery.admit(context(finalId),{businessRequestId:finalId,operation:"fulfillment.shipment-container.finalize.v1",input:finalInput})).ok);
+  assert.equal((await lost.finalize(context(finalId),finalInput)).ok,false);
+  const terminal=await recovery.discover(context("l0-final-read"));assert.ok(terminal.ok);const shipment=terminal.value.find(item=>item.businessRequestId===finalId)!;assert.equal((shipment.result as any).status,"shipped");
+  const replay=await service.finalize(context(finalId),finalInput);assert.ok(replay.ok);assert.deepEqual(replay.value,shipment.result);
+  assert.equal((await db.query("SELECT COUNT(*)::integer n FROM v2_fulfillment_shipment_handoffs WHERE organization_id=$1 AND shipment_id=$2",[org,prepared.value.shipmentId])).rows[0].n,1,"recovery/replay materializes no second handoff");
+  assert.equal((await projection(f.orderId,a)).remainingFulfillmentQuantity,1,"removed replacement output remains separately usable");
+}]);
+cases.push(["FUL26 receipt identity is tenant/operation/request, not actor; distinct operations may share a business request",async()=>{
+  const f=await fixture(4);await f.work("front",{orderedQuantity:4,producedQuantity:4});
+  const recovery=new PostgresPhysicalOperationRecovery(pool),id="l0-shared-business-identity",input={businessRequestId:id,orderId:f.orderId,allocations:[{orderLineId:f.lineId,quantity:1}]};
+  const first=await recovery.admit(context(id),{businessRequestId:id,operation:"fulfillment.pickup.complete.v1",input});assert.ok(first.ok);
+  await db.query("INSERT INTO users VALUES('fresh-second-operator')");
+  const another={...context(id),principal:{...context().principal,userId:"fresh-second-operator"}} as OperationContext;
+  const pending=await recovery.receipt(another,"fulfillment.pickup.complete.v1",id);assert.ok(pending.ok);assert.equal(pending.value.organizationId,org);assert.equal(pending.value.input,undefined,"another actor's pending body stays private without changing receipt identity");
+  const adopted=await recovery.admit(another,{businessRequestId:id,operation:"fulfillment.pickup.complete.v1",input});assert.ok(adopted.ok);assert.equal(adopted.value.status,"pending");assert.equal(adopted.value.input,undefined);
+  const picked=await fulfillment.recordPickup(another,input);assert.ok(picked.ok,picked.ok?"":`freshly authorized actor can execute the independently known exact admitted command: ${picked.error.publicMessage}`);assert.equal(picked.value.handoff.completedPrincipalSubject,"fresh-second-operator");
+  const shipAdmit=await recovery.admit(context(id),{businessRequestId:id,operation:"fulfillment.shipment.complete.v1",input});assert.ok(shipAdmit.ok,"admission identity includes operation, so the same business ID is not conflated");
+  const shipped=await fulfillment.recordShipment(context(id),input);assert.ok(shipped.ok);
+  const pickupReceipt=await recovery.receipt(context("read-pickup"),"fulfillment.pickup.complete.v1",id),shipmentReceipt=await recovery.receipt(another,"fulfillment.shipment.complete.v1",id);assert.ok(pickupReceipt.ok);assert.ok(shipmentReceipt.ok);assert.deepEqual(pickupReceipt.value.result,picked.value);assert.deepEqual(shipmentReceipt.value.result,shipped.value);assert.notEqual(picked.value.handoff.handoffId,shipped.value.handoff.handoffId);
+  assert.equal((await recovery.receipt(another,"fulfillment.shipment-container.void.v1",id)).ok,false,"another operation's receipt is not a match");
+  assert.equal((await recovery.receipt(context("wrong-tenant",foreignOrg),"fulfillment.pickup.complete.v1",id)).ok,false);
+  assert.equal((await recovery.withdraw(context(id),"fulfillment.shipment-container.void.v1",id)).ok,false,"missing admission must not be converted into a failed mutation receipt");
+  const success=await recovery.withdraw(another,"fulfillment.pickup.complete.v1",id);assert.ok(success.ok);assert.equal(success.value.status,"succeeded","withdrawal cannot rewrite a committed result");assert.deepEqual(success.value.result,picked.value);
+  assert.ok((await fulfillment.recordPickup(context(id),input)).ok);assert.ok((await fulfillment.recordShipment(another,input)).ok);
+  assert.equal((await db.query("SELECT COUNT(*)::integer n FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2",[org,f.orderId])).rows[0].n,2,"cross-actor exact replay materializes no additional physical result");
+  const revoked={...another,principal:{...another.principal,authority:{membershipId:"m",capabilities:[]}}} as OperationContext;assert.equal((await recovery.receipt(revoked,"fulfillment.pickup.complete.v1",id)).ok,false);assert.equal((await fulfillment.recordShipment(revoked,input)).ok,false);
+}]);
+cases.push(["FUL11 actual Customer/custom source, immutable prepare/correction/handoff sender and blind historical document",async()=>{
+  const f=await fixture(3);await f.work("front",{orderedQuantity:3,producedQuantity:3});
+  await db.query("UPDATE customers SET company_name='Ordering Customer',blind_shipping=true,billing_street1='Original Return Address' WHERE organization_id=$1 AND id='m5-customer'",[org]);
+  const service=new ShipmentContainerApplicationService(new PostgresShipmentContainerRunner(pool)),input={allocations:[{orderId:f.orderId,orderLineId:f.lineId,quantity:1}]};
+  const prepared=await service.createPrepared(context("l0-sender-default"),input);assert.ok(prepared.ok,prepared.ok?"":prepared.error.publicMessage);const frozen=prepared.value.currentPreparedRevision!.senderSnapshot!;assert.equal(frozen.blindShipping,true);assert.equal(frozen.source,"customer");assert.equal(frozen.sender?.addressLine1,"Original Return Address");
+  await db.query("UPDATE customers SET company_name='Changed Customer',billing_street1='Changed Return Address' WHERE organization_id=$1 AND id='m5-customer'",[org]);
+  const corrected=await service.correctPrepared(context("l0-sender-carrier-correction"),{shipmentId:prepared.value.shipmentId,allocations:input.allocations,carrier:{carrierName:"Manual"},reason:"Carrier correction only"});assert.ok(corrected.ok);assert.deepEqual(corrected.value.currentPreparedRevision?.senderSnapshot,frozen,"carrier-only correction preserves frozen sender instead of rebinding mutable CRM");
+  const finalized=await service.finalize(context("l0-sender-final"),{shipmentId:prepared.value.shipmentId,expectedPreparedRevisionId:corrected.value.preparedRevisionId!});assert.ok(finalized.ok);
+  await assert.rejects(db.query("UPDATE v2_fulfillment_shipment_prepared_revisions SET sender_snapshot='{}'::jsonb WHERE organization_id=$1 AND id=$2",[org,corrected.value.preparedRevisionId]),error=>(error as {code:string}).code==="23514","sender identity cannot be rewritten after preparation");
+  const snapshot=(await db.query<{handoff_id:string;snapshot:any}>("SELECT s.handoff_id,s.snapshot FROM v2_fulfillment_handoff_document_snapshots s JOIN v2_fulfillment_shipment_handoffs h ON h.organization_id=s.organization_id AND h.handoff_id=s.handoff_id WHERE h.organization_id=$1 AND h.shipment_id=$2",[org,prepared.value.shipmentId])).rows[0];assert.deepEqual(snapshot.snapshot.senderSnapshot,frozen);assert.notEqual(snapshot.snapshot.destination.addressLine1,frozen.sender?.addressLine1);
+  const document=await new PostgresFulfillmentDocumentService(pool).document(org,brandedId<"FulfillmentHandoffId">(snapshot.handoff_id));assert.equal(document.organization.name,"Ordering Customer");assert.match(document.organization.address!,/Original Return Address/);assert.equal(document.organization.website,undefined);assert.equal(document.organization.footerNote,undefined);
+  const explicitFalse=await service.createPrepared(context("l0-sender-false"),{...input,senderIntents:[{orderId:f.orderId,blindShipping:false}]});assert.ok(explicitFalse.ok);assert.equal(explicitFalse.value.currentPreparedRevision?.senderSnapshot?.source,"organization");
+  const incomplete=await service.createPrepared(context("l0-sender-incomplete"),{...input,senderIntents:[{orderId:f.orderId,blindShipping:true,source:"custom",customSender:{company:"Custom",addressLine1:"Missing locality"} as any}]});assert.equal(incomplete.ok,false,"incomplete Custom never falls back to complete Customer billing data");
+  await db.query("INSERT INTO company_settings(organization_id,website,address) VALUES($1,'organization.example.invalid','New company address')",[org]);
+  await db.query("UPDATE organizations SET name='Changed Organization' WHERE id=$1",[org]);
+  const branded=await service.finalize(context("l0-company-sender-final"),{shipmentId:explicitFalse.value.shipmentId,expectedPreparedRevisionId:explicitFalse.value.preparedRevisionId!});assert.ok(branded.ok);
+  const companyHandoff=(await db.query<{handoff_id:string}>("SELECT handoff_id FROM v2_fulfillment_shipment_handoffs WHERE organization_id=$1 AND shipment_id=$2",[org,explicitFalse.value.shipmentId])).rows[0].handoff_id;
+  const normalDocument=await new PostgresFulfillmentDocumentService(pool).document(org,brandedId<"FulfillmentHandoffId">(companyHandoff));assert.equal(normalDocument.organization.name,"Changed Organization","non-blind company sender remains the established branding contract");assert.equal(normalDocument.organization.address,"New company address","non-blind sender never substitutes Customer billing");assert.equal(normalDocument.organization.website,"organization.example.invalid","non-blind organization branding remains the established presentation");
+  await db.query("UPDATE customers SET blind_shipping=false WHERE organization_id=$1 AND id='m5-customer'",[org]);
+}]);
+cases.push(["FUL11 preserves existing direct non-blind Shipment without a Customer; no new Customer requirement or Ship To fallback",async()=>{
+  const f=await fixture(2);await f.work("front",{orderedQuantity:2,producedQuantity:2});await db.query("UPDATE v2_sales_documents SET customer_id=NULL WHERE organization_id=$1 AND id=$2",[org,f.orderId]);
+  const id="l0-nonblind-no-customer",result=await fulfillment.recordShipment(context(id),{businessRequestId:id,orderId:f.orderId,allocations:[{orderLineId:f.lineId,quantity:1}]});assert.ok(result.ok,result.ok?"":result.error.publicMessage);
+  const snapshot=(await db.query<{snapshot:any}>("SELECT snapshot FROM v2_fulfillment_handoff_document_snapshots WHERE organization_id=$1 AND handoff_id=$2",[org,result.value.handoff.handoffId])).rows[0].snapshot;assert.equal(snapshot.senderSnapshot.blindShipping,false);assert.equal(snapshot.senderSnapshot.source,"organization");assert.equal(snapshot.senderSnapshot.sender,undefined);assert.equal(snapshot.senderSnapshot.organizationSender,undefined);
+}]);
+
+cases.push(["FUL26 actual Shipping/M0 receipt B cannot acknowledge canonical browser marker A with the same receipt key",async()=>{
+  const f=await fixture(4);await f.work("front",{orderedQuantity:4,producedQuantity:4});
+  const shipping=new ShipmentContainerApplicationService(new PostgresShipmentContainerRunner(pool)),recovery=new PostgresPhysicalOperationRecovery(pool);
+  const allocation={orderId:f.orderId,orderLineId:f.lineId,quantity:1};
+  const a=await shipping.createPrepared(context("proof-prepare-a"),{allocations:[allocation]}),b=await shipping.createPrepared(context("proof-prepare-b"),{allocations:[allocation]});assert.ok(a.ok);assert.ok(b.ok);
+  const businessRequestId="44444444-4444-4444-8444-444444444444",operation="fulfillment.shipment-container.finalize.v1" as const;
+  const inputB={shipmentId:b.value.shipmentId,expectedPreparedRevisionId:b.value.preparedRevisionId!};
+  const completed=await shipping.finalize(context(businessRequestId),inputB);assert.ok(completed.ok);
+  const canonicalRow=(await db.query<{payload_fingerprint:string}>("SELECT payload_fingerprint FROM v2_operation_requests WHERE organization_id=$1 AND operation=$2 AND business_request_id=$3",[org,operation,businessRequestId])).rows[0];
+  const expected=`sha256:${createHash("sha256").update(canonicalJson(inputB)).digest("hex")}`;assert.equal(canonicalRow.payload_fingerprint,expected);assert.equal(Buffer.from(expected.slice(7),"hex").length,32);
+  let reader={...context("proof-read"),principal:{...context().principal,userId:"different-authorized-proof-reader"}} as OperationContext;
+  const verified=await recovery.receipt(reader,operation,businessRequestId);assert.ok(verified.ok);assert.equal(verified.value.submittedPayloadFingerprint,expected);assert.equal(verified.value.input,undefined,"legacy canonical proof does not expose another actor's submitted body");
+  const count=async()=>Number((await db.query<{n:number}>("SELECT COUNT(*)::integer n FROM v2_fulfillment_handoffs WHERE organization_id=$1 AND order_document_id=$2",[org,f.orderId])).rows[0].n),before=await count();
+  const dom=new JSDOM("<!doctype html><div id='proof-root'></div>",{url:"http://localhost"});
+  for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,Event:dom.window.Event,MouseEvent:dom.window.MouseEvent,crypto:webcrypto}))Object.defineProperty(globalThis,name,{configurable:true,value});
+  const storageKey=`ph.v2.fulfillment.intent.v1:${encodeURIComponent(org)}`,container=dom.window.document.getElementById("proof-root")!,root=createRoot(container);
+  let physicalCalls=0,wire:"normal"|"missing"|"malformed"|"wrong-size"="normal";
+  const alter=(proof:PhysicalRecoveryResult):PhysicalRecoveryResult=>wire==="normal"?proof:{...proof,submittedPayloadFingerprint:wire==="missing"?undefined:wire==="malformed"?"sha256:not-a-digest":`sha256:${"a".repeat(62)}`};
+  configureFulfillmentOwnerTransport(async <T,>(requestedOrg:string,suffix:string,init?:RequestInit):Promise<T>=>{
+    assert.equal(requestedOrg,org);
+    if(init?.method&&init.method!=="GET"){physicalCalls++;throw Error("No mutation is permitted during this mounted proof regression.");}
+    if(suffix==="/physical-operations"){const result=await recovery.discover(reader);if(!result.ok)throw result.error;return result.value.map(alter) as T;}
+    const parts=suffix.split("/"),result=await recovery.receipt(reader,decodeURIComponent(parts[2]) as PhysicalOperation,decodeURIComponent(parts[3]));
+    if(!result.ok)throw result.error;return alter(result.value) as T;
+  });
+  const Harness=({scope}:{scope:string})=>{
+    const intent=useFulfillmentIntent(org,scope);
+    return React.createElement(React.Fragment,null,React.createElement("button",{disabled:intent.state.kind!=="ready",onClick:()=>{physicalCalls++;}},"Submit physical intent"),React.createElement(PhysicalRecoveryPanel,{organizationId:org,sessionScope:scope,csrfReady:true}));
+  };
+  const marker=(scope:string,payload:typeof inputB)=>({version:1 as const,organizationId:org,sessionScope:scope,businessRequestId,operation:"shipment-finalize" as const,payload,bodyCanonical:canonicalFulfillmentIntentBody(org,scope,"shipment-finalize",businessRequestId,payload)!,recovery:"retry" as const});
+  const button=(label:string)=>Array.from(container.querySelectorAll("button")).find(item=>item.textContent===label)!;
+  const wait=async(predicate:()=>boolean)=>{for(let attempt=0;attempt<100&&!predicate();attempt++)await new Promise(resolve=>setTimeout(resolve,10));assert.ok(predicate(),container.textContent??"mounted proof did not settle");};
+  const probe=async(scope:string,value:ReturnType<typeof marker>,clears:boolean)=>{
+    const raw=JSON.stringify(value);dom.window.sessionStorage.setItem(storageKey,raw);flushSync(()=>root.render(React.createElement(Harness,{key:scope,scope})));
+    await wait(()=>Boolean(button("Acknowledge these owner results before new physical intent")));
+    flushSync(()=>button("Acknowledge these owner results before new physical intent").click());
+    await wait(()=>clears?dom.window.sessionStorage.getItem(storageKey)===null:/remains blocked|could not be read|cannot be cleared/.test(container.textContent??""));
+    assert.equal(dom.window.sessionStorage.getItem(storageKey),clears?null:raw);assert.equal(button("Submit physical intent").disabled,!clears);assert.equal(physicalCalls,0);
+  };
+  try{
+    const markerA=marker("same-key-wrong-shipment",{shipmentId:a.value.shipmentId,expectedPreparedRevisionId:a.value.preparedRevisionId!});assert.ok(validateFulfillmentIntentRecord(markerA,org,markerA.sessionScope));await probe(markerA.sessionScope,markerA,false);
+    await probe("same-key-wrong-revision",marker("same-key-wrong-revision",{...inputB,expectedPreparedRevisionId:a.value.preparedRevisionId!}),false);
+    await probe("malformed-body",{...marker("malformed-body",inputB),bodyCanonical:"not-the-canonical-submitted-body"},false);
+    wire="missing";await probe("missing-owner-proof",marker("missing-owner-proof",inputB),false);
+    wire="malformed";await probe("malformed-owner-proof",marker("malformed-owner-proof",inputB),false);
+    wire="wrong-size";await probe("wrong-size-owner-proof",marker("wrong-size-owner-proof",inputB),false);
+    wire="normal";const matching=marker("canonical-b-different-actor",inputB);assert.equal(await submittedPhysicalFingerprint(matching),expected);await probe(matching.sessionScope,matching,true);
+    reader={...reader,principal:{...reader.principal,authority:{membershipId:"m",capabilities:[]}}} as OperationContext;
+    const denied=await recovery.receipt(reader,operation,businessRequestId);assert.equal(denied.ok,false);assert.equal("value" in denied,false,"revoked grants receive no fingerprint");
+    assert.equal(await count(),before,"acknowledgement never calls a physical API or inflates canonical handoffs");assert.equal(physicalCalls,0);
+  }finally{flushSync(()=>root.unmount());dom.window.close();}
 }]);
 
 try {

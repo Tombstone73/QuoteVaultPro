@@ -80,7 +80,7 @@ function harness() {
   } }, new TracedPolicy(), { reconcileOrder: async () => { calls.push("reconcile"); }, reconcileInvoice: async () => undefined });
   return { service, tx, calls, receipts, revisions, seed: (allocations = [replacement]) => store(revision(allocations)), resume: () => { resumed = true; } };
 }
-const noEffects = (calls: string[]) => assert.ok(!calls.some(call => ["create", "correct", "void", "finalize", "availability", "succeed", "reconcile"].includes(call)), calls.join(","));
+const noEffects = (calls: string[], lifecycleReplay = false) => {assert.ok(!calls.some(call => ["create", "correct", "void", "finalize", "availability", "succeed", ...(lifecycleReplay?[]:["reconcile"])].includes(call)), calls.join(","));if(lifecycleReplay)assert.equal(calls.filter(call=>call==="reconcile").length,1,"authorized finalization replay repairs postcommit lifecycle only");};
 const cases: [string, () => Promise<void>][] = [];
 
 cases.push(["new/resumed and mixed replacement creates deny before domain writes", async () => {
@@ -107,7 +107,7 @@ cases.push(["finalize/void authorize locked current replacement scope", async ()
     denied(await run()); noEffects(h.calls);
     const accepted = value(await run(both)); h.calls.length = 0;
     denied(await run()); noEffects(h.calls); h.calls.length = 0;
-    assert.deepEqual(value(await run(both)), accepted); noEffects(h.calls);
+    assert.deepEqual(value(await run(both)), accepted); noEffects(h.calls,operation==="finalize");
     h.calls.length = 0; denied(await run([])); assert.deepEqual(h.calls, ["allow:fulfillment.ship"]);
   }
 }]);
@@ -157,7 +157,7 @@ cases.push(["original-only create/correct/finalize/void retain ship-only authori
     assert.deepEqual(value(await h.service.correctPrepared(context("correct"), correction)), corrected);
     const run = () => terminal === "finalize" ? h.service.finalize(context(terminal), { shipmentId: "shipment", expectedPreparedRevisionId: corrected.preparedRevisionId! })
       : h.service.voidPrepared(context(terminal), { shipmentId: "shipment", reason: "Cancel original" });
-    const done = value(await run()); h.calls.length = 0; assert.deepEqual(value(await run()), done); noEffects(h.calls);
+    const done = value(await run()); h.calls.length = 0; assert.deepEqual(value(await run()), done); noEffects(h.calls,terminal==="finalize");
   }
   const legacy = harness(); legacy.seed([]);
   const correction = { shipmentId: "shipment", allocations: [original], reason: "Allocate legacy empty container" };

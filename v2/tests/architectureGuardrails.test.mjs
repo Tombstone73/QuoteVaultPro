@@ -297,6 +297,21 @@ test("baseline requires exact file, hash, symbols, target and occurrence budget"
   assert.equal(applyBaseline([{ ...sqlFinding, verb: "INSERT" }], [sqlEntry]).violations.length, 1);
 });
 
+test("retired QuickBooks writers and Customer type cannot inherit the contracted bridge budget", async () => {
+  const file = "infrastructure/accounting/quickBooksBillingQueue.ts";
+  const current = (await readArchitectureFiles()).find(entry => entry.file === file);
+  assert.ok(current);
+  assert.equal(applyBaseline(evaluateImports([current]), baseline).violations.length, 0);
+  const bridge = baseline.find(entry => entry.file === file && entry.specifier === "../../../server/quickbooksService.js");
+  assert.equal(bridge.count, 1);
+  assert.equal(bridge.symbols.length, 6);
+  for (const symbol of ["V2QuickBooksCustomer", "syncV2InvoiceToQuickBooks", "syncV2PaymentToQuickBooks"]) {
+    assert.ok(!bridge.symbols.includes(symbol));
+    const added = `${current.source}\n${importFixture(bridge.specifier, `{ ${symbol} as retiredBridgeSymbol }`)}`;
+    assert.ok(applyBaseline(evaluateImports(files(file, added)), baseline).violations.length > 0);
+  }
+});
+
 test("namespace V1 bridges track used symbols, computed access and escaping", () => {
   const file = "infrastructure/accounting/quickBooksIntegrationReadiness.ts";
   const clean = "import * as qb from '../../../server/quickbooksService.js'; qb.getAuthorizationUrlForOrganization(org);";

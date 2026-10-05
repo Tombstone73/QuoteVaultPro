@@ -17,6 +17,7 @@ const shipment = (status: "prepared" | "shipped") => ({
 const revision = {
   id: revisionId, organization_id: organizationId, shipment_id: shipmentId, revision_number: 2, revision_kind: "correction", supersedes_revision_id: "revision-prior", correction_reason: "Corrected quantity",
   customer_id: "customer-a", destination: { addressLine1: "1 Print Way" }, manual_carrier_name: "Manual", manual_carrier_service: null, manual_tracking_number: "TRACK-1", notes: null, package_count: null,
+  sender_snapshot: {version:1,blindShipping:false,source:"organization",intents:[{orderId:"order-a",blindShipping:false}]},
   created_at: now, created_principal_kind: "staff", created_principal_subject: "operator",
 };
 const allocation = { order_document_id: "order-a", order_line_id: "line-a", quantity: 5 };

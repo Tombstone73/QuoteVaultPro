@@ -87,5 +87,5 @@ assert.deepEqual(reconciled.sort(), ["order-a", "order-b"], "only unique affecte
 const replayedFinalization = await finalizationService.finalize(context("finalize-success"), { shipmentId: "shipment-final", expectedPreparedRevisionId: "revision-2" });
 assert.equal(replayedFinalization.ok, true, "exact finalization retry replays canonical result");
 assert.equal(finalizations, 1, "replay never materializes duplicate fulfillment facts");
-assert.deepEqual(reconciled.sort(), ["order-a", "order-b"], "replay never invokes lifecycle reconciliation again");
+assert.deepEqual(reconciled.sort(), ["order-a", "order-a", "order-b", "order-b"], "exact replay repairs an interrupted postcommit owner reconciliation without repeating handoff facts");
 console.log("Shipment container idempotency tests passed.");

@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { newBusinessRequestId, productionApi, type ProductionRun, type ProductionWorkProjection } from "./api";
+import { discoverProductionOutput, prepareProductionOutput, executeProductionOutput, type ProductionOutputReceipt } from "./productionRecoveryApi";
 
 type PendingRunOutput = Readonly<{
  organizationId:string;sessionScope:string;productionRunId:string;allocationId:string;businessRequestId:string;submittedAt:string;
@@ -82,7 +83,8 @@ const clearRunOutputIntentsAfterRefresh=(organizationId:string):boolean=>{
 };
 const clearConfirmedRunOutput=(submission:PendingRunOutput):boolean=>{
  try{
-  const key=pendingRunOutputKey(submission.organizationId,submission.sessionScope),raw=sessionStorage.getItem(key);
+   const key=pendingRunOutputKey(submission.organizationId,submission.sessionScope),raw=sessionStorage.getItem(key);
+   if(raw===null&&sessionStorage.getItem(outputPresenceKey)===null&&runOutputIntentKeys().length===0)return true;
   if(sessionStorage.getItem(outputPresenceKey)!==submission.organizationId||!raw||JSON.stringify(parsePendingRunOutput(raw,submission.organizationId,submission.sessionScope))!==JSON.stringify(submission))return false;
   const keys=runOutputIntentKeys();if(keys.length!==1||keys[0]!==key)return false;
   sessionStorage.removeItem(key);if(sessionStorage.getItem(key)!==null||runOutputIntentKeys().length!==0)return false;
@@ -108,35 +110,100 @@ export function ProductionRunEventHistory({events}:{events:ProductionRun["events
 export function ProductionRunWorkspace({organizationId,sessionScope,station,queue,canWork,onOpenArtwork}:{organizationId:string;sessionScope:string;station:"flatbed"|"roll";queue:readonly ProductionWorkProjection[];canWork:boolean;onOpenArtwork:(fileId:string)=>void}){
   const client=useQueryClient(),key=["v2",sessionScope,organizationId,"production",station,"runs"],runs=useQuery({queryKey:key,queryFn:()=>productionApi.runs(organizationId,station),retry:false});
   const scopeKey=`${organizationId}\u0000${sessionScope}`;
+  const currentScope=useRef(scopeKey);currentScope.current=scopeKey;
+  const admissionEpoch=useRef(0);
+  useEffect(()=>{currentScope.current=scopeKey;return()=>{currentScope.current="";admissionEpoch.current++;};},[scopeKey]);
+  const durableOutput=useQuery({queryKey:["v2",sessionScope,organizationId,"production","run-output-recovery"],queryFn:({signal})=>discoverProductionOutput(organizationId,sessionScope,"production.run.output.v1",undefined,signal),enabled:canWork,retry:false});
+  const [reviewedReceipt,setReviewedReceipt]=useState("");
   const [selected,setSelected]=useState<string[]>([]),[selectedScope,setSelectedScope]=useState(scopeKey),[active,setActive]=useState<ProductionRun|null>(null),[activeScope,setActiveScope]=useState<string|null>(null),[good,setGood]=useState("0"),[waste,setWaste]=useState("0"),[outputRecovery,setOutputRecovery]=useState<RunOutputRecovery>(()=>readPendingRunOutput(organizationId,sessionScope)),[outputRecoveryBusy,setOutputRecoveryBusy]=useState(false);
+  const latestReceipt=canWork&&!durableOutput.isError&&activeScope===scopeKey?durableOutput.data?.find(receipt=>receipt.productionRunId===active?.productionRunId&&Boolean(active?.allocations.some(member=>member.productionRunAllocationId===receipt.productionRunAllocationId&&member.productionWorkId===receipt.productionWorkId&&(member as typeof member&{productionAttemptId?:string}).productionAttemptId===receipt.productionAttemptId))):undefined;
+  const durableOutputBlocked=canWork&&(durableOutput.isPending||durableOutput.isError||Boolean(latestReceipt&&reviewedReceipt!==`${scopeKey}:${latestReceipt.businessRequestId}`));
   const recoveryScopeMatches=outputRecovery.organizationId===organizationId&&outputRecovery.sessionScope===sessionScope;
-  const pendingOutput=recoveryScopeMatches&&outputRecovery.status==="pending"?outputRecovery.submission:null;
-  const outputRecoveryBlocked=!recoveryScopeMatches||outputRecovery.status!=="ready";
+   const pendingOutput=canWork&&!durableOutput.isError&&recoveryScopeMatches&&outputRecovery.status==="pending"?outputRecovery.submission:null;
+   const outputRecoveryBlocked=durableOutputBlocked||!recoveryScopeMatches||outputRecovery.status!=="ready";
   const outputFieldsHidden=!recoveryScopeMatches||outputRecovery.status==="blocked";
   const selectedForScope=selectedScope===scopeKey?selected:[];
-  const displayedActive=activeScope===scopeKey&&recoveryScopeMatches&&outputRecovery.status!=="blocked"?active:null;
+   const displayedActive=activeScope===scopeKey&&recoveryScopeMatches&&outputRecovery.status!=="blocked"?active:null;
+   useEffect(()=>{const receipt=latestReceipt;if(!receipt?.intent||receipt.intentRedacted||receipt.status!=="pending"||outputRecovery.status!=="ready"||!recoveryScopeMatches||!receipt.productionRunId||!receipt.productionRunAllocationId)return;setOutputRecovery({status:"pending",organizationId,sessionScope,submission:{organizationId,sessionScope,productionRunId:receipt.productionRunId,allocationId:receipt.productionRunAllocationId,businessRequestId:receipt.businessRequestId,submittedAt:receipt.submittedAt,input:{goodQuantityDelta:receipt.intent.goodQuantityDelta,wasteQuantityDelta:receipt.intent.wasteQuantityDelta??0}}});},[latestReceipt,organizationId,sessionScope,outputRecovery.status,recoveryScopeMatches]);
   useEffect(()=>{const refreshRecovery=()=>setOutputRecovery(readPendingRunOutput(organizationId,sessionScope));setSelected([]);setSelectedScope(scopeKey);setActive(null);setActiveScope(null);setGood("0");setWaste("0");refreshRecovery();window.addEventListener(outputIntentChangedEvent,refreshRecovery);return()=>window.removeEventListener(outputIntentChangedEvent,refreshRecovery);},[organizationId,sessionScope]);
  const selectable=useMemo(()=>queue.filter(item=>!item.unitQuantitySatisfied&&item.state==="ready"&&!item.activeAttempt),[queue]);
  const refresh=async()=>{await Promise.all([client.invalidateQueries({queryKey:key}),client.invalidateQueries({queryKey:["v2",sessionScope,organizationId,"production",station,"queue"]})]);};
   const create=useMutation({mutationFn:()=>productionApi.createRun(organizationId,newBusinessRequestId(),{stationKey:station,members:selectedForScope.map(id=>{const item=selectable.find(x=>x.work.productionWorkId===id)!;return {productionWorkId:id,quantity:item.remainingGoodQuantity};})}),onSuccess:run=>{setActive(run);setActiveScope(scopeKey);setSelected([]);refresh();}});
   const transition=useMutation({mutationFn:(transition:"ready"|"start"|"hold"|"resume"|"complete"|"cancel")=>productionApi.transitionRun(organizationId,displayedActive!.productionRunId,newBusinessRequestId(),transition,transition==="cancel"?"Operator cancelled the Run from the station workspace.":undefined),onSuccess:run=>{setActive(run);setActiveScope(scopeKey);refresh();}});
-  const output=useMutation({mutationFn:(submission:PendingRunOutput)=>productionApi.runOutput(submission.organizationId,submission.productionRunId,submission.allocationId,submission.businessRequestId,submission.input),onSuccess:async(run,submission)=>{if(clearConfirmedRunOutput(submission)){runOutputFences.delete(runOutputFenceKey(submission.organizationId,submission.sessionScope));notifyRunOutputIntentChanged();setOutputRecovery(readPendingRunOutput(submission.organizationId,submission.sessionScope));}else{runOutputFences.set(runOutputFenceKey(submission.organizationId,submission.sessionScope),"cleanup-failed");setOutputRecovery(blockedRunRecovery(submission.organizationId,submission.sessionScope,"cleanup-failed"));}if(submission.organizationId===organizationId&&submission.sessionScope===sessionScope){setActive(run);setActiveScope(scopeKey);setGood("0");setWaste("0");await refresh();}}});
-  const reconcileOutputRecovery=async()=>{
-   if(!recoveryScopeMatches||outputRecoveryBusy)return;
+   const output=useMutation({mutationFn:async(submission:PendingRunOutput)=>{
+    const submittedScope=`${submission.organizationId}\u0000${submission.sessionScope}`;
+    const epoch=admissionEpoch.current;
+    const assertCurrent=()=>{if(currentScope.current!==submittedScope||admissionEpoch.current!==epoch)throw Error("Production Run output admission is inactive. The original intent remains pending.");};
+    assertCurrent();
+    const prepared=await prepareProductionOutput(submission.organizationId,submission.sessionScope,"production.run.output.v1",{...submission.input,businessRequestId:submission.businessRequestId,productionRunId:submission.productionRunId,productionRunAllocationId:submission.allocationId},assertCurrent);
+    const run=await executeProductionOutput<ProductionRun>(submission.organizationId,submission.sessionScope,"production.run.output.v1",{productionRunId:submission.productionRunId,productionRunAllocationId:submission.allocationId},submission.businessRequestId,prepared.input,assertCurrent);return {run,epoch};
+   },onSuccess:async(result,submission)=>{
+    if(currentScope.current!==`${submission.organizationId}\u0000${submission.sessionScope}`||result.epoch!==admissionEpoch.current)return;
+    await durableOutput.refetch();
+    if(currentScope.current!==`${submission.organizationId}\u0000${submission.sessionScope}`||result.epoch!==admissionEpoch.current)return;
+    if(clearConfirmedRunOutput(submission)){runOutputFences.delete(runOutputFenceKey(submission.organizationId,submission.sessionScope));notifyRunOutputIntentChanged();setOutputRecovery(readPendingRunOutput(submission.organizationId,submission.sessionScope));}else{runOutputFences.set(runOutputFenceKey(submission.organizationId,submission.sessionScope),"cleanup-failed");setOutputRecovery(blockedRunRecovery(submission.organizationId,submission.sessionScope,"cleanup-failed"));}
+    setActive(result.run);setActiveScope(scopeKey);setGood("0");setWaste("0");await refresh();
+   },onError:async(_error,submission)=>{if(currentScope.current===`${submission.organizationId}\u0000${submission.sessionScope}`)await durableOutput.refetch();}});
+   const replayCommittedReceipt=async(receipt:ProductionOutputReceipt,assertCurrent:()=>void)=>{
+    if(receipt.status!=="succeeded")return;
+    if(!receipt.intent||!receipt.productionRunId||!receipt.productionRunAllocationId)throw Error("The exact committed Run input is unavailable for owner repair.");
+    const prepared=await prepareProductionOutput(organizationId,sessionScope,"production.run.output.v1",{...receipt.intent,productionRunId:receipt.productionRunId,productionRunAllocationId:receipt.productionRunAllocationId},assertCurrent);
+    const run=await executeProductionOutput<ProductionRun>(organizationId,sessionScope,"production.run.output.v1",{productionRunId:receipt.productionRunId,productionRunAllocationId:receipt.productionRunAllocationId},receipt.businessRequestId,prepared.input,assertCurrent);
+    assertCurrent();setActive(run);setActiveScope(scopeKey);
+   };
+   const reconcileOutputRecovery=async()=>{
+    if(!recoveryScopeMatches||outputRecoveryBusy)return;
+    const epoch=admissionEpoch.current;
+    const assertCurrent=()=>{if(currentScope.current!==scopeKey||admissionEpoch.current!==epoch)throw Error("Run recovery admission is inactive; its intent remains recoverable.");};
    setOutputRecoveryBusy(true);
-   try{
-    await refreshRunOwnerViews(organizationId);
+    try{
+     if(!pendingOutput)throw Error("The exact original intent must be recovered before it can be cleared.");
+      const [receipt]=await discoverProductionOutput(organizationId,sessionScope,"production.run.output.v1",pendingOutput.businessRequestId,undefined,assertCurrent);
+      if(!receipt?.intent||receipt.status==="pending"||receipt.productionRunId!==pendingOutput.productionRunId||receipt.productionRunAllocationId!==pendingOutput.allocationId||receipt.intent.goodQuantityDelta!==pendingOutput.input.goodQuantityDelta||(receipt.intent.wasteQuantityDelta??0)!==pendingOutput.input.wasteQuantityDelta)throw Error("The original Run output result is not confirmed.");
+     await replayCommittedReceipt(receipt,assertCurrent);
+     await refreshRunOwnerViews(organizationId);
+     assertCurrent();
     if(!clearRunOutputIntentsAfterRefresh(organizationId))throw Error("Saved output intent could not be reconciled in session storage.");
     clearRunOutputFencesForOrganization(organizationId);notifyRunOutputIntentChanged();
     const next=readPendingRunOutput(organizationId,sessionScope);setOutputRecovery(next);
     if(next.status!=="ready")return;
-    output.reset();await refresh();
-   }catch{runOutputFences.set(runOutputFenceKey(organizationId,sessionScope),"owner-refresh-failed");setOutputRecovery(blockedRunRecovery(organizationId,sessionScope,"owner-refresh-failed"));}
-   finally{setOutputRecoveryBusy(false);}
+     output.reset();setReviewedReceipt(`${scopeKey}:${receipt.businessRequestId}`);await durableOutput.refetch();await refresh();
+   }catch{if(currentScope.current===scopeKey&&admissionEpoch.current===epoch){runOutputFences.set(runOutputFenceKey(organizationId,sessionScope),"owner-refresh-failed");setOutputRecovery(blockedRunRecovery(organizationId,sessionScope,"owner-refresh-failed"));}}
+   finally{if(currentScope.current===scopeKey&&admissionEpoch.current===epoch)setOutputRecoveryBusy(false);}
   };
   const outputInput=()=>({goodQuantityDelta:Number(good),wasteQuantityDelta:Number(waste)});
+  const recoverOwnerReceipt=async()=>{
+   if(!latestReceipt||outputRecoveryBusy)return;setOutputRecoveryBusy(true);
+   const epoch=admissionEpoch.current;
+   const assertCurrent=()=>{if(currentScope.current!==scopeKey||admissionEpoch.current!==epoch)throw Error("Run receipt admission is inactive; its intent remains recoverable.");};
+   try{
+    const [receipt]=await discoverProductionOutput(organizationId,sessionScope,"production.run.output.v1",latestReceipt.businessRequestId,undefined,assertCurrent);
+    if(!receipt?.intent||!receipt.productionRunId||!receipt.productionRunAllocationId)throw Error("Historical exact Run intent is unavailable.");
+    const marker=sessionStorage.getItem(outputPresenceKey),savedKeys=runOutputIntentKeys();
+    let matchedSavedKey:string|undefined;
+    if(marker!==null&&marker!==organizationId||savedKeys.length>1)throw Error("Another output intent remains fenced.");
+    if(savedKeys.length){
+     const savedKey=savedKeys[0]!,raw=sessionStorage.getItem(savedKey),scope=raw?JSON.parse(raw).sessionScope:undefined;
+     const saved=raw&&typeof scope==="string"?parsePendingRunOutput(raw,organizationId,scope):null;
+     if(!saved||savedKey!==pendingRunOutputKey(organizationId,saved.sessionScope)||saved.businessRequestId!==receipt.businessRequestId||saved.productionRunId!==receipt.productionRunId||saved.allocationId!==receipt.productionRunAllocationId||saved.input.goodQuantityDelta!==receipt.intent.goodQuantityDelta||saved.input.wasteQuantityDelta!==(receipt.intent.wasteQuantityDelta??0))throw Error("The stored Run intent does not match this authorized owner receipt.");
+     matchedSavedKey=savedKey;
+    }else if(marker!==null)throw Error("Unidentified output presence cannot be reconciled from another receipt.");
+    await replayCommittedReceipt(receipt,assertCurrent);
+    assertCurrent();
+    if(matchedSavedKey){sessionStorage.removeItem(matchedSavedKey);if(sessionStorage.getItem(matchedSavedKey)!==null)throw Error("Exact Run intent cleanup failed.");}
+    sessionStorage.removeItem(outputPresenceKey);if(sessionStorage.getItem(outputPresenceKey)!==null)throw Error("Exact Run marker cleanup failed.");
+    clearRunOutputFencesForOrganization(organizationId);
+    if(receipt.status==="pending"){
+     const submission:PendingRunOutput={organizationId,sessionScope,productionRunId:receipt.productionRunId,allocationId:receipt.productionRunAllocationId,businessRequestId:receipt.businessRequestId,submittedAt:receipt.submittedAt,input:{goodQuantityDelta:receipt.intent.goodQuantityDelta,wasteQuantityDelta:receipt.intent.wasteQuantityDelta??0}};
+     const persisted=persistPendingRunOutput(submission);if(!persisted)throw Error("Recovered Run intent persistence failed.");
+     setOutputRecovery({status:"pending",organizationId,sessionScope,submission:persisted});
+    }else{setOutputRecovery(readPendingRunOutput(organizationId,sessionScope));setReviewedReceipt(`${scopeKey}:${receipt.businessRequestId}`);}
+    notifyRunOutputIntentChanged();await durableOutput.refetch();
+   }catch{if(currentScope.current===scopeKey&&admissionEpoch.current===epoch){runOutputFences.set(runOutputFenceKey(organizationId,sessionScope),"owner-refresh-failed");setOutputRecovery(blockedRunRecovery(organizationId,sessionScope,"owner-refresh-failed"));}}
+   finally{if(currentScope.current===scopeKey&&admissionEpoch.current===epoch)setOutputRecoveryBusy(false);}
+  };
   const validOutput=()=>{const input=outputInput();return Number.isSafeInteger(input.goodQuantityDelta)&&input.goodQuantityDelta>=0&&Number.isSafeInteger(input.wasteQuantityDelta)&&input.wasteQuantityDelta>=0&&(input.goodQuantityDelta>0||input.wasteQuantityDelta>0);};
-  const submitOutput=(allocationId:string)=>{if(!recoveryScopeMatches||outputRecovery.status!=="ready"||activeScope!==scopeKey||!displayedActive||!validOutput())return;const fresh=readPendingRunOutput(organizationId,sessionScope);if(fresh.status!=="ready"){setOutputRecovery(fresh);notifyRunOutputIntentChanged();return;}const submission:PendingRunOutput=Object.freeze({organizationId,sessionScope,productionRunId:displayedActive.productionRunId,allocationId,businessRequestId:newBusinessRequestId(),submittedAt:new Date().toISOString(),input:Object.freeze(outputInput())});const persisted=persistPendingRunOutput(submission);if(!persisted){setOutputRecovery(blockedRunRecovery(organizationId,sessionScope,"persist-failed"));return;}output.reset();setOutputRecovery({status:"pending",organizationId,sessionScope,submission:persisted});output.mutate(persisted);};
+   const submitOutput=(allocationId:string)=>{if(durableOutputBlocked||!recoveryScopeMatches||outputRecovery.status!=="ready"||activeScope!==scopeKey||!displayedActive||!validOutput())return;const fresh=readPendingRunOutput(organizationId,sessionScope);if(fresh.status!=="ready"){setOutputRecovery(fresh);notifyRunOutputIntentChanged();return;}const submission:PendingRunOutput=Object.freeze({organizationId,sessionScope,productionRunId:displayedActive.productionRunId,allocationId,businessRequestId:newBusinessRequestId(),submittedAt:new Date().toISOString(),input:Object.freeze(outputInput())});const persisted=persistPendingRunOutput(submission);if(!persisted){setOutputRecovery(blockedRunRecovery(organizationId,sessionScope,"persist-failed"));return;}output.reset();setOutputRecovery({status:"pending",organizationId,sessionScope,submission:persisted});output.mutate(persisted);};
  const toggle=(id:string)=>setSelected(current=>current.includes(id)?current.filter(x=>x!==id):[...current,id].slice(0,50));
   return (
    <section className="v2-production-runs">
@@ -144,18 +211,21 @@ export function ProductionRunWorkspace({organizationId,sessionScope,station,queu
      <div><small>{station} station</small><h2>Production Runs</h2><p>Runs reserve compatible canonical Production work; they never create fulfillment quantity.</p></div>
      <button disabled={!canWork||outputRecoveryBlocked||!selectedForScope.length||create.isPending} onClick={()=>create.mutate()}>Create Run ({selectedForScope.length})</button>
     </header>
-    {recoveryScopeMatches&&create.error&&<p role="alert">{create.error.message}</p>}
+     {recoveryScopeMatches&&create.error&&<p role="alert">{create.error.message}</p>}
+     {canWork&&durableOutput.isError&&<p role="alert">Durable Production Run recovery is unavailable. No new physical output can be submitted.</p>}
+     {latestReceipt&&<p>Owner receipt binding: Run {latestReceipt.productionRunId}; Allocation {latestReceipt.productionRunAllocationId??"not retained"}; Work {latestReceipt.productionWorkId??"not retained"}; Attempt {latestReceipt.productionAttemptId??"not retained"}.</p>}
+      {latestReceipt&&<section aria-label="Durable Production Run output receipt"><p>Original request {latestReceipt.businessRequestId}: {latestReceipt.intent?`${latestReceipt.intent.goodQuantityDelta} good / ${latestReceipt.intent.wasteQuantityDelta??0} waste.`:latestReceipt.intentRedacted?"Submitted Run input is private to its initiating actor. Only protected status is shown; pending status is not a commitment.":latestReceipt.historicalIntentUnavailable?"Historical committed Run result recovered; exact submitted allocation/quantities were not retained and cannot be replayed.":"Exact Run input is unavailable; no commitment is inferred."} Owner recorded {latestReceipt.submittedAt}. Result: {latestReceipt.status}. {latestReceipt.rejection?.message}</p>{latestReceipt.intent&&<button type="button" disabled={outputRecoveryBusy} onClick={()=>void recoverOwnerReceipt()}>Recover this owner request</button>}{latestReceipt.status!=="pending"&&<button type="button" onClick={()=>setReviewedReceipt(`${scopeKey}:${latestReceipt.businessRequestId}`)}>I reviewed the owner output result</button>}</section>}
     {recoveryScopeMatches&&transition.error&&<p role="alert">{transition.error.message}</p>}
     {!recoveryScopeMatches&&<section role="alert" aria-label="Redacted Production Run output recovery"><p>A saved Production output intent is fenced to another scope. Its request details are hidden; physical output is blocked.</p>{outputRecovery.organizationId===organizationId&&<button disabled={!recoveryScopeMatches||outputRecoveryBusy} onClick={()=>void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}</section>}
     {recoveryScopeMatches&&outputRecovery.status==="blocked"&&<section role="alert" aria-label="Blocked Production Run output recovery"><p>{runOutputRecoveryMessage(outputRecovery.reason)} Details are hidden.</p>{outputRecovery.reason!=="other-organization"&&outputRecovery.reason!=="other-handler"&&<button disabled={outputRecoveryBusy} onClick={()=>void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}</section>}
     {pendingOutput&&<section role={output.error?"alert":"status"} aria-label="Pending Production Run output">
      <p>{output.error?`Output response was not confirmed: ${productionRunErrorMessage(output.error)}. `:"Output request is awaiting confirmation. "}Original request {pendingOutput.businessRequestId} for allocation {pendingOutput.allocationId} was submitted at {pendingOutput.submittedAt} with {pendingOutput.input.goodQuantityDelta} good and {pendingOutput.input.wasteQuantityDelta} waste.</p>
-     {isDefiniteRunOutputRejection(output.error)&&<button type="button" disabled={outputRecoveryBusy} onClick={()=>void reconcileOutputRecovery()}>Refresh Production state to reconcile</button>}
+      <button type="button" disabled={outputRecoveryBusy} onClick={()=>void reconcileOutputRecovery()}>Look up original output result</button>
      <button type="button" disabled={output.isPending} onClick={()=>output.mutate(pendingOutput)}>Retry original output</button>
     </section>}
-    {recoveryScopeMatches&&outputRecovery.status!=="blocked"&&<div className="v2-production-run-grid">
+     {recoveryScopeMatches&&(outputRecovery.status!=="blocked"||outputRecovery.reason==="scope-mismatch")&&<div className="v2-production-run-grid">
      <article><h3>Available work</h3>{selectable.map(item=><label key={item.work.productionWorkId}><input type="checkbox" disabled={outputRecoveryBlocked} checked={selectedForScope.includes(item.work.productionWorkId)} onChange={()=>toggle(item.work.productionWorkId)}/><b>{item.operatorContext?.orderNumber??item.work.orderId}</b> · {item.operatorContext?.product?.displayName??"Production work"} · {item.remainingGoodQuantity} available</label>)}</article>
-     <article><h3>Runs</h3>{runs.data?.map(run=><button className="v2-production-run-row" key={run.productionRunId} disabled={outputRecoveryBlocked} onClick={()=>{setActive(run);setActiveScope(scopeKey);}}><b>{run.productionRunId.slice(0,8)}</b><span>{run.state}</span><small>{run.allocations.length} members · {run.allocations.reduce((n,a)=>n+a.goodQuantity,0)}/{run.allocations.reduce((n,a)=>n+a.allocatedQuantity,0)}</small></button>)}</article>
+      <article><h3>Runs</h3>{runs.data?.map(run=><button className="v2-production-run-row" key={run.productionRunId} onClick={()=>{setActive(run);setActiveScope(scopeKey);}}><b>{run.productionRunId.slice(0,8)}</b><span>{run.state}</span><small>{run.allocations.length} members · {run.allocations.reduce((n,a)=>n+a.goodQuantity,0)}/{run.allocations.reduce((n,a)=>n+a.allocatedQuantity,0)}</small></button>)}</article>
     </div>}
     {displayedActive&&<article className="v2-production-run-detail">
      <header><div><small>Run {displayedActive.productionRunId}</small><h3>{displayedActive.state} · {displayedActive.stationKey}</h3></div><div>

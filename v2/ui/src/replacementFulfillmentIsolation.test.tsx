@@ -6,6 +6,8 @@ import { FulfillmentWorkspace } from "./FulfillmentWorkspace";
 import type { FulfillmentWorkspaceOrder } from "./api";
 import type { ReplacementFulfillmentProjection } from "../../src/modules/fulfillment/contracts";
 import { brandedId } from "../../src/modules/shared/commercialValues";
+import { installFulfillmentOwnerTestTransport } from "./fulfillmentOwnerTestHarness";
+installFulfillmentOwnerTestTransport();
 
 const order: FulfillmentWorkspaceOrder = { orderId: "m5-ui-order", number: "ORD-1019", commercialState: "open", customerName: "Synthetic Customer",
   lines: [{ orderId: "m5-ui-order", orderLineId: "m5-ui-line", description: "Synthetic Banner", orderedQuantity: 2,

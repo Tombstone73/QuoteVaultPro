@@ -88,18 +88,39 @@ describe("V2 deployment wiring", () => {
     expect(v1Vercel).not.toContain('"/v2/:path*"');
   });
 
-  test("readiness requires the prepared Quote evidence schema, not just connectivity", async () => {
+  test("readiness requires each protected owner schema in order, not just connectivity", async () => {
     const authentication = createStandaloneStaffAuthentication({
       verifier: { authenticate: async () => null, currentStaff: async () => null, eligibleOrganizations: async () => [] },
       config: loadV2StandaloneAuthConfig({ SESSION_SECRET: "x".repeat(32), NODE_ENV: "test" }),
       sessionMiddleware: session({ name: "v2.sid", secret: "x".repeat(32), resave: false, saveUninitialized: false }),
     });
-    for (const ready of [false, true]) {
+    const checks = ["prepared_evidence_json", "sender_snapshot", "v2_quickbooks_provider_requests",
+      "v2_sales_quote_delivery_attempts_checkpoint_success_uidx", "v2_production_run_allocations_exclusive_active_uidx"];
+    const cases: Array<{ failureAt?: number; mode: "true" | "false" | "missing" | "throw"; status: number; queries: number }> = [
+      { mode: "true", status: 200, queries: checks.length },
+      ...checks.flatMap((_, failureAt) => (["false", "missing", "throw"] as const)
+        .map(mode => ({ failureAt, mode, status: 503, queries: failureAt + 1 }))),
+    ];
+    for (const scenario of cases) {
       const queries: string[] = [];
-      const pool = { query: async (sql: string) => { queries.push(sql); return { rows: [{ ready }], rowCount: 1 }; } };
+      const pool = { query: async (sql: string) => {
+        const index = queries.length;
+        queries.push(sql);
+        if (index === scenario.failureAt) {
+          if (scenario.mode === "throw") throw new Error("Synthetic protected catalog failure");
+          if (scenario.mode === "missing") return { rows: [], rowCount: 0 };
+          return { rows: [{ ready: false }], rowCount: 1 };
+        }
+        return { rows: [{ ready: true }], rowCount: 1 };
+      } };
       const app = createV2DeploymentApp(loadV2RuntimeConfig({ V2_SERVICE_NAME: "schema-readiness" }), pool as never, logger, authentication);
-      await request(app).get("/ready").expect(ready ? 200 : 503);
-      expect(queries).toHaveLength(1);
+      const response = await request(app).get("/ready").expect(scenario.status, {
+        status: scenario.status === 200 ? "ready" : "not_ready",
+        checks: { application: scenario.status === 200 ? "ok" : "unavailable" },
+      });
+      expect(queries).toHaveLength(scenario.queries);
+      for (const [index, sql] of queries.entries()) expect(sql).toContain(checks[index]);
+      expect(JSON.stringify(response.body)).not.toContain("Synthetic protected catalog failure");
       expect(queries[0]).toContain("prepared_evidence_json");
       expect(queries[0]).toContain("v2_sales_quote_delivery_prepared_evidence_immutable");
     }

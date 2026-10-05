@@ -2066,6 +2066,34 @@
       "when": 1790827200003,
       "tag": "0299_v2_sales_quote_delivery_prepared_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 301,
+      "version": "7",
+      "when": 1790827200004,
+      "tag": "0300_v2_quickbooks_payment_recovery_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1790827200005,
+      "tag": "0301_v2_shipment_sender_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 303,
+      "version": "7",
+      "when": 1790827200006,
+      "tag": "0302_v2_quote_delivery_checkpoint_success",
+      "breakpoints": true
+    },
+    {
+      "idx": 304,
+      "version": "7",
+      "when": 1790827200007,
+      "tag": "0303_v2_production_exclusive_membership",
+      "breakpoints": true
     }
   ]
 }

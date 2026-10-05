@@ -1,5 +1,7 @@
 import type { ProductOptionRule } from "../../../shared/productOptionRules";
 import { createProductionDailyReportClient } from "./productionDailyReportApi";
+import { configureFulfillmentOwnerTransport } from "./fulfillmentOwnerApi";
+import { configureProductionRecoveryTransport } from "./productionRecoveryApi";
 
 export type ApiError = Readonly<{ code: string; message: string }>;
 export type SalesTaxJurisdiction = Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; destinationMethods?: readonly ("shipping"|"local_delivery")[]; updatedAt: string }>;
@@ -1685,6 +1687,12 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   }
   return body.data as T;
 };
+configureProductionRecoveryTransport(<T>(organizationId: string, operation: "production", suffix: string, init: RequestInit, expectedSessionScope: string): Promise<T> => {
+  if (sessionScope !== expectedSessionScope) throw sessionContextChanged();
+  const headers = new Headers(init.headers);
+  if ((init.method ?? "GET") !== "GET") headers.set("x-v2-csrf-token", csrfTokens.get(csrfKey(organizationId)) ?? "");
+  return request<T>(`/v2/organizations/${encodeURIComponent(organizationId)}/${operation}${suffix}`, { ...init, headers: Object.fromEntries(headers.entries()) });
+});
 export const clearV2ApiSessionState = (): void => {
   responseGeneration++;
   csrfTokens.clear();
@@ -1771,7 +1779,7 @@ export const quickBooksIntegrationApi = {
   syncSelected: (organizationId:string,invoiceIds:readonly string[]) => request<Readonly<{invoiceIds:readonly string[];state:"queued"}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/sync-selected`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({invoiceIds})}),
   syncFinancial:(organizationId:string,subjects:readonly Readonly<{subjectKind:"payment"|"refund";subjectId:string}>[]) => request<Readonly<{subjects:readonly Readonly<{subjectKind:"payment"|"refund";subjectId:string}>[];state:"queued"}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/sync-financial`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({subjects})}),
   retry: (organizationId:string,kind:"invoice"|"payment"|"refund",subjectId:string) => request<Readonly<{state:"queued";attemptCount:number}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/queue/${encodeURIComponent(kind)}/${encodeURIComponent(subjectId)}/retry`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:"{}"}),
-  reconcile: (organizationId:string,kind:"invoice"|"payment"|"refund",subjectId:string) => request<Readonly<{state:"queued";attemptCount:number}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/queue/${encodeURIComponent(kind)}/${encodeURIComponent(subjectId)}/reconcile`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:"{}"}),
+  reconcile: (organizationId:string,kind:"invoice"|"payment"|"refund",subjectId:string) => request<Readonly<{state:"queued";attemptCount:number}> | Readonly<{state:"succeeded";providerId:string}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/queue/${encodeURIComponent(kind)}/${encodeURIComponent(subjectId)}/reconcile`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:"{}"}),
   customerImportPreview:(organizationId:string)=>request<QuickBooksCustomerImportPreview>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/import-preview/customers`),
   invoiceImportPreview:(organizationId:string,scope:"open_ar"|"historical"|"all_unsynced",page:number)=>request<QuickBooksInvoiceImportPreview>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/import-preview/invoices?scope=${scope}&page=${page}&pageSize=25`),
   importInvoices:(organizationId:string,invoices:readonly Readonly<{qbId:string;classification:"open_ar"|"historical"|"skip"}>[])=>request<Readonly<{created:number;updated:number;skipped:number;excluded:number;failed:number;errors:readonly string[]}>>(`/v2/organizations/${encodeURIComponent(organizationId)}/settings/accounting/import/invoices`,{method:"POST",headers:{"x-v2-csrf-token":csrfTokens.get(csrfKey(organizationId)) ?? ""},body:JSON.stringify({invoices})}),
@@ -3401,6 +3409,11 @@ export const inventoryApi = {
 };
 const fulfillmentEndpoint = (org: string, suffix = "") =>
   `/v2/organizations/${encodeURIComponent(org)}/fulfillment${suffix}`;
+configureFulfillmentOwnerTransport(<T>(organizationId: string, suffix: string, init?: RequestInit) => {
+  const headers = new Headers(init?.headers);
+  if (init?.method && init.method !== "GET") headers.set("x-v2-csrf-token", csrfTokens.get(csrfKey(organizationId)) ?? "");
+  return request<T>(fulfillmentEndpoint(organizationId, suffix), { ...init, headers: Object.fromEntries(headers.entries()) });
+});
 const fulfillmentMutation = (
   org: string,
   orderId: string,

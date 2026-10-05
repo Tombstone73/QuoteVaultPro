@@ -6,6 +6,11 @@ import { flushSync } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { fulfillmentApi, type FulfillmentShipmentContainer, type FulfillmentShipmentDetail, type FulfillmentShipmentDraftAllocationInput, type FulfillmentWorkspaceOrder, type ReplacementObligationProjection } from "./api";
 import { ShipmentBuilder, canonicalFulfillmentIntentBody, groupShipmentAllocations, shipmentQuantityValid, validateFulfillmentIntentRecord } from "./ShipmentBuilder";
+import { installFulfillmentOwnerTestTransport } from "./fulfillmentOwnerTestHarness";
+import { configureFulfillmentOwnerTransport,fulfillmentOwnerApi } from "./fulfillmentOwnerApi";
+import { ShipmentSenderControls } from "./ShipmentSenderControls";
+import type { ShipmentSenderIntent } from "../../src/modules/fulfillment/shipmentSender";
+installFulfillmentOwnerTestTransport();
 
 assert.equal(shipmentQuantityValid("20", 60), true);
 assert.equal(shipmentQuantityValid("61", 60), false, "operator UI does not submit beyond the server-reported available quantity");
@@ -124,9 +129,14 @@ const runPreparedRevisionInteraction = async () => {
     assert.deepEqual(sideEffects, { create: 0, correct: 0, cancel: 0, finalize: 1 }, "no physical side effect can run while authoritative reload is unresolved");
     flushSync(() => findButton("Retry authoritative shipment reload")!.click()); await flush();
     assert.equal(detailReads, 3);
-    assert.match(container.textContent ?? "", /Prepared revision 2 \(revision-2\) is loaded/);
     assert.match(container.textContent ?? "", /2 saved allocations/);
-    assert.equal(findButton("Mark shipped")!.disabled, false, "a different authoritative revision clears the stale guard");
+    assert.equal(findButton("Mark shipped")!.disabled, true, "a different owner projection does not prove the unresolved command failed");
+    assert.notEqual(dom.window.sessionStorage.getItem("ph.v2.fulfillment.intent.v1:org-a"),null);
+    await fulfillmentOwnerApi.withdraw("org-a","fulfillment.shipment-container.finalize.v1",stored.businessRequestId);
+    flushSync(()=>findButton("Retry authoritative shipment reload")!.click());await flush();
+    for(let attempt=0;attempt<20&&findButton("Mark shipped")!.disabled;attempt++)await flush();
+    assert.equal(detailReads,4);
+    assert.equal(findButton("Mark shipped")!.disabled, false, "only an exact positive owner withdrawal receipt and a new revision clear the stale guard");
     assert.equal(dom.window.sessionStorage.getItem("ph.v2.fulfillment.intent.v1:org-a"), null);
     assert.deepEqual(sideEffects, { create: 0, correct: 0, cancel: 0, finalize: 1 });
   } finally {
@@ -170,12 +180,11 @@ const runCorruptIntentFailsClosed = async () => {
     assert.equal(ownerReads, 1, "owner reads happen only after explicit recovery refresh");
     assert.equal(dom.window.sessionStorage.getItem(storageKey), corrupt, "unknown request bodies are preserved for operator recovery");
     assert.deepEqual(sideEffects, { create: 0, correct: 0, cancel: 0, finalize: 0 });
-    assert.ok(findButton("Resolve after authoritative owner verification"));
-    flushSync(() => findButton("Resolve after authoritative owner verification")!.click()); await flush();
-    assert.equal(dom.window.sessionStorage.getItem(storageKey), null, "only the explicit owner-verified resolution clears malformed storage");
+    assert.equal(findButton("Resolve after authoritative owner verification"),undefined,"projection refresh cannot supply a force-clear escape hatch");
+    assert.equal(dom.window.sessionStorage.getItem(storageKey),corrupt,"without a correlated receipt, corrupt metadata remains unresolved");
     flushSync(() => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click()); await flush();
-    assert.equal(findButton("Create prepared shipment")!.disabled, false, "a new intent is enabled only after refresh and explicit resolution");
-    assert.deepEqual(sideEffects, { create: 0, correct: 0, cancel: 0, finalize: 0 }, "operator resolution does not send a replacement request automatically");
+    assert.equal(findButton("Create prepared shipment")!.disabled, true,"missing outcome evidence never enables a changed physical intent");
+    assert.deepEqual(sideEffects, { create: 0, correct: 0, cancel: 0, finalize: 0 });
   } finally {
     flushSync(() => root.unmount());
     dom.window.close();
@@ -185,4 +194,21 @@ const runCorruptIntentFailsClosed = async () => {
 
 await runPreparedRevisionInteraction();
 await runCorruptIntentFailsClosed();
+const runSenderControls=async()=>{
+  const dom=new JSDOM("<!doctype html><div id='root'></div>",{url:"http://localhost"});
+  for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,HTMLSelectElement:dom.window.HTMLSelectElement,Event:dom.window.Event}))Object.defineProperty(globalThis,name,{configurable:true,value});
+  configureFulfillmentOwnerTransport(async <T,>():Promise<T>=>({orderId:"order-a",customerId:"customer-a",defaultBlindShipping:true,billingSender:{company:"Customer Return Identity",addressLine1:"Billing Return Way",city:"Tampa",region:"FL",postalCode:"12345",country:"US"}} as T));
+  const container=dom.window.document.getElementById("root")!,root=createRoot(container);let captured:readonly ShipmentSenderIntent[]=[];
+  const Harness=()=>{const [values,setValues]=React.useState<readonly ShipmentSenderIntent[]>([]);return <ShipmentSenderControls organizationId="sender-ui-org" sessionScope="sender-ui-scope" orderIds={["order-a"]} intents={values} disabled={false} onChange={next=>{captured=next;setValues(next);}}/>;};
+  try{
+    flushSync(()=>root.render(<Harness/>));await new Promise(resolve=>setTimeout(resolve,20));assert.match(container.textContent!,/Billing Return Way/);assert.match(container.textContent!,/separate from Ship To/);
+    const blind=container.querySelector<HTMLSelectElement>('select[aria-label="Blind shipping order-a"]')!;
+    flushSync(()=>{blind.value="no";blind.dispatchEvent(new dom.window.Event("change",{bubbles:true}));});assert.equal(captured[0]?.blindShipping,false,"operator can explicitly disable blind Customer default");assert.equal(container.querySelector('select[aria-label="Sender source order-a"]'),null);
+    flushSync(()=>{blind.value="yes";blind.dispatchEvent(new dom.window.Event("change",{bubbles:true}));});assert.equal(captured[0]?.blindShipping,true);
+    const source=container.querySelector<HTMLSelectElement>('select[aria-label="Sender source order-a"]')!;flushSync(()=>{source.value="custom";source.dispatchEvent(new dom.window.Event("change",{bubbles:true}));});assert.equal(captured[0]?.source,"custom");
+    for(const field of ["company","recipient","addressLine1","addressLine2","city","region","postalCode","country","phone","email"])assert.ok(container.querySelector(`input[aria-label="${field} sender order-a"]`),`Custom operator field ${field} is mounted`);
+    assert.doesNotMatch(container.textContent!,/Billing Return Way/,"Custom form does not mix Customer billing preview into its independent sender");
+  }finally{flushSync(()=>root.unmount());dom.window.close();installFulfillmentOwnerTestTransport();}
+};
+await runSenderControls();
 console.log("Shipment builder revision reload guard, intent schema, and corrupt-storage tests passed.");

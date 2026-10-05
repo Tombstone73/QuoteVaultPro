@@ -4,8 +4,10 @@ import { PostgresOperationRequestRepository } from "../persistence/postgresOpera
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { ProductionRunTransaction, ProductionRunTransactionRunner } from "../../src/modules/production/productionRunApplication.js";
 import type { ProductionRun, ProductionRunAllocation, ProductionRunEvent } from "../../src/modules/production/productionRunApplication.js";
-import { brandedId, type OrganizationId, type ProductionRunId, type ProductionWorkId } from "../../src/modules/shared/commercialValues.js";
+import { brandedId, canonicalJson, type OrganizationId, type ProductionRunId, type ProductionWorkId } from "../../src/modules/shared/commercialValues.js";
 import { assertCompatibleRunMembers, canRefreshRunPreparation, preparedArtworkIsCurrent, type PreparedArtwork } from "../../src/modules/production/productionRuns.js";
+import { PostgresProductionRecovery, requirePreparedProductionOutput, lockProductionRunMembership } from "./postgresProductionRecovery.js";
+import { productionIntentFingerprint } from "../../src/modules/production/productionRecovery.js";
 
 type CandidateRow={id:string;station_key:"flatbed"|"roll"|null;material_fingerprint:string|null;ordered_quantity:number;recorded_good_quantity:string;reserved_quantity:string;artwork_assignment_id:string;artwork_file_id:string;artwork_identity_fingerprint:string;artwork_object_version:string};
 type RunRow={id:string;organization_id:string;station_key:"flatbed"|"roll";state:ProductionRun["state"];revision:number;material_fingerprint:string|null;layout_metadata:Record<string,unknown>};
@@ -18,7 +20,7 @@ const asRun=(row:RunRow,items:AllocationRow[],events:EventRow[]):ProductionRun=>
 
 export class PostgresProductionRunTransaction implements ProductionRunTransaction {
   private readonly requests=new PostgresOperationRequestRepository();
-  constructor(private readonly client:PoolClient){}
+  constructor(private readonly client:PoolClient,private readonly exclusiveCreationApproved=false){}
   private async lockProductionWork(org:OrganizationId,workId:ProductionWorkId,stationKey?:"flatbed"|"roll",requireExecutable=false){
    const locked=await this.client.query<{id:string}>("SELECT w.id FROM v2_production_works w WHERE w.organization_id=$1 AND w.id=$2 FOR UPDATE OF w",[org,workId]);
    if(!locked.rows[0])throw Error("Production Run member work was not found.");
@@ -38,9 +40,10 @@ export class PostgresProductionRunTransaction implements ProductionRunTransactio
    if(requireExecutable&&row.latest_control==="rework_requested")throw Error("Production Run member is blocked pending Prepress rework.");
    return row;
   }
- async reserve(input:Parameters<ProductionRunTransaction["reserve"]>[0]){const result=await this.requests.reserve(this.client,input);return {kind:result.kind==="replay"?"replay" as const:"new" as const,requestId:result.request.id,resultJson:result.request.resultJson};}
+ async reserve(input:Parameters<ProductionRunTransaction["reserve"]>[0]){if(input.operation==="production.run.output.v1"){if(input.outputIntent){if(input.outputIntent.businessRequestId!==input.businessRequestId||productionIntentFingerprint(input.outputIntent)!==input.payloadFingerprint)throw new V2ApplicationError("VALIDATION_ERROR","Production output intent and request identity must match.");await PostgresProductionRecovery.prepareInTransaction(this.client,input,"production.run.output.v1",input.outputIntent);}await requirePreparedProductionOutput(this.client,input);}const result=await this.requests.reserve(this.client,input);return {kind:result.kind==="replay"?"replay" as const:"new" as const,requestId:result.request.id,resultJson:result.request.resultJson};}
  async succeed(org:string,id:string,result:ProductionRun){await this.requests.succeed(this.client,org,id,{resourceType:"production_run",resourceId:result.productionRunId,resultJson:result});}
-  async lockCandidates(org:OrganizationId,ids:readonly ProductionWorkId[]){
+   async lockCandidates(org:OrganizationId,ids:readonly ProductionWorkId[]){
+    await lockProductionRunMembership(this.client);
    for(const id of [...new Set(ids)].sort())await this.client.query("SELECT w.id FROM v2_production_works w WHERE w.organization_id=$1 AND w.id=$2 FOR UPDATE OF w",[org,id]);
    const rows=await this.client.query<CandidateRow>(`SELECT w.id,COALESCE(cycle.destination_station_key,step.production_destination_station_key,e.production_destination,origin_attempt.station_key) station_key,
      (SELECT string_agg(mr.material_id||':'||mr.unit,',' ORDER BY mr.material_id,mr.unit) FROM v2_order_line_material_requirements mr WHERE mr.organization_id=w.organization_id AND mr.order_line_id=w.order_line_id) material_fingerprint,
@@ -63,10 +66,37 @@ export class PostgresProductionRunTransaction implements ProductionRunTransactio
     return {productionWorkId:brandedId<"ProductionWorkId">(r.id),stationKey:r.station_key,materialFingerprint:r.material_fingerprint,orderedQuantity:r.ordered_quantity,recordedGoodQuantity:Number(r.recorded_good_quantity),reservedByOtherRuns:Number(r.reserved_quantity),artworkAssignmentId:r.artwork_assignment_id,artworkFileId:r.artwork_file_id,artworkIdentityFingerprint:r.artwork_identity_fingerprint,artworkObjectVersion:r.artwork_object_version};
    });
  }
-  async create(_input:Parameters<ProductionRunTransaction["create"]>[0]):Promise<ProductionRun>{
-   throw new V2ApplicationError("CONFLICT","Production Run creation remains disabled until exclusive membership is verified with a native two-client PostgreSQL test.");
-  }
- async lockRun(org:OrganizationId,id:ProductionRunId){const run=await this.client.query<RunRow>("SELECT id,organization_id,station_key,state,revision,material_fingerprint,layout_metadata FROM v2_production_runs WHERE organization_id=$1 AND id=$2 FOR UPDATE",[org,id]);if(!run.rows[0])return null;const [items,events]=await Promise.all([this.client.query<AllocationRow>("SELECT id,production_work_id,allocated_quantity,good_quantity,waste_quantity,artwork_assignment_id,artwork_file_id,artwork_identity_fingerprint,artwork_object_version,production_attempt_id,position,released_at,terminal_resolution FROM v2_production_run_allocations WHERE organization_id=$1 AND production_run_id=$2 ORDER BY position FOR UPDATE",[org,id]),this.client.query<EventRow>("SELECT id,sequence,event_kind,production_run_allocation_id,production_attempt_id,reason,note,created_at,created_principal_kind,created_principal_subject,created_staff_actor_user_id FROM v2_production_run_events WHERE organization_id=$1 AND production_run_id=$2 ORDER BY sequence,id",[org,id])]);return asRun(run.rows[0],items.rows,events.rows);}
+   async create(input:Parameters<ProductionRunTransaction["create"]>[0]):Promise<ProductionRun>{
+    if(!this.exclusiveCreationApproved)throw new V2ApplicationError("CONFLICT","Production Run creation remains disabled until exclusive membership is verified with a native two-client PostgreSQL test and reviewed approval.");
+    const invariant=await this.client.query<{definition:string;valid:boolean;unique:boolean}>(`SELECT pg_get_indexdef(i.indexrelid) definition,i.indisvalid valid,i.indisunique unique FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE i.indrelid='v2_production_run_allocations'::regclass AND c.relname='v2_production_run_allocations_exclusive_active_uidx'`);
+    const index=invariant.rows[0];
+    if(!index?.valid||!index.unique||!/\(organization_id, production_work_id\) WHERE membership_active$/.test(index.definition))throw new V2ApplicationError("CONFLICT","Production Run exclusive membership invariant is unavailable.");
+    const triggers=await this.client.query<{n:number}>(`SELECT count(*)::integer n FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='O' AND ((tgrelid='v2_production_run_allocations'::regclass AND tgname IN ('v2_production_run_membership_bind_trigger','v2_production_run_membership_gate_allocations')) OR (tgrelid='v2_production_runs'::regclass AND tgname IN ('v2_production_run_membership_state_trigger','v2_production_run_membership_gate_runs')))`);
+    if(triggers.rows[0]?.n!==4)throw new V2ApplicationError("CONFLICT","Production Run exclusive membership invariant triggers are unavailable.");
+    const ids=input.members.map(member=>member.productionWorkId).sort();
+    if(!ids.length||new Set(ids).size!==ids.length)throw new V2ApplicationError("VALIDATION_ERROR","Production Run members must be unique.");
+    const existing=await this.lockRun(input.organizationId,input.id);
+    for(const id of ids)await this.lockProductionWork(input.organizationId,id,input.stationKey,true);
+    if(existing){
+     if(existing.stationKey!==input.stationKey||existing.materialFingerprint!==input.materialFingerprint||canonicalJson(existing.layoutMetadata)!==canonicalJson(input.layoutMetadata)||existing.allocations.length!==ids.length||existing.allocations.some(member=>!ids.includes(member.productionWorkId)||member.allocatedQuantity!==input.quantities.get(member.productionWorkId)))throw new V2ApplicationError("IDEMPOTENCY_CONFLICT","Production Run identity was used for different members.");
+     return existing;
+    }
+    const conflict=await this.client.query("SELECT ra.id FROM v2_production_run_allocations ra JOIN v2_production_runs r ON r.organization_id=ra.organization_id AND r.id=ra.production_run_id WHERE ra.organization_id=$1 AND ra.production_work_id=ANY($2::varchar[]) AND ra.released_at IS NULL AND r.state IN ('draft','ready','active','held') LIMIT 1",[input.organizationId,ids]);
+    if(conflict.rows.length)throw new V2ApplicationError("CONFLICT","Production work already belongs to an active Production Run.");
+    const current=await this.lockCandidates(input.organizationId,ids);
+    if(current.length!==ids.length)throw new V2ApplicationError("CONFLICT","Production Run members are no longer available.");
+    assertCompatibleRunMembers(input.stationKey,current.map(member=>({...member,requestedQuantity:input.quantities.get(member.productionWorkId)!})));
+    for(const member of current){const frozen=input.members.find(item=>item.productionWorkId===member.productionWorkId)!;if(member.materialFingerprint!==input.materialFingerprint||!preparedArtworkIsCurrent({artworkAssignmentId:frozen.artworkAssignmentId,artworkFileId:frozen.artworkFileId,identityFingerprint:frozen.artworkIdentityFingerprint,objectVersion:frozen.artworkObjectVersion},{artworkAssignmentId:member.artworkAssignmentId,artworkFileId:member.artworkFileId,identityFingerprint:member.artworkIdentityFingerprint,objectVersion:member.artworkObjectVersion}))throw new V2ApplicationError("CONFLICT","Production Run preparation changed before creation.");}
+    await this.client.query("INSERT INTO v2_production_runs(id,organization_id,station_key,material_fingerprint,layout_metadata,created_principal_kind,created_principal_subject,created_staff_actor_user_id) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8)",[input.id,input.organizationId,input.stationKey,input.materialFingerprint,JSON.stringify(input.layoutMetadata),input.principalKind,input.principalSubject,input.staffActorUserId??null]);
+    await this.event({organizationId:input.organizationId,productionRunId:input.id,kind:"created",principalKind:input.principalKind,principalSubject:input.principalSubject,staffActorUserId:input.staffActorUserId});
+    for(const [position,member] of current.entries()){
+     const id=randomUUID();
+     await this.client.query("INSERT INTO v2_production_run_allocations(id,organization_id,production_run_id,production_work_id,allocated_quantity,artwork_assignment_id,artwork_file_id,artwork_identity_fingerprint,artwork_object_version,position) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",[id,input.organizationId,input.id,member.productionWorkId,input.quantities.get(member.productionWorkId),member.artworkAssignmentId,member.artworkFileId,member.artworkIdentityFingerprint,member.artworkObjectVersion,position]);
+     await this.event({organizationId:input.organizationId,productionRunId:input.id,kind:"allocation_reserved",productionRunAllocationId:id,principalKind:input.principalKind,principalSubject:input.principalSubject,staffActorUserId:input.staffActorUserId});
+    }
+    return (await this.lockRun(input.organizationId,input.id))!;
+   }
+  async lockRun(org:OrganizationId,id:ProductionRunId){await lockProductionRunMembership(this.client);const run=await this.client.query<RunRow>("SELECT id,organization_id,station_key,state,revision,material_fingerprint,layout_metadata FROM v2_production_runs WHERE organization_id=$1 AND id=$2 FOR UPDATE",[org,id]);if(!run.rows[0])return null;const [items,events]=await Promise.all([this.client.query<AllocationRow>("SELECT id,production_work_id,allocated_quantity,good_quantity,waste_quantity,artwork_assignment_id,artwork_file_id,artwork_identity_fingerprint,artwork_object_version,production_attempt_id,position,released_at,terminal_resolution FROM v2_production_run_allocations WHERE organization_id=$1 AND production_run_id=$2 ORDER BY position FOR UPDATE",[org,id]),this.client.query<EventRow>("SELECT id,sequence,event_kind,production_run_allocation_id,production_attempt_id,reason,note,created_at,created_principal_kind,created_principal_subject,created_staff_actor_user_id FROM v2_production_run_events WHERE organization_id=$1 AND production_run_id=$2 ORDER BY sequence,id",[org,id])]);return asRun(run.rows[0],items.rows,events.rows);}
  async list(org:OrganizationId,station?:"flatbed"|"roll"){const rows=await this.client.query<RunRow>(`SELECT id,organization_id,station_key,state,revision,material_fingerprint,layout_metadata FROM v2_production_runs WHERE organization_id=$1 ${station?"AND station_key=$2":""} ORDER BY created_at DESC,id DESC LIMIT 100`,station?[org,station]:[org]);return Promise.all(rows.rows.map(row=>this.lockRun(org,brandedId<"ProductionRunId">(row.id)).then(value=>value!)));}
  async orderIds(org:OrganizationId,id:ProductionRunId){const rows=await this.client.query<{order_document_id:string}>("SELECT DISTINCT w.order_document_id FROM v2_production_run_allocations ra JOIN v2_production_works w ON w.organization_id=ra.organization_id AND w.id=ra.production_work_id WHERE ra.organization_id=$1 AND ra.production_run_id=$2 ORDER BY w.order_document_id",[org,id]);return rows.rows.map(row=>brandedId<"OrderId">(row.order_document_id));}
   private async currentCandidatesForRun(org:OrganizationId,run:ProductionRun){

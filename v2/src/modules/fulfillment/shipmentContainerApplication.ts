@@ -7,24 +7,28 @@ import { brandedId, canonicalJson, type FulfillmentHandoffId, type OrganizationI
 import { manualCarrierShipment, type ManualCarrierShipment } from "./carrierShipment.js";
 import type { FulfillmentShipmentContainer, FulfillmentShipmentContainerDetail, ShipmentContainerStatus, ShipmentPreparedAllocation, ShipmentPreparedRevision } from "./shipmentContainer.js";
 import type { OrderAutomaticLifecycle } from "../sales/orderAutomaticLifecycle.js";
+import type { OrderingCustomerSender, ShipmentSenderIntent } from "./shipmentSender.js";
+import type { PhysicalOperation } from "./physicalOperationRecovery.js";
 
 type Actor = Readonly<{ principalKind: OperationContext["principal"]["kind"]; principalSubject: string; staffActorUserId?: string }>;
 type Reservation = Readonly<{ kind: "new" | "resumed" | "replay"; request: Readonly<{ id: string; resultJson: unknown | null }> }>;
 type CarrierInput = Omit<ManualCarrierShipment, "status" | "shippedAt">;
 export interface ShipmentContainerTransaction {
+  readSenderContext?(organizationId: OrganizationId, orderIds: readonly string[]): Promise<readonly OrderingCustomerSender[]>;
+  claimPhysicalIntent?(context: OperationContext, operation: PhysicalOperation, input: unknown): Promise<void>;
   reserve(input: Readonly<{ organizationId: string; operation: string; businessRequestId: string; payloadFingerprint: string }> & Actor): Promise<Reservation>;
   succeed(organizationId: string, requestId: string, result: FulfillmentShipmentContainer): Promise<void>;
   create(input: Readonly<{ id: string; organizationId: OrganizationId; customerId?: string; destination?: unknown; carrier: ManualCarrierShipment }> & Actor): Promise<FulfillmentShipmentContainer>;
   markShipped(input: Readonly<{ organizationId: OrganizationId; shipmentId: string; carrier: ManualCarrierShipment }> & Actor): Promise<FulfillmentShipmentContainer | null>;
   attach(input: Readonly<{ organizationId: OrganizationId; shipmentId: string; handoffIds: readonly FulfillmentHandoffId[] }>): Promise<boolean>;
   /** M7.8B recovery methods are optional only for legacy in-memory test adapters. */
-  createPrepared?(input: Readonly<{ id: string; organizationId: OrganizationId; customerId?: string; destination?: unknown; carrier: ManualCarrierShipment; allocations: readonly ShipmentPreparedAllocation[] }> & Actor): Promise<FulfillmentShipmentContainerDetail>;
+  createPrepared?(input: Readonly<{ id: string; organizationId: OrganizationId; customerId?: string; destination?: unknown; senderIntents?: readonly ShipmentSenderIntent[]; carrier: ManualCarrierShipment; allocations: readonly ShipmentPreparedAllocation[] }> & Actor): Promise<FulfillmentShipmentContainerDetail>;
   /** forUpdate holds the shipment lock on this transaction's client through authorization and mutation. */
   get?(organizationId: OrganizationId, shipmentId: string, options?: Readonly<{ forUpdate?: boolean }>): Promise<FulfillmentShipmentContainerDetail | null>;
   /** Immutable evidence, scoped to exactly one tenant, shipment and revision. Required for correction replay. */
   getPreparedRevision?(organizationId: OrganizationId, shipmentId: string, revisionId: string): Promise<ShipmentPreparedRevision | null>;
   list?(organizationId: OrganizationId, request?: Readonly<{ status?: ShipmentContainerStatus; limit?: number }>): Promise<readonly FulfillmentShipmentContainer[]>;
-  correctPrepared?(input: Readonly<{ organizationId: OrganizationId; shipmentId: string; carrier: ManualCarrierShipment; allocations: readonly ShipmentPreparedAllocation[]; correctionReason: string }> & Actor): Promise<FulfillmentShipmentContainerDetail | null>;
+  correctPrepared?(input: Readonly<{ organizationId: OrganizationId; shipmentId: string; senderIntents?: readonly ShipmentSenderIntent[]; carrier: ManualCarrierShipment; allocations: readonly ShipmentPreparedAllocation[]; correctionReason: string }> & Actor): Promise<FulfillmentShipmentContainerDetail | null>;
   voidPrepared?(input: Readonly<{ organizationId: OrganizationId; shipmentId: string; reason: string }> & Actor): Promise<FulfillmentShipmentContainer | null>;
   /**
    * The only production transition from a prepared container to SHIPPED.  The
@@ -41,30 +45,43 @@ const fingerprint = (value: unknown) => `sha256:${createHash("sha256").update(ca
 export class ShipmentContainerApplicationService {
   constructor(private readonly runner: ShipmentContainerRunner, private readonly authority = new AuthorityPolicy(), private readonly orderLifecycle?: OrderAutomaticLifecycle) {}
   private allow(context: OperationContext) { if (!this.authority.decide(context.principal, { capability: "fulfillment.ship", resource: { organizationId: context.organizationId } }).allowed) throw new V2ApplicationError("FORBIDDEN", "The principal does not have shipment authority."); }
+  async senderContext(context: OperationContext, orderId: string): Promise<ApplicationResult<OrderingCustomerSender>> {
+    try {
+      requireOperationPrincipalScope(context); this.allow(context);
+      if(context.principal.kind!=="staff")throw new V2ApplicationError("FORBIDDEN","Sender context is staff-only.");
+      const result=await this.runner.transaction(async tx=>{
+        if(!tx.readSenderContext)throw new V2ApplicationError("INTERNAL_ERROR","Sender context is unavailable.");
+        const rows=await tx.readSenderContext(context.organizationId as OrganizationId,[orderId]);
+        if(!rows[0])throw new V2ApplicationError("NOT_FOUND","Sender context was not found.");
+        return rows[0];
+      });
+      return success(result);
+    }catch(error){return failure(this.error(error));}
+  }
 
   async create(context: OperationContext, input: Readonly<{ customerId?: string; destination?: unknown; carrier?: CarrierInput }>): Promise<ApplicationResult<FulfillmentShipmentContainer>> {
     return this.mutate(context, input, "fulfillment.shipment-container.create.v1", (tx, organizationId) => tx.create({ id: randomUUID(), organizationId, ...(input.customerId ? { customerId: input.customerId } : {}), ...(input.destination ? { destination: input.destination } : {}), carrier: manualCarrierShipment({ status: "prepared", ...(input.carrier ?? {}) }), ...actor(context) }));
   }
 
   /** Creates an editable prepared shipment with append-only reservation evidence. It never records a fulfillment handoff. */
-  async createPrepared(context: OperationContext, input: Readonly<{ customerId?: string; destination?: unknown; carrier?: CarrierInput; allocations: readonly ShipmentPreparedAllocation[] }>): Promise<ApplicationResult<FulfillmentShipmentContainerDetail>> {
+  async createPrepared(context: OperationContext, input: Readonly<{ customerId?: string; destination?: unknown; senderIntents?: readonly ShipmentSenderIntent[]; carrier?: CarrierInput; allocations: readonly ShipmentPreparedAllocation[] }>): Promise<ApplicationResult<FulfillmentShipmentContainerDetail>> {
     return this.mutate(context, input, "fulfillment.shipment-container.prepare.v1", async (tx, organizationId) => {
       if (!tx.createPrepared) throw new V2ApplicationError("INTERNAL_ERROR", "Shipment recovery persistence is unavailable.");
       this.allocations(input.allocations);
       this.allowAllocations(context, input.allocations);
-      return tx.createPrepared({ id: randomUUID(), organizationId, ...(input.customerId ? { customerId: input.customerId } : {}), ...(input.destination !== undefined ? { destination: input.destination } : {}), carrier: manualCarrierShipment({ status: "prepared", ...(input.carrier ?? {}) }), allocations: input.allocations, ...actor(context) });
+      return tx.createPrepared({ id: randomUUID(), organizationId, ...(input.customerId ? { customerId: input.customerId } : {}), ...(input.destination !== undefined ? { destination: input.destination } : {}), ...(input.senderIntents ? { senderIntents: input.senderIntents } : {}), carrier: manualCarrierShipment({ status: "prepared", ...(input.carrier ?? {}) }), allocations: input.allocations, ...actor(context) });
     }, undefined, (tx, saved) => this.allowReplay(context, tx, saved, "prepare"));
   }
 
   /** Prepared recovery is deliberately separate from final shipment completion. */
-  async correctPrepared(context: OperationContext, input: Readonly<{ shipmentId: string; carrier?: CarrierInput; allocations: readonly ShipmentPreparedAllocation[]; reason: string }>): Promise<ApplicationResult<FulfillmentShipmentContainerDetail>> {
+  async correctPrepared(context: OperationContext, input: Readonly<{ shipmentId: string; senderIntents?: readonly ShipmentSenderIntent[]; carrier?: CarrierInput; allocations: readonly ShipmentPreparedAllocation[]; reason: string }>): Promise<ApplicationResult<FulfillmentShipmentContainerDetail>> {
     return this.mutate(context, input, "fulfillment.shipment-container.correct.v1", async (tx, organizationId) => {
       if (!tx.correctPrepared) throw new V2ApplicationError("INTERNAL_ERROR", "Shipment recovery persistence is unavailable.");
       this.allocations(input.allocations);
       if (!input.reason.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A prepared shipment correction reason is required.");
       const current = await this.lockedRevision(tx, organizationId, input.shipmentId);
       this.allowAllocations(context, [...current.allocations, ...input.allocations]);
-      const result = await tx.correctPrepared({ organizationId, shipmentId: input.shipmentId, carrier: manualCarrierShipment({ status: "prepared", ...(input.carrier ?? {}) }), allocations: input.allocations, correctionReason: input.reason, ...actor(context) });
+      const result = await tx.correctPrepared({ organizationId, shipmentId: input.shipmentId, ...(input.senderIntents ? { senderIntents: input.senderIntents } : {}), carrier: manualCarrierShipment({ status: "prepared", ...(input.carrier ?? {}) }), allocations: input.allocations, correctionReason: input.reason, ...actor(context) });
       if (!result) throw new V2ApplicationError("CONFLICT", "Only an existing prepared shipment can be corrected.");
       return result;
     }, undefined, (tx, saved) => this.allowReplay(context, tx, saved, "correct", input.shipmentId));
@@ -129,8 +146,10 @@ export class ShipmentContainerApplicationService {
       if (!context.businessRequest?.id.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "A matching business request identity is required.");
       let committedMutation = false;
       const result = await this.runner.transaction(async tx => {
+        if (operation !== "fulfillment.shipment-container.create.v1") await tx.claimPhysicalIntent?.(context, operation as PhysicalOperation, input);
         const reservation = await tx.reserve({ organizationId: context.organizationId, operation, businessRequestId: context.businessRequest!.id, payloadFingerprint: fingerprint(input), ...actor(context) });
         if (reservation.kind === "replay") {
+          if (!reservation.request.resultJson) throw new V2ApplicationError("CONFLICT", "The physical operation has no successful receipt and cannot be repeated with this request identity.");
           await authorizeReplay?.(tx, reservation.request.resultJson);
           return reservation.request.resultJson as T;
         }
@@ -139,7 +158,7 @@ export class ShipmentContainerApplicationService {
         committedMutation = true;
         return shipment;
       });
-      if (committedMutation) await afterCommitted?.(result);
+      if (committedMutation || operation === "fulfillment.shipment-container.finalize.v1") await afterCommitted?.(result);
       return success(result);
     } catch (error) { return failure(this.error(error)); }
   }

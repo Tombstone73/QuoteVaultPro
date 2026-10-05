@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { configureProductionRecoveryTransport, discoverProductionOutput, prepareProductionOutput, executeProductionOutput, type ProductionOutputReceipt, type ProductionRecoveryTransport } from "./productionRecoveryApi";
+const receipt:ProductionOutputReceipt={operation:"production.attempt.output.v1",businessRequestId:"request-a",productionWorkId:"work-a",productionAttemptId:"attempt-a",intent:{businessRequestId:"request-a",productionAttemptId:"attempt-a",goodQuantityDelta:7,wasteQuantityDelta:2} as ProductionOutputReceipt["intent"],submittedAt:"2026-10-03T00:00:00.000Z",status:"pending",result:null};
+const result={work:{organizationId:"org-a",productionWorkId:"work-a"},attempt:{productionAttemptId:"attempt-a",productionWorkId:"work-a"}};
+let cases=0;
+const use=(handler:(suffix:string,init:RequestInit)=>unknown|Promise<unknown>)=>configureProductionRecoveryTransport((async(org,operation,suffix,init,expected)=>{assert.equal(org,"org-a");assert.equal(operation,"production");assert.equal(expected,"scope-a");return handler(suffix,init);}) as ProductionRecoveryTransport);
+try{
+ configureProductionRecoveryTransport(undefined);await assert.rejects(()=>discoverProductionOutput("org-a","scope-a",receipt.operation),/central transport/);cases++;
+ use((suffix,init)=>{assert.match(suffix,/output-recovery/);assert.equal(init.method,"GET");assert.equal(init.body,undefined);return [receipt];});assert.deepEqual(await discoverProductionOutput("org-a","scope-a",receipt.operation),[receipt]);cases++;
+ use(()=>{throw Error("Current grants revoked");});await assert.rejects(()=>discoverProductionOutput("org-a","scope-a",receipt.operation),/revoked/);cases++;
+ for(const invalid of [{...receipt,intent:null},{...receipt,status:"succeeded",result:null},{...receipt,status:"succeeded",result:{...result,work:{...result.work,organizationId:"org-b"}}},{...receipt,status:"rejected"},{...receipt,status:"rejected",rejection:{code:"RETRYABLE_FAILURE",message:"unknown"}}]){use(()=>[invalid]);await assert.rejects(()=>discoverProductionOutput("org-a","scope-a",receipt.operation),/invalid evidence/);cases++;}
+ const redacted={...receipt,intent:null,intentRedacted:true};use(()=>[redacted]);assert.equal((await discoverProductionOutput("org-a","scope-a",receipt.operation))[0]?.intent,null);cases++;
+ const submitted={businessRequestId:"request-a",productionAttemptId:"attempt-a",goodQuantityDelta:7,wasteQuantityDelta:2};let posts=0;
+ use((suffix,init)=>{if(init.method==="GET")return [];posts++;assert.match(suffix,/output-intents/);assert.deepEqual(JSON.parse(String(init.body)),submitted);return receipt;});await prepareProductionOutput("org-a","scope-a",receipt.operation,submitted);assert.equal(posts,1);cases++;
+ const sparse={businessRequestId:"request-a",productionAttemptId:"attempt-a",goodQuantityDelta:7};const sparseReceipt={...receipt,intent:sparse};
+ use((_,init)=>{if(init.method==="GET")return [sparseReceipt];posts++;assert.deepEqual(JSON.parse(String(init.body)),sparse);return sparseReceipt;});assert.deepEqual((await prepareProductionOutput("org-a","scope-a",receipt.operation,{...sparse,wasteQuantityDelta:0})).input,{goodQuantityDelta:7});cases++;
+ let active=true;use(async(_,init)=>{if(init.method==="GET")return [];active=false;return receipt;});await assert.rejects(()=>prepareProductionOutput("org-a","scope-a",receipt.operation,submitted,()=>{if(!active)throw Error("Unmounted admission");}),/Unmounted/);cases++;
+ use((_,init)=>{if(init.method==="GET")return [{...receipt,status:"succeeded",result}];return {...receipt,status:"succeeded",result};});const committed=await prepareProductionOutput("org-a","scope-a",receipt.operation,submitted);assert.equal(committed.status,"succeeded");
+ use((suffix,init)=>{assert.match(suffix,/attempts\/attempt-a\/output$/);assert.deepEqual(JSON.parse(String(init.body)),{businessRequestId:"request-a",...committed.input});return result;});assert.deepEqual(await executeProductionOutput("org-a","scope-a",receipt.operation,{productionAttemptId:"attempt-a"},"request-a",committed.input,()=>{}),result);cases++;
+ console.log(`Production recovery injected transport/receipt contracts: ${cases} cases passed; central generation/CSRF behavior is tested by the mounted suite.`);
+}finally{configureProductionRecoveryTransport(undefined);}

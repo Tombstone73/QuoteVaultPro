@@ -64,6 +64,54 @@ do not disable unrelated accepted fulfillment or existing Run output. Disabled o
 incomplete source is not an external-only closure. These are restrictive scope
 clarifications, not implementation acceptance or additional feature authority.
 
+### October 5 Durable Recovery Checkpoint
+
+Recovery resumes from DEV and coordinator HEAD
+`121b0df1570ef03b0323c43789a467f353b27990`, not from the campaign baseline.
+Read-only worktree/branch/history/status inspection, generated-report inspection,
+source comparisons and durable review transcripts preceded manual edits. The
+package inventory is recorded in `remainingL0Campaign.recovery20261005` in the
+existing reconciliation ledger. All lane candidates and unrelated caller-root
+changes remain preserved; no V1, MAIN, PROD, L1 or Storefront change is included.
+
+BILL-16 remains delivered and unchanged. Accepted Accounting and Shipping bytes
+are assembled but uncommitted in the coordinator. Sales business/Artwork final
+review remains pending; shared Sales UI and schema 0302 have separate bounded
+acceptance. Production source/schema and its final transactional duplicate-input
+correction are accepted for assembly, not native proof. ACCESS-05 remains an
+unaccepted nine-file candidate with caller-ordering/cascade and native-fixture
+corrections outstanding. Native launcher safety is accepted, but its real coverage
+contracts remain NULL and the obsolete B10/E7 support proposal is not adopted.
+
+The recovered Accounting/Shipping/diagnostic coordinator checkpoint ran the full
+`npm run v2:validate`: **10/11 gates**, failing only the two pending migration
+integrity records. All 100 Jest suites and 1,232 tests passed with zero pending,
+as did 293 core and 99 UI runner invocations, 102 architecture fixtures and 11
+runner-safety fixtures. All three sanitized V2 builds passed. Import debt remains
+81/81; SQL debt is 189 instances/169 fingerprints. The 295 protected migration
+records remain unchanged. This checkpoint is not final Sales/Production/Auth
+union validation or a clean-SHA delivery receipt.
+
+The edited guarded deployment test again stopped at the intentional dotenv guard
+before any assertions. Native owner suites, provider/carrier execution and new
+DEV fixture mutations remain unrun. No row transition or L0 count reduction is
+made at this checkpoint; the ten rows have different source/integration/proof
+statuses rather than a blanket external-only disposition.
+
+The subsequent Accounting/Shipping/Production/Artwork assembly checkpoint passed
+all **11 canonical gates**, 100 Jest suites / 1,232 tests with zero pending, 299
+core and 100 UI invocations, 102 architecture fixtures and 13 safety fixtures.
+All three builds passed. The four-append migration/readiness union, nonnative
+source composition and Production-only native-CI candidate have separate final
+bounded independent PASS results. Integrity now protects 299 entries through
+0303, digest `8ac68ff7f1c60c1b4477b47792dc2b93a4cac8ca10095411da441fb35b4273f9`.
+This source milestone excludes the held Sales replay-status correction and Auth
+coexistence-blocked candidate. Native Production 0/28 and Team 0/20 remain unrun;
+Run creation remains default-off and Team's native coverage contract remains NULL.
+The held Auth lane also passed its own eleven canonical gates after exact named
+operation/bridge registrations and debt retirement, without resolving shared
+QA/V1 ordering or adopting 0304. No row transition follows from these local gates.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

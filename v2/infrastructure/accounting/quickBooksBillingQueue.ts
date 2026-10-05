@@ -2,15 +2,12 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Pool, PoolClient } from "pg";
 import {
-  syncV2InvoiceToQuickBooks,
-  syncV2PaymentToQuickBooks,
   syncV2RefundCreditMemoToQuickBooks,
   syncV2RefundDisbursementToQuickBooks,
   fetchQBCustomersForPreview,
   fetchQBInvoicePreviewPage,
   importQBInvoicesByIds,
   type QBInvoicePreviewScope,
-  type V2QuickBooksCustomer,
 } from "../../../server/quickbooksService.js";
 import { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
 import {
@@ -20,13 +17,17 @@ import {
   type QuickBooksInvoiceProjection as InvoiceProjection,
 } from "./quickBooksLiveInvoiceProjection.js";
 import { quickBooksPaymentReference } from "./quickBooksPaymentReference.js";
+import { PostgresQuickBooksPaymentReadTransport, type QuickBooksPaymentReadPort } from "./quickBooksPaymentReadTransport.js";
+import { quickBooksPaymentReconciliationRequired, type QuickBooksPaymentRecoveryContext } from "./quickBooksPaymentRecovery.js";
+import { exportOrRecoverQuickBooksPayment } from "./quickBooksPaymentExport.js";
+import { publicationIntent, invoicePublicationIntent, assertInvoicePublicationAmounts, assertPublicationLink, publicationEquals, type PublicationIntent, type ConfirmedPublication, type PublicationLink } from "./quickBooksProviderPublication.js";
 export { quickBooksQueueFailureState, v2QuickBooksQueueWorkerEnabled } from "./quickBooksQueuePolicy.js";
 
 export type QuickBooksSyncSubject = "invoice" | "payment" | "refund";
 type QuickBooksLinkKind = "customer" | "invoice" | "payment" | "refund_credit_memo" | "refund_disbursement";
 type JobState = "queued" | "processing" | "retry" | "succeeded" | "uncertain" | "blocked";
 type QuickBooksQueueClient = Pick<PoolClient, "query">;
-type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; attemptCount: number }>;
+type Job = Readonly<{ id: string; organizationId: string; subjectKind: QuickBooksSyncSubject; subjectId: string; attemptCount: number; recoveryState?: "uncertain" | "blocked"; recoveryGeneration?: string;publicationVersion?:string }>;
 export type QuickBooksQueueRunResult = Readonly<{ claimed: number; succeeded: number; retry: number; uncertain: number; blocked: number }>;
 export type QuickBooksOperationsRead = Readonly<{
   eligibleInvoiceCount: number;
@@ -54,7 +55,7 @@ export const enqueueV2QuickBooksSync = async (client: QuickBooksQueueClient, org
              WHEN v2_quickbooks_sync_jobs.state IN ('uncertain','blocked') THEN v2_quickbooks_sync_jobs.state
              WHEN v2_quickbooks_sync_jobs.state='processing' THEN 'processing'
              ELSE 'queued'
-           END,
+            END,
            available_at=CASE
              WHEN v2_quickbooks_sync_jobs.state IN ('uncertain','blocked','processing') THEN v2_quickbooks_sync_jobs.available_at
              ELSE LEAST(v2_quickbooks_sync_jobs.available_at,now())
@@ -79,7 +80,7 @@ export const enqueueV2QuickBooksAutoSync = async (client: QuickBooksQueueClient,
 };
 
 export class PostgresQuickBooksSyncNow {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, private readonly paymentReader: QuickBooksPaymentReadPort = new PostgresQuickBooksPaymentReadTransport(pool)) {}
   async policy(organizationId:string):Promise<{autoSync:boolean}> { const result=await this.pool.query<{ enabled:boolean }>("SELECT COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled FROM organizations WHERE id=$1",[organizationId]); return {autoSync:result.rows[0]?.enabled===true}; }
   async setPolicy(organizationId:string,autoSync:boolean):Promise<{autoSync:boolean}> { const result=await this.pool.query<{ enabled:boolean }>("UPDATE organizations SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{preferences,quickBooks,autoSync}',to_jsonb($2::boolean),true),updated_at=now() WHERE id=$1 RETURNING COALESCE(settings #>> '{preferences,quickBooks,autoSync}','false')='true' enabled",[organizationId,autoSync]); if(!result.rows[0])throw new Error("Organization is unavailable for QuickBooks configuration."); return {autoSync:result.rows[0].enabled}; }
   /** Explicit operator selection uses the same durable queue as Sync Now. */
@@ -170,9 +171,9 @@ export class PostgresQuickBooksSyncNow {
     const where=`j.organization_id=$1 AND ($2='' OR COALESCE(i.invoice_display_number,'') ILIKE '%'||$2||'%' OR COALESCE(c.display_name,c.company_name,'') ILIKE '%'||$2||'%' OR j.subject_kind ILIKE '%'||$2||'%') AND (NOT $3::boolean OR j.state IN ('blocked','retry','uncertain'))`;
     const joins=`FROM v2_quickbooks_sync_jobs j LEFT JOIN v2_billing_payments p ON p.organization_id=j.organization_id AND j.subject_kind='payment' AND p.id=j.subject_id LEFT JOIN v2_billing_refunds r ON r.organization_id=j.organization_id AND j.subject_kind='refund' AND r.id=j.subject_id LEFT JOIN v2_billing_invoices i ON i.organization_id=j.organization_id AND ((j.subject_kind='invoice' AND i.id=j.subject_id) OR (j.subject_kind='payment' AND i.id=p.invoice_id) OR (j.subject_kind='refund' AND i.id=r.invoice_id)) LEFT JOIN customers c ON c.organization_id=j.organization_id AND c.id=i.customer_id LEFT JOIN v2_quickbooks_sync_links l ON l.organization_id=j.organization_id AND l.entity_id=j.subject_id AND ((j.subject_kind IN ('invoice','payment') AND l.entity_kind=j.subject_kind) OR (j.subject_kind='refund' AND l.entity_kind='refund_disbursement'))`;
     const [rows,count]=await Promise.all([
-      this.pool.query<{id:string;subject_kind:QuickBooksSyncSubject;subject_id:string;state:JobState;attempt_count:number;last_error:string|null;updated_at:Date;completed_at:Date|null;display_number:string|null;customer_name:string;amount_cents:string|null;currency:string|null;provider_id:string|null}>(`SELECT j.id,j.subject_kind,j.subject_id,j.state,j.attempt_count,j.last_error,j.updated_at,j.completed_at,COALESCE(i.invoice_display_number,'Invoice') display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,CASE WHEN j.subject_kind='payment' THEN p.amount_cents WHEN j.subject_kind='refund' THEN r.amount_cents ELSE i.total_cents END::text amount_cents,COALESCE(p.currency,r.currency,i.currency) currency,l.provider_id ${joins} WHERE ${where} ORDER BY CASE WHEN j.state IN ('blocked','retry','uncertain') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT $4 OFFSET $5`,[organizationId,search,input.actionRequiredOnly,pageSize,offset]),
+      this.pool.query<{id:string;subject_kind:QuickBooksSyncSubject;subject_id:string;state:JobState;attempt_count:number;last_error:string|null;updated_at:Date;completed_at:Date|null;display_number:string|null;customer_name:string;amount_cents:string|null;currency:string|null;provider_id:string|null;payment_unattempted:boolean}>(`SELECT j.id,j.subject_kind,j.subject_id,j.state,j.attempt_count,j.last_error,j.updated_at,j.completed_at,COALESCE(i.invoice_display_number,'Invoice') display_number,COALESCE(c.display_name,c.company_name,'Customer unavailable') customer_name,CASE WHEN j.subject_kind='payment' THEN p.amount_cents WHEN j.subject_kind='refund' THEN r.amount_cents ELSE i.total_cents END::text amount_cents,COALESCE(p.currency,r.currency,i.currency) currency,l.provider_id,(j.subject_kind='payment' AND NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links known WHERE known.organization_id=j.organization_id AND known.entity_kind='payment' AND known.entity_id=j.subject_id) AND (NOT EXISTS (SELECT 1 FROM v2_quickbooks_payment_references ref WHERE ref.organization_id=j.organization_id AND ref.payment_id=j.subject_id) OR EXISTS (SELECT 1 FROM v2_quickbooks_payment_references ref WHERE ref.organization_id=j.organization_id AND ref.payment_id=j.subject_id AND ref.recovery_context IS NOT NULL AND ref.recovery_context->>'jobId'=j.id AND ref.provider_attempt_started_at IS NULL))) payment_unattempted ${joins} WHERE ${where} ORDER BY CASE WHEN j.state IN ('blocked','retry','uncertain') THEN 0 ELSE 1 END,j.updated_at DESC LIMIT $4 OFFSET $5`,[organizationId,search,input.actionRequiredOnly,pageSize,offset]),
       this.pool.query<{count:string}>(`SELECT count(*)::text count ${joins} WHERE ${where}`,[organizationId,search,input.actionRequiredOnly]),
-    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({jobId:row.id,subjectKind:row.subject_kind,subjectId:row.subject_id,displayNumber:row.display_number??"Invoice",customerName:row.customer_name,amountCents:row.amount_cents===null?null:Number(row.amount_cents),currency:row.currency,state:row.state,attemptCount:row.attempt_count,lastError:row.last_error,updatedAt:row.updated_at.toISOString(),completedAt:row.completed_at?.toISOString()??null,providerId:row.provider_id,retryEligible:row.state==="blocked"||row.state==="retry",recoveryEligible:quickBooksCredentialInterruptedRecoveryEligible(row.state,row.last_error)})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
+    ]); const total=Number(count.rows[0]?.count??0); return {items:rows.rows.map(row=>({jobId:row.id,subjectKind:row.subject_kind,subjectId:row.subject_id,displayNumber:row.display_number??"Invoice",customerName:row.customer_name,amountCents:row.amount_cents===null?null:Number(row.amount_cents),currency:row.currency,state:row.state,attemptCount:row.attempt_count,lastError:row.last_error,updatedAt:row.updated_at.toISOString(),completedAt:row.completed_at?.toISOString()??null,providerId:row.provider_id,retryEligible:(row.state==="blocked"||row.state==="retry")&&(row.subject_kind==="payment"?row.payment_unattempted:!row.last_error?.includes("QUICKBOOKS_PAYMENT_RECONCILIATION_REQUIRED")),recoveryEligible:row.subject_kind==="payment"?((row.state==="uncertain"||row.state==="blocked")&&!row.payment_unattempted):quickBooksCredentialInterruptedRecoveryEligible(row.state,row.last_error)})),total,page,pageSize,hasNextPage:offset+rows.rows.length<total};
   }
   /** Recovery deliberately preserves the one existing queue identity. */
   async retry(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<{ state: "queued"; attemptCount: number }> {
@@ -185,7 +186,19 @@ export class PostgresQuickBooksSyncNow {
           ? "SELECT p.id FROM v2_billing_payments p WHERE p.organization_id=$1 AND p.id=$2 AND EXISTS (SELECT 1 FROM v2_billing_payment_allocations a JOIN v2_billing_invoices i ON i.organization_id=a.organization_id AND i.id=a.invoice_id WHERE a.organization_id=p.organization_id AND a.payment_id=p.id AND i.invoice_state <> 'void')"
           : "SELECT r.id FROM v2_billing_refunds r WHERE r.organization_id=$1 AND r.id=$2 AND EXISTS (SELECT 1 FROM v2_billing_refund_allocations a JOIN v2_billing_refund_allocation_evidence e ON e.organization_id=a.organization_id AND e.refund_allocation_id=a.id JOIN v2_billing_invoices i ON i.organization_id=e.organization_id AND i.id=e.invoice_id WHERE a.organization_id=r.organization_id AND a.refund_id=r.id AND i.invoice_state <> 'void')", [organizationId, subjectId]);
       if (!valid.rows[0]) throw new Error(`The V2 ${subjectKind} is unavailable for QuickBooks recovery.`);
-      const recovered = await client.query<{ attempt_count:number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 AND state IN ('blocked','retry') RETURNING attempt_count", [organizationId,subjectKind,subjectId]);
+      if(subjectKind==="payment"){
+        // Every invocation first crosses the protected append-only reference
+        // barrier. Missing reference/link or a valid unstarted context proves
+        // no authorized attempt; historical NULL context does not.
+        const job=await client.query<{id:string;state:JobState;attempt_count:number}>("SELECT id,state,attempt_count FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 FOR UPDATE",[organizationId,subjectId]);
+        const current=job.rows[0];
+        if(!current||!['blocked','retry'].includes(current.state))throw quickBooksPaymentReconciliationRequired("Payment is not available for explicit retry");
+        const eligible=await client.query<{unattempted:boolean}>("SELECT (NOT EXISTS (SELECT 1 FROM v2_quickbooks_sync_links known WHERE known.organization_id=$1 AND known.entity_kind='payment' AND known.entity_id=$2) AND (NOT EXISTS (SELECT 1 FROM v2_quickbooks_payment_references ref WHERE ref.organization_id=$1 AND ref.payment_id=$2) OR EXISTS (SELECT 1 FROM v2_quickbooks_payment_references ref WHERE ref.organization_id=$1 AND ref.payment_id=$2 AND ref.recovery_context IS NOT NULL AND ref.recovery_context->>'jobId'=$3 AND ref.provider_attempt_started_at IS NULL))) unattempted",[organizationId,subjectId,current.id]);
+        if(eligible.rows[0]?.unattempted!==true)throw quickBooksPaymentReconciliationRequired("original Payment attempt is unknown or started; use read-only reconciliation");
+        await client.query("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2",[organizationId,subjectId]);
+        await client.query("COMMIT");return {state:"queued",attemptCount:current.attempt_count};
+      }
+      const recovered = await client.query<{ attempt_count:number }>("UPDATE v2_quickbooks_sync_jobs SET state='queued',available_at=now(),lease_expires_at=NULL,claimed_by=NULL,updated_at=now() WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 AND state IN ('blocked','retry') AND COALESCE(last_error,'') NOT LIKE '%QUICKBOOKS_PAYMENT_RECONCILIATION_REQUIRED%' RETURNING attempt_count", [organizationId,subjectKind,subjectId]);
       if (recovered.rows[0]) { await client.query("COMMIT"); return { state:"queued",attemptCount:recovered.rows[0].attempt_count }; }
       const job = await client.query<{ state:JobState }>("SELECT state FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND subject_kind=$2 AND subject_id=$3 FOR UPDATE", [organizationId,subjectKind,subjectId]);
       const state=job.rows[0]?.state;
@@ -198,6 +211,7 @@ export class PostgresQuickBooksSyncNow {
   /** Only a pre-provider credential interruption can be resumed here. Other
    * uncertain outcomes stay held for explicit provider reconciliation. */
   async resumeAfterCredentialReauth(organizationId: string, subjectKind: QuickBooksSyncSubject, subjectId: string): Promise<{ state: "queued"; attemptCount: number }> {
+    if (subjectKind === "payment") throw quickBooksPaymentReconciliationRequired("Payment recovery requires its durable attempt state, not credential-error text");
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -206,6 +220,13 @@ export class PostgresQuickBooksSyncNow {
       await client.query("COMMIT");
       return { state:"queued",attemptCount:recovered.rows[0].attempt_count };
     } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+  async reconcilePayment(organizationId: string, paymentId: string, authorizeCurrentOperator: () => Promise<void>): Promise<{ state: "succeeded"; providerId: string }> {
+    const job = await this.pool.query<{id:string;attempt_count:number;state:"uncertain"|"blocked";generation:string}>("SELECT id,attempt_count,state,updated_at::text generation FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND subject_kind='payment' AND subject_id=$2 AND state IN ('uncertain','blocked')", [organizationId,paymentId]);
+    if (!job.rows[0]) throw quickBooksPaymentReconciliationRequired("Payment is not held for reconciliation");
+    const current = job.rows[0];
+    const providerId = await new V2QuickBooksBillingWorker(this.pool,"v2-qb:read-reconciliation",this.paymentReader).recoverPayment({id:current.id,organizationId,subjectKind:"payment",subjectId:paymentId,attemptCount:current.attempt_count,recoveryState:current.state,recoveryGeneration:current.generation},authorizeCurrentOperator);
+    return {state:"succeeded",providerId};
   }
   async importPreview(organizationId:string, scope:QBInvoicePreviewScope, page:number, pageSize:number) { return fetchQBInvoicePreviewPage({organizationId,scope,page,pageSize}); }
   async customerImportPreview(organizationId:string) { return fetchQBCustomersForPreview(organizationId); }
@@ -219,7 +240,7 @@ export class PostgresQuickBooksSyncNow {
 }
 
 export class V2QuickBooksBillingWorker {
-  constructor(private readonly pool: Pool, private readonly workerId = `v2-qb:${process.env.RAILWAY_REPLICA_ID || hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`) {}
+  constructor(private readonly pool: Pool, private readonly workerId = `v2-qb:${process.env.RAILWAY_REPLICA_ID || hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`, private readonly paymentReader: QuickBooksPaymentReadPort = new PostgresQuickBooksPaymentReadTransport(pool)) {}
 
   async run(limit = 8): Promise<QuickBooksQueueRunResult> {
     const result = { claimed: 0, succeeded: 0, retry: 0, uncertain: 0, blocked: 0 };
@@ -228,14 +249,24 @@ export class V2QuickBooksBillingWorker {
       if (!job) break;
       result.claimed += 1;
       try {
-        await this.process(job);
-        await this.finish(job, "succeeded");
-        result.succeeded += 1;
+        if (job.subjectKind === "payment") {
+          const providerId = await this.processPayment(job);
+          await this.completePayment(job, providerId);
+          result.succeeded += 1;
+        } else if (job.subjectKind === "invoice") {
+          await this.processInvoice(job);
+          result.succeeded += 1;
+        } else {
+          await this.process(job);
+          if (await this.finish(job, "succeeded")) result.succeeded += 1;
+          else result.uncertain += 1;
+        }
       } catch (error) {
+        if(job.subjectKind==="invoice"&&["42P01","42703"].includes((error as {code?:string}).code??""))error=quickBooksPaymentReconciliationRequired("protected canonical publication schema is unavailable");
         const state: JobState = quickBooksQueueFailureState(error);
-        if (state === "uncertain") result.uncertain += 1; else if (state === "blocked") result.blocked += 1; else result.retry += 1;
         if (job.subjectKind === "refund") await this.workflow(job.organizationId, job.subjectId, state, concise(error));
-        await this.finish(job, state, concise(error));
+        const finished = job.subjectKind === "payment" ? await this.finishPaymentFailure(job,state,concise(error)) : job.subjectKind === "invoice" ? await this.finishInvoiceFailure(job,state,concise(error)) : await this.finish(job, state, concise(error));
+        if (!finished || state === "uncertain") result.uncertain += 1; else if (state === "blocked") result.blocked += 1; else result.retry += 1;
       }
     }
     return result;
@@ -268,15 +299,16 @@ export class V2QuickBooksBillingWorker {
 
   private async process(job: Job): Promise<void> {
     if (job.subjectKind === "invoice") return this.processInvoice(job);
-    if (job.subjectKind === "payment") return this.processPayment(job);
+    if (job.subjectKind === "payment") throw quickBooksPaymentReconciliationRequired("Payment processing requires guarded atomic completion");
     return this.processRefund(job);
   }
 
   private async processInvoice(job: Job): Promise<void> {
     const client = await this.pool.connect();
+    let released=false;
     try {
-      const invoice = await client.query<{ customer_id:string|null; display_number:string; currency:string; posted_at:Date; synchronization_version:string }>(
-        `SELECT i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,i.synchronization_version
+      const invoice = await client.query<{ customer_id:string|null; display_number:string; currency:string; posted_at:Date; synchronization_version:string;total_cents:string;tax_cents:string }>(
+        `SELECT i.customer_id,COALESCE(i.invoice_display_number,d.display_number) display_number,i.currency,COALESCE(i.issued_at,i.created_at) posted_at,i.synchronization_version,i.total_cents::text total_cents,i.tax_total_cents::text tax_cents
          FROM v2_billing_invoices i JOIN v2_sales_documents d ON d.organization_id=i.organization_id AND d.id=i.sales_order_document_id
          WHERE i.organization_id=$1 AND i.id=$2 AND i.invoice_state <> 'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_invoice_approvals approval WHERE approval.organization_id=i.organization_id AND approval.invoice_id=i.id AND approval.synchronization_version=i.synchronization_version)`, [job.organizationId, job.subjectId]);
       const row = invoice.rows[0];
@@ -294,26 +326,105 @@ export class V2QuickBooksBillingWorker {
       ) current_projection ORDER BY ordering`, [job.organizationId, job.subjectId]);
       const lines = projectionLines(lineRows.rows);
       if (!lines.length) throw new Error("V2 Order-backed Invoice has no billable lines for QuickBooks sync.");
-      const customerProjection: V2QuickBooksCustomer = { id: customerRow.id, displayName: customerRow.display_name || customerRow.company_name || "", companyName: customerRow.company_name || undefined, email: customerRow.email || undefined, phone: customerRow.phone || undefined, kind: customerRow.customer_type === "individual" ? "individual" : "business" };
+      if(Number(row.tax_cents)!==0||lines.some(line=>line.lineAmountCents<0||line.unitAmountCents<0)||lines.reduce((sum,line)=>sum+line.lineAmountCents,0)!==Number(row.total_cents))throw quickBooksPaymentReconciliationRequired("approved Invoice tax or adjustment is not representable by the existing sales-line export shape");
       const projection: InvoiceProjection = { displayNumber: row.display_number, currency: row.currency, postedAt: row.posted_at.toISOString(), customerId: customerRow.id, lines };
+      assertInvoicePublicationAmounts(projection);
       const fingerprint = quickBooksInvoiceProjectionFingerprint(projection);
+      const publicationJob={...job,publicationVersion:row.synchronization_version};
       const existingInvoice = await this.invoiceLink(job.organizationId, job.subjectId);
-      const existingCustomer = await this.link(job.organizationId, "customer", customerRow.id);
-      // A stale queue job intentionally reads the newest live V2 projection.
-      // If nothing accounting-relevant changed, it only advances local export
-      // evidence and never makes a redundant provider write.
-      if (existingInvoice?.projectionFingerprint === fingerprint) {
-        await this.upsertInvoiceLink(job.organizationId, job.subjectId, existingInvoice.providerId, projection, fingerprint, row.synchronization_version);
-        return;
-      }
-      const provider = await syncV2InvoiceToQuickBooks({ organizationId: job.organizationId, invoiceId: job.subjectId, displayNumber: row.display_number, currency: row.currency, postedAt: row.posted_at.toISOString(), customer: customerProjection, customerQuickBooksId: existingCustomer ?? undefined, quickBooksInvoiceId: existingInvoice?.providerId, lines });
-      await this.upsertLink(job.organizationId, "customer", customerRow.id, provider.qbCustomerId);
-      await this.upsertInvoiceLink(job.organizationId, job.subjectId, provider.qbInvoiceId, projection, fingerprint, row.synchronization_version);
-    } finally { client.release(); }
+      const customerLink=await this.pool.query<{provider_id:string;projection_json:unknown}>("SELECT provider_id,projection_json FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind='customer' AND entity_id=$2",[job.organizationId,customerRow.id]);
+      const connection=await this.paymentReader.connection(job.organizationId);
+      let unchangedIntent:PublicationIntent|undefined;
+      if(existingInvoice){const key=assertPublicationLink(connection,"invoice",job.subjectId,{providerId:existingInvoice.providerId,projectionJson:existingInvoice.projectionJson});const evidence=await this.pool.query<{intent_json:PublicationIntent}>("SELECT intent_json FROM v2_quickbooks_provider_requests WHERE request_id=$1 AND organization_id=$2 AND entity_kind='invoice' AND entity_id=$3 AND realm_id=$4 AND environment=$5 AND confirmed_provider_id=$6",[key,job.organizationId,job.subjectId,connection.realmId,connection.environment,existingInvoice.providerId]);if(!evidence.rows[0])throw quickBooksPaymentReconciliationRequired("Invoice binding has no confirmed canonical request evidence");if(existingInvoice.projectionFingerprint===fingerprint)unchangedIntent=evidence.rows[0].intent_json;}
+      const displayName=(customerRow.display_name||customerRow.company_name||"").trim();
+      if(!displayName)throw quickBooksPaymentReconciliationRequired("Customer display name is unavailable");
+      const customerIntent=publicationIntent(connection,"customer",customerRow.id,{DisplayName:displayName,...(customerRow.company_name?{CompanyName:customerRow.company_name}:{}),...(customerRow.email?{PrimaryEmailAddr:{Address:customerRow.email}}:{}),...(customerRow.phone?{PrimaryPhone:{FreeFormNumber:customerRow.phone}}:{})});
+      // The newest approved Billing projection is the source. Durable request
+      // keys preserve unchanged exports without redundant provider mutations.
+      client.release();released=true;
+      const customerPublication=await this.publishPrerequisite(publicationJob,customerIntent,customerLink.rows[0]?{providerId:customerLink.rows[0].provider_id,projectionJson:customerLink.rows[0].projection_json}:undefined);
+      await this.commitPublication(publicationJob,customerPublication);
+      const intent=unchangedIntent??invoicePublicationIntent(connection,job.subjectId,customerPublication.providerIdentity.providerId,projection,row.synchronization_version);
+      const invoicePublication=await this.publishPrerequisite(publicationJob,intent,existingInvoice?{providerId:existingInvoice.providerId,projectionJson:existingInvoice.projectionJson}:undefined);
+      await this.commitPublication(publicationJob,invoicePublication,{projection,fingerprint,version:row.synchronization_version});
+    } finally { if(!released) client.release(); }
   }
 
-  private async processPayment(job: Job): Promise<void> {
+  private async lockPublicationJob(client:QuickBooksQueueClient,job:Job):Promise<void>{
+    const rows=await client.query("SELECT id FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND id=$2 AND subject_kind='invoice' AND subject_id=$3 AND state='processing' AND claimed_by=$4 AND attempt_count=$5 AND lease_expires_at>now() FOR UPDATE",[job.organizationId,job.id,job.subjectId,this.workerId,job.attemptCount]);
+    if(!rows.rows[0])throw quickBooksPaymentReconciliationRequired("publication job generation changed or lease expired");
+    if(job.publicationVersion){const current=await client.query("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND synchronization_version=$3 AND invoice_state<>'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_invoice_approvals a WHERE a.organization_id=$1 AND a.invoice_id=$2 AND a.synchronization_version=$3)",[job.organizationId,job.subjectId,job.publicationVersion]);if(!current.rows[0])throw quickBooksPaymentReconciliationRequired("approved publication version changed");}
+  }
+
+  private async publishPrerequisite(job:Job,wanted:PublicationIntent,link?:PublicationLink):Promise<ConfirmedPublication>{
+    if(!this.paymentReader.publishEntity)throw quickBooksPaymentReconciliationRequired("pinned canonical publisher is unavailable");
+    const priorKey=link?assertPublicationLink(wanted.connection,wanted.entityKind,wanted.entityId,link):undefined;
+    const foreignScope=await this.pool.query("SELECT request_id FROM v2_quickbooks_provider_requests WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3 AND (realm_id<>$4 OR environment<>$5) LIMIT 1",[job.organizationId,wanted.entityKind,wanted.entityId,wanted.connection.realmId,wanted.connection.environment]);
+    if(foreignScope.rows[0])throw quickBooksPaymentReconciliationRequired("canonical publication already has a different realm/environment intent");
+    const pending=await this.pool.query<{intent_json:PublicationIntent}>("SELECT intent_json FROM v2_quickbooks_provider_requests WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3 AND realm_id=$4 AND environment=$5 AND provider_attempt_started_at IS NOT NULL AND confirmed_provider_id IS NULL AND request_id<>$6 ORDER BY created_at",[job.organizationId,wanted.entityKind,wanted.entityId,wanted.connection.realmId,wanted.connection.environment,wanted.requestId]);
+    for(const row of pending.rows){const recovered=await this.paymentReader.publishEntity(row.intent_json,true,async()=>{throw quickBooksPaymentReconciliationRequired("unknown publication cannot replay");},link?.providerId);await this.confirmPublicationRequest(job,recovered);}
+    const previous=await this.pool.query<{intent_json:PublicationIntent;confirmed_provider_id:string}>("SELECT intent_json,confirmed_provider_id FROM v2_quickbooks_provider_requests WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3 AND realm_id=$4 AND environment=$5 AND confirmed_provider_id IS NOT NULL ORDER BY confirmed_at DESC LIMIT 1",[job.organizationId,wanted.entityKind,wanted.entityId,wanted.connection.realmId,wanted.connection.environment]);
+    const prior=previous.rows[0];
+    if(priorKey&&(!prior||prior.confirmed_provider_id!==link!.providerId))throw quickBooksPaymentReconciliationRequired("bound publication has no matching confirmed request");
+    const client=await this.pool.connect();let intent=wanted,attempted=false;
+    try{await client.query("BEGIN");await this.lockPublicationJob(client,job);
+      await client.query("INSERT INTO v2_quickbooks_provider_requests(request_id,organization_id,entity_kind,entity_id,realm_id,environment,intent_json) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(request_id) DO NOTHING",[wanted.requestId,job.organizationId,wanted.entityKind,wanted.entityId,wanted.connection.realmId,wanted.connection.environment,JSON.stringify(wanted)]);
+      const saved=await client.query<{intent_json:PublicationIntent;provider_attempt_started_at:Date|null}>("SELECT intent_json,provider_attempt_started_at FROM v2_quickbooks_provider_requests WHERE request_id=$1 AND organization_id=$2 FOR UPDATE",[wanted.requestId,job.organizationId]);
+      const row=saved.rows[0];if(!row)throw quickBooksPaymentReconciliationRequired("publication intent is unavailable");
+      if(!publicationEquals(row.intent_json,wanted)){
+        if(wanted.entityKind!=="customer"||row.provider_attempt_started_at===null||row.intent_json.entityId!==wanted.entityId||!publicationEquals(row.intent_json.connection,wanted.connection))throw quickBooksPaymentReconciliationRequired("prepared publication payload changed");
+        intent=row.intent_json;
+      }
+      attempted=row.provider_attempt_started_at!==null;await client.query("COMMIT");
+    }catch(error){await client.query("ROLLBACK");if((error as {code?:string}).code==="42703"||(error as {code?:string}).code==="42P01")throw quickBooksPaymentReconciliationRequired("protected publication request schema is unavailable");throw error;}finally{client.release();}
+    return this.paymentReader.publishEntity(intent,attempted,async()=>{
+      const mutation=await this.pool.connect();try{await mutation.query("BEGIN");await this.lockPublicationJob(mutation,job);
+        const started=await mutation.query("UPDATE v2_quickbooks_provider_requests SET provider_attempt_started_at=now() WHERE request_id=$1 AND organization_id=$2 AND intent_json=$3::jsonb AND provider_attempt_started_at IS NULL RETURNING request_id",[intent.requestId,job.organizationId,JSON.stringify(intent)]);
+        if(!started.rows[0])throw quickBooksPaymentReconciliationRequired("publication already attempted; no replay");await mutation.query("COMMIT");
+      }catch(error){await mutation.query("ROLLBACK");throw error;}finally{mutation.release();}
+    },link?.providerId??prior?.confirmed_provider_id,prior?.intent_json);
+  }
+
+  private async confirmPublicationRequest(job:Job,result:ConfirmedPublication):Promise<void>{
+    const client=await this.pool.connect();try{await client.query("BEGIN");await this.lockPublicationJob(client,job);await this.recordPublicationConfirmation(client,job,result);await client.query("COMMIT");}catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}
+  }
+
+  private async recordPublicationConfirmation(client:QuickBooksQueueClient,job:Job,result:ConfirmedPublication):Promise<void>{
+    const identity=result.providerIdentity;
+    const confirmed=await client.query("UPDATE v2_quickbooks_provider_requests SET confirmed_provider_id=$3,confirmed_at=COALESCE(confirmed_at,now()) WHERE request_id=$1 AND organization_id=$2 AND entity_kind=$4 AND entity_id=$5 AND realm_id=$6 AND environment=$7 AND provider_attempt_started_at IS NOT NULL AND (confirmed_provider_id IS NULL OR confirmed_provider_id=$3) RETURNING request_id",[result.providerRequestId,job.organizationId,identity.providerId,identity.entityKind,identity.entityId,identity.realmId,identity.environment]);
+    if(!confirmed.rows[0])throw quickBooksPaymentReconciliationRequired("publication confirmation has no durable attempt identity");
+  }
+
+  private async commitPublication(job:Job,result:ConfirmedPublication,invoice?:{projection:InvoiceProjection;fingerprint:string;version:string}):Promise<void>{
+    const client=await this.pool.connect();try{await client.query("BEGIN");await this.lockPublicationJob(client,job);
+      const identity=result.providerIdentity;
+      if(identity.organizationId!==job.organizationId||(invoice&&(identity.entityKind!=="invoice"||identity.entityId!==job.subjectId)))throw quickBooksPaymentReconciliationRequired("publication identity scope changed");
+      if(invoice){const current=await client.query("SELECT id FROM v2_billing_invoices WHERE organization_id=$1 AND id=$2 AND synchronization_version=$3 AND invoice_state<>'void' AND EXISTS (SELECT 1 FROM v2_quickbooks_invoice_approvals a WHERE a.organization_id=$1 AND a.invoice_id=$2 AND a.synchronization_version=$3)",[job.organizationId,job.subjectId,invoice.version]);if(!current.rows[0])throw quickBooksPaymentReconciliationRequired("approved Invoice projection changed before publication");}
+      const previous=await client.query<{provider_id:string;projection_json:unknown}>("SELECT provider_id,projection_json FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind=$2 AND entity_id=$3 FOR UPDATE",[job.organizationId,identity.entityKind,identity.entityId]);
+      if(previous.rows[0]){assertPublicationLink({organizationId:job.organizationId,realmId:identity.realmId,environment:identity.environment},identity.entityKind,identity.entityId,{providerId:previous.rows[0].provider_id,projectionJson:previous.rows[0].projection_json});if(previous.rows[0].provider_id!==identity.providerId)throw quickBooksPaymentReconciliationRequired("publication cannot overwrite a different provider identity");}
+      const json={...(invoice?.projection??{}),providerIdentity:identity,providerRequestId:result.providerRequestId};
+      const adopted=await client.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id,projection_version,projection_fingerprint,projection_json,projection_synced_at) VALUES($1,$2::varchar,$3,$4,$5,$6,$7::jsonb,CASE WHEN $2::varchar='invoice' THEN now() ELSE NULL END) ON CONFLICT(organization_id,entity_kind,entity_id) DO UPDATE SET projection_version=EXCLUDED.projection_version,projection_fingerprint=EXCLUDED.projection_fingerprint,projection_json=EXCLUDED.projection_json,projection_synced_at=EXCLUDED.projection_synced_at,updated_at=now() WHERE v2_quickbooks_sync_links.provider_id=EXCLUDED.provider_id AND v2_quickbooks_sync_links.projection_json->'providerIdentity'=EXCLUDED.projection_json->'providerIdentity' RETURNING provider_id",[job.organizationId,identity.entityKind,identity.entityId,identity.providerId,invoice?.version??null,invoice?.fingerprint??null,JSON.stringify(json)]);
+      if(adopted.rows.length!==1)throw quickBooksPaymentReconciliationRequired("publication adoption identity raced or differs");
+      await this.recordPublicationConfirmation(client,job,result);
+      if(invoice){const completed=await client.query("UPDATE v2_quickbooks_sync_jobs SET state='succeeded',last_error=NULL,lease_expires_at=NULL,claimed_by=NULL,completed_at=now(),updated_at=now() WHERE organization_id=$1 AND id=$2 AND subject_kind='invoice' AND attempt_count=$3 RETURNING id",[job.organizationId,job.id,job.attemptCount]);if(!completed.rows[0])throw quickBooksPaymentReconciliationRequired("Invoice publication completion changed");}
+      await client.query("COMMIT");
+    }catch(error){await client.query("ROLLBACK");if((error as {code?:string}).code==="23505")throw quickBooksPaymentReconciliationRequired("publication identity is already bound to another record");throw error;}finally{client.release();}
+  }
+
+  private async finishInvoiceFailure(job:Job,state:JobState,error:string):Promise<boolean>{
+    const result=await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2::varchar,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2::varchar='retry' THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,updated_at=now() WHERE id=$1 AND organization_id=$5 AND subject_kind='invoice' AND state='processing' AND claimed_by=$6 AND attempt_count=$7 AND lease_expires_at>now() RETURNING id",[job.id,state,error,retryDelayMs(job.attemptCount),job.organizationId,this.workerId,job.attemptCount]);return result.rows.length===1;
+  }
+
+  async recoverPayment(job: Job, authorizeCurrentOperator: () => Promise<void>): Promise<string> {
+    if (!job.recoveryState || !job.recoveryGeneration || typeof authorizeCurrentOperator !== "function") throw quickBooksPaymentReconciliationRequired("current operator recovery authority is unavailable");
+    const providerId = await this.processPayment(job, true);
+    await this.completePayment(job, providerId, authorizeCurrentOperator);
+    return providerId;
+  }
+
+  private async processPayment(job: Job, recoveryOnly = false): Promise<string> {
     const client = await this.pool.connect();
+    let released = false;
     try {
       const payment = await client.query<{ invoice_id:string; allocated_cents:string; payment_cents:string; currency:string; occurred_at:Date; customer_id:string|null; synchronization_version:string }>(
         `SELECT a.invoice_id,a.amount_cents::text allocated_cents,p.amount_cents::text payment_cents,p.currency,p.occurred_at,i.customer_id,i.synchronization_version
@@ -324,27 +435,43 @@ export class V2QuickBooksBillingWorker {
          ORDER BY a.invoice_id`, [job.organizationId, job.subjectId]);
       const rows = payment.rows;
       const row = rows[0];
-      if (!row?.customer_id || rows.some((allocation) => allocation.customer_id !== row.customer_id || allocation.currency !== row.currency)) throw new Error("V2 Payment allocations must belong to one QuickBooks Customer and currency.");
+      if (!row?.customer_id || rows.some((allocation) => allocation.customer_id !== row.customer_id || allocation.currency !== row.currency)) throw quickBooksPaymentReconciliationRequired("V2 Payment allocations must belong to one QuickBooks Customer and currency");
       const allocationTotal = rows.reduce((total, allocation) => total + Number(allocation.allocated_cents), 0);
-      if (allocationTotal !== Number(row.payment_cents)) throw new Error("V2 Payment allocation total does not equal its immutable Payment amount.");
+      if (allocationTotal !== Number(row.payment_cents)) throw quickBooksPaymentReconciliationRequired("V2 Payment allocation total does not equal its immutable Payment amount");
       const allocationLinks = await Promise.all(rows.map(async (allocation) => ({ allocation, invoiceLink: await this.invoiceLink(job.organizationId, allocation.invoice_id) })));
       if (allocationLinks.some(({ allocation, invoiceLink }) => !invoiceLink || invoiceLink.projectionVersion !== allocation.synchronization_version)) throw new Error("V2 Payment waits for every allocated Invoice QuickBooks projection.");
       const customerQuickBooksId = await this.link(job.organizationId, "customer", row.customer_id);
       if (!customerQuickBooksId) throw new Error("V2 Payment waits for its Customer QuickBooks projection.");
       const existingPayment = await this.link(job.organizationId, "payment", job.subjectId);
-      const provider = await syncV2PaymentToQuickBooks({ organizationId: job.organizationId, paymentId: job.subjectId, quickBooksPaymentId: existingPayment ?? undefined, ...(existingPayment ? {} : { paymentReference: await this.paymentReference(client, job.organizationId, job.subjectId) }), quickBooksCustomerId: customerQuickBooksId, amountCents: Number(row.payment_cents), currency: row.currency, occurredAt: row.occurred_at.toISOString(), allocations: allocationLinks.map(({ allocation, invoiceLink }) => ({ quickBooksInvoiceId: invoiceLink!.providerId, amountCents: Number(allocation.allocated_cents) })) });
-      await this.upsertLink(job.organizationId, "payment", job.subjectId, provider.qbPaymentId);
-    } finally { client.release(); }
+      const connection = await this.paymentReader.connection(job.organizationId);
+      const identity = { schemaVersion: 1 as const, ...connection, jobId: job.id, paymentId: job.subjectId, customerId: customerQuickBooksId, amountCents: Number(row.payment_cents), currency: row.currency, allocations: allocationLinks.map(({ allocation, invoiceLink }) => ({ invoiceId: invoiceLink!.providerId, amountCents: Number(allocation.allocated_cents) })) };
+      const prepared = await this.paymentReference(client, job, identity, !recoveryOnly && !existingPayment);
+      client.release(); released = true;
+      return await exportOrRecoverQuickBooksPayment(this.paymentReader, prepared.context, { externalId: existingPayment ?? undefined, allowCreate: !recoveryOnly && !prepared.providerAttemptStarted, occurredAt: row.occurred_at.toISOString(), beforeCreate: () => this.startPaymentProviderAttempt(job, prepared.context) });
+    } finally { if (!released) client.release(); }
   }
 
   /** Exactly one persisted PMT sequence belongs to one V2 Payment. It is
    * integration evidence, allowing a lost provider response to be reconciled
    * by the same PaymentRefNum instead of creating another Payment. */
-  private async paymentReference(client: QuickBooksQueueClient, organizationId: string, paymentId: string): Promise<string> {
+  private async paymentReference(client: QuickBooksQueueClient, job: Job, identity: Omit<QuickBooksPaymentRecoveryContext,"reference">, allowPrepare: boolean): Promise<{context:QuickBooksPaymentRecoveryContext;providerAttemptStarted:boolean}> {
+    const organizationId = job.organizationId, paymentId = job.subjectId;
     await client.query("BEGIN");
     try {
-      const existing = await client.query<{ payment_ref_num: string }>("SELECT payment_ref_num FROM v2_quickbooks_payment_references WHERE organization_id=$1 AND payment_id=$2 FOR KEY SHARE", [organizationId, paymentId]);
-      if (existing.rows[0]) { await client.query("COMMIT"); return existing.rows[0].payment_ref_num; }
+      await this.lockPaymentJob(client,job);
+      const existing = await client.query<{ payment_ref_num: string; recovery_context: QuickBooksPaymentRecoveryContext | null; provider_attempt_started_at: Date | null }>("SELECT payment_ref_num,recovery_context,provider_attempt_started_at FROM v2_quickbooks_payment_references WHERE organization_id=$1 AND payment_id=$2 FOR UPDATE", [organizationId, paymentId]);
+      if (existing.rows[0]) {
+        const row = existing.rows[0], expected = { ...identity, reference: row.payment_ref_num };
+        // JSONB key order is not stable; compare values, never serialized objects.
+        const stored = row.recovery_context;
+        if (!stored || Object.entries(identity).some(([key,value]) => key !== "allocations" && stored[key as keyof QuickBooksPaymentRecoveryContext] !== value)
+          || stored.reference !== expected.reference || !Array.isArray(stored.allocations) || stored.allocations.length !== expected.allocations.length
+          || expected.allocations.some((allocation,index) => stored.allocations[index]?.invoiceId !== allocation.invoiceId || stored.allocations[index]?.amountCents !== allocation.amountCents)) throw quickBooksPaymentReconciliationRequired("historical request context is missing or differs from current allocation/realm evidence");
+        await client.query("COMMIT"); return {context:expected,providerAttemptStarted:row.provider_attempt_started_at !== null};
+      }
+      if (!allowPrepare) throw quickBooksPaymentReconciliationRequired("an earlier attempt has no durable provider request context");
+      if (!this.paymentReader.assertCreationReferences) throw quickBooksPaymentReconciliationRequired("trusted Customer and Invoice realm bindings are unavailable");
+      await this.paymentReader.assertCreationReferences({organizationId,realmId:identity.realmId,environment:identity.environment},identity);
       const allocated = await client.query<{ sequence_number: string }>(`INSERT INTO v2_quickbooks_payment_reference_counters(organization_id,next_sequence) VALUES($1,2)
         ON CONFLICT(organization_id) DO UPDATE SET next_sequence=v2_quickbooks_payment_reference_counters.next_sequence+1
         WHERE v2_quickbooks_payment_reference_counters.next_sequence <= 99999999999999999
@@ -352,11 +479,57 @@ export class V2QuickBooksBillingWorker {
       const sequence = allocated.rows[0]?.sequence_number;
       if (!sequence) throw new Error("QuickBooks Payment reference sequence is exhausted.");
       const reference = quickBooksPaymentReference(sequence);
-      const created = await client.query<{ payment_ref_num: string }>(`INSERT INTO v2_quickbooks_payment_references(organization_id,payment_id,sequence_number,payment_ref_num)
-        VALUES($1,$2,$3::bigint,$4) RETURNING payment_ref_num`, [organizationId, paymentId, sequence, reference]);
+      const context = { ...identity, reference };
+      await client.query(`INSERT INTO v2_quickbooks_payment_references(organization_id,payment_id,sequence_number,payment_ref_num,recovery_context)
+        VALUES($1,$2,$3::bigint,$4,$5::jsonb)`, [organizationId, paymentId, sequence, reference, JSON.stringify(context)]);
       await client.query("COMMIT");
-      return created.rows[0]!.payment_ref_num;
-    } catch (error) { await client.query("ROLLBACK"); throw error; }
+      return {context,providerAttemptStarted:false};
+    } catch (error) { await client.query("ROLLBACK"); if ((error as {code?:string}).code === "42703") throw quickBooksPaymentReconciliationRequired("V2 recovery schema is unavailable"); throw error; }
+  }
+
+  private async lockPaymentJob(client: QuickBooksQueueClient, job: Job): Promise<void> {
+    const current = job.recoveryState && job.recoveryGeneration
+      ? await client.query("SELECT id FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND id=$2 AND subject_kind='payment' AND subject_id=$3 AND state=$4 AND attempt_count=$5 AND updated_at=$6::timestamptz AND claimed_by IS NULL AND lease_expires_at IS NULL FOR UPDATE", [job.organizationId,job.id,job.subjectId,job.recoveryState,job.attemptCount,job.recoveryGeneration])
+      : await client.query("SELECT id FROM v2_quickbooks_sync_jobs WHERE organization_id=$1 AND id=$2 AND subject_kind='payment' AND subject_id=$3 AND state='processing' AND claimed_by=$4 AND attempt_count=$5 AND lease_expires_at>now() FOR UPDATE", [job.organizationId,job.id,job.subjectId,this.workerId,job.attemptCount]);
+    if (!current.rows[0]) throw quickBooksPaymentReconciliationRequired("Payment queue generation changed or its lease expired");
+  }
+
+  private async startPaymentProviderAttempt(job: Job, context: QuickBooksPaymentRecoveryContext): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.lockPaymentJob(client,job);
+      const started = await client.query("UPDATE v2_quickbooks_payment_references SET provider_attempt_started_at=now() WHERE organization_id=$1 AND payment_id=$2 AND recovery_context=$3::jsonb AND provider_attempt_started_at IS NULL RETURNING payment_id", [job.organizationId,job.subjectId,JSON.stringify(context)]);
+      if (!started.rows[0]) throw quickBooksPaymentReconciliationRequired("the original provider attempt has already started or its identity is unavailable");
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  }
+
+  private async completePayment(job: Job, providerId: string, authorizeCurrentOperator?: () => Promise<void>): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.lockPaymentJob(client,job);
+      if (job.recoveryState) {
+        if (!authorizeCurrentOperator) throw quickBooksPaymentReconciliationRequired("current operator recovery authority is unavailable");
+        await authorizeCurrentOperator();
+      }
+      // Never overwrite a different identity. The existing provider/entity
+      // unique constraints also prevent one QBO Payment being adopted twice.
+      const linked = await client.query<{provider_id:string}>("SELECT provider_id FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind='payment' AND entity_id=$2 FOR UPDATE", [job.organizationId,job.subjectId]);
+      if (linked.rows[0] && linked.rows[0].provider_id !== providerId) throw quickBooksPaymentReconciliationRequired("the local Payment already has a different provider identity");
+      if (!linked.rows[0]) await client.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id) VALUES($1,'payment',$2,$3) ON CONFLICT(organization_id,entity_kind,entity_id) DO NOTHING", [job.organizationId,job.subjectId,providerId]);
+      const adopted = await client.query<{provider_id:string}>("SELECT provider_id FROM v2_quickbooks_sync_links WHERE organization_id=$1 AND entity_kind='payment' AND entity_id=$2 FOR UPDATE", [job.organizationId,job.subjectId]);
+      if (adopted.rows[0]?.provider_id !== providerId) throw quickBooksPaymentReconciliationRequired("provider adoption identity changed");
+      const completed = await client.query("UPDATE v2_quickbooks_sync_jobs SET state='succeeded',last_error=NULL,lease_expires_at=NULL,claimed_by=NULL,completed_at=now(),updated_at=now() WHERE organization_id=$1 AND id=$2 AND subject_kind='payment' AND subject_id=$3 AND attempt_count=$4 RETURNING id", [job.organizationId,job.id,job.subjectId,job.attemptCount]);
+      if (!completed.rows[0]) throw quickBooksPaymentReconciliationRequired("Payment completion could not be confirmed");
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); if ((error as {code?:string}).code === "23505") throw quickBooksPaymentReconciliationRequired("provider identity is already bound to another local record"); throw error; } finally { client.release(); }
+  }
+
+  private async finishPaymentFailure(job: Job, state: JobState, error: string): Promise<boolean> {
+    const result = await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2::varchar,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2::varchar='retry' THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,updated_at=now() WHERE id=$1 AND organization_id=$5 AND subject_kind='payment' AND subject_id=$6 AND state='processing' AND claimed_by=$7 AND attempt_count=$8 AND lease_expires_at>now() RETURNING id", [job.id,state,error,retryDelayMs(job.attemptCount),job.organizationId,job.subjectId,this.workerId,job.attemptCount]);
+    return result.rows.length === 1;
   }
 
   /**
@@ -425,7 +598,7 @@ export class V2QuickBooksBillingWorker {
   private async upsertInvoiceLink(organizationId: string, invoiceId: string, providerId: string, projection: InvoiceProjection, fingerprint: string, version: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_sync_links(organization_id,entity_kind,entity_id,provider_id,projection_fingerprint,projection_version,projection_json,projection_synced_at) VALUES($1,'invoice',$2,$3,$4,$5,$6::jsonb,now()) ON CONFLICT(organization_id,entity_kind,entity_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,projection_fingerprint=EXCLUDED.projection_fingerprint,projection_version=EXCLUDED.projection_version,projection_json=EXCLUDED.projection_json,projection_synced_at=EXCLUDED.projection_synced_at,updated_at=now()", [organizationId, invoiceId, providerId, fingerprint, version, JSON.stringify(projection)]); }
   private async startRefundWorkflow(organizationId: string, refundId: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_refund_sync_workflows(organization_id,refund_id,state) VALUES($1,$2,'queued') ON CONFLICT(organization_id,refund_id) DO NOTHING", [organizationId, refundId]); }
   private async workflow(organizationId: string, refundId: string, state: "queued" | "credit_created" | "disbursement_created" | "linked" | "succeeded" | "uncertain" | "retry" | "blocked", error?: string): Promise<void> { await this.pool.query("INSERT INTO v2_quickbooks_refund_sync_workflows(organization_id,refund_id,state,last_error,completed_at) VALUES($1,$2,$3::varchar,$4::varchar,CASE WHEN $5::boolean THEN now() ELSE NULL END) ON CONFLICT(organization_id,refund_id) DO UPDATE SET state=EXCLUDED.state,last_error=EXCLUDED.last_error,completed_at=EXCLUDED.completed_at,updated_at=now()", [organizationId, refundId, state, error ?? null, state === "succeeded"]); }
-  private async finish(job: Job, state: JobState, error?: string): Promise<void> { const delay = state === "retry" || (state === "uncertain" && job.subjectKind === "refund") ? retryDelayMs(job.attemptCount) : 0; await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2::varchar,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2::varchar='retry' OR ($2::varchar='uncertain' AND subject_kind='refund') THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,completed_at=CASE WHEN $2::varchar='succeeded' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1 AND state='processing' AND claimed_by=$5", [job.id,state,error ?? null,delay,this.workerId]); }
+  private async finish(job: Job, state: JobState, error?: string): Promise<boolean> { const delay = state === "retry" || (state === "uncertain" && job.subjectKind === "refund") ? retryDelayMs(job.attemptCount) : 0; const result = await this.pool.query("UPDATE v2_quickbooks_sync_jobs SET state=$2::varchar,last_error=$3,lease_expires_at=NULL,claimed_by=NULL,available_at=CASE WHEN $2::varchar='retry' OR ($2::varchar='uncertain' AND subject_kind='refund') THEN now()+($4::text||' milliseconds')::interval ELSE available_at END,completed_at=CASE WHEN $2::varchar='succeeded' THEN now() ELSE NULL END,updated_at=now() WHERE id=$1 AND state='processing' AND claimed_by=$5 AND attempt_count=$6 RETURNING id", [job.id,state,error ?? null,delay,this.workerId,job.attemptCount]); return result.rows.length === 1; }
 }
 
 

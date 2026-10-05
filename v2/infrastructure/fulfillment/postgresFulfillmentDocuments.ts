@@ -3,6 +3,7 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { FulfillmentHandoffId, OrganizationId } from "../../src/modules/shared/commercialValues.js";
 import { ownerDocumentFilename, renderOwnerPdf, type OwnerPdfDocument } from "../documents/ownerPdfRenderer.js";
 import { readTenantBranding } from "../documents/postgresTenantBranding.js";
+import { requireShipmentSenderSnapshot } from "../../src/modules/fulfillment/shipmentSender.js";
 
 type Row = Readonly<{ customer_id: string | null; snapshot: unknown }>;
 type RecordValue = Record<string, unknown>;
@@ -21,11 +22,15 @@ export class PostgresFulfillmentDocumentService {
   }
   async customerId(organizationId: OrganizationId, handoffId: FulfillmentHandoffId) { return (await this.row(organizationId, handoffId)).customer_id ?? undefined; }
   async document(organizationId: OrganizationId, handoffId: FulfillmentHandoffId): Promise<OwnerPdfDocument> {
-    const [branding, row] = await Promise.all([readTenantBranding(this.pool, organizationId), this.row(organizationId, handoffId)]);
+    const row = await this.row(organizationId, handoffId);
     const snapshot = record(row.snapshot), method = string(snapshot.method) ?? "shipment", destination = record(snapshot.destination), shipment = record(snapshot.shipment), lines = Array.isArray(snapshot.lines) ? snapshot.lines.map(record) : [];
     if (!lines.length) throw new V2ApplicationError("CONFLICT", "Fulfillment handoff document evidence is incomplete.");
     const destinationText = [string(destination.recipient), string(destination.company), string(destination.addressLine1), string(destination.addressLine2), [string(destination.city), string(destination.region)].filter(Boolean).join(", "), string(destination.postalCode), string(destination.country)].filter(Boolean).join(" · ");
-    return { kind: method === "pickup" ? "pickup-receipt" : "packing-slip", title: `${methodLabel(method)} · ${string(snapshot.orderNumber) ?? "Order"}`, number: string(snapshot.orderNumber) ?? "Order", issuedAt: string(snapshot.completedAt)?.slice(0, 10) ?? new Date().toISOString().slice(0, 10), organization: branding, sections: [
+    const senderSnapshot = snapshot.senderSnapshot === undefined ? undefined : requireShipmentSenderSnapshot(snapshot.senderSnapshot);
+    const sender = senderSnapshot?.blindShipping ? senderSnapshot.sender! : undefined;
+    const companyBranding=sender?undefined:await readTenantBranding(this.pool,organizationId);
+    const identity = sender ? { name: sender.company??sender.recipient!, address: [sender.recipient, sender.addressLine1, sender.addressLine2, `${sender.city}, ${sender.region} ${sender.postalCode}`, sender.country].filter(Boolean).join(", "), ...(sender.phone ? { phone: sender.phone } : {}), ...(sender.email ? { email: sender.email } : {}) } : companyBranding!;
+    return { kind: method === "pickup" ? "pickup-receipt" : "packing-slip", title: `${methodLabel(method)} · ${string(snapshot.orderNumber) ?? "Order"}`, number: string(snapshot.orderNumber) ?? "Order", issuedAt: string(snapshot.completedAt)?.slice(0, 10) ?? new Date().toISOString().slice(0, 10), organization: identity, sections: [
       { heading: "Handoff", entries: [{ label: "Order", value: string(snapshot.orderNumber) ?? "Unavailable" }, { label: "Customer", value: string(snapshot.customer) ?? "Customer unavailable" }, ...(string(snapshot.purchaseOrder) ? [{ label: "Customer PO", value: string(snapshot.purchaseOrder)! }] : []), { label: "Actual handoff method", value: method === "pickup" ? "Customer pickup" : "Shipment" }, ...(string(snapshot.completedAt) ? [{ label: "Completed", value: string(snapshot.completedAt)! }] : [])] },
       { heading: "Items in this handoff", entries: lines.map((line) => ({ value: `${string(line.description) ?? "Line item"} · Qty ${integer(line.quantity)}` })) },
       ...(method === "shipment" && destinationText ? [{ heading: "Requested destination", entries: [{ value: destinationText }] }] : []),

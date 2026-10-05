@@ -73,8 +73,9 @@ assert.match(queue, /accountingApproval:row\.approval_id \? "approved" : "requir
 assert.match(queue, /requires accounting approval before QuickBooks sync/);
 assert.match(queue, /COALESCE\(i\.invoice_display_number,d\.display_number\)/);
 assert.match(queue, /l\.projection_version IS DISTINCT FROM i\.synchronization_version/);
-assert.match(queue, /existingInvoice\?\.projectionFingerprint === fingerprint/);
-assert.match(queue, /stale queue job intentionally reads the newest live V2 projection/);
+assert.match(queue, /invoicePublicationIntent/);
+assert.match(queue, /publishPrerequisite/);
+assert.match(queue, /newest approved Billing projection/);
 assert.match(queue, /invoiceLink\.projectionVersion !== row\.synchronization_version/);
 assert.match(invoice, /enqueueV2QuickBooksAutoSync\(this\.client,input\.organizationId,"invoice",input\.invoiceId\)/);
 const draftInvoice = readFileSync(resolve("v2/infrastructure/billing/postgresBillingDraftInvoiceTransaction.ts"), "utf8");
@@ -98,7 +99,13 @@ assert.throws(() => quickBooksPaymentReference("0"), /invalid/, "a Payment refer
 assert.throws(() => quickBooksPaymentReference("123456789012345678"), /invalid/, "the provider reference remains within the QuickBooks 21-character limit");
 assert.match(paymentReferenceMigration, /v2_quickbooks_payment_references/);
 assert.match(paymentReferenceMigration, /v2_quickbooks_payment_reference_counters/);
-assert.match(queue, /paymentReference: await this\.paymentReference/);
+assert.match(queue, /prepared = await this\.paymentReference/);
+assert.match(queue, /provider_attempt_started_at/);
+assert.match(queue, /this\.startPaymentProviderAttempt/);
+assert.match(queue, /await this\.completePayment/);
+assert.doesNotMatch(queue, /syncV2PaymentToQuickBooks/);
+assert.match(queue, /exportOrRecoverQuickBooksPayment/);
+assert.match(queue, /recovery_context/);
 assert.match(provider, /input\.paymentReference/);
 assert.match(provider, /V2 Payment requires a durable PMT reference/);
 assert.doesNotMatch(provider, /PHV2-/);

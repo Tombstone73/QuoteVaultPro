@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
 import type { ProductionDailyReport } from "../../src/modules/production/productionDailyReport";
 import type { UiBootstrap, ProductionWorkProjection } from "./api";
+import type { ProductionOutputReceipt } from "./productionRecoveryApi";
 
 assert.equal(process.env.V2_VALIDATION_MODE, "deterministic");
 const require = createRequire(import.meta.url);
@@ -45,20 +47,37 @@ let currentBootstrap = structuredClone(bootstrap), reportMode: "success" | "erro
 let denyPageReads = false, reportLabel = "Current";
 let outputMode: "none" | "ordinary" | "run" = "none", outputFailuresRemaining = 0, activeRunResponse: unknown;
 let operationalProjection = projection, operationalQueue = queue;
+const durableReceipts=new Map<string,ProductionOutputReceipt>();
+const receiptCreators=new Map<string,string>();
+let pausePrepareJson=false;
+const pausedPrepareBodies:{resume:()=>void;scope:string;body:Record<string,unknown>}[]=[];
 const deniedPageCalls: WireCall[] = [];
+let ownerHttp:((call:WireCall)=>Promise<Response>)|undefined;
 const originalFetch = globalThis.fetch, originalPrint = window.print;
 const response = (payload: unknown, status = 200, scope = currentBootstrap.sessionScope) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json", "x-v2-session-scope": scope } });
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input), "https://ui.invalid"); const call = { url, init }; calls.push(call);
+  if(ownerHttp&&(/\/production\/runs(?:\/|$)/.test(url.pathname)||/\/production\/output-(?:recovery|intents)/.test(url.pathname))){if(init?.method==="POST"&&url.pathname.endsWith("/output"))outputCalls.push({call,body:JSON.parse(String(init.body))});return ownerHttp(call);}
   if ((init?.method ?? "GET") === "POST") {
     assert.notEqual(outputMode, "none", `Unexpected Production mutation: ${url}`);
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if(url.pathname.includes("/production/output-intents/")){
+      const operation=url.pathname.split("/").at(-1) as ProductionOutputReceipt["operation"];
+      const prior=durableReceipts.get(String(body.businessRequestId));
+      const receipt=prior??{operation,businessRequestId:String(body.businessRequestId),productionWorkId:workId,productionAttemptId:String(body.productionAttemptId??"88888888-8888-4888-8888-888888888888"),...(body.productionRunId?{productionRunId:String(body.productionRunId),productionRunAllocationId:String(body.productionRunAllocationId)}:{}),intent:body as ProductionOutputReceipt["intent"],submittedAt:new Date().toISOString(),status:"pending" as const,result:null};
+      durableReceipts.set(receipt.businessRequestId,receipt);if(!prior)receiptCreators.set(receipt.businessRequestId,String(currentBootstrap.userId));
+      const result=response({ok:true,data:{...receipt,intent:body}});
+      if(pausePrepareJson){const json=result.json.bind(result);const gate=new Promise<void>(resume=>pausedPrepareBodies.push({resume,scope:currentBootstrap.sessionScope,body}));result.json=async()=>{await gate;return json();};}
+      return result;
+    }
     outputCalls.push({ call, body });
     if (outputFailuresRemaining > 0) { outputFailuresRemaining--; return response({ ok: false, error: { code: "RETRYABLE_FAILURE", message: "The Production output response was lost." } }, 503); }
+    const receipt=durableReceipts.get(String(body.businessRequestId));if(receipt)durableReceipts.set(receipt.businessRequestId,{...receipt,status:"succeeded",result:outputMode==="run"?activeRunResponse:{work:{organizationId:org,productionWorkId:workId},attempt:{productionAttemptId:receipt.productionAttemptId,productionWorkId:workId}}});
     return response({ ok: true, data: outputMode === "run" ? activeRunResponse : { accepted: true } });
   }
   assert.equal(init?.method ?? "GET", "GET", `Report integration unexpectedly attempted a non-GET request: ${url}`);
   if (url.pathname.endsWith("/ui-bootstrap")) return response({ ok: true, data: currentBootstrap });
+  if(url.pathname.endsWith("/production/output-recovery"))return response({ok:true,data:currentBootstrap.organizationId===org?[...durableReceipts.values()].filter(receipt=>receipt.operation===url.searchParams.get("operation")&&(!url.searchParams.has("businessRequestId")||receipt.businessRequestId===url.searchParams.get("businessRequestId"))).reverse().map(receipt=>receiptCreators.get(receipt.businessRequestId)===currentBootstrap.userId?receipt:{...receipt,intent:null,intentRedacted:true,rejection:undefined}):[]});
   if (url.pathname.endsWith("/production/daily-report")) {
     if (denyPageReads && url.searchParams.get("mode") === "page") {
       deniedPageCalls.push(call);
@@ -75,7 +94,7 @@ globalThis.fetch = async (input, init) => {
   throw Error(`Unexpected authenticated API request: ${url}`);
 };
 window.print = () => { prints++; };
-let root = createRoot(document.getElementById("root")!), cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+let root = createRoot(document.getElementById("root")!), cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity },mutations:{gcTime:Infinity} } });
 const text = () => document.body.textContent ?? "";
 const button = (label: string) => {
   const parent = ["Overview", "Board", "Calendar", "Stations", "Daily Report"].includes(label) ? document.querySelector('[aria-label="Production view"]') : document;
@@ -114,9 +133,12 @@ const withRequestIdCounter = async (work: (count: () => number) => Promise<void>
 };
 const baseCallCount = () => calls.filter(call => /\/production\/stations\/|\/prepress$/.test(call.url.pathname)).length;
 const reset = async (path = "/production") => {
-  await act(async () => root.unmount()); cache.clear(); root = createRoot(document.getElementById("root")!); cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  await act(async () => root.unmount()); cache.clear(); root = createRoot(document.getElementById("root")!); cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity },mutations:{gcTime:Infinity} } });
   clearV2ApiSessionState(); (globalThis as typeof globalThis & { __phV2ProductionOutputFences?: Map<string, string> }).__phV2ProductionOutputFences?.clear(); currentBootstrap = structuredClone(bootstrap); reportMode = "success"; calls.length = 0; deferred.length = 0; prints = 0;
   denyPageReads = false; reportLabel = "Current"; deniedPageCalls.length = 0; outputMode = "none"; outputFailuresRemaining = 0; outputCalls.length = 0; activeRunResponse = undefined; operationalProjection = projection; operationalQueue = queue;
+  durableReceipts.clear();
+  receiptCreators.clear();pausePrepareJson=false;pausedPrepareBodies.length=0;
+  ownerHttp=undefined;
   window.history.replaceState({}, "", path); sessionStorage.clear(); sessionStorage.setItem("ph.v2.organization-id", org);
 };
 const mountApp = async (path = "/production") => { await reset(path); await act(async () => root.render(React.createElement(QueryClientProvider, { client: cache }, React.createElement(App, { appearance: defaultVisualAppearance, setAppearance: () => {} })))); await settle(() => Boolean(document.querySelector('[aria-label="Production view"]'))); };
@@ -372,8 +394,9 @@ try {
     let recovery = document.querySelector('[role="alert"][aria-label*="Production output recovery"]'); assert.ok(recovery);
     assert.doesNotMatch(recovery.textContent ?? "", new RegExp(`${ordinaryRequestId}|${attempt.productionAttemptId}|7 good|0 waste`));
     assert.equal(outputCalls.length, 1); assert.ok(sessionStorage.getItem(`ph.v2.production.pending-output.${org}.${bootstrap.sessionScope}`));
-    await click("Refresh Production state to reconcile"); await settle(() => sessionStorage.getItem("ph.v2.production.pending-output-presence") === null);
-    assert.equal(outputCalls.length, 1, "owner reconciliation clears the fenced intent without submitting a new request");
+    await click("Refresh Production state to reconcile");
+    assert.equal(sessionStorage.getItem("ph.v2.production.pending-output-presence"),org,"projection refresh must not erase an unresolved physical output intent");
+    assert.equal(outputCalls.length, 1, "projection refresh never creates another physical output request");
 
     await reset(); await quoteApi.bootstrap(org);
     const { runId, allocationId } = prepareRunOutput(); await openDirectRunOutput(org, bootstrap.sessionScope);
@@ -435,5 +458,111 @@ try {
     assert.equal(sessionStorage.getItem("ph.v2.production.pending-output-presence"), null);
     assert.equal(outputCalls.some(({ call }) => call.url.pathname.endsWith(`/runs/${runId}/transitions`)), false, "retry never starts, completes or cancels the Run");
   });
-  console.log(`Production daily report actual App/workspace/API integration: ${cases} cases passed. Bootstrap and operational/report wire DTOs are intercepted fixtures; actual API generation, query signals, renderer and print guards execute. No browser print-layout/provider proof.`);
+  await check("durable discovery recovers pending output after complete tab-storage loss without a blind new POST",async()=>{
+    for(const mode of ["ordinary","run"] as const){
+      await reset();await quoteApi.bootstrap(org);if(mode==="ordinary")prepareOrdinaryOutput();else prepareRunOutput();
+      await openOutputSurface(mode,org,bootstrap.sessionScope);if(mode==="run")await setInputValue('[aria-label="Run good output"]',"8");
+      await click("Record output");await settle(()=>outputCalls.length===1);const first=outputCalls[0]!;
+      sessionStorage.clear();if(mode==="ordinary")await remountWorkspace(org,bootstrap.sessionScope);else {await remountRunWorkspace(org,bootstrap.sessionScope);await act(async()=>document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());}
+      await settle(()=>text().includes(String(first.body.businessRequestId)));
+      assert.equal(outputCalls.length,1,"durable discovery is read-only and never invents a new physical report");
+      await click("Retry original output");await settle(()=>outputCalls.length===2);
+      assert.deepEqual(outputCalls[1]!.body,first.body);assert.equal(outputCalls[1]!.call.url.href,first.call.url.href);
+    }
+  });
+  await check("committed-response loss is recovered by exact receipt without repeating physical output",async()=>{
+    await reset();await quoteApi.bootstrap(org);prepareOrdinaryOutput();await openOutputSurface("ordinary",org,bootstrap.sessionScope);
+    await click("Record output");await settle(()=>outputCalls.length===1);const id=String(outputCalls[0]!.body.businessRequestId);
+    const original=durableReceipts.get(id)!;durableReceipts.set(id,{...original,status:"succeeded",result:{work:{organizationId:org,productionWorkId:workId},attempt:{productionAttemptId:original.productionAttemptId,productionWorkId:workId}}});
+    await click("Look up original output result");await settle(()=>sessionStorage.getItem("ph.v2.production.pending-output-presence")===null);
+    assert.equal(outputCalls.length,1);assert.match(text(),/Result: succeeded/);
+  });
+  await check("fresh same-actor session can explicitly rebind only the matching durable owner intent",async()=>{
+    for(const mode of ["ordinary","run"] as const){
+      await reset();await quoteApi.bootstrap(org);if(mode==="ordinary")prepareOrdinaryOutput();else prepareRunOutput();
+      await openOutputSurface(mode,org,bootstrap.sessionScope);if(mode==="run")await setInputValue('[aria-label="Run good output"]',"8");
+      await click("Record output");await settle(()=>outputCalls.length===1);const first=outputCalls[0]!;
+      clearV2ApiSessionState();currentBootstrap={...currentBootstrap,sessionScope:"recovery-session-b"};await quoteApi.bootstrap(org);
+      if(mode==="ordinary")await renderWorkspace(org,currentBootstrap.sessionScope,true,true);else {await renderRunWorkspace(org,currentBootstrap.sessionScope);await act(async()=>document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());}
+      await settle(()=>Boolean([...document.querySelectorAll("button")].find(node=>node.textContent==="Recover this owner request")));
+      await click("Recover this owner request");assert.equal(outputCalls.length,1,"session rebind is receipt recovery only, never a physical report");
+      const key=`ph.v2.production.pending-${mode==="run"?"run-":""}output.${org}.${currentBootstrap.sessionScope}`;
+      const saved=JSON.parse(sessionStorage.getItem(key)!);assert.equal(saved.businessRequestId,first.body.businessRequestId);
+      await click("Retry original output");await settle(()=>outputCalls.length===2);assert.deepEqual(outputCalls[1]!.body,first.body);
+    }
+  });
+  await check("EXACT ordinary and Run pause-json/unmount/AuthA-clear/AuthB-bootstrap continuation never posts old intent under B",async()=>{
+    for(const mode of ["ordinary","run"] as const){
+      await reset();await quoteApi.bootstrap(org);if(mode==="ordinary")prepareOrdinaryOutput();else prepareRunOutput();
+      await openOutputSurface(mode,org,bootstrap.sessionScope);await setInputValue(mode==="ordinary"?'[aria-label="Flatbed good output"]':'[aria-label="Run good output"]',"3");
+      await click("Record output");await settle(()=>outputCalls.length===1);const original=outputCalls[0]!;
+      pausePrepareJson=true;await click("Retry original output");await settle(()=>pausedPrepareBodies.length===1);
+      assert.equal(pausedPrepareBodies[0]!.scope,bootstrap.sessionScope);assert.equal(pausedPrepareBodies[0]!.body.businessRequestId,original.body.businessRequestId);
+      await act(async()=>root.unmount());root=createRoot(document.getElementById("root")!);
+      clearV2ApiSessionState();currentBootstrap={...currentBootstrap,userId:"99999999-9999-4999-8999-999999999999",sessionScope:"auth-b",csrfToken:"CSRF_B"};await quoteApi.bootstrap(org);
+      await act(async()=>pausedPrepareBodies[0]!.resume());await settle();
+      assert.equal(outputCalls.length,1,"no physical POST after A unmount/body decode");
+      assert.equal(calls.filter(call=>call.init?.method==="POST"&&(call.init.headers as Record<string,string>)["x-v2-csrf-token"]==="CSRF_B").length,0,"B CSRF never carries A's pending body");
+      const stored=[...Array(sessionStorage.length)].map((_,i)=>sessionStorage.key(i)!).find(key=>key.startsWith("ph.v2.production.pending-")&&key.includes(bootstrap.sessionScope));
+      assert.ok(stored);assert.equal(JSON.parse(sessionStorage.getItem(stored)!).businessRequestId,original.body.businessRequestId,"admission remains recoverable");
+    }
+  });
+  await check("same-scope unmount fences prepare continuation while fresh mounted owner can retry exact receipt",async()=>{
+    for(const mode of ["ordinary","run"] as const){
+      await reset();await quoteApi.bootstrap(org);if(mode==="ordinary")prepareOrdinaryOutput();else prepareRunOutput();await openOutputSurface(mode,org,bootstrap.sessionScope);await setInputValue(mode==="ordinary"?'[aria-label="Flatbed good output"]':'[aria-label="Run good output"]',"3");
+      await click("Record output");await settle(()=>outputCalls.length===1);const original=outputCalls[0]!;
+      pausePrepareJson=true;await click("Retry original output");await settle(()=>pausedPrepareBodies.length===1);
+      await act(async()=>root.unmount());root=createRoot(document.getElementById("root")!);await act(async()=>pausedPrepareBodies[0]!.resume());await settle();assert.equal(outputCalls.length,1);
+      pausePrepareJson=false;if(mode==="ordinary")await renderWorkspace(org,bootstrap.sessionScope,true,true);else await renderRunWorkspace(org,bootstrap.sessionScope);
+      await click("Retry original output");await settle(()=>outputCalls.length===2);assert.deepEqual(outputCalls[1]!.body,original.body);
+    }
+  });
+  await check("Actor B sees only protected status and never adopts Actor A pending body",async()=>{
+    for(const mode of ["ordinary","run"] as const){
+      await reset();await quoteApi.bootstrap(org);if(mode==="ordinary")prepareOrdinaryOutput();else prepareRunOutput();await openOutputSurface(mode,org,bootstrap.sessionScope);await setInputValue(mode==="ordinary"?'[aria-label="Flatbed good output"]':'[aria-label="Run good output"]',"3");
+      await click("Record output");await settle(()=>outputCalls.length===1);sessionStorage.clear();clearV2ApiSessionState();currentBootstrap={...currentBootstrap,userId:"99999999-9999-4999-8999-999999999999",sessionScope:"actor-b",csrfToken:"CSRF_B"};await quoteApi.bootstrap(org);
+      if(mode==="ordinary")await remountWorkspace(org,currentBootstrap.sessionScope);else {await remountRunWorkspace(org,currentBootstrap.sessionScope);await act(async()=>document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());}await settle();
+      assert.equal(document.querySelector('[aria-label="Pending Production output"],[aria-label="Pending Production Run output"]'),null);
+      assert.equal([...document.querySelectorAll("button")].some(button=>button.textContent==="Retry original output"),false);assert.equal(outputCalls.length,1);
+      const protectedText=document.querySelector('[aria-label="Durable Production output receipt"],[aria-label="Durable Production Run output receipt"]')?.textContent??"";assert.match(protectedText,/private to its initiating actor/);assert.doesNotMatch(protectedText,/Historical committed/);assert.match(protectedText,/Result: pending/);
+      assert.equal([...durableReceipts.values()][0]?.intent?.goodQuantityDelta,3,"original admission was not overwritten or lost");
+    }
+  });
+  await check("actual mounted Run lookup and rebind replay repair post-commit lifecycle before clearing admission",async()=>{
+    const {PGlite}=await import("@electric-sql/pglite"),express=(await import("express")).default,requestHttp=(await import("supertest")).default;
+    const {productionRecoveryFixture}=await import("../../tests/infrastructure/productionRecoveryFixture"),{PostgresProductionRunTransaction,PostgresProductionRunTransactionRunner}=await import("../../infrastructure/production/postgresProductionRunTransaction"),{PostgresProductionRecovery}=await import("../../infrastructure/production/postgresProductionRecovery"),{ProductionRecoveryService}=await import("../../src/modules/production/productionRecovery"),{ProductionRunApplicationService}=await import("../../src/modules/production/productionRunApplication"),{createProductionRouter}=await import("../../src/interfaces/http/productionRoutes"),{brandedId}=await import("../../src/modules/shared/commercialValues");
+    for(const recoveryPath of ["lookup","rebind"] as const){
+      await reset();const db=new PGlite();
+      const client={query:async(sql:string,values?:unknown[])=>{if(values===undefined){const entries=await db.exec(sql),entry=entries.at(-1)??{rows:[],affectedRows:0};return {...entry,rowCount:entry.affectedRows??entry.rows.length};}const entry=await db.query(sql,values);return {...entry,rowCount:entry.affectedRows??entry.rows.length};},release(){}} as unknown as import("pg").PoolClient;
+      const pool={connect:async()=>client} as unknown as import("pg").Pool;
+      try{
+        await productionRecoveryFixture(client,await readFile(new URL("../../tests/infrastructure/productionExclusiveMembership.request.sql",import.meta.url),"utf8"));
+        const testOrg=brandedId<"OrganizationId">("org-a"),runId=brandedId<"ProductionRunId">("ui-repair"),actor={principalKind:"staff" as const,principalSubject:"actor-a",staffActorUserId:"actor-a"},owner=new PostgresProductionRunTransaction(client,true);
+        await client.query("BEGIN");const members=await owner.lockCandidates(testOrg,[brandedId<"ProductionWorkId">("work-a")]);const seeded=await owner.create({id:runId,organizationId:testOrg,stationKey:"roll",materialFingerprint:null,layoutMetadata:{},members,quantities:new Map([["work-a",10]]),...actor});await client.query("COMMIT");
+        await client.query("INSERT INTO v2_production_attempts(id,organization_id,production_work_id,sequence,attempt_kind,station_key) VALUES('ui-attempt','org-a','work-a',1,'initial','roll')");await client.query("UPDATE v2_production_run_allocations SET production_attempt_id='ui-attempt' WHERE production_run_id='ui-repair'");await client.query("UPDATE v2_production_runs SET state='active' WHERE id='ui-repair'");
+        let lifecycleCalls=0;const lifecycle={reconcileOrder:async()=>{lifecycleCalls++;if(lifecycleCalls===1)throw Error("Inert post-commit reconciliation failure");},reconcileInvoice:async()=>{throw Error("No financial reconciliation in this fixture");}};
+        const dependencies={runs:new ProductionRunApplicationService(new PostgresProductionRunTransactionRunner(pool),undefined,lifecycle),recovery:new ProductionRecoveryService(new PostgresProductionRecovery(pool)),principals:{principal:async()=>({kind:"staff",organizationId:testOrg,userId:"actor-a",authority:{membershipId:"ui-owner",capabilities:["production.view","production.run.execute"]}})}} as unknown as import("../../src/interfaces/http/productionRoutes").ProductionHttpDependencies;
+        const app=express();app.use(express.json());app.use("/v2/organizations/:organizationId/production",createProductionRouter(dependencies));
+        ownerHttp=async call=>{const method=call.init?.method??"GET";const pending=method==="POST"?requestHttp(app).post(call.url.pathname).send(JSON.parse(String(call.init?.body))):requestHttp(app).get(call.url.pathname).query(Object.fromEntries(call.url.searchParams));const result=await pending;return response(result.body,result.status,currentBootstrap.sessionScope);};
+        currentBootstrap={...bootstrap,organizationId:testOrg,userId:"actor-a",capabilities:{...bootstrap.capabilities,productionWork:true}};await quoteApi.bootstrap(testOrg);
+        await act(async()=>root.render(React.createElement(QueryClientProvider,{client:cache},React.createElement(ProductionRunWorkspace,{organizationId:testOrg,sessionScope:currentBootstrap.sessionScope,station:"roll",queue:[],canWork:true,onOpenArtwork:()=>{}}))));await settle(()=>Boolean(document.querySelector(".v2-production-run-row")));await act(async()=>document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());await setInputValue('[aria-label="Run good output"]',"3");await click("Record output");await settle(()=>outputCalls.length===1&&lifecycleCalls===1);
+        const original=outputCalls[0]!,savedKey=`ph.v2.production.pending-run-output.${testOrg}.${currentBootstrap.sessionScope}`;assert.ok(sessionStorage.getItem(savedKey));assert.equal((await client.query("SELECT good_quantity FROM v2_production_attempts WHERE id='ui-attempt'")).rows[0].good_quantity,3);
+        const eventsBefore=(await client.query("SELECT count(*)::integer n FROM v2_production_run_events WHERE event_kind='good_output'")).rows[0].n;
+        if(recoveryPath==="rebind")await settle(()=>[...document.querySelectorAll("button")].some(node=>node.textContent==="Recover this owner request"));
+        const postsBefore=outputCalls.length;await click(recoveryPath==="lookup"?"Look up original output result":"Recover this owner request");await settle(()=>sessionStorage.getItem(savedKey)===null&&lifecycleCalls===2);
+        assert.equal(outputCalls.length,postsBefore+1,"GET alone cannot acknowledge unfinished lifecycle repair");assert.deepEqual(outputCalls.at(-1)!.body,original.body);assert.equal(outputCalls.at(-1)!.call.url.pathname,original.call.url.pathname);
+        assert.equal((await client.query("SELECT good_quantity FROM v2_production_attempts WHERE id='ui-attempt'")).rows[0].good_quantity,3);assert.equal((await client.query("SELECT count(*)::integer n FROM v2_production_run_events WHERE event_kind='good_output'")).rows[0].n,eventsBefore);assert.equal(seeded.allocations.length,1);
+      }finally{await act(async()=>root.unmount());root=createRoot(document.getElementById("root")!);cache.clear();ownerHttp=undefined;await db.close();}
+    }
+  });
+  await check("durable selection never adopts an intent bound to another Work/Run allocation",async()=>{
+    for(const mode of ["ordinary","run"] as const){
+      await reset();await quoteApi.bootstrap(org);if(mode==="ordinary")prepareOrdinaryOutput();else prepareRunOutput();await openOutputSurface(mode,org,bootstrap.sessionScope);await setInputValue(mode==="ordinary"?'[aria-label="Flatbed good output"]':'[aria-label="Run good output"]',"3");await click("Record output");await settle(()=>outputCalls.length===1);sessionStorage.clear();
+      if(mode==="ordinary"){
+        const different="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",attempt={...operationalProjection.activeAttempt!,productionAttemptId:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",productionWorkId:different};operationalProjection={...operationalProjection,work:{...operationalProjection.work,productionWorkId:different},activeAttempt:attempt,attempts:[attempt]};operationalQueue={...operationalQueue,items:[operationalProjection]} as unknown as typeof queue;cache.clear();await remountWorkspace(org,bootstrap.sessionScope);
+      }else{activeRunResponse={...(activeRunResponse as Record<string,unknown>),productionRunId:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"};cache.clear();await remountRunWorkspace(org,bootstrap.sessionScope);await act(async()=>document.querySelector<HTMLButtonElement>(".v2-production-run-row")!.click());}await settle();
+      assert.equal(document.querySelector('[aria-label="Pending Production output"],[aria-label="Pending Production Run output"]'),null);assert.equal(outputCalls.length,1);
+    }
+  });
+  console.log(`Production actual App/workspace/parent-API integration: ${cases} named cases passed. Lookup/rebind lifecycle paths use real HTTP owner services and PGlite; other bootstrap/report DTOs are intercepted fixtures. No native, browser print-layout or provider proof.`);
 } finally { await act(async () => root.unmount()); cache.clear(); clearV2ApiSessionState(); globalThis.fetch = originalFetch; window.print = originalPrint; if (oldCss) require.extensions[".css"] = oldCss; else delete require.extensions[".css"]; if (oldReact) Object.assign(globalThis, { React: oldReact }); else delete (globalThis as { React?: typeof React }).React; dom.window.close(); }

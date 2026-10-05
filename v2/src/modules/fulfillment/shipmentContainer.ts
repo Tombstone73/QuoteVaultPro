@@ -2,6 +2,7 @@ import type { PrincipalKind } from "../../authorization/principals.js";
 import type { CustomerId, FulfillmentHandoffId, OrganizationId } from "../shared/commercialValues.js";
 import { manualCarrierShipment, type ManualCarrierShipment } from "./carrierShipment.js";
 import type { ShippingPricingPolicy, ShippingResponsibility } from "./replacementShippingEconomics.js";
+import type { ShipmentSenderSnapshot } from "./shipmentSender.js";
 
 export type ShipmentContainerStatus = "prepared" | "shipped" | "voided";
 
@@ -25,6 +26,7 @@ export type ShipmentPreparedRevision = Readonly<{
   correctionReason?: string;
   customerId?: CustomerId;
   destination?: unknown;
+  senderSnapshot?: ShipmentSenderSnapshot;
   carrier: ManualCarrierShipment;
   allocations: readonly ShipmentPreparedAllocation[];
   createdAt: string;
