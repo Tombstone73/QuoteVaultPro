@@ -1,5 +1,5 @@
 import { canonicalCapabilityRegistry, type CanonicalCapabilityDescriptor } from "./canonicalCapabilityRegistry";
-import { productParityInventory } from "./capabilityInventory";
+import { productParityInventory, type ProductParityInventoryItem } from "./capabilityInventory";
 
 export const finalMigrationClassificationValues = [
   "shared_canonical", "compatibility_only", "ui_only_reviewed", "ai_integration_pending", "deliberately_ai_ineligible", "hard_denied", "underlying_model_unsupported",
@@ -30,14 +30,14 @@ export function finalMigrationInventoryRows() {
   }));
   const unsupportedRows = productParityInventory
     .filter((item) => item.classification === "underlying_support_not_demonstrated")
-    .map((item) => ({ id: `product.${item.id}`, domain: "products", classification: "underlying_model_unsupported" as const, ui: typeof item.uiSource === "string" ? item.uiSource : item.uiSource.file, ai: "not_exposed", operation: "not_applicable", adapter: "—", authority: "—", go: "not_applicable", lifecycle: item.notes }));
+    .map((item: ProductParityInventoryItem) => ({ id: `product.${item.id}`, domain: "products", classification: "underlying_model_unsupported" as const, ui: typeof item.uiSource === "string" ? item.uiSource : item.uiSource.file, ai: "not_exposed", operation: "not_applicable", adapter: "—", authority: "—", go: "not_applicable", lifecycle: item.notes }));
   return [...capabilityRows, ...unsupportedRows];
 }
 
 export function renderFinalMigrationInventoryMarkdown(): string {
   const rows = finalMigrationInventoryRows();
   const classifications = finalMigrationClassificationValues.map((classification) => `- ${classification}: ${rows.filter((row) => row.classification === classification).length}`).join("\n");
-  const domainNames = [...new Set(rows.map((row) => row.domain))].sort();
+  const domainNames = Array.from(new Set(rows.map((row) => row.domain))).sort();
   const domains = domainNames.map((domain) => {
     const domainRows = rows.filter((row) => row.domain === domain)
       .map((row) => `| ${row.id} | ${row.classification} | ${row.ui} | ${row.ai} | ${row.operation} | ${row.adapter} | ${row.authority} | ${row.go} | ${row.lifecycle} |`).join("\n");

@@ -95,7 +95,7 @@ function unsupportedProductDetailNotice(operations: unknown): string {
  * tenant record IDs, fingerprints, or PBV2 structures. */
 export type ActiveSemanticProductDraftContext = {
   name: string;
-  category: { state: "resolved" | "unresolved"; label: string; provenance: "explicit_user" | "structured_candidate" | "ai_interpreted" | "selected_template" | "canonical_default" | "unresolved" };
+  category: { state: "resolved" | "unresolved"; label: string; provenance: "explicit_user" | "structured_candidate" | "ai_interpreted" | "semantic_inference" | "selected_template" | "canonical_default" | "unresolved" };
   material: { state: "resolved" | "unresolved" | "explicitly_unset"; label: string | null; provenance: string };
   measurementMode: "dimensions_required" | "quantity_only" | "fixed_size";
   pricing: { model: string; basis: string | null; optionGroup: string | null; rates: Array<{ option: string; priceCents: number }> };

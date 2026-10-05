@@ -708,7 +708,7 @@ export class AssistantService {
   }
 
   async archiveConversations(scope: AssistantScope, data: AssistantBulkArchiveConversationsRequest) {
-    const conversationIds = [...new Set(data.conversationIds)];
+    const conversationIds = Array.from(new Set(data.conversationIds));
     const archived = await this.repo.archiveConversations({ ...scope, conversationIds });
     const archivedIds = archived.map((conversation) => conversation.id);
     return {

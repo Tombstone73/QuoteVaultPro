@@ -9,7 +9,7 @@ export const OPERATOR_SKILL_MAX_CHARS_PER_SKILL = 1_500;
 export const OPERATOR_SKILL_MAX_TOTAL_CHARS = 5_600;
 
 type SelectionReason = "request_match" | "trusted_active_task" | "trusted_entity_context";
-export type OperatorSkillSelection = { domains: readonly OperatorDomain[]; reasons: Readonly<Record<OperatorDomain, readonly SelectionReason[]>> };
+export type OperatorSkillSelection = { domains: readonly OperatorDomain[]; reasons: Readonly<Partial<Record<OperatorDomain, readonly SelectionReason[]>>> };
 export type OperatorSkillSourceVersion = { slug: string; sourcePath: string; version: string; contentHash: string; contentChars: number };
 export type ResolvedOperatorSkill = {
   skillId: string; domain: OperatorDomain; version: "v1"; purpose: string;
@@ -61,7 +61,9 @@ export function selectOperatorSkills(input: { request: string; activeDomain?: st
   if (!direct.length && !activeDomain) for (const domain of entityDomains) add(domain, "trusted_entity_context");
   if (direct.length && activeDomain && isShortReferentialFollowUp(input.request)) add(activeDomain, "trusted_active_task");
   const orderedDomains = operatorIndex.map((entry) => entry.domain).filter((domain) => selected.has(domain)).slice(0, OPERATOR_SKILL_MAX_SELECTED);
-  return { domains: orderedDomains, reasons: Object.fromEntries(orderedDomains.map((domain) => [domain, [...(reasons.get(domain) ?? [])]])) as Record<OperatorDomain, readonly SelectionReason[]> };
+  const reasonsByDomain: Partial<Record<OperatorDomain, readonly SelectionReason[]>> = {};
+  for (const domain of orderedDomains) reasonsByDomain[domain] = Array.from(reasons.get(domain) ?? []);
+  return { domains: orderedDomains, reasons: reasonsByDomain };
 }
 
 function bounded(value: string, maxChars: number): string { return value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`; }
@@ -77,7 +79,7 @@ function renderSkillContent(manifest: OperatorSkillManifest, entry: OperatorInde
 }
 
 async function loadOne(manifest: OperatorSkillManifest, entry: OperatorIndexEntry, remainingChars: number, loadedContentHashes: Set<string>): Promise<{ skill: ResolvedOperatorSkill | null; skipped: OperatorSkillLoadDiagnostics["skipped"] }> {
-  const skipped: OperatorSkillLoadDiagnostics["skipped"] = [];
+  const skipped: Array<OperatorSkillLoadDiagnostics["skipped"][number]> = [];
   const sourceContent: Array<{ source: OperatorSkillSourceVersion; body: string | null }> = [];
   for (const source of manifest.approvedSources) {
     try {
@@ -99,7 +101,7 @@ async function loadOne(manifest: OperatorSkillManifest, entry: OperatorIndexEntr
 /** Loads repository-approved documents only. A bad or absent source removes
  * that source/skill from this decision; it never invents replacement policy. */
 export async function resolveOperatorSkills(selection: OperatorSkillSelection, options: { manifests?: readonly OperatorSkillManifest[] } = {}): Promise<OperatorSkillLoadResult> {
-  const skills: ResolvedOperatorSkill[] = []; const skipped: OperatorSkillLoadDiagnostics["skipped"] = [];
+  const skills: ResolvedOperatorSkill[] = []; const skipped: Array<OperatorSkillLoadDiagnostics["skipped"][number]> = [];
   const manifests = options.manifests ?? operatorSkillManifests;
   const manifestsByDomain = new Map(manifests.map((manifest) => [manifest.domain, manifest]));
   const loadedContentHashes = new Set<string>();

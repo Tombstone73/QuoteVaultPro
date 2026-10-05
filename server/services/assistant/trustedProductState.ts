@@ -40,7 +40,8 @@ export function currentTurnProductResolution(observations: readonly AssistantOpe
     addId(ids, (productMatches[0] as { recordId?: unknown }).recordId);
   }
   if (ids.size !== 1) ambiguous = attempted;
-  return { attempted, productId: !ambiguous && ids.size === 1 ? [...ids][0]! : null, ambiguous };
+  const productId = Array.from(ids)[0] ?? null;
+  return { attempted, productId: !ambiguous && ids.size === 1 ? productId : null, ambiguous };
 }
 
 export function currentTurnProductFact(observations: readonly AssistantOperatorObservation[] | undefined): CurrentTurnProductFact | null {

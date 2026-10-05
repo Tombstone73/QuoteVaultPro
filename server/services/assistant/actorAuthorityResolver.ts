@@ -1,4 +1,4 @@
-import { normalizeOrganizationRole, resolveOrganizationRoleAuthority } from "@shared/organizationRoleAuthority";
+import { normalizeOrganizationRole, resolveOrganizationRoleAuthority, type OrganizationRole } from "@shared/organizationRoleAuthority";
 
 export type AssistantAuthorityStatus = "allowed" | "denied" | "unknown";
 export type TrustedAssistantActorAuthorityInput = {
@@ -11,7 +11,7 @@ export type TrustedAssistantActorAuthorityInput = {
 export type AssistantActorAuthorityContext = {
   actorUserId: string;
   organizationId: string;
-  organizationRole: string | null;
+  organizationRole: OrganizationRole | null;
   grants: readonly string[];
   status: "resolved" | "unknown";
   authoritySourceTrace: readonly string[];
@@ -36,7 +36,7 @@ export type AssistantAuthorityComparison = {
 };
 
 function normalizeGrants(grants: readonly string[]): readonly string[] {
-  return Object.freeze([...new Set(grants.map((grant) => grant.trim().toLowerCase()).filter(Boolean))].sort());
+  return Object.freeze(Array.from(new Set(grants.map((grant) => grant.trim().toLowerCase()).filter(Boolean))).sort());
 }
 
 /** Uses only tenantContext's persisted organization role. Unknown roles stay
@@ -60,7 +60,7 @@ export function compareAssistantAuthority(surface: AssistantAuthorityComparison[
 export function compareAssistantCommandMetadata(metadata: { requiredCapability: string; allowedRoles: readonly string[] }, authority: AssistantActorAuthorityContext): AssistantAuthorityComparison {
   const role = authority.organizationRole;
   if (authority.status !== "resolved" || !role) return { surface: "command_metadata", result: "unknown", currentOnly: [], resolverOnly: [] };
-  const allowedRoles = metadata.allowedRoles.map(normalizeOrganizationRole).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+  const allowedRoles = metadata.allowedRoles.map(normalizeOrganizationRole).filter((candidate): candidate is OrganizationRole => candidate !== null);
   const roleAllowsCommand = allowedRoles.includes(role);
   const resolverAllowsCommand = authority.grants.includes(metadata.requiredCapability);
   if (roleAllowsCommand === resolverAllowsCommand) return { surface: "command_metadata", result: "exact_match", currentOnly: [], resolverOnly: [] };

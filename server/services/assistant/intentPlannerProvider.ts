@@ -343,9 +343,11 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
       stage = "invalid_contract";
       issues = !providerPlan.success
         ? validationIssuePaths(providerPlan.error)
-        : !capabilityOperationCompatible || parsed?.success
+        : !capabilityOperationCompatible || !parsed
           ? ["capabilityId"]
-          : validationIssuePaths(parsed.error);
+          : parsed.success
+            ? ["capabilityId"]
+            : validationIssuePaths(parsed.error);
       if (attempt < MAX_REPAIR_ATTEMPTS) continue;
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response.provider, model: response.model, attempts: attempt + 1, stage, repairAttempted: attempt > 0, providerMetadata: metadata, validationIssuePaths: issues };
       logPlannerFailure(input.organizationId, diagnostics, { validationIssuePaths: issues });

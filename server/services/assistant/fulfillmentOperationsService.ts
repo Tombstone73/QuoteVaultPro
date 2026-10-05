@@ -76,7 +76,11 @@ const nonEmptyId = (value: string | null | undefined) =>
  * fulfillment workspace UI. A workspace reference is an order key only; it
  * is never used as a synthetic fulfillment-record identifier.
  */
-export function resolveCanonicalPickupTarget(input: Pick<Intake, "orderId" | "orderLineItemId" | "fulfillmentOrderId">): CanonicalPickupTarget {
+export function resolveCanonicalPickupTarget(input: {
+  orderId?: string | null;
+  orderLineItemId?: string | null;
+  fulfillmentOrderId?: string | null;
+}): CanonicalPickupTarget {
   const explicitOrderId = nonEmptyId(input.orderId);
   const fulfillmentWorkspaceOrderId = nonEmptyId(input.fulfillmentOrderId);
   const orderLineItemId = nonEmptyId(input.orderLineItemId);
@@ -137,7 +141,8 @@ export function previewPendingFulfillmentPickup(
   intake: Pick<Intake, "orderId" | "orderLineItemId" | "fulfillmentOrderId" | "quantity">,
 ): CanonicalPickupPreview {
   const target = resolveCanonicalPickupTarget(intake);
-  if (!Number.isSafeInteger(intake.quantity) || intake.quantity <= 0) {
+  const quantity = intake.quantity;
+  if (typeof quantity !== "number" || !Number.isSafeInteger(quantity) || quantity <= 0) {
     throw new FulfillmentOperationError("PICKUP_DETAILS_REQUIRED", "A positive pickup quantity is required.");
   }
   if (detail.orderId !== target.orderId) {
@@ -149,14 +154,14 @@ export function previewPendingFulfillmentPickup(
   const line = resolveCanonicalPickupLine(detail, target.orderLineItemId);
   const currentPickedUpQuantity = line.production.pickedUpQuantity;
   const remainingQuantity = line.production.remainingQuantity;
-  if (intake.quantity > remainingQuantity) {
+  if (quantity > remainingQuantity) {
     throw new FulfillmentOperationError("QTY_EXCEEDS_ORDER", "Pickup quantity exceeds the remaining order quantity for this line item.");
   }
   // Reuse the shared canonical pre-handoff projection used by the Fulfillment
   // workflow instead of making the Assistant its own quantity calculator.
   const projected = buildPickupTravelerProgressSnapshot([
     { id: line.id, production: line.production },
-  ], [{ orderLineItemId: line.id, quantity: intake.quantity }], new Date().toISOString()).lines[0];
+  ], [{ orderLineItemId: line.id, quantity }], new Date().toISOString()).lines[0];
   if (!projected) throw new FulfillmentOperationError("PICKUP_PREVIEW_UNAVAILABLE", "The canonical pickup projection could not be prepared.");
   return {
     orderId: detail.orderId,
@@ -165,7 +170,7 @@ export function previewPendingFulfillmentPickup(
     productLabel: line.productName || line.description || "Order line",
     orderedQuantity: line.production.orderedQuantity,
     currentPickedUpQuantity,
-    requestedQuantity: intake.quantity,
+    requestedQuantity: quantity,
     projectedPickedUpQuantity: projected.afterPickupQuantity,
     projectedRemainingQuantity: projected.remainingAfterPickupQuantity,
     pickupTicketId: detail.pickupTicket?.id ?? null,

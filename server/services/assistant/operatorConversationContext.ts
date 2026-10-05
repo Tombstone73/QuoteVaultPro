@@ -111,7 +111,7 @@ export function uniqueResource(context: OperatorConversationResourceContext | nu
 }
 
 function positiveQuantity(message: string): number | null {
-  const candidates = [...message.matchAll(/\b(\d{1,7})\s*(?:pieces?|signs?|items?)?\b/gi)]
+  const candidates = Array.from(message.matchAll(/\b(\d{1,7})\s*(?:pieces?|signs?|items?)?\b/gi))
     .map((match) => Number(match[1]))
     .filter((value) => Number.isSafeInteger(value) && value > 0);
   return candidates.at(-1) ?? null;

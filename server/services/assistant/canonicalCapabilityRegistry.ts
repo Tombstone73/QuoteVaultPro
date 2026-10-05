@@ -244,7 +244,7 @@ export function getCapabilitiesForActor(input: AiCapabilityDiscoveryInput): AiCa
 
 export function validateCanonicalCapabilityRegistry(): void {
   validateOperatorSkillManifests();
-  const ids = new Set<string>(); const skills = new Set(operatorSkillManifests.map((manifest) => manifest.skillId));
+  const ids = new Set<string>(); const skills = new Set<string>(operatorSkillManifests.map((manifest) => manifest.skillId));
   const domains = new Set(operatorIndex.map((entry) => entry.domain));
   const commands = new Set<string>(); const readTools = new Set<string>();
   for (const capability of canonicalCapabilityRegistry) {

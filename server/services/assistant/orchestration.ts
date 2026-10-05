@@ -122,9 +122,9 @@ export interface AssistantOrchestrationResult {
 function safeOperationalMetadata(toolName: AssistantToolName, result: AssistantToolResultEnvelope): AssistantToolExecutionAudit["operationalMetadata"] | undefined {
   if (!toolName.startsWith("investigation.") || !result.data || typeof result.data !== "object") return undefined;
   const data = result.data as Record<string, any>;
-  if (toolName === "investigation.search") return { resourceTypes: [...new Set((data.matches ?? []).map((match: any) => match?.resource?.type).filter((type): type is string => typeof type === "string"))], resultCount: Array.isArray(data.matches) ? data.matches.length : 0 };
+  if (toolName === "investigation.search") return { resourceTypes: Array.from(new Set<string>((data.matches ?? []).map((match: any) => match?.resource?.type).filter((type: unknown): type is string => typeof type === "string"))), resultCount: Array.isArray(data.matches) ? data.matches.length : 0 };
   if (toolName === "investigation.get") return { resourceTypes: typeof data.snapshot?.type === "string" ? [data.snapshot.type] : [], resultCount: data.snapshot ? 1 : 0 };
-  if (toolName === "investigation.related") return { resourceTypes: [...new Set((data.edges ?? []).flatMap((edge: any) => [edge?.from?.type, edge?.to?.type]).filter((type): type is string => typeof type === "string"))], resultCount: Array.isArray(data.edges) ? data.edges.length : 0, ...(typeof data.returnedDepth === "number" ? { depth: data.returnedDepth } : {}), ...(typeof data.truncated === "boolean" ? { truncated: data.truncated } : {}) };
+  if (toolName === "investigation.related") return { resourceTypes: Array.from(new Set<string>((data.edges ?? []).flatMap((edge: any) => [edge?.from?.type, edge?.to?.type]).filter((type: unknown): type is string => typeof type === "string"))), resultCount: Array.isArray(data.edges) ? data.edges.length : 0, ...(typeof data.returnedDepth === "number" ? { depth: data.returnedDepth } : {}), ...(typeof data.truncated === "boolean" ? { truncated: data.truncated } : {}) };
   return { resourceTypes: typeof data.resource?.type === "string" ? [data.resource.type] : [], resultCount: Array.isArray(data.events) ? data.events.length : 0 };
 }
 

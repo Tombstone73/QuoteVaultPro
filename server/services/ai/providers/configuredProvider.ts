@@ -498,8 +498,10 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const outputItemTypes = output.slice(0, 32).map((item: any) => typeof item?.type === "string" ? item.type.slice(0, 80) : "unknown");
       const outputItemStatuses = output.slice(0, 32).map((item: any) => typeof item?.status === "string" ? item.status.slice(0, 80) : "unknown");
       const functionCallItems = output.filter((item: any) => item?.type === "function_call");
-      const functionCalls = functionCallItems.filter((item: any) => typeof item?.name === "string" && providerFunctionNames.has(item.name));
-      const decodedFunctionCalls = functionCalls.map((item: any) => ({
+      const functionCalls: Array<{ name: string; arguments?: unknown; call_id?: unknown }> = functionCallItems.filter((item: { name?: unknown; arguments?: unknown; call_id?: unknown }): item is { name: string; arguments?: unknown; call_id?: unknown } =>
+        typeof item.name === "string" && providerFunctionNames.has(item.name),
+      );
+      const decodedFunctionCalls: Array<{ toolName: string; arguments: Record<string, unknown>; argumentDecodeSucceeded: boolean }> = functionCalls.map((item) => ({
         toolName: providerFunctionNames.get(item.name)!,
         ...decodeDeepSeekFunctionArguments(item.arguments),
       }));
