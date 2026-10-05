@@ -113,15 +113,16 @@ function totalImpactDelta(value: ProductDraftIntent["optionGroups"][number]["val
 
 function buildMatrix(intent: ProductDraftIntent, groups: Map<string, ProductDraftIntent["optionGroups"][number]>): ProductOptionPricingMatrix | null {
   if (intent.pricing.model === "option_quantity_tiers") {
-    const group = groups.get(intent.pricing.optionKey);
-    assert(group, "MATRIX_OPTION_MISSING", `Pricing option '${intent.pricing.optionKey}' is not declared.`, "pricing.optionKey");
+    const pricing = intent.pricing;
+    const group = groups.get(pricing.optionKey);
+    assert(group, "MATRIX_OPTION_MISSING", `Pricing option '${pricing.optionKey}' is not declared.`, "pricing.optionKey");
     const expected = new Set(group.values.map((value) => value.key));
-    const rows = intent.pricing.rows.map((row, rowIndex) => {
+    const rows = pricing.rows.map((row, rowIndex) => {
       assert(expected.has(row.option), "MATRIX_CELL_UNKNOWN", `Tier row '${row.option}' does not belong to its option group.`, "pricing.rows");
-      return { id: stableId("intent_matrix", row.option), when: { [intent.pricing.optionKey]: row.option }, tierBasis: "line_item_quantity" as const, qtyTiers: row.tiers.map((tier, tierIndex) => ({ id: `intent_row_${rowIndex + 1}_tier_${tierIndex + 1}`, label: tier.maximumQuantity === null ? `${tier.minimumQuantity}+` : `${tier.minimumQuantity}-${tier.maximumQuantity}`, minQty: tier.minimumQuantity, maxQty: tier.maximumQuantity, ...(intent.pricing.unit === "per_piece" ? { perPieceCents: tier.priceCents } : { perSqftCents: tier.priceCents }) })) };
+      return { id: stableId("intent_matrix", row.option), when: { [pricing.optionKey]: row.option }, tierBasis: "line_item_quantity" as const, qtyTiers: row.tiers.map((tier, tierIndex) => ({ id: `intent_row_${rowIndex + 1}_tier_${tierIndex + 1}`, label: tier.maximumQuantity === null ? `${tier.minimumQuantity}+` : `${tier.minimumQuantity}-${tier.maximumQuantity}`, minQty: tier.minimumQuantity, maxQty: tier.maximumQuantity, ...(pricing.unit === "per_piece" ? { perPieceCents: tier.priceCents } : { perSqftCents: tier.priceCents }) })) };
     });
-    assert(new Set(intent.pricing.rows.map((row) => row.option)).size === expected.size && intent.pricing.rows.length === expected.size, "MATRIX_CELL_MISSING", "Every option value requires one quantity-tier schedule.", "pricing.rows");
-    return { dimensions: [intent.pricing.optionKey], rows };
+    assert(new Set(pricing.rows.map((row) => row.option)).size === expected.size && pricing.rows.length === expected.size, "MATRIX_CELL_MISSING", "Every option value requires one quantity-tier schedule.", "pricing.rows");
+    return { dimensions: [pricing.optionKey], rows };
   }
   if (intent.pricing.model === "one_dimensional_matrix") {
     const group = groups.get(intent.pricing.optionKey);
@@ -198,7 +199,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const isFee = pricing.model === "scalar" && pricing.unit === "flat_fee";
   const isHourly = pricing.model === "scalar" && pricing.unit === "per_hour";
   const pricingProfileKey = pricingProfileKeyFor(pricing);
-  const productFormulaVariables = isFee ? { flatFee: pricing.priceCents / 100 } : isHourly ? { hourly_rate: pricing.priceCents / 100 } : null;
+  const productFormulaVariables: Record<string, number> | null = isFee ? { flatFee: pricing.priceCents / 100 } : isHourly ? { hourly_rate: pricing.priceCents / 100 } : null;
   const productPricingFormula = isFee ? "flatFee" : isHourly ? "hours * hourly_rate" : null;
   assert(!isFee || intent.workflow.kind === "service_fee", "FLAT_FEE_WORKFLOW_INVALID", "Flat-fee pricing requires the service-fee workflow.", "workflow.kind");
   const perSqft = pricing.model === "scalar" && pricing.unit === "per_square_foot" ? pricing.priceCents : null;

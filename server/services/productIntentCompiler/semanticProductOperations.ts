@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { applyProductDraftIntentPatch, type ProductDraftIntent, type ProductDraftIntentPatch } from "@shared/productDraftIntent";
+import { applyProductDraftIntentPatch, productDraftIntentSchema, type ProductDraftIntent, type ProductDraftIntentPatch } from "@shared/productDraftIntent";
 import { applyCanonicalProductIntentProposal, buildCanonicalProductIntentProposal } from "./productIntentCanonicalProposal";
 
 /** Provider-facing Product Builder language. It contains only business labels
@@ -167,12 +167,16 @@ function compileCompatibilitySemanticProductOperations(
       const value = findValue(group, operation.value);
       const basis = operation.basis;
       if (nextPricing.model === "unresolved") {
-        nextPricing = {
+        const matrixPricing = {
           model: "one_dimensional_matrix",
           unit: basis ?? nextPricing.unit ?? "unresolved",
           optionKey: group.key,
           cells: group.values.map((candidate) => ({ option: candidate.key, priceCents: candidate.key === value.key ? operation.priceCents : 0 })),
         };
+        nextPricing = productDraftIntentSchema.parse({
+          ...current,
+          pricing: matrixPricing,
+        }).pricing;
         for (const candidate of group.values) if (candidate.key !== value.key) addRateQuestion(group, candidate);
       } else if (nextPricing.model === "one_dimensional_matrix") {
         if (group.key !== nextPricing.optionKey) throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_AXIS_UNRESOLVED");
@@ -277,8 +281,8 @@ export function compileSemanticProductOperations(
     if (working === current) throw error;
     const failedByOperation = new Map(rejected.map((item) => [item.operation.op, item]));
     const successfulOperationNames = new Set(semantic.operations.map((operation) => operation.op).filter((name) => !failedByOperation.has(name)));
-    const unresolved = working.unresolvedFields.filter((field) => ![...successfulOperationNames].some((name) => field.path === `semanticOperations.${name}`));
-    for (const item of failedByOperation.values()) {
+    const unresolved = working.unresolvedFields.filter((field) => !Array.from(successfulOperationNames).some((name) => field.path === `semanticOperations.${name}`));
+    for (const item of Array.from(failedByOperation.values())) {
       const code = item.error instanceof Error ? item.error.message : "PRODUCT_INTENT_SEMANTIC_OPERATION_REJECTED";
       const path = `semanticOperations.${item.operation.op}`;
       if (!unresolved.some((field) => field.path === path)) unresolved.push({

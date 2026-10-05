@@ -4208,7 +4208,7 @@ export class InboundOrderService {
           quantity: lineItem.quantity,
           width: lineItem.width,
           height: lineItem.height,
-          dimensionsUnit: lineItem.dimensionsUnit,
+          dimensionsUnit: stringFromUnknown(getPathValue(lineItem.snapshotJson, "dimensionsUnit")),
           optionSelections,
           pbv2TreeVersionId,
         });
@@ -5843,9 +5843,11 @@ export class InboundOrderService {
       customerId: customer.selectedCustomerId ?? null,
       lines: lineItems,
     });
-    taxCalculation.totals.lineItemsWithTax.forEach((lineTax, index) => {
-      lineItems[index]!.taxAmount = lineTax.taxAmount;
-      lineItems[index]!.isTaxableSnapshot = lineTax.isTaxableSnapshot;
+    lineItems.forEach((lineItem, index) => {
+      const lineTax = taxCalculation.totals.lineItemsWithTax[index];
+      if (!lineTax) throw new Error("Authoritative tax calculation did not return a corresponding line item.");
+      lineItem.taxAmount = lineTax.taxAmount.toFixed(2);
+      lineItem.isTaxableSnapshot = lineTax.isTaxableSnapshot;
     });
 
     return {
@@ -6161,15 +6163,19 @@ export class InboundOrderService {
     });
   }
 
-  private usesSquareFootPricing(product: { pricingProfileKey?: string | null }, treeJson: OptionTreeV2 | null): boolean {
+  private usesSquareFootPricing(product: { pricingProfileKey?: string | null }, treeJson: Record<string, unknown> | null): boolean {
     // The default profile is explicitly the square-foot formula profile. PBV2
     // products can state the same basis in their active pricing configuration.
     if (product.pricingProfileKey === "default") return true;
-    const pricingV2 = treeJson?.meta?.pricingV2;
+    const pricingV2 = asRecord(asRecord(treeJson?.meta)?.pricingV2);
     if (!pricingV2) return false;
     if (pricingV2.optionMatrixPricingUnit === "per_square_foot") return true;
-    if (pricingV2.base && Object.prototype.hasOwnProperty.call(pricingV2.base, "perSqftCents")) return true;
-    return Boolean(pricingV2.sqftTiers?.some((tier) => Object.prototype.hasOwnProperty.call(tier, "perSqftCents")));
+    const base = asRecord(pricingV2.base);
+    if (base && Object.prototype.hasOwnProperty.call(base, "perSqftCents")) return true;
+    return Array.isArray(pricingV2.sqftTiers) && pricingV2.sqftTiers.some((tier) => {
+      const tierRecord = asRecord(tier);
+      return tierRecord != null && Object.prototype.hasOwnProperty.call(tierRecord, "perSqftCents");
+    });
   }
 
   private normalizePbv2Selections(input: LineItemOptionSelectionsV2 | Record<string, unknown> | null | undefined): LineItemOptionSelectionsV2 {

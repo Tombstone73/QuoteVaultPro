@@ -2012,7 +2012,7 @@ export function registerProductRoutes(
             productId, changes: canonicalChanges,
             auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
           });
-          existingProduct = result.product;
+          existingProduct = { ...existingProduct, ...result.product };
         } catch (error) {
           // The Product Editor submits its complete form state.  A canonical
           // configuration no-op is therefore an idempotent sub-operation, not
@@ -2032,14 +2032,14 @@ export function registerProductRoutes(
           productId,
           changes: pricingMetadataChanges,
         });
-        existingProduct = result.product;
+        existingProduct = { ...existingProduct, ...result.product };
       }
 
       if (requestedPricingEngineConfiguration) {
         const actorUserId = getUserId(req.user);
         if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
         const result = await canonicalProductPricingEngineConfigurationOperations.execute({ organizationId, actorUserId, productId, changes: requestedPricingEngineConfiguration, expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(), auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` } });
-        existingProduct = result.product;
+        existingProduct = { ...existingProduct, ...result.product };
       }
 
       if (requestedPrimaryMaterialId !== undefined) {
@@ -2053,14 +2053,14 @@ export function registerProductRoutes(
           expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(),
           auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
         });
-        existingProduct = result.product;
+        existingProduct = { ...existingProduct, ...result.product };
       }
 
       if (requestedActive !== undefined) {
         const actorUserId = getUserId(req.user);
         if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
         const result = await canonicalProductLifecycleOperations.execute({ organizationId, actorUserId, productId, isActive: requestedActive, expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(), auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` } });
-        existingProduct = result.product;
+        existingProduct = { ...existingProduct, ...result.product };
       }
 
       if (Object.prototype.hasOwnProperty.call(productData, "productTypeId")) {

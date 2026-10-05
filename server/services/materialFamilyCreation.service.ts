@@ -46,7 +46,7 @@ export class MaterialFamilyCreationService {
         description: input.description ?? null,
       }).returning();
       const dimensions = [] as any[];
-      for (const [sortOrder, dimension] of input.dimensions.entries()) {
+      for (const [sortOrder, dimension] of Array.from(input.dimensions.entries())) {
         dimensions.push(await materialFamilyLifecycleService.createDimension({
           organizationId: input.organizationId,
           familyId: family.id,

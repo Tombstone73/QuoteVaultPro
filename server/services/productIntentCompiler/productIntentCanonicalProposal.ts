@@ -22,6 +22,8 @@ import {
   canonicalProductMaterialProposalSchema,
   type CanonicalProductMaterialProposal,
 } from "../products/canonicalProductMaterialOperations";
+import { optionTreeV2Schema, type OptionTreeV2 } from "@shared/optionTreeV2";
+import type { SemanticProductOperationsResult } from "./semanticProductOperations";
 
 const compatibilityOperationNameSchema = z.enum([
   "remove_option_value",
@@ -69,7 +71,7 @@ export const canonicalProductIntentStateSchema = z.object({
 }).strict();
 export type CanonicalProductIntentState = z.infer<typeof canonicalProductIntentStateSchema>;
 
-type SemanticOperation = Record<string, unknown> & { op: string };
+type SemanticOperation = SemanticProductOperationsResult["operations"][number];
 export type CanonicalProductIntentPlanningOptions = { categoryLabels?: readonly string[] };
 
 function normalized(value: string): string {
@@ -194,7 +196,7 @@ function applyPricingProposalOperation(proposal: CanonicalProductPricingProposal
     const group = pricingGroup(String(operation.optionGroup)); const value = pricingValue(group, String(operation.value));
     next.percentageImpacts = next.percentageImpacts.filter((impact) => impact.optionGroupKey !== group.key || impact.optionValueKey !== value.key);
     if (operation.replacesPercentageWhen) {
-      const prerequisiteGroup = pricingGroup(String((operation.replacesPercentageWhen as any).optionGroup)); const prerequisiteValue = pricingValue(prerequisiteGroup, String((operation.replacesPercentageWhen as any).value));
+      const prerequisiteGroup = pricingGroup(operation.replacesPercentageWhen.optionGroup); const prerequisiteValue = pricingValue(prerequisiteGroup, operation.replacesPercentageWhen.value);
       next.percentageImpacts.push({ optionGroupKey: group.key, optionValueKey: value.key, impact: { kind: "total_percentage_of_base", percent: Number(operation.percent), prerequisite: { optionGroupKey: prerequisiteGroup.key, optionValueKey: prerequisiteValue.key } } });
     } else next.percentageImpacts.push({ optionGroupKey: group.key, optionValueKey: value.key, impact: { kind: "percentage_of_base", percent: Number(operation.percent) } });
   }
@@ -394,9 +396,11 @@ export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): Ca
     }
   }
   const mutations: Pbv2OptionConfigurationMutation[] = [];
-  for (const group of parentGroups.values()) mutations.push({ kind: "add_group", group: { key: `${group.key}_group`, label: group.label } });
+  for (const group of Array.from(parentGroups.values())) mutations.push({ kind: "add_group", group: { key: `${group.key}_group`, label: group.label } });
   for (const group of intent.optionGroups) {
-    const defaults = group.values.filter((value) => value.isDefault).map((value) => value.key);
+    const defaultValues = group.values.filter((value) => value.isDefault);
+    const defaults = defaultValues.map((value) => value.key);
+    const defaultValue = group.selectionMode === "multiple" ? defaults : defaultValues[0]?.key;
     mutations.push({
       kind: "add_input",
       group: `${group.parentGroupKey ?? group.key}_group`,
@@ -406,7 +410,7 @@ export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): Ca
         type: group.inputType ?? (group.selectionMode === "multiple" ? "multiselect" : "select"),
         required: group.required,
         ...(group.inputType ? {} : { choices: group.values.map((value, sortOrder) => ({ value: value.key, label: value.label, sortOrder })) }),
-        ...(defaults.length ? { defaultValue: group.selectionMode === "multiple" ? defaults : defaults[0]! } : {}),
+        ...(defaults.length && defaultValue !== undefined ? { defaultValue } : {}),
         ...(group.availableWhen ? { visibilityRules: [{ type: "equals" as const, selectionKey: group.availableWhen.optionGroupKey, value: group.availableWhen.optionValueKey }] } : {}),
       },
     });
@@ -424,7 +428,7 @@ export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): Ca
 function draftTree(intent: ProductDraftIntent): Record<string, unknown> {
   const nodes: Record<string, unknown> = {};
   const edges: Record<string, unknown>[] = [];
-  for (const [index, group] of intent.optionGroups.entries()) {
+  for (const [index, group] of Array.from(intent.optionGroups.entries())) {
     const groupKey = group.parentGroupKey ?? group.key;
     const parent = intent.optionGroups.find((candidate) => candidate.key === groupKey);
     const groupId = `draft_group_${groupKey}`;
@@ -441,30 +445,34 @@ function draftTree(intent: ProductDraftIntent): Record<string, unknown> {
   return { schemaVersion: 2, status: "DRAFT", nodes, edges, rootNodeIds: intent.optionGroups.map((group) => `draft_input_${group.key}`) };
 }
 
-function groupsFromTree(intent: ProductDraftIntent, tree: Record<string, any>): ProductDraftIntent["optionGroups"] {
+function groupsFromTree(intent: ProductDraftIntent, treeValue: unknown): ProductDraftIntent["optionGroups"] {
+  const tree: OptionTreeV2 = optionTreeV2Schema.parse(treeValue);
   const priorGroups = new Map(intent.optionGroups.map((group) => [group.key, group]));
-  const inputs = Object.values(tree.nodes ?? {}).filter((node: any) => String(node?.type).toUpperCase() === "INPUT" && node?.status !== "DELETED") as any[];
+  const inputs = Object.values(tree.nodes).filter((node) => String(node.type).toUpperCase() === "INPUT" && node.status !== "DELETED");
   return inputs.sort((left, right) => Number(left.ui?.sortOrder ?? 0) - Number(right.ui?.sortOrder ?? 0)).map((input) => {
     const key = String(input.input?.selectionKey ?? input.key);
     const prior = priorGroups.get(key);
     const defaultValue = input.input?.defaultValue;
     const defaults = new Set(Array.isArray(defaultValue) ? defaultValue.map(String) : defaultValue == null ? [] : [String(defaultValue)]);
     const priorValues = new Map((prior?.values ?? []).map((value) => [value.key, value]));
-    const visibility = Array.isArray(input.visibility?.rules) && input.visibility.rules.length === 1 && input.visibility.rules[0]?.type === "equals" ? input.visibility.rules[0] : null;
-    const parentEdge = (Array.isArray(tree.edges) ? tree.edges : []).find((edge: any) => edge?.toNodeId === input.id);
-    const parentNode = parentEdge ? tree.nodes?.[parentEdge.fromNodeId] : null;
+    const visibilityRules = input.visibility?.rules;
+    const visibility = visibilityRules?.length === 1 && visibilityRules[0]?.type === "equals" ? visibilityRules[0] : null;
+    const parentEdge = tree.edges?.find((edge) => edge.toNodeId === input.id);
+    const parentNode = parentEdge ? tree.nodes[parentEdge.fromNodeId] : null;
     const parentGroupKey = typeof parentNode?.key === "string" && parentNode.key.endsWith("_group") ? parentNode.key.slice(0, -"_group".length) : null;
+    const inputType = input.input?.type === "text" || input.input?.type === "textarea" ? input.input.type : null;
+    const choiceValues = (input.choices ?? []).map((choice) => {
+      const value = choice.value;
+      return { ...(priorValues.get(value) ?? {}), key: value, label: String(choice.label ?? value), isDefault: defaults.has(value) };
+    });
     return {
       key,
       label: String(input.label ?? key),
       required: Boolean(input.input?.required),
       selectionMode: input.input?.type === "multiselect" ? "multiple" as const : "single" as const,
-      ...((input.input?.type === "text" || input.input?.type === "textarea") ? { inputType: input.input.type as "text" | "textarea" } : {}),
-      ...((input.input?.type === "text" || input.input?.type === "textarea") && parentGroupKey && parentGroupKey !== key ? { parentGroupKey } : {}),
-      values: (Array.isArray(input.choices) ? input.choices : []).map((choice: any) => {
-        const value = String(choice.value);
-        return { ...(priorValues.get(value) ?? {}), key: value, label: String(choice.label ?? value), isDefault: defaults.has(value) };
-      }),
+      ...(inputType ? { inputType } : {}),
+      ...(inputType && parentGroupKey && parentGroupKey !== key ? { parentGroupKey } : {}),
+      values: choiceValues,
       ...(visibility ? { availableWhen: { optionGroupKey: String(visibility.selectionKey), optionValueKey: String(visibility.value) } } : {}),
     };
   });
@@ -518,7 +526,7 @@ export function projectCanonicalProductIntentStateToV1Draft(
   if (findings.length) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", "The pre-persistence PBV2 proposal state is invalid.", findings);
   const unsupportedCodes = new Set(state.unsupportedDetails.map((detail) => detail.code));
   const fieldMetadata = Object.fromEntries(Object.entries(current.fieldMetadata).filter(([path]) => !path.startsWith(unsupportedMetadataPrefix)));
-  for (const code of unsupportedCodes) fieldMetadata[`${unsupportedMetadataPrefix}${code}`] = { source: "explicit_user" };
+  for (const code of Array.from(unsupportedCodes)) fieldMetadata[`${unsupportedMetadataPrefix}${code}`] = { source: "explicit_user" };
   let unresolvedFields = [
     ...current.unresolvedFields.filter((field) => field.code !== "GROMMET_QUANTITY_UNRESOLVED" && field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit" && !field.path.startsWith("pricing.optionRates.")),
     ...productPricing.missingInformation,

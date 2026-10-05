@@ -27,6 +27,8 @@ import {
 import { generateProductIntentCandidateActions, generateProductIntentRecommendations, parseProductIntentCandidateAction, parseProductIntentRecommendation, type ExistingProductCandidate } from "./productIntentInteractions";
 import { canonicalProductIntentStateFromV1Draft, projectCanonicalProductIntentStateToV1Draft } from "./productIntentCanonicalProposal";
 
+const answerSeparators = new RegExp("[^\\p{L}\\p{N}]+", "gu");
+
 export type CanonicalProductIntentCandidates = {
   categories: readonly TenantIntentReference[];
   materials: readonly TenantIntentReference[];
@@ -100,7 +102,7 @@ const semanticNumberWords: Record<string, string> = {
   "5": "five", "5th": "five", fifth: "five", five: "five",
 };
 function normalizeAnswer(value: string): string {
-  return value.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()
+  return value.trim().toLocaleLowerCase().replace(answerSeparators, " ").trim()
     .split(" ").filter(Boolean).map((token) => semanticNumberWords[token] ?? token.replace(/s$/, "")).join(" ");
 }
 
