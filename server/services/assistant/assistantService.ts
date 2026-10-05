@@ -857,18 +857,24 @@ export class AssistantService {
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
     const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
+    const resumesProductDraft = Boolean(task.canonicalProductIntentProposalId)
+      && /^(?:please\s+)?(?:continue|resume|update|edit)\s+(?:(?:the|this|my|our|current|existing)\s+){0,2}(?:product\s+draft|draft\s+product)\b/i.test(request.message.trim());
+    const explicitProductIntent = explicitCreationEntity === "product" || resumesProductDraft;
     const activeResourceContext = persistedActiveResourceContext(task.semanticChanges);
-    const pendingAction = explicitCreationEntity ? null : derivePendingOperatorActionContext({
+    const pendingAction = explicitCreationEntity || resumesProductDraft ? null : derivePendingOperatorActionContext({
       message: request.message,
       resources: activeResourceContext,
       prior: pendingActionForCurrentResources(persistedPendingActionContext(task.semanticChanges), activeResourceContext),
     });
+    const verifiedMaterialReview = readMaterialPendingReview(task.semanticChanges, conversation.id, task.id);
     // A follow-up may only contain the requested Material details. Retain the
     // initial explicit entity unless the user explicitly switches to Product.
-    const materialCreationRequest = explicitCreationEntity === "product" ? false
-      : explicitCreationEntity === "material" || (!pendingAction && (task.domain === null || task.domain === "materials")
-        && !task.canonicalProductIntentProposalId && resolveExplicitCreationEntity(task.goal) === "material");
-    const pendingMaterialReview = materialCreationRequest ? readMaterialPendingReview(task.semanticChanges, conversation.id, task.id) : null;
+    const materialCreationRequest = explicitProductIntent ? false
+      : explicitCreationEntity === "material" || (!pendingAction && (
+        task.domain === "materials"
+        || (task.domain === null && !task.canonicalProductIntentProposalId
+          && resolveExplicitCreationEntity(task.goal) === "material")));
+    const pendingMaterialReview = materialCreationRequest ? verifiedMaterialReview : null;
     if (materialCreationRequest && !pendingMaterialReview && !pendingAction
       && (!task.domain || task.domain === "materials") && isAffirmativeMaterialReply(request.message)) {
       return this.persistOperatorResponse(input, { response: "There is no verified Material question to confirm. Please provide the Material details before review.", status: "responded", errorCode: null, cards: [], audits: [] }, {
@@ -1236,7 +1242,10 @@ export class AssistantService {
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     const taskPatch: MaterialTaskTransition["patch"] = {
-      ...(materialCreationRequest ? { domain: "materials" } : typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
+      ...(explicitProductIntent ? { domain: "products" }
+        : materialCreationRequest ? { domain: "materials" }
+        : typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain }
+        : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: hasPendingProtectedProductProposal ? null : run.safeWorkingSummary,
       entityReferences,
       semanticChanges: {
@@ -1290,9 +1299,9 @@ export class AssistantService {
       }).catch(() => null)
       : null;
     console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, ...run.diagnostics, legacyFallback: false });
-    const materialTaskTransition: MaterialTaskTransition | undefined = materialCreationRequest
-      ? { taskId: task.id, expectedQuestion: pendingMaterialReview
-        ? { questionId: pendingMaterialReview.questionId, version: pendingMaterialReview.version, content: pendingMaterialReview.question, correlationId: pendingMaterialReview.correlationId } : null, patch: taskPatch }
+    const materialTaskTransition: MaterialTaskTransition | undefined = materialCreationRequest || task.semanticChanges[MATERIAL_REVIEW_KEY] != null
+      ? { taskId: task.id, expectedQuestion: verifiedMaterialReview
+        ? { questionId: verifiedMaterialReview.questionId, version: verifiedMaterialReview.version, content: verifiedMaterialReview.question, correlationId: verifiedMaterialReview.correlationId } : null, patch: taskPatch }
       : undefined;
     if (!materialTaskTransition) await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: taskPatch });
     return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
