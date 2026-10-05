@@ -47,6 +47,8 @@ describe("Order mutation atomicity", () => {
     expect(taxService).toContain("const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;");
     expect(taxService).toContain("total: totals.subtotal - discount + totals.taxAmount + shipping,");
     expect(invoiceService).toContain("billablePricedLineItems,");
+    expect(invoiceService).toContain("const discountCents = Math.max(0, toCents(order.discount));");
+    expect(invoiceService).toContain("subtotalCents - discountCents + taxCents + shippingCents");
     expect(invoiceService).toContain("buildInvoiceLineItemSnapshots(invoice.id, financialSnapshot.billablePricedLineItems)");
     expect(invoiceService).toContain("buildInvoiceLineItemSnapshots(invoice.id, snapshot.billablePricedLineItems)");
     expect(routes).toContain("A PBV2 recompute changes customer economics.");

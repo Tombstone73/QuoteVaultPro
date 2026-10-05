@@ -1014,7 +1014,11 @@ function buildOrderInvoiceFinancialSnapshot(order: any, lineItems: any[]) {
   const tax = Number(order.tax || '0');
   const taxCents = toCents(tax);
   const shippingCents = Number(order.shippingCents ?? 0) || 0;
-  const totalCents = Math.max(0, subtotalCents + taxCents + shippingCents);
+  // The Order owns the aggregate commercial discount. Invoice rows remain a
+  // faithful snapshot of the current billable charges; its header applies the
+  // same discount that the canonical Order financial rollup applies.
+  const discountCents = Math.max(0, toCents(order.discount));
+  const totalCents = Math.max(0, subtotalCents - discountCents + taxCents + shippingCents);
 
   return {
     pricedLineItems,
@@ -1025,6 +1029,7 @@ function buildOrderInvoiceFinancialSnapshot(order: any, lineItems: any[]) {
     subtotalCents,
     taxCents,
     shippingCents,
+    discountCents,
     totalCents,
     subtotal: subtotalCents / 100,
     tax,
