@@ -21,10 +21,11 @@ import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionP
 import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
-import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
+import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore, type MaterialTaskTransition } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
 import { resolveExplicitCreationEntity } from "./materialEntityIntent";
 import { assistantMaterialActionService, AssistantMaterialActionError } from "./materialActionService";
+import { MATERIAL_REVIEW_KEY, handleMaterialReply, isAffirmativeMaterialReply, materialConfirmationQuestion, materialSkuQuestion, readMaterialPendingReview, startMaterialPendingReview } from "./materialPendingReview";
 import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
@@ -133,6 +134,7 @@ export interface AssistantRepository {
   listConversations(scope: AssistantScope, status?: "active" | "archived"): Promise<AssistantConversationRecord[]>;
   createConversation(input: AssistantScope & { title?: string | null }): Promise<AssistantConversationRecord>;
   getConversation(scope: AssistantScope & { conversationId: string }): Promise<AssistantConversationDetailRecord | null>;
+  getLatestAssistantMessage(scope: AssistantScope & { conversationId: string }): Promise<AssistantMessageRecord | null>;
   updateConversation(input: AssistantScope & { conversationId: string; patch: AssistantUpdateConversationRequest }): Promise<AssistantConversationRecord | null>;
   archiveConversations(input: AssistantScope & { conversationIds: string[] }): Promise<AssistantConversationRecord[]>;
   /** Replaces the canonical Product Intent cards on the assistant turn that
@@ -169,6 +171,7 @@ export interface AssistantRepository {
       failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean;
       operationalMetadata?: { resourceTypes: readonly string[]; resultCount: number; depth?: number; truncated?: boolean };
     }>;
+    materialTaskTransition?: MaterialTaskTransition;
   }): Promise<AssistantTurnResult | null>;
   /** A continuation writes only the resumed assistant output. It must not add
    * another user message, and its implementation owns the atomic resolution
@@ -854,16 +857,24 @@ export class AssistantService {
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
     const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
-    // A follow-up may only contain the requested Material details. Retain the
-    // initial explicit entity unless the user explicitly switches to Product.
-    const materialCreationRequest = explicitCreationEntity === "product" ? false
-      : explicitCreationEntity === "material" || resolveExplicitCreationEntity(task.goal) === "material";
     const activeResourceContext = persistedActiveResourceContext(task.semanticChanges);
-    const pendingAction = derivePendingOperatorActionContext({
+    const pendingAction = explicitCreationEntity ? null : derivePendingOperatorActionContext({
       message: request.message,
       resources: activeResourceContext,
       prior: pendingActionForCurrentResources(persistedPendingActionContext(task.semanticChanges), activeResourceContext),
     });
+    // A follow-up may only contain the requested Material details. Retain the
+    // initial explicit entity unless the user explicitly switches to Product.
+    const materialCreationRequest = explicitCreationEntity === "product" ? false
+      : explicitCreationEntity === "material" || (!pendingAction && (task.domain === null || task.domain === "materials")
+        && !task.canonicalProductIntentProposalId && resolveExplicitCreationEntity(task.goal) === "material");
+    const pendingMaterialReview = materialCreationRequest ? readMaterialPendingReview(task.semanticChanges, conversation.id, task.id) : null;
+    if (materialCreationRequest && !pendingMaterialReview && !pendingAction
+      && (!task.domain || task.domain === "materials") && isAffirmativeMaterialReply(request.message)) {
+      return this.persistOperatorResponse(input, { response: "There is no verified Material question to confirm. Please provide the Material details before review.", status: "responded", errorCode: null, cards: [], audits: [] }, {
+        taskId: task.id, expectedQuestion: null, patch: { domain: "materials" },
+      });
+    }
     const audits: AssistantToolExecutionAudit[] = [];
     const providerConfig = await this.operatorProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
     const providerCapabilities = resolveAiProviderCapabilities(providerConfig);
@@ -1145,12 +1156,54 @@ export class AssistantService {
         }
       },
     }, ...fallbackWebTools, this.operatorCompositeTool()];
-    const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
+    const latestAssistantQuestion = pendingMaterialReview
+      ? await this.repo.getLatestAssistantMessage({ ...scope, conversationId: conversation.id }) : null;
+    const currentMaterialQuestion = Boolean(pendingMaterialReview && latestAssistantQuestion?.content === pendingMaterialReview.question
+      && latestAssistantQuestion.correlationId === pendingMaterialReview.correlationId);
+    const materialReply = pendingMaterialReview && currentMaterialQuestion
+      ? handleMaterialReply(pendingMaterialReview, request.message)
+      : pendingMaterialReview ? { kind: "invalid" as const, response: "The prior Material question is no longer current. No Material proposal was prepared." } : null;
+    if (materialReply && materialReply.kind !== "ready") {
+      if (!pendingMaterialReview || !currentMaterialQuestion) {
+        throw new AssistantServiceError("MATERIAL_TASK_TRANSITION_STALE", "The Material question changed. Reload the conversation before replying again.", 409);
+      }
+      if (materialReply.kind === "invalid" && pendingMaterialReview.version >= 128) {
+        throw new AssistantServiceError("MATERIAL_REVIEW_LIMIT", "This Material review reached its safe size limit. Start a new review.", 409);
+      }
+      const canonicalQuestion = pendingMaterialReview.status === "awaiting_confirmation"
+        ? materialConfirmationQuestion(pendingMaterialReview) : materialSkuQuestion(pendingMaterialReview);
+      const explanation = materialReply.kind === "invalid"
+        ? materialReply.response.replace(pendingMaterialReview.question, "").trim() : "";
+      const explainedQuestion = explanation ? `${explanation} ${canonicalQuestion}` : canonicalQuestion;
+      const materialResponse = materialReply.kind === "invalid"
+        ? explainedQuestion.length <= 1_000 ? explainedQuestion : canonicalQuestion
+        : materialReply.response;
+      const nextReview = materialReply.kind === "awaiting" ? { ...materialReply.review, correlationId }
+        : materialReply.kind === "invalid" && pendingMaterialReview.version < 128
+          ? { ...pendingMaterialReview, version: pendingMaterialReview.version + 1, questionId: crypto.randomUUID(), correlationId, question: materialResponse }
+          : pendingMaterialReview;
+      const patch: MaterialTaskTransition["patch"] = {
+        domain: "materials", status: materialReply.kind === "cancelled" ? "completed" : "active",
+        semanticChanges: { ...task.semanticChanges, [MATERIAL_REVIEW_KEY]: materialReply.kind === "cancelled" ? null : nextReview },
+        missingInformation: materialReply.kind === "cancelled" ? [] : materialReply.kind === "awaiting" ? materialReply.missingInformation : task.missingInformation,
+      };
+      return this.persistOperatorResponse(input, { response: materialResponse, status: "responded", errorCode: null, cards: [], audits }, {
+        taskId: task.id, expectedQuestion: { questionId: pendingMaterialReview.questionId, version: pendingMaterialReview.version, content: pendingMaterialReview.question, correlationId: pendingMaterialReview.correlationId }, patch,
+      });
+    }
+    const decisionProvider = materialReply?.kind === "ready"
+      ? { decide: async ({ observations }: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]) => observations.length
+        ? observations.some((observation) => observation.toolName === "materials.prepare_action" && observation.status === "succeeded" && observation.presentation?.cards.some((card) => card.kind === "action_proposal"))
+          ? { kind: "complete", response: "The Material Family review is ready. GO is required before any Material is created." }
+          : { kind: "fail", response: "The Material review could not be prepared. No Material was created. Please start a new review before attempting it again." }
+        : { kind: "call_tools", calls: [{ toolName: "materials.prepare_action", arguments: materialReply.action }] } }
+      : this.operatorDecisionProvider(scope.organizationId);
+    const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
     const run = await runtime.run({
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: existingProduct ? null : task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, activeResourceContext, pendingAction, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: materialCreationRequest ? "materials" : task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: materialCreationRequest ? "materials" : task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, activeResourceContext, pendingAction, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
@@ -1159,7 +1212,9 @@ export class AssistantService {
       ? productObservation.presentation.cards
       : [...renderToolResults(run.observations).cards, ...compositeCards];
     const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
-    const response = typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
+    const newMaterialReview = run.materialCandidate && !pendingMaterialReview
+      ? startMaterialPendingReview({ candidate: run.materialCandidate, sourceMessage: request.message, question: run.response, conversationId: conversation.id, taskId: task.id, correlationId }) : null;
+    const response = newMaterialReview ? materialConfirmationQuestion(newMaterialReview) : typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
     const status = run.status === "failed" ? "failed" : "responded" as const;
     const proposalId = typeof productData?.proposalId === "string" ? productData.proposalId : null;
     // A completed read-only detour must not close an unfinished authoritative
@@ -1177,23 +1232,24 @@ export class AssistantService {
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
     const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.toolName === "products.apply_existing_operations" && observation.presentation?.cards.some((card) => card.kind === "action_proposal"));
     const recentCompletedTurn = run.status === "completed" && !hasPendingProtectedProductProposal ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
-    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
+    const activeStatus = newMaterialReview || run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
-    await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
-      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
+    const taskPatch: MaterialTaskTransition["patch"] = {
+      ...(materialCreationRequest ? { domain: "materials" } : typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: hasPendingProtectedProductProposal ? null : run.safeWorkingSummary,
       entityReferences,
       semanticChanges: {
         ...mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn, hasPendingProtectedProductProposal),
         [activeResourceContextStorageKey]: updatedResourceContext,
-        [pendingActionContextStorageKey]: updatedPendingAction,
+        [pendingActionContextStorageKey]: newMaterialReview ? null : updatedPendingAction,
+        [MATERIAL_REVIEW_KEY]: newMaterialReview ? { ...newMaterialReview, question: response } : materialReply?.kind === "ready" ? null : pendingMaterialReview,
       },
       missingInformation: run.missingInformation,
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,
       status: activeStatus,
-    } });
+    };
     const hasFailedTool = run.observations.some((observation) => observation.status === "rejected" || observation.status === "failed" || observation.status === "timed_out");
     const diagnostic = (run.status === "failed" || hasFailedTool)
       ? await persistAiDiagnostic({
@@ -1234,7 +1290,12 @@ export class AssistantService {
       }).catch(() => null)
       : null;
     console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, ...run.diagnostics, legacyFallback: false });
-    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits });
+    const materialTaskTransition: MaterialTaskTransition | undefined = materialCreationRequest
+      ? { taskId: task.id, expectedQuestion: pendingMaterialReview
+        ? { questionId: pendingMaterialReview.questionId, version: pendingMaterialReview.version, content: pendingMaterialReview.question, correlationId: pendingMaterialReview.correlationId } : null, patch: taskPatch }
+      : undefined;
+    if (!materialTaskTransition) await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: taskPatch });
+    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
   }
 
   /**
@@ -1406,6 +1467,7 @@ export class AssistantService {
   private async persistOperatorResponse(
     input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string },
     result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; audits: AssistantToolExecutionAudit[] },
+    materialTaskTransition?: MaterialTaskTransition,
   ): Promise<AssistantTurnResult> {
     // Defense in depth: a known raw control decision is never a presentable
     // assistant message. Do not broadly suppress JSON, because users may
@@ -1436,6 +1498,7 @@ export class AssistantService {
         failureCategory: audit.failureCategory, failingStep: audit.failingStep, coreResultSucceeded: audit.coreResultSucceeded,
         operationalMetadata: audit.operationalMetadata,
       })),
+      ...(materialTaskTransition ? { materialTaskTransition } : {}),
     });
     if (!persisted) throw this.notFound();
     return persisted;
@@ -1493,7 +1556,10 @@ export class AssistantService {
   private async persistFoundationTurn(input: Parameters<AssistantRepository["createFoundationTurn"]>[0]) {
     try {
       return await this.repo.createFoundationTurn(input);
-    } catch {
+    } catch (error) {
+      if (input.materialTaskTransition && error instanceof Error && "code" in error && error.code === "MATERIAL_TASK_TRANSITION_STALE") {
+        throw new AssistantServiceError("MATERIAL_TASK_TRANSITION_STALE", "The Material question changed. Reload the conversation before replying again.", 409);
+      }
       throw new AssistantServiceError(
         "ASSISTANT_MESSAGE_PERSISTENCE_FAILED",
         "The lookup completed, but the assistant response could not be saved. Please retry.",

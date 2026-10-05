@@ -59,7 +59,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "Return exactly one JSON object and no markdown. Valid shapes:",
       '{"kind":"call_tools","calls":[{"toolName":"registered name","arguments":{}}],"workingSummary":"safe short summary"}',
       '{"kind":"continue","workingSummary":"safe short summary"}',
-      '{"kind":"ask_user","question":"business question","missingInformation":["one item"],"clarification":{"kind":"binary_confirmation|single_field"},"workingSummary":"safe short summary"}',
+      '{"kind":"ask_user","question":"business question","missingInformation":["one item"],"clarification":{"kind":"binary_confirmation|single_field"},"materialCandidate":{"familyName":{"value":"source text","span":{"start":0,"end":1}},"dimension":{"key":"color","displayName":{"value":"Color","span":{"start":0,"end":1}}},"colors":[{"value":"source text","span":{"start":0,"end":1}}],"supplier":{"value":"source text","span":{"start":0,"end":1}},"price":{"amount":1,"unit":"liter","span":{"start":0,"end":1}},"sku":null}}',
       '{"kind":"complete","response":"concise answer grounded in observations","workingSummary":"safe short summary"}',
       '{"kind":"fail","response":"safe explanation","recoverySummary":"safe short summary"}.',
       capabilities.responsesApi
@@ -92,6 +92,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "For an explicit existing-product edit, 'do not apply/change it yet' means prepare the protected products.apply_existing_operations preview now; it does not mean skip that capability. Only the separate GO confirmation executes the persisted change.",
       "For a read-only question about the active product draft, answer directly from activeSemanticProductDraft when it contains the requested current business facts; no tool is required. If a conditional request says not to change anything unless current state is wrong and the authoritative context shows it is already correct, complete with that no-op outcome and do not request a mutation.",
       "Protected mutations are represented only by semantic planning tools and must never execute a mutation directly.",
+      "For a Material Family confirmation question, include materialCandidate on ask_user with exact character-offset spans from this turn's original goal (zero-based, end exclusive) for Family name, every color, supplier, and complete '$amount per liter' price expression. For dimension.displayName Color, its span may cover the original 'comes in [color list]' evidence when the user does not literally say Color. Set sku:null; do not invent SKUs or use your question, a summary, or previous turns as span sources. Only offer this typed candidate when the original user message supports the facts; the server validates each claim. A yes only asks for explicit Color: SKU entries, never a GO proposal. Do not apply Product Builder rules to Material creation.",
       renderOperatorSkillsForProvider(loadedSkills.skills),
       input.finalSynthesis
         ? "Investigation capacity is exhausted. Produce one truthful final synthesis using only supplied observations and active-task context. You have no tools in this response: do not return call_tools or continue, do not claim unobserved research, and clearly state evidence gaps."

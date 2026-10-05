@@ -4,6 +4,7 @@ import type { ActiveSemanticProductDraftContext } from "./productManagementSkill
 import { currentTurnProductResolution, isProductResolutionObservation, taskForCurrentProductEvidence } from "./trustedProductState";
 import { existingProductEditOperationsSchema } from "./existingProductEditContract";
 import type { OperatorConversationResourceContext, PendingOperatorActionContext } from "./operatorConversationContext";
+import { materialPartialCandidateSchema, validateMaterialPartialCandidate, type MaterialPartialCandidate } from "./materialPendingReview";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -58,7 +59,7 @@ export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
   /** A provider-native capability made progress but needs another Responses
    * request before it can produce a user-visible decision. */
   z.object({ kind: z.literal("continue"), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
-  z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), clarification: z.object({ kind: z.enum(["binary_confirmation", "single_field"]) }).strict().optional(), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
+  z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), clarification: z.object({ kind: z.enum(["binary_confirmation", "single_field"]) }).strict().optional(), materialCandidate: materialPartialCandidateSchema.optional(), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("complete"), response: z.string().trim().min(1).max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("fail"), response: z.string().trim().min(1).max(1_000), recoverySummary: z.string().trim().min(1).max(2_000).optional(), providerDecisionShape: providerDecisionShapeSchema.optional() }).strict(),
 ]);
@@ -203,6 +204,7 @@ export type AssistantOperatorRunResult = {
   safeWorkingSummary: string | null;
   missingInformation: string[];
   clarification?: "binary_confirmation" | "single_field" | null;
+  materialCandidate?: MaterialPartialCandidate;
   diagnostics: {
     configuredMaxSteps: number;
     stepsConsumed: number;
@@ -360,6 +362,12 @@ export class AssistantOperatorRuntime {
         return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
       if (decision.kind === "ask_user") {
+        if (input.trustedContext.task?.domain === "materials" && input.trustedContext.task.pendingAction?.action !== "fulfillment_pickup"
+          && decision.missingInformation.length === 1 && decision.missingInformation[0] === "confirmation") {
+          const materialCandidate = validateMaterialPartialCandidate(decision.materialCandidate, input.goal);
+          if (!materialCandidate) return { status: "failed", response: "I couldn't verify the proposed Material details against your message. No Material proposal was prepared. Please provide the Material details again.", observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+          return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: ["confirmation"], clarification: "binary_confirmation", materialCandidate, diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+        }
         // A multi-field question makes a plain-language answer such as "yes"
         // impossible to interpret safely. Keep known task state and request
         // only the first genuinely unresolved field instead.

@@ -6,6 +6,7 @@ import {
   aiContextSnapshots,
   aiConversations,
   aiMessages,
+  aiOperatorTasks,
   aiReportEntityResolutions,
   aiToolExecutions,
   aiTurns,
@@ -20,6 +21,8 @@ import type {
   AssistantTurnResult,
 } from "../services/assistant/assistantService";
 import { hasCanonicalProposalCard, replaceCanonicalProposalCards } from "../services/assistant/canonicalProductIntentCardPersistence";
+import { MATERIAL_REVIEW_KEY } from "../services/assistant/materialPendingReview";
+import type { MaterialTaskTransition } from "../services/assistant/operatorTaskContext";
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -108,6 +111,14 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     return { ...toConversation(conversation), messages: messages.map(toMessage) };
   }
 
+  async getLatestAssistantMessage(scope: AssistantScope & { conversationId: string }): Promise<AssistantMessageRecord | null> {
+    const [row] = await db.select({ message: aiMessages }).from(aiMessages)
+      .innerJoin(aiConversations, eq(aiMessages.conversationId, aiConversations.id))
+      .where(and(conversationPredicate(scope, scope.conversationId), eq(aiMessages.orgId, scope.organizationId), eq(aiMessages.role, "assistant")))
+      .orderBy(desc(aiMessages.sequence)).limit(1);
+    return row ? toMessage(row.message) : null;
+  }
+
   async replaceCanonicalProductIntentCards(input: AssistantScope & { conversationId: string; proposalId: string; cards: AssistantStructuredCard[] }): Promise<AssistantMessageRecord | null> {
     const conversation = await this.getConversation(input);
     if (!conversation) return null;
@@ -186,6 +197,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       coreResultSucceeded?: boolean;
       operationalMetadata?: { resourceTypes: readonly string[]; resultCount: number; depth?: number; truncated?: boolean };
     }>;
+    materialTaskTransition?: MaterialTaskTransition;
   }): Promise<AssistantTurnResult | null> {
     const created = await db.transaction(async (tx) => {
       const [conversation] = await tx
@@ -199,6 +211,35 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       // advisory lock, preventing two concurrent turns from claiming the same
       // (conversation_id, sequence) unique key.
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${conversation.id}))`);
+
+      if (input.materialTaskTransition) {
+        const { taskId, expectedQuestion, patch } = input.materialTaskTransition;
+        if (expectedQuestion) {
+          const [latest] = await tx.select({ content: aiMessages.content, correlationId: aiMessages.correlationId })
+            .from(aiMessages).where(and(
+              eq(aiMessages.orgId, input.organizationId), eq(aiMessages.conversationId, conversation.id), eq(aiMessages.role, "assistant"),
+            )).orderBy(desc(aiMessages.sequence)).limit(1);
+          if (latest?.content !== expectedQuestion.content || latest.correlationId !== expectedQuestion.correlationId) {
+            throw Object.assign(new Error("Material question changed before the turn was saved."), { code: "MATERIAL_TASK_TRANSITION_STALE" });
+          }
+        }
+        const expected = expectedQuestion
+          ? and(
+              sql`${aiOperatorTasks.semanticChanges} -> ${MATERIAL_REVIEW_KEY} ->> 'questionId' = ${expectedQuestion.questionId}`,
+              sql`${aiOperatorTasks.semanticChanges} -> ${MATERIAL_REVIEW_KEY} ->> 'version' = ${String(expectedQuestion.version)}`,
+            )
+          : sql`(${aiOperatorTasks.semanticChanges} -> ${MATERIAL_REVIEW_KEY} IS NULL OR ${aiOperatorTasks.semanticChanges} -> ${MATERIAL_REVIEW_KEY} = 'null'::jsonb)`;
+        const [updated] = await tx.update(aiOperatorTasks).set({
+          ...patch,
+          ...(patch.status === "completed" || patch.status === "abandoned" ? { completedAt: new Date() } : {}),
+          updatedAt: new Date(),
+        }).where(and(
+          eq(aiOperatorTasks.id, taskId), eq(aiOperatorTasks.orgId, input.organizationId),
+          eq(aiOperatorTasks.userId, input.userId), eq(aiOperatorTasks.conversationId, conversation.id),
+          eq(aiOperatorTasks.status, "active"), expected,
+        )).returning({ id: aiOperatorTasks.id });
+        if (!updated) throw Object.assign(new Error("Material question changed before the turn was saved."), { code: "MATERIAL_TASK_TRANSITION_STALE" });
+      }
 
       const now = new Date();
       const [turn] = await tx

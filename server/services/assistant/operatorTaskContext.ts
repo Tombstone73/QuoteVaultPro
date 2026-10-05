@@ -26,6 +26,14 @@ export interface AssistantOperatorTaskStore {
   update(input: { organizationId: string; userId: string; taskId: string; patch: Partial<Pick<AssistantOperatorTask, "domain" | "workingSummary" | "entityReferences" | "missingInformation" | "semanticChanges" | "confirmationState" | "status" | "canonicalProductIntentProposalId" | "lastObservationSummary">> }): Promise<AssistantOperatorTask | null>;
 }
 
+/** Applied with the corresponding Material question/proposal turn, never as a
+ * separate task-store write. null means no Material question was pending. */
+export type MaterialTaskTransition = {
+  taskId: string;
+  expectedQuestion: { questionId: string; version: number; content: string; correlationId: string } | null;
+  patch: Partial<Pick<AssistantOperatorTask, "domain" | "workingSummary" | "entityReferences" | "missingInformation" | "semanticChanges" | "confirmationState" | "status" | "canonicalProductIntentProposalId" | "lastObservationSummary">>;
+};
+
 function rowToTask(row: typeof aiOperatorTasks.$inferSelect): AssistantOperatorTask {
   return {
     id: row.id, organizationId: row.orgId, userId: row.userId, conversationId: row.conversationId, domain: row.domain,

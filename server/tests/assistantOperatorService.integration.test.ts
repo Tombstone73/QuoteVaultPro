@@ -13,12 +13,13 @@ function repository() {
   const conversation: any = { id: "conversation_1", organizationId: "org_1", userId: "user_1", title: "New", status: "active", lastActivityAt: new Date(), createdAt: new Date(), updatedAt: new Date(), messages: [] };
   return {
     listConversations: jest.fn(), createConversation: jest.fn(), updateConversation: jest.fn(), getConversation: jest.fn(async () => conversation),
+    getLatestAssistantMessage: jest.fn(async () => [...conversation.messages].reverse().find((message: any) => message.role === "assistant") ?? null),
     createFoundationTurn: jest.fn(async (input: any) => ({ turnId: "turn_1", correlationId: input.correlationId, status: input.status, conversation, userMessage: { id: "u", conversationId: conversation.id, turnId: "turn_1", role: "user", content: input.message, createdAt: new Date() }, assistantMessage: { id: "a", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: input.response, structuredCards: input.structuredCards, createdAt: new Date() } })),
   };
 }
 
-function taskStore(activeProposalId: string | null = null): AssistantOperatorTaskStore & { updates: any[] } {
-  const task: any = { id: "task_1", organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", domain: activeProposalId ? "products" : null, goal: "Create product", workingSummary: null, entityReferences: [], missingInformation: [], semanticChanges: {}, confirmationState: "none", status: "active", canonicalProductIntentProposalId: activeProposalId, lastObservationSummary: null };
+function taskStore(activeProposalId: string | null = null, taskGoal = "Create product"): AssistantOperatorTaskStore & { updates: any[] } {
+  const task: any = { id: "task_1", organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", domain: activeProposalId ? "products" : null, goal: taskGoal, workingSummary: null, entityReferences: [], missingInformation: [], semanticChanges: {}, confirmationState: "none", status: "active", canonicalProductIntentProposalId: activeProposalId, lastObservationSummary: null };
   const updates: any[] = [];
   return { updates, getActive: jest.fn(async () => activeProposalId ? task : null), create: jest.fn(async () => task), update: jest.fn(async (input: any) => { updates.push(input); Object.assign(task, input.patch); return task; }) };
 }
@@ -31,7 +32,7 @@ function continuingTaskStore(): AssistantOperatorTaskStore & { updates: any[]; t
     task,
     updates,
     getActive: jest.fn(async () => created ? task : null),
-    create: jest.fn(async () => { created = true; return task; }),
+    create: jest.fn(async (input: any) => { task.goal = input.goal; created = true; return task; }),
     update: jest.fn(async (input: any) => { updates.push(input); Object.assign(task, input.patch); return task; }),
   };
 }
@@ -51,7 +52,264 @@ function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
   };
 }
 
+function digitechCandidate(details: string) {
+  const sourced = (value: string) => {
+    const start = details.indexOf(value);
+    if (start < 0) throw new Error(`Missing source evidence: ${value}`);
+    return { value, span: { start, end: start + value.length } };
+  };
+  const supplierStart = details.lastIndexOf("Digitech");
+  return {
+    familyName: sourced("Digitech TruFire KSJ Ink"),
+    dimension: { key: "color", displayName: { value: "Color", span: {
+      start: details.indexOf("comes in"), end: details.indexOf("White") + "White".length,
+    } } },
+    colors: ["Cyan", "Magenta", "Yellow", "Black", "White"].map(sourced),
+    supplier: { value: "Digitech", span: { start: supplierStart, end: supplierStart + "Digitech".length } },
+    price: { amount: 130, unit: "liter", span: sourced("$130 per liter").span }, sku: null,
+  };
+}
+
 describe("AssistantService Operator Runtime integration", () => {
+  test("Digitech family yes requests missing SKUs, then five supplied SKUs produce only a governed review proposal", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { assistantMaterialActionService } = await import("../services/assistant/materialActionService");
+    const { materialFamilyCreationService } = await import("../services/materialFamilyCreation.service");
+    const repo = repository(); const tasks = continuingTaskStore();
+    const conversation = await repo.getConversation();
+    let persistedTurns = 0;
+    repo.createFoundationTurn.mockImplementation(async (input: any) => {
+      if (input.materialTaskTransition) {
+        const { expectedQuestion, patch } = input.materialTaskTransition;
+        const latestAssistant = [...conversation.messages].reverse().find((message: any) => message.role === "assistant");
+        if (expectedQuestion && (latestAssistant?.content !== expectedQuestion.content || latestAssistant?.correlationId !== expectedQuestion.correlationId
+          || tasks.task.semanticChanges.materialPendingReviewV1?.questionId !== expectedQuestion.questionId
+          || tasks.task.semanticChanges.materialPendingReviewV1?.version !== expectedQuestion.version)) throw new Error("Stale Material question");
+        if (!expectedQuestion && tasks.task.semanticChanges.materialPendingReviewV1) throw new Error("Unexpected pending Material question");
+        Object.assign(tasks.task, patch);
+      }
+      const turnId = `turn_${++persistedTurns}`;
+      const userMessage = { id: `user_${persistedTurns}`, conversationId: conversation.id, turnId, role: "user", content: input.message, correlationId: input.correlationId, createdAt: new Date() };
+      const assistantMessage = { id: `assistant_${persistedTurns}`, conversationId: conversation.id, turnId, role: "assistant", content: input.response, structuredCards: input.structuredCards, correlationId: input.correlationId, createdAt: new Date() };
+      conversation.messages.push(userMessage, assistantMessage);
+      return { turnId, correlationId: input.correlationId, status: input.status, conversation, userMessage, assistantMessage };
+    });
+    const initialRequest = "Can you add a material for me?";
+    const details = "Digitech TruFire KSJ Ink. It comes in Cyan, Magenta, Yellow, Black and White. It costs $130 per liter and I get it from Digitech.";
+    const question = "Should I set this up as a Material Family named 'Digitech TruFire KSJ Ink' with one variant per color (Cyan, Magenta, Yellow, Black, White), each at $130 per liter from Digitech?";
+    const colors = ["Cyan", "Magenta", "Yellow", "Black", "White"];
+    const materialCandidate = digitechCandidate(details);
+    const skus = ["TRUFIRE-C", "TRUFIRE-M", "TRUFIRE-Y", "TRUFIRE-K", "TRUFIRE-W"];
+    const skuReply = "Cyan: TRUFIRE-C\nMagenta: TRUFIRE-M\nYellow: TRUFIRE-Y\nBlack: TRUFIRE-K\nWhite: TRUFIRE-W";
+    const lookupFamily = jest.spyOn(materialFamilyCreationService, "findFamilyByExactName").mockResolvedValue(null);
+    const prepare = jest.spyOn(assistantMaterialActionService, "prepare");
+    const execute = jest.spyOn(assistantMaterialActionService, "execute");
+    const product = { beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const provider = { decide: jest.fn(async ({ goal, observations, task, toolCatalog }: any) => {
+      expect(task.id).toBe("task_1");
+      expect(toolCatalog.map((tool: any) => tool.name)).not.toContain("products.begin_draft");
+      expect(toolCatalog.map((tool: any) => tool.name)).not.toContain("products.apply_operations");
+      if (goal === initialRequest) {
+        expect(observations).toEqual([]);
+        expect(task.missingInformation).toEqual([]);
+        return { kind: "ask_user", question: "Please give me the material name and its form and unit/cost details.", missingInformation: ["material details"] };
+      }
+      if (goal === details) {
+        expect(observations).toEqual([]);
+        expect(task.missingInformation).toEqual(["material details"]);
+        return { kind: "ask_user", question, missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" }, materialCandidate };
+      }
+      if (goal === skuReply) {
+        if (observations.length) {
+          expect(observations[0]).toMatchObject({ toolName: "materials.prepare_action", status: "succeeded" });
+          return { kind: "complete", response: "Review the Material Family and its five concrete variants; GO is separate." };
+        }
+        expect(toolCatalog.map((tool: any) => tool.name)).toContain("materials.prepare_action");
+        return { kind: "call_tools", calls: [{ toolName: "materials.prepare_action", arguments: { action: "materials.create_family", family: { name: "Digitech TruFire KSJ Ink", dimensions: [{ key: "color", displayName: "Color" }] }, variants: colors.map((color, index) => ({ material: { name: `Digitech TruFire KSJ Ink / ${color}`, sku: skus[index], type: "liquid", materialForm: "liquid", inventoryUnit: "milliliter", consumptionUnit: "milliliter", purchaseUnit: "liter", costPerPurchaseUnit: 130, vendorCostPerUnit: 130, preferredVendorName: "Digitech", stockQuantity: 0, minStockAlert: 0, isActive: true }, values: [{ dimensionKey: "color", value: color }] })) } }] };
+      }
+      expect(goal).toBe("yes");
+      expect(observations).toEqual([]);
+      expect(task.missingInformation).toEqual(["confirmation"]);
+      return { kind: "ask_user", question, missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" } };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    const staff = { ...actor, permissions: ["assistant.internal_staff", "assistant.materials.create", "assistant.products.create_inactive_draft"] };
+    const messageIds = () => conversation.messages.map((message: any) => message.id);
+
+    try {
+      expect(messageIds()).toEqual([]);
+      expect(tasks.getActive).toHaveBeenCalledTimes(0);
+      const first = await service.createTurn(scope, "conversation_1", staff, { message: initialRequest, context });
+      expect(first).toMatchObject({ turnId: "turn_1", userMessage: { id: "user_1" }, assistantMessage: { id: "assistant_1" } });
+      expect(messageIds()).toEqual(["user_1", "assistant_1"]);
+      expect(tasks.task).toMatchObject({ goal: initialRequest, missingInformation: ["material details"], status: "active" });
+      expect(conversation.messages[1].structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+
+      const second = await service.createTurn(scope, "conversation_1", staff, { message: details, context });
+      expect(second).toMatchObject({ turnId: "turn_2", userMessage: { id: "user_2" }, assistantMessage: { id: "assistant_2", content: question } });
+      expect(messageIds()).toEqual(["user_1", "assistant_1", "user_2", "assistant_2"]);
+      expect(tasks.task).toMatchObject({ goal: initialRequest, missingInformation: ["confirmation"], status: "active" });
+      expect(conversation.messages[3].structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+      expect(prepare).not.toHaveBeenCalled();
+      const pendingAfterSecond = structuredClone(tasks.task.semanticChanges);
+
+      const third = await service.createTurn(scope, "conversation_1", staff, { message: "yes", context });
+      expect(third).toMatchObject({ turnId: "turn_3", userMessage: { id: "user_3", content: "yes" }, assistantMessage: { id: "assistant_3" } });
+      expect(messageIds()).toEqual(["user_1", "assistant_1", "user_2", "assistant_2", "user_3", "assistant_3"]);
+      expect(tasks.task.goal).toBe(initialRequest);
+      expect(third.status).toBe("responded");
+      expect(third.assistantMessage.content).toBe("What SKU should I use for each color: Cyan, Magenta, Yellow, Black, White? Please provide each as Color: SKU.");
+      expect(third.assistantMessage.content).not.toContain("TRUFIRE-");
+      expect(conversation.messages[5].content).not.toContain("I couldn't reconcile");
+      expect(conversation.messages[5].content).not.toContain("GO");
+      expect(conversation.messages[5].structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+      expect(prepare).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+      expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+      expect(pendingAfterSecond).toMatchObject({ materialPendingReviewV1: {
+        version: 1, conversationId: "conversation_1", taskId: "task_1", sourceMessage: details,
+        status: "awaiting_confirmation", candidate: materialCandidate, question,
+        questionId: expect.any(String), correlationId: expect.any(String),
+      } });
+      expect(tasks.task.semanticChanges).toMatchObject({ materialPendingReviewV1: {
+        status: "awaiting_skus", candidate: materialCandidate,
+        question: third.assistantMessage.content, questionId: expect.any(String),
+      } });
+      expect(tasks.task.semanticChanges.materialPendingReviewV1.questionId).not.toBe(pendingAfterSecond.materialPendingReviewV1.questionId);
+      expect(tasks.task.missingInformation.join(" ")).toMatch(/SKU/i);
+
+      const fourth = await service.createTurn(scope, "conversation_1", staff, { message: skuReply, context });
+      expect(fourth).toMatchObject({ turnId: "turn_4", status: "responded", userMessage: { id: "user_4", content: skuReply }, assistantMessage: { id: "assistant_4" } });
+      expect(messageIds()).toEqual(["user_1", "assistant_1", "user_2", "assistant_2", "user_3", "assistant_3", "user_4", "assistant_4"]);
+      expect(tasks.task.goal).toBe(initialRequest);
+      expect(conversation.messages[7].structuredCards).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal", plan: expect.objectContaining({ action: "materials.create_family", arguments: expect.objectContaining({ family: expect.objectContaining({ name: "Digitech TruFire KSJ Ink", dimensions: [{ key: "color", displayName: "Color" }] }), variants: colors.map((color, index) => expect.objectContaining({ material: expect.objectContaining({ name: `Digitech TruFire KSJ Ink / ${color}`, sku: skus[index], preferredVendorName: "Digitech", materialForm: "liquid", inventoryUnit: "milliliter", consumptionUnit: "milliliter", vendorCostUnit: "milliliter", inventoryUnitsPerPurchaseUnit: 1000, vendorCostPerUnit: 130, costPerUnit: 0.13 }), values: [{ dimensionKey: "color", value: color }] })) }) }) })]));
+      expect(fourth.assistantMessage.content).toContain("GO");
+      expect(prepare).toHaveBeenCalledTimes(1);
+      const prepared = await prepare.mock.results[0]?.value;
+      expect(prepared).toMatchObject({ action: "materials.create_family", family: { name: "Digitech TruFire KSJ Ink", dimensions: [{ key: "color", displayName: "Color" }] } });
+      expect(prepared.variants).toHaveLength(5);
+      for (const [index, color] of colors.entries()) {
+        expect(prepared.variants[index]).toMatchObject({ material: { name: expect.stringContaining(color), sku: skus[index], preferredVendorName: "Digitech", materialForm: "liquid", inventoryUnit: "milliliter", consumptionUnit: "milliliter", vendorCostPerUnit: 130, costPerUnit: 0.13 }, values: [{ dimensionKey: "color", value: color }] });
+      }
+      expect(execute).not.toHaveBeenCalled();
+      expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+      expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+      lookupFamily.mockRestore();
+      execute.mockRestore();
+    }
+  });
+
+  test.each([
+    { reply: "go ahead", colors: ["Cyan", "Magenta", "Yellow", "Black", "White"], price: 130, status: "awaiting_skus", question: "What SKU should I use for each color: Cyan, Magenta, Yellow, Black, White? Please provide each as Color: SKU." },
+    { reply: "no", colors: ["Cyan", "Magenta", "Yellow", "Black", "White"], price: 130, status: "rejected", question: null },
+    { reply: "yes, but remove White", colors: ["Cyan", "Magenta", "Yellow", "Black"], price: 130, status: "awaiting_confirmation", question: "Should I set this up as a Material Family named 'Digitech TruFire KSJ Ink' with one variant per color (Cyan, Magenta, Yellow, Black), each at $130 per liter from Digitech?" },
+    { reply: "make it $135 per liter instead", colors: ["Cyan", "Magenta", "Yellow", "Black", "White"], price: 135, status: "awaiting_confirmation", question: "Should I set this up as a Material Family named 'Digitech TruFire KSJ Ink' with one variant per color (Cyan, Magenta, Yellow, Black, White), each at $135 per liter from Digitech?" },
+  ])("Material confirmation '$reply' updates only the pending task, without a proposal or GO", async ({ reply, colors, price, status, question: nextQuestion }) => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { assistantMaterialActionService } = await import("../services/assistant/materialActionService");
+    const repo = repository(); const tasks = continuingTaskStore();
+    const persistedConversation = await repo.getConversation();
+    let persistedTurns = 0;
+    repo.createFoundationTurn.mockImplementation(async (input: any) => {
+      if (input.materialTaskTransition) {
+        const { expectedQuestion, patch } = input.materialTaskTransition;
+        const latestAssistant = [...persistedConversation.messages].reverse().find((message: any) => message.role === "assistant");
+        if (expectedQuestion && (latestAssistant?.content !== expectedQuestion.content || latestAssistant?.correlationId !== expectedQuestion.correlationId
+          || tasks.task.semanticChanges.materialPendingReviewV1?.questionId !== expectedQuestion.questionId
+          || tasks.task.semanticChanges.materialPendingReviewV1?.version !== expectedQuestion.version)) throw new Error("Stale Material question");
+        if (!expectedQuestion && tasks.task.semanticChanges.materialPendingReviewV1) throw new Error("Unexpected pending Material question");
+        Object.assign(tasks.task, patch);
+      }
+      const turnId = `turn_${++persistedTurns}`;
+      const userMessage = { id: `user_${persistedTurns}`, conversationId: persistedConversation.id, turnId, role: "user", content: input.message, correlationId: input.correlationId, createdAt: new Date() };
+      const assistantMessage = { id: `assistant_${persistedTurns}`, conversationId: persistedConversation.id, turnId, role: "assistant", content: input.response, structuredCards: input.structuredCards, correlationId: input.correlationId, createdAt: new Date() };
+      persistedConversation.messages.push(userMessage, assistantMessage);
+      return { turnId, correlationId: input.correlationId, status: input.status, conversation: persistedConversation, userMessage, assistantMessage };
+    });
+    const initialRequest = "Can you add a material for me?";
+    const details = "Digitech TruFire KSJ Ink. It comes in Cyan, Magenta, Yellow, Black and White. It costs $130 per liter and I get it from Digitech.";
+    const question = "Should I set this up as a Material Family named 'Digitech TruFire KSJ Ink' with one variant per color (Cyan, Magenta, Yellow, Black, White), each at $130 per liter from Digitech?";
+    const prepare = jest.spyOn(assistantMaterialActionService, "prepare").mockImplementation(async () => { throw new Error("Explicit SKUs are required before preparing any Material proposal."); });
+    const execute = jest.spyOn(assistantMaterialActionService, "execute");
+    const product = { beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const provider = { decide: jest.fn(async ({ goal, observations, task, toolCatalog }: any) => {
+      expect(observations).toEqual([]);
+      expect(toolCatalog.map((tool: any) => tool.name)).not.toContain("products.begin_draft");
+      expect(toolCatalog.map((tool: any) => tool.name)).not.toContain("products.apply_operations");
+      if (goal === initialRequest) return { kind: "ask_user", question: "Please give me the material name and its form and unit/cost details.", missingInformation: ["material details"] };
+      if (goal === details) return { kind: "ask_user", question, missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" }, materialCandidate: digitechCandidate(details) };
+      expect(goal).toBe(reply);
+      expect(task.missingInformation).toEqual(["confirmation"]);
+      return { kind: "ask_user", question, missingInformation: ["confirmation"], clarification: { kind: "binary_confirmation" } };
+    }) };
+    const staff = { ...actor, permissions: ["assistant.internal_staff", "assistant.materials.create", "assistant.products.create_inactive_draft"] };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    try {
+      await service.createTurn(scope, "conversation_1", staff, { message: initialRequest, context });
+      await service.createTurn(scope, "conversation_1", staff, { message: details, context });
+      expect(tasks.task).toMatchObject({ goal: initialRequest, missingInformation: ["confirmation"], status: "active" });
+      expect(repo.createFoundationTurn.mock.calls[1]?.[0]).toMatchObject({ message: details, response: question, status: "responded" });
+      expect(repo.createFoundationTurn.mock.calls[1]?.[0]?.structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+
+      const third = await service.createTurn(scope, "conversation_1", staff, { message: reply, context });
+      expect(third.status).toBe("responded");
+      expect(tasks.task.goal).toBe(initialRequest);
+      expect(repo.createFoundationTurn.mock.calls[2]?.[0]).toMatchObject({ message: reply, status: "responded" });
+      expect(repo.createFoundationTurn.mock.calls[2]?.[0]?.structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+      expect(prepare).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+      expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+      expect(third.assistantMessage.content).not.toContain("GO");
+      if (status === "rejected") {
+        expect(tasks.task.semanticChanges.materialPendingReviewV1).toBeNull();
+      } else {
+        expect(tasks.task.semanticChanges).toMatchObject({ materialPendingReviewV1: {
+          candidate: { familyName: { value: "Digitech TruFire KSJ Ink" }, dimension: { key: "color" },
+            colors: colors.map((value) => ({ value })), supplier: { value: "Digitech" }, price: { amount: price, unit: "liter" } }, status,
+        } });
+      }
+      if (status === "rejected") {
+        expect(third.assistantMessage.content).toMatch(/cancel|won't|not.*creat/i);
+        expect(tasks.task.missingInformation).toEqual([]);
+      } else {
+        expect(third.assistantMessage.content).toBe(nextQuestion);
+        expect(third.assistantMessage.content).not.toContain("TRUFIRE-");
+        expect(tasks.task.semanticChanges.materialPendingReviewV1.question).toBe(nextQuestion);
+      }
+    } finally {
+      prepare.mockRestore();
+      execute.mockRestore();
+    }
+  });
+
+  test.each(["Create product", "Can you add a material for me?"])("a Product draft can answer yes without Material interception after task goal '%s'", async (taskGoal) => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1", taskGoal);
+    const question = "Should 3 Layer be the default?";
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(), beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({ name: "Translucent Vinyl", outstandingDecisions: [{ path: "optionGroups.layers.default", question, choices: ["3 Layer", "5 Layer"] }], readyForReview: false })),
+    };
+    const provider = { decide: jest.fn(async ({ observations, task }: any) => {
+      expect(observations).toEqual([]);
+      expect(task.activeSemanticProductDraft).toMatchObject({ name: "Translucent Vinyl" });
+      return { kind: "ask_user", question, missingInformation: ["Layers default"], clarification: { kind: "binary_confirmation" } };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Is 3 Layer the default?", context });
+    expect(tasks.updates.at(-1)?.patch.missingInformation).toEqual(["Layers default"]);
+    await service.createTurn(scope, "conversation_1", actor, { message: "yes", context });
+    expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ status: "responded", response: question }));
+    expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+  });
+
   test("hands Investigation resources into a later pickup preparation and preserves a binary yes without an Order re-question", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = continuingTaskStore();
