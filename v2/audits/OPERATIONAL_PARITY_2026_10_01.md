@@ -112,6 +112,18 @@ The held Auth lane also passed its own eleven canonical gates after exact named
 operation/bridge registrations and debt retirement, without resolving shared
 QA/V1 ordering or adopting 0304. No row transition follows from these local gates.
 
+The first reviewed recovery source commit is
+`c595218c22ddb9397a3fadfe95399dd4aa451f7f`, not yet pushed. Its exact-clean
+canonical rerun failed only the Contact UI case at line 119, despite the earlier
+green checkpoint; all other ten gates and three builds passed. A controlled
+Customer-response gate reproduced the missing query/render prerequisite without
+an App/API change. The narrow existing-test correction preserves exact identity
+and stale-Contact assertions, adds real-DTO positive/negative controls and no
+sleep/poll/retry/skip/deadline change. Independent review accepted blob
+`7520fd3fd80ed5d65e17f41e141cb3ce1199c4a7` after 8 UI and 9 HTTP cases plus types.
+A new follow-up commit and complete exact-SHA rerun are required before DEV push;
+the failed receipt is retained and is not overridden or labelled flaky.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

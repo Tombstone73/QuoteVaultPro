@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { JSDOM } from "jsdom";
-import type { UiBootstrap } from "./api";
+import type { Selection, UiBootstrap } from "./api";
 
 // Mount the actual App, with one React/query module graph. Only CSS evaluation
 // is omitted; all Quote HTTP, authorization, application and CRM reads are real.
@@ -10,7 +10,8 @@ const previousCss = require.extensions[".css"];
 require.extensions[".css"] = () => {};
 const React: typeof import("react") = require("react");
 const { act } = React;
-const { QueryClient, QueryClientProvider }: typeof import("@tanstack/react-query") = require("@tanstack/react-query");
+const { QueryClient, QueryClientProvider, notifyManager }: typeof import("@tanstack/react-query") = require("@tanstack/react-query");
+const { quoteFormKeys }: typeof import("./quoteFormQueries") = require("./quoteFormQueries");
 const { quoteContactFixture }: typeof import("../../tests/interfaces/quoteContactSelection.test") = require("../../tests/interfaces/quoteContactSelection.test");
 const request: typeof import("supertest") = require("supertest");
 const f = await quoteContactFixture();
@@ -26,6 +27,7 @@ const originalPrincipal = f.principal;
 let bootstrap: UiBootstrap = { organizationId: f.org, userId: "staff", sessionScope: "quote-contact-session", csrfToken: "fixture-csrf", capabilities: { quoteView: true, quoteEdit: true, quoteCreate: false, quoteSend: false, quoteConvert: false, quoteOverridePrice: false } };
 const calls: { path: string; method: string; body?: { patch: { customerContact: unknown } } }[] = [];
 let selectionGate: (() => Promise<void>) | undefined;
+let customersGate: Promise<void> | undefined;
 let selectionFailure = false;
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -37,6 +39,7 @@ globalThis.fetch = async (input, init) => {
   else if (path.endsWith("/artwork") || path.endsWith("/history") || path.endsWith("/workflow/actions")) result = { ok: true, data: [] };
   else if (path.startsWith(`/v2/organizations/${f.org}/quotes/`)) {
     const response = method === "PATCH" ? await request(f.app).patch(path).send(body) : await request(f.app).get(path + url.search);
+    if (path.endsWith("/form/customers") && customersGate) await customersGate;
     if (path.endsWith("/contact-selection")) {
       // Delay an already-resolved old reference, not the new Customer's request.
       if (selectionGate) await selectionGate();
@@ -54,6 +57,23 @@ const assertSelectionScope = () => assert.ok(cache.getQueryCache().getAll().some
 ])), "saved selection query includes session, organization, Quote, revision and complete canonical reference");
 const field = (label: string) => { const node = document.querySelector(`[aria-label="${label}"]`); assert.ok(node, `${label} field exists`); return node as HTMLInputElement | HTMLSelectElement; };
 const contact = () => field("Contact") as HTMLSelectElement;
+const assertFormOptions = (label: "Customer" | "Contact", selections: readonly Selection[]) => assert.deepEqual(
+  [...(field(label) as HTMLSelectElement).options].filter(option => option.value).map(option => ({ id: option.value, label: option.textContent })),
+  selections.map(selection => ({ id: label === "Customer" ? selection.customerId : selection.contactId, label: selection.displayName })),
+  `${label} options render the completed owner DTO, not stale or synthetic identities`,
+);
+const renderFormOptions = async (label: "Customer" | "Contact", queryKey: readonly unknown[]) => {
+  const query = cache.getQueryCache().find<readonly Selection[]>({ queryKey, exact: true });
+  assert.ok(query?.promise, `${label} query has started`);
+  // Request initiation and saved-Contact hydration do not imply form options
+  // are ready. Await this query and its React Query notification before act flushes.
+  await act(async () => {
+    await query.promise;
+    await new Promise<void>(resolve => notifyManager.schedule(resolve));
+  });
+  assert.equal(query.state.status, "success");
+  assertFormOptions(label, query.state.data!);
+};
 const settle = async (predicate: () => boolean) => {
   for (let index = 0; index < 150; index++) { await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); }); if (predicate()) return; }
   assert.ok(predicate(), `App settled: ${text()}\n${JSON.stringify(calls)}`);
@@ -115,16 +135,31 @@ try {
   });
   await check("Customer-linked opened edit retains filter and explicit Customer change clears selected Contact", async () => {
     f.quote = { ...f.quote, quote: { ...f.quote.quote, customerContact: { ...f.quote.quote.customerContact, customerId: f.customerId } } };
+    let release!: () => void; customersGate = new Promise<void>(resolve => { release = resolve; });
     await mount(); await settle(() => contact().selectedOptions[0]?.textContent === "Zoe Saved");
+    const customerKey = quoteFormKeys.customers(bootstrap.sessionScope, f.org);
+    assert.equal(cache.getQueryState(customerKey)?.status, "pending");
+    assert.equal(field("Customer").value, "", "saved Contact hydration alone does not render Customer options");
+    const rendered = renderFormOptions("Customer", customerKey);
+    release(); await rendered; customersGate = undefined;
     assert.equal(contact().disabled, false); assert.equal(field("Customer").value, f.customerId);
+    await renderFormOptions("Contact", quoteFormKeys.contacts(bootstrap.sessionScope, f.org, f.customerId));
+    // Give Account B a real active Contact to prove readiness is more than an
+    // empty cleared select; the actual CRM reader must supply and render it.
+    await f.db.query("INSERT INTO customer_contact_links VALUES('other-link',$1,$2,'page-first','active')", [f.org, f.otherCustomerId]);
     await change("Customer", f.otherCustomerId);
-    await settle(() => calls.some(call => call.path.endsWith(`/customers/${f.otherCustomerId}/contacts`)));
+    await renderFormOptions("Contact", quoteFormKeys.contacts(bootstrap.sessionScope, f.org, f.otherCustomerId));
     assert.equal(contact().value, ""); assert.ok(![...contact().options].some(option => option.value === f.contactId));
+    assert.throws(() => assertFormOptions("Contact", [{ contactId: f.contactId, displayName: "Zoe Saved" }]), assert.AssertionError, "the render barrier rejects the previous Customer's DTO");
+    assert.throws(() => assertFormOptions("Contact", [{ contactId: f.foreignContactId, displayName: "Alex Other" }]), assert.AssertionError, "matching labels cannot hide a wrong Contact identity");
+    assertFormOptions("Contact", [{ contactId: "page-first", displayName: "Alex Other" }]);
+    await change("Contact", "page-first"); assert.equal(contact().value, "page-first");
+    assert.equal(field("Customer").value, f.otherCustomerId);
   });
   await check("late old selected lookup cannot add previous Customer Contact after explicit change", async () => {
     let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); selectionGate = () => gate;
     await mount(); await settle(() => calls.some(call => call.path.endsWith("/contact-selection")));
-    await settle(() => [...(field("Customer") as HTMLSelectElement).options].some(option => option.value === f.otherCustomerId));
+    await renderFormOptions("Customer", quoteFormKeys.customers(bootstrap.sessionScope, f.org));
     await change("Customer", f.otherCustomerId); await act(async () => { release(); await gate; }); selectionGate = undefined;
     await settle(() => cache.isFetching() === 0);
     assert.equal(contact().value, ""); assert.ok(![...contact().options].some(option => option.value === f.contactId));
