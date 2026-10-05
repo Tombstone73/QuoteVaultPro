@@ -158,6 +158,71 @@ harness correction, not a domain/assertion/Node-version change or confirmation o
 the old Ubuntu artifact's root cause. Exact new source gates and hosted/native
 confirmation remain required before further success claims.
 
+The reviewed harness milestone `a110b21c9c65ccd6b3c9b99c9f9d4d935fc5a14a`
+subsequently passed all eleven canonical gates and all three builds on its exact
+clean SHA, then fast-forwarded DEV from1f102f9a. Remote verification matched and
+MAIN stayed unchanged. New exact hosted canonical/native/deployment receipts are
+pending; the previous hosted failure is retained. This does not imply a native
+PASS, source-complete Sales/Auth adoption, Run enablement or an L0 reduction.
+
+At exacta110, hosted run37276436066 passed all eleven canonical gates and
+Payment79/79; the dependent Production-native job111656721344 **RAN / FAILED**
+with exit1 on October5 at07:21:22 UTC. Public evidence identifies no safe failure
+code or matrix assertion; invocation timing is not proof of a failure stage.
+No native typed receipt was uploaded, so actualPIDs/waits/counts/cleanup/PGversion
+remain unverified and OPS12 remains open/defaultdisabled. Exact DEV anonymous
+version/health/ready were HTTP200 at07:16:00 and07:23:01, overone minute apart.
+These results supersede pending observations, not prior recorded failures or
+row acceptance. A bounded native diagnostic investigation is active; no safety,
+deadline, source pin or matrix assertion is waived to obtain a green result.
+
+### October 5 Continuation Checkpoint: Recovery Starting 21:30Z
+
+Bounded recovery beginning at 2026-10-05T21:30:44Z inspected durable artifacts,
+worktree history and existing dirty updates without restarting the campaign.
+The assembly `c595218c`, Contact prerequisite correction `1f102f9a` and Payment
+linker correction `a110b21c` are already delivered milestones, not new work in
+this continuation. Prior failed receipts and all lane/caller-root changes remain
+preserved. Historical issued Invoice evidence, tenant structural recovery floor
+and Sales-owned last-explicit-publication policies remain immutable; receipt
+identity stays tenant/operation/request with fresh authorization before disclosure
+or replay. No L1, Storefront, V1, MAIN or PROD scope is added.
+
+One anonymous GET each to DEV `/version`, `/health` and `/ready` during this
+continuation returned full SHA `a110b21c9c65ccd6b3c9b99c9f9d4d935fc5a14a`,
+service `printershero-v2`, health `ok` and readiness `ready/application=ok`.
+These are advertised deployment/readiness observations, not authenticated
+workflow, provider-isolation or native contention evidence. No credentials were
+loaded, DB commands or provider calls made, or business fixtures mutated.
+
+| Row | Exact targeted acceptance still required | Execution blocker |
+| --- | --- | --- |
+| OPS-09 | Campaign-only ordinary attempt and existing Run allocation: committed-response loss, owner output-recovery lookup, reload/tab-loss recovery and exact-body/key replay produce one output fact; changed payload/scope fails closed. | No approved disposable Production fixture/action ledger; new Run creation remains disabled. |
+| FUL-11 | Campaign-only blind/non-blind sender default/override and Customer/Custom selection, incomplete/incompatible rejection, frozen finalized document identity; no carrier calls. | No approved Customer/address/Order/shipment action manifest or irreversible local-finalization approval. |
+| FUL-26 | Campaign-only pickup/shipment/replacement intent admission, lost-response discovery/receipt and same-key replay across supported scope/tab/session loss; no duplicate handoff, fresh authority and conflict checks. | No approved original/replacement fixture ledger or irreversible handoff authorization. |
+| BILL-16 | New Customer/TEMP/line/Order/Invoice issue/partial cash/remainder flow; issued PDF/checkpoint hashes unchanged through payments/restart, current settlement correct and exactly two cash facts. | Approval=false, REQUIRED_COMMIT and manifest/script hash approvals absent, Product unset, autoSync=false and provider suppression unverified; settled-fixture GET-only evidence is insufficient. |
+| PAY-22 | V2-only exact identity/collision and fail-closed uncertain-attempt regressions with inert provider fixtures; native catalog/provider evidence remains separate. | Durable plan is offline-only: DEV QuickBooks connection/export/recovery is excluded, with no authorized live-provider path. |
+
+The general QA manifest has executionPermitted=false, null parent flow/SHA and
+null exact actions. `.env.playwright` exists but presence/prior normal QA login
+does not establish fresh credential validity or mutation authority. Historical
+fixtures remain forbidden mutation targets; disconnected QuickBooks does not
+prove exporter suppression. Auth remains a coexistence/source blocker, not an
+external-only gap: shared caller/ancestor-cascade and organization/state lock
+ordering must be reconciled before adoption; 0304 and Team coverage are not adopted.
+Sales' bounded correction is in progress and not yet accepted.
+
+Public run `37276436066` reconfirmed a110 canonical 11/11 and Payment79/79,
+but Production native **RAN / FAILED**; the public annotation exposes only exit1
+and only the canonical artifact exists. No native PID/wait/count/cleanup receipt
+exists; Team is **NOT RUN**, NULL/OFF, and Run creation stays default-disabled.
+The existing DEV-only disposable PostgreSQL16 workflow is a feasible conditional
+path after the reviewed, validated DEV delivery authorized by this recovery
+request; no native result is inferred before execution. The native diagnostic two-file diff has independent **PASS**
+from `ses_ef2047187ffejNnBTKGU70Gc4D`; this accepts bounded diagnostics only,
+not native proof. No new final canonical/build receipt, commit or push is claimed.
+The ten retained L0s and all priorities are unchanged; **no row transitions**.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

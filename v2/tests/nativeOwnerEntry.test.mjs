@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import yaml from 'js-yaml';
 import { cleanEnvironment } from '../scripts/validate.mjs';
-import { nativeOwnerRegistry, parseNativeArguments, prepareNativeEnvironment, nativeSocketAllowed, installNativeNetworkPolicyForTests, validateNativeReceipt, validateNativeReceiptForTests, runNativeOwnerEntryForTests, runOwnedProcessForTests, writeNativeArtifactForTests, stopWindowsOwnedTreeForTests, verifyNativeHooksForTests } from '../scripts/native-owner-entry.mjs';
+import { NativeOwnerEntryError, nativeFailureForTests, parseNativeChildFailureCode, runNativeOwnerCliForTests, nativeOwnerRegistry, parseNativeArguments, prepareNativeEnvironment, nativeSocketAllowed, installNativeNetworkPolicyForTests, validateNativeReceipt, validateNativeReceiptForTests, runNativeOwnerEntryForTests, runOwnedProcessForTests, writeNativeArtifactForTests, stopWindowsOwnedTreeForTests, verifyNativeHooksForTests } from '../scripts/native-owner-entry.mjs';
 
 // Synthetic unit contracts only. They are not B/E case names or native proof.
 const commit = 'a'.repeat(40);
@@ -441,4 +441,138 @@ test('implementation evidence reports only the three leased source hashes', () =
   const repository = fileURLToPath(new URL('../../', import.meta.url));
   const sourceHashes = Object.fromEntries(['v2/scripts/native-owner-entry.mjs', 'v2/tests/nativeOwnerEntry.test.mjs', '.github/workflows/v2-validation.yml'].map(relative => [relative, createHash('sha256').update(fs.readFileSync(path.join(repository, relative))).digest('hex')]));
   console.log(JSON.stringify({ scope: 'implementation source identity, not native proof', sourceHashes }));
+});
+
+// Inert diagnostic controls: no actual guard loading, producer import or native child.
+async function diagnosticCli(overrides = {}, env = environment('production'), argv = ['--lane', 'production', '--expected-commit', commit]) {
+  const mock = services('production', { loadGuards: () => ({ safe: value => value.TEST_DATABASE_URL, clone: value => value.TEST_DATABASE_URL }), ...overrides });
+  const output = [], errors = [];
+  const status = await runNativeOwnerCliForTests(argv, env, mock.dependencies, value => output.push(value), value => errors.push(value));
+  return { ...mock, status, output, errors, failure: errors[0] ? JSON.parse(errors[0]) : null };
+}
+function assertPublicFailure(result, code, stage) {
+  assert.equal(result.status, 1); assert.deepEqual(result.output, []);
+  assert.equal(result.errors.length, 2);
+  assert.equal(result.errors[1], `::error title=Native Owner Failure::${result.errors[0]}`);
+  assert.equal(result.failure.code, code); assert.equal(result.failure.stage, stage);
+  assert.equal(result.failure.status, 'error');
+  for (const key of ['receiptValid', 'coverageAdjudicated', 'allNativeProofClaimed']) assert.equal(result.failure[key], false);
+  assert.equal(result.calls.some(value => value?.output), false);
+  assert.doesNotMatch(result.errors.join(''), /private|password|postgresql:|SELECT|customer|pid|namespace|passedCases|%|\r|\n/i);
+  assert.ok(Buffer.byteLength(result.errors[1]) < 1024);
+}
+
+test('public preflight diagnostics cover dirty, mismatched and unavailable source without artifacts or child effects', async () => {
+  for (const [source, expected] of [[{ commit, clean: false }, 'EXACT_CLEAN_SOURCE_REQUIRED'], [{ commit: 'b'.repeat(40), clean: true }, 'EXACT_CLEAN_SOURCE_REQUIRED'], [null, 'SOURCE_PREFLIGHT_UNAVAILABLE']]) {
+    const result = await diagnosticCli({ readSource: () => { if (!source) throw new NativeOwnerEntryError(expected); return source; } });
+    assertPublicFailure(result, expected, 'source');
+    assert.equal(result.failure.requestedSha, commit); assert.equal(result.failure.verifiedSourceSha, null);
+    assert.equal(result.failure.childExit, null); assert.equal(result.failure.childTimedOut, null);
+    assert.equal(result.calls.some(value => value?.args || value?.artifact), false);
+  }
+});
+
+test('public hash preflight diagnostics distinguish requested SHA from verified source and remain before child/artifact', async () => {
+  const result = await diagnosticCli({ verifyHooks: () => { throw new NativeOwnerEntryError('NATIVE_HOOK_DEPENDENCY_HASH_MISMATCH'); } });
+  assertPublicFailure(result, 'NATIVE_HOOK_DEPENDENCY_HASH_MISMATCH', 'hooks');
+  assert.equal(result.failure.requestedSha, commit); assert.equal(result.failure.verifiedSourceSha, commit);
+  assert.equal(result.calls.some(value => value?.args || value?.artifact), false);
+});
+
+test('public context/approval/guard/output-path failures preserve exact preflight ordering and disclose no context values', async () => {
+  for (const [key, value, code] of [['GITHUB_REF', 'private-customer', 'REVIEWED_DEV_CI_EVENT_REQUIRED'], ['GITHUB_SHA', 'b'.repeat(40), 'GITHUB_SHA_MISMATCH'], ['V2_NATIVE_OWNER_EVENT_AFTER', 'b'.repeat(40), 'DEV_PUSH_AFTER_SHA_MISMATCH'], ['V2_L0_LANE_F_NATIVE_APPROVED', '0', 'EXACT_PRODUCTION_TARGET_APPROVAL_REQUIRED'], ['GITHUB_RUN_ID', 'private', 'CI_RUN_METADATA_REQUIRED']]) {
+    let guards = 0;
+    const result = await diagnosticCli({ loadGuards: () => { guards++; throw new Error('private'); } }, { ...environment('production'), [key]: value });
+    assertPublicFailure(result, code, 'environment');
+    assert.equal(guards, 0); assert.equal(result.failure.verifiedSourceSha, null);
+    assert.equal(result.calls.some(item => item?.args || item?.artifact), false);
+  }
+  const guard = await diagnosticCli({ loadGuards: () => ({ safe: () => { throw new Error('private password'); }, clone: () => { assert.fail('must not run'); } }) });
+  assertPublicFailure(guard, 'EXISTING_DATABASE_GUARD_REJECTED', 'guards');
+  const output = await diagnosticCli({ githubOutputFile: () => { throw new NativeOwnerEntryError('NORMAL_CI_OUTPUT_PATH_REQUIRED'); } });
+  assertPublicFailure(output, 'NORMAL_CI_OUTPUT_PATH_REQUIRED', 'output-path');
+  assert.equal(output.calls.some(item => item?.args || item?.artifact), false);
+});
+
+test('public CLI rejects private/invalid/duplicate argv before any service and does not echo requested identity', async () => {
+  for (const [argv, code] of [[['--private', 'postgresql://private/password'], 'INVALID_ARGUMENTS'], [['--lane', 'production', '--expected-commit', 'private-customer'], 'CLOSED_LANE_AND_EXACT_COMMIT_REQUIRED'], [['--lane', 'production', '--expected-commit', commit, '--expected-commit', commit], 'DUPLICATE_ARGUMENT']]) {
+    let guards = 0;
+    const result = await diagnosticCli({ loadGuards: () => { guards++; } }, environment('production'), argv);
+    assertPublicFailure(result, code, 'arguments');
+    assert.equal(result.failure.requestedSha, null); assert.equal(result.failure.verifiedSourceSha, null);
+    assert.equal(guards, 0); assert.deepEqual(result.calls, []);
+  }
+});
+
+test('public child failures disclose only bounded exit, allowlisted signal, timeout and recognized protocol code', async () => {
+  for (const [exitCode, signal, timedOut, failureCode, expectedExit, expectedSignal, expectedCode] of [
+    [1, null, false, null, 1, null, null],
+    [null, 'SIGKILL', true, 'NATIVE_CHILD_DEADLINE', null, 'SIGKILL', 'NATIVE_CHILD_DEADLINE'],
+    [null, 'SIGTERM', false, null, null, 'SIGTERM', null],
+    [256, 'private\n::error::customer', false, 'PRIVATE_CUSTOMER_CODE', null, null, null],
+    [-1, 'SIGUNKNOWN', false, 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED', null, null, null],
+    ['1', 'SIGINT', 'private', 'postgresql://private/password', null, 'SIGINT', null],
+  ]) {
+    const result = await diagnosticCli({ runChild: async () => ({ code: 1, stdout: 'private SQL SELECT customer', diagnostics: { exitCode, signal, timedOut, failureCode, stderr: 'private password', message: 'private customer' } }) });
+    assertPublicFailure(result, 'NATIVE_CHILD_FAILED_OR_TIMED_OUT', 'child');
+    assert.equal(result.failure.childExit, expectedExit); assert.equal(result.failure.childSignal, expectedSignal);
+    assert.equal(result.failure.childTimedOut, typeof timedOut === 'boolean' ? timedOut : null);
+    assert.equal(result.failure.childCode, expectedCode);
+    const artifacts = result.calls.filter(value => value?.artifact);
+    assert.equal(artifacts.length, 1); assert.equal(artifacts[0].artifact.code, result.failure.code);
+    assert.equal(artifacts[0].artifact.childCode, expectedCode);
+    assert.doesNotMatch(JSON.stringify(artifacts), /private|password|SELECT|customer/);
+  }
+});
+
+test('arbitrary errors, spoofed known plain codes, accessors and injected stages have a finite safe fallback', async () => {
+  for (const error of [new Error('private password SELECT customer'), Object.assign(new Error('private'), { code: 'NATIVE_HOOK_DEPENDENCY_HASH_MISMATCH' }), new NativeOwnerEntryError('PRIVATE_CUSTOMER_CODE'), new NativeOwnerEntryError('private\n::error::customer'), Object.defineProperty(new NativeOwnerEntryError('INVALID_ARGUMENTS'), 'code', { get() { throw new Error('private'); } }), null]) {
+    if (error) error.stage = 'private';
+    const result = await diagnosticCli({ verifyHooks: () => { throw error; } });
+    assertPublicFailure(result, 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED', 'hooks');
+    assert.equal(result.calls.some(value => value?.args || value?.artifact), false);
+    const untrusted = nativeFailureForTests(error);
+    assert.equal(untrusted.stage, 'unknown'); assert.equal(untrusted.requestedSha, null);
+    assert.equal(untrusted.childCode, null);
+  }
+});
+
+test('strict bounded child protocol accepts only exact sanitized failure schema and finite code/stage', async () => {
+  const errors = [];
+  const status = await runNativeOwnerCliForTests(['--native-child', 'production', '--expected-commit', commit], environment('production'), {
+    internalChild: async (_options, context) => { context.stage = 'producer'; throw new NativeOwnerEntryError('NATIVE_PROVIDER_OR_NETWORK_IO_FORBIDDEN'); },
+  }, () => assert.fail('no success output'), value => errors.push(value));
+  assert.equal(status, 1); assert.equal(errors.length, 1); assert.doesNotMatch(errors[0], /::error|sha|private|pid/i);
+  const raw = JSON.parse(errors[0]);
+  assert.equal(raw.format, 'NATIVE_OWNER_CHILD_FAILURE_V1');
+  for (const key of ['receiptValid', 'coverageAdjudicated', 'allNativeProofClaimed']) assert.equal(raw[key], false);
+  assert.equal(parseNativeChildFailureCode(errors[0]), 'NATIVE_PROVIDER_OR_NETWORK_IO_FORBIDDEN');
+  for (const altered of [{ ...raw, code: 'PRIVATE_CODE' }, { ...raw, code: 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' }, { ...raw, stage: 'private' }, { ...raw, receiptValid: true }, { ...raw, coverageAdjudicated: true }, { ...raw, allNativeProofClaimed: true }, { ...raw, status: 'pass' }, { ...raw, message: 'private' }, { ...raw, format: 'other' }]) assert.equal(parseNativeChildFailureCode(JSON.stringify(altered)), null);
+  for (const invalid of [null, '{}', 'null', '[]', 'private Node trace\n' + errors[0], errors[0] + '\n' + errors[0], ' '.repeat(4097) + errors[0]]) assert.equal(parseNativeChildFailureCode(invalid), null);
+});
+
+test('internal child arbitrary/private error stays suppressed and cannot become public annotation or recognized child code', async () => {
+  for (const error of [new Error('private password'), new NativeOwnerEntryError('PRIVATE_CODE')]) {
+    const errors = [];
+    assert.equal(await runNativeOwnerCliForTests(['--native-child', 'production', '--expected-commit', commit], environment('production'), { internalChild: async (_options, context) => { context.stage = 'private'; throw error; } }, () => assert.fail('no success'), value => errors.push(value)), 1);
+    assert.equal(errors.length, 1); assert.equal(parseNativeChildFailureCode(errors[0]), null);
+    assert.equal(JSON.parse(errors[0]).stage, 'unknown'); assert.doesNotMatch(errors[0], /private|password|::error/);
+  }
+});
+
+test('failure artifact write errors still annotate safely and local failures never emit Actions commands', async () => {
+  const result = await diagnosticCli({ runChild: async () => ({ code: 1, diagnostics: { exitCode: 1, timedOut: false } }), saveArtifact: () => { throw new Error('private artifact path/password'); } });
+  assertPublicFailure(result, 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED', 'failure-artifact');
+  assert.equal(result.failure.childExit, 1);
+  const local = await diagnosticCli({}, { ...environment('production'), GITHUB_ACTIONS: 'false' });
+  assert.equal(local.status, 1); assert.equal(local.errors.length, 1); assert.equal(local.failure.code, 'REVIEWED_DEV_CI_EVENT_REQUIRED');
+  assert.doesNotMatch(local.errors[0], /::error/);
+});
+
+test('synthetic CLI success emits only validated success and never a failure annotation', async () => {
+  const result = await diagnosticCli();
+  assert.equal(result.status, 0); assert.deepEqual(result.errors, []); assert.equal(result.output.length, 1);
+  assert.equal(JSON.parse(result.output[0]).receiptValid, true);
+  assert.equal(result.calls.filter(value => value?.output).length, 1);
+  assert.doesNotMatch(result.output[0], /::error|childCode|requestedSha|verifiedSourceSha/);
 });

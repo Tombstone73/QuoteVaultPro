@@ -74,6 +74,75 @@ const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const pair = value => Array.isArray(value) && value.length === 2 && value.every(pid => Number.isSafeInteger(pid) && pid > 0 && pid <= 2147483647) && value[0] !== value[1];
 const inside = (parent, file) => { const relative = path.relative(parent, file); return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative); };
 
+// Public diagnostics are closed vocabularies, not error messages or pattern-matched codes.
+const failureCodes = new Set([
+  'INVALID_ARGUMENTS', 'DUPLICATE_ARGUMENT', 'CLOSED_LANE_AND_EXACT_COMMIT_REQUIRED',
+  'NATIVE_OPT_IN_REQUIRED', 'REVIEWED_DEV_CI_EVENT_REQUIRED', 'EXPLICIT_MANUAL_NATIVE_OPT_IN_REQUIRED',
+  'GITHUB_SHA_MISMATCH', 'DEV_PUSH_AFTER_SHA_MISMATCH', 'EXPECTED_COMMIT_ENV_MISMATCH',
+  'ALTERNATE_DATABASE_ENVIRONMENT_FORBIDDEN', 'TEST_DATABASE_URL_REQUIRED', 'INVALID_TEST_DATABASE_URL',
+  'ONLY_LITERAL_LOOPBACK_CI_POSTGRES_ALLOWED', 'INVALID_TEST_DATABASE_NAME', 'EXACT_LANE_DATABASE_REQUIRED',
+  'EXACT_PRODUCTION_TARGET_APPROVAL_REQUIRED', 'CI_RUN_METADATA_REQUIRED', 'DATABASE_GUARD_RESULT_MISMATCH',
+  'EXISTING_DATABASE_GUARD_REJECTED', 'SOURCE_PREFLIGHT_UNAVAILABLE', 'EXACT_CLEAN_SOURCE_REQUIRED',
+  'REVIEWED_OWNER_COVERAGE_PENDING', 'INVALID_REVIEWED_CASE_CONTRACT', 'FIXED_OWNER_COUNT_CONTRACT_REQUIRED',
+  'EXACT_NATIVE_HOOK_FILE_REQUIRED', 'NATIVE_HOOK_DEPENDENCY_HASH_MISMATCH',
+  'NATIVE_HOOK_METADATA_OR_REVIEWED_HASH_MISMATCH', 'NATIVE_SUITE_HASH_MISMATCH',
+  'NATIVE_PROVIDER_OR_NETWORK_IO_FORBIDDEN', 'EXACT_PRODUCTION_CONTRACT_REQUIRED',
+  'PRODUCTION_RECEIPT_IDENTITY_MISMATCH', 'PRODUCTION_RECEIPT_SOURCE_MISMATCH',
+  'PRODUCTION_VERSION_HASH_OR_RUNTIME_MISMATCH', 'EXACT_ORDERED_PRODUCTION_CASES_REQUIRED',
+  'ACTUAL_PRODUCTION_CONTENDER_PIDS_REQUIRED', 'PRODUCTION_NAMESPACE_MISMATCH', 'FIXED_ORDERED_MANIFEST_MISMATCH',
+  'FIXED_PRODUCTION_MEASUREMENTS_OR_CLEANUP_MISMATCH', 'PER_CASE_EXECUTING_PIDS_REQUIRED',
+  'ACTUAL_PRODUCTION_CONTENDERS_AND_WAITS_REQUIRED', 'ACTUAL_LOCK_WAIT_REQUIRED',
+  'NONCONTENTION_CASE_MUST_NOT_INVENT_CONTENDERS', 'EXACT_CASE_NAMESPACE_SET_REQUIRED',
+  'ACTUAL_NAMESPACE_REMOVAL_REQUIRED', 'EXACT_PRODUCTION_NAMESPACE_UNION_REQUIRED',
+  'CLOSED_RECEIPT_PROFILE_REQUIRED', 'TEAM_COVERAGE_NOT_APPROVED', 'NATIVE_OUTPUT_LIMIT',
+  'EXACTLY_ONE_NATIVE_RECEIPT_REQUIRED', 'RECEIPT_LANE_GATE_OR_RUNNER_MISMATCH',
+  'EXACT_PASSED_FAILED_SKIPPED_PENDING_COUNTS_REQUIRED', 'FAILED_SKIPPED_OR_PENDING_NATIVE_CASES',
+  'OWNER_RECEIPT_EXACT_CLEAN_SOURCE_REQUIRED', 'EXACT_NAMED_CASE_RESULTS_REQUIRED', 'EXACT_REVIEWED_CASE_SET_REQUIRED',
+  'PER_CASE_PASS_OWNER_PIDS_AND_COUNTS_REQUIRED', 'FIXED_PER_CASE_OWNER_COUNTS_MISMATCH',
+  'TEAM_RECEIPT_IDENTITY_SOURCE_OR_CLEANUP_MISMATCH', 'ACTUAL_TEAM_NAMESPACE_REQUIRED', 'ACTUAL_POSTGRES16_OR_LATER_REQUIRED',
+  'NORMAL_CI_OUTPUT_PATH_REQUIRED', 'SAFE_ARTIFACT_ID_REQUIRED', 'SAFE_ARTIFACT_DIRECTORY_REQUIRED',
+  'PREEXISTING_ARTIFACT_ENTRY_FORBIDDEN', 'CURRENT_CASE_COVERAGE_NOT_ADJUDICATED',
+  'OWNED_TREE_CLEANUP_FAILED_ROOT_FALLBACK_NOT_TREE_PROOF', 'NATIVE_CHILD_FAILED_OR_TIMED_OUT',
+  'POSTEXECUTION_EXACT_CLEAN_SOURCE_REQUIRED', 'INTERNAL_CHILD_MARKER_REQUIRED', 'NATIVE_CHILD_DEADLINE',
+  'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED',
+]);
+const failureStages = new Set(['unknown', 'arguments', 'environment', 'guards', 'source', 'coverage', 'hooks', 'output-path', 'child', 'post-source', 'post-hooks', 'receipt', 'artifact', 'outputs', 'failure-artifact', 'child-marker', 'network-policy', 'producer']);
+const failureSignals = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGHUP', 'SIGQUIT', 'SIGPIPE']);
+const failureContexts = new WeakMap();
+function safeFailureCode(error) {
+  try {
+    const code = error instanceof NativeOwnerEntryError ? Object.getOwnPropertyDescriptor(error, 'code')?.value : null;
+    if (failureCodes.has(code)) return code;
+  } catch {}
+  return 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED';
+}
+function failureDiagnostic(error, context = {}) {
+  const child = context.child;
+  return {
+    status: 'error', receiptValid: false, coverageAdjudicated: false, allNativeProofClaimed: false,
+    code: safeFailureCode(error), stage: failureStages.has(context.stage) ? context.stage : 'unknown',
+    requestedSha: sha(context.requestedSha) ? context.requestedSha : null,
+    verifiedSourceSha: sha(context.verifiedSourceSha) ? context.verifiedSourceSha : null,
+    childExit: Number.isInteger(child?.exitCode) && child.exitCode >= 0 && child.exitCode <= 255 ? child.exitCode : null,
+    childSignal: failureSignals.has(child?.signal) ? child.signal : null,
+    childTimedOut: typeof child?.timedOut === 'boolean' ? child.timedOut : null,
+    childCode: failureCodes.has(child?.failureCode) && child.failureCode !== 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? child.failureCode : null,
+  };
+}
+export function nativeFailureForTests(error) { return failureDiagnostic(error, failureContexts.get(error)); }
+function childFailureProtocol(error, context) {
+  const { status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage } = failureDiagnostic(error, context);
+  return JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage });
+}
+export function parseNativeChildFailureCode(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(text) > 4096) return null;
+  try {
+    const raw = JSON.parse(text);
+    if (!raw || !same(Object.keys(raw).sort(), ['allNativeProofClaimed', 'code', 'coverageAdjudicated', 'format', 'receiptValid', 'stage', 'status']) || raw.format !== 'NATIVE_OWNER_CHILD_FAILURE_V1' || raw.status !== 'error' || raw.receiptValid !== false || raw.coverageAdjudicated !== false || raw.allNativeProofClaimed !== false || !failureStages.has(raw.stage)) return null;
+    return failureCodes.has(raw.code) && raw.code !== 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? raw.code : null;
+  } catch { return null; }
+}
+
 export function parseNativeArguments(argv, internal = false) {
   const result = {};
   const allowed = internal ? ['--native-child', '--expected-commit'] : ['--lane', '--expected-commit'];
@@ -280,7 +349,8 @@ export function stopWindowsOwnedTreeForTests(child, env, spawnKiller) { return s
 function runOwnedProcess(args, env, timeoutMs, signals = process, onOutput = null) {
   return new Promise(resolve => {
     const child = spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
-    let stdout = '', stdoutBytes = 0, stderrBytes = 0, timedOut = false, limited = false, spawnFailed = false, interrupted = false, cleanupBoundedOut = false;
+    let stdout = '', stderrProtocol = '', stdoutBytes = 0, stderrBytes = 0, timedOut = false, limited = false, spawnFailed = false, interrupted = false, cleanupBoundedOut = false;
+    let childExit = null, childSignal = null;
     let settled = false, closed = false, exitCode = 1, cleanup, cleanupCap, drainCap;
     const treeDiagnostics = { treeCleanupFailed: false, treeCleanupFailureCode: null, rootFallbackAttempted: false, rootFallbackFailed: false };
     const finish = () => {
@@ -288,7 +358,7 @@ function runOwnedProcess(args, env, timeoutMs, signals = process, onOutput = nul
       clearTimeout(timer); clearTimeout(cleanupCap); clearTimeout(drainCap);
       signals.removeListener('SIGINT', interrupt); signals.removeListener('SIGTERM', interrupt);
       child.stdout?.destroy(); child.stderr?.destroy(); if (!closed) child.unref();
-      resolve({ code: timedOut || interrupted || limited || spawnFailed || cleanupBoundedOut || treeDiagnostics.treeCleanupFailed ? 1 : exitCode, stdout, diagnostics: { stdoutBytes, stderrBytes, timedOut, interrupted, outputLimited: limited, spawnFailed, cleanupBoundedOut, ...treeDiagnostics } });
+      resolve({ code: timedOut || interrupted || limited || spawnFailed || cleanupBoundedOut || treeDiagnostics.treeCleanupFailed ? 1 : exitCode, stdout, diagnostics: { stdoutBytes, stderrBytes, timedOut, interrupted, outputLimited: limited, spawnFailed, cleanupBoundedOut, ...treeDiagnostics, exitCode: childExit, signal: childSignal, failureCode: parseNativeChildFailureCode(stderrProtocol) } });
     };
     const stop = () => {
       if (cleanup) return;
@@ -314,9 +384,9 @@ function runOwnedProcess(args, env, timeoutMs, signals = process, onOutput = nul
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
     signals.on('SIGINT', interrupt); signals.on('SIGTERM', interrupt);
     child.stdout.on('data', chunk => { stdoutBytes += chunk.length; if (stdoutBytes <= 1024 * 1024) { stdout += chunk; onOutput?.(stdout); } else { limited = true; stop(); } });
-    child.stderr.on('data', chunk => { stderrBytes += chunk.length; if (stderrBytes > 1024 * 1024) { limited = true; stop(); } });
+    child.stderr.on('data', chunk => { stderrBytes += chunk.length; stderrProtocol = stderrBytes <= 4096 ? stderrProtocol + chunk : ''; if (stderrBytes > 1024 * 1024) { limited = true; stop(); } });
     child.on('error', () => { spawnFailed = true; stop(); });
-    child.on('close', code => { closed = true; exitCode = code ?? 1; if (!cleanup) finish(); });
+    child.on('close', (code, signal) => { closed = true; exitCode = code ?? 1; childExit = Number.isInteger(code) && code >= 0 && code <= 255 ? code : null; childSignal = failureSignals.has(signal) ? signal : null; if (!cleanup) finish(); });
   });
 }
 function runChild(args, env, timeoutMs) { return runOwnedProcess(args, env, timeoutMs); }
@@ -356,65 +426,109 @@ function appendOutputs(file, receipt) {
   fs.appendFileSync(file, Object.entries(fields).map(([key, value]) => `${key}=${value}`).join('\n') + '\n');
 }
 const dependencies = { loadGuards: loadActualGuards, readSource, readCoverage: profile => profile.coverageContract, verifyHooks, runChild, githubOutputFile, saveArtifact, appendOutputs };
-async function executeController(options, sourceEnv, services) {
+async function executeController(options, sourceEnv, services, context) {
+  context.stage = 'environment';
   const prepared = prepareNativeEnvironment(options, sourceEnv);
+  context.stage = 'guards';
   guardPrepared(prepared, services.loadGuards());
+  context.stage = 'source';
   const source = services.readSource(prepared.env);
   check(source.commit === prepared.expectedCommit && source.clean === true, 'EXACT_CLEAN_SOURCE_REQUIRED');
+  context.verifiedSourceSha = source.commit;
+  context.stage = 'coverage';
   const coverage = requireCoverageContract(services.readCoverage(prepared.profile));
   check(prepared.lane !== 'production' || coverage === productionCoverage, 'EXACT_PRODUCTION_CONTRACT_REQUIRED');
   check(prepared.lane !== 'team' || coverage !== productionCoverage, 'TEAM_COVERAGE_NOT_APPROVED');
-  services.verifyHooks(prepared.profile, coverage);
+  context.stage = 'hooks'; services.verifyHooks(prepared.profile, coverage);
+  context.stage = 'output-path';
   const outputFile = services.githubOutputFile(sourceEnv);
   const env = { ...prepared.env, V2_NATIVE_OWNER_CHILD: '1' };
   let result, cleanupFailureCode;
   try {
+    context.stage = 'child';
     const child = await services.runChild(['--import', 'tsx', entry, '--native-child', prepared.lane, '--expected-commit', prepared.expectedCommit], env, prepared.profile.timeoutMs);
+    context.child = child.diagnostics;
     if (child.diagnostics.treeCleanupFailed) {
       cleanupFailureCode = ['WINDOWS_TREE_KILL_SPAWN_FAILED', 'WINDOWS_TREE_KILL_SIGNALED', 'WINDOWS_TREE_KILL_EXIT_FAILED', 'WINDOWS_TREE_KILL_TIMEOUT'].includes(child.diagnostics.treeCleanupFailureCode) ? child.diagnostics.treeCleanupFailureCode : 'OWNED_TREE_CLEANUP_FAILED';
       throw new NativeOwnerEntryError('OWNED_TREE_CLEANUP_FAILED_ROOT_FALLBACK_NOT_TREE_PROOF');
     }
     check(child.code === 0 && !child.diagnostics.timedOut && !child.diagnostics.interrupted && !child.diagnostics.outputLimited && !child.diagnostics.spawnFailed && !child.diagnostics.cleanupBoundedOut && !child.diagnostics.treeCleanupFailed, 'NATIVE_CHILD_FAILED_OR_TIMED_OUT');
+    context.stage = 'post-source';
     const after = services.readSource(prepared.env);
     check(after.clean === true && after.commit === source.commit && after.commit === prepared.expectedCommit, 'POSTEXECUTION_EXACT_CLEAN_SOURCE_REQUIRED');
-    services.verifyHooks(prepared.profile, coverage);
+    context.stage = 'post-hooks'; services.verifyHooks(prepared.profile, coverage);
+    context.stage = 'receipt';
     result = { ...validateReceipt(child.stdout, prepared, after, coverage), diagnostics: child.diagnostics };
+    context.stage = 'artifact';
     services.saveArtifact(prepared.lane, result);
+    context.stage = 'outputs';
     services.appendOutputs(outputFile, result);
     return result;
   } catch (error) {
-    services.saveArtifact(prepared.lane, { status: 'error', receiptValid: false, coverageAdjudicated: false, lane: prepared.lane, sha: source.commit, code: error instanceof NativeOwnerEntryError ? error.code : 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED', ...(cleanupFailureCode ? { treeCleanupFailed: true, treeCleanupFailureCode: cleanupFailureCode, rootFallbackIsNotFullTreeCleanup: true } : {}), allNativeProofClaimed: false });
-    throw error instanceof NativeOwnerEntryError ? error : new NativeOwnerEntryError('NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+    const failure = failureDiagnostic(error, context);
+    try { services.saveArtifact(prepared.lane, { ...failure, lane: prepared.lane, sha: source.commit, ...(cleanupFailureCode ? { treeCleanupFailed: true, treeCleanupFailureCode: cleanupFailureCode, rootFallbackIsNotFullTreeCleanup: true } : {}) }); }
+    catch (artifactError) { context.stage = 'failure-artifact'; throw artifactError; }
+    throw error;
   }
 }
-export function runNativeOwnerEntry(options, sourceEnv = process.env) { return executeController(options, sourceEnv, dependencies); }
+async function runController(options, sourceEnv, services) {
+  const context = { requestedSha: options?.expectedCommit };
+  try { return await executeController(options, sourceEnv, services, context); }
+  catch (error) {
+    const safe = new NativeOwnerEntryError(safeFailureCode(error));
+    failureContexts.set(safe, context); throw safe;
+  }
+}
+export function runNativeOwnerEntry(options, sourceEnv = process.env) { return runController(options, sourceEnv, dependencies); }
 // Explicit module-level DI for unit tests only. CLI has no test/bypass switch.
-export function runNativeOwnerEntryForTests(options, sourceEnv, overrides) { return executeController(options, sourceEnv, { ...dependencies, ...overrides }); }
+export function runNativeOwnerEntryForTests(options, sourceEnv, overrides) { return runController(options, sourceEnv, { ...dependencies, ...overrides }); }
 
-async function executeInternalChild(options) {
+async function executeInternalChild(options, context) {
+  context.stage = 'child-marker';
   check(process.env.V2_NATIVE_OWNER_CHILD === '1', 'INTERNAL_CHILD_MARKER_REQUIRED');
+  context.stage = 'environment';
   const prepared = prepareNativeEnvironment(options, process.env);
+  context.stage = 'guards';
   guardPrepared(prepared, loadActualGuards());
+  context.stage = 'source';
   const source = readSource(prepared.env);
   check(source.clean === true && source.commit === prepared.expectedCommit, 'EXACT_CLEAN_SOURCE_REQUIRED');
-  const coverage = requireCoverageContract(prepared.profile.coverageContract); verifyHooks(prepared.profile, coverage);
+  context.verifiedSourceSha = source.commit; context.stage = 'coverage';
+  const coverage = requireCoverageContract(prepared.profile.coverageContract);
+  context.stage = 'hooks'; verifyHooks(prepared.profile, coverage);
+  context.stage = 'network-policy';
   installNetworkPolicy(prepared.target, { net, tls, http, https, dgram, global: globalThis }); syncBuiltinESMExports();
   process.argv = [process.execPath, path.join(root, prepared.profile.suite), ...prepared.profile.args];
-  const deadline = setTimeout(() => { console.error(JSON.stringify({ status: 'error', receiptValid: false, code: 'NATIVE_CHILD_DEADLINE' })); process.exit(1); }, prepared.profile.timeoutMs);
+  const deadline = setTimeout(() => { console.error(childFailureProtocol(new NativeOwnerEntryError('NATIVE_CHILD_DEADLINE'), context)); process.exit(1); }, prepared.profile.timeoutMs);
   deadline.unref();
   try {
+    context.stage = 'producer';
     await import(pathToFileURL(process.argv[1]).href);
+    context.stage = 'post-source';
     const after = readSource(prepared.env);
-    check(after.clean === true && after.commit === source.commit, 'POSTEXECUTION_EXACT_CLEAN_SOURCE_REQUIRED'); verifyHooks(prepared.profile, coverage);
+    check(after.clean === true && after.commit === source.commit, 'POSTEXECUTION_EXACT_CLEAN_SOURCE_REQUIRED');
+    context.stage = 'post-hooks'; verifyHooks(prepared.profile, coverage);
   } finally { clearTimeout(deadline); }
 }
-export async function main(argv = process.argv.slice(2)) {
+async function executeCli(argv, sourceEnv, services, write, writeError) {
   const internal = argv[0] === '--native-child';
-  const options = parseNativeArguments(argv, internal);
-  if (internal) { await executeInternalChild(options); return; }
-  const result = await runNativeOwnerEntry(options);
-  console.log(JSON.stringify(result));
+  const context = { stage: 'arguments' };
+  try {
+    const options = parseNativeArguments(argv, internal); context.requestedSha = options.expectedCommit;
+    if (internal) { await services.internalChild(options, context); return 0; }
+    const result = await runController(options, sourceEnv, services);
+    write(JSON.stringify(result)); return 0;
+  } catch (error) {
+    const failureContext = failureContexts.get(error) ?? context;
+    if (internal) writeError(childFailureProtocol(error, failureContext));
+    else {
+      const json = JSON.stringify(failureDiagnostic(error, failureContext));
+      writeError(json);
+      if (sourceEnv.GITHUB_ACTIONS === 'true') writeError(`::error title=Native Owner Failure::${json}`);
+    }
+    return 1;
+  }
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === entry) main().catch(error => {
-  console.error(JSON.stringify({ status: 'error', receiptValid: false, coverageAdjudicated: false, code: error instanceof NativeOwnerEntryError ? error.code : 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' })); process.exitCode = 1;
-});
+export function main(argv = process.argv.slice(2)) { return executeCli(argv, process.env, { ...dependencies, internalChild: executeInternalChild }, value => console.log(value), value => console.error(value)); }
+export function runNativeOwnerCliForTests(argv, sourceEnv, overrides, write, writeError) { return executeCli(argv, sourceEnv, { ...dependencies, internalChild: executeInternalChild, ...overrides }, write, writeError); }
+if (process.argv[1] && path.resolve(process.argv[1]) === entry) main().then(code => { process.exitCode = code; });
