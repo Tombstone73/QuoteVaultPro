@@ -223,6 +223,108 @@ from `ses_ef2047187ffejNnBTKGU70Gc4D`; this accepts bounded diagnostics only,
 not native proof. No new final canonical/build receipt, commit or push is claimed.
 The ten retained L0s and all priorities are unchanged; **no row transitions**.
 
+### October 5 Actual Continuation Delivery: 17cd02c0
+
+Milestone `17cd02c00d9e3780b53ec77f8a90a80910face22` committed the independently
+reviewed four-file diagnostic/audit package with **PASS**. Its exact-clean
+`npm run v2:validate` passed **11/11** gates: 100 Jest suites / 1,232 tests,
+zero failed/pending, 299 selected core and 100 UI suites, 102 architecture and 13
+harness fixtures. Imports remain 81/81, SQL debt 189/169 and protected migration
+history 299 entries, unchanged. All **four sanitized production builds PASS**,
+including the backend packaging 299 migrations, highest idx304 / 0303.
+The full inert native-launcher fixture suite passed **46**, zero failed/skipped;
+these are synthetic/inert checks, **not native proof**.
+
+Delivery actually fast-forwarded `origin/dev` from a110 to exact17cd02c0 and
+reverified the remote. Observed MAIN d1fa remained unchanged by this campaign.
+Status: **Deployable but not yet live-validated**. Native CI for17cd has not yet
+been observed; prior a110 Production **RAN / FAILED** and Team **NOT RUN** are
+retained, not replaced with an invented receipt. Run creation remains disabled.
+
+Sales corrected replay and two fixture contracts now have independent bounded
+source **PASS**, reviewer `ses_ef1ffcdfdffegq5g2o6U3Ae7gN`; author final gates
+and coordinator integration remain pending. This is not final integrated Sales
+acceptance or a row closure. Auth coexistence/source holds and targeted action-
+manifest/provider-isolation blockers are unchanged. All ten L0s remain open with
+no row transitions. This appended audit update does not alter the original
+four-file commit bytes or claim new gates/builds/push beyond that milestone.
+
+At the first post-delivery observation, run `37378800610` was executing canonical
+validation for exact `17cd02c0`; conditional Production native had not started.
+Anonymous DEV version advertised exact `17cd02c0`, with health/readiness OK.
+This is deployment observation only, not authenticated workflow or native proof.
+
+### October 5 Dependent Sales Integration Checkpoint
+
+Reviewed dependent capture `bbc38081da3d379c5a1a29e3ec68fe36734c5b8d` contains
+32 Sales paths; the original five support dirty paths are preserved. Independent
+source PASS covers 37 SHA-256 entries (aggregate prefix `41a4a8`), including
+modern replay status and exact conversion/parity/email fixture corrections.
+Coordinator source is **32 paths staged, not committed**: 29 exact-byte copies
+and three shared API/server/classifier adaptations. Four explicit classifications
+were added with all 414 existing rows preserved. Imports81/81 and SQL189/169
+remain unchanged. Publication readiness0302 is already adopted; the0300-0303
+journal and299 protected history prefix are unchanged. No Auth0304 is adopted.
+
+Integrator focused checks PASS: 9 UI, 15 actual-App, 16 readiness plus five helper
+controls, core/UI types, boundaries and classification. Full parent-union gates
+are **currently running; no result claimed**. The source author's first9/11
+failures remain recorded; focused fixture fixes are accepted, final lane gate
+pending. Expected lane integrity failure from unjournaled0302 is resolved only
+by the parent's already-adopted journal, not by weakening or skipping that gate.
+
+Current primary status: **Sales source integrated, pending union acceptance**,
+not held business source. Auth coexistence/source remains held; other targeted
+external/native/live acceptance gaps and fixed policies remain unchanged. Ten
+L0s remain open, with no row transitions, integrated final acceptance, new
+commit/push or native proof inferred from this checkpoint.
+
+The terminal `17cd02c0` hosted run passed all eleven canonical gates and
+Payment79/79, but native job `111997107142` **RAN / FAILED**. The new safe
+annotation identifies `NATIVE_CHILD_FAILED_OR_TIMED_OUT`, stage `child`, exit1,
+timedOut=false, and no child-level code. Actual case count is **UNKNOWN**; no
+Production28 typed receipt or verified PID/wait/namespace-cleanup evidence exists.
+Public logs require sign-in. No speculative source repair, native PASS or Run
+enablement follows; Team remains NOT RUN and source/coexistence-blocked.
+
+### October 5 Final Source And Blocker Disposition
+
+The corrected Sales union has independent **PASS** from
+`ses_ef2047187ffejNnBTKGU70Gc4D`: 29 owned files exactly match the reviewed
+capture, and the three shared API/server/classifier adaptations preserve all
+earlier Accounting/Shipping/Production/Billing/Artwork behavior and five-owner
+readiness. Independent Production23, physical8, PaymentUI9 and SalesApp15 reruns
+passed. No new architecture exemption or baseline retirement was applicable.
+
+The stable precommit union passed **all eleven canonical gates**, 100 Jest
+suites / **1,246 tests**, zero failed or pending, **301 selected core suites**
+and **102 UI suites**. Classification has 418 rows / 414 executable suites;
+407 deterministic entries include three declared non-executable assets.
+Architecture102, runner-safety13, imports81/81, SQL189/169 and the protected
+299-entry migration stream passed. All four production-mode builds passed,
+including backend packaging through idx304 / 0303. Selected suites must not be
+confused with process invocations: Jest runs its 100 selected suites together.
+
+The final Sales lane receipt is 10/11, not 11/11: all 99 Jest suites / 1,135
+tests and 291 selected core / 100 UI suites pass, while its unapplied 0302 lacks
+a lane journal entry. The coordinator's already-reviewed ordered 0300-0303 union
+resolves that integrity gate without altering history or bypassing validation.
+The original failed lane receipt remains preserved. Exact-clean source milestone
+validation and DEV delivery are subsequent gates, not inferred from this checkpoint.
+
+| Disposition | Rows | Remaining Acceptance |
+| --- | --- | --- |
+| Source/coexistence blocked | ACCESS-05 | Frozen shared QA/V1 prior-lock/DML callers and ancestor cascades prevent safe adoption; no0304, Team coverage NULL/OFF, native20 NOT RUN. |
+| Native failure and conditional enablement blocked | OPS-12 | Exact17cd native child exited1 without timeout; no typed28-case proof, case count unknown, public child details unavailable. Creation remains disabled. |
+| Guarded/external/targeted DEV evidence blocked | SALE-08, SALE-09, ACCESS-12, OPS-09, FUL-11, FUL-26, BILL-16, PAY-22 | Guarded conversion/catalog/provider proof or exact approved disposable DEV actions missing; financial provider suppression remains unverified. |
+
+Starting L0 **10**, ending L0 **10**, rows closed **0**. Verdict **C: SOME L0
+REMAIN WITH PRECISE BLOCKERS**. PGlite/local SQL is not native multi-client proof.
+The next campaign is remaining-L0 acceptance only: resolve the frozen-caller
+coexistence problem, diagnose/prove native Production before reviewed enablement,
+then run the guarded and specifically approved DEV proofs. No L1, UI polish or
+Storefront. All original worktrees/candidates and unrelated root changes remain.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

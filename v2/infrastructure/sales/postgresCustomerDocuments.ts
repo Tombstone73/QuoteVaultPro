@@ -7,6 +7,7 @@ import { readTenantBranding } from "../documents/postgresTenantBranding.js";
 import type { TenantBranding } from "../documents/ownerPdfRenderer.js";
 import type { DocumentOrganizationIdentity } from "../../src/modules/organization/businessProfile.js";
 import { parsePreparedQuoteDeliveryEvidence } from "./preparedQuoteDeliveryEvidence.js";
+import { publicationEvidenceStatus, readPublishedQuoteCheckpoints } from "./postgresQuotePublication.js";
 
 type HeaderRow = { id: string; display_number: string; currency: string; purchase_order_number: string | null; requested_due_date: Date | null; commercial_notes: string | null; customer_name: string | null; customer_email: string | null; contact_id: string | null; contact_exists: string | null; contact_name: string | null; contact_email: string | null; requested_fulfillment_method: string | null; selling_adjustment_cents: string; selling_adjustment_reason: string | null; commercial_charge: unknown; tax_composition: unknown; delivery_state?: "not_sent" | "sent"; };
 type LineRow = { description: string; quantity: number; selling_unit_cents: string; selling_line_cents: string; resolved_configuration: unknown };
@@ -49,14 +50,18 @@ export class PostgresCustomerDocumentService {
     return { document: this.current("quote", header, branding, lines), recipientEmail: text(header.contact_email) };
   }
   private async quoteFrom(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId): Promise<CustomerSalesDocument> {
-    const [header, branding, sent, unresolved] = await Promise.all([
+    const sent = await readPublishedQuoteCheckpoints(queryable, organizationId, quoteId);
+    if (sent[0]) {
+      if (!publicationEvidenceStatus(sent[0])) throw new V2ApplicationError("CONFLICT", "Quote publication evidence is incomplete.");
+      return this.fromCheckpoint(queryable, organizationId, quoteId, sent[0]);
+    }
+    const unresolved = await queryable.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain','succeeded') LIMIT 1", [organizationId, quoteId]);
+    if (unresolved.rows[0]) throw new V2ApplicationError("CONFLICT", "Quote delivery has no qualifying committed publication receipt.");
+    const [header, branding] = await Promise.all([
       this.quoteHeader(queryable, organizationId, quoteId), this.branding(queryable, organizationId),
-      queryable.query<CheckpointRow>("SELECT payload,occurred_at FROM v2_sales_quote_checkpoints WHERE organization_id=$1 AND quote_document_id=$2 AND checkpoint_kind='quote_sent' ORDER BY checkpoint_sequence DESC LIMIT 1", [organizationId, quoteId]),
-      queryable.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain') LIMIT 1", [organizationId, quoteId]),
     ]);
     if (!header) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
-    if (sent.rows[0]) return this.fromCheckpoint(queryable, organizationId, quoteId, sent.rows[0]);
-    if (header.delivery_state === "sent" || unresolved.rows[0])
+    if (header.delivery_state === "sent")
       throw new V2ApplicationError("CONFLICT", "This Quote has unresolved delivery evidence and cannot be rendered as a known sent document.");
     const lines = await this.lines(queryable, organizationId, quoteId);
     return this.current("quote", header, branding, lines);
@@ -68,7 +73,22 @@ export class PostgresCustomerDocumentService {
     return this.current("order", header, branding, lines);
   }
 
-  async quotePdf(organizationId: OrganizationId, quoteId: QuoteId): Promise<Uint8Array> { return renderCustomerSalesPdf(await this.quote(organizationId, quoteId)); }
+  async quotePdf(organizationId: OrganizationId, quoteId: QuoteId): Promise<Uint8Array> {
+    const latest = (await readPublishedQuoteCheckpoints(this.pool, organizationId, quoteId))[0];
+    return latest ? this.quoteCheckpointPdf(organizationId, quoteId, latest.id) : renderCustomerSalesPdf(await this.quote(organizationId, quoteId));
+  }
+  async quoteCheckpointPdf(organizationId: OrganizationId, quoteId: QuoteId, checkpointId: string): Promise<Uint8Array> {
+    const checkpoint = (await readPublishedQuoteCheckpoints(this.pool, organizationId, quoteId)).find(row => row.id === checkpointId);
+    if (!checkpoint || !publicationEvidenceStatus(checkpoint)) throw new V2ApplicationError("NOT_FOUND", "Committed Quote publication was not found.");
+    const prepared = parsePreparedQuoteDeliveryEvidence(checkpoint.prepared_evidence_json);
+    if (prepared?.documentPdfBase64) return Buffer.from(prepared.documentPdfBase64, "base64");
+    return renderCustomerSalesPdf(await this.fromCheckpoint(this.pool, organizationId, quoteId, checkpoint));
+  }
+  async quoteCheckpointPdfEvidence(organizationId: OrganizationId, quoteId: QuoteId, checkpointId: string): Promise<"archived-pdf" | "checkpoint-preview"> {
+    const checkpoint = (await readPublishedQuoteCheckpoints(this.pool, organizationId, quoteId)).find(row => row.id === checkpointId);
+    if (!checkpoint || !publicationEvidenceStatus(checkpoint)) throw new V2ApplicationError("NOT_FOUND", "Committed Quote publication was not found.");
+    return parsePreparedQuoteDeliveryEvidence(checkpoint.prepared_evidence_json)?.documentPdfBase64 ? "archived-pdf" : "checkpoint-preview";
+  }
   async orderPdf(organizationId: OrganizationId, orderId: OrderId): Promise<Uint8Array> { return renderCustomerSalesPdf(await this.order(organizationId, orderId)); }
   /** Quote delivery intentionally does not fall back to a different Customer
    * address. A Quote Contact is the explicit recipient selection. */
@@ -126,15 +146,41 @@ export class PostgresCustomerDocumentService {
   }
   private async fromCheckpoint(queryable: Pool | PoolClient, organizationId: OrganizationId, quoteId: QuoteId, checkpoint: CheckpointRow): Promise<CustomerSalesDocument> {
     const payload = record(checkpoint.payload); const commercial = record(payload.commercial); const presentation = record(payload.customerPresentation); const sentEvidence = record(payload.sentEvidence); const tax = record(commercial.taxComposition); const adjustment = record(commercial.sellingAdjustment); const charge = record(commercial.commercialCharge);
+    if (payload.kind !== "quote_sent" || payload.organizationId !== organizationId || record(payload.sourceDocument).quoteId !== quoteId)
+      throw new V2ApplicationError("CONFLICT", "Quote publication evidence does not match its organization and document.");
     const attemptId = text(sentEvidence.deliveryAttemptId);
     const attempt = attemptId ? await queryable.query<DeliveryAttemptEvidenceRow>("SELECT id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state,quote_checkpoint_id,provider_message_id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND id=$2", [organizationId, attemptId]) : { rows: [] as DeliveryAttemptEvidenceRow[] };
     const prepared = attempt.rows[0] && parsePreparedQuoteDeliveryEvidence(attempt.rows[0].prepared_evidence_json);
     const organization = organizationIdentity(payload.organizationPresentation);
+    if (!attempt.rows[0] || attempt.rows[0].delivery_state !== "succeeded" || attempt.rows[0].quote_document_id !== quoteId
+      || attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId))
+      throw new V2ApplicationError("CONFLICT", "Quote document is not bound to a committed successful publication.");
+    if (!prepared && attempt.rows[0].prepared_evidence_json == null) {
+      // Historical readability is strictly frozen semantics, not a reconstructed
+      // original attachment, recipient, current CRM identity, or current branding.
+      if (!organization || !text(presentation.customerDisplayName) || !Array.isArray(commercial.lines)
+        || !text(commercial.currency) || !text(sentEvidence.documentNumber) || !text(sentEvidence.documentDate))
+        throw new V2ApplicationError("CONFLICT", "Historical Quote evidence is incomplete; resend the current draft to establish modern evidence.");
+      if (commercial.lines.some(entry => { const line = record(entry); return !text(line.description) || !Number.isSafeInteger(line.quantity) || Number(line.quantity) <= 0
+        || !Number.isSafeInteger(record(record(line.sellingPriceDecision).resultingUnitAmount).cents) || !Number.isSafeInteger(record(line.sellingLineAmount).cents); })
+        || tax.status === "resolved" && !Number.isSafeInteger(tax.finalTotalCents))
+        throw new V2ApplicationError("CONFLICT", "Historical Quote commercial amounts are incomplete.");
+      const lines = commercial.lines.map(entry => { const line = record(entry); return { description: text(line.description) ?? "Line item", quantity: integer(line.quantity), configuration: salesConfigurationPresentation(record(line.resolvedConfiguration)), unitCents: integer(record(record(line.sellingPriceDecision).resultingUnitAmount).cents), totalCents: integer(record(line.sellingLineAmount).cents) }; });
+      if (tax.status === "unresolved") throw new V2ApplicationError("CONFLICT", "Historical Quote tax evidence is unresolved.");
+      const lineSubtotalCents = lines.reduce((sum, line) => sum + line.totalCents, 0), adjustmentCents = integer(adjustment.cents), chargeCents = integer(charge.cents), taxCents = integer(tax.taxCents);
+      return { kind: "quote", number: text(sentEvidence.documentNumber)!, issuedAt: text(sentEvidence.documentDate)!, organization,
+        customer: { displayName: text(presentation.customerDisplayName)!, ...(text(presentation.contactDisplayName) ? { contactName: text(presentation.contactDisplayName) } : {}), ...(text(presentation.email) ? { email: text(presentation.email) } : {}), ...(text(commercial.purchaseOrderNumber) ? { purchaseOrderNumber: text(commercial.purchaseOrderNumber) } : {}), ...(text(commercial.requestedDueDate) ? { requestedDueDate: text(commercial.requestedDueDate) } : {}) },
+        lines, currency: text(commercial.currency)!, lineSubtotalCents, adjustmentCents, chargeCents, taxCents,
+        totalCents: tax.status === "resolved" ? integer(tax.finalTotalCents) : lineSubtotalCents + adjustmentCents + chargeCents,
+        ...(text(adjustment.reason) ? { adjustmentReason: text(adjustment.reason) } : {}),
+        ...(text(charge.description) || text(charge.kind) ? { chargeLabel: text(charge.description) ?? text(charge.kind) } : {}),
+        ...(text(record(commercial.requestedFulfillment).method) ? { fulfillment: text(record(commercial.requestedFulfillment).method) } : {}),
+        ...(text(record(commercial.terms).commercialNotes) ? { notes: text(record(commercial.terms).commercialNotes) } : {}) };
+    }
     if (!attempt.rows[0] || !prepared || !organization || !attempt.rows[0].operation_request_id
       || attempt.rows[0].quote_document_id !== quoteId || attempt.rows[0].id !== attemptId
-      || attempt.rows[0].delivery_state !== "succeeded" && attempt.rows[0].delivery_state !== "uncertain"
-      || attempt.rows[0].quote_checkpoint_id && attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId)
-      || attempt.rows[0].delivery_state === "succeeded" && attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId)
+      || attempt.rows[0].delivery_state !== "succeeded"
+      || attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId)
       || attempt.rows[0].provider_message_id !== text(sentEvidence.providerMessageId)
       || attempt.rows[0].recipient_email !== text(sentEvidence.recipientEmail)
       || attempt.rows[0].document_sha256 !== text(sentEvidence.documentSha256)

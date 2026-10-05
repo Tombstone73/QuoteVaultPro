@@ -2,13 +2,13 @@ import type { Pool } from "pg";
 import type { PortalPrincipal } from "../../src/authorization/principals.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { PortalCommercialRead, PortalOrderDetail, PortalOrderSummary, PortalOrdersDashboard, PortalPage, PortalQuoteDetail, PortalQuoteSummary } from "../../src/modules/portal/commercialReads.js";
+import type { QuotePublicationReadPort } from "../../src/modules/sales/contracts.js";
 
 const pageSize = 30;
 const money = (cents: string | number, currency: string) => ({ cents: Number(cents), currency });
 const commercialStatus = (value: string): "open" | "completed" | "cancelled" => value === "completed" ? "completed" : value === "cancelled" ? "cancelled" : "open";
 type Cursor = Readonly<{ updatedAt: string; id: string }>;
 type OrderRow = Readonly<{ id: string; display_number: string; purchase_order_number: string | null; created_at: Date; updated_at: Date; requested_due_date: string | null; commercial_state: string; currency: string; total_cents: string; balance_cents: string; line_count: number; fulfilled_count: number }>;
-type QuoteRow = Readonly<{ id: string; display_number: string; created_at: Date; updated_at: Date; requested_due_date: string | null; currency: string; acceptance_state: string | null; delivery_state: string | null; order_document_id: string | null; total_cents: string }>;
 
 const encodeCursor = (value: Cursor): string => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const decodeCursor = (value?: string): Cursor | undefined => {
@@ -22,13 +22,11 @@ const decodeCursor = (value?: string): Cursor | undefined => {
   }
 };
 const orderSummary = (row: OrderRow): PortalOrderSummary => ({ orderId: row.id, number: row.display_number, ...(row.purchase_order_number ? { purchaseOrderNumber: row.purchase_order_number } : {}), createdAt: row.created_at.toISOString(), ...(row.requested_due_date ? { requestedDueDate: String(row.requested_due_date) } : {}), status: commercialStatus(row.commercial_state), total: money(row.total_cents, row.currency), payment: Number(row.balance_cents) > 0 ? "open_balance" : "settled", fulfillment: Number(row.line_count) === 0 ? "not_required" : Number(row.fulfilled_count) === 0 ? "required" : Number(row.fulfilled_count) < Number(row.line_count) ? "partial" : "fulfilled" });
-const quoteSummary = (row: QuoteRow): PortalQuoteSummary => ({ quoteId: row.id, number: row.display_number, createdAt: row.created_at.toISOString(), ...(row.requested_due_date ? { requestedDueDate: String(row.requested_due_date) } : {}), status: row.order_document_id ? "converted" : row.acceptance_state ?? row.delivery_state ?? "pending", total: money(row.total_cents, row.currency), ...(row.order_document_id ? { convertedOrderId: row.order_document_id } : {}) });
 const orderProjection = `SELECT d.id,d.display_number,d.purchase_order_number,d.created_at,d.updated_at,d.requested_due_date,o.commercial_state,d.currency,COALESCE((SELECT sum(l.selling_line_cents) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id),0)::text total_cents,COALESCE((SELECT sum(i.total_cents-COALESCE((SELECT sum(a.amount_cents) FROM v2_billing_payment_allocations a WHERE a.organization_id=i.organization_id AND a.invoice_id=i.id),0)+COALESCE((SELECT sum(a.amount_cents) FROM v2_billing_refund_allocation_evidence a WHERE a.organization_id=i.organization_id AND a.invoice_id=i.id),0)) FROM v2_billing_invoices i WHERE i.organization_id=d.organization_id AND i.sales_order_document_id=d.id AND i.invoice_state<>'void'),0)::text balance_cents,(SELECT count(*) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id)::int line_count,(SELECT count(*) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id AND COALESCE((SELECT sum(h.quantity) FROM v2_fulfillment_handoff_lines h WHERE h.organization_id=l.organization_id AND h.order_line_id=l.id),0)>=l.quantity)::int fulfilled_count FROM v2_sales_documents d JOIN v2_sales_order_details o ON o.organization_id=d.organization_id AND o.document_id=d.id`;
-const quoteProjection = `SELECT d.id,d.display_number,d.created_at,d.updated_at,d.requested_due_date,d.currency,q.acceptance_state,q.delivery_state,conversion.order_document_id,COALESCE((SELECT sum(l.selling_line_cents) FROM v2_sales_document_lines l WHERE l.organization_id=d.organization_id AND l.document_id=d.id),0)::text total_cents FROM v2_sales_documents d JOIN v2_sales_quote_details q ON q.organization_id=d.organization_id AND q.document_id=d.id LEFT JOIN v2_sales_quote_conversions conversion ON conversion.organization_id=d.organization_id AND conversion.quote_document_id=d.id`;
 
 /** Queries bind their Customer predicate exclusively from the portal principal. */
 export class PostgresPortalCommercialRead implements PortalCommercialRead {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, private readonly publications?: QuotePublicationReadPort) {}
   async listOrders(principal: PortalPrincipal, cursor?: string): Promise<PortalPage<PortalOrderSummary>> {
     const after=decodeCursor(cursor), result=await this.pool.query<OrderRow>(`${orderProjection} WHERE d.organization_id=$1 AND d.customer_id=$2 AND d.document_kind='order' AND ($3::timestamptz IS NULL OR (d.updated_at,d.id)<($3::timestamptz,$4::text)) ORDER BY d.updated_at DESC,d.id DESC LIMIT $5`,[principal.organizationId,principal.customerId,after?.updatedAt??null,after?.id??null,pageSize+1]), rows=result.rows.slice(0,pageSize),last=rows.at(-1);
     return {items:rows.map(orderSummary),...(result.rows.length>pageSize&&last?{nextCursor:encodeCursor({updatedAt:last.updated_at.toISOString(),id:last.id})}:{})};
@@ -43,10 +41,15 @@ export class PostgresPortalCommercialRead implements PortalCommercialRead {
     return {...orderSummary(row),lines:lines.rows.map((line:any)=>({lineId:line.id,description:line.description,quantity:Number(line.quantity),fulfilledQuantity:Number(line.fulfilled_quantity),remainingFulfillmentQuantity:Math.max(0,Number(line.quantity)-Number(line.fulfilled_quantity)),unitPrice:money(line.selling_unit_cents,row.currency),lineTotal:money(line.selling_line_cents,row.currency)})),shipments:shipments.rows.map((shipment:any)=>({shipmentId:shipment.id,status:shipment.shipment_status,createdAt:shipment.created_at.toISOString(),...(shipment.manual_carrier_name?{carrier:shipment.manual_carrier_name}:{}),...(shipment.manual_carrier_service?{service:shipment.manual_carrier_service}:{}),...(shipment.manual_tracking_number?{trackingNumber:shipment.manual_tracking_number}:{}),...(shipment.shipped_at?{shippedAt:shipment.shipped_at.toISOString()}:{}),quantity:Number(shipment.quantity)}))};
   }
   async listQuotes(principal: PortalPrincipal, cursor?: string): Promise<PortalPage<PortalQuoteSummary>> {
-    const after=decodeCursor(cursor),result=await this.pool.query<QuoteRow>(`${quoteProjection} WHERE d.organization_id=$1 AND d.customer_id=$2 AND d.document_kind='quote' AND ($3::timestamptz IS NULL OR (d.updated_at,d.id)<($3::timestamptz,$4::text)) ORDER BY d.updated_at DESC,d.id DESC LIMIT $5`,[principal.organizationId,principal.customerId,after?.updatedAt??null,after?.id??null,pageSize+1]),rows=result.rows.slice(0,pageSize),last=rows.at(-1);
-    return {items:rows.map(quoteSummary),...(result.rows.length>pageSize&&last?{nextCursor:encodeCursor({updatedAt:last.updated_at.toISOString(),id:last.id})}:{})};
+    if (!this.publications) throw new V2ApplicationError("RETRYABLE_FAILURE", "Sales publication access is unavailable.");
+    return this.publications.list(principal.organizationId, principal.customerId, cursor);
   }
-  async getQuote(principal: PortalPrincipal, quoteId: string): Promise<PortalQuoteDetail | null> {
-    const result=await this.pool.query<QuoteRow>(`${quoteProjection} WHERE d.organization_id=$1 AND d.customer_id=$2 AND d.id=$3 AND d.document_kind='quote'`,[principal.organizationId,principal.customerId,quoteId]),row=result.rows[0];if(!row)return null;const lines=await this.pool.query<any>("SELECT id,description,quantity,selling_unit_cents,selling_line_cents FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2 ORDER BY position",[principal.organizationId,quoteId]);return {...quoteSummary(row),lines:lines.rows.map((line:any)=>({lineId:line.id,description:line.description,quantity:Number(line.quantity),unitPrice:money(line.selling_unit_cents,row.currency),lineTotal:money(line.selling_line_cents,row.currency)}))};
+  async getQuote(principal: PortalPrincipal, quoteId: string, checkpointId?: string): Promise<PortalQuoteDetail | null> {
+    if (!this.publications) throw new V2ApplicationError("RETRYABLE_FAILURE", "Sales publication access is unavailable.");
+    return this.publications.get(principal.organizationId, principal.customerId, quoteId, checkpointId);
+  }
+  async getQuotePdf(principal: PortalPrincipal, quoteId: string, checkpointId?: string) {
+    if (!this.publications?.pdf) throw new V2ApplicationError("RETRYABLE_FAILURE", "Sales publication documents are unavailable.");
+    return this.publications.pdf(principal.organizationId, principal.customerId, quoteId, checkpointId);
   }
 }

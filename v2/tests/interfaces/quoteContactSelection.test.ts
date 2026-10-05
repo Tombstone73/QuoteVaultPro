@@ -8,9 +8,10 @@ import type { Principal } from "../../src/authorization/principals.js";
 import type { TransactionalClient } from "../../infrastructure/persistence/types.js";
 import { PostgresCustomersCompatibilityReader } from "../../infrastructure/compatibility/postgresCustomersRead.js";
 import { PostgresSalesContactSelection } from "../../infrastructure/customers/postgresSalesContactSelection.js";
-import { QuoteApplicationService, type QuoteReadModel, type QuoteTransaction } from "../../src/modules/sales/quoteApplication.js";
+import { createQuoteLifecycleCheckpoint, QuoteApplicationService, type QuoteReadModel, type QuoteTransaction } from "../../src/modules/sales/quoteApplication.js";
 import { createQuoteRouter, type QuoteHttpDependencies } from "../../src/interfaces/http/quoteRoutes.js";
 import { brandedId, currencyCode } from "../../src/modules/shared/commercialValues.js";
+import type { QuoteCheckpoint } from "../../src/modules/sales/contracts.js";
 
 /** Shared by the mounted App test. Only Quote persistence/effect ports are
  * fixtures; authorization, reference validation, updates and CRM selection run
@@ -40,6 +41,7 @@ export async function quoteContactFixture() {
   await db.query("INSERT INTO customer_contact_links VALUES('link',$1,$2,$3,'active')", [org, customerId, contactId]);
   let quote: QuoteReadModel = { quote: { quoteId, organizationId: org, customerContact: { organizationId: org, contactId }, currency: currencyCode("USD"), terms: {}, deliveryState: "not_sent", acceptanceState: "not_accepted", lifecycleState: "open", lines: [] }, number: { kind: "quote", display: "QT1001", core: 1001n }, revision: "1", checkpoints: [] };
   let principal: Principal = { kind: "staff", organizationId: org, userId: "staff", authority: { membershipId: "fresh", capabilities: ["quote.view", "quote.edit"] } };
+  let publications: readonly QuoteCheckpoint[] = [];
   const customers = new PostgresCustomersCompatibilityReader(client);
   const effects: unknown[] = [];
   const unused = async (): Promise<never> => { throw Error("Unrelated owner port must not be called"); };
@@ -53,6 +55,7 @@ export async function quoteContactFixture() {
     audit: async value => { effects.push(value); },
     allocateNumber: unused, create: unused, transition: unused, freezeTaxComposition: unused,
     read: async (organizationId, id) => { events.push("quote-read"); return organizationId === org && id === quoteId ? structuredClone(quote) : null; },
+    readPublishedCheckpoints: async (organizationId, id) => { events.push("publication-read"); return organizationId === org && id === quoteId ? structuredClone(publications) : []; },
     update: async input => {
       assert.equal(input.organizationId, org); assert.equal(input.quoteId, quoteId);
       if (input.expectedRevision !== Number(quote.revision)) return false;
@@ -63,7 +66,7 @@ export async function quoteContactFixture() {
   };
   const service = new QuoteApplicationService({ transaction: async work => work(tx) });
   const selection = new PostgresSalesContactSelection(client);
-  const dependencies: QuoteHttpDependencies = {
+  const dependencies: Omit<QuoteHttpDependencies, "documents"> & { documents?: QuoteHttpDependencies["documents"] } = {
     service,
     principals: { principal: async () => { events.push("fresh-principal"); return principal; } },
     formReads: { customers: async () => [{ customerId, displayName: "Account A" }, { customerId: otherCustomerId, displayName: "Account B" }], contacts: async (_org, customer) => {
@@ -78,6 +81,7 @@ export async function quoteContactFixture() {
   return { app, endpoint, org, otherOrg, quoteId, customerId, otherCustomerId, contactId, foreignContactId, db, events, effects, dependencies,
     get quote() { return quote; }, set quote(value: QuoteReadModel) { quote = value; },
     get principal() { return principal; }, set principal(value: Principal) { principal = value; },
+    get publications() { return publications; }, set publications(value: readonly QuoteCheckpoint[]) { publications = value; },
   };
 }
 
@@ -132,11 +136,10 @@ async function main() {
       assert.equal((await request(f.app).get(`${f.endpoint.replace(f.quoteId, "missing")}/contact-selection`)).status, 404);
       assert.ok(!f.events.includes("selection"));
     });
-    await check("Portal retains actual Quote Customer scope and cannot browse contact-only or another account", async () => {
+    await check("Portal cannot read mutable staff Quote/CRM selection, even for its own Customer; publication uses the Sales DTO", async () => {
       const staff = f.principal;
       f.principal = { kind: "portal", organizationId: f.org, customerId: f.customerId, subjectId: "portal", capabilities: ["quote.view"] };
-      for (const customer of [undefined, f.otherCustomerId]) { reference(customer); f.events.length = 0; assert.equal((await selection()).status, 403); assert.ok(!f.events.includes("selection")); }
-      reference(f.customerId); assert.deepEqual((await selection()).body.data, { id: f.contactId, label: "Zoe Saved" });
+      for (const customer of [undefined, f.otherCustomerId, f.customerId]) { reference(customer); f.events.length = 0; assert.equal((await selection()).status, 403); assert.ok(!f.events.includes("selection")); }
       f.principal = staff; reference();
     });
     await check("missing optional injected dependency fails closed after the Quote authorization", async () => {
@@ -161,6 +164,54 @@ async function main() {
       assert.equal((await selection()).body.data.label, "Zoe Saved");
       assert.deepEqual((await f.db.query("SELECT * FROM customers ORDER BY id")).rows, before.rows);
       assert.ok(f.effects.length > 0, "real Quote owner recorded mutation effects");
+    });
+    await check("publication history and downloads reject uncommitted sent checkpoints, not just unknown IDs", async () => {
+      const cpId = brandedId<"QuoteCheckpointId">("committed-publication");
+      const sentEvidence: any = { customerContact: f.quote.quote.customerContact, deliveryAttemptId: "inert-attempt", providerMessageId: "inert-provider", recipientEmail: "frozen@example.invalid", documentSha256: `sha256:${"a".repeat(64)}`, documentNumber: "QT-FROZEN-PUBLIC", documentDate: "2026-10-03" };
+      const cp = createQuoteLifecycleCheckpoint(f.quote.quote, "send", cpId, { customerDisplayName: "Frozen Customer" },
+        { organizationId: f.org, principal: f.principal, operationId: "inert-publication" } as any, undefined, { name: "Frozen shop" }, sentEvidence);
+      const pendingId = brandedId<"QuoteCheckpointId">("uncommitted-publication");
+      f.publications = [cp];
+      f.quote = { ...f.quote, publishedCheckpointId: cpId, publishedEvidenceStatus: "modern", checkpoints: [
+        { checkpointId: cpId, kind: "quote_sent", occurredAt: cp.occurredAt },
+        { checkpointId: pendingId, kind: "quote_sent", occurredAt: cp.occurredAt },
+      ] };
+      let downloads = 0;
+      f.dependencies.documents = {
+        quote: async () => { throw Error("Published download must not substitute mutable document identity"); },
+        quotePdf: async () => { throw Error("Published download must select the committed checkpoint"); },
+        quoteCheckpointPdf: async (organizationId, quoteId, checkpointId) => {
+          assert.equal(organizationId, f.org); assert.equal(quoteId, f.quoteId); assert.equal(checkpointId, cpId); downloads++;
+          return new Uint8Array([37, 80, 68, 70]);
+        },
+      };
+      const history = await request(f.app).get(`${f.endpoint}/publications`);
+      assert.equal(history.status, 200); assert.deepEqual(history.body.data.items.map((item: any) => item.checkpointId), [cpId]);
+      assert.equal((await request(f.app).get(`${f.endpoint}/document.pdf`).query({ checkpointId: pendingId })).status, 404);
+      assert.equal(downloads, 0);
+      const pdf = await request(f.app).get(`${f.endpoint}/document.pdf`);
+      assert.equal(pdf.status, 200); assert.equal(pdf.headers["cache-control"], "private, no-store");
+      assert.equal(pdf.headers["x-quote-document-evidence"], "checkpoint-preview");
+      assert.match(pdf.headers["content-disposition"], /Preview_/);
+      assert.match(pdf.headers["content-disposition"], /QT-FROZEN-PUBLIC/); assert.equal(downloads, 1);
+      f.dependencies.documents.quoteCheckpointPdfEvidence = async () => "archived-pdf";
+      const original = await request(f.app).get(`${f.endpoint}/document.pdf`);
+      assert.equal(original.status, 200); assert.equal(original.headers["x-quote-document-evidence"], "archived-pdf");
+      assert.doesNotMatch(original.headers["content-disposition"], /Preview_/);
+    });
+    await check("fresh role, tenant, and existing Portal binding checks precede publication PDF disclosure", async () => {
+      const staff = f.principal as Extract<Principal, { kind: "staff" }>;
+      const originalDocuments = f.dependencies.documents!;
+      f.dependencies.documents = { ...originalDocuments, quoteCheckpointPdf: async () => { throw Error("Unauthorized publication must not reach PDF rendering"); } };
+      f.principal = { ...staff, authority: { ...staff.authority, capabilities: [] } };
+      assert.equal((await request(f.app).get(`${f.endpoint}/document.pdf`)).status, 403);
+      f.principal = staff;
+      assert.equal((await request(f.app).get(`${f.endpoint.replace(f.org, f.otherOrg)}/document.pdf`)).status, 404);
+      f.principal = { kind: "portal", organizationId: f.org, customerId: f.customerId, subjectId: "existing-portal", capabilities: ["quote.view"] };
+      const bindingBefore = structuredClone(f.principal);
+      assert.equal((await request(f.app).get(`${f.endpoint}/document.pdf`)).status, 403);
+      assert.deepEqual(f.principal, bindingBefore);
+      f.principal = staff; f.dependencies.documents = originalDocuments;
     });
     console.log(`Canonical Quote contact selection: ${cases} cases passed (real route/application and in-memory Customers PostgreSQL adapter; fixture Quote persistence).`);
   } finally { await f.db.close(); }

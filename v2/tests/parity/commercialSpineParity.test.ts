@@ -202,7 +202,15 @@ const createFixtureRuntime = (options: Readonly<{ yardRouting?: "no_route" | "un
       }
     },
   };
-  return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService(conversionRunner, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), setCurrentPolicies() { currentTaxable = false; currentPaymentTerms = "due_on_receipt"; }, setProductionRouteConfigured(value: boolean) { productionRouteConfigured = value; }, get quoteRead() { return quoteRead; }, get createdOrder() { return createdOrder; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, get policyReads() { return { taxabilityReads, commercialPolicyReads }; }, audits, acceptedArtwork, artworkCarries };
+  // The inert adapter models explicit delivery finalization separately from the
+  // send transition; actual receipt qualification is covered by the PGlite suite.
+  const commitPublication = (checkpointId: string | undefined) => {
+    const checkpoint = checkpointId ? checkpoints.get(checkpointId) : undefined;
+    expect(checkpoint).toMatchObject({ kind: "quote_sent", organizationId, sourceDocument: { quoteId: quoteRead!.quote.quoteId } });
+    expect(checkpoint!.sentEvidence?.providerMessageId).toBeTruthy();
+    quoteRead = { ...quoteRead!, publishedCheckpointId: checkpoint!.checkpointId, publishedEvidenceStatus: "modern" };
+  };
+  return { quote: new QuoteApplicationService({ transaction: async (work) => work(quoteTx as never) }), conversion: new QuoteConversionApplicationService(conversionRunner, new OrderApplicationService({ transaction: async (work) => work(orderTx as never) })), commitPublication, setCurrentPolicies() { currentTaxable = false; currentPaymentTerms = "due_on_receipt"; }, setProductionRouteConfigured(value: boolean) { productionRouteConfigured = value; }, get quoteRead() { return quoteRead; }, get createdOrder() { return createdOrder; }, get invoiceInput() { return invoiceInput; }, get routes() { return routes; }, get policyReads() { return { taxabilityReads, commercialPolicyReads }; }, audits, acceptedArtwork, artworkCarries };
 };
 
 describe("M5 commercial spine parity baseline", () => {
@@ -249,6 +257,11 @@ describe("M5 commercial spine parity baseline", () => {
     const sent = await runtime.quote.recordDelivered(context("quote-send"), { businessRequestId: "quote-send", quoteId: created.value.quote.quote.quoteId, expectedRevision: created.value.quote.revision, deliveryAttemptId: "fixture-delivery-1", providerMessageId: "fixture-message-1", preparedSnapshot: preparedEvidence(created.value.quote, "alex@example.test", `sha256:${"1".repeat(64)}`) });
     expect(sent.ok).toBe(true);
     if (!sent.ok) throw sent.error;
+    expect(runtime.quoteRead?.publishedCheckpointId).toBeUndefined();
+    const unpublished = await runtime.conversion.accept(context("unpublished-accept"), { businessRequestId: "unpublished-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
+    expect(unpublished).toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(runtime.createdOrder).toBeUndefined(); expect(runtime.invoiceInput).toBeUndefined();
+    runtime.commitPublication(sent.value.checkpointId);
     runtime.setCurrentPolicies();
     const accepted = await runtime.conversion.accept(context("quote-accept"), { businessRequestId: "quote-accept", quoteId: created.value.quote.quote.quoteId, expectedRevision: sent.value.quote.revision });
     expect(accepted.ok).toBe(true);
@@ -308,6 +321,7 @@ describe("M5 commercial spine parity baseline", () => {
     });
     if (!sent.ok) throw sent.error;
     expect(sent.ok).toBe(true);
+    runtime.commitPublication(sent.value.checkpointId);
     const accepted = await runtime.conversion.accept(context("unconfigured-accept"), {
       businessRequestId: "unconfigured-accept", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: sent.value.quote.revision,
@@ -332,6 +346,7 @@ describe("M5 commercial spine parity baseline", () => {
     });
     if (!sent.ok) throw sent.error;
     expect(sent.ok).toBe(true);
+    runtime.commitPublication(sent.value.checkpointId);
     const accepted = await runtime.conversion.accept(context("unroutable-accept"), {
       businessRequestId: "unroutable-accept", quoteId: created.value.quote.quote.quoteId,
       expectedRevision: sent.value.quote.revision,

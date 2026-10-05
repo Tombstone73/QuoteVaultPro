@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { capabilityIds } from "../../src/authorization/capabilities";
@@ -12,6 +12,8 @@ import { PostgresCustomerDocumentService } from "../../infrastructure/sales/post
 import { canRetryPreparedQuoteDeliveryAttempt, loadPreparedQuoteDeliveryEvidenceFromAttempt, persistPreparedQuoteDeliveryAttempt, PostgresQuoteDeliveryService } from "../../infrastructure/sales/postgresQuoteDelivery";
 import { serializePreparedQuoteDeliveryEvidence } from "../../infrastructure/sales/preparedQuoteDeliveryEvidence";
 import { quoteCommercialSnapshot } from "../../src/modules/sales/contracts";
+import { PostgresQuoteTransaction } from "../../infrastructure/sales/postgresQuoteTransaction";
+import { publishedQuoteCheckpointSql } from "../../infrastructure/sales/postgresQuotePublication";
 
 const conversionFixture = async (failAt?: string) => {
   const organizationId = "contract-org";
@@ -22,7 +24,7 @@ const conversionFixture = async (failAt?: string) => {
   const line: any = { lineId: "quote-line-a", productId: "product-a", description: "Product", quantity: 2, resolvedConfiguration, pricingResult, sellingPriceDecision: { kind: "calculated", pricingResultId: pricingResult.id, calculatedUnitAmount: pricingResult.calculatedUnitAmount, calculatedLineAmount: pricingResult.calculatedLineAmount, resultingUnitAmount: pricingResult.calculatedUnitAmount, resultingLineAmount: pricingResult.calculatedLineAmount, decidedAt: "2026-09-01T00:00:00.000Z" }, calculatedLineAmount: pricingResult.calculatedLineAmount, sellingLineAmount: pricingResult.calculatedLineAmount, taxability: { taxable: true, source: "product" } };
   const taxComposition = composeSalesTax({ lines: [{ lineId: line.lineId, amountCents: line.sellingLineAmount.cents, taxable: true }], exemption: { exempt: false }, resolution: { status: "resolved", receiptLocation: { country: "US", region: "OR" }, jurisdiction: { jurisdictionId: "jurisdiction-a", name: "Zero rate", receiptLocation: { country: "US", region: "OR" }, rateBasisPoints: 0, active: true, homeBusiness: true } } });
   const sentCheckpoint: any = { schemaVersion: 1, checkpointId: "sent-checkpoint-a", evidenceFingerprint: "sent-fingerprint", organizationId, occurredAt: "2026-09-01T00:00:00.000Z", principal: { principalKind: "staff", subjectId: "staff-a" }, customerPresentation: { customerDisplayName: "Customer", contactDisplayName: "Contact", email: "alex@example.test" }, commercial: { currency: "USD", terms: {}, lines: [line], taxComposition }, sentEvidence: { customerContact, deliveryAttemptId: "delivery-a", recipientEmail: "alex@example.test", documentSha256: `sha256:${"a".repeat(64)}`, documentNumber: "QT-101", documentDate: "2026-09-01", providerMessageId: "provider-a" }, kind: "quote_sent", sourceDocument: { quoteId: "quote-a" } };
-  const initial = { quote: { quoteId: "quote-a", organizationId, customerContact, currency: "USD", terms: {}, lines: [line], taxComposition, deliveryState: "sent", acceptanceState: "not_accepted", lifecycleState: "open" }, revision: "1", checkpoints: [{ checkpointId: sentCheckpoint.checkpointId, kind: sentCheckpoint.kind, occurredAt: sentCheckpoint.occurredAt }] };
+  const initial = { quote: { quoteId: "quote-a", organizationId, customerContact, currency: "USD", terms: {}, lines: [line], taxComposition, deliveryState: "sent", acceptanceState: "not_accepted", lifecycleState: "open" }, revision: "1", publishedCheckpointId: sentCheckpoint.checkpointId, publishedEvidenceStatus: "modern", checkpoints: [{ checkpointId: sentCheckpoint.checkpointId, kind: sentCheckpoint.kind, occurredAt: sentCheckpoint.occurredAt }] };
   let state: any = { quoteRead: initial, checkpoints: [sentCheckpoint], orderRead: null, invoice: null, lineage: null, artwork: [] };
   const calls: string[] = [], messages: string[] = [];
   const requests = new Map<string, any>();
@@ -62,7 +64,14 @@ const conversionFixture = async (failAt?: string) => {
   const runner: any = { transaction: async (action: any) => {
     transactions++; calls.push("begin"); const before = structuredClone(state);
     try { const result = await action({ quote: quoteTx, order: orderTx, artwork }); calls.push("commit"); return result; }
-    catch (error) { state = before; calls.push("rollback"); throw error; }
+    catch (error) {
+      state = before;
+      // Model PostgreSQL JSON decoding in this Jest realm after rollback.
+      // Host structuredClone objects are not local plain commercial JSON.
+      state.quoteRead = JSON.parse(JSON.stringify(before.quoteRead));
+      state.checkpoints = JSON.parse(JSON.stringify(before.checkpoints));
+      calls.push("rollback"); throw error;
+    }
   } };
   const orders = new OrderApplicationService({ transaction: async () => { throw new Error("Order core must reuse the conversion transaction"); } });
   const service = new QuoteConversionApplicationService(runner, orders);
@@ -81,6 +90,10 @@ const conversionFixture = async (failAt?: string) => {
       state.checkpoints = [sentCheckpoint, invalidAccepted];
     },
     changeCurrentQuote: (change: (quote: any) => any) => { state.quoteRead = { ...state.quoteRead, quote: change(state.quoteRead.quote) }; },
+    setPublication: (checkpointId: string | null, evidenceStatus: "modern" | "historical" | null = "modern") => { state.quoteRead = { ...state.quoteRead, publishedCheckpointId: checkpointId, publishedEvidenceStatus: evidenceStatus }; },
+    clearPublication: () => { delete state.quoteRead.publishedCheckpointId; delete state.quoteRead.publishedEvidenceStatus; },
+    corruptReceipt: (change: (receipt: any) => any) => { for (const request of requests.values()) if (request.status === "succeeded") request.resultJson = change(structuredClone(request.resultJson)); },
+    appendSent: (checkpoint: any) => { state.checkpoints.push(checkpoint); state.quoteRead = { ...state.quoteRead, checkpoints: [...state.quoteRead.checkpoints, { checkpointId: checkpoint.checkpointId, kind: "quote_sent", occurredAt: checkpoint.occurredAt }] }; },
     removeSentEvidence: () => { state.checkpoints = state.checkpoints.map((checkpoint: any) => { const { sentEvidence: _sentEvidence, ...historical } = checkpoint; return historical; }); },
     state: () => state, transactions: () => transactions, initial, line, sentCheckpoint, calls, messages };
 };
@@ -171,7 +184,7 @@ describe("sent Quote preparation evidence", () => {
 
     const result = await service.send(fixture.context, { businessRequestId: "send-request", quoteId: currentQuote.quoteId, expectedRevision: "1" });
     expect(result).toMatchObject({ ok: false, error: { code: "CONFLICT", message: "The provider accepted delivery; Quote state needs reconciliation." } });
-    expect(sendCalls).toEqual(["recipient", "routability", "prepare", "provider-stub"]);
+    expect(sendCalls).toEqual(["prepare", "provider-stub"]);
     expect(quoteService.committed.preparedSnapshot).toEqual(fixture.input.preparedSnapshot);
     expect(uncertainArgs?.slice(0, 3)).toEqual(["contract-org", "send-request", "delivery-a"]);
     expect(uncertainArgs?.[4]).toBe("provider-message-a");
@@ -223,14 +236,35 @@ describe("sent Quote preparation evidence", () => {
     expect(canRetryPreparedQuoteDeliveryAttempt({ ...row, delivery_state: "failed" }, { ...evidence, documentNumber: "QT-CHANGED" })).toBe(false);
     expect(loadPreparedQuoteDeliveryEvidenceFromAttempt({ ...row, document_sha256: `sha256:${"d".repeat(64)}` })).toBeNull();
   });
+  test.each([408, 500, 503])("provider %s stays uncertain instead of authorizing a duplicate send", async status => {
+    const fixture = deliveryFixture();
+    const quoteService: any = { read: async () => ({ ok: true, value: fixture.current() }), recordDelivered: async () => { throw new Error("No checkpoint for unknown provider outcome"); } };
+    const service: any = new PostgresQuoteDeliveryService({} as any, quoteService, {} as any);
+    let sends = 0, unresolved = false;
+    service.prepare = async () => {
+      if (unresolved) throw new V2ApplicationError("CONFLICT", "A prior delivery is unresolved.");
+      return { requestId: "send-request", attemptId: "delivery-a", recipient: "prepared@example.test", document: {}, pdf: new Uint8Array(), preparedEvidence: fixture.input.preparedSnapshot, frozenTaxComposition: fixture.input.frozenTaxComposition, integration: {} };
+    };
+    service.deliver = async () => { sends++; throw { response: { status } }; };
+    service.uncertain = async () => { unresolved = true; };
+    service.failed = async () => { throw new Error("An uncertain provider result must not become retryable rejection"); };
+    const input = { businessRequestId: "send-request", quoteId: "quote-send-a", expectedRevision: "1" };
+    await expect(service.send(fixture.context, input)).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    await expect(service.send(fixture.context, input)).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(sends).toBe(1);
+  });
 
   test("delivery success requires the exact pending attempt, recipient, PDF hash, Quote, and request link", async () => {
     const fixture = deliveryFixture();
+    await fixture.send();
+    const committedCheckpoint = { ...fixture.sentCheckpoint(), checkpointId: "checkpoint-a" };
     let updateRowCount = 0;
     const statements: Array<{ sql: string; parameters?: unknown[] }> = [];
     const client: any = {
       query: async (sql: string, parameters?: unknown[]) => {
         statements.push({ sql, parameters });
+        if (sql.startsWith("SELECT d.id FROM v2_sales_documents")) return { rowCount: 1, rows: [{ id: "quote-send-a" }] };
+        if (sql.startsWith("SELECT id,checkpoint_kind,occurred_at,payload")) return { rowCount: 1, rows: [{ payload: committedCheckpoint }] };
         return { rowCount: sql.startsWith("UPDATE v2_sales_quote_delivery_attempts") ? updateRowCount : 1, rows: [] };
       },
       release: () => undefined,
@@ -240,12 +274,14 @@ describe("sent Quote preparation evidence", () => {
     service.requests = requests;
     const hash = fixture.input.preparedSnapshot.documentSha256;
     const preparedEvidenceJson = serializePreparedQuoteDeliveryEvidence(fixture.input.preparedSnapshot);
-    const arguments_ = [fixture.context, "send-request", "delivery-a", "quote-send-a", "checkpoint-a", "provider-a", "prepared@example.test", hash, preparedEvidenceJson, { quote: {} }];
+    const arguments_ = [fixture.context, "send-request", "delivery-a", "quote-send-a", "checkpoint-a", "provider-a", "prepared@example.test", hash, preparedEvidenceJson, { quote: fixture.current() }];
 
     await expect(service.succeeded(...arguments_)).rejects.toMatchObject({ code: "CONFLICT" });
     expect(statements.at(-1)?.sql).toBe("ROLLBACK");
-    expect(statements[1]?.sql).toContain("quote_document_id=$3 AND operation_request_id=$4 AND delivery_state='pending' AND recipient_email=$7 AND document_sha256=$8 AND prepared_evidence_json=$9::jsonb");
-    expect(statements[1]?.parameters).toEqual(["contract-org", "delivery-a", "quote-send-a", "send-request", "checkpoint-a", "provider-a", "prepared@example.test", hash, preparedEvidenceJson]);
+    expect(statements[1]?.sql).toContain("FOR UPDATE OF d,q");
+    const attemptUpdate = statements.find(statement => statement.sql.startsWith("UPDATE v2_sales_quote_delivery_attempts"));
+    expect(attemptUpdate?.sql).toContain("quote_document_id=$3 AND operation_request_id=$4 AND delivery_state='pending' AND recipient_email=$7 AND document_sha256=$8 AND prepared_evidence_json=$9::jsonb");
+    expect(attemptUpdate?.parameters).toEqual(["contract-org", "delivery-a", "quote-send-a", "send-request", "checkpoint-a", "provider-a", "prepared@example.test", hash, preparedEvidenceJson]);
 
     statements.length = 0;
     updateRowCount = 1;
@@ -269,7 +305,8 @@ describe("sent Quote preparation evidence", () => {
     let unresolvedAttempt = false;
     let sentPayload: any = fixture.sentCheckpoint();
     const client: any = { query: async (sql: string) => {
-      if (sql.includes("FROM v2_sales_quote_checkpoints")) return { rows: hasSentCheckpoint ? [{ payload: sentPayload, occurred_at: new Date("2026-10-03T02:00:00.000Z") }] : [] };
+      if (sql.includes("FROM v2_sales_quote_checkpoints")) return { rows: hasSentCheckpoint ? [{ id: fixture.sentCheckpoint().checkpointId, organization_id: "contract-org", quote_document_id: "quote-send-a", payload: sentPayload,
+        occurred_at: new Date("2026-10-03T02:00:00.000Z"), prepared_evidence_json: fixture.input.preparedSnapshot, attempt_id: "delivery-a", recipient_email: "prepared@example.test", document_sha256: `sha256:${"b".repeat(64)}`, provider_message_id: "provider-a" }] : [] };
       if (sql.includes("FROM v2_sales_quote_delivery_attempts") && sql.includes("quote_document_id=$2")) return { rows: unresolvedAttempt ? [{ id: "pending-delivery" }] : [] };
       if (sql.includes("FROM v2_sales_quote_delivery_attempts") && sql.includes("id=$2")) return { rows: [{ id: "delivery-a", organization_id: "contract-org", quote_document_id: "quote-send-a", operation_request_id: "send-request", recipient_email: "prepared@example.test", document_sha256: `sha256:${"b".repeat(64)}`, prepared_evidence_json: fixture.input.preparedSnapshot, delivery_state: "succeeded", quote_checkpoint_id: fixture.sentCheckpoint().checkpointId, provider_message_id: "provider-a" }] };
       if (sql.includes("FROM organizations o LEFT JOIN company_settings")) return { rows: [{ name: "Live Organization" }] };
@@ -298,6 +335,45 @@ describe("sent Quote preparation evidence", () => {
     hasSentCheckpoint = false;
     unresolvedAttempt = true;
     await expect(documents.quote("contract-org" as any, "quote-send-a" as any)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+  test("completed send replay requires fresh authority plus exact committed checkpoint/request evidence, never provider preparation", async () => {
+    const fixture = deliveryFixture(); const recorded = await fixture.send(); expect(recorded.ok).toBe(true);
+    if (!recorded.ok) return;
+    let cached: any = recorded.value, linked = true, connections = 0;
+    const client: any = { query: async (sql: string, parameters?: unknown[]) => {
+      if (sql === publishedQuoteCheckpointSql) {
+        expect(parameters).toEqual(["contract-org", "quote-send-a"]);
+        return { rows: [{ id: fixture.sentCheckpoint().checkpointId, organization_id: "contract-org", quote_document_id: "quote-send-a", payload: fixture.sentCheckpoint(),
+          prepared_evidence_json: fixture.input.preparedSnapshot, attempt_id: "delivery-a", recipient_email: "prepared@example.test",
+          document_sha256: fixture.input.preparedSnapshot.documentSha256, provider_message_id: "provider-a" }] };
+      }
+      if (sql.startsWith("SELECT id FROM v2_sales_quote_delivery_attempts")) {
+        expect(parameters).toEqual(["contract-org", "quote-send-a", "send-request", fixture.sentCheckpoint().checkpointId,
+          "delivery-a", "prepared@example.test", fixture.input.preparedSnapshot.documentSha256, "provider-a"]);
+        return { rows: linked ? [{ id: "delivery-a" }] : [], rowCount: linked ? 1 : 0 };
+      }
+      expect(["BEGIN", "COMMIT", "ROLLBACK"]).toContain(sql); return { rows: [], rowCount: 0 };
+    }, release: () => {} };
+    const read = jest.spyOn(PostgresQuoteTransaction.prototype, "read").mockImplementation(async () => fixture.current());
+    const provider = jest.fn(async () => { throw new Error("Replay cannot send provider bytes"); });
+    const service: any = new PostgresQuoteDeliveryService({ connect: async () => { connections++; return client; } } as any,
+      { read: async () => ({ ok: true, value: fixture.current() }) } as any,
+      { requireReady: async () => { throw new Error("Replay cannot prepare an email provider"); } } as any);
+    service.requests = { reserve: async () => ({ kind: "replay", request: { id: "send-request", status: "succeeded", resultJson: cached } }) };
+    service.deliver = provider;
+    try {
+      const input = { businessRequestId: "send-request", quoteId: "quote-send-a", expectedRevision: "1" };
+      await expect(service.send(fixture.context, input)).resolves.toMatchObject({ ok: true, value: { checkpointId: fixture.sentCheckpoint().checkpointId,
+        quote: { publishedCheckpointId: fixture.sentCheckpoint().checkpointId, publishedEvidenceStatus: "modern" } } });
+      cached = { ...recorded.value, checkpointId: "uncommitted-checkpoint" };
+      await expect(service.send(fixture.context, input)).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+      cached = recorded.value; linked = false;
+      await expect(service.send(fixture.context, input)).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+      const before = connections;
+      const revoked = { ...fixture.context, principal: { ...fixture.context.principal, authority: { membershipId: "revoked", capabilities: [] } } };
+      await expect(service.send(revoked, input)).resolves.toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+      expect(connections).toBe(before); expect(provider).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
   });
 });
 
@@ -418,7 +494,7 @@ describe("M1.10 Quote to Order conversion contract", () => {
     expect(fixture.calls.filter((call) => !["begin", "commit", "rollback"].includes(call))).toEqual(ownerWritesBefore);
   });
 
-  test("rejects post-send commercial or same-display Contact edits before acceptance can create owner records", async () => {
+  test("accepts only the last published commercial and Contact despite internal unsent edits", async () => {
     const changes = [
       (quote: any) => ({ ...quote, jobLabel: "unaccepted unsent label" }),
       (quote: any) => ({ ...quote, terms: { commercialNotes: "unsent revision" } }),
@@ -429,10 +505,13 @@ describe("M1.10 Quote to Order conversion contract", () => {
     for (const change of changes) {
       const fixture = await conversionFixture();
       fixture.changeCurrentQuote(change);
-      const before = structuredClone(fixture.state());
-      await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
-      expect(fixture.state()).toEqual(before);
-      expect(fixture.calls).toEqual(["begin", "rollback"]);
+      await expect(fixture.accept()).resolves.toMatchObject({ ok: true });
+      expect(fixture.state().orderRead.order.customerContact).toEqual(fixture.sentCheckpoint.sentEvidence.customerContact);
+      expect(fixture.state().orderRead.order.lines[0].description).toBe(fixture.line.description);
+      expect(fixture.state().orderRead.order.jobLabel).toBeUndefined();
+      expect(fixture.state().orderRead.order.terms).toEqual(fixture.sentCheckpoint.commercial.terms);
+      expect(fixture.state().orderRead.order.taxComposition).toEqual(fixture.sentCheckpoint.commercial.taxComposition);
+      expect(fixture.state().checkpoints[0]).toEqual(fixture.sentCheckpoint);
     }
   });
 
@@ -443,6 +522,76 @@ describe("M1.10 Quote to Order conversion contract", () => {
     await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
     expect(fixture.state()).toEqual(before);
     expect(fixture.calls).toEqual(["begin", "rollback"]);
+  });
+  test("canonical publication selection ignores a newer provider-unconfirmed checkpoint", async () => {
+    const fixture = await conversionFixture();
+    fixture.appendSent({ ...fixture.sentCheckpoint, checkpointId: "unconfirmed-checkpoint", commercial: { ...fixture.sentCheckpoint.commercial, jobLabel: "UNCONFIRMED_SECRET" } });
+    fixture.setPublication(fixture.sentCheckpoint.checkpointId);
+    await expect(fixture.accept()).resolves.toMatchObject({ ok: true });
+    expect(fixture.state().orderRead.order.jobLabel).toBeUndefined();
+    expect(fixture.state().checkpoints[2].sourceCheckpointId).toBe(fixture.sentCheckpoint.checkpointId);
+  });
+  test("legacy NULL modern evidence and unavailable publication never create acceptance or an Order", async () => {
+    for (const [id, evidence] of [["sent-checkpoint-a", "historical"], [null, null], ["wrong-checkpoint", "modern"]] as const) {
+      const fixture = await conversionFixture(); fixture.setPublication(id, evidence);
+      const before = structuredClone(fixture.state());
+      await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+      expect(fixture.state()).toEqual(before); expect(fixture.calls).toEqual(["begin", "rollback"]);
+    }
+  });
+  test("a differing internal line set fails closed until Artwork supplies publication-line coordination", async () => {
+    const fixture = await conversionFixture(); fixture.setPublication(fixture.sentCheckpoint.checkpointId);
+    fixture.changeCurrentQuote(quote => ({ ...quote, lines: [{ ...quote.lines[0], lineId: "unsent-line" }] }));
+    const before = structuredClone(fixture.state());
+    await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT", message: expect.stringContaining("Artwork publication-line coordination") } });
+    expect(fixture.state()).toEqual(before); expect(fixture.calls).toEqual(["begin", "rollback"]);
+  });
+  test("sent state and newest checkpoint never substitute for missing committed publication proof", async () => {
+    const fixture = await conversionFixture(); fixture.clearPublication();
+    const before = structuredClone(fixture.state());
+    await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(fixture.state()).toEqual(before); expect(fixture.calls).toEqual(["begin", "rollback"]);
+  });
+  test("not_sent internal revision accepts the qualified last publication and ignores unsent commercial/party fields", async () => {
+    const fixture = await conversionFixture();
+    fixture.changeCurrentQuote(quote => ({ ...quote, deliveryState: "not_sent", jobLabel: "UNSENT LABEL", customerContact: { ...quote.customerContact, contactId: "contact-internal" },
+      lines: [{ ...quote.lines[0], description: "UNSENT LINE" }] }));
+    await expect(fixture.accept()).resolves.toMatchObject({ ok: true });
+    expect(fixture.state().orderRead.order.customerContact).toEqual(fixture.sentCheckpoint.sentEvidence.customerContact);
+    expect(fixture.state().orderRead.order.lines[0].description).toBe(fixture.line.description);
+    expect(fixture.state().orderRead.order.taxComposition).toEqual(fixture.sentCheckpoint.commercial.taxComposition);
+    expect(fixture.state().orderRead.order.jobLabel).toBeUndefined();
+    await expect(fixture.accept()).resolves.toMatchObject({ ok: true });
+    expect(fixture.calls.filter(call => call === "order_persistence")).toHaveLength(1);
+  });
+  test("not_sent alone cannot authorize acceptance without publication, stale CAS, or legal terminal state", async () => {
+    for (const variant of ["no-publication", "stale", "declined", "voided"] as const) {
+      const fixture = await conversionFixture();
+      fixture.changeCurrentQuote(quote => ({ ...quote, deliveryState: "not_sent", ...(variant === "declined" || variant === "voided" ? { lifecycleState: variant } : {}) }));
+      if (variant === "no-publication") fixture.clearPublication();
+      const before = structuredClone(fixture.state());
+      await expect(fixture.accept(variant === "stale" ? "stale-token" : "1")).resolves.toMatchObject({ ok: false, error: { code: variant === "stale" ? "STALE_STATE" : "CONFLICT" } });
+      expect(fixture.state()).toEqual(before); expect(fixture.calls).toEqual(["begin", "rollback"]);
+    }
+  });
+  test("current unresolved-tax policy remains enforced for both acceptance and conversion", async () => {
+    const acceptFixture = await conversionFixture();
+    acceptFixture.changeCurrentQuote(quote => ({ ...quote, deliveryState: "not_sent", taxComposition: { status: "unresolved", reason: "tax_jurisdiction_not_configured", finalTotalCents: 200 } }));
+    await expect(acceptFixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(acceptFixture.calls).toEqual(["begin", "rollback"]);
+    const convertFixture = await conversionFixture(); convertFixture.markAcceptedWithSentSnapshot();
+    convertFixture.changeCurrentQuote(quote => ({ ...quote, deliveryState: "not_sent", taxComposition: { status: "unresolved", reason: "tax_jurisdiction_not_configured", finalTotalCents: 200 } }));
+    await expect(convertFixture.convert("accepted-checkpoint-a")).resolves.toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(convertFixture.calls).toEqual(["begin", "rollback"]);
+  });
+  test.each(["foreign-quote", "foreign-conversion-checkpoint", "publication-proof-lost"])("receipt replay remains bound to authorized publication: %s", async scenario => {
+    const fixture = await conversionFixture(); await expect(fixture.accept()).resolves.toMatchObject({ ok: true });
+    if (scenario === "foreign-quote") fixture.corruptReceipt(receipt => ({ ...receipt, quoteId: "another-quote" }));
+    if (scenario === "foreign-conversion-checkpoint") fixture.corruptReceipt(receipt => ({ ...receipt, conversionCheckpointId: "another-conversion" }));
+    if (scenario === "publication-proof-lost") fixture.clearPublication();
+    const before = structuredClone(fixture.state()); fixture.calls.length = 0;
+    await expect(fixture.accept()).resolves.toMatchObject({ ok: false, error: { code: "CONFLICT" } });
+    expect(fixture.state()).toEqual(before); expect(fixture.calls).toEqual(["begin", "rollback"]);
   });
 
   test("direct conversion rejects accepted evidence that is not bound to its sent checkpoint", async () => {
@@ -523,10 +672,10 @@ describe("M1.10 Quote to Order conversion contract", () => {
 
     expect(source).toMatch(/resolveOrderRoutability/);
     expect(source).toMatch(/routability: Readonly<\{ status: "ready" \| "unroutable"/);
-    expect(send).toMatch(/await this\.requireRoutability/);
-    expect(send.indexOf("requireRoutability")).toBeLessThan(send.indexOf("integrations.requireReady"));
-    expect(send.indexOf("requireRoutability")).toBeLessThan(send.indexOf("this.prepare"));
+    expect(send.indexOf("this.prepare")).toBeLessThan(send.indexOf("this.deliver"));
     expect(prepare).toMatch(/await this\.requireRoutability/);
+    expect(prepare.indexOf("requireRoutability")).toBeLessThan(prepare.indexOf("freezeTaxComposition"));
+    expect(prepare.indexOf("requireRoutability")).toBeLessThan(prepare.indexOf("integrations.requireReady"));
     expect(prepare.indexOf("requireRoutability")).toBeLessThan(prepare.indexOf("quoteDeliveryInTransaction"));
     expect(prepare.indexOf("requireRoutability")).toBeLessThan(prepare.indexOf("renderCustomerSalesPdf"));
   });

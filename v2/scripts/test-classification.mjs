@@ -43,6 +43,12 @@ add('v2/tests/infrastructure/', 'tsx', ['shipmentSenderSchema.postgres.test.ts']
   'safe-deterministic', 'Actual Shipping migrations and exact protected catalog readiness run in disposable in-memory PGlite with declared minimal referenced schemas; no connection URL, V1 initialization, provider or external I/O.');
 add('v2/ui/src/', 'tsx', ['physicalRecovery.test.tsx'],
   'safe-deterministic', 'Mounted JSDOM recovery uses an injected scoped owner transport, synthetic receipts and canonical fingerprints; no live database, carrier, provider or physical effect.');
+add('v2/tests/infrastructure/', 'tsx', ['quotePublication.postgres.test.ts'],
+  'safe-deterministic', 'Actual Sales publication, delivery receipt replay, Portal reads and conversion operations execute in disposable in-memory PGlite with inert owner ports; no external database, provider invocation, credentials or V1 initialization.');
+add('v2/tests/modules/', 'tsx', ['quotePublicationOwner.pure.ts'],
+  'safe-deterministic', 'Sales revision and explicit immutable publication contracts execute with injected in-memory owner ports; no database or provider initialization.');
+add('v2/ui/src/', 'tsx', ['quotePublication.test.tsx', 'quotePublicationIntegration.test.tsx'],
+  'safe-deterministic', 'Mounted staff and Portal publication/history controls and actual App transport execute with JSDOM, intercepted fetch and inert receipts; no external network, database or provider effects.');
 add('v2/tests/', 'tsx', [
   'infrastructure/workspaceArtwork.test.ts',
   'infrastructure/workspaceMaintenance.test.ts',

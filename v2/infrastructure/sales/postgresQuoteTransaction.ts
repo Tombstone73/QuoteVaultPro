@@ -37,6 +37,7 @@ import type {
   SalesLineSnapshot,
 } from "../../src/modules/sales/contracts.js";
 import type { CommercialCharge, SalesTaxComposition } from "../../src/modules/sales/taxComposition.js";
+import { publicationEvidenceStatus, readPublishedQuoteCheckpoints } from "./postgresQuotePublication.js";
 
 type HeaderRow = {
   id: string;
@@ -323,6 +324,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
             : {}),
         }
       : { organizationId, contactId: brandedId<"ContactId">(row.contact_id!) };
+    const published = (await readPublishedQuoteCheckpoints(this.client, organizationId, quoteId))[0];
     /**
      * A Quote is commercially mutable until it has crossed a customer-document
      * boundary.  Its persisted tax snapshot is useful for edit writes and for
@@ -334,7 +336,8 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
      * composition it derives; the send transition explicitly freezes its
      * authoritative composition before delivery instead.
      */
-    const mutableCommercialProjection = row.delivery_state === "not_sent" &&
+     const mutableCommercialProjection = (row.delivery_state === "not_sent" ||
+       published?.prepared_evidence_json && Number(row.revision) > Number((published.prepared_evidence_json as { expectedRevision?: string }).expectedRevision) + 1) &&
       row.acceptance_state === "not_accepted" &&
       row.lifecycle_state === "open";
     // Send preparation writes the exact composition represented to the
@@ -427,6 +430,8 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         display: row.display_number,
       },
       revision: row.revision,
+      publishedCheckpointId: published ? brandedId<"QuoteCheckpointId">(published.id) : null,
+      publishedEvidenceStatus: published ? publicationEvidenceStatus(published) : null,
       checkpoints: checkpoints.rows.map((c) => ({
         checkpointId: brandedId<"QuoteCheckpointId">(c.id),
         kind: c.checkpoint_kind,
@@ -486,11 +491,17 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     // operation cannot commit a revision increment.
     if (input.kind === "send" && !input.frozenTaxComposition)
       throw new Error("Quote send transition requires a frozen tax composition.");
+    if (input.kind === "accept") {
+      const published = (await readPublishedQuoteCheckpoints(this.client, input.organizationId, input.quoteId))[0];
+      if (!published || publicationEvidenceStatus(published) !== "modern" || input.checkpoint.kind !== "quote_accepted"
+        || input.checkpoint.organizationId !== input.organizationId || input.checkpoint.sourceDocument.quoteId !== input.quoteId
+        || input.checkpoint.sourceCheckpointId !== published.id) return false;
+    }
     const state = await this.client.query(
       input.kind === "send"
-        ? "UPDATE v2_sales_quote_details SET delivery_state='sent',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='not_sent' AND tax_composition=$3::jsonb"
+        ? "UPDATE v2_sales_quote_details SET delivery_state='sent',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND acceptance_state='not_accepted' AND tax_composition=$3::jsonb"
         : input.kind === "accept"
-          ? "UPDATE v2_sales_quote_details SET acceptance_state='accepted',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='sent' AND acceptance_state='not_accepted'"
+          ? "UPDATE v2_sales_quote_details SET acceptance_state='accepted',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND acceptance_state='not_accepted' AND NOT EXISTS(SELECT 1 FROM v2_sales_quote_conversions c WHERE c.organization_id=$1 AND c.quote_document_id=$2)"
           : input.kind === "decline"
             ? "UPDATE v2_sales_quote_details SET lifecycle_state='declined',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open' AND delivery_state='sent'"
             : "UPDATE v2_sales_quote_details SET lifecycle_state='voided',updated_at=now() WHERE organization_id=$1 AND document_id=$2 AND lifecycle_state='open'",
@@ -541,11 +552,12 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     const current = await this.read(input.organizationId, input.quoteId, true);
     if (!current || current.revision !== input.expectedRevision) return current;
     if (
-      current.quote.deliveryState !== "not_sent" ||
       current.quote.acceptanceState !== "not_accepted" ||
       current.quote.lifecycleState !== "open"
     ) return current;
-    const composition = current.quote.taxComposition;
+    const composition = await this.hasPendingDeliveryAttempt(input.organizationId, input.quoteId) ? current.quote.taxComposition
+      : await this.composeCurrentTaxComposition({ organizationId: input.organizationId, customerId: current.quote.customerContact.customerId,
+        fulfillment: current.quote.requestedFulfillment, lines: current.quote.lines, adjustment: current.quote.sellingAdjustment, charge: current.quote.commercialCharge });
     if (!composition)
       throw new Error("Quote tax composition is unavailable for delivery preparation.");
     await this.persistTaxComposition(input.organizationId, input.quoteId, composition);
@@ -561,6 +573,10 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
       [organizationId, quoteId, checkpointId],
     );
     return result.rows[0] ? asObject<QuoteCheckpoint>(result.rows[0].payload) : null;
+  }
+  async readPublishedCheckpoints(organizationId: OrganizationId, quoteId: QuoteId): Promise<readonly QuoteCheckpoint[]> {
+    return (await readPublishedQuoteCheckpoints(this.client, organizationId, quoteId))
+      .filter(row => publicationEvidenceStatus(row) !== null).map(row => row.payload);
   }
   async appendConvertedCheckpoint(
     input: Parameters<QuoteConversionPersistencePort["appendConvertedCheckpoint"]>[0],
@@ -628,7 +644,7 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     quoteId: QuoteId,
   ): Promise<boolean> {
     const result = await this.client.query<{ exists: boolean }>(
-      "SELECT EXISTS(SELECT 1 FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state='pending') AS exists",
+      "SELECT EXISTS(SELECT 1 FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain')) AS exists",
       [organizationId, quoteId],
     );
     return result.rows[0]?.exists === true;

@@ -16,6 +16,7 @@ import * as materials from "../../infrastructure/sales/postgresOrderMaterialRequ
 import * as numbering from "../../infrastructure/sales/postgresCommercialPrimitives.js";
 import * as productionRequirements from "../../infrastructure/sales/postgresProductionRequirements.js";
 import * as salesTax from "../../infrastructure/sales/postgresSalesTaxComposition.js";
+import { publicationEvidenceStatus, readPublishedQuoteCheckpoints } from "../../infrastructure/sales/postgresQuotePublication.js";
 import * as orderApplication from "../../src/modules/sales/orderApplication.js";
 import * as orderLifecycle from "../../src/modules/sales/orderLifecycle.js";
 import * as persistence from "../../src/modules/sales/persistenceContracts.js";
@@ -55,6 +56,7 @@ const dependencyExports = new Map<string, object>([
   ["../routing/postgresRoutePrerequisites.js", routePrerequisites], ["./postgresOrderMaterialRequirements.js", materials],
   ["./postgresCommercialPrimitives.js", numbering], ["./postgresProductionRequirements.js", productionRequirements],
   ["./postgresSalesTaxComposition.js", salesTax], ["../../src/modules/sales/orderApplication.js", orderApplication],
+  ["./postgresQuotePublication.js", { publicationEvidenceStatus, readPublishedQuoteCheckpoints }],
   ["../../src/modules/sales/orderLifecycle.js", orderLifecycle], ["../../src/modules/sales/persistenceContracts.js", persistence],
   ["../../src/modules/pricing/v2PricingAdapter.js", pricingAdapter], ["../../src/modules/shared/commercialValues.js", commercialValues],
   ["../billing/postgresBillingDraftInvoiceTransaction.js", { PostgresBillingDraftInvoiceTransaction: SqlWritingBillingFixture }],
@@ -175,6 +177,9 @@ const fixture = async () => {
       if (sql.startsWith("SELECT d.id,d.organization_id")) { expect(values).toEqual([organizationId, orderId]); return result([{ ...header }]); }
       if (sql.startsWith("SELECT id,product_id,product_type_id,description")) return result([...rows].sort((a, b) => a.position - b.position));
       if (sql === "SELECT id FROM v2_sales_document_lines WHERE organization_id=$1 AND document_id=$2") return result(rows.map((row) => ({ id: row.id })));
+      if (sql.startsWith("SELECT cp.id,cp.payload,cp.occurred_at,cp.checkpoint_sequence,")) {
+        expect(values).toEqual([organizationId, orderId]); return result();
+      }
       if (sql.startsWith("SELECT id,name,country_code") || sql.startsWith("SELECT is_tax_exempt,") || sql.startsWith("SELECT quote_document_id,")
         || sql.startsWith("SELECT order_document_id FROM v2_sales_quote_conversions") || sql.startsWith("SELECT id,checkpoint_kind,")
         || sql.includes("FROM v2_route_instances") || sql.startsWith("SELECT l.id,l.description,l.quantity")

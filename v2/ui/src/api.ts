@@ -71,6 +71,8 @@ export type QuoteRead = Readonly<{
   };
   number: { display: string; core: string };
   revision: string;
+  publishedCheckpointId?: string | null;
+  publishedEvidenceStatus?: "modern" | "historical" | null;
   checkpoints: readonly {
     checkpointId: string;
     kind: string;
@@ -1663,6 +1665,7 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
   // session's React Query namespace.
   const responseSessionScope = response.headers.get("x-v2-session-scope");
   if (responseSessionScope) adoptSessionScope(responseSessionScope);
+  requireCurrentResponse(generation);
   const body = await response.json().catch(() => ({}));
   requireCurrentResponse(generation);
   if (!response.ok || !body.ok) {
@@ -1816,6 +1819,10 @@ export const quoteApi = {
     return value;
   },
   sendReadiness: (organizationId: string, quoteId: string) => request<QuoteSendReadiness>(endpoint(organizationId, `/${encodeURIComponent(quoteId)}/send-readiness`)),
+  publications: (organizationId: string, quoteId: string) =>
+    request<Readonly<{ items: readonly import("../../src/modules/sales/contracts").QuoteCheckpoint[] }>>(
+      endpoint(organizationId, `/${encodeURIComponent(quoteId)}/publications`),
+    ),
   customers: (organizationId: string) =>
     request<readonly Selection[]>(
       `/v2/organizations/${encodeURIComponent(organizationId)}/quotes/form/customers`,
@@ -1998,7 +2005,7 @@ export const quoteApi = {
   action: (
     organizationId: string,
     quoteId: string,
-    action: "send" | "decline" | "void",
+    action: "send" | "decline" | "void" | "revise",
     businessRequestId: string,
     expectedRevision: string,
     reason?: string,

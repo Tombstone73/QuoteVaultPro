@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { canonicalJson } from "../../src/modules/shared/commercialValues.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import type { PreparedQuoteDeliveryEvidence } from "../../src/modules/sales/contracts.js";
@@ -24,6 +25,12 @@ export const parsePreparedQuoteDeliveryEvidence = (value: unknown): PreparedQuot
       || typeof evidence.documentSha256 !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(evidence.documentSha256)
       || typeof evidence.documentNumber !== "string" || !evidence.documentNumber
       || typeof evidence.documentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(evidence.documentDate)) return null;
+    if (evidence.documentPdfBase64 !== undefined) {
+      if (typeof evidence.documentPdfBase64 !== "string") return null;
+      const pdf = Buffer.from(evidence.documentPdfBase64, "base64");
+      if (pdf.toString("base64") !== evidence.documentPdfBase64 || pdf.subarray(0, 5).toString() !== "%PDF-"
+        || `sha256:${createHash("sha256").update(pdf).digest("hex")}` !== evidence.documentSha256) return null;
+    }
     return JSON.parse(canonicalJson(evidence)) as PreparedQuoteDeliveryEvidence;
   } catch {
     return null;

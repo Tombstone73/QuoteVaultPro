@@ -479,6 +479,8 @@ describe("canonical Job Label", () => {
       current = {
         ...current!,
         quote: { ...current!.quote, jobLabel: "Current must not substitute", deliveryState: "sent", acceptanceState: "accepted" },
+        publishedCheckpointId: sent.checkpointId,
+        publishedEvidenceStatus: "modern",
         checkpoints: [
           { checkpointId: sent.checkpointId, kind: sent.kind, occurredAt: sent.occurredAt },
           { checkpointId: accepted.checkpointId, kind: accepted.kind, occurredAt: accepted.occurredAt },

@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   money,
   newBusinessRequestId,
-  contactApi,
   type QuoteSendReadiness,
   orderApi,
   quoteApi,
@@ -75,6 +74,7 @@ import { CommandCenter } from "./CommandCenter";
 import { FormulaLibraryWorkspace } from "./FormulaLibraryWorkspace";
 import { PersistedSalesEntry } from "./PersistedSalesEntry";
 import { QuoteArtworkPanel } from "./QuoteArtworkPanel";
+import { QuotePublicationPanel } from "./QuotePublicationPanel";
 import { SalesTaxSettingsWorkspace } from "./SalesTaxSettingsWorkspace";
 import { EmailSettingsWorkspace } from "./EmailSettingsWorkspace";
 import { QuickBooksSettingsWorkspace } from "./QuickBooksSettingsWorkspace";
@@ -358,31 +358,34 @@ export const App = ({
     );
   useEffect(() => {
     const resetForTrustedSessionChange = () => {
-      clearV2SessionQueryState(queryClient);
       clearV2ApiSessionState();
       sessionScopeRef.current = "";
-      setSessionScope("");
-      setOrganizationId("");
-      setQuoteId("");
-      setNewQuoteRequested(false);
-      setOrderId("");
-      setCustomerId("");
-      setContactId("");
-      setProductId("");
-      setProductBuilderId("");
-      setNewProductBuilder(false);
-      setInvoiceId("");
-      setFulfillmentOrderId("");
-      setProductionStation(undefined);
-      setProductionWorkId("");
-      setArtworkOrderId("");
-      setArtworkLineId("");
-      setProofWorkId("");
-      setProofOrderId("");
-      setProofLineId("");
-      setPrepressLineId("");
-      setPrepressUnitId("");
-      setNotice("");
+      // Disable old-scope observers before removal can notify them to refetch.
+      flushSync(() => {
+        setSessionScope("");
+        setOrganizationId("");
+        setQuoteId("");
+        setNewQuoteRequested(false);
+        setOrderId("");
+        setCustomerId("");
+        setContactId("");
+        setProductId("");
+        setProductBuilderId("");
+        setNewProductBuilder(false);
+        setInvoiceId("");
+        setFulfillmentOrderId("");
+        setProductionStation(undefined);
+        setProductionWorkId("");
+        setArtworkOrderId("");
+        setArtworkLineId("");
+        setProofWorkId("");
+        setProofOrderId("");
+        setProofLineId("");
+        setPrepressLineId("");
+        setPrepressUnitId("");
+        setNotice("");
+      });
+      clearV2SessionQueryState(queryClient);
     };
     window.addEventListener(
       "v2:session-context-changed",
@@ -1068,6 +1071,7 @@ export const App = ({
                 bootstrap.data?.capabilities.quoteOverridePrice === true
               }
               canCreate={bootstrap.data?.capabilities.quoteCreate === true}
+              canView={trustedBootstrap && bootstrap.data?.capabilities.quoteView === true}
               canEdit={bootstrap.data?.capabilities.quoteEdit === true}
               canSend={bootstrap.data?.capabilities.quoteSend === true}
               canConvert={bootstrap.data?.capabilities.quoteConvert === true}
@@ -1540,6 +1544,7 @@ const QuotesPage = (
       newQuoteRequested: boolean;
       setQuoteId: (value: string) => void;
       canCreate: boolean;
+      canView: boolean;
       canEdit: boolean;
       canSend: boolean;
       canConvert: boolean;
@@ -1567,6 +1572,8 @@ const QuotesPage = (
     hasQuote: Boolean(props.quote),
     hasError: Boolean(props.error),
   });
+  if (!props.canView || (props.error as ApiError | undefined)?.code === "FORBIDDEN")
+    return <section className="lab v2-sales-workspace v2-quote-editor"><p role="alert">Quote viewing is unavailable for the current session.</p></section>;
   if (legacyQuoteId)
     return (
       <LegacyQuoteWorkspace
@@ -1619,7 +1626,7 @@ const QuotesPage = (
         >
           ← Quotes
         </button>
-        <QuoteWorkspace {...props} />
+        <QuoteWorkspace key={`${props.sessionScope}:${props.organizationId}:${props.quoteId}`} {...props} />
       </section>
     );
   }
@@ -1738,6 +1745,7 @@ type WorkspaceProps = Readonly<{
   ) => void;
   reconcileAuthority: () => Promise<void>;
   canOverridePrice: boolean;
+  canView: boolean;
   canCreate?: boolean;
   canEdit?: boolean;
   canSend?: boolean;
@@ -1915,6 +1923,7 @@ const QuoteWorkspace = ({
   applyQuoteResult,
   reconcileAuthority,
   canOverridePrice,
+  canView,
   canCreate = false,
   canEdit = true,
   canSend = true,
@@ -1949,6 +1958,7 @@ const QuoteWorkspace = ({
   const [editingLineId, setEditingLineId] = useState("");
   const [addEditorVersion, setAddEditorVersion] = useState(0);
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [sendRequest, setSendRequest] = useState<Readonly<{ organizationId: string; sessionScope: string; quoteId: string; revision: string; businessRequestId: string }> | null>(null);
   const [acceptDialogOpen, setAcceptDialogOpen] = useState(false);
   const customers = useQuoteFormCustomers(sessionScope, organizationId);
   const contacts = useQuoteFormContacts(
@@ -1977,23 +1987,6 @@ const QuoteWorkspace = ({
   const headerContacts = selectedContact && !contacts.data?.some(contact => contact.contactId === selectedContact.id)
     ? [...(contacts.data ?? []), { contactId: selectedContact.id, displayName: selectedContact.label }]
     : contacts.data ?? [];
-  const recipientContact = useQuery({
-    queryKey: [
-      "v2",
-      sessionScope,
-      organizationId,
-      "quote-send-contact",
-      quote?.quote.customerContact.contactId ?? "",
-    ],
-    queryFn: () =>
-      contactApi.get(organizationId, quote!.quote.customerContact.contactId!),
-    enabled: Boolean(
-      (sendDialogOpen || acceptDialogOpen) &&
-      sessionScope &&
-      organizationId &&
-      quote?.quote.customerContact.contactId,
-    ),
-  });
   const sendReadiness = useQuery<QuoteSendReadiness>({
     queryKey: ["v2", sessionScope, organizationId, "quote-send-readiness", quote?.quote.quoteId ?? ""],
     queryFn: () => quoteApi.sendReadiness(organizationId, quote!.quote.quoteId),
@@ -2018,7 +2011,7 @@ const QuoteWorkspace = ({
     delete requestIds.current[operation];
   };
 
-  useEffect(() => {
+  const resetQuoteDraft = () => {
     setPurchaseOrderNumber(quote?.quote.purchaseOrderNumber ?? "");
     setJobLabel(quote?.quote.jobLabel ?? "");
     setRequestedDueDate(dateInputValue(quote?.quote.requestedDueDate));
@@ -2040,9 +2033,33 @@ const QuoteWorkspace = ({
     setHeaderCustomerId(quote?.quote.customerContact.customerId ?? "");
     setHeaderContactId(quote?.quote.customerContact.contactId ?? "");
     setEditingLineId("");
+  };
+  useEffect(() => {
+    resetQuoteDraft();
   }, [quote?.quote.quoteId]);
 
-  const handleMutationError = (mutationError: unknown) => {
+  const dirty = Boolean(quote && (editingLineId || JSON.stringify([
+    headerCustomerId, headerContactId, purchaseOrderNumber.trim(), jobLabel.trim(), requestedDueDate, expiresAt, termsCode.trim(), commercialNotes,
+    fulfillmentMethod, destinationAddress, destinationCity, destinationRegion, destinationCountry, destinationPostalCode, fulfillmentInstructions.trim(), adjustmentCents.trim(), adjustmentReason, chargeKind, chargeCents.trim(), chargeDescription.trim(),
+  ]) !== JSON.stringify([
+    quote.quote.customerContact.customerId ?? "", quote.quote.customerContact.contactId ?? "", quote.quote.purchaseOrderNumber ?? "", quote.quote.jobLabel ?? "", dateInputValue(quote.quote.requestedDueDate), dateInputValue(quote.quote.expiresAt), quote.quote.terms.termsCode ?? "", quote.quote.terms.commercialNotes ?? "",
+    quote.quote.requestedFulfillment?.method ?? "pickup", quote.quote.requestedFulfillment?.destination?.addressLine1 ?? "", quote.quote.requestedFulfillment?.destination?.city ?? "", quote.quote.requestedFulfillment?.destination?.region ?? "", quote.quote.requestedFulfillment?.destination?.country ?? "US", quote.quote.requestedFulfillment?.destination?.postalCode ?? "", quote.quote.requestedFulfillment?.instructions ?? "", quote.quote.sellingAdjustment ? String(quote.quote.sellingAdjustment.cents) : "", quote.quote.sellingAdjustment?.reason ?? "", quote.quote.commercialCharge?.kind ?? "shipping", quote.quote.commercialCharge ? String(quote.quote.commercialCharge.cents) : "", quote.quote.commercialCharge?.description ?? "",
+  ])));
+  const mutationScope = { organizationId, sessionScope, quoteId: quote?.quote.quoteId ?? "" };
+  const currentMutationScope = useRef(mutationScope);
+  currentMutationScope.current = mutationScope;
+  const currentQuoteAuthority = useRef({ canView, canEdit, canSend, csrfReady });
+  currentQuoteAuthority.current = { canView, canEdit, canSend, csrfReady };
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const captureMutationScope = () => mutationScope;
+  const isCurrentMutation = (scope: typeof mutationScope | undefined) => Boolean(mounted.current && currentQuoteAuthority.current.canView && scope
+    && scope.organizationId === currentMutationScope.current.organizationId
+    && scope.sessionScope === currentMutationScope.current.sessionScope
+    && scope.quoteId === currentMutationScope.current.quoteId);
+
+  const handleMutationError = (mutationError: unknown, scope: typeof mutationScope | undefined = mutationScope) => {
+    if (!isCurrentMutation(scope)) return;
     const code = (mutationError as ApiError)?.code;
     if (code === "FORBIDDEN") void reconcileAuthority();
     if (code === "STALE_STATE") {
@@ -2054,6 +2071,7 @@ const QuoteWorkspace = ({
   };
 
   const create = useMutation({
+    onMutate: captureMutationScope,
     mutationFn: (line: QuoteLineMutationInput) => {
       const payload = {
         organizationId,
@@ -2087,16 +2105,18 @@ const QuoteWorkspace = ({
         lines: [line],
       });
     },
-    onSuccess: (result) => {
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
       completeRequest("create");
       applyQuoteResult(result, organizationId, sessionScope);
       load(result.quote.quote.quoteId);
       setNotice("Quote created.");
     },
-    onError: handleMutationError,
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
 
   const save = useMutation({
+    onMutate: captureMutationScope,
     mutationFn: () => {
       const payload = {
         organizationId,
@@ -2136,15 +2156,17 @@ const QuoteWorkspace = ({
         },
       );
     },
-    onSuccess: (result) => {
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
       completeRequest("save");
       applyQuoteResult(result, organizationId, sessionScope);
       setNotice("Quote saved.");
     },
-    onError: handleMutationError,
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
 
   const lineChange = useMutation({
+    onMutate: captureMutationScope,
     mutationFn: (lineChanges: unknown[]) => {
       const payload = {
         organizationId,
@@ -2159,55 +2181,60 @@ const QuoteWorkspace = ({
         { expectedRevision: quote!.revision, lineChanges },
       );
     },
-    onSuccess: (result) => {
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
       completeRequest("line-change");
       applyQuoteResult(result, organizationId, sessionScope);
       setEditingLineId("");
       setAddEditorVersion((value) => value + 1);
       setNotice("Quote line saved.");
     },
-    onError: handleMutationError,
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
 
   const duplicate = useMutation({
+    onMutate: captureMutationScope,
     mutationFn: () =>
       quoteApi.duplicate(
         organizationId,
         quote!.quote.quoteId,
         requestId("duplicate", { organizationId, quoteId: quote!.quote.quoteId }),
       ),
-    onSuccess: (result) => {
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
       completeRequest("duplicate");
       applyQuoteResult(result, organizationId, sessionScope);
       setNotice(`New Draft Quote #${result.quote.number.display} created.`);
       load(result.quote.quote.quoteId);
     },
-    onError: handleMutationError,
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
 
   const action = useMutation({
-    mutationFn: () =>
-      quoteApi.action(
-        organizationId,
-        quote!.quote.quoteId,
+    onMutate: captureMutationScope,
+    mutationFn: (input: NonNullable<typeof sendRequest>) => {
+      if (!isCurrentMutation(input)) throw { code: "SESSION_CONTEXT_CHANGED", message: "The Quote editor context changed. Verify the existing delivery request before retrying." };
+      if (!currentQuoteAuthority.current.canSend || !currentQuoteAuthority.current.csrfReady) throw { code: "FORBIDDEN", message: "Quote delivery is unavailable for the current session." };
+      return quoteApi.action(
+        input.organizationId,
+        input.quoteId,
         "send",
-        requestId("action:send", {
-          organizationId,
-          quoteId: quote!.quote.quoteId,
-          revision: quote!.revision,
-        }),
-        quote!.revision,
-      ),
-    onSuccess: (result) => {
+        input.businessRequestId,
+        input.revision,
+      );
+    },
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
       completeRequest("action:send");
       applyQuoteResult(result, organizationId, sessionScope);
       setSendDialogOpen(false);
       setNotice("Quote PDF delivered to the selected contact and recorded as immutable Sales evidence.");
     },
-    onError: handleMutationError,
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
 
   const accept = useMutation({
+    onMutate: captureMutationScope,
     mutationFn: () =>
       quoteApi.accept(
         organizationId,
@@ -2219,7 +2246,8 @@ const QuoteWorkspace = ({
         }),
         quote!.revision,
       ),
-    onSuccess: (result) => {
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
       completeRequest("accept");
       applyQuoteResult({ quote: result.quote }, organizationId, sessionScope);
       setAcceptDialogOpen(false);
@@ -2229,19 +2257,42 @@ const QuoteWorkspace = ({
       });
       openOrder?.(result.orderId);
     },
-    onError: handleMutationError,
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
   const terminal = useMutation({
+    onMutate: captureMutationScope,
     mutationFn: (input: Readonly<{ action: "decline" | "void"; reason: string }>) => quoteApi.action(organizationId, quote!.quote.quoteId, input.action, requestId(`action:${input.action}`, { organizationId, quoteId: quote!.quote.quoteId, revision: quote!.revision, reason: input.reason }), quote!.revision, input.reason),
-    onSuccess: (result) => { applyQuoteResult(result, organizationId, sessionScope); setNotice("Quote lifecycle outcome recorded as immutable Sales evidence."); },
-    onError: handleMutationError,
+    onSuccess: (result, _variables, scope) => { if (!isCurrentMutation(scope)) return; applyQuoteResult(result, organizationId, sessionScope); setNotice("Quote lifecycle outcome recorded as immutable Sales evidence."); },
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
+  const revise = useMutation({
+    onMutate: captureMutationScope,
+    mutationFn: () => quoteApi.action(organizationId, quote!.quote.quoteId, "revise", requestId("action:revise", {
+      organizationId, quoteId: quote!.quote.quoteId, revision: quote!.revision,
+    }), quote!.revision),
+    onSuccess: (result, _variables, scope) => {
+      if (!isCurrentMutation(scope)) return;
+      completeRequest("action:revise");
+      applyQuoteResult(result, organizationId, sessionScope);
+      setNotice("Internal revision started. The committed customer publication is unchanged.");
+    },
+    onError: (error, _variables, scope) => handleMutationError(error, scope),
+  });
+  const publicationBusy = loading || create.isPending || save.isPending || action.isPending || accept.isPending || terminal.isPending || revise.isPending || lineChange.isPending || duplicate.isPending;
+  const openSendDialog = () => {
+    if (!isCurrentMutation(mutationScope) || !currentQuoteAuthority.current.canSend || !currentQuoteAuthority.current.csrfReady || !quote || !canSend || !csrfReady || dirty || publicationBusy) return;
+    const payload = { organizationId, quoteId: quote.quote.quoteId, revision: quote.revision };
+    setSendRequest({ ...payload, sessionScope, businessRequestId: requestId("action:send", payload) });
+    setSendDialogOpen(true);
+  };
+  const currentSendRequest = sendRequest && isCurrentMutation(sendRequest) && sendRequest.revision === quote?.revision ? sendRequest : null;
 
   const mutationError =
     error ||
     create.error ||
     save.error ||
     action.error ||
+    revise.error ||
     terminal.error ||
     accept.error ||
     lineChange.error ||
@@ -2265,7 +2316,7 @@ const QuoteWorkspace = ({
             requestedDueDate={requestedDueDate}
             expiresAt={expiresAt}
             termsCode={termsCode}
-            canEdit={canEdit}
+            canEdit={canEdit && !publicationBusy}
             readOnly={locked}
             onCustomerChange={(value) => {
               const next = clearContactForCustomerChange(value);
@@ -2311,7 +2362,7 @@ const QuoteWorkspace = ({
             <button
               className="button secondary"
               type="button"
-              disabled={!canCreate || duplicate.isPending || !csrfReady}
+              disabled={!canCreate || publicationBusy || !csrfReady}
               onClick={() => duplicate.mutate()}
             >
               {duplicate.isPending ? "Duplicating…" : "Duplicate Quote"}
@@ -2319,30 +2370,32 @@ const QuoteWorkspace = ({
             <button
               className="button secondary"
               type="button"
-              disabled={!canEdit || save.isPending || !csrfReady}
+              disabled={!canEdit || publicationBusy || !csrfReady}
               onClick={() => save.mutate()}
             >
               {save.isPending ? "Saving…" : "Save"}
             </button>
-            {quote.quote.deliveryState === "not_sent" && canSend && (
+            {dirty && <button className="button secondary" type="button" disabled={publicationBusy} onClick={resetQuoteDraft}>Cancel unsaved changes</button>}
+            {dirty && <p role="status">Save or cancel internal edits before publishing.</p>}
+            {quote.quote.deliveryState === "not_sent" && !quote.publishedCheckpointId && quote.quote.acceptanceState === "not_accepted" && (quote.quote.lifecycleState ?? "open") === "open" && canSend && (
               <button
                 className="button"
                 type="button"
-                disabled={action.isPending || !csrfReady}
-                onClick={() => setSendDialogOpen(true)}
+                disabled={publicationBusy || dirty || !csrfReady}
+                onClick={openSendDialog}
               >
                 Send Quote
               </button>
             )}
             {(quote.quote.lifecycleState ?? "open") === "open" && !quote.quote.convertedOrderId && (
-              <button className="button secondary" type="button" disabled={terminal.isPending || !csrfReady} onClick={() => {
+              <button className="button secondary" type="button" disabled={!canEdit || publicationBusy || !csrfReady} onClick={() => {
                 const action = quote.quote.deliveryState === "sent" ? "decline" : "void";
                 const reason = window.prompt(action === "decline" ? "Customer decline reason (required):" : "Void reason (required):");
                 if (reason?.trim()) terminal.mutate({ action, reason: reason.trim() });
                 else if (reason !== null) setNotice("A reason is required.");
               }}>{quote.quote.deliveryState === "sent" ? "Record decline" : "Void Quote"}</button>
             )}
-            {quote.quote.deliveryState === "sent" &&
+            {quote.publishedCheckpointId && quote.publishedEvidenceStatus === "modern" &&
               quote.quote.acceptanceState === "not_accepted" &&
               canEdit &&
               canSend &&
@@ -2350,7 +2403,7 @@ const QuoteWorkspace = ({
                 <button
                   className="button"
                   type="button"
-                  disabled={accept.isPending || !csrfReady || quote.quote.taxComposition?.status === "unresolved"}
+                   disabled={publicationBusy || !csrfReady || quote.quote.taxComposition?.status === "unresolved"}
                   onClick={() => setAcceptDialogOpen(true)}
                 >
                   Accept Quote & Create Order
@@ -2374,7 +2427,7 @@ const QuoteWorkspace = ({
                     <button
                       type="button"
                       className="v2-sales-add-line"
-                      disabled={!canEdit || lineChange.isPending || !csrfReady}
+                      disabled={!canEdit || publicationBusy || !csrfReady}
                       onClick={() => setEditingLineId("__add__")}
                     >
                       Add line
@@ -2637,6 +2690,30 @@ const QuoteWorkspace = ({
                 ),
                 History: (
                   <section className="v2-sales-history">
+                    <QuotePublicationPanel
+                      key={`${sessionScope}:${organizationId}:${quote.quote.quoteId}`}
+                      organizationId={organizationId} sessionScope={sessionScope} quoteId={quote.quote.quoteId} revision={quote.revision}
+                      publishedCheckpointId={quote.publishedCheckpointId} publishedEvidenceStatus={quote.publishedEvidenceStatus}
+                      canView={canView}
+                      loadHistory={async () => {
+                        const scope = mutationScope;
+                        const inactive = { code: "SESSION_CONTEXT_CHANGED", message: "The Quote editor context changed. This history response was not applied." };
+                        if (!isCurrentMutation(scope)) throw inactive;
+                        try {
+                          const result = await quoteApi.publications(organizationId, quote.quote.quoteId);
+                          if (!isCurrentMutation(scope)) throw inactive;
+                          return result;
+                        } catch (error) {
+                          if (isCurrentMutation(scope)) handleMutationError(error, scope);
+                          throw error;
+                        }
+                      }}
+                      canResend={canSend && csrfReady && !locked && (quote.quote.lifecycleState ?? "open") === "open" && quote.quote.acceptanceState === "not_accepted" && !dirty}
+                      canRevise={canEdit && csrfReady && !locked && quote.quote.deliveryState === "sent" && (quote.quote.lifecycleState ?? "open") === "open" && quote.quote.acceptanceState === "not_accepted" && !dirty}
+                      busy={publicationBusy}
+                      onResend={openSendDialog}
+                      onRevise={() => { if (isCurrentMutation(mutationScope) && currentQuoteAuthority.current.canEdit && currentQuoteAuthority.current.csrfReady && canEdit && csrfReady && !dirty && !publicationBusy) revise.mutate(); }}
+                    />
                     <h2>History</h2>
                     {quote.checkpoints.length ? (
                       <ol>
@@ -2790,12 +2867,12 @@ const QuoteWorkspace = ({
               <button
                 className="button"
                 type="button"
-                onClick={() => action.mutate()}
+                onClick={() => { if (currentSendRequest && isCurrentMutation(currentSendRequest) && currentQuoteAuthority.current.canSend && currentQuoteAuthority.current.csrfReady && canSend && !dirty && !publicationBusy) action.mutate(currentSendRequest); }}
                 disabled={
-                  !csrfReady || action.isPending || sendReadiness.isLoading || sendReadiness.data?.canSend !== true
+                  !currentSendRequest || !canSend || dirty || !csrfReady || publicationBusy || sendReadiness.isLoading || sendReadiness.isFetching || sendReadiness.isError || sendReadiness.data?.canSend !== true
                 }
               >
-                {action.isPending ? "Sending…" : "Send Quote PDF"}
+                {action.isPending ? "Sending…" : quote.publishedCheckpointId ? "Resend Current Internal Revision PDF" : "Send Quote PDF"}
               </button>
             </footer>
           </div>
@@ -2819,27 +2896,11 @@ const QuoteWorkspace = ({
               </button>
             </header>
             <p className="v2-quote-send-notice">
-              This accepts the frozen commercial Quote and creates its canonical
-              Order and Draft Invoice in one operation. It does not send
-              customer communication, take payment, or check inventory
-              availability.
+              This accepts the last committed published revision of this Quote,
+              not the current internal draft, and creates its canonical Order
+              and Draft Invoice in one operation. It does not send customer
+              communication, take payment, or check inventory availability.
             </p>
-            <dl className="v2-quote-accept-summary">
-              <div>
-                <dt>Contact</dt>
-                <dd>
-                  {recipientContact.data?.displayName ?? "Selected contact"}
-                </dd>
-              </div>
-              <div>
-                <dt>Quote total</dt>
-                <dd>{money(quote.totals.sellingLineAmount)}</dd>
-              </div>
-              <div>
-                <dt>Lines</dt>
-                <dd>{quote.quote.lines.length}</dd>
-              </div>
-            </dl>
             <footer>
               <button
                 className="button secondary"
@@ -2853,7 +2914,7 @@ const QuoteWorkspace = ({
                 className="button"
                 type="button"
                 onClick={() => accept.mutate()}
-                disabled={!csrfReady || accept.isPending}
+                disabled={!canEdit || !canSend || !canConvert || !quote.publishedCheckpointId || quote.publishedEvidenceStatus !== "modern" || !csrfReady || publicationBusy}
               >
                 {accept.isPending ? "Accepting…" : "Accept & Create Order"}
               </button>

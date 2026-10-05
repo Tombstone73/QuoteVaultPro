@@ -3,13 +3,12 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe } from "@stripe/stripe-js";
 import { useQuery } from "@tanstack/react-query";
 import "./portal.css";
+import { PortalQuotes, PortalQuoteDetail } from "./PortalQuotes";
 
 type Money = Readonly<{ cents: number; currency: string }>;
 type Session = Readonly<{ portal: Readonly<{ displayName: string; customerId: string }>; returnTo: string; csrfToken: string; sessionScope: string }>;
 type OrderSummary = Readonly<{ orderId: string; number: string; purchaseOrderNumber?: string; createdAt: string; requestedDueDate?: string; status: "open" | "completed" | "cancelled"; total: Money; payment: "unbilled" | "open_balance" | "settled"; fulfillment: "not_required" | "required" | "partial" | "fulfilled" }>;
 type OrderDetail = OrderSummary & Readonly<{ lines: readonly Readonly<{ lineId: string; description: string; quantity: number; unitPrice: Money; lineTotal: Money }>[]; shipments: readonly Readonly<{ shipmentId: string; status: "prepared" | "shipped"; carrier?: string; service?: string; trackingNumber?: string; shippedAt?: string; quantity: number }>[] }>;
-type QuoteSummary = Readonly<{ quoteId: string; number: string; createdAt: string; requestedDueDate?: string; status: string; total: Money; convertedOrderId?: string }>;
-type QuoteDetail = QuoteSummary & Readonly<{ lines: readonly Readonly<{ lineId: string; description: string; quantity: number; unitPrice: Money; lineTotal: Money }>[] }>;
 type OrdersDashboard = Readonly<{ recentOrders: readonly OrderSummary[]; currentOrderCount: number; historicalOrderCount: number; openBalanceOrderCount: number }>;
 type PortalProof = Readonly<{ proofVersionId: string; orderNumber: string; lineDescription: string; revision: number; issuedAt: string; status: "awaiting_response" | "approved" | "revision_requested" | "superseded"; actionable: boolean; response?: Readonly<{ outcome: string; comment?: string; respondedAt: string }>; artifacts: readonly Readonly<{ artworkFileId: string; filename: string; contentType: string; viewUrl: string }>[] }>;
 type CatalogItem = Readonly<{ productId: string; displayName: string; requiresDimensions: boolean; currency: string }>;
@@ -133,20 +132,6 @@ const OrderDetailPage = ({ orderId, csrfToken }: Readonly<{ orderId: string; csr
   return <><PageHeader title={order.number} description={`Placed ${date(order.createdAt)}${order.purchaseOrderNumber ? ` · PO ${order.purchaseOrderNumber}` : ""}${order.requestedDueDate ? ` · Due ${date(order.requestedDueDate)}` : ""}`} actions={<a className="portal-quiet" href="/portal/orders">All orders</a>} />{uploadNotice && <Notice tone="success">{uploadNotice}</Notice>}{error && <Notice tone="warning">{error}</Notice>}<div className="portal-detail-grid"><div><Section title="Order summary"><dl className="portal-facts"><div><dt>Status</dt><dd><Badge>{status(order.status)}</Badge></dd></div><div><dt>Fulfillment</dt><dd><Badge>{status(order.fulfillment)}</Badge></dd></div><div><dt>Order total</dt><dd>{money(order.total)}</dd></div><div><dt>Payment</dt><dd>{status(order.payment)}</dd></div></dl></Section><Section title="Items">{order.lines.map((line) => <article className="portal-line portal-line-artwork" key={line.lineId}><div><strong>{line.description}</strong><small>Quantity {line.quantity.toLocaleString()} · {money(line.unitPrice)} each</small><label className="portal-artwork-upload">Add source artwork (PDF)<input type="file" accept="application/pdf" disabled={uploadingLineId === line.lineId} onChange={(event) => { void upload(line.lineId, event.currentTarget.files?.[0]); event.currentTarget.value = ""; }} /></label></div><strong>{money(line.lineTotal)}</strong></article>)}</Section><Section title="Shipments & pickup">{order.shipments.length ? <div className="portal-shipment-list">{order.shipments.map((shipment) => <article key={shipment.shipmentId}><div><strong>{shipment.carrier ?? (shipment.status === "shipped" ? "Shipment" : "Preparing shipment")}</strong><small>{shipment.service ?? ""}{shipment.trackingNumber ? ` · ${shipment.trackingNumber}` : ""}{shipment.shippedAt ? ` · Shipped ${date(shipment.shippedAt)}` : ""}</small></div><Badge tone={shipment.status === "shipped" ? "success" : undefined}>{status(shipment.status)}</Badge></article>)}</div> : <Empty title="Nothing has shipped yet">Tracking appears here for each shipment, including partial shipments.</Empty>}</Section></div><aside><Section title="Need help?"><p className="portal-muted">Your account representative can help with changes to your order.</p></Section></aside></div></>;
 };
 
-const Quotes = () => {
-  const [items, setItems] = useState<readonly QuoteSummary[] | null>(null); const [error, setError] = useState("");
-  useEffect(() => { void request<{ items: readonly QuoteSummary[] }>("/v2/portal/quotes").then((result) => setItems(result.items)).catch((reason) => setError(reason instanceof Error ? reason.message : "Quotes are unavailable.")); }, []);
-  if (!items && !error) return <Loading />; const active = (items ?? []).filter((quote) => !quote.convertedOrderId); const history = (items ?? []).filter((quote) => Boolean(quote.convertedOrderId));
-  return <><PageHeader title="Quotes" description="Pricing we have prepared for you." />{error && <Notice tone="warning">{error}</Notice>}<Section title={`Open quotes (${active.length})`}>{active.length ? <QuoteRows items={active} /> : <Empty title="No open quotes">Ask your account representative for a quote and it will appear here.</Empty>}</Section><Section title="Quote history"><>{history.length ? <QuoteRows items={history} /> : <Empty title="No past quotes yet">Accepted and converted quotes remain available here.</Empty>}</></Section></>;
-};
-const QuoteRows = ({ items }: Readonly<{ items: readonly QuoteSummary[] }>) => <List>{items.map((quote) => <a key={quote.quoteId} href={`/portal/quotes/${encodeURIComponent(quote.quoteId)}`}><div><strong>{quote.number}</strong><small>{date(quote.createdAt)}{quote.requestedDueDate ? ` · Due ${date(quote.requestedDueDate)}` : ""}</small></div><div className="portal-row-summary"><Badge>{status(quote.status)}</Badge><strong>{money(quote.total)}</strong></div></a>)}</List>;
-const QuoteDetailPage = ({ quoteId }: Readonly<{ quoteId: string }>) => {
-  const [quote, setQuote] = useState<QuoteDetail | null>(null); const [error, setError] = useState("");
-  useEffect(() => { void request<QuoteDetail>(`/v2/portal/quotes/${encodeURIComponent(quoteId)}`).then(setQuote).catch((reason) => setError(reason instanceof Error ? reason.message : "This Quote could not be opened.")); }, [quoteId]);
-  if (!quote && !error) return <Loading />; if (!quote) return <><PageHeader title="Quote not available" description="We could not open this Quote." /><Notice tone="warning">{error}</Notice></>;
-  return <><PageHeader title={quote.number} description={`Prepared ${date(quote.createdAt)}${quote.requestedDueDate ? ` · Due ${date(quote.requestedDueDate)}` : ""}`} actions={<a className="portal-quiet" href="/portal/quotes">All quotes</a>} /><Section title="Quote details"><div className="portal-line-list">{quote.lines.map((line) => <article className="portal-line" key={line.lineId}><div><strong>{line.description}</strong><small>Quantity {line.quantity.toLocaleString()} · {money(line.unitPrice)} each</small></div><strong>{money(line.lineTotal)}</strong></article>)}</div><dl className="portal-total"><dt>Total</dt><dd>{money(quote.total)}</dd></dl></Section>{quote.convertedOrderId ? <Notice tone="success">This Quote was converted to an Order.</Notice> : <Notice>Quote acceptance is completed through your account representative until a canonical portal acceptance contract is available.</Notice>}</>;
-};
-
 const Proofs = () => {
   const [items, setItems] = useState<readonly PortalProof[] | null>(null); const [error, setError] = useState("");
   useEffect(() => { void request<{ items: readonly PortalProof[] }>("/v2/portal/proofs").then((result) => setItems(result.items)).catch((reason) => setError(reason instanceof Error ? reason.message : "Proofs are unavailable.")); }, []);
@@ -207,8 +192,8 @@ const AuthenticatedPortal = ({ session }: Readonly<{ session: Session }>) => {
   if (path === "/portal" || path === "/portal/") page = <Home session={session} />;
   else if (path === "/portal/orders") page = <Orders />;
   else if (orderId) page = <OrderDetailPage orderId={orderId} csrfToken={session.csrfToken} />;
-  else if (path === "/portal/quotes") page = <Quotes />;
-  else if (quoteId) page = <QuoteDetailPage quoteId={quoteId} />;
+   else if (path === "/portal/quotes") page = <PortalQuotes key={session.sessionScope} sessionScope={session.sessionScope} />;
+   else if (quoteId) page = <PortalQuoteDetail key={`${session.sessionScope}:${quoteId}`} quoteId={quoteId} sessionScope={session.sessionScope} />;
   else if (path === "/portal/proofs") page = <Proofs />;
   else if (proofId) page = <ProofDetailPage proofId={proofId} csrfToken={session.csrfToken} />;
   else if (path === "/portal/catalog") page = <Catalog csrfToken={session.csrfToken} />;

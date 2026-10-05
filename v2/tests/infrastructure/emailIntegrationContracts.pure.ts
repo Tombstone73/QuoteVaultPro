@@ -64,8 +64,17 @@ assert.equal(finishes.length, 1, "an authenticated session and communications.co
 assert.deepEqual(redirects.slice(1), Array.from({ length: 2 }, () => ({ status: 302, location: "https://workspace.example/settings?email=error" })));
 const delivery = source("v2/infrastructure/sales/postgresQuoteDelivery.ts");
 assert.match(delivery, /this\.integrations\.requireReady\(context\.organizationId\)/u);
-assert.match(delivery, /const prepared = await this\.prepare\(context, input, integration\)/u);
-assert.ok(delivery.indexOf("this.integrations.requireReady") < delivery.indexOf("this.prepare(context, input, integration)"));
+assert.match(delivery, /const prepared = await this\.prepare\(context, input\)/u);
+assert.match(delivery, /this\.deliver\(prepared\.integration/u);
+const preparation = delivery.slice(delivery.indexOf("private async prepare("), delivery.indexOf("private async routability("));
+const readiness = preparation.indexOf("const integration = await this.integrations.requireReady(context.organizationId)");
+assert.ok(readiness >= 0, "new delivery preparation must require tenant email readiness under the Quote lock");
+assert.ok(preparation.indexOf('if (reservation.kind === "replay")') >= 0 && preparation.indexOf('if (reservation.kind === "replay")') < readiness,
+  "committed replay must qualify its receipt without preparing an email provider");
+assert.ok(preparation.indexOf("await persistPreparedQuoteDeliveryAttempt(") > readiness,
+  "email readiness must precede creation of a new provider attempt");
+assert.ok(preparation.indexOf('await client.query("COMMIT"); return') > readiness,
+  "email readiness must precede committing new delivery preparation");
 assert.ok(!delivery.includes("FROM email_settings"));
 assert.match(delivery, /providerRequiresReauth/u);
 assert.match(delivery, /quoteRecipientReadiness/u);

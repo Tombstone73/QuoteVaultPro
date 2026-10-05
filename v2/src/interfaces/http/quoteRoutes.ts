@@ -24,6 +24,8 @@ import busboy from "busboy";
 export interface QuoteCustomerDocumentPort {
   quotePdf(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId): Promise<Uint8Array>;
   quote(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId): Promise<Readonly<{ kind: "quote" | "order"; number: string }>>;
+  quoteCheckpointPdf?(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId, checkpointId: string): Promise<Uint8Array>;
+  quoteCheckpointPdfEvidence?(organizationId: import("../../modules/shared/commercialValues.js").OrganizationId, quoteId: import("../../modules/shared/commercialValues.js").QuoteId, checkpointId: string): Promise<"archived-pdf" | "checkpoint-preview">;
 }
 export interface QuoteDeliveryPort {
   send(context: OperationContext, input: QuoteLifecycleInput): Promise<import("../../errors/applicationError.js").ApplicationResult<QuoteOperationResult>>;
@@ -151,6 +153,8 @@ const quoteForUi = (value: QuoteReadModel) => {
     },
     number: value.number,
     revision: value.revision,
+    publishedCheckpointId: value.publishedCheckpointId,
+    publishedEvidenceStatus: value.publishedEvidenceStatus,
     checkpoints: value.checkpoints,
     totals: {
       currency,
@@ -201,6 +205,7 @@ const context = async (
     request,
     organizationId,
   );
+  if (principal.kind === "portal") throw new V2ApplicationError("FORBIDDEN", "Use the customer-safe published Quote read.");
   return {
     principal,
     organizationId,
@@ -382,6 +387,14 @@ export const createQuoteRouter = (
       response.json({ ok: true, data: selected ? { id: selected.id, label: selected.label } : null });
     } catch (cause) { error(response, cause); }
   });
+  router.get("/:quoteId/publications", async (request, response) => {
+    try {
+      response.setHeader("Cache-Control", "private, no-store");
+      const result = await dependencies.service.publicationHistory(await context(request, dependencies), brandedId<"QuoteId">(request.params.quoteId));
+      if (!result.ok) return error(response, result.error);
+      response.json({ ok: true, data: { items: result.value } });
+    } catch (cause) { error(response, cause); }
+  });
   router.get("/:quoteId", async (request, response) => {
     try {
       const result = await dependencies.service.read(
@@ -405,15 +418,28 @@ export const createQuoteRouter = (
   });
   router.get("/:quoteId/document.pdf", async (request, response) => {
     try {
+      response.setHeader("Cache-Control", "private, no-store");
       if (!dependencies.documents) throw new V2ApplicationError("INTERNAL_ERROR", "Quote document runtime is unavailable.");
       const operation = await context(request, dependencies);
       const quoteId = brandedId<"QuoteId">(request.params.quoteId);
       const read = await dependencies.service.read(operation, quoteId);
       if (!read.ok) return error(response, read.error);
-      const document = await dependencies.documents.quote(brandedId<"OrganizationId">(operation.organizationId), quoteId);
-      const bytes = await dependencies.documents.quotePdf(brandedId<"OrganizationId">(operation.organizationId), quoteId);
+      const checkpointId = typeof request.query.checkpointId === "string" ? request.query.checkpointId : read.value.publishedCheckpointId ?? undefined;
+      let publication: import("../../modules/sales/contracts.js").QuoteCheckpoint | undefined;
+      if (checkpointId) {
+        const history = await dependencies.service.publicationHistory(operation, quoteId);
+        if (!history.ok) return error(response, history.error);
+        publication = history.value.find(item => item.checkpointId === checkpointId);
+        if (!publication) throw new V2ApplicationError("NOT_FOUND", "Committed Quote publication was not found.");
+      }
+      if (checkpointId && !dependencies.documents.quoteCheckpointPdf) throw new V2ApplicationError("RETRYABLE_FAILURE", "Quote history PDF is unavailable.");
+      const document = checkpointId ? { number: publication!.sentEvidence?.documentNumber ?? "Historical_Quote" } : await dependencies.documents.quote(brandedId<"OrganizationId">(operation.organizationId), quoteId);
+      const bytes = checkpointId ? await dependencies.documents.quoteCheckpointPdf!(brandedId<"OrganizationId">(operation.organizationId), quoteId, checkpointId)
+        : await dependencies.documents.quotePdf(brandedId<"OrganizationId">(operation.organizationId), quoteId);
+      const evidence = checkpointId ? await dependencies.documents.quoteCheckpointPdfEvidence?.(brandedId<"OrganizationId">(operation.organizationId), quoteId, checkpointId) ?? "checkpoint-preview" : "internal-draft-preview";
       response.status(200).setHeader("content-type", "application/pdf");
-      response.setHeader("content-disposition", `inline; filename=\"Quote_${document.number.replace(/[^a-z0-9._-]+/gi, "-")}.pdf\"`);
+      response.setHeader("X-Quote-Document-Evidence", evidence);
+      response.setHeader("content-disposition", `inline; filename=\"Quote_${evidence === "archived-pdf" ? "" : "Preview_"}${document.number.replace(/[^a-z0-9._-]+/gi, "-")}.pdf\"`);
       response.send(Buffer.from(bytes));
     } catch (cause) { error(response, cause); }
   });
@@ -443,6 +469,14 @@ export const createQuoteRouter = (
         expectedRevision: String((request.body as { expectedRevision?: unknown }).expectedRevision ?? ""),
       };
       await send(response, await dependencies.delivery.send(await context(request, dependencies, true), body));
+    } catch (cause) { error(response, cause); }
+  });
+  router.post("/:quoteId/revise", async (request, response) => {
+    try {
+      await send(response, await dependencies.service.revise(await context(request, dependencies, true), {
+        businessRequestId: requestId(request.body), quoteId: brandedId<"QuoteId">(request.params.quoteId),
+        expectedRevision: String(request.body?.expectedRevision ?? ""),
+      }));
     } catch (cause) { error(response, cause); }
   });
   for (const terminal of ["decline", "void"] as const) router.post(`/:quoteId/${terminal}`, async (request, response) => {

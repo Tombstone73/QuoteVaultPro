@@ -41,6 +41,8 @@ export type AttributionSnapshot =
   | Readonly<{ principalKind: Exclude<PrincipalKind, "delegated_ai">; subjectId: string; staffActorUserId?: never }>
   | Readonly<{ principalKind: "delegated_ai"; subjectId: string; staffActorUserId: string }>;
 
+export type { QuotePublicationReadPort, PublishedQuoteSummary, PublishedQuoteDetail } from "./quotePublication.js";
+
 export const assertSellingPriceDecision = (decision: SellingPriceDecision, pricingResult: PricingResult): SellingPriceDecision => {
   if (decision.pricingResultId !== pricingResult.id) throw new Error("Selling price must reference its PricingResult.");
   if ([decision.calculatedUnitAmount, decision.calculatedLineAmount, decision.resultingUnitAmount, decision.resultingLineAmount].some((amount) => amount.currency !== pricingResult.currency)) throw new Error("Selling price currency must match PricingResult.");
@@ -138,7 +140,7 @@ type QuoteCheckpointBase = Readonly<{
   /** Captured at a customer-document/issuance boundary; absent only on
    * historical checkpoints created before organization identity snapshots. */
   organizationPresentation?: DocumentOrganizationIdentity;
-  commercial: Readonly<{ jobLabel?: string; purchaseOrderNumber?: string; requestedDueDate?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
+  commercial: Readonly<{ jobLabel?: string; purchaseOrderNumber?: string; requestedDueDate?: string; expiresAt?: string; currency: CurrencyCode; terms: CommercialTerms; lines: readonly SalesLineSnapshot[]; requestedFulfillment?: RequestedFulfillment; sellingAdjustment?: SalesOrderAdjustment; commercialCharge?: CommercialCharge; taxComposition?: SalesTaxComposition; taxEvidence?: Readonly<{ policyVersion: string; amounts: readonly Money[] }> }>;
   sourceCheckpointId?: QuoteCheckpointId;
   sentEvidence?: QuoteSentDeliveryEvidence;
 }>;
@@ -169,6 +171,8 @@ export type PreparedQuoteDeliveryEvidence = Readonly<{
   organizationPresentation: DocumentOrganizationIdentity;
   recipientEmail: string;
   documentSha256: string;
+  /** New sends archive exact bytes. Historical absence is never backfilled. */
+  documentPdfBase64?: string;
   documentNumber: string;
   documentDate: string;
 }>;
@@ -180,6 +184,7 @@ export const quoteCommercialSnapshot = (quote: QuoteCurrentState): QuoteCheckpoi
   ...(quote.jobLabel !== undefined ? { jobLabel: quote.jobLabel } : {}),
   ...(quote.purchaseOrderNumber ? { purchaseOrderNumber: quote.purchaseOrderNumber } : {}),
   ...(quote.requestedDueDate ? { requestedDueDate: quote.requestedDueDate } : {}),
+  ...(quote.expiresAt ? { expiresAt: quote.expiresAt } : {}),
   ...(quote.requestedFulfillment ? { requestedFulfillment: quote.requestedFulfillment } : {}),
   ...(quote.sellingAdjustment ? { sellingAdjustment: quote.sellingAdjustment } : {}),
   ...(quote.commercialCharge ? { commercialCharge: quote.commercialCharge } : {}),

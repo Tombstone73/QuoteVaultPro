@@ -59,6 +59,8 @@ import { resolveV2MutationWorkerStartup } from "./mutationWorkerStartup.js";
 import { PostgresPortalProofRead } from "../../infrastructure/proofing/postgresPortalProofRead.js";
 import { PostgresProofArtifactRead } from "../../infrastructure/proofing/postgresProofArtifactRead.js";
 import { PostgresPortalCommercialRead } from "../../infrastructure/portal/postgresPortalCommercialRead.js";
+import { PostgresQuotePublicationRead } from "../../infrastructure/sales/postgresQuotePublication.js";
+import { PostgresCustomerDocumentService } from "../../infrastructure/sales/postgresCustomerDocuments.js";
 import { PostgresPortalOrderIdentityRead } from "../../infrastructure/portal/postgresPortalOrderIdentity.js";
 import { V2ApplicationError } from "../errors/applicationError.js";
 import { PermissionSetPrincipalIssuer } from "../authorization/permissionSets.js";
@@ -92,7 +94,10 @@ export const createV2DeploymentApp = (
   const contactWorkspace = new PostgresContactWorkspaceReader(pool);
   const productLifecycle = new ProductVersionLifecycleApplicationService(new PostgresProductVersionTransactionRunner(pool));
   const customerPricing = new CustomerCommercialPricingAdapter(new V2PricingParityAdapter(), customerCommercialStore);
-  const quote = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const quoteRuntime = composeAuthenticatedQuoteRuntime({ pool, trustedHostIdentity, trustedHostMiddleware });
+  const customerDocuments = new PostgresCustomerDocumentService(pool);
+  const publications = new PostgresQuotePublicationRead(pool, customerDocuments);
+  const quote = { ...quoteRuntime, dependencies: { ...quoteRuntime.dependencies, documents: customerDocuments } };
   const orderService = new OrderApplicationService(
     new PostgresOrderTransactionRunner(
       pool,
@@ -190,7 +195,7 @@ export const createV2DeploymentApp = (
     emailIntegration,
     quickBooksIntegration,
     { principals: billing.dependencies.principals, connections:billing.dependencies.stripeConnect },
-    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}), commercial: new PostgresPortalCommercialRead(pool), orders: portalOrders, artwork: portalArtwork },
+    { middleware: authentication.portalMiddleware, principal: authentication.portalPrincipal, proofing: proofing.dependencies.service, proofs: new PostgresPortalProofRead(pool,{file:async(organizationId,artworkFileId)=>{const file=await artwork.dependencies.delivery?.file(organizationId,artworkFileId);if(!file)throw new V2ApplicationError("NOT_FOUND","Proof file was not found.");return file;}}), commercial: new PostgresPortalCommercialRead(pool, publications), orders: portalOrders, artwork: portalArtwork },
     inbound,
     customerCommercial,
     aiAssistant,

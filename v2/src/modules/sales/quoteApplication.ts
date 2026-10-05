@@ -141,6 +141,10 @@ export type QuoteReadModel = Readonly<{
   quote: QuoteCurrentState;
   number: SalesDocumentNumber;
   revision: string;
+  /** Null or absent evidence never authorizes acceptance. Current adapters
+   * explicitly identify the committed successful publication. */
+  publishedCheckpointId?: QuoteCheckpointId | null;
+  publishedEvidenceStatus?: "modern" | "historical" | null;
   checkpoints: readonly Readonly<{
     checkpointId: QuoteCheckpointId;
     kind: QuoteCheckpoint["kind"];
@@ -233,6 +237,8 @@ export interface QuoteTransaction {
     quoteId: QuoteId,
     forUpdate?: boolean,
   ): Promise<QuoteReadModel | null>;
+  readCheckpoint?(organizationId: OrganizationId, quoteId: QuoteId, checkpointId: QuoteCheckpointId): Promise<QuoteCheckpoint | null>;
+  readPublishedCheckpoints?(organizationId: OrganizationId, quoteId: QuoteId): Promise<readonly QuoteCheckpoint[]>;
   update(
     input: Readonly<{
       organizationId: OrganizationId;
@@ -605,6 +611,7 @@ export class QuoteApplicationService {
   ): Promise<ApplicationResult<QuoteReadModel>> {
     try {
       requireOperationPrincipalScope(context);
+      if (context.principal.kind === "portal") throw new V2ApplicationError("FORBIDDEN", "Use the customer-safe published Quote read.");
       const result = await this.runner.transaction(async (tx) => {
         const quote = await tx.read(
           brandedId<"OrganizationId">(context.organizationId),
@@ -624,6 +631,26 @@ export class QuoteApplicationService {
     } catch (error) {
       return failure(this.error(error));
     }
+  }
+  async publicationHistory(context: OperationContext, quoteId: QuoteId): Promise<ApplicationResult<readonly QuoteCheckpoint[]>> {
+    try {
+      requireOperationPrincipalScope(context);
+      if (context.principal.kind === "portal") throw new V2ApplicationError("FORBIDDEN", "Use the customer-safe published Quote read.");
+      return success(await this.runner.transaction(async tx => {
+        const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), quoteId);
+        if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+        requireAllowed(this.authority, context, "quote.view", current.quote.customerContact.customerId);
+        if (!tx.readPublishedCheckpoints) throw new V2ApplicationError("RETRYABLE_FAILURE", "Committed Quote history is unavailable.");
+        const checkpoints = await tx.readPublishedCheckpoints(brandedId<"OrganizationId">(context.organizationId), quoteId);
+        for (const checkpoint of checkpoints) {
+          if (checkpoint.kind !== "quote_sent" || !current.checkpoints.some(summary => summary.kind === "quote_sent" && summary.checkpointId === checkpoint.checkpointId)
+            || checkpoint.organizationId !== context.organizationId || checkpoint.sourceDocument?.quoteId !== quoteId)
+            throw new V2ApplicationError("CONFLICT", "Quote history evidence is unavailable.");
+          requireAllowed(this.authority, context, "quote.view", checkpoint.sentEvidence?.customerContact?.customerId);
+        }
+        return checkpoints;
+      }));
+    } catch (cause) { return failure(this.error(cause)); }
   }
   /** Creates a fresh Draft from frozen commercial facts, never lifecycle evidence. */
   async duplicate(
@@ -706,6 +733,7 @@ export class QuoteApplicationService {
           tx.customers,
           reference,
         );
+        requireAllowed(this.authority, context, "quote.edit", reference.customerId);
         const lines = await this.applyLineChanges(
           tx,
           context,
@@ -846,6 +874,30 @@ export class QuoteApplicationService {
       },
     );
   }
+  /** Starts a new internal revision without changing the published checkpoint.
+   * Accepted/converted sources remain locked; this never reopens an Order. */
+  async revise(context: OperationContext, input: QuoteLifecycleInput): Promise<ApplicationResult<QuoteOperationResult>> {
+    return this.mutate(context, "sales.quote.revise.v1", input, "quote.edit", async (tx, request) => {
+      const organizationId = brandedId<"OrganizationId">(context.organizationId);
+      const current = await tx.read(organizationId, input.quoteId, true);
+      if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+      requireAllowed(this.authority, context, "quote.edit", current.quote.customerContact.customerId);
+      if (current.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before revising.");
+      if (current.quote.deliveryState !== "sent" || current.quote.acceptanceState !== "not_accepted" || current.quote.lifecycleState !== "open" || current.quote.convertedOrderId)
+        throw new V2ApplicationError("CONFLICT", "Only an open, unaccepted sent Quote can start another internal revision.");
+      await validateReference(context.organizationId, tx.customers, current.quote.customerContact);
+      const applied = await tx.update({ organizationId, quoteId: input.quoteId, expectedRevision: Number(current.revision),
+        customerContact: current.quote.customerContact, jobLabel: current.quote.jobLabel, purchaseOrderNumber: current.quote.purchaseOrderNumber,
+        requestedDueDate: current.quote.requestedDueDate, expiresAt: current.quote.expiresAt, terms: current.quote.terms, lines: current.quote.lines,
+        requestedFulfillment: current.quote.requestedFulfillment, sellingAdjustment: current.quote.sellingAdjustment, commercialCharge: current.quote.commercialCharge });
+      if (!applied) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before revising.");
+      const quote = await tx.read(organizationId, input.quoteId);
+      if (!quote) throw new Error("Revised Quote could not be read.");
+      await this.history(tx, context, request.id, "sales.quote.revise.v1", { eventType: "quote_internal_revision_started", resourceId: input.quoteId,
+        changes: [{ group: "commercial_terms", kind: "terms_changed", summary: "New internal revision started. Published sent history is unchanged." }] });
+      return { quote };
+    });
+  }
   async recordDelivered(
     context: OperationContext,
     input: QuoteDeliveredInput,
@@ -947,10 +999,10 @@ export class QuoteApplicationService {
           || canonicalJson(current.quote.customerContact) !== canonicalJson(input.preparedSnapshot.customerContact)
           || canonicalJson(quoteCommercialSnapshot(current.quote)) !== canonicalJson(input.preparedSnapshot.commercial))
           throw new V2ApplicationError("STALE_STATE", "The Quote changed after its customer document was prepared.");
-        if (kind === "send" && current.quote.deliveryState !== "not_sent")
+        if (current.quote.acceptanceState === "accepted")
           throw new V2ApplicationError(
             "CONFLICT",
-            "Quote has already been sent.",
+            "An accepted Quote cannot be resent; create a new draft instead.",
           );
         const frozenTaxComposition = input.frozenTaxComposition ?? current.quote.taxComposition;
         if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved")
@@ -1017,6 +1069,7 @@ export class QuoteApplicationService {
   ): Promise<ApplicationResult<QuoteOperationResult>> {
     try {
       requireOperationPrincipalScope(context);
+      requireAllowed(this.authority, context, capability);
       if (!context.businessRequest)
         throw new V2ApplicationError(
           "VALIDATION_ERROR",
@@ -1045,8 +1098,16 @@ export class QuoteApplicationService {
               ? { staffActorUserId: staffActorId(context.principal) }
               : {}),
           });
-          if (reservation.kind === "replay")
-            return reservation.request.resultJson as QuoteOperationResult;
+          if (reservation.kind === "replay") {
+            const saved = reservation.request.resultJson as QuoteOperationResult | null;
+            if (!saved?.quote || saved.quote.quote.organizationId !== context.organizationId)
+              throw new V2ApplicationError("CONFLICT", "The Quote request has no safe completed result.");
+            const current = await tx.read(brandedId<"OrganizationId">(context.organizationId), saved.quote.quote.quoteId);
+            if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
+            requireAllowed(this.authority, context, capability, current.quote.customerContact.customerId);
+            requireAllowed(this.authority, context, capability, saved.quote.quote.customerContact.customerId);
+            return saved;
+          }
           const result = await work(tx, reservation.request);
           await tx.attribute({
             organizationId: context.organizationId,
