@@ -60,6 +60,57 @@ export function buildQuickBooksInvoiceProjection(input: {
   return { payload, economics };
 }
 
+/**
+ * Fail before an external accounting write when the exact QBO payload cannot
+ * represent the canonical local Invoice economics.  The response assertion
+ * below remains necessary, but it is deliberately not the first guard.
+ */
+export function assertQuickBooksInvoiceProjectionParity(input: {
+  invoice: CanonicalQuickBooksInvoice;
+  productLines: any[];
+  sourceCommercialLines: Array<{ id: string; description: string; amountCents: number }>;
+  projection: { payload: any; economics: ReturnType<typeof canonicalQuickBooksInvoiceEconomics> };
+}): void {
+  const expected = input.projection.economics;
+  const productLines = input.productLines ?? [];
+  const projectedMerchandiseCents = productLines.reduce((sum, line) => sum + (moneyCents(line?.Amount) ?? 0), 0);
+  const payloadSalesLines = (Array.isArray(input.projection.payload?.Line) ? input.projection.payload.Line : [])
+    .filter((line: any) => String(line?.DetailType || "") === "SalesItemLineDetail");
+  const projectedSalesCents = payloadSalesLines.reduce((sum: number, line: any) => sum + (moneyCents(line?.Amount) ?? 0), 0);
+  const projectedTaxCents = moneyCents(input.projection.payload?.TxnTaxDetail?.TotalTax ?? 0) ?? 0;
+  const expectedSalesCents = expected.merchandiseCents + expected.shippingCents;
+  const projectedTotalCents = projectedSalesCents + projectedTaxCents;
+  const sourceLinesMatchProjection = input.sourceCommercialLines.length === productLines.length
+    && input.sourceCommercialLines.every((source, index) => {
+      const projected = productLines[index];
+      return String(projected?.Description ?? "") === source.description
+        && (moneyCents(projected?.Amount) ?? null) === source.amountCents;
+    });
+
+  if (projectedMerchandiseCents !== expected.merchandiseCents
+    || projectedSalesCents !== expectedSalesCents
+    || projectedTaxCents !== expected.taxCents
+    || projectedTotalCents !== expected.totalCents
+    || !sourceLinesMatchProjection) {
+    const error: any = new Error(
+      `QuickBooks invoice pre-send economic integrity failure: expected ${expected.totalCents} cents, projected ${projectedTotalCents} cents.`,
+    );
+    error.code = "QB_INVOICE_PRE_SEND_ECONOMIC_INTEGRITY_FAILURE";
+    error.diagnostics = {
+      expected,
+      projectedMerchandiseCents,
+      projectedSalesCents,
+      projectedTaxCents,
+      projectedTotalCents,
+      productLineCount: productLines.length,
+      payloadSalesLineCount: payloadSalesLines.length,
+      sourceCommercialLineIds: input.sourceCommercialLines.map((line) => line.id),
+      sourceLinesMatchProjection,
+    };
+    throw error;
+  }
+}
+
 function moneyCents(value: unknown): number | null {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.round(numeric * 100) : null;

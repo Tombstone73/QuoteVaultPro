@@ -1,4 +1,4 @@
-import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, buildQuickBooksInvoiceProjection } from '../lib/quickBooksInvoiceProjection';
+import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, buildQuickBooksInvoiceProjection } from '../lib/quickBooksInvoiceProjection';
 
 const invoice = { subtotalCents: 40000, shippingCents: 2500, taxCents: 4250, totalCents: 46750 };
 const productLines = [{ LineNum: 1, Amount: 400, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { Qty: 1, UnitPrice: 400 }, Description: 'Product' }];
@@ -15,6 +15,11 @@ describe('QuickBooks canonical invoice projection', () => {
     expect(buildQuickBooksInvoiceProjection({ invoice: { ...invoice, shippingCents: 0, totalCents: 44250 }, qbCustomerId: 'customer-1', docNumber: 'INV-1', txnDate: '2026-09-22', productLines }).payload.Line).toEqual(productLines);
     expect(() => assertQuickBooksInvoiceEconomicParity({ invoice, qbCustomerId: 'customer-1', docNumber: 'INV-1', qbInvoice: { CustomerRef: { value: 'customer-1' }, DocNumber: 'INV-1', TotalAmt: 467.5, TxnTaxDetail: { TotalTax: 0 }, Line: [{ Description: 'Product', Amount: 400, DetailType: 'SalesItemLineDetail' }, { Description: 'Shipping', Amount: 25, DetailType: 'SalesItemLineDetail' }] } })).toThrow('expected tax 4250');
     expect(() => assertQuickBooksInvoiceEconomicParity({ invoice, qbCustomerId: 'customer-1', docNumber: 'INV-1', qbInvoice: { CustomerRef: { value: 'customer-1' }, DocNumber: 'INV-1', TotalAmt: 467.5, TxnTaxDetail: { TotalTax: 42.5 }, Line: [{ Description: 'Product', Amount: 400, DetailType: 'SalesItemLineDetail' }, { Description: 'Shipping', Amount: 25, DetailType: 'SalesItemLineDetail' }] } })).not.toThrow();
+  });
+
+  it('fails locally before a QuickBooks request when product lines contradict the canonical invoice', () => {
+    const projection = buildQuickBooksInvoiceProjection({ invoice, qbCustomerId: 'customer-1', docNumber: 'INV-1', txnDate: '2026-09-22', productLines: [{ ...productLines[0], Amount: 432.1 }] });
+    expect(() => assertQuickBooksInvoiceProjectionParity({ invoice, productLines: projection.payload.Line.slice(0, 1), sourceCommercialLines: [{ id: 'line-1', description: 'Product', amountCents: 43_210 }], projection })).toThrow('pre-send economic integrity failure');
   });
 
   it('uses only the canonical per-invoice customer shipping allocation, never carrier cost', () => {

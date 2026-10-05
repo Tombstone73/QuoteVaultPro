@@ -37,10 +37,19 @@ describe("Order mutation atomicity", () => {
   });
 
   it("rebuilds a commercial header correction from persisted billable lines and includes shipping exactly once", async () => {
-    const taxService = await source("server/services/orders/orderTaxCalculationService.ts");
+    const [taxService, invoiceService, routes] = await Promise.all([
+      source("server/services/orders/orderTaxCalculationService.ts"),
+      source("server/invoicesService.ts"),
+      source("server/routes/orders.routes.ts"),
+    ]);
 
     expect(taxService).toContain("const lines = await executor.select().from(orderLineItems)");
     expect(taxService).toContain("const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;");
     expect(taxService).toContain("total: totals.subtotal - discount + totals.taxAmount + shipping,");
+    expect(invoiceService).toContain("billablePricedLineItems,");
+    expect(invoiceService).toContain("buildInvoiceLineItemSnapshots(invoice.id, financialSnapshot.billablePricedLineItems)");
+    expect(invoiceService).toContain("buildInvoiceLineItemSnapshots(invoice.id, snapshot.billablePricedLineItems)");
+    expect(routes).toContain("A PBV2 recompute changes customer economics.");
+    expect(routes).toContain("The line write and financial fan-out are one commercial");
   });
 });

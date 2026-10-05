@@ -21,8 +21,8 @@ import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHi
 import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quickBooksHistoricalInvoiceNumbering.service';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
-import { buildQuickBooksInvoiceLinePayloadsWithDiagnostics } from './lib/downstreamEffectivePricing';
-import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, buildQuickBooksInvoiceProjection } from './lib/quickBooksInvoiceProjection';
+import { buildQuickBooksInvoiceLinePayloadsWithDiagnostics, resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
+import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, buildQuickBooksInvoiceProjection } from './lib/quickBooksInvoiceProjection';
 import { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
 import {
   resolveBillingCustomerForOrder,
@@ -1361,8 +1361,6 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
   const customer = customerContext?.customer ?? null;
   if (!customer) throw new Error('Customer not found');
 
-  const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
-
   const lineItems = await db
     .select({
       id: invoiceLineItems.id,
@@ -1387,6 +1385,47 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
   );
 
   const invoiceLines = buildQuickBooksInvoiceLinePayloadsWithDiagnostics(getBillableBundleRoots(lineItems as any[]));
+  // Economic preflight is intentionally independent of the QBO customer ID,
+  // so even creating a missing QBO Customer cannot happen before a malformed
+  // Invoice projection is rejected locally.
+  const preflightProjection = buildQuickBooksInvoiceProjection({
+    invoice: invoice as any,
+    qbCustomerId: 'preflight-only',
+    docNumber: invoiceDisplayNumber,
+    txnDate: new Date(txnDate).toISOString().split('T')[0],
+    dueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
+    productLines: invoiceLines.payloads,
+  });
+
+  // This must run before *any* QBO accounting mutation.  A failed
+  // parity check is a local reconciliation state, never a chance to let QBO
+  // calculate a contradictory customer balance and discover it afterwards.
+  try {
+    assertQuickBooksInvoiceProjectionParity({
+      invoice: invoice as any,
+      productLines: invoiceLines.payloads,
+      sourceCommercialLines: lineItems.map((line: any) => {
+        const pricing = resolveOrderLineItemInvoicePricing(line);
+        return {
+          id: String(line.id),
+          description: String(line.description || ''),
+          amountCents: pricing.effectiveTotalCents,
+        };
+      }),
+      projection: preflightProjection,
+    });
+  } catch (error: any) {
+    console.error('[QuickBooks] Invoice pre-send economic integrity failure', {
+      organizationId,
+      invoiceId,
+      invoiceLineItemIds: lineItems.map((line: any) => line.id),
+      code: error?.code ?? null,
+      diagnostics: error?.diagnostics ?? null,
+    });
+    throw error;
+  }
+
+  const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
   const projection = buildQuickBooksInvoiceProjection({
     invoice: invoice as any,
     qbCustomerId,

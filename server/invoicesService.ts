@@ -1018,6 +1018,10 @@ function buildOrderInvoiceFinancialSnapshot(order: any, lineItems: any[]) {
 
   return {
     pricedLineItems,
+    // This is the one customer-charge projection for an Order.  `pricedLineItems`
+    // intentionally retains historical/cancelled rows for operational callers,
+    // but an Invoice snapshot must never persist those rows as charges.
+    billablePricedLineItems,
     subtotalCents,
     taxCents,
     shippingCents,
@@ -1193,8 +1197,8 @@ export async function createInvoiceFromOrderInTransaction(
     });
 
     // Snapshot line items
-    if (financialSnapshot.pricedLineItems.length) {
-      const snapshotRows = buildInvoiceLineItemSnapshots(invoice.id, financialSnapshot.pricedLineItems);
+    if (financialSnapshot.billablePricedLineItems.length) {
+      const snapshotRows = buildInvoiceLineItemSnapshots(invoice.id, financialSnapshot.billablePricedLineItems);
       if (snapshotRows.length) {
         await tx.insert(invoiceLineItems).values(snapshotRows as any);
       }
@@ -1332,7 +1336,10 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   }
   const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, order.id));
   const snapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
-  const desiredRows = buildInvoiceLineItemSnapshots(invoice.id, snapshot.pricedLineItems);
+  // Replace the persisted live snapshot from the same billable projection
+  // that produced the header. Do not leak retained operational history into
+  // customer-facing Invoice rows.
+  const desiredRows = buildInvoiceLineItemSnapshots(invoice.id, snapshot.billablePricedLineItems);
   const existingRows = await tx.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id)).orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.id));
   const lineSnapshotsChanged = JSON.stringify(existingRows.map(invoiceSnapshotComparable)) !== JSON.stringify(desiredRows.map(invoiceSnapshotComparable));
   const financialChanged =

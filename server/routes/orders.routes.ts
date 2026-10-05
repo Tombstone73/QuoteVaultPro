@@ -8287,29 +8287,33 @@ export async function registerOrderRoutes(
             if (isCanceledOrder({ state: ownership.state, status: ownership.status, canceledAt: ownership.canceledAt })) {
                 return res.status(409).json({ success: false, message: "Cannot edit line items on a cancelled order." });
             }
-            const lines = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, ownership.orderId));
-            assertValidParentLink(lines as any, childId, parentLineItemId);
-            const child = lines.find((line) => line.id === childId)!;
-            const priorParentId = child.parentLineItemId ? String(child.parentLineItemId) : null;
-            if (priorParentId === parentLineItemId) return res.json({ success: true, data: enrichLineItemWithEffectivePricing(child as any) });
-            const [updated] = await db.update(orderLineItems).set({
-                parentLineItemId,
-                lineItemRole: parentLineItemId ? "child" : "standalone",
-                updatedAt: new Date(),
-            }).where(eq(orderLineItems.id, childId)).returning();
-            for (const parentId of [priorParentId, parentLineItemId].filter((id): id is string => Boolean(id))) {
-                await recalculateOrderBundleParent(parentId);
-            }
-            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId, getUserId(req.user) ?? null);
-            await recomputeOrderBillingStatus({ organizationId, orderId: String(ownership.orderId) });
-            await db.insert(auditLogs).values({
-                organizationId, userId: getUserId(req.user) ?? null,
-                actionType: parentLineItemId ? "ORDER_LINE_ITEM_PARENT_LINKED" : "ORDER_LINE_ITEM_PARENT_UNLINKED",
-                entityType: "order_line_item", entityId: childId, entityName: child.description ?? null,
-                description: parentLineItemId ? "Order line item linked to a parent line item." : "Order line item unlinked from its parent.",
-                newValues: { parentLineItemId }, oldValues: { parentLineItemId: priorParentId },
-            } as any);
-            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updated as any) });
+            const result = await db.transaction(async (tx) => {
+                const lines = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, ownership.orderId));
+                assertValidParentLink(lines as any, childId, parentLineItemId);
+                const child = lines.find((line) => line.id === childId)!;
+                const priorParentId = child.parentLineItemId ? String(child.parentLineItemId) : null;
+                if (priorParentId === parentLineItemId) return { updated: child };
+                const [updated] = await tx.update(orderLineItems).set({
+                    parentLineItemId,
+                    lineItemRole: parentLineItemId ? "child" : "standalone",
+                    updatedAt: new Date(),
+                }).where(eq(orderLineItems.id, childId)).returning();
+                for (const parentId of [priorParentId, parentLineItemId].filter((id): id is string => Boolean(id))) {
+                    await recalculateOrderBundleParent(parentId, tx);
+                }
+                const actorUserId = getUserId(req.user) ?? null;
+                await recalculateEditableOrderFinancialsInTransaction(tx, { organizationId, orderId: String(ownership.orderId), actorUserId });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(ownership.orderId), executor: tx });
+                await tx.insert(auditLogs).values({
+                    organizationId, userId: actorUserId,
+                    actionType: parentLineItemId ? "ORDER_LINE_ITEM_PARENT_LINKED" : "ORDER_LINE_ITEM_PARENT_UNLINKED",
+                    entityType: "order_line_item", entityId: childId, entityName: child.description ?? null,
+                    description: parentLineItemId ? "Order line item linked to a parent line item." : "Order line item unlinked from its parent.",
+                    newValues: { parentLineItemId }, oldValues: { parentLineItemId: priorParentId },
+                } as any);
+                return { updated };
+            });
+            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(result.updated as any) });
         } catch (error: any) {
             return res.status(error?.statusCode ?? 400).json({ success: false, message: error?.message ?? "Failed to update line item parent" });
         }
@@ -8377,23 +8381,29 @@ export async function registerOrderRoutes(
                 legacyOverridePriceCents: (oldLineItem as any).overridePriceCents,
             });
 
-            const [lineItem] = await db
-                .update(orderLineItems)
-                .set({
-                    specsJson: mergePricingIntoSpecsJson({ specsJson: (oldLineItem as any).specsJson, pricing }),
-                    overridePriceCents: pricing.hasPriceOverride ? pricing.effectiveTotalCents : null,
-                    overrideAt: pricing.hasPriceOverride ? new Date() : null,
-                    overrideByUserId: pricing.hasPriceOverride ? userId : null,
-                    unitPrice: (pricing.effectiveUnitPriceCents / 100).toFixed(2),
-                    totalPrice: (pricing.effectiveTotalCents / 100).toFixed(2),
-                    updatedAt: new Date(),
-                })
-                .where(eq(orderLineItems.id, lineItemId))
-                .returning();
-            if (!lineItem) return res.status(404).json({ message: "Order line item not found" });
-
-            await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId, userId);
-            await recomputeOrderBillingStatus({ organizationId, orderId: String(lineItem.orderId) });
+            const lineItem = await db.transaction(async (tx) => {
+                const [updated] = await tx
+                    .update(orderLineItems)
+                    .set({
+                        specsJson: mergePricingIntoSpecsJson({ specsJson: (oldLineItem as any).specsJson, pricing }),
+                        overridePriceCents: pricing.hasPriceOverride ? pricing.effectiveTotalCents : null,
+                        overrideAt: pricing.hasPriceOverride ? new Date() : null,
+                        overrideByUserId: pricing.hasPriceOverride ? userId : null,
+                        unitPrice: (pricing.effectiveUnitPriceCents / 100).toFixed(2),
+                        totalPrice: (pricing.effectiveTotalCents / 100).toFixed(2),
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(orderLineItems.id, lineItemId))
+                    .returning();
+                if (!updated) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                await recalculateEditableOrderFinancialsInTransaction(tx, {
+                    organizationId,
+                    orderId: String(updated.orderId),
+                    actorUserId: userId,
+                });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(updated.orderId), executor: tx });
+                return updated;
+            });
 
             const oldTotalCents = Math.round(Number((oldLineItem as any).totalPrice ?? 0) * 100);
             await storage.createOrderAuditLog({
@@ -8983,8 +8993,11 @@ export async function registerOrderRoutes(
                 updateData.totalPrice = (effectivePricing.effectiveTotalCents / 100).toFixed(2);
             }
 
-            const lineItem = shouldReconcileProofGateRemoval
-                ? await db.transaction(async (tx) => {
+            // The line write and financial fan-out are one commercial
+            // boundary.  Do not let the browser, a refresh, or a later PDF/QB
+            // action repair an Invoice after an Order edit has committed.
+            const lineItem = await db.transaction(async (tx) => {
+                if (shouldReconcileProofGateRemoval) {
                     await tx
                         .update(orderLineItems)
                         .set({ ...updateData, updatedAt: new Date() })
@@ -8997,13 +9010,27 @@ export async function registerOrderRoutes(
                     });
                     const [reconciled] = await tx
                         .select()
-                        .from(orderLineItems)
-                        .where(eq(orderLineItems.id, lineItemId))
-                        .limit(1);
+                    .from(orderLineItems)
+                    .where(eq(orderLineItems.id, lineItemId))
+                    .limit(1);
                     if (!reconciled) throw new Error("Order line item not found after proof-gate reconciliation");
+                    await recalculateEditableOrderFinancialsInTransaction(tx, {
+                        organizationId,
+                        orderId: String(reconciled.orderId),
+                        actorUserId: userId ?? null,
+                    });
+                    await recomputeOrderBillingStatus({ organizationId, orderId: String(reconciled.orderId), executor: tx });
                     return reconciled;
-                })
-                : await storage.updateOrderLineItem(lineItemId, updateData);
+                }
+                const updated = await new OrdersRepository(tx).updateOrderLineItem(lineItemId, updateData);
+                await recalculateEditableOrderFinancialsInTransaction(tx, {
+                    organizationId,
+                    orderId: String(updated.orderId),
+                    actorUserId: userId ?? null,
+                });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(updated.orderId), executor: tx });
+                return updated;
+            });
             const quantityChanged =
                 updateData.quantity !== undefined &&
                 Number((oldLineItem as any).quantity) !== Number((lineItem as any).quantity);
@@ -9275,9 +9302,6 @@ export async function registerOrderRoutes(
                 }
             }
 
-            await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId, userId ?? null);
-            await recomputeOrderBillingStatus({ organizationId, orderId: String(lineItem.orderId) });
-
             res.json({
                 ...enrichLineItemWithEffectivePricing((finalLineItem ?? lineItem) as any),
                 finalArtworkSynchronization,
@@ -9369,21 +9393,34 @@ export async function registerOrderRoutes(
                 pricing: effectivePricing,
             });
 
-            const [updated] = await db
-                .update(orderLineItems)
-                .set({
-                    pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
-                    pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
-                    optionSelectionsJson: { schemaVersion: 2, selected: pricingResult.pbv2SnapshotJson.selections || {} } as any,
-                    selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
-                    specsJson: specsJson as any,
-                    overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
-                    unitPrice: (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2),
-                    totalPrice: (effectivePricing.effectiveTotalCents / 100).toFixed(2),
-                    updatedAt: new Date(),
-                })
-                .where(eq(orderLineItems.id, lineItemId))
-                .returning();
+            // A PBV2 recompute changes customer economics.  Its persisted
+            // line, Order rollup, live Invoice snapshot, and billing state
+            // must either commit together or not at all.
+            const updated = await db.transaction(async (tx) => {
+                const [line] = await tx
+                    .update(orderLineItems)
+                    .set({
+                        pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+                        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
+                        optionSelectionsJson: { schemaVersion: 2, selected: pricingResult.pbv2SnapshotJson.selections || {} } as any,
+                        selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
+                        specsJson: specsJson as any,
+                        overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
+                        unitPrice: (effectivePricing.effectiveUnitPriceCents / 100).toFixed(2),
+                        totalPrice: (effectivePricing.effectiveTotalCents / 100).toFixed(2),
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(orderLineItems.id, lineItemId))
+                    .returning();
+                if (!line) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                await recalculateEditableOrderFinancialsInTransaction(tx, {
+                    organizationId,
+                    orderId: String((li as any).orderId),
+                    actorUserId: getUserId(req.user) ?? null,
+                });
+                await recomputeOrderBillingStatus({ organizationId, orderId: String((li as any).orderId), executor: tx });
+                return line;
+            });
 
             const components = await db
                 .select()
@@ -9394,7 +9431,6 @@ export async function registerOrderRoutes(
                     eq(orderLineItemComponents.status, 'ACCEPTED')
                 ));
 
-            await recomputeOrderTotalsFromPersistedLineItems(String((li as any).orderId), organizationId, getUserId(req.user) ?? null);
             res.json({ ...(updated as any), components });
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
