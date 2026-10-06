@@ -167,8 +167,17 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     };
 
     return (
-        <DocumentMetaCard contentClassName="p-4">
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <DocumentMetaCard
+            className={showOrderFields ? "border-border/60 bg-card shadow-sm" : undefined}
+            contentClassName={showOrderFields ? "space-y-0 p-0" : "p-4"}
+        >
+            {showOrderFields && (
+                <div className="border-b border-border/60 px-5 py-4">
+                    <h2 className="text-base font-semibold tracking-tight text-foreground">Customer &amp; order details</h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Identify the customer, job, and delivery dates.</p>
+                </div>
+            )}
+            <div className={showOrderFields ? "grid grid-cols-1 gap-6 p-5 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.2fr)]" : "grid grid-cols-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]"}>
                 {/* Customer + Contact */}
                 <div className="space-y-4">
                     <div className="space-y-2">

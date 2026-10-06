@@ -19,7 +19,8 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Lock, ExternalLink } from "lucide-react";
+import { ArrowLeft, Lock, ExternalLink, Loader2 } from "lucide-react";
+import { PageHeader } from "@/components/titan";
 import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { ROUTES } from "@/config/routes";
@@ -1182,6 +1183,85 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         setPendingNavigation(null);
     };
 
+    const renderSummaryCard = () => (
+        <SummaryCard
+            lineItems={state.lineItems}
+            products={state.products}
+            subtotal={state.subtotal}
+            taxAmount={state.taxAmount}
+            grandTotal={state.grandTotal}
+            effectiveTaxRate={state.effectiveTaxRate}
+            discountAmount={state.discountAmount}
+            shippingCents={state.shippingCents}
+            deliveryMethod={state.deliveryMethod}
+            selectedCustomer={state.selectedCustomer}
+            selectedContactId={state.selectedContactId}
+            selectedContact={state.selectedContact as QuoteRecipientContactLike | null}
+            pricingStale={state.pricingStale}
+            canSaveQuote={state.canSaveQuote}
+            isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
+            hasUnsavedChanges={state.hasUnsavedChanges}
+            readOnly={readOnly}
+            onSave={createTarget === "order" ? handleCreateOrder : handleSave}
+            onSaveAndBack={createTarget === "order" ? undefined : (preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack)}
+            afterSaveNavigation={preferences.afterSaveNavigation}
+            primaryActionLabel={createTarget === "order" ? (orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order") : undefined}
+            primaryActionSavingLabel={createTarget === "order" ? "Creating Order…" : undefined}
+            onConvertToOrder={createTarget === "order" ? (() => {}) : (() => setShowConvertDialog(true))}
+            canConvertToOrder={state.canConvertToOrder}
+            convertToOrderPending={state.convertToOrderHook?.isPending}
+            showConvertToOrder={createTarget === "order" ? false : (!editMode && !!state.quoteId)}
+            onDiscard={handleDiscard}
+            quoteId={state.quoteId}
+            quoteNumber={(state.quote as any)?.quoteNumber ?? null}
+            quoteStatus={(state.quote as any)?.status ?? null}
+            onDiscountAmountChange={state.handlers.setDiscountAmount}
+            quoteTaxExempt={state.quoteTaxExempt}
+            quoteTaxRateOverride={state.quoteTaxRateOverride}
+            onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
+            onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
+            workflowState={workflowState || undefined}
+            requireApproval={orgPreferences?.quotes?.requireApproval || false}
+            isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
+            onPreviewQuote={handlePreviewQuote}
+            onDownloadQuote={handleDownloadQuote}
+            onSendQuote={handleSendQuote}
+            onApprove={handleApprove}
+            onApproveAndSend={handleApproveAndSend}
+            onRequestApproval={handleRequestApproval}
+            isApproving={approveMutation.isPending}
+            isApprovingAndSending={approveAndSendMutation.isPending}
+            isRequestingApproval={requestApprovalMutation.isPending}
+            presentation={createTarget === "order" ? "order" : "quote"}
+        />
+    );
+
+    const orderRoutingPanel = createTarget === "order" && !readOnly ? (
+        <Card className="border-border/60 shadow-sm">
+            <CardHeader className="border-b border-border/60 px-5 py-4">
+                <CardTitle className="text-sm font-semibold">After creating the order</CardTitle>
+                <CardDescription>Choose when eligible line items enter production workflows.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 p-5">
+                <Label htmlFor="order-route-after-save" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Routing</Label>
+                <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible") }>
+                    <SelectTrigger id="order-route-after-save">
+                        <SelectValue placeholder="Choose what happens after save" />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="save_only">Keep line items on Order</SelectItem>
+                        <SelectItem value="route_eligible">Route eligible line items</SelectItem>
+                    </SelectContent>
+                </Select>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                    {orderRouteAfterSave === "route_eligible"
+                        ? "Saved lines enter Design, Proofing, or Prepress only after artwork promotion and eligibility checks pass."
+                        : "The order is saved without starting workflow ownership."}
+                </p>
+            </CardContent>
+        </Card>
+    ) : null;
+
     // EARLY RETURNS MUST COME AFTER ALL HOOKS
     // Permission check
     if (!state.isInternalUser) {
@@ -1224,12 +1304,19 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     return (
         <div className="min-h-screen bg-background">
-            <div className="mx-auto w-full max-w-[1600px] px-6 py-4">
+            <div className={createTarget === "order" ? "mx-auto w-full max-w-none px-4 pb-36 pt-6 sm:px-6 xl:px-8 xl:pb-40" : "mx-auto w-full max-w-[1600px] px-6 py-4"}>
                 {/* Top bar: Back + Quote # + Status + Actions */}
-                <QuoteHeader
+                {createTarget === "order" ? (
+                    <PageHeader
+                        title="New Order"
+                        subtitle="Select a customer, build the line items, and review fulfillment before creating the order."
+                        backButton={<Button type="button" variant="outline" size="sm" onClick={handleBack} className="shrink-0 gap-2"><ArrowLeft className="h-4 w-4" />Orders</Button>}
+                        className="items-start gap-4 border-b border-border/60 pb-5 [&>div:first-child]:items-start"
+                    />
+                ) : <QuoteHeader
                     quoteNumber={(state.quote as any)?.quoteNumber || ""}
                     quoteId={state.quoteId}
-                    newTitle={createTarget === "order" ? "New Order" : undefined}
+                    newTitle={undefined}
                     canDuplicateQuote={state.canDuplicateQuote}
                     isDuplicatingQuote={state.isDuplicatingQuote}
                     status={(state.quote as any)?.status}
@@ -1237,16 +1324,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     showReviseButton={isLocked}
                     isRevisingQuote={reviseMutation.isPending}
                     editMode={editMode}
-                    editModeDisabled={createTarget === "order" ? true : state.isSaving || isLocked}
-                    showEditModeToggle={createTarget !== "order"}
+                    editModeDisabled={state.isSaving || isLocked}
+                    showEditModeToggle
                     onBack={handleBack}
                     onDuplicateQuote={() => setShowDuplicateDialog(true)}
                     onReviseQuote={handleReviseQuote}
                     onEditModeChange={(next) => {
-                        if (createTarget === "order") {
-                            setEditMode(true);
-                            return;
-                        }
                         if (isLocked) {
                             toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
                             setEditMode(false);
@@ -1254,7 +1337,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                         }
                         setEditMode(next);
                     }}
-                />
+                />}
 
                 {isLocked && lockedHint && (
                     <Alert className="mt-4 border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
@@ -1276,10 +1359,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 )}
 
                 {/* Two-column layout: Left (Customer + Line Items + Totals) | Right (Fulfillment + Attachments) */}
-                <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
+                <div className={createTarget === "order" ? "mt-6 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]" : "grid gap-6 mt-6 lg:grid-cols-[1fr_400px]"}>
                     {/* LEFT COLUMN: Customer + Line Items + Totals */}
-                    <div className="space-y-6">
+                    <div className={createTarget === "order" ? "contents" : "space-y-6"}>
                         {/* Customer & Details Panel */}
+                        <div className={createTarget === "order" ? "min-w-0 xl:col-span-2" : ""}>
                         <CustomerCard
                             ref={customerSelectRef}
                             selectedCustomerId={state.selectedCustomerId}
@@ -1312,8 +1396,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             onAddTag={state.handlers.addTag}
                             onRemoveTag={state.handlers.removeTag}
                         />
+                        </div>
 
                         {/* Line Items Section */}
+                        <div className={createTarget === "order" ? "min-w-0 xl:col-start-1 xl:row-start-2" : ""}>
                         <LineItemsSection
                             quoteId={state.quoteId}
                             customerId={state.selectedCustomerId}
@@ -1333,82 +1419,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             ensureLineItemId={createTarget === "order" ? undefined : state.handlers.ensureLineItemId}
                             createTarget={createTarget}
                         />
+                        </div>
 
-                        {/* Quote Summary / Totals - Moved to left column */}
-                        {createTarget === "order" && !readOnly && (
-                            <Card className="border-primary/20 bg-primary/[0.03]">
-                                <CardContent className="space-y-2 p-4">
-                                    <Label htmlFor="order-route-after-save">After save</Label>
-                                    <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible") }>
-                                        <SelectTrigger id="order-route-after-save">
-                                            <SelectValue placeholder="Choose what happens after save" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="save_only">Keep line items on Order</SelectItem>
-                                            <SelectItem value="route_eligible">Route eligible line items</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                    <p className="text-xs text-muted-foreground">
-                                        {orderRouteAfterSave === "route_eligible"
-                                            ? "Saved lines enter Design, Proofing, or Prepress only after artwork promotion and eligibility checks pass."
-                                            : "The order is saved without starting workflow ownership."}
-                                    </p>
-                                </CardContent>
-                            </Card>
-                        )}
-                        <SummaryCard
-                            lineItems={state.lineItems}
-                            products={state.products}
-                            subtotal={state.subtotal}
-                            taxAmount={state.taxAmount}
-                            grandTotal={state.grandTotal}
-                            effectiveTaxRate={state.effectiveTaxRate}
-                            discountAmount={state.discountAmount}
-                            shippingCents={state.shippingCents}
-                            deliveryMethod={state.deliveryMethod}
-                            selectedCustomer={state.selectedCustomer}
-                            selectedContactId={state.selectedContactId}
-                            selectedContact={state.selectedContact as QuoteRecipientContactLike | null}
-                            pricingStale={state.pricingStale}
-                            canSaveQuote={state.canSaveQuote}
-                            isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
-                            hasUnsavedChanges={state.hasUnsavedChanges}
-                            readOnly={readOnly}
-                            onSave={createTarget === "order" ? handleCreateOrder : handleSave}
-                            onSaveAndBack={createTarget === "order" ? undefined : (preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack)}
-                            afterSaveNavigation={preferences.afterSaveNavigation}
-                            primaryActionLabel={createTarget === "order" ? (orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order") : undefined}
-                            primaryActionSavingLabel={createTarget === "order" ? "Creating Order…" : undefined}
-                            onConvertToOrder={createTarget === "order" ? (() => {}) : (() => setShowConvertDialog(true))}
-                            canConvertToOrder={state.canConvertToOrder}
-                            convertToOrderPending={state.convertToOrderHook?.isPending}
-                            showConvertToOrder={createTarget === "order" ? false : (!editMode && !!state.quoteId)}
-                            onDiscard={handleDiscard}
-                            quoteId={state.quoteId}
-                            quoteNumber={(state.quote as any)?.quoteNumber ?? null}
-                            quoteStatus={(state.quote as any)?.status ?? null}
-                            onDiscountAmountChange={state.handlers.setDiscountAmount}
-                            quoteTaxExempt={state.quoteTaxExempt}
-                            quoteTaxRateOverride={state.quoteTaxRateOverride}
-                            onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
-                            onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
-                            workflowState={workflowState || undefined}
-                            requireApproval={orgPreferences?.quotes?.requireApproval || false}
-                            isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
-                            onPreviewQuote={handlePreviewQuote}
-                            onDownloadQuote={handleDownloadQuote}
-                            onSendQuote={handleSendQuote}
-                            onApprove={handleApprove}
-                            onApproveAndSend={handleApproveAndSend}
-                            onRequestApproval={handleRequestApproval}
-                            isApproving={approveMutation.isPending}
-                            isApprovingAndSending={approveAndSendMutation.isPending}
-                            isRequestingApproval={requestApprovalMutation.isPending}
-                        />
+                        {/* Quote summary retains its original position. Order actions sit beside the line list. */}
+                        {createTarget !== "order" && renderSummaryCard()}
                     </div>
 
                     {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
-                    <div className="space-y-6 lg:sticky lg:top-4 h-fit">
+                    <div className={createTarget === "order" ? "min-w-0 space-y-6 xl:col-start-2 xl:row-start-2 h-fit" : "space-y-6 lg:sticky lg:top-4 h-fit"}>
                         {state.isInternalUser && createTarget !== "order" && (
                             <Card className="rounded-lg border border-border/40 bg-card/50">
                                 <CardHeader className="pb-3">
@@ -1456,6 +1474,13 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             onShippingCentsChange={!readOnly ? saveShippingCents : undefined}
                             defaultCustomer={state.selectedCustomer}
                         />
+
+                        {createTarget === "order" && (
+                            <div className="space-y-4">
+                                {orderRoutingPanel}
+                                {renderSummaryCard()}
+                            </div>
+                        )}
 
                         {/* Attachments - Now more prominent in right column */}
                         {!!state.quoteId && (
@@ -1553,6 +1578,28 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     </div>
                 </div>
             </div>
+
+            {createTarget === "order" && !readOnly && (
+                <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card px-4 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] sm:px-6 xl:inset-x-auto xl:bottom-6 xl:right-8 xl:w-[360px] xl:rounded-lg xl:border xl:px-4 xl:shadow-lg">
+                    <div className="mx-auto flex max-w-3xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4 xl:items-stretch xl:flex-col xl:gap-2">
+                        <div className="flex items-baseline justify-between gap-3 sm:block xl:flex">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Order total</span>
+                            <div className="font-mono text-xl font-bold tabular-nums text-foreground">${state.grandTotal.toFixed(2)}</div>
+                        </div>
+                        <Button
+                            type="button"
+                            className="h-11 w-full font-semibold sm:w-auto sm:min-w-48 xl:w-full"
+                            onClick={handleCreateOrder}
+                            disabled={!state.canSaveQuote || createOrderSubmitting || createDirectOrderMutation.isPending}
+                        >
+                            {(createOrderSubmitting || createDirectOrderMutation.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            {createOrderSubmitting || createDirectOrderMutation.isPending
+                                ? "Creating Order…"
+                                : orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order"}
+                        </Button>
+                    </div>
+                </div>
+            )}
 
             {/* Convert to Order Dialog */}
             <ConvertQuoteToOrderDialog

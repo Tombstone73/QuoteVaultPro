@@ -21,6 +21,7 @@ import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
 import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteActionEligibility";
 
 type SummaryCardProps = {
+    presentation?: "quote" | "order";
     lineItems: QuoteLineItemDraft[];
     products: Product[];
     subtotal: number;
@@ -74,6 +75,7 @@ type SummaryCardProps = {
 };
 
 export function SummaryCard({
+    presentation = "quote",
     lineItems,
     products,
     subtotal,
@@ -179,10 +181,16 @@ export function SummaryCard({
         : sendEligibility.reason;
     
     return (
-        <Card className="rounded-lg border border-border/40 bg-card/50">
-            <CardContent className="space-y-4 px-4 py-3 pt-4">
+        <Card className={presentation === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
+            {presentation === "order" && (
+                <CardHeader className="border-b border-border/60 px-5 py-4">
+                    <CardTitle className="text-base font-semibold tracking-tight">Order totals</CardTitle>
+                    <p className="text-xs text-muted-foreground">Review pricing before creating the order.</p>
+                </CardHeader>
+            )}
+            <CardContent className={presentation === "order" ? "space-y-4 px-5 py-4" : "space-y-4 px-4 py-3 pt-4"}>
                 {/* Dev-only diagnostics */}
-                {import.meta.env.DEV && (
+                {import.meta.env.DEV && presentation !== "order" && (
                     <div className="bg-muted/50 text-muted-foreground p-2 mb-3 font-mono text-xs rounded border border-border/40">
                         <div className="font-bold text-sm mb-1">Dev Diagnostics:</div>
                         <div>Line Items: {lineItems.length} ({lineItems.filter(li => li.status === 'draft').length} draft, {lineItems.filter(li => li.status === 'canceled').length} canceled)</div>
@@ -311,7 +319,7 @@ export function SummaryCard({
                 <Separator className="my-4" />
 
                 {/* Grand Total - emphasized */}
-                <div className="flex justify-between items-baseline pt-2 pb-2">
+                <div className={presentation === "order" ? "flex flex-wrap justify-between items-baseline gap-2 pt-2 pb-2" : "flex justify-between items-baseline pt-2 pb-2"}>
                     <div className="flex items-center gap-2">
                         <span className="text-base font-semibold">Grand Total</span>
                         {pricingStale && (
@@ -320,12 +328,24 @@ export function SummaryCard({
                             </Badge>
                         )}
                     </div>
-                    <span className="text-3xl font-bold font-mono tracking-tight">${grandTotal.toFixed(2)}</span>
+                    <span className={presentation === "order" ? "text-2xl font-bold font-mono tracking-tight sm:text-3xl" : "text-3xl font-bold font-mono tracking-tight"}>${grandTotal.toFixed(2)}</span>
                 </div>
             </CardContent>
 
-            <CardFooter className="flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40">
-                {!readOnly ? (
+            <CardFooter className={presentation === "order" ? "flex flex-col gap-2.5 border-t border-border/60 px-5 py-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
+                {presentation === "order" ? (
+                    <>
+                        <Button className="h-11 w-full font-semibold" onClick={onSave} disabled={!canSaveQuote || isSaving}>
+                            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            {isSaving ? (primaryActionSavingLabel || "Creating Order…") : (primaryActionLabel || "Create Order")}
+                        </Button>
+                        {showDiscard && (
+                            <Button variant="outline" className="w-full" onClick={onDiscard} disabled={isSaving}>
+                                <X className="mr-2 h-4 w-4" />Discard draft
+                            </Button>
+                        )}
+                    </>
+                ) : !readOnly ? (
                     <>
                         {/* EDIT MODE */}
                         {/* Row 1: Save Changes */}

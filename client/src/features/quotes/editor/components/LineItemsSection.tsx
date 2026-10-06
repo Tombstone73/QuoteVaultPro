@@ -432,6 +432,7 @@ export function LineItemsSection({
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const orderProductPickerTriggerRef = useRef<HTMLButtonElement | null>(null);
   
   const filteredProducts = useMemo(() => {
     const active = products.filter((p) => (p as any).isActive !== false);
@@ -1191,20 +1192,99 @@ export function LineItemsSection({
     400
   );
 
+  const renderProductPicker = (inHeader: boolean) => (
+    <Popover open={searchOpen} onOpenChange={(open) => {
+      setSearchOpen(open);
+      if (!open) setSearchQuery("");
+    }}>
+      <PopoverTrigger asChild>
+        <Button
+          ref={inHeader ? orderProductPickerTriggerRef : undefined}
+          variant="outline"
+          type="button"
+          disabled={isCreatingDraft}
+          role="combobox"
+          aria-expanded={searchOpen}
+          className={inHeader ? "h-9 gap-2 border-primary/40 bg-primary/[0.03] font-medium hover:bg-primary/[0.07]" : "w-full justify-between h-9 font-normal"}
+        >
+          <span className={inHeader ? "text-foreground" : "text-muted-foreground"}>
+            {searchQuery ? `Searching: ${searchQuery}` : "Add Product"}
+          </span>
+          {inHeader ? <Plus className="h-4 w-4 shrink-0" /> : <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className={inHeader ? "w-[min(520px,calc(100vw-2rem))] p-0" : "w-[520px] p-0"} align={inHeader ? "end" : "start"}>
+        <Command shouldFilter={false}>
+          <CommandInput
+            placeholder="Search by name, SKU, or category…"
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+          />
+          <CommandList>
+            <CommandEmpty>No products found.</CommandEmpty>
+            <CommandGroup>
+              {filteredProducts.map((p) => (
+                <CommandItem
+                  key={p.id}
+                  value={`${p.name} ${(p as any).sku || ''} ${(p as any).category || ''}`}
+                  disabled={isCreatingDraft}
+                  onSelect={async () => {
+                    const created = await onCreateDraftLineItem(p.id);
+                    const k = created ? getItemKey(created) : null;
+                    setSearchQuery("");
+                    setSearchOpen(false);
+                    if (k) {
+                      pendingScrollToItemKeyRef.current = k;
+                      onExpandedKeyChange(k);
+                    }
+                  }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{p.name}</div>
+                    {(p as any).sku && (
+                      <div className="text-xs text-muted-foreground truncate">SKU: {(p as any).sku}</div>
+                    )}
+                  </div>
+                  <Badge variant="outline" className="ml-2 text-[10px] shrink-0">
+                    {(p as any).category || "Product"}
+                  </Badge>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+
   return (
-    <Card className="rounded-lg border border-border/40 bg-card/50">
-      <CardHeader className="px-4 py-2.5 border-b border-border/40">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="border-border/60 text-xs">
-            {count} {count === 1 ? 'item' : 'items'}
-          </Badge>
+    <Card className={createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
+      <CardHeader className={createTarget === "order" ? "sticky top-0 z-20 border-b border-border/60 bg-card px-5 py-4" : "px-4 py-2.5 border-b border-border/40"}>
+        <div className={createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
+          {createTarget === "order" && (
+            <div>
+              <h2 className="text-base font-semibold tracking-tight text-foreground">Line items</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">Add products, then expand a line to set specifications and pricing.</p>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="border-border/60 text-xs">
+              {count} {count === 1 ? 'item' : 'items'}
+            </Badge>
+            {createTarget === "order" && !readOnly && renderProductPicker(true)}
+          </div>
         </div>
       </CardHeader>
 
-      <CardContent className="px-4 py-3">
-        {lineItems.length === 0 ? (
-          <div className="py-6 text-center text-xs text-muted-foreground">
-            —
+      <CardContent className={createTarget === "order" ? "px-3 py-4 sm:px-5" : "px-4 py-3"}>
+        {(createTarget === "order" ? count === 0 : lineItems.length === 0) ? (
+          <div className={createTarget === "order" ? "rounded-md border border-dashed border-border/70 bg-muted/20 px-5 py-10 text-center" : "py-6 text-center text-xs text-muted-foreground"}>
+            {createTarget === "order" ? (
+              <>
+                <p className="text-sm font-medium text-foreground">No line items yet</p>
+                <p className="mt-1 text-sm text-muted-foreground">Use Add Product below to start building this order.</p>
+              </>
+            ) : "—"}
           </div>
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -1628,70 +1708,21 @@ export function LineItemsSection({
 
         {/* Add Product (edit mode only) */}
         {!readOnly && (
-          <div className="mt-4 pt-4 border-t border-border/40">
-            <Popover open={searchOpen} onOpenChange={(open) => {
-              setSearchOpen(open);
-              if (!open) {
-                setSearchQuery("");
-              }
-            }}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  type="button"
-                  disabled={isCreatingDraft}
-                  role="combobox"
-                  aria-expanded={searchOpen}
-                  className="w-full justify-between h-9 font-normal"
-                >
-                  <span className="text-muted-foreground">
-                    {searchQuery ? `Searching: ${searchQuery}` : "Add Product"}
-                  </span>
-                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-[520px] p-0" align="start">
-                <Command shouldFilter={false}>
-                  <CommandInput
-                    placeholder="Search by name, SKU, or category…"
-                    value={searchQuery}
-                    onValueChange={setSearchQuery}
-                  />
-                  <CommandList>
-                    <CommandEmpty>No products found.</CommandEmpty>
-                    <CommandGroup>
-                      {filteredProducts.map((p) => (
-                        <CommandItem
-                          key={p.id}
-                          value={`${p.name} ${(p as any).sku || ''} ${(p as any).category || ''}`}
-                          disabled={isCreatingDraft}
-                          onSelect={async () => {
-                            const created = await onCreateDraftLineItem(p.id);
-                            const k = created ? getItemKey(created) : null;
-                            setSearchQuery("");
-                            setSearchOpen(false);
-                            if (k) {
-                              pendingScrollToItemKeyRef.current = k;
-                              onExpandedKeyChange(k);
-                            }
-                          }}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate font-medium">{p.name}</div>
-                            {(p as any).sku && (
-                              <div className="text-xs text-muted-foreground truncate">SKU: {(p as any).sku}</div>
-                            )}
-                          </div>
-                          <Badge variant="outline" className="ml-2 text-[10px] shrink-0">
-                            {(p as any).category || "Product"}
-                          </Badge>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
+          <div className={createTarget === "order" ? "mt-4 border-t border-border/60 pt-4" : "mt-4 pt-4 border-t border-border/40"}>
+            {createTarget === "order" ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 w-full justify-between border-primary/40 bg-primary/[0.03] font-medium"
+                onClick={() => {
+                  orderProductPickerTriggerRef.current?.scrollIntoView({ block: "nearest" });
+                  setSearchOpen(true);
+                }}
+                disabled={isCreatingDraft}
+              >
+                Add Product <Plus className="h-4 w-4" />
+              </Button>
+            ) : renderProductPicker(false)}
           </div>
         )}
       </CardContent>
