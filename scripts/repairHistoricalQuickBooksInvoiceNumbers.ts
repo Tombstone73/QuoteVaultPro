@@ -1,11 +1,12 @@
 import 'dotenv/config';
-import { and, eq } from 'drizzle-orm';
-import { db } from '../server/db';
-import { invoices } from '../shared/schema';
+import { and, eq, isNull } from 'drizzle-orm';
+import { auditLogs, invoices, organizations } from '../shared/schema';
 import { resolveHistoricalQuickBooksInvoiceNumber } from '../shared/quickBooksHistoricalNumbering';
-import { findHistoricalQuickBooksInvoiceNumberConflicts } from '../server/services/quickBooksHistoricalInvoiceNumbering.service';
 
 const apply = process.argv.includes('--apply');
+const organizationId = process.argv.find((value) => value.startsWith('--organization-id='))?.slice('--organization-id='.length) || null;
+const confirmedOrganizationId = process.argv.find((value) => value.startsWith('--confirm-organization-id='))?.slice('--confirm-organization-id='.length) || null;
+const actorUserId = process.argv.find((value) => value.startsWith('--actor-user-id='))?.slice('--actor-user-id='.length) || null;
 
 type RepairableInvoice = {
   id: string;
@@ -19,6 +20,21 @@ type RepairableInvoice = {
 };
 
 async function main() {
+  if (!organizationId) throw new Error('Explicit --organization-id=<uuid> is required. Never infer a tenant from candidate rows.');
+  if (apply && (confirmedOrganizationId !== organizationId || !actorUserId)) {
+    throw new Error('--apply requires matching --confirm-organization-id and --actor-user-id after dry-run review.');
+  }
+  const [{ db }, { findHistoricalQuickBooksInvoiceNumberConflicts }] = await Promise.all([
+    import('../server/db'), import('../server/services/quickBooksHistoricalInvoiceNumbering.service'),
+  ]);
+  const target = await db.select({ id: organizations.id, name: organizations.name })
+    .from(organizations).where(eq(organizations.id, organizationId));
+  if (target.length !== 1) throw new Error('Target organization must resolve exactly once.');
+  const allCandidateOrganizations = await db.select({ organizationId: invoices.organizationId })
+    .from(invoices).where(and(eq(invoices.organizationId, organizationId), eq(invoices.importSource, 'quickbooks'), eq(invoices.isHistorical, true)));
+  const countsByOrganization = Object.fromEntries(Array.from(new Set(allCandidateOrganizations.map((row) => row.organizationId)))
+    .sort().map((id) => [id, allCandidateOrganizations.filter((row) => row.organizationId === id).length]));
+  console.log('[historical-qb-numbering] target', JSON.stringify({ organizationId, organizationName: target[0]!.name, countsByOrganization, mode: apply ? 'APPLY' : 'DRY_RUN' }));
   const candidates = await db
     .select({
       id: invoices.id,
@@ -32,6 +48,7 @@ async function main() {
     })
     .from(invoices)
     .where(and(
+      eq(invoices.organizationId, organizationId),
       eq(invoices.importSource, 'quickbooks'),
       eq(invoices.isHistorical, true),
     ));
@@ -60,7 +77,7 @@ async function main() {
 
     report.affected++;
     const conflicts = await findHistoricalQuickBooksInvoiceNumberConflicts({
-      organizationId: row.organizationId,
+      organizationId,
       identity,
       excludeInvoiceId: row.id,
     });
@@ -83,7 +100,7 @@ async function main() {
   for (const repair of repairs) {
     await db.transaction(async (tx) => {
       const conflicts = await findHistoricalQuickBooksInvoiceNumberConflicts({
-        organizationId: repair.row.organizationId,
+        organizationId,
         identity: repair.identity,
         excludeInvoiceId: repair.row.id,
         executor: tx,
@@ -91,7 +108,7 @@ async function main() {
       if (conflicts.length > 0) {
         throw new Error(`Invoice ${repair.row.id} acquired a historical-number conflict: ${conflicts.map((conflict) => `${conflict.kind}:${conflict.entity}:${conflict.id}`).join(', ')}`);
       }
-      await tx
+      const updated = await tx
         .update(invoices)
         .set({
           invoiceNumber: repair.identity.invoiceNumber,
@@ -101,7 +118,21 @@ async function main() {
           invoiceSequence: null,
           updatedAt: new Date(),
         })
-        .where(and(eq(invoices.id, repair.row.id), eq(invoices.organizationId, repair.row.organizationId)));
+        .where(and(
+          eq(invoices.id, repair.row.id), eq(invoices.organizationId, organizationId),
+          eq(invoices.importSource, 'quickbooks'), eq(invoices.isHistorical, true),
+          eq(invoices.invoiceNumber, repair.row.invoiceNumber),
+          repair.row.displayNumber == null ? isNull(invoices.displayNumber) : eq(invoices.displayNumber, repair.row.displayNumber),
+        )).returning({ id: invoices.id });
+      if (updated.length !== 1) throw new Error(`Invoice ${repair.row.id} changed after dry run; transaction aborted.`);
+      await tx.insert(auditLogs).values({
+        organizationId, userId: actorUserId,
+        actionType: 'historical_qb_invoice_number_repaired', entityType: 'invoice',
+        entityId: repair.row.id, entityName: repair.identity.displayNumber,
+        description: 'Tenant-scoped historical QuickBooks Invoice numbering repair.',
+        oldValues: { invoiceNumber: repair.row.invoiceNumber, displayNumber: repair.row.displayNumber },
+        newValues: { invoiceNumber: repair.identity.invoiceNumber, displayNumber: repair.identity.displayNumber },
+      });
     });
     report.repaired++;
   }

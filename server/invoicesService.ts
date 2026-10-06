@@ -17,6 +17,7 @@ import { getBillableBundleRoots } from './services/lineItemBundles';
 import { hydrateInvoiceLineItemsWithProductIdentity } from './services/invoiceLinePresentation.service';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
+import { scopedInvoiceLine, scopedOrderLine } from './lib/financialRepairTenantScope';
 import { getInvoiceFinancialPaymentEligibility } from '../shared/paymentOrchestration';
 import { normalizeInvoiceDashboardSummaryAggregates, type InvoiceDashboardSummary } from './lib/invoiceDashboardSummary';
 import {
@@ -993,7 +994,7 @@ async function lockInvoiceOrderCreation(tx: any, organizationId: string, orderId
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${organizationId}:${orderId}`}))`);
 }
 
-function buildOrderInvoiceFinancialSnapshot(order: any, lineItems: any[]) {
+export function buildOrderInvoiceFinancialSnapshot(order: any, lineItems: any[]) {
   const pricedLineItems = lineItems.map((lineItem: any) => ({
     lineItem,
     pricing: resolveOrderLineItemInvoicePricing(lineItem),
@@ -1097,7 +1098,7 @@ export async function createInvoiceFromOrderInTransaction(
       order,
       actorUserId: userId,
     }) : null;
-    const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+    const lineItems = await tx.select().from(orderLineItems).where(scopedOrderLine(orderId, organizationId));
 
     // New-style Orders carry a frozen Job Number. The first Invoice has no
     // suffix; later independent invoices use the next ordinal. The per-order
@@ -1329,13 +1330,13 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
     return { status: "not_editable" as const, invoiceId: invoice.id };
   }
-  const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, order.id));
+  const lineItems = await tx.select().from(orderLineItems).where(scopedOrderLine(order.id, input.organizationId));
   const snapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
   // Replace the persisted live snapshot from the same billable projection
   // that produced the header. Do not leak retained operational history into
   // customer-facing Invoice rows.
   const desiredRows = buildInvoiceLineItemSnapshots(invoice.id, snapshot.billablePricedLineItems);
-  const existingRows = await tx.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id)).orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.id));
+  const existingRows = await tx.select().from(invoiceLineItems).where(scopedInvoiceLine(invoice.id, input.organizationId)).orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.id));
   const lineSnapshotsChanged = JSON.stringify(existingRows.map(invoiceSnapshotComparable)) !== JSON.stringify(desiredRows.map(invoiceSnapshotComparable));
   const financialChanged =
     Number((invoice as any).subtotalCents ?? 0) !== snapshot.subtotalCents ||
@@ -1373,7 +1374,7 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
 
   await retireInvoicePaymentSessions(tx, { organizationId: input.organizationId, invoiceId: invoice.id, expectedVersion: Number(invoice.invoiceVersion || 1) });
   if (lineSnapshotsChanged) {
-    await tx.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
+    await tx.delete(invoiceLineItems).where(scopedInvoiceLine(invoice.id, input.organizationId));
     if (desiredRows.length) await tx.insert(invoiceLineItems).values(desiredRows as any);
   }
   const hasQuickBooksLink = Boolean(String((invoice as any).qbInvoiceId || (invoice as any).externalAccountingId || "").trim());

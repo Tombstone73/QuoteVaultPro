@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "audit-order-invoice-tenant.ts",
+    "repair-order-commercial-financials.ts",
+    "repair-sandbox-inv-1200.ts",
+    "repairHistoricalQuickBooksInvoiceNumbers.ts"
+  ],
+  "exclude": ["../node_modules", "../dist"]
+}

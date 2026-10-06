@@ -243,7 +243,9 @@ export function normalizeInvoiceAccountingDisplay(
       : [],
   });
 
-  const rawRemainingCents = historicalArState
+  const rawRemainingCents = rawStatus === 'void' || rawStatus === 'voided'
+    ? 0
+    : historicalArState
     ? approvedHistoricalArBalanceCents(invoice)
     : nativePaymentRollup.amountDueCents;
 

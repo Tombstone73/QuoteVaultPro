@@ -4,6 +4,7 @@ import { customers, orderLineItems, orders, organizations, products } from "@sha
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput, type OrderTaxPolicy } from "../../quoteOrderPricing";
 import { db } from "../../db";
 import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../../invoicesService";
+import { scopedOrderLine, scopedOrderLineId } from "../../lib/financialRepairTenantScope";
 import { getBillableBundleRoots } from "../lineItemBundles";
 
 type TaxableOrderLine = {
@@ -55,7 +56,7 @@ async function calculateTaxForLines(executor: any, input: {
       inArray(products.id, productIds),
     ))
     : [];
-  const productMap = new Map(productRows.map((product: any) => [String(product.id), product]));
+  const productMap = new Map<string, any>(productRows.map((product: any) => [String(product.id), product]));
 
   let customer: any = null;
   if (input.customerId) {
@@ -106,7 +107,7 @@ export async function calculateEditableOrderFinancialSnapshot(executor: any, inp
     eq(orders.organizationId, input.organizationId),
   )).limit(1);
   if (!order) return null;
-  const lines = await executor.select().from(orderLineItems).where(eq(orderLineItems.orderId, input.orderId));
+  const lines = await executor.select().from(orderLineItems).where(scopedOrderLine(input.orderId, input.organizationId));
   const { billableLines, totals } = await calculateTaxForLines(executor, {
     organizationId: input.organizationId,
     customerId: order.customerId,
@@ -143,7 +144,7 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
       taxAmount: totals.lineItemsWithTax[index]!.taxAmount.toFixed(2),
       isTaxableSnapshot: totals.lineItemsWithTax[index]!.isTaxableSnapshot,
       updatedAt: new Date(),
-    } as any).where(eq(orderLineItems.id, line.id!))));
+    } as any).where(scopedOrderLineId(line.id!, input.organizationId))));
     const [updated] = await executor.update(orders).set({
       subtotal: totals.subtotal.toFixed(2),
       tax: totals.taxAmount.toFixed(2),

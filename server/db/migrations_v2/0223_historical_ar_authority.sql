@@ -29,18 +29,9 @@ ALTER TABLE invoices ADD CONSTRAINT invoices_historical_ar_open_evidence_check
           AND mod((historical_ar_approval_evidence ->> 'originalCents')::numeric, 1) = 0
         ELSE false END));
 
--- Source-verified zero-balance QB imports can be classified without inventing
--- Payment rows. Every nonzero/ambiguous legacy import remains review-required.
-UPDATE invoices SET
-  historical_ar_state = CASE
-    WHEN import_source = 'quickbooks' AND qb_import_balance_due IS NOT NULL
-      AND qb_import_balance_due::numeric = 0 THEN 'historical_closed'
-    ELSE 'historical_review_required' END,
-  historical_ar_source_balance_cents = CASE
-    WHEN import_source = 'quickbooks' AND qb_import_balance_due IS NOT NULL
-      THEN greatest(0, round(qb_import_balance_due::numeric * 100))::integer
-    ELSE NULL END
-WHERE import_source IS NOT NULL AND historical_ar_state IS NULL;
+-- Intentionally no data backfill here. Existing imports with no explicit
+-- authority state remain fail-closed; any later data classification must be
+-- a separately reviewed, tenant-scoped operation with source evidence.
 
 CREATE INDEX IF NOT EXISTS invoices_historical_ar_state_org_idx
   ON invoices(organization_id, historical_ar_state);

@@ -37,6 +37,20 @@ describe('normalizeInvoiceAccountingDisplay', () => {
     expect(normalized.isFullyPaid).toBe(false);
   });
 
+  test('void test artifact is noncollectible without a fabricated payment', () => {
+    const normalized = normalizeInvoiceAccountingDisplay({
+      totalCents: 4400,
+      status: 'void',
+      balanceDue: '0.00',
+      lockedReason: 'sandbox_test_artifact',
+      payments: [],
+    });
+    expect(normalized.displayRemainingCents).toBe(0);
+    expect(normalized.displayPaidCents).toBe(0);
+    expect(normalized.displayStatus).toBe('Voided');
+    expect(normalized.isFullyPaid).toBe(false);
+  });
+
   test('TitanOS partial and full payments drive remaining balance and paid label', () => {
     const partial = normalizeInvoiceAccountingDisplay({
       importSource: null,

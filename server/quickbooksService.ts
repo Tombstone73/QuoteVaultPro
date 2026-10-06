@@ -2438,7 +2438,7 @@ export async function processPullInvoices(jobId: string, organizationId: string)
               balanceDue: localData.balanceDue,
               externalAccountingId: localData.externalAccountingId,
             })
-            .where(eq(invoices.id, existing.id));
+            .where(and(eq(invoices.id, existing.id), eq(invoices.organizationId, organizationId)));
           // Reconsider lifecycle only after a new balance reduction, not an
           // unchanged sync replay that could undo an explicit Order reopen.
           if (existing.orderId && Number(localData.balanceDue) < Number(existing.balanceDue)) {
@@ -2542,7 +2542,7 @@ export async function processPushInvoices(jobId: string, organizationId: string)
         await db
           .update(invoices)
           .set({ syncStatus: 'error', syncError: error.message, updatedAt: new Date() })
-          .where(eq(invoices.id, invoice.id));
+          .where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, orgId)));
         errorCount++;
       }
     }
@@ -3779,7 +3779,7 @@ export async function importQBInvoicesByIds(
             qbPoSource: newPoSource,
             updatedAt: new Date(),
           })
-          .where(eq(invoices.id, existing.id));
+          .where(and(eq(invoices.id, existing.id), eq(invoices.organizationId, organizationId)));
 
         result.updated++;
         if (isHistorical) result.importedHistorical++; else result.stagedForReview++;

@@ -2,6 +2,7 @@ import "dotenv/config";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { getRuntimeEnvironmentSummary } from "../server/lib/runtimeEnvironment";
+import { assertExclusiveTenantCandidates, scopedOrderLine } from "../server/lib/financialRepairTenantScope";
 
 function arg(name: string): string | null {
   const prefix = `--${name}=`;
@@ -12,7 +13,7 @@ function arg(name: string): string | null {
 }
 
 function usage(): never {
-  throw new Error("Usage: tsx scripts/repair-order-commercial-financials.ts --organization-id <uuid> (--order-number <number> | --order-id <uuid>) [--actor-user-id <uuid> --apply]");
+  throw new Error("Usage: tsx scripts/repair-order-commercial-financials.ts --organization-id <uuid> (--order-number <number> | --order-id <uuid>) [--actor-user-id <uuid> --confirm-organization-id <uuid> --apply]");
 }
 
 function money(value: unknown): string {
@@ -22,16 +23,18 @@ function money(value: unknown): string {
 
 async function main() {
   const apply = process.argv.includes("--apply");
-  const organizationId = arg("organization-id");
+  const organizationId = arg("organization-id") ?? usage();
   const orderId = arg("order-id");
   const orderNumberText = arg("order-number");
   const actorUserId = arg("actor-user-id");
-  if (!organizationId || (!!orderId === !!orderNumberText)) usage();
+  const confirmedOrganizationId = arg("confirm-organization-id");
+  if (!!orderId === !!orderNumberText) usage();
   const orderNumber = orderNumberText == null ? null : Number(orderNumberText);
   if (orderNumberText != null && (!Number.isSafeInteger(orderNumber) || orderNumber! <= 0)) {
     throw new Error("--order-number must be a positive integer.");
   }
   if (apply && !actorUserId) throw new Error("--actor-user-id is required with --apply for audit attribution.");
+  if (apply && confirmedOrganizationId !== organizationId) throw new Error("--apply requires --confirm-organization-id matching the target after dry-run review.");
 
   const environment = getRuntimeEnvironmentSummary();
   console.log("[order-commercial-repair] environment", JSON.stringify({
@@ -53,10 +56,23 @@ async function main() {
     import("../shared/schema"),
     import("../server/services/orders/orderTaxCalculationService"),
   ]);
-  const { customers, invoiceLineItems, invoices, orderLineItems, orders, payments } = schema;
+  const { customers, invoiceLineItems, invoices, orderLineItems, orders, organizations, payments } = schema;
+  const resolvedOrganizations = await db.select({ id: organizations.id, name: organizations.name })
+    .from(organizations).where(eq(organizations.id, organizationId));
+  const candidates = await db.select({ id: orders.id, organizationId: orders.organizationId })
+    .from(orders).where(orderId
+      ? and(eq(orders.organizationId, organizationId), eq(orders.id, orderId))
+      : and(eq(orders.organizationId, organizationId), eq(orders.orderNumber, String(orderNumber))));
+  console.log("[order-commercial-repair] target and candidate counts", JSON.stringify({
+    targetOrganizationId: organizationId,
+    targetOrganizationName: resolvedOrganizations[0]?.name ?? null,
+    countsByOrganization: Object.fromEntries(Array.from(new Set(candidates.map((candidate) => candidate.organizationId)))
+      .sort().map((id) => [id, candidates.filter((candidate) => candidate.organizationId === id).length])),
+  }));
+  assertExclusiveTenantCandidates(organizationId, resolvedOrganizations, candidates);
   const orderPredicate = orderId
     ? and(eq(orders.organizationId, organizationId), eq(orders.id, orderId))
-    : and(eq(orders.organizationId, organizationId), eq(orders.orderNumber, orderNumber!));
+    : and(eq(orders.organizationId, organizationId), eq(orders.orderNumber, String(orderNumber)));
   const matches = await db.select({
     id: orders.id,
     organizationId: orders.organizationId,
@@ -70,7 +86,7 @@ async function main() {
     total: orders.total,
     fulfillmentStatus: orders.fulfillmentStatus,
     shippingMethod: orders.shippingMethod,
-  }).from(orders).leftJoin(customers, eq(customers.id, orders.customerId)).where(orderPredicate);
+  }).from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId))).where(orderPredicate);
   if (matches.length !== 1) throw new Error(`Refusing repair: expected exactly one Order match, found ${matches.length}.`);
   const order = matches[0]!;
 
@@ -87,7 +103,7 @@ async function main() {
       status: orderLineItems.status,
       parentLineItemId: orderLineItems.parentLineItemId,
       lineItemRole: orderLineItems.lineItemRole,
-    }).from(orderLineItems).where(eq(orderLineItems.orderId, order.id));
+    }).from(orderLineItems).where(scopedOrderLine(order.id, organizationId));
     const linkedInvoices = await executor.select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
@@ -103,7 +119,10 @@ async function main() {
     const invoiceIds = linkedInvoices.map((invoice: any) => invoice.id);
     const invoiceLines = invoiceIds.length
       ? await executor.select({ invoiceId: invoiceLineItems.invoiceId, orderLineItemId: invoiceLineItems.orderLineItemId, lineTotalCents: invoiceLineItems.lineTotalCents })
-        .from(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, invoiceIds))
+        .from(invoiceLineItems).where(and(
+          inArray(invoiceLineItems.invoiceId, invoiceIds),
+          sql`exists (select 1 from ${invoices} where ${invoices.id} = ${invoiceLineItems.invoiceId} and ${invoices.organizationId} = ${organizationId})`,
+        ))
       : [];
     const paymentRows = invoiceIds.length
       ? await executor.select({ invoiceId: payments.invoiceId, id: payments.id, status: payments.status, amountCents: payments.amountCents, provider: payments.provider })
@@ -127,14 +146,19 @@ async function main() {
     return snapshot;
   }
 
-  await report("before", db);
+  const beforeSnapshot = await report("before", db);
   if (!apply) {
-    console.log("[order-commercial-repair] dry run only; rerun with --apply and --actor-user-id after reviewing this report.");
+    console.log("[order-commercial-repair] dry run only; rerun with --apply, --actor-user-id, and --confirm-organization-id after reviewing this report.");
     return;
   }
 
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT ${orders.id} FROM ${orders} WHERE ${orders.id} = ${order.id} AND ${orders.organizationId} = ${organizationId} FOR UPDATE`);
+    const lockedSnapshot = await financials.calculateEditableOrderFinancialSnapshot(tx, { organizationId, orderId: order.id });
+    if (!lockedSnapshot || JSON.stringify({ order: lockedSnapshot.order, lines: lockedSnapshot.lines })
+        !== JSON.stringify({ order: beforeSnapshot.order, lines: beforeSnapshot.lines })) {
+      throw new Error("Order financial preconditions changed after dry-run/preflight; transaction aborted.");
+    }
     const repaired = await financials.recalculateEditableOrderFinancialsInTransaction(tx, { organizationId, orderId: order.id, actorUserId });
     if (!repaired) throw new Error("Order was not found during canonical recalculation.");
   });
