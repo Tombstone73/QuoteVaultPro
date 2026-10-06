@@ -1,5 +1,204 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+## October 6 Final-Four Campaign
+
+Starting clean source and exact healthy/ready DEV:
+`cdc75fa735f40bc5474ecadb21ff49f5a97e7eeb`. Scope is SALE-08, SALE-09,
+ACCESS-12 and ACCESS-05 only. **Final disposition: four L0s remain; zero
+closures, no classification or priority changes.** SALE-08, SALE-09 and ACCESS-12
+retain C/L0; ACCESS-05 retains its counted F/L0 classification, with its current
+technical/deployment blocker described separately. Source milestone
+`c8b945b1641a815d856fd763363d4f105a1e91bf` is reviewed, committed and fast-forward
+pushed to origin/dev, but its DEV rollout failed the required authority preflight.
+Running DEV remains the healthy starting commitcdc75fa. No post-change live
+acceptance was run against the wrong version, and no previous closure changed.
+
+### Deployment Blocker
+
+Read-only Railway metadata for the explicit PrintersHero-DEV/Development service
+identifies failed deployment `f1c499fd-f4a2-4c2c-bb74-63b6d21f8d10` for c8b945b1.
+The canonical predeploy runner stopped with:
+
+```text
+ACCESS05 preflight: active tenant lacks usable structural authority:
+p7c-1a2701e9-960b-4a5e-a38d-efed970d7cae
+```
+
+This is a pre-existing DEV data invariant failure, not permission to weaken the
+floor or create an arbitrary guardian. It is the first reported tenant, not an
+exhaustive inventory. Read-only canonical `v2:migrations:status`, explicitly scoped
+to this DEV project/environment/service, confirms no applied ledger entries at
+either new migration timestamp: maximum created_at1790827200007 still maps to0303.
+The legacy ledger has298 rows/maxid299; its old gap/name-label behavior was not
+modified. Both new migrations remain pending on DEV.
+
+The exact tenant appears in `POST_M6_ROUTING_READINESS.md:39`; its generator class
+is documented in `POST_M6_DEV_DATA.md:11` as synthetic by origin but **KEEP AS
+HISTORY**. The routing inventory is explicitly not a deletion manifest. No tenant
+deletion, archival, deactivation, role grant, password reset or exemption was
+performed. Legitimate authority enrollment or an explicitly approved canonical
+retention/lifecycle disposition is required before retrying deployment. The test
+prefix alone does not authorize cleanup. QA Owner authentication and tax/Portal
+prerequisites remain separate blockers even after that data issue is resolved.
+
+### Verification And Limits
+
+Final `npm run v2:validate` passed **11/11**:302 core entries,100 Jest suites with
+1246 tests/zero pending,102 UI suites,102 architecture and13 runner checks.
+Imports retain81 exact baseline instances; SQL debt shrank to185 instances/
+166 fingerprints. All four requested builds passed: backend, V2 foundation,
+V2 server and V2 UI. Backend packaging includes301 migrations throughidx306.
+Historical299 entries stayed byte-identical; append-only journal/integrity and
+`git diff --check` passed. Existing build warnings were not turned into L1/polish.
+
+The native receipt's1545 source pins were matched byte-for-byte to c8b945b1 Git
+blobs, without rewriting the receipt's original dirty-tree attribution. Safe
+native evidence was archived under `.cache/v2-validation/final-four-native-evidence`
+after secret scanning. All39 earlier native artifacts remain preserved. The owned
+local PostgreSQL server was gracefully stopped after verified fixture cleanup;
+no shared service was stopped. Source code, native execution, final test-only
+contract alignment and evidence have separate independent review records.
+
+Verdict **C: TECHNICAL L0 REMAINS WITH PRECISE BLOCKER**. Next work is a separately
+authorized retained-tenant recovery/retention decision and legitimate QA Owner
+authentication, followed by exact deployment and these four acceptance rows only.
+
+### Quote Publication Isolation
+
+The reviewed candidate reuses the canonical Quote delivery attempt, prepared
+evidence, PDF, checkpoint, publication, replay and conversion operations. The
+existing exact M77 DEV environment/database/organization predicate and the single
+recipient `quote-final-four@example.invalid` select explicit QA suppression.
+Mismatched QA targets/recipients, reserved-recipient use outside the target, and
+guard drift cannot fall through to Gmail. Existing Gmail transport remains
+`gmail`; suppression uses `dev_qa_suppressed`, terminal `suppressed`, a typed
+immutable context, and a NULL provider message ID. Successful publication is not
+email-delivery success. Staff and Portal explicitly display email suppression.
+
+New forward migration `0304_v2_quote_suppressed_publication` preserves historical
+evidence and adds null-strict completion/context checks, immutable transport and
+terminal suppression evidence, and combined publication-checkpoint uniqueness.
+Qualification includes exact recipient/customer/contact/commercial/PDF/attempt/
+request/checkpoint correspondence and current suppression scope. Invalid latest
+evidence cannot silently expose an older publication or a mutable draft PDF.
+Source and migration review `ses_eede2b8beffeyuAVSUQrodvWP7` approved the candidate;
+independent checks passed 522 publication checks, 53 migration assertions,
+60 conversion/projection Jest tests and the mounted publication/App scenarios.
+These are isolated automated tests, not positive DEV publication acceptance.
+
+Disposable fixture: Customer `6b38ce9b-1df5-41ce-961d-406b90f12459`, Contact
+`c92e36d5-8e48-432f-8a77-3a823936af18`, Sales Workspace
+`1a263376-f42e-4371-8977-67eb572954be` (revision2), promoted through the canonical
+operation to `QT-1003`, Quote `d8f05c1c-8de9-4d74-a2ff-4271b243575a` (revision1).
+It has a short QA label, the reviewed synthetic recipient, one configured USD1.00
+Product line and pickup fulfillment. Recipient/routing are ready; tax remains
+`tax_jurisdiction_not_configured`. No Send was invoked. Evidence is
+`.cache/v2-validation/nine-l0-final-four-sales.json` in this worktree.
+
+Resolved jurisdiction is a genuine existing Send/acceptance prerequisite, not
+something suppression may bypass. The configured Operations login lacks
+`pricing.configure`, organization administration and Team management. Only its
+credentials are available; existing Dale/Owner membership is not claimed absent.
+Normal V2 Staff password login is supported, but no usable Owner credential was
+provided to automation. No password guessing/reset, session extraction, grant
+elevation, tax-rate invention or Portal lifecycle expansion was attempted.
+
+### Structural Authority Contract
+
+Auth owns the floor. An active/trial, non-archived, non-deleted surviving tenant
+must retain an active tenant Owner/Admin membership with an INTERNAL_USER identity,
+an unpadded/nonempty login email accepted by the current login path, completed
+password setup, a usable password identity, and an active Staff set containing
+effective catalog capability authority. SQL and JavaScript readiness agree on
+ECMAScript trimming, UTF-16 input bounds, and exact bcrypt format/length.
+Capability-only roles and Platform Developer flags alone do not count. Existing
+Platform Developer recovery permission remains separate; a qualifying Owner/Admin
+with that flag counts through the membership, not through the flag.
+
+Pending/unusable invitations do not count. New active-tenant bootstrap must create
+usable authority atomically before commit. Existing active floorless tenants fail
+migration preflight without automatic promotion, password repair or exemption.
+Durable organization/member enrollment history prevents state deletion,
+reactivation or repeated bootstrap from restoring deliberately removed authority.
+All six existing new-tenant Portal defaults are preserved. No new Staff invitation
+acceptance endpoint or generic provisioning system is implied by this work.
+
+| Runtime Class | Participation |
+| --- | --- |
+| A: mounted V2 | Team mutations and separate Portal delivery-completion transactions; Proof transaction entry and its Auth recipient operation; standalone Portal setup/reset; Proof queue token/completion transactions. |
+| B: shared QA/bootstrap | Existing shared QA scripts and the transaction-owning legacy bootstrap service are real potential same-database writers. They remain unchanged and fail before protected writes unless enrolled; a different connection cannot enroll their transaction. |
+| C: maintenance/destructive | Global identity/catalog changes and destructive cleanup need exclusive entry before dependencies, including organization deletion's actual user-pointer SET NULL effects. |
+| D: test/rehearsal only | Unmounted permission bootstrap/administration adapters and fixture cleanup are not deployed HTTP routes; retained adapters use the same entry contract. Installed triggers remain live enforcement, not test-only exclusions. |
+| E: V1-only | Legacy user/invite/platform HTTP routers are not registered by the V2 entry point. Separate V1 process coexistence is not presumed; unenrolled writes against the protected database are not silently exempted. |
+
+Lock order: same transaction/client, READ COMMITTED, entry maintenance gate,
+sorted organization locks, sorted authority states, fresh authority, request
+classification, new/resumed-mutation revision check, ordered dependencies,
+owner mutation, structural-floor assertion and receipt. Ordinary tenant work
+uses compatible shared gates; global identity/destructive work chooses exclusive
+mode at entry, never upgrades. Provider calls remain outside database locks.
+Entry guards assert existing enrollment before protected DML; deferred checks
+do not acquire missing locks. Unrelated locked tenants do not receive artificial
+revision changes solely because global coordination included them.
+
+Replay rechecks current authority, actor, terminal success and bound intent.
+Successful modern retries do not repeat changes or require their original
+revision still to be current. Legacy role receipts that never bound the original
+description fail closed rather than guess its value, rewrite history or execute
+a new operation; normal provable legacy Portal replay remains supported and
+captured one-time URLs remain nonreplayable. New bound role intents use v2 keys.
+
+`0305_v2_usable_structural_authority` and the Auth implementation passed corrected
+independent source review `ses_eede11ee7ffeouK6tIr1Hkq64Y`. Reviewed SQL SHA256:
+`f33c69874e30395d974e494a43767052a74d9f28fe96e3934a845dcd5745893b`.
+Native concurrency evidence is recorded below; DEV Team acceptance remains separate.
+
+### Native Evidence Scope
+
+An isolated native PostgreSQL17.10 instance at loopback was provisioned with
+private random credentials; the unchanged test-URL guard passed. The immutable
+stream cannot bootstrap an empty database because0000 is a marker, so the failed
+0001 attempt rolled back rather than modifying history. A separately reviewed
+fixture uses committed current legacy schema and the complete unchanged124-entry
+V2 tail0180-0303. Its210 legacy tables and683 declared FKs, including actual
+users.last_active_org_id SET NULL, were verified before and after commit. No
+historical migration-ledger entries were invented. Missing positive crm_revision
+checks on Customers/Contacts are an explicit, accepted Auth/Proof fixture limit;
+this is not CRM constraint parity or a full299-migration rehearsal.
+
+Approved0305 was applied only to that isolated fixture. Its73 physical checks,
+12 exact function bodies, marker keys/cascades and preserved683 FKs passed.
+That zero-tenant installation proves DDL readiness, not concurrency behavior.
+The native harness uses two actor connections plus an observer, explicit target/
+manifest guards, runtime-source fingerprints, pre-write coordination and owned-ID
+cleanup. Final attempt4 passed all58 native cases and all58 per-case cleanups,
+with12 complete lock-wait witnesses and three distinct PostgreSQL backends. Each
+case checks for zero-authority active tenants before teardown. Final cleanup
+restored the343-table baseline, catalog data,683 FKs and empty migration ledger.
+Native receipt SHA256:
+`e977af6f47d75fb3140a5b6bb31118befbd8107090b660f6eca8e8a842141866`.
+Independent offline evidence review `ses_eedbdf9b8ffeh3PvlJH4bFTT51` approved
+bounded ACCESS-05 native PASS, verifying actual outcome/cleanup counts, lock
+witnesses, schema/source hashes and all39 earlier artifacts' preservation.
+
+This proof ran against reviewed dirty-tree bytes at starting HEADcdc75fa, with
+1545 runtime/source pins independently matched to the candidate. It is not a
+clean-commit claim. Cases cover concurrent Team reductions, raw role/removal,
+enrollment and frozen writers,22 floor-input mutations, actual credential and
+Proof-recipient transaction coordination, fresh authority, replay, rollback,
+unrelated-tenant progress and cleanup. Proof operations intentionally roll back;
+no committed Proof issuance or provider delivery is claimed. Earlier address
+format, transient wait-observation and cleanup failures remain recorded. The
+measured bulk-cleanup budget limit does not establish the earlier failure's cause.
+The final run used stricter repeated complete wait witnesses and per-case fixture
+cleanup, without increasing race deadlines or weakening assertions. Native PASS
+does not supply the missing last-authority DEV test or close ACCESS-05 by itself.
+
+Both migrations are committed append-only additions at indexes305/306, pending
+DEV application because of the preflight blocker. Historical SQL,
+previous closures, MAIN/PROD, V1 source, L1, Storefront and UI polish remain
+untouched. Truth-related publication labels are the only UI changes in scope.
+
 ## October 6 Remaining-Nine Acceptance
 
 Current campaign began with **nine** open L0 rows. Requested baseline
