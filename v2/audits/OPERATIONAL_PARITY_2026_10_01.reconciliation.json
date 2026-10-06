@@ -607,6 +607,38 @@
       "rowTransitions": [],
       "status": "Zero closures. Distinct source/coexistence, native-proof and guarded/live exact-action authorization holds remain; not external-only completion. Preserve all prior observations, dirty updates and failed receipts."
     },
+    "terminalObservationD5fb": {
+      "checkpointUtc": "2026-10-06T01:37:28Z",
+      "commit": "d5fb164b23d6e174c70140ebae1783e5f451b891",
+      "delivery": "Actually fast-forward pushed origin/dev8477->exactd5f; preserve the preceding committed Oct6 checkpoint as historical evidence",
+      "exactCleanValidation": { "command": "npm run v2:validate", "gatesPassed": 11, "gatesFailed": 0, "jestSuites": 100, "jestTestsPassed": 1246, "buildsPassed": 4 },
+      "deploymentStatus": "Deployable but NOT business-live-validated",
+      "hosted": {
+        "run": "https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37399176376",
+        "sha": "d5fb164b23d6e174c70140ebae1783e5f451b891",
+        "deterministic": "11/11 PASS; Payment79/79",
+        "native": "RAN/FAILED",
+        "childPhase": "scenario",
+        "ordinal": 7,
+        "completed": 6,
+        "sqlstate": null,
+        "childExit": 1,
+        "childTimedOut": false,
+        "receiptValid": false,
+        "coverageAdjudicated": false,
+        "nativeArtifact": false,
+        "pinnedCase": { "name": "raw duplicate same Run member is physically rejected", "kind": "schema", "expectedSqlstate": "23505" },
+        "limits": "Expected23505 is manifest expectation, not observed failing SQLSTATE. No actual failing substep or source defect proven. Production28 completed6 then failed at7, not PASS; Run creation disabled."
+      },
+      "anonymousDev": "Version advertises exactd5f, healthok and ready/applicationok only; not business workflow or native proof",
+      "targetedDev": "Business mutations NOT RUN; manifests execution=false, BILL-16 provider isolation=false; no QA fixture or direct DB/provider activity",
+      "holds": "Auth source/coexistence hold and native20 NOT RUN unchanged; eight other acceptance blockers unchanged",
+      "followup": "Narrow reviewed substep-harness follow-up in progress; no future validation, commit or push claim",
+      "startingL0": 10,
+      "endingL0": 10,
+      "rowsClosed": [],
+      "status": "Terminal source/deployment/native-failure observation only. Zero closures, no native PASS or business-live acceptance; prior history preserved."
+    },
     "status": "TenL0 remain open, zero closures. Reviewed Billing/Accounting/Shipping/Production/Artwork and corrected Sales source are integrated; Sales union candidate canonical11/11 and four builds PASS. ACCESS-05 remains source/coexistence-blocked with no0304 adoption. OPS-12 native17cd RAN/FAILED at child/non-timeout with no typed proof; creation remains disabled. Eight other rows await guarded/external/approved targeted DEV evidence. No native PASS, environment-only verdict, policy reopening, priority downgrade or L1 work."
   },
   "wave2DependencyUpdates": {

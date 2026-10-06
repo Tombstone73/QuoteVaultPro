@@ -47,13 +47,13 @@ const productionCases = [
   ['runtime creation remains default disabled after all native scenarios', 'admission', [0,0,0,0,0,0]],
 ].map(([name, kind, values]) => Object.freeze({ name, kind, expectedCounts: Object.freeze(Object.fromEntries([...countKeys, ...(values.length === 7 ? ['historicalAllocations'] : [])].map((key, index) => [key, values[index]]))) }));
 const productionCoverage = Object.freeze({
-  hookSha256: '7d1a38f3c17c352bf6b81d0555713fccbd31f86cd2d7041a614676adf6fb3dc1',
-  suiteHash: '5af6e3bcc49a8ef5b5d83d4c85fc4861f124b648f36ae1e5b44b071f28097050',
+  hookSha256: '487aee5cd0cd5d015f26390541f228310af78c086983f735600a92fe408f839d',
+  suiteHash: '78a0d494bdd7b0c022e6981e73db1c67236061394c5fb09c513641e587b89199',
   summaryPidCase: productionCases[0].name,
   cases: Object.freeze(productionCases),
   // suiteHash covers only producer + proposal. The clean commit binds the runtime closure and lockfile.
   fileHashes: Object.freeze({
-    'v2/tests/infrastructure/productionRunExclusive.native.ts': '7d1a38f3c17c352bf6b81d0555713fccbd31f86cd2d7041a614676adf6fb3dc1',
+    'v2/tests/infrastructure/productionRunExclusive.native.ts': '487aee5cd0cd5d015f26390541f228310af78c086983f735600a92fe408f839d',
     'v2/tests/infrastructure/productionRecoveryFixture.ts': '26157cc67f7557d28baa1b6a5196c415eb736f10817c726736b752266902f3e3',
     'v2/tests/infrastructure/productionExclusiveMembership.request.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
     'server/db/migrations_v2/0303_v2_production_exclusive_membership.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
@@ -111,20 +111,27 @@ const failureSignals = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGS
 const failureContexts = new WeakMap();
 const sqlstates = new Set(['23505', '23503', '40P01', '55P03', '57014', '42P01', '42703']);
 const setupPhases = ['module-load', 'setup', 'db-connect', 'fixture'];
+const caseSevenSubsteps = ['raw-parent-insert', 'first-member-insert', 'duplicate-insert', 'duplicate-rejection', 'post-action-counts', 'cleanup-evidence'];
 let producerProgress = null;
-export function reportNativeProductionProgress(phase, ordinal = 0, error = null) {
+export function reportNativeProductionProgress(phase, ordinal = 0, error = null, substep = undefined) {
   if (!producerProgress) throw new NativeOwnerEntryError('NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
   const progress = producerProgress;
+  const previous = progress.substep;
   check((setupPhases.includes(phase) && phase !== 'module-load' && ordinal === 0 && progress.completed === 0 &&
       (phase === progress.phase || setupPhases.indexOf(phase) === setupPhases.indexOf(progress.phase) + 1)) ||
     (phase === 'scenario' && Number.isInteger(ordinal) && ordinal >= 1 && ordinal <= 28 && ordinal === progress.completed + 1 &&
       (progress.phase === 'fixture' || progress.phase === 'scenario')) ||
     (phase === 'passed' && ordinal === progress.ordinal && progress.phase === 'scenario'), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
-  if (phase === 'passed') { progress.completed = ordinal; progress.sqlstate = null; }
+  check(substep === undefined || (phase === 'scenario' && ordinal === 7 && progress.phase === 'scenario' &&
+    ((previous === null && substep === caseSevenSubsteps[0]) ||
+      (caseSevenSubsteps.indexOf(substep) === caseSevenSubsteps.indexOf(previous) + 1 && caseSevenSubsteps.includes(substep)))), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+  if (phase === 'passed') { progress.completed = ordinal; progress.sqlstate = null; progress.substep = null; }
   else {
+    const keepRejectedSqlstate = phase === 'scenario' && ordinal === 7 && progress.phase === 'scenario' && progress.substep === 'duplicate-rejection' && substep === undefined;
+    progress.substep = substep ?? (phase === 'scenario' && progress.phase === 'scenario' && progress.ordinal === ordinal ? previous : null);
     progress.phase = phase; progress.ordinal = ordinal;
     const code = error && Object.getOwnPropertyDescriptor(error, 'code')?.value;
-    progress.sqlstate = sqlstates.has(code) ? code : null;
+    progress.sqlstate = sqlstates.has(code) ? code : keepRejectedSqlstate ? progress.sqlstate : null;
   }
 }
 function safeFailureCode(error) {
@@ -149,6 +156,7 @@ function failureDiagnostic(error, context = {}) {
     childOrdinal: Number.isInteger(child?.progress?.ordinal) && child.progress.ordinal >= 0 && child.progress.ordinal <= 28 ? child.progress.ordinal : null,
     childCompleted: Number.isInteger(child?.progress?.completed) && child.progress.completed >= 0 && child.progress.completed <= 28 ? child.progress.completed : null,
     childSqlstate: sqlstates.has(child?.progress?.sqlstate) ? child.progress.sqlstate : null,
+    childSubstep: child?.progress?.phase === 'scenario' && child.progress.ordinal === 7 && child.progress.completed === 6 && caseSevenSubsteps.includes(child.progress.substep) ? child.progress.substep : null,
   };
 }
 export function nativeFailureForTests(error) { return failureDiagnostic(error, failureContexts.get(error)); }
@@ -161,7 +169,7 @@ function parseNativeChildFailure(text) {
   try {
     const raw = JSON.parse(text);
     if (!raw || !same(Object.keys(raw).sort(), ['allNativeProofClaimed', 'code', 'coverageAdjudicated', 'format', 'progress', 'receiptValid', 'stage', 'status']) || raw.format !== 'NATIVE_OWNER_CHILD_FAILURE_V1' || raw.status !== 'error' || raw.receiptValid !== false || raw.coverageAdjudicated !== false || raw.allNativeProofClaimed !== false || !failureStages.has(raw.stage)) return null;
-    if (raw.progress !== null && (raw.stage !== 'producer' || !raw.progress || !same(Object.keys(raw.progress).sort(), ['completed', 'ordinal', 'phase', 'sqlstate']) || ![...setupPhases, 'scenario'].includes(raw.progress.phase) || !Number.isInteger(raw.progress.completed) || raw.progress.completed < 0 || raw.progress.completed > 28 || !Number.isInteger(raw.progress.ordinal) || (raw.progress.phase !== 'scenario' ? raw.progress.ordinal !== 0 || raw.progress.completed !== 0 : raw.progress.ordinal < 1 || raw.progress.ordinal > 28 || ![raw.progress.ordinal,raw.progress.ordinal-1].includes(raw.progress.completed)) || (raw.progress.sqlstate !== null && (!sqlstates.has(raw.progress.sqlstate) || ['module-load', 'setup'].includes(raw.progress.phase))))) return null;
+    if (raw.progress !== null && (raw.stage !== 'producer' || !raw.progress || !same(Object.keys(raw.progress).sort(), ['completed', 'ordinal', 'phase', 'sqlstate', 'substep']) || ![...setupPhases, 'scenario'].includes(raw.progress.phase) || !Number.isInteger(raw.progress.completed) || raw.progress.completed < 0 || raw.progress.completed > 28 || !Number.isInteger(raw.progress.ordinal) || (raw.progress.phase !== 'scenario' ? raw.progress.ordinal !== 0 || raw.progress.completed !== 0 : raw.progress.ordinal < 1 || raw.progress.ordinal > 28 || ![raw.progress.ordinal,raw.progress.ordinal-1].includes(raw.progress.completed)) || (raw.progress.sqlstate !== null && (!sqlstates.has(raw.progress.sqlstate) || ['module-load', 'setup'].includes(raw.progress.phase))) || (raw.progress.substep !== null && !(raw.progress.phase === 'scenario' && raw.progress.ordinal === 7 && raw.progress.completed === 6 && caseSevenSubsteps.includes(raw.progress.substep))))) return null;
     return failureCodes.has(raw.code) ? { code: raw.code === 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? null : raw.code, progress: raw.progress } : null;
   } catch { return null; }
 }
@@ -526,7 +534,7 @@ async function executeInternalChild(options, context) {
   installNetworkPolicy(prepared.target, { net, tls, http, https, dgram, global: globalThis }); syncBuiltinESMExports();
   process.argv = [process.execPath, path.join(root, prepared.profile.suite), ...prepared.profile.args];
   if (prepared.lane === 'production') {
-    context.progress = { phase: 'module-load', ordinal: 0, completed: 0, sqlstate: null };
+    context.progress = { phase: 'module-load', ordinal: 0, completed: 0, sqlstate: null, substep: null };
     producerProgress = context.progress;
   }
   const deadline = setTimeout(() => { console.error(childFailureProtocol(new NativeOwnerEntryError('NATIVE_CHILD_DEADLINE'), context)); process.exit(1); }, prepared.profile.timeoutMs);

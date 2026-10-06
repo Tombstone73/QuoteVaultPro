@@ -553,8 +553,8 @@ test('strict bounded child protocol accepts only exact sanitized failure schema 
 
 test('native child progress is bounded, ordered and never parses raw or spoofed stderr', async () => {
   const protocol = (progress, stage = 'producer') => JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status: 'error', receiptValid: false, coverageAdjudicated: false, allNativeProofClaimed: false, code: 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED', stage, progress });
-  const setup = { phase: 'setup', ordinal: 0, completed: 0, sqlstate: null };
-  const scenario = { phase: 'scenario', ordinal: 6, completed: 5, sqlstate: '40P01' };
+  const setup = { phase: 'setup', ordinal: 0, completed: 0, sqlstate: null, substep: null };
+  const scenario = { phase: 'scenario', ordinal: 6, completed: 5, sqlstate: '40P01', substep: null };
   // An ordinary producer assertion carries progress but no recognized child error code.
   for (const phase of ['module-load', 'setup', 'db-connect', 'fixture']) {
     const progress={...setup,phase,sqlstate:phase==='fixture'?'42P01':null};
@@ -566,12 +566,16 @@ test('native child progress is bounded, ordered and never parses raw or spoofed 
   }
   const valid = JSON.parse(protocol(scenario)); valid.code = 'NATIVE_CHILD_DEADLINE';
   assert.deepEqual(parseNativeChildFailureForTests(JSON.stringify(valid)), { code: 'NATIVE_CHILD_DEADLINE', progress: scenario });
-  for (const progress of [{...scenario,sqlstate:'PRIVATE'}, {...scenario,ordinal:29}, {...scenario,completed:7}, {...setup,completed:1}, {...setup,phase:'module-load',sqlstate:'23505'}, {...setup,phase:'db-connect',ordinal:1}, {...setup,phase:'fixture',completed:1}, {...setup,phase:'production'}, {...scenario,error:'private'}, {...scenario,sqlstate:'23505\n::error::private'}]) {
+  for (const progress of [{...scenario,sqlstate:'PRIVATE'}, {...scenario,ordinal:29}, {...scenario,completed:7}, {...setup,completed:1}, {...setup,phase:'module-load',sqlstate:'23505'}, {...setup,phase:'db-connect',ordinal:1}, {...setup,phase:'fixture',completed:1}, {...setup,phase:'production'}, {...scenario,error:'private'}, {...scenario,sqlstate:'23505\n::error::private'}, {...scenario,substep:'duplicate-insert'}, {...scenario,ordinal:7,substep:'duplicate-insert'}, {...scenario,ordinal:7,completed:6,substep:'private SQL'}, {...setup,substep:'fixture'}, {...scenario,ordinal:7,completed:7,substep:'cleanup-evidence'}]) {
     assert.equal(parseNativeChildFailureForTests(JSON.stringify({...valid,progress})), null);
   }
   for (const text of [JSON.stringify({...valid,stage:'arguments'}),JSON.stringify({...valid,private:'customer'}),JSON.stringify(valid).slice(0,-1),'private stack\n'+JSON.stringify(valid),JSON.stringify(valid)+'\nprivate SQL']) assert.equal(parseNativeChildFailureForTests(text),null);
   assert.equal(parseNativeChildFailureForTests(JSON.stringify({...valid,progress:null})).progress,null);
-  assert.deepEqual(parseNativeChildFailureForTests(JSON.stringify({...valid,progress:{phase:'scenario',ordinal:28,completed:28,sqlstate:null}})).progress,{phase:'scenario',ordinal:28,completed:28,sqlstate:null});
+  assert.deepEqual(parseNativeChildFailureForTests(JSON.stringify({...valid,progress:{phase:'scenario',ordinal:28,completed:28,sqlstate:null,substep:null}})).progress,{phase:'scenario',ordinal:28,completed:28,sqlstate:null,substep:null});
+  for (const substep of ['raw-parent-insert','first-member-insert','duplicate-insert','duplicate-rejection','post-action-counts','cleanup-evidence']) {
+    const progress={phase:'scenario',ordinal:7,completed:6,sqlstate:substep==='duplicate-rejection'?'23503':null,substep};
+    assert.deepEqual(parseNativeChildFailureForTests(protocol(progress)),{code:null,progress});
+  }
   const errors=[];
   assert.equal(await runNativeOwnerCliForTests(['--native-child','production','--expected-commit',commit],environment('production'),{internalChild:async (_options,context)=>{context.stage='producer';context.progress={...scenario};throw new Error('private SQL SELECT password');}},()=>assert.fail('no receipt'),value=>errors.push(value)),1);
   assert.deepEqual(parseNativeChildFailureForTests(errors[0]),{code:null,progress:scenario});
@@ -580,6 +584,11 @@ test('native child progress is bounded, ordered and never parses raw or spoofed 
   assertPublicFailure(result,'NATIVE_CHILD_FAILED_OR_TIMED_OUT','child');
   assert.equal(result.failure.childPhase,'scenario'); assert.equal(result.failure.childOrdinal,6);
   assert.equal(result.failure.childCompleted,5); assert.equal(result.failure.childSqlstate,'40P01');
+  assert.equal(result.failure.childSubstep,null);
+  const caseSeven={phase:'scenario',ordinal:7,completed:6,sqlstate:'23503',substep:'duplicate-rejection'};
+  const rejected=await diagnosticCli({runChild:async()=>({code:1,stdout:'private SQL',diagnostics:{exitCode:1,timedOut:false,progress:caseSeven}})});
+  assertPublicFailure(rejected,'NATIVE_CHILD_FAILED_OR_TIMED_OUT','child');
+  assert.equal(rejected.failure.childSubstep,'duplicate-rejection');assert.equal(rejected.failure.childSqlstate,'23503');
   assert.doesNotMatch(result.errors.join(''),/private SQL|customer|postgresql:/);
 });
 

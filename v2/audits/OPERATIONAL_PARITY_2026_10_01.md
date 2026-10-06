@@ -377,6 +377,30 @@ is not provider validation. Policies stay fixed. Initial L0 **10**, ending **10*
 closures **0**: source, proof and live/action-authorization holds remain distinct.
 All prior observations and failed receipts remain historical evidence.
 
+### October 6 Terminal Observation: d5fb164b
+
+Commit `d5fb164b23d6e174c70140ebae1783e5f451b891` was fast-forward pushed to
+origin/dev from8477. Exact-clean `npm run v2:validate` passed **11/11**, 100 Jest
+suites / **1,246 tests**; all four builds passed. Status: **Deployable but NOT
+business-live-validated**. The preceding Oct6 checkpoint remains historical.
+
+Hosted [run37399176376](https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37399176376)
+at exactd5f passed deterministic11/11 and Payment79/79. Native **RAN / FAILED**:
+child phase=scenario, ordinal7, completed6, sqlstate=null, childExit1, non-timeout;
+receiptValid=false, coverageAdjudicated=false, no native artifact. The pinned
+manifest names case7 `raw duplicate same Run member is physically rejected`
+(schema), expected23505. That expected SQLSTATE is not observed failure data.
+No actual failing substep or source defect is proven. Production28 completed six
+then failed at seven, **not PASS**; Run creation remains disabled.
+
+Anonymous DEV version now advertises exactd5f, healthok and ready/applicationok
+only. Targeted business DEV mutations are **NOT RUN**: exact-action manifests
+remain execution=false and BILL-16 provider isolation=false. Auth source hold
+and native20 NOT RUN, plus the eight other acceptance blockers, are unchanged.
+Initial10 -> ending10, zero closed. Narrow reviewed substep-harness follow-up is
+in progress, with no future validation/commit/push claim. No direct DB/provider
+activity or native proof follows from this audit observation.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit
