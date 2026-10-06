@@ -489,6 +489,93 @@ or processor actions occurred.
 Ten L0s remain, no transitions. No future cast-fix/full28/closure/commit is claimed;
 all earlier history and receipts remain preserved.
 
+### October 6 Current Checkpoint: CI-Validated Production28
+
+DEV now advertises `f1b6db741a3d2b08d0991de4e04598a91e9f16dd`, healthy/ready;
+exact-clean canonical11/11 and all four builds PASS. Root A was harness SQL42P08
+at case7's INSERT `$2` state/CASE typing, repaired with a cast. Native686c then
+passed isolated case7 but full proof failed case9 SQLSTATE42P08 after eight
+completed. Two UPDATE `$1` state/CASE fixture defects in cases9/10 and16/17 were
+reproduced and fixed with two explicit casts; regression193+57+13 independently
+PASS. Prior failed runs remain historical; business Production was not changed by
+these harness fixes.
+
+Actual exactf1b [run37420770597](https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37420770597)
+passed canonical11/11, Payment79/79, isolated case7 and **full Production28**.
+Strict CI validated the typed28 receipt: zero failed/skipped/pending, actual PIDs,
+lock waits and all namespace cleanup. Independent `ses_ef08c706` confirms
+**CI-validated Production28 PASS ONLY**. Artifact11392918839 metadata:2450 bytes,
+digest `sha256:2cfedbc059cc292666019ee1a165eaf32728c7ec41ab97a963058a604e6db287`.
+Unauthenticated download returned401: artifact bytes were not independently
+inspected, and no actual PID or PostgreSQL patch-version values are quoted.
+No additional diagnostic changes are needed from this evidence.
+
+Production runtime opt-in is **IN PROGRESS**, not yet reviewed/delivered.
+OPS-12 remains open pending reviewed wiring and approved disposable DEV
+create/reopen acceptance; native PASS is not runtime or business-live closure.
+ACCESS-05 retains the unchanged V1 user-prelock/organization-cascade SET NULL
+cycle source hold: no0304/native Team adoption. Fresh current QA login returned200
+and verified the organization, then policy403/configure capabilities false;
+old false manifests are not a current authorization veto. No business mutation.
+
+Row-specific prerequisites remain: OPS-09 is provider-free but lacks disposable
+attempt/existing-Run ledger and verified capabilities; FUL-11/26 concern manual
+facts, not carrier purchases, but lack disposable allocations/capabilities/exact
+action manifests. Sales needs safe published-Quote/Portal identity and email
+boundary fixtures. BILL-16 autoSync/worker suppression remain unknown. PAY-22
+closure adjudication is underway, **no transition yet**. Counts remain ten L0s,
+no row closures. Preserve every earlier checkpoint; no future opt-in, DEV action,
+delivery or parity success is inferred.
+
+### Current Bounded Closure: PAY-22 B/L0
+
+PAY-22's frozen local recovery-identity contract is closed **C -> B**, priority
+**L0 unchanged**, on accepted exactf1b source. Independent
+`ses_ef151a9c0ffeuCqMRTvUAEu8H1` and `ses_ef2047187ffejNnBTKGU70Gc4D` PASS
+confirm no relevant missing local-contract gate:111 actual V2 recovery,9 UI and
+107 SQL checks, plus canonical11/11 /100Jest1246. Recovery binds unique durable
+queue identity, realm/reference, Customer, exact amount/currency and Invoice/
+allocations; missing/ambiguous/mismatch stays held without first-reference V1
+fallback. `server.ts:171-180` awaits the recovery physical catalog helper during
+`/ready` evaluation, **not startup**; exactf1b readiness was observed.
+Provider **NOT RUN** is an explicit external-provider limitation, not A/live
+acceptance or a missing local safety gate. Historical backfill/mapping and
+unsupported tax stay held without fabrication or renumbering.
+
+Current277 classes A/B/C/D/E/F = **13/50/121/49/9/35**. Starting campaign10,
+now **9 open L0**, PAY-22 alone closed; remaining L1/L2/L3/L4 **135/60/1/0**
+and all priority totals are unchanged. Current remaining L0s: SALE-08, SALE-09,
+OPS-09, OPS-12, FUL-11, FUL-26, BILL-16, ACCESS-05, ACCESS-12. OPS-12 has
+CI-validatedProduction28 PASS only (artifact bytes not independently read),
+but stays open for reviewed runtime opt-in and disposable DEVcreate acceptance.
+ACCESS-05 is source-held; seven other QA rows retain actual prerequisites.
+All earlier ten-count checkpoints and the Wave2 outcome remain historical;
+immutable inventory is unchanged. No broad audit or other transition.
+
+### Final Candidate Disposition: Run Opt-In Source Accepted
+
+Run opt-in now has independent **PASS** from `ses_ef08c706` for exactly three
+files: runner defaultfalse forwarded, canonical composition's singletrue, and
+62 HTTP/PGlite plus actual-issuer test cases. Author canonical11/11 passed on
+the stable candidate; main all four builds passed. Earlier IN PROGRESS snapshots
+remain historical. Candidate is **not yet committed/delivered or final-native
+validated**. Current deployedf1b remains disabled until a future delivery.
+
+Direct-constructor defaultfalse and native case28 still deny creation. Receipt
+`runtimeCreationEnabled=false` describes that tested **DIRECT default only**;
+it must not imply canonical deployment stays disabled after a successor opt-in.
+Accepted f1b28 is strong strict CI-validated typed proof, with artifact bytes not
+downloaded. Root A's three harness casts are corrected; no further defect or
+successor proof is inferred.
+
+OPS-12 stays **C/L0**, pending disposable DEV grouped-create/list/reopen acceptance
+and delivery gates. PAY-22 stays **B/L0**, sole closure: starting10/current9.
+Current remaining IDs: SALE-08, SALE-09, OPS-09, OPS-12, FUL-11, FUL-26,
+BILL-16, ACCESS-05, ACCESS-12. ACCESS-05 is source/coexistence-held; seven QA
+rows retain exact-action manifest, capability, isolation and disposable-fixture
+prerequisites. No further row transition, L1 work or future commit/push/native
+claim; all histories and concurrent candidate files remain preserved.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit
@@ -523,7 +610,7 @@ original Wave 1 inventory remains byte-identical, not re-audited or rewritten.
 | Prepared Quote correspondence and migration 0299 | `535de86069721bf96c9b25f7440a79a467210ffb` | Source/schema reviews PASS; existing frozen Job Label regression preserved; SALE-08/09 partial |
 | Refund provider-ID binding follow-up | `be11ae6b07ff80b44800e6c1ff40c50fbc03e7d1` | Corrected missed durable binding; Billing persists provider ID without Refund facts; final review PASS |
 
-### Exact Remaining L0
+### Historical Wave 2 Remaining L0
 
 | ID | Required next work / gate |
 | --- | --- |
@@ -1000,7 +1087,7 @@ current next-campaign recommendation is in the recovery outcome above.
 
 Historical Wave 1: Start with 274 transcribed rows; preserve two whole-row aliases without counting them; split operational Prepress notes/QC from standalone automated preflight. This yields 273 counted operator-intent rows, not a percentage of all application features.
 
-Current Wave 2 scope: 273 preserved Wave 1 intents + 4 reviewed coverage additions = 277. The current classes below apply only the recorded, reviewed Wave 2 transitions.
+Current scope: 273 preserved Wave 1 intents + 4 reviewed coverage additions = 277. The current classes below apply the recorded Wave 2 transitions and the bounded PAY-22 C->B/L0 closure; historical checkpoint totals remain preserved.
 
 The baseline inventory plus coordinator reconciliation is the authority for this
 campaign's parity status; it is not an ownership constitution or launch approval.
@@ -1009,12 +1096,12 @@ Remaining means C/D/F. A closed safety subset does not promote its whole row.
 
 | Class | A | B | C | D | E | F |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Rows | 13 | 49 | 122 | 49 | 9 | 35 |
+| Rows | 13 | 50 | 121 | 49 | 9 | 35 |
 
 | Priority | L0 | L1 | L2 | L3 | L4 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | All rows | 18 | 186 | 62 | 2 | 9 |
-| Remaining C/D/F | 10 | 135 | 60 | 1 | 0 |
+| Remaining C/D/F | 9 | 135 | 60 | 1 | 0 |
 
 ### Remaining Launch And Daily Work
 
@@ -1027,7 +1114,7 @@ Remaining means C/D/F. A closed safety subset does not promote its whole row.
 | OPS | 28 | 2 | 13 | 5 | 2 |
 | FUL | 28 | 2 | 14 | 4 | 4 |
 | BILL | 29 | 1 | 20 | 3 | 3 |
-| PAY | 28 | 1 | 12 | 6 | 3 |
+| PAY | 28 | 0 | 12 | 6 | 3 |
 | ACCESS | 27 | 2 | 13 | 6 | 5 |
 | UTIL | 24 | 0 | 3 | 15 | 2 |
 | Inventory/Materials | 1 | 0 | 1 | 0 | 0 |
@@ -1314,7 +1401,7 @@ provider-validation exception, not automatic evidence of a missing capability.
 | PAY-19: Accounting: Auto Sync preference and eligibility | Queue/immediate policy presentation and stable automatic worker. | Preference/approval/admission design and Payment transaction enqueues; nested jsonb_set does not create missing preferences/quickBooks parents. | C | L2 | With empty JSON, enablement may return false. Auto Sync controls new admission, not worker/backlog stop. ACTION: Owner in-memory SQL characterization and exact preference fix after contract review. | Settings; Accounting | V1: client/src/pages/settings/integrations.tsx:1045-1052; server/services/quickbooksSyncQueueWorker.ts <br> V2: v2/ui/src/QuickBooksSettingsWorkspace.tsx:55,80; v2/src/interfaces/http/quickBooksIntegrationRoutes.ts:27; v2/infrastructure/accounting/quickBooksBillingQueue.ts:66-84,104-116; v2/infrastructure/billing/postgresBillingPaymentsTransaction.ts:58,105,139,172 <br> Tests: V2: v2/tests/infrastructure/quickBooksBillingQueue.pure.ts (Source/DDL/pure policy; conditional SQL defect not executed.) | source/test inspection; tests not run by auditor; confidence: High conditional source | unverified | Owner persistence characterization; DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
 | PAY-20: Accounting/CRM: QuickBooks Customer create/link/update/import review | Preview/confirm Customer pull with actual routes. | Ensure Customer during Invoice export; existing link immediately returned. UI only counts preview customers, no adoption; ambiguous matches fail closed with no resolution UI. | C | L1 | Outbound prerequisite exists; standalone inbound adoption/linked update/review incomplete. ACTION: Canonical Customers operation and explicit ambiguity resolution; no V1 direct CRM writes. | Customers; Integrations | V1: client/src/pages/settings/integrations.tsx:715-737,1105-1115,2269; server/routes/quickbooks.routes.ts:414,763 <br> V2: v2/infrastructure/accounting/quickBooksBillingQueue.ts:284-310; server/quickbooksService.ts:1285-1313; v2/ui/src/QuickBooksSettingsWorkspace.tsx:51,73; v2/src/interfaces/http/quickBooksIntegrationRoutes.ts:36 <br> Tests: V2: v2/tests/infrastructure/quickBooksBillingQueue.pure.ts; v2/tests/infrastructure/quickBooksQueueRecovery.pure.ts (Source/fake pool; recovery imports provider module/dummy DB URL, unrun.) | source/test inspection; tests not run by auditor; confidence: High | unverified | CRM adoption/identity contract; DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
 | PAY-21: Accounting: QuickBooks Invoice export/update without Invoice authority | Invoice and selected queue sync through routes/provider service. | Current approval and owner projection export with persisted fingerprint/version/provider ID, SyncToken update/recovery, durable queue/leases and startup gate. | B | L1 | Bounded export intent complete in source, not Billing tax/history/documents or provider-live proof. ACTION: Preserve Integration-owned mapping and Billing reads; disconnected DEV is bounded exception. | Accounting/Integrations; Billing contract | V1: client/src/pages/invoice-detail.tsx:957-984,1217; client/src/pages/settings/quickbooks-sync-queue.tsx:163-171,220-234; server/routes/quickbooks.routes.ts:167-184 <br> V2: v2/ui/src/QuickBooksSettingsWorkspace.tsx:57-58,70; v2/infrastructure/accounting/quickBooksBillingQueue.ts:244-266,275-312; server/quickbooksService.ts:1316-1360; v2/src/interfaces/http/quickBooksIntegrationRoutes.ts:12,20-38; v2/src/deployment/server.ts:232-235 <br> Tests: V2: v2/tests/infrastructure/quickBooksBillingQueue.pure.ts (Mostly source/DDL/pure policy, no live export.) | source/test inspection; tests not run by auditor; confidence: High source | unverified | DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
-| PAY-22: Accounting: QuickBooks Payment export/allocation and recovery identity | Payment sync/ID; grouped exports deliberately held; separate PMT sequence begins at 1000. | One Payment/all allocations export and PMT sequence begins at 1; recovery accepts first provider PaymentRefNum match without Customer/amount/currency/linked-Invoice validation. | C | L0 | Improved multi-allocation projection but overlapping PMT namespaces can adopt unrelated Payment by reference alone. ACTION: Characterize collision and fail closed on financial identity mismatch; never renumber history or blindly adopt. | Integrations; Accounting | V1: client/src/pages/invoice-detail.tsx:2940-3007; server/services/billing/customerPaymentOperations.ts:12,133-138; server/quickbooksService.ts:1518-1564 <br> V2: v2/infrastructure/accounting/quickBooksBillingQueue.ts:315-359; server/quickbooksService.ts:1366-1391 <br> Tests: V2: v2/tests/infrastructure/quickBooksBillingQueue.pure.ts; v2/tests/modules/paymentAggregate.pure.ts (Source/DDL/pure reference functions, no collision execution.) | source/test inspection; tests not run by auditor; confidence: High conditional source | unverified | External recovery identity contract; DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
+| PAY-22: Accounting: QuickBooks Payment export/allocation and recovery identity | Payment sync/ID; grouped exports deliberately held; separate PMT sequence begins at 1000. | BASELINE: One Payment/all allocations export and PMT sequence begins at 1; recovery accepted first provider PaymentRefNum match without Customer/amount/currency/linked-Invoice validation. CURRENT: V2 transport and protected durable queue/attempt context require unique realm/reference, Customer, exact money/currency and Invoice/allocation identity agreement; missing/ambiguous/mismatch stays held with no first-reference V1 fallback. | B | L0 | No remaining gap in the frozen local recovery-identity safety contract. Provider NOT RUN is an explicit external-provider limitation. Historical backfill/mapping and unsupported tax remain held without fabrication. ACTION: Preserve collision/exact-identity/uncertain-attempt and readiness regressions; no renumbering or disconnected DEV export. | Integrations; Accounting | BASELINE V1: client/src/pages/invoice-detail.tsx:2940-3007; server/services/billing/customerPaymentOperations.ts:12,133-138; server/quickbooksService.ts:1518-1564. BASELINE V2: quickBooksBillingQueue.ts:315-359; server/quickbooksService.ts:1366-1391. CURRENT V2: v2/infrastructure/accounting/quickBooksPaymentRecovery.ts, quickBooksPaymentReadTransport.ts, quickBooksPaymentExport.ts, quickBooksBillingQueue.ts, quickBooksRecoveryPhysicalPostconditions.ts; v2/src/deployment/server.ts:171-180; v2/tests/infrastructure/quickBooksPaymentRecovery.test.ts; v2/tests/persistence/quickBooksRecoveryContext.postgres.test.ts; v2/ui/src/quickBooksSettingsWorkspace.test.tsx. | Actual V2 recovery111/111, UI9, SQL107 and exactf1b canonical11/11 /100Jest1246 PASS. Independent ses_ef151a9c0ffeuCqMRTvUAEu8H1 and ses_ef2047187ffejNnBTKGU70Gc4D PASS bounded contract, no relevant missing gate. | Exactf1b /ready observes awaited Payment catalog check DURING readiness evaluation, not startup. Provider NOT RUN; no QBO acceptance. | C->B/L0 bounded local closure only, not A or provider-live parity. Immutable baseline retained; no other transition. |
 | PAY-23: Accounting: QuickBooks Refund export and multiple allocations | Queue has Invoice/Payment types, no established dedicated Refund console; Stripe Refund evidence separate. | Single-allocation recoverable CreditMemo then A/R Check disbursement; multi-allocation rejection plain Error becomes retry despite held comment. | C | L1 | Multi-allocation unsupported and repeatedly retried, though rejected before provider calls; no V1 dedicated-console equivalence claim. ACTION: Owner-approved multi-allocation handling and truthful unsupported-state policy, not repeated doomed attempts. | Accounting/Integrations; Payments allocations | V1: client/src/pages/settings/quickbooks-sync-queue.tsx:27-47; client/src/pages/invoice-detail.tsx:560-624; server/services/stripeRefundRecovery.service.ts:39-136 <br> V2: v2/infrastructure/accounting/quickBooksBillingQueue.ts:368-418; server/quickbooksService.ts:1412-1472; v2/infrastructure/accounting/quickBooksQueuePolicy.ts:2-9 <br> Tests: V2: v2/tests/infrastructure/quickBooksBillingQueue.pure.ts; v2/tests/infrastructure/refundAllocationAggregate.pure.ts (Source/DDL, no provider execution.) | source/test inspection; tests not run by auditor; confidence: High | unverified | Allocation/export contract; DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
 | PAY-24: Accounting: QuickBooks retry versus uncertain-result reconciliation | Retry/force results and bounded provider attempts. | Blocked/retry identity retained; generic uncertainty held. Reconcile and resume only requeues exact credential interruption; Refund has resumable provider lookup. | C | L1 | No general unknown Invoice/Payment outcome recovery outside credential case. ACTION: Do not label credential requeue general reconciliation; retain uncertainty hold/no duplicate writes. | Integrations | V1: client/src/pages/settings/quickbooks-sync-queue.tsx:163-171,234 <br> V2: v2/ui/src/QuickBooksSettingsWorkspace.tsx:60-61,72; v2/src/interfaces/http/quickBooksIntegrationRoutes.ts:34-35; v2/infrastructure/accounting/quickBooksBillingQueue.ts:178-208 <br> Tests: V2: v2/tests/infrastructure/quickBooksQueueRecovery.pure.ts (Fake pool, retained provider import/dummy DB URL; not assumed clean deterministic fixture and not run.) | source/test inspection; tests not run by auditor; confidence: High | unverified | Provider outcome-reconciliation contract; DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
 | PAY-25: Accounting: external IDs and actionable failure visibility | QB Payment ID/sync time/error and local queue failures visible. | DTO includes providerId/attempt/state/error; UI omits providerId and subview mutation failures. | C | L2 | Available correlation hidden and failures suppressed. ACTION: Read-only Integration evidence/IDs, query/mutation errors and queued acknowledgement; IDs never editable financial authority. | Accounting UI | V1: client/src/pages/invoice-detail.tsx:2940-2969; client/src/pages/settings/quickbooks-sync-queue.tsx:232-234 <br> V2: v2/infrastructure/accounting/quickBooksBillingQueue.ts:38,168-175; v2/ui/src/QuickBooksSettingsWorkspace.tsx:72 <br> Tests: V2: v2/ui/src/quickBooksSettingsWorkspace.test.tsx (Source strings, not mounted failures.) | source/test inspection; tests not run by auditor; confidence: High | unverified | DEV QuickBooks intentionally disconnected; Coordinator normalized to campaign priority definitions; not implementation complexity. |
