@@ -1,3 +1,4 @@
+import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { InvoiceCustomerReleaseAction } from "@/components/InvoiceCustomerReleaseAction";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import { useActiveOrganizationRole } from '@/hooks/useActiveOrganizationRole';
@@ -273,7 +274,7 @@ export default function InvoiceDetailPage() {
   const invoice = data?.invoice;
   const lineItems = data?.lineItems ?? [];
   const payments = data?.payments ?? [];
-  const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
+  const paymentsList: any[] = ((invoicePayments.data as any[]) ?? payments).filter(isFinancialPaymentHistory);
   const pendingRefundRequestByPaymentId = useMemo(() => new Map(
     (stripeRefundRequests.data || [])
       .filter((request) => ['reserved', 'submitted'].includes(String(request.status || '').toLowerCase()))

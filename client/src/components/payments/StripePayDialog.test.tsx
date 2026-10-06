@@ -151,3 +151,13 @@ test('approval revoked while the dialog is open blocks Stripe confirmation and p
   expect(confirmPayment).not.toHaveBeenCalled();
   expect(mounts).toBe(1); expect(unmounts).toBe(0);
 });
+
+
+test.each(['/api/invoices', '/api/portal/invoices', '/api/guest/invoices'])('opening and closing %s never submits or confirms payment', async apiBasePath => {
+  const view = render(<StripePayDialog {...props} apiBasePath={apiBasePath} />);
+  await screen.findByTestId('hosted-payment-element');
+  expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/stripe/create-intent'), expect.anything());
+  view.rerender(<StripePayDialog {...props} apiBasePath={apiBasePath} open={false} />);
+  expect(confirmPayment).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+  expect((apiFetch as jest.Mock).mock.calls.some(([url]) => String(url).endsWith('/stripe/confirm'))).toBe(false);
+});

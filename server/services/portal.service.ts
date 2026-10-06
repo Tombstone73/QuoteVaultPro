@@ -1,3 +1,4 @@
+import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { getInvoiceCustomerPaymentEligibility, type CustomerPaymentInvoice } from '../lib/invoiceCustomerPaymentEligibility';
 import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
 import { isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
@@ -61,7 +62,7 @@ import { resolvePortalInvoiceIdentity } from "../lib/portalInvoiceIdentity";
 import { storageApplicationService } from "./storage/StorageApplicationService";
 import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
 import { resolveStripeRuntimeConfig, type StripeBrowserRuntimeConfig } from "./stripeRuntimeConfig.service";
-import { recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "./stripePaymentAttempt.service";
+import { assertStripeAttemptIntent, findStripePaymentAttempt, retireCanceledStripeAttempt, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "./stripePaymentAttempt.service";
 import { canonicalInvoiceCustomerId } from "./invoiceCustomerProjection";
 import { finalizeStripeCustomerPaymentBatch } from "./stripeCustomerPaymentBatchFinalization.service";
 import { getCustomerStatement, type CustomerStatement } from "./customerStatement.service";
@@ -280,7 +281,8 @@ export type PortalProofActionResultDto = {
 
 export type PortalStripePaymentIntentDto = {
   clientSecret: string;
-  paymentId: string;
+  paymentId: string | null;
+  paymentAttemptId?: string;
   invoiceId: string;
   amount: number;
   currency: string;
@@ -307,7 +309,8 @@ export type PortalGroupedStripePaymentIntentResult = PortalGroupedStripePaymentI
 };
 
 export type PortalStripeConfirmDto = {
-  payment: PortalInvoicePaymentDto;
+  payment: PortalInvoicePaymentDto | null;
+  paymentStatus?: string;
   invoice: InvoicePortalDto;
 };
 
@@ -1859,6 +1862,11 @@ async function loadPortalInvoicePaymentRows(organizationId: string, invoiceId: s
       paidAt: payments.paidAt,
       succeededAt: payments.succeededAt,
       appliedAt: payments.appliedAt,
+      refundedAt: payments.refundedAt,
+      externalAccountingId: payments.externalAccountingId,
+      quickbooksPaymentReference: payments.quickbooksPaymentReference,
+      syncedAt: payments.syncedAt,
+      qbReconciledAt: payments.qbReconciledAt,
       stripePaymentIntentId: payments.stripePaymentIntentId,
       createdAt: payments.createdAt,
     })
@@ -1912,6 +1920,7 @@ async function markStripePaymentNonPending(paymentId: string, organizationId: st
     .update(payments)
     .set({
       status,
+      syncStatus: "skipped",
       ...(status === "failed" ? { failedAt: now } : { canceledAt: now }),
       updatedAt: now,
     } as any)
@@ -1970,7 +1979,7 @@ export async function listPortalInvoicePayments(req: Request, invoiceId: string)
   if (!invoice || !isInvoiceCustomerVisible(invoice)) return null;
 
   const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
-  return rows.map(mapPayment);
+  return rows.filter(isFinancialPaymentHistory).map(mapPayment);
 }
 
 /** Read-only diagnostic authority, using the same tenant/customer invoice scope. */
@@ -2175,7 +2184,7 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
   // amount changed. Its external outcome is still authoritative and can only
   // be transitioned after Stripe reports a terminal state.
   const [differentAmountPending] = await db
-    .select({ id: payments.id, stripePaymentIntentId: payments.stripePaymentIntentId })
+    .select({ id: payments.id, stripePaymentIntentId: payments.stripePaymentIntentId, metadata: payments.metadata })
     .from(payments)
     .where(and(
       eq(payments.organizationId, scope.organizationId),
@@ -2186,6 +2195,7 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
     ))
     .orderBy(desc(payments.createdAt))
     .limit(1);
+  if (differentAmountPending && (!differentAmountPending.stripePaymentIntentId || (differentAmountPending.metadata as any)?.stripeAccountId !== stripeAccountId)) { throw new PortalAccessError(409, "Previous Stripe payment requires account/identity review"); }
   if (differentAmountPending?.stripePaymentIntentId) {
     const stripe = getStripeClient();
     const pi = await stripe.paymentIntents.retrieve(String(differentAmountPending.stripePaymentIntentId), { stripeAccount: stripeAccountId } as any);
@@ -2224,6 +2234,7 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
     .orderBy(desc(payments.createdAt))
     .limit(1);
 
+  if (existingPending && (!existingPending.stripePaymentIntentId || (existingPending.metadata as any)?.stripeAccountId !== stripeAccountId)) { throw new PortalAccessError(409, "Previous Stripe payment requires account/identity review"); }
   if (existingPending?.stripePaymentIntentId) {
     // Do not adopt a pending intent from a different portal actor/context.
     const existingPreviewActor = (existingPending.metadata as any)?.staffPreviewPayment?.actorUserId;
@@ -2262,7 +2273,8 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
         };
       }
 
-      await markStripePaymentNonPending(existingPending.id, scope.organizationId, piStatus === "failed" ? "failed" : "canceled");
+      if (piStatus !== "canceled") throw new PortalAccessError(409, "Existing Stripe attempt requires review");
+      await markStripePaymentNonPending(existingPending.id, scope.organizationId, "canceled");
     } catch (error) {
       if (error instanceof PortalAccessError) throw error;
       throw new PortalAccessError(502, "Unable to verify the existing Stripe payment attempt; it was left unchanged");
@@ -2290,7 +2302,9 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
     throw new PortalAccessError(409, "A previous portal payment is still awaiting completion");
   }
   const stripe = getStripeClient();
-  const pi = await stripe.paymentIntents.create(
+  const pi = attempt.stripePaymentIntentId
+    ? await stripe.paymentIntents.retrieve(attempt.stripePaymentIntentId, { stripeAccount: attempt.stripeAccountId })
+    : await stripe.paymentIntents.create(
     {
       amount: amountDueCents,
       currency: currency.toLowerCase(),
@@ -2310,6 +2324,12 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
     } as any,
   );
 
+  assertStripeAttemptIntent(attempt, pi);
+  if (pi.status === 'canceled') {
+    await retireCanceledStripeAttempt(scope.organizationId, attempt.id);
+    throw new PortalAccessError(409, "Previous payment was canceled. Reopen checkout.");
+  }
+  if (['processing', 'requires_capture'].includes(pi.status)) throw new PortalAccessError(409, "Existing payment is still processing or awaiting capture.");
   if (!pi.client_secret) throw new PortalAccessError(502, "Payment processor did not return a client secret");
 
   const paymentIntentId = String(pi.id);
@@ -2333,91 +2353,8 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
     });
     throw new PortalAccessError(409, "Invoice is already paid");
   }
-  const [existingByIntent] = await db
-    .select({
-      id: payments.id,
-      status: payments.status,
-    })
-    .from(payments)
-    .where(and(eq(payments.organizationId, scope.organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
-    .limit(1);
-
-  if (existingByIntent && String(existingByIntent.status || "").toLowerCase() === "pending") {
-    return {
-      clientSecret: String(pi.client_secret),
-      paymentId: existingByIntent.id,
-      invoiceId: invoice.id,
-      amount: centsToMoney(amountDueCents),
-      currency,
-      stripeAccountId,
-    };
-  }
-  if (existingByIntent && ["succeeded", "captured"].includes(String(existingByIntent.status || "").toLowerCase())) {
-    throw new PortalAccessError(409, "Invoice is already paid");
-  }
-
-  const insertedRows = await db
-    .insert(payments)
-    .values({
-      organizationId: scope.organizationId,
-      invoiceId: invoice.id,
-      provider: "stripe",
-      status: "pending",
-      amount: (amountDueCents / 100).toFixed(2),
-      amountCents: amountDueCents,
-      currency,
-      stripePaymentIntentId: paymentIntentId,
-      metadata: {
-        portal: !isGuestPayment,
-        guestPayment: isGuestPayment,
-        ...(previewPayment ? { staffPreviewPayment: previewPayment } : {}),
-        invoiceId: invoice.id,
-        customerId: scope.customerId,
-        stripeAccountId,
-        stripePaymentAttemptId: attempt.id,
-      },
-      method: "credit_card",
-      appliedAt: now,
-      createdByUserId: scope.userId,
-      syncStatus: "pending",
-      createdAt: now,
-      updatedAt: now,
-    } as any)
-    .onConflictDoNothing({ target: [payments.organizationId, payments.stripePaymentIntentId] })
-    .returning({ id: payments.id });
-
-  const paymentId = insertedRows[0]?.id;
-  if (paymentId) {
-    await recordStripePaymentAttemptIntent({
-      organizationId: scope.organizationId,
-      attemptId: attempt.id,
-      stripePaymentIntentId: paymentIntentId,
-      paymentId: String(paymentId),
-    });
-  }
-  if (!paymentId) {
-    const [existingAfterConflict] = await db
-      .select({ id: payments.id, status: payments.status })
-      .from(payments)
-      .where(and(eq(payments.organizationId, scope.organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
-      .limit(1);
-
-    if (!existingAfterConflict || String(existingAfterConflict.status || "").toLowerCase() !== "pending") {
-      if (existingAfterConflict && ["succeeded", "captured"].includes(String(existingAfterConflict.status || "").toLowerCase())) {
-        throw new PortalAccessError(409, "Invoice is already paid");
-      }
-      throw new PortalAccessError(500, "Failed to create payment record");
-    }
-
-    return {
-      clientSecret: String(pi.client_secret),
-      paymentId: existingAfterConflict.id,
-      invoiceId: invoice.id,
-      amount: centsToMoney(amountDueCents),
-      currency,
-      stripeAccountId,
-    };
-  }
+  // No financial payment exists until canonical settlement.
+  const paymentId = null;
 
   try {
     await db.insert(auditLogs).values({
@@ -2437,6 +2374,7 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
   return {
     clientSecret: String(pi.client_secret),
     paymentId,
+    paymentAttemptId: attempt.id,
     invoiceId: invoice.id,
     amount: centsToMoney(amountDueCents),
     currency,
@@ -2452,8 +2390,14 @@ export async function validatePortalStripePayment(req: Request, invoiceId: strin
   if (!invoice) throw new PortalAccessError(404, "Not found");
   const rows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
   const amount = assertPortalInvoicePayable(invoice, rows);
-  const payment = rows.find(row => row.stripePaymentIntentId === req.body?.paymentIntentId);
-  if (!payment || payment.status !== 'pending' || Number(payment.amountCents) !== amount || payment.metadata?.customerId !== scope.customerId) {
+  const intentId = String(req.body?.paymentIntentId || '');
+  const attempt = await findStripePaymentAttempt(scope.organizationId, invoice.id, intentId);
+  const payment = rows.find(row => row.stripePaymentIntentId === intentId);
+  const context = attempt || payment;
+  const stripeAccountId = await getStripeAccountId(scope.organizationId);
+  if (!context || !['pending', 'failed'].includes(context.status) || Number(context.amountCents) !== amount ||
+    (context.metadata as any)?.customerId !== scope.customerId ||
+    (attempt ? attempt.stripeAccountId : (payment?.metadata as any)?.stripeAccountId) !== stripeAccountId) {
     throw new PortalAccessError(409, "Payment context changed. Close and reopen the payment form.");
   }
   return { eligible: true };
@@ -2518,36 +2462,30 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
     .where(and(eq(payments.organizationId, scope.organizationId), eq(payments.invoiceId, invoice.id), eq(payments.stripePaymentIntentId, paymentIntentId)))
     .limit(1);
 
-  if (!payment) return null;
-
-  const piAmountCents = Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? 0)));
-  const currentPaymentStatus = String(payment.status || "").toLowerCase();
-  if (piStatus !== "succeeded" && currentPaymentStatus !== "succeeded") {
-    const currentRows = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id);
-    assertPortalInvoicePayable(invoice, currentRows);
+  const attempt = await findStripePaymentAttempt(scope.organizationId, invoice.id, paymentIntentId);
+  if (!payment && !attempt) return null;
+  const contextMetadata = (attempt?.metadata || payment?.metadata) as any;
+  if (contextMetadata?.customerId !== scope.customerId ||
+    (attempt ? attempt.stripeAccountId : contextMetadata?.stripeAccountId) !== stripeAccountId) {
+    throw new PortalAccessError(409, "Payment billing context changed");
   }
-
-  if (piStatus === "succeeded") {
-    if (Number(payment.amountCents || 0) !== piAmountCents) {
-      throw new PortalAccessError(409, "Payment amount changed");
-    }
-
-    await reconcileSucceededStripePayment({
-      organizationId: scope.organizationId,
-      invoiceId: invoice.id,
-      paymentId: payment.id,
-      amountCents: piAmountCents,
+  if (attempt) assertStripeAttemptIntent(attempt as any, pi);
+  if (piStatus !== "succeeded" && !['succeeded', 'captured'].includes(String(payment?.status))) {
+    assertPortalInvoicePayable(invoice, await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id));
+  }
+  if (["succeeded", "payment_failed", "requires_payment_method", "canceled"].includes(piStatus)) {
+    const type = piStatus === 'succeeded' ? 'payment_intent.succeeded'
+      : piStatus === 'canceled' ? 'payment_intent.canceled' : 'payment_intent.payment_failed';
+    await captureAndApplyStripeObservation({
+      eventId: `stripe-portal-confirm:v3:${paymentIntentId}:${type}`, type,
+      organizationId: scope.organizationId, invoiceId: invoice.id, paymentIntentId,
+      paymentAttemptId: attempt?.id || (payment?.metadata as any)?.stripePaymentAttemptId || null,
+      stripeAccountId, amountCents: Number(pi.amount_received), currency: pi.currency, occurredAt: new Date(),
     });
-  } else if (piStatus === "payment_failed" || piStatus === "requires_payment_method") {
-    await markStripePaymentNonPending(payment.id, scope.organizationId, "failed");
-  } else if (piStatus === "canceled") {
-    await markStripePaymentNonPending(payment.id, scope.organizationId, "canceled");
   }
-
-  const [updatedPayment] = await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id).then((rows) =>
-    rows.filter((row) => row.id === payment.id),
-  );
-  if (!updatedPayment) return null;
+  const updatedPayment = (await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id))
+    .find(row => row.stripePaymentIntentId === paymentIntentId);
+  if (!updatedPayment) return { payment: null, paymentStatus: piStatus, invoice: await refreshPortalInvoiceDto(scope, invoice.id) };
 
   if (String(updatedPayment.status || "").toLowerCase() === "succeeded") {
     try {
@@ -2562,16 +2500,16 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
         description: null,
         followUpArea: "Accounting",
         actionUrl: `/invoices/${invoice.id}`,
-        idempotencyKey: `portal:INVOICE_PAYMENT_SUCCEEDED:invoice:${invoice.id}:payment:${payment.id}`,
+        idempotencyKey: `portal:INVOICE_PAYMENT_SUCCEEDED:invoice:${invoice.id}:payment:${updatedPayment.id}`,
         metadata: {
           invoiceNumber: invoice.invoiceNumber,
-          paymentId: payment.id,
+          paymentId: updatedPayment.id,
         },
       });
     } catch (error) {
       console.error("[Portal Payments] failed to record portal follow-up", {
         invoiceId: invoice.id,
-        paymentId: payment.id,
+        paymentId: updatedPayment.id,
         message: error instanceof Error ? error.message : String(error),
       });
     }
@@ -2579,6 +2517,7 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
 
   return {
     payment: mapPayment(updatedPayment),
+    paymentStatus: piStatus,
     invoice: await refreshPortalInvoiceDto(scope, invoice.id),
   };
 }

@@ -62,6 +62,7 @@ function textOrNull(value: unknown): string | null {
 }
 
 function nonNegativeCents(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
   const cents = Number(value);
   if (!Number.isFinite(cents)) return null;
   return Math.max(0, Math.round(cents));
@@ -288,28 +289,32 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
         await markProcessed(tx, normalizedEventId, now);
         return { eventId: normalizedEventId, processed: true, alreadyProcessed: false, effect, paymentId: null, invoiceId: null };
       }
-      if (!payment && effect !== "succeeded") {
-        if (effect === "failed" || effect === "canceled") {
-          await tx.update(stripePaymentAttempts).set({
-            status: effect,
-            updatedAt: new Date(),
-          } as any).where(and(
-            eq(stripePaymentAttempts.organizationId, organizationId),
-            eq(stripePaymentAttempts.stripePaymentIntentId, paymentIntentId),
-            inArray(stripePaymentAttempts.status, ["reserved", "pending"]),
-          ));
-        }
-        await markProcessed(tx, normalizedEventId, now);
-        return { eventId: normalizedEventId, processed: true, alreadyProcessed: false, effect: "missing_payment", paymentId: null, invoiceId: observation.invoiceId };
+      const [attempt] = await tx.select().from(stripePaymentAttempts).where(and(
+        eq(stripePaymentAttempts.organizationId, organizationId),
+        observation.paymentAttemptId ? eq(stripePaymentAttempts.id, observation.paymentAttemptId)
+          : eq(stripePaymentAttempts.stripePaymentIntentId, paymentIntentId),
+      )).limit(1);
+      if (observation.paymentAttemptId && !attempt) {
+        throw Object.assign(new Error("Stripe observation attempt was not found."), { code: "STRIPE_EVENT_ATTEMPT_MISMATCH" });
       }
-
+      if (attempt && ((attempt.stripePaymentIntentId && attempt.stripePaymentIntentId !== paymentIntentId) ||
+        (observation.invoiceId && attempt.invoiceId !== observation.invoiceId) ||
+        (payment && attempt.invoiceId !== payment.invoiceId) ||
+        (observation.stripeAccountId && attempt.stripeAccountId !== observation.stripeAccountId) ||
+        (effect === "succeeded" && (Number(attempt.amountCents) !== observation.amountCents ||
+          String(attempt.currency).toUpperCase() !== observation.currency)))) {
+        throw Object.assign(new Error("Stripe observation conflicts with its durable attempt."), { code: "STRIPE_EVENT_ATTEMPT_MISMATCH" });
+      }
       if (payment && observation.invoiceId && String(payment.invoiceId) !== observation.invoiceId) {
         throw Object.assign(new Error("Stripe observation invoice does not match the local payment."), { code: "STRIPE_EVENT_INVOICE_MISMATCH" });
       }
 
-      const invoiceId = payment ? String(payment.invoiceId) : required(observation.invoiceId, "STRIPE_EVENT_INVOICE_REQUIRED", "Stripe success observation is missing its invoice.");
-      const stripeAccountId = observation.stripeAccountId || textOrNull((payment as any)?.metadata?.stripeAccountId) || textOrNull((lineage as any)?.batch?.stripeAccountId);
+      const invoiceId = payment ? String(payment.invoiceId) : required(observation.invoiceId || attempt?.invoiceId || null, "STRIPE_EVENT_INVOICE_REQUIRED", "Stripe success observation is missing its invoice.");
+      const stripeAccountId = observation.stripeAccountId || attempt?.stripeAccountId || textOrNull((payment as any)?.metadata?.stripeAccountId) || textOrNull((lineage as any)?.batch?.stripeAccountId);
       const requiredStripeAccountId = required(stripeAccountId, "STRIPE_EVENT_ACCOUNT_REQUIRED", "Stripe observation is missing its connected-account identity.");
+      if (payment?.metadata?.stripeAccountId && payment.metadata.stripeAccountId !== requiredStripeAccountId) {
+        throw Object.assign(new Error("Stripe observation account conflicts with payment lineage."), { code: "STRIPE_EVENT_ACCOUNT_MISMATCH" });
+      }
       const [connection] = await tx.select({ organizationId: integrationConnections.organizationId }).from(integrationConnections).where(and(
         eq(integrationConnections.provider, "stripe"),
         eq(integrationConnections.externalAccountId, requiredStripeAccountId),
@@ -323,9 +328,33 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
       )).limit(1);
       if (!invoice) throw Object.assign(new Error("Invoice not found for Stripe observation."), { code: "STRIPE_EVENT_INVOICE_NOT_FOUND" });
 
+      // Non-settled observations only affect the attempt ledger when no legacy
+      // financial artifact exists. Validate tenant/account/lineage first.
+      if (!payment && effect !== "succeeded") {
+        if (effect === "failed" || effect === "canceled") {
+          await tx.update(stripePaymentAttempts).set({
+            status: effect, stripePaymentIntentId: paymentIntentId, updatedAt: now,
+          } as any).where(and(
+            eq(stripePaymentAttempts.organizationId, organizationId),
+            eq(stripePaymentAttempts.invoiceId, invoiceId),
+            observation.paymentAttemptId ? eq(stripePaymentAttempts.id, observation.paymentAttemptId)
+              : eq(stripePaymentAttempts.stripePaymentIntentId, paymentIntentId),
+            inArray(stripePaymentAttempts.status, ["reserved", "pending", "failed"]),
+          ));
+        }
+        await markProcessed(tx, normalizedEventId, now);
+        return { eventId: normalizedEventId, processed: true, alreadyProcessed: false, effect, paymentId: null, invoiceId };
+      }
+
+      let financialStateChanged = false;
+      const settledAt = new Date(observation.occurredAt);
       if (effect === "succeeded") {
         const amountCents = observation.amountCents ?? 0;
+        if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || !observation.currency) {
+          throw Object.assign(new Error("Stripe success requires positive settled funds and currency."), { code: "STRIPE_EVENT_AMOUNT_INVALID" });
+        }
         if (!payment) {
+          financialStateChanged = true;
           const [inserted] = await tx.insert(payments).values({
             organizationId,
             invoiceId,
@@ -336,25 +365,35 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
             currency: observation.currency || "USD",
             stripePaymentIntentId: paymentIntentId,
             method: "credit_card",
-            paidAt: now,
-            succeededAt: now,
-            metadata: { stripePaymentIntentId: paymentIntentId, stripeAccountId: observation.stripeAccountId } as any,
-            createdByUserId: null,
+            appliedAt: settledAt,
+            paidAt: settledAt,
+            succeededAt: settledAt,
+            metadata: { ...(attempt?.metadata as any || {}), invoiceId, organizationId,
+              stripePaymentIntentId: paymentIntentId, stripeAccountId: requiredStripeAccountId,
+              stripePaymentAttemptId: attempt?.id || observation.paymentAttemptId,
+              portal: attempt?.channel === "portal", guestPayment: attempt?.channel === "guest" } as any,
+            createdByUserId: attempt?.createdByUserId || null,
             syncStatus: "pending",
             createdAt: now,
             updatedAt: now,
           } as any).returning();
           payment = inserted as any;
-        } else if (Number(payment.amountCents || 0) !== amountCents) {
+        } else if (Number(payment.amountCents || 0) !== amountCents || String(payment.currency).toUpperCase() !== observation.currency) {
           throw Object.assign(new Error("Stripe observation amount does not match the local payment."), { code: "STRIPE_EVENT_AMOUNT_MISMATCH" });
-        } else if (String(payment.status).toLowerCase() !== "succeeded") {
+        } else if (!["succeeded", "captured"].includes(String(payment.status).toLowerCase())) {
+          if (!["pending", "failed", "canceled"].includes(String(payment.status).toLowerCase())) {
+            throw Object.assign(new Error("Existing financial history requires reconciliation review."), { code: "STRIPE_EVENT_PAYMENT_STATE_CONFLICT" });
+          }
+          financialStateChanged = true;
           const [updated] = await tx.update(payments).set({
             status: "succeeded",
             amount: (amountCents / 100).toFixed(2),
             amountCents,
             currency: observation.currency || String(payment.currency || "USD"),
-            paidAt: now,
-            succeededAt: now,
+            appliedAt: settledAt,
+            paidAt: settledAt,
+            succeededAt: settledAt,
+            syncStatus: payment.externalAccountingId ? payment.syncStatus : "pending",
             failedAt: null,
             canceledAt: null,
             updatedAt: now,
@@ -366,9 +405,11 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
         const currentStatus = String(payment.status).toLowerCase();
         // Terminal failure events can arrive after a successful event. They
         // describe an older attempt and must never undo collected money.
-        if (currentStatus !== "succeeded" && currentStatus !== "captured" && currentStatus !== targetStatus) {
+        if (currentStatus !== "succeeded" && currentStatus !== "captured" && currentStatus !== targetStatus &&
+          !["refunded", "partially_refunded"].includes(currentStatus) && !payment.paidAt && !payment.succeededAt && !payment.refundedAt) {
           const [updated] = await tx.update(payments).set({
             status: targetStatus,
+            syncStatus: "skipped",
             ...(targetStatus === "failed" ? { failedAt: now, canceledAt: null } : { canceledAt: now, failedAt: null }),
             updatedAt: now,
           } as any).where(and(eq(payments.id, payment.id), eq(payments.organizationId, organizationId))).returning();
@@ -417,6 +458,7 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
             const remainingCents = Math.max(0, Number(payment.amountCents || 0) - alreadyRefundedCents);
             const effectiveRefundCents = Math.min(refundAmountCents, remainingCents);
             if (effectiveRefundCents > 0) {
+              financialStateChanged = true;
               await tx.insert(payments).values({
                 organizationId,
                 invoiceId,
@@ -442,7 +484,7 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
       // The attempt ledger is non-financial, but it must follow signed Stripe
       // terminal observations. A refund leaves the original succeeded attempt
       // terminal, allowing a reopened invoice to reserve a brand-new attempt.
-      if (effect === "succeeded" || effect === "failed" || effect === "canceled") {
+      if (effect === "succeeded" || ((effect === "failed" || effect === "canceled") && !["succeeded", "captured", "refunded", "partially_refunded"].includes(String(payment?.status)) && !payment?.paidAt && !payment?.succeededAt && !payment?.refundedAt)) {
         await tx.update(stripePaymentAttempts).set({
           status: effect,
           ...(payment?.id ? { paymentId: payment.id } : {}),
@@ -450,7 +492,7 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
         } as any).where(and(
           eq(stripePaymentAttempts.organizationId, organizationId),
           eq(stripePaymentAttempts.stripePaymentIntentId, paymentIntentId),
-          inArray(stripePaymentAttempts.status, ["reserved", "pending"]),
+          inArray(stripePaymentAttempts.status, ["reserved", "pending", "failed", "canceled"]),
         ));
         // The API can crash after Stripe accepts the idempotent request but
         // before it persists the PaymentIntent id. The signed webhook carries
@@ -465,15 +507,15 @@ export async function retryByEvent(eventId: string): Promise<StripePaymentReconc
             eq(stripePaymentAttempts.id, observation.paymentAttemptId),
             eq(stripePaymentAttempts.organizationId, organizationId),
             eq(stripePaymentAttempts.invoiceId, invoiceId),
-            inArray(stripePaymentAttempts.status, ["reserved", "pending"]),
+            inArray(stripePaymentAttempts.status, ["reserved", "pending", "failed", "canceled"]),
           ));
         }
       }
 
-      const reconciled = await reconcileInvoicePaymentStateInTransaction({ tx, organizationId, invoiceId });
+      const reconciled = financialStateChanged ? await reconcileInvoicePaymentStateInTransaction({ tx, organizationId, invoiceId }) : null;
       await markProcessed(tx, normalizedEventId, now);
       return {
-        eventId: normalizedEventId, processed: true, alreadyProcessed: false, effect,
+        eventId: normalizedEventId, processed: true, alreadyProcessed: effect === "succeeded" && !financialStateChanged, effect,
         paymentId: payment?.id ? String(payment.id) : null,
         invoiceId: reconciled?.updated?.id ? String(reconciled.updated.id) : invoiceId,
       };

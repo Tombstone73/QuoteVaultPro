@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 let invoiceRows: Record<string, unknown>[] = [];
 let paymentRows: Record<string, unknown>[] = [];
+let attemptRows: Record<string, any>[] = [];
 let batch: Record<string, unknown> | null = null;
 const stripeRetrieve = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const stripeCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -16,10 +17,10 @@ const query = (fields?: Record<string, unknown>) => {
   const q: any = {
     from: (table: any) => {
       const name = getTableName(table);
-      result = name === 'invoices' ? invoiceRows.splice(0, 1) : name === 'payments' ? (fields && Object.keys(fields).length === 2 ? [] : paymentRows) : name === 'customer_payment_batches' && batch ? [batch] : [];
+      result = name === 'invoices' ? invoiceRows.splice(0, 1) : name === 'payments' ? paymentRows : name === 'stripe_payment_attempts' ? attemptRows : name === 'customer_payment_batches' && batch ? [batch] : [];
       return q;
     },
-    leftJoin: () => q, where: (condition: any) => { predicates.push(new PgDialect().sqlToQuery(condition)); return q; }, orderBy: () => q,
+    leftJoin: () => q, where: (condition: any) => { const compiled = new PgDialect().sqlToQuery(condition); predicates.push(compiled); if (compiled.sql.includes('"payments"."amount_cents" <>')) result = []; return q; }, orderBy: () => q,
     limit: async () => result,
     then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject),
   };
@@ -28,9 +29,11 @@ const query = (fields?: Record<string, unknown>) => {
 const database: any = { select: query, execute: async () => ({}), transaction: async (work: any) => work(database),
   insert: (table: any) => ({ values: (value: any) => {
     writes.push(getTableName(table));
-    return { returning: async () => [{ id: 'batch', ...value }] };
+    if (getTableName(table) === 'stripe_payment_attempts') attemptRows.push(value);
+    const result = { returning: async () => [{ id: 'batch', ...value }], onConflictDoNothing: () => result };
+    return result;
   } }),
-  update: (table: any) => ({ set: () => ({ where: async () => { writes.push(getTableName(table)); } }) }),
+  update: (table: any) => ({ set: (value: any) => ({ where: async () => { writes.push(getTableName(table)); if (getTableName(table) === 'stripe_payment_attempts') attemptRows.forEach(a => Object.assign(a, value)); } }) }),
 };
 jest.unstable_mockModule('../db', () => ({ db: database, pool: {}, hasQuoteAttachmentPagesTable: () => true, hasPageCountStatusColumn: () => true }));
 jest.unstable_mockModule('../lib/stripe', () => ({ assertStripeServerConfig: () => ({}), getStripeWebhookSecret: () => "fixture", getStripeClient: () => ({ paymentIntents: { retrieve: stripeRetrieve, create: stripeCreate } }) }));
@@ -40,7 +43,7 @@ const service = await import('../services/portal.service');
 const invoice = (approved = false, id = 'invoice') => ({ id, storedCustomerId: 'customer', billingCustomerId: 'customer', status: 'billed', totalCents: 25000, currency: 'USD', invoiceVersion: 2, accountingApprovedAt: approved ? new Date() : null, accountingApprovedVersion: approved ? 2 : null });
 const request = (body: Record<string, unknown> = {}) => ({ organizationId: 'org', user: { id: 'user' }, portalCustomerId: 'customer', portalCustomer: { id: 'customer', organizationId: 'org' }, body } as any);
 beforeEach(() => {
-  invoiceRows = []; paymentRows = []; batch = null; writes.length = 0; predicates.length = 0;
+  invoiceRows = []; paymentRows = []; attemptRows = []; batch = null; writes.length = 0; predicates.length = 0;
   stripeRetrieve.mockReset().mockResolvedValue({ status: 'requires_payment_method', amount: 25000, client_secret: 'pi_fixture_secret_fixture', metadata: { organizationId: 'org', customerId: 'customer', invoiceId: 'invoice' } });
   stripeCreate.mockReset().mockResolvedValue({ id: 'pi_fixture', status: 'requires_payment_method', client_secret: 'pi_fixture_secret_fixture' });
   runtime.mockReset().mockResolvedValue({ ok: true, data: { connectedAccountId: 'acct_fixture' } });
@@ -93,7 +96,7 @@ test('mixed released-unapproved and approved invoices use one canonical grouped 
 test('released unapproved invoice reuses existing intent and revalidates stale balances', async () => {
   const released = { ...invoice(), customerReleasedAt: new Date() };
   invoiceRows.push(released);
-  paymentRows = [{ id: 'payment', status: 'pending', amountCents: 25000, stripePaymentIntentId: 'pi_fixture', metadata: { customerId: 'customer' } }];
+  paymentRows = [{ id: 'payment', status: 'pending', amountCents: 25000, stripePaymentIntentId: 'pi_fixture', metadata: { customerId: 'customer', stripeAccountId: 'acct_fixture' } }];
   expect(await service.createPortalStripePaymentIntent(request(), 'invoice')).toMatchObject({ paymentId: 'payment', amount: 250 });
   expect(stripeCreate).not.toHaveBeenCalled();
   invoiceRows.push({ ...released, totalCents: 20000 });
@@ -153,7 +156,7 @@ test('an old Customer batch cannot be reused by the current authorized Customer'
 });
 test('an approved invoice can reuse an incomplete intent; new approval is observed on requery', async () => {
   invoiceRows.push(invoice(), invoice(true));
-  paymentRows = [{ id: 'payment', status: 'pending', amountCents: 25000, stripePaymentIntentId: 'pi_fixture', metadata: { customerId: 'customer' } }];
+  paymentRows = [{ id: 'payment', status: 'pending', amountCents: 25000, stripePaymentIntentId: 'pi_fixture', metadata: { customerId: 'customer', stripeAccountId: 'acct_fixture' } }];
   await expect(service.createPortalStripePaymentIntent(request(), 'invoice')).rejects.toThrow('Not released to customer');
   await expect(service.createPortalStripePaymentIntent(request(), 'invoice')).resolves.toMatchObject({ paymentId: 'payment', amount: 250 });
   expect(stripeCreate).not.toHaveBeenCalled();
@@ -164,4 +167,23 @@ test.each(['validate', 'confirm'])('open grouped checkout checks persisted membe
   const call = action === 'validate' ? service.validatePortalGroupedStripePayment : service.confirmPortalGroupedStripePayment;
   await expect(call(request({ paymentIntentId: 'pi_fixture' }))).rejects.toThrow('Not released to customer');
   expect(stripeRetrieve).not.toHaveBeenCalled();
+});
+
+
+test.each(['portal', 'guest'])('%s opening and reopening keeps checkout only in the attempt ledger', async channel => {
+  const released = { ...invoice(), customerReleasedAt: new Date() };
+  const req = channel === 'guest' ? { guestPaymentScope: { organizationId: 'org', customerId: 'customer', invoiceId: 'invoice', userId: null }, body: {} } as any : request();
+  stripeCreate.mockImplementation(async (input: any) => ({ ...input, id: 'pi_fixture', status: 'requires_payment_method', client_secret: 'pi_fixture_secret_fixture', amount_received: 0 }));
+  invoiceRows.push(released);
+  const opened = await service.createPortalStripePaymentIntent(req, 'invoice');
+  expect(opened).toMatchObject({ paymentId: null, paymentAttemptId: attemptRows[0].id, amount: 250 });
+  expect(writes).not.toContain('payments'); expect(paymentRows).toEqual([]);
+  const intent = await stripeCreate.mock.results[0].value;
+  stripeRetrieve.mockResolvedValue(intent);
+  invoiceRows.push(released);
+  await expect(service.validatePortalStripePayment({ ...req, body: { paymentIntentId: 'pi_fixture' } }, 'invoice')).resolves.toEqual({ eligible: true });
+  invoiceRows.push(released);
+  await service.createPortalStripePaymentIntent(req, 'invoice');
+  expect(stripeCreate).toHaveBeenCalledTimes(1); expect(stripeRetrieve).toHaveBeenCalledTimes(1);
+  expect(attemptRows).toHaveLength(1); expect(writes).not.toContain('payments');
 });

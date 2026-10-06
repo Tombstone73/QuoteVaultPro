@@ -1,3 +1,4 @@
+import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { registerInvoiceCustomerReleaseRoutes } from './invoiceCustomerRelease.routes';
 import { getInvoiceCustomerReleaseDisplay, isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
 import { getInvoiceCustomerPaymentEligibility } from '../lib/invoiceCustomerPaymentEligibility';
@@ -61,7 +62,7 @@ import {
   shouldRecalculateInvoiceDueDateAfterSuccessfulSend,
 } from "../../shared/invoiceSendAutomation";
 import type { StripePaymentConfirmSuccessResponse } from "../../shared/stripePaymentConfirm";
-import { markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
+import { assertStripeAttemptIntent, findStripePaymentAttempt, retireCanceledStripeAttempt, markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
 import {
   buildBulkInvoiceEmailRequestKey,
   enqueueBulkInvoiceEmailCampaign,
@@ -1032,7 +1033,7 @@ export async function registerMvpInvoicingRoutes(
       // A changed invoice balance does not make an earlier PaymentIntent safe
       // to ignore. Verify its Stripe state before offering a second amount.
       const [differentAmountPending] = await db
-        .select({ id: payments.id, stripePaymentIntentId: payments.stripePaymentIntentId })
+        .select({ id: payments.id, stripePaymentIntentId: payments.stripePaymentIntentId, metadata: payments.metadata })
         .from(payments)
         .where(and(
           eq(payments.organizationId, organizationId),
@@ -1043,6 +1044,7 @@ export async function registerMvpInvoicingRoutes(
         ))
         .orderBy(desc(payments.createdAt))
         .limit(1);
+      if (differentAmountPending && (!differentAmountPending.stripePaymentIntentId || (differentAmountPending.metadata as any)?.stripeAccountId !== stripeAccountId)) { return res.status(409).json({ success: false, error: 'Previous Stripe payment requires account/identity review' }); }
       if (differentAmountPending?.stripePaymentIntentId) {
         try {
           const stripe = getStripeClient();
@@ -1093,6 +1095,7 @@ export async function registerMvpInvoicingRoutes(
         .orderBy(desc(payments.createdAt))
         .limit(1);
 
+      if (existingPending && (!existingPending.stripePaymentIntentId || (existingPending.metadata as any)?.stripeAccountId !== stripeAccountId)) { return res.status(409).json({ success: false, error: 'Previous Stripe payment requires account/identity review' }); }
       if (existingPending) {
         const existingIntentId = (existingPending as any).stripePaymentIntentId ? String((existingPending as any).stripePaymentIntentId) : '';
         if (existingIntentId) {
@@ -1146,18 +1149,17 @@ export async function registerMvpInvoicingRoutes(
               });
             }
 
+            if (piStatus !== 'canceled') return res.status(409).json({ success: false, error: 'Existing Stripe attempt requires review' });
             // Not usable: transition existing row out of pending, then continue to create a new PI.
             const now = new Date();
             await db
               .update(payments)
-              .set(piStatus === 'failed'
-                ? { status: 'failed', failedAt: now, canceledAt: null, updatedAt: now } as any
-                : { status: 'canceled', canceledAt: now, failedAt: null, updatedAt: now } as any)
+              .set({ status: 'canceled', syncStatus: 'skipped', canceledAt: now, failedAt: null, updatedAt: now } as any)
               .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
             await markStripePaymentAttemptTerminalForPayment({
               organizationId,
               paymentId: String((existingPending as any).id),
-              status: piStatus === 'failed' ? 'failed' : 'canceled',
+              status: 'canceled',
             });
           } catch (err: any) {
             console.error('[StripeCreateIntent] failed to retrieve existing intent', {
@@ -1170,12 +1172,7 @@ export async function registerMvpInvoicingRoutes(
             return res.status(502).json({ success: false, error: "Unable to verify the existing Stripe payment attempt; it was left unchanged." });
           }
         } else {
-          // Pending row without intent id should not block payment attempts.
-          const now = new Date();
-          await db
-            .update(payments)
-            .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
-            .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+          return res.status(409).json({ success: false, error: 'Previous payment requires processor review' });
         }
       }
 
@@ -1191,7 +1188,7 @@ export async function registerMvpInvoicingRoutes(
         currency,
         stripeAccountId,
         createdByUserId: userId,
-        metadata: { invoiceNumber: invoiceDisplayNumber },
+        metadata: { invoiceNumber: invoiceDisplayNumber, importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv), qbInvoiceId: inv.qbInvoiceId || null },
       });
       const attempt = reservation.attempt;
       if (Number(attempt.amountCents) !== amountDueCents || String(attempt.stripeAccountId) !== stripeAccountId) {
@@ -1199,7 +1196,9 @@ export async function registerMvpInvoicingRoutes(
       }
 
       const stripe = getStripeClient();
-      const pi = await stripe.paymentIntents.create(
+      const pi = attempt.stripePaymentIntentId
+        ? await stripe.paymentIntents.retrieve(attempt.stripePaymentIntentId, { stripeAccount: attempt.stripeAccountId })
+        : await stripe.paymentIntents.create(
         {
           amount: amountDueCents,
           currency: currency.toLowerCase(),
@@ -1220,6 +1219,14 @@ export async function registerMvpInvoicingRoutes(
         } as any
       );
 
+      assertStripeAttemptIntent(attempt, pi);
+      if (pi.status === 'canceled') {
+        await retireCanceledStripeAttempt(organizationId, attempt.id);
+        return res.status(409).json({ success: false, error: 'Previous payment was canceled. Reopen checkout.' });
+      }
+      if (['processing', 'requires_capture'].includes(pi.status)) {
+        return res.status(409).json({ success: false, error: 'Existing payment is still processing or awaiting capture.' });
+      }
       if (!pi.client_secret) throw new Error('Stripe did not return client_secret');
 
       const paymentIntentId = pi.id;
@@ -1242,104 +1249,8 @@ export async function registerMvpInvoicingRoutes(
         return res.status(409).json({ success: false, error: 'Invoice is already paid' });
       }
 
-      // If another request already inserted the payment row (Stripe idempotency can cause this), reuse it.
-      const [existingByIntent] = await db
-        .select()
-        .from(payments)
-        .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
-        .limit(1);
-
-      if (existingByIntent && String((existingByIntent as any).status || '').toLowerCase() === 'pending') {
-        logStripeCreateIntentDebug({
-          event: 'stripe.create_intent.reuse_pending',
-          orgId: organizationId,
-          invoiceId: inv.id,
-          paymentId: String((existingByIntent as any).id),
-          stripePaymentIntentId: paymentIntentId,
-          amountCents: amountDueCents,
-        });
-        return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id, stripeAccountId } });
-      }
-      if (existingByIntent && ['succeeded', 'captured'].includes(String((existingByIntent as any).status || '').toLowerCase())) {
-        return res.status(409).json({ success: false, error: 'Invoice is already paid' });
-      }
-
+      // Initiation is non-financial; settlement owns the payments ledger.
       const now = new Date();
-      const insertedRows = await db
-        .insert(payments)
-        .values({
-          organizationId,
-          invoiceId: inv.id,
-          provider: 'stripe',
-          status: 'pending',
-          amount: (amountDueCents / 100).toFixed(2),
-          amountCents: amountDueCents,
-          currency,
-          stripePaymentIntentId: paymentIntentId,
-          metadata: {
-            invoiceId: inv.id,
-            organizationId,
-            stripeAccountId,
-            stripePaymentAttemptId: attempt.id,
-            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
-            qbInvoiceId: inv.qbInvoiceId || null,
-          },
-          method: 'credit_card',
-          appliedAt: now,
-          createdByUserId: userId,
-          syncStatus: 'pending',
-          createdAt: now,
-          updatedAt: now,
-        } as any)
-        // Backed by 0026_stripe_payments_v1.sql unique index:
-        // payments_org_stripe_payment_intent_id_uidx (organization_id, stripe_payment_intent_id)
-        .onConflictDoNothing({ target: [payments.organizationId, payments.stripePaymentIntentId] })
-        .returning();
-
-      const payment: any | undefined = insertedRows[0] as any;
-
-      if (payment) {
-        await recordStripePaymentAttemptIntent({
-          organizationId,
-          attemptId: attempt.id,
-          stripePaymentIntentId: paymentIntentId,
-          paymentId: String(payment.id),
-        });
-      }
-
-      if (!payment) {
-        const [existingAfterConflict] = await db
-          .select()
-          .from(payments)
-          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
-          .limit(1);
-
-        if (existingAfterConflict && String((existingAfterConflict as any).status || '').toLowerCase() === 'pending') {
-          logStripeCreateIntentDebug({
-            event: 'stripe.create_intent.reuse_pending',
-            orgId: organizationId,
-            invoiceId: inv.id,
-            paymentId: String((existingAfterConflict as any).id),
-            stripePaymentIntentId: paymentIntentId,
-            amountCents: amountDueCents,
-          });
-          return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id, stripeAccountId } });
-        }
-        if (existingAfterConflict && ['succeeded', 'captured'].includes(String((existingAfterConflict as any).status || '').toLowerCase())) {
-          return res.status(409).json({ success: false, error: 'Invoice is already paid' });
-        }
-
-        throw new Error('Failed to create payment row');
-      }
-
-      logStripeCreateIntentDebug({
-        event: 'stripe.create_intent.create_new',
-        orgId: organizationId,
-        invoiceId: inv.id,
-        paymentId: String(payment.id),
-        stripePaymentIntentId: paymentIntentId,
-        amountCents: amountDueCents,
-      });
 
       try {
         await db.insert(auditLogs).values({
@@ -1356,7 +1267,7 @@ export async function registerMvpInvoicingRoutes(
         } as any);
       } catch {}
 
-      return res.json({ success: true, data: { clientSecret, paymentId: payment?.id, stripeAccountId } });
+      return res.json({ success: true, data: { clientSecret, paymentId: null, paymentAttemptId: attempt.id, stripeAccountId } });
     } catch (error: any) {
       console.error('[StripeCreateIntent] failed', {
         invoiceId: String(req?.params?.id || ''),
@@ -1439,14 +1350,19 @@ export async function registerMvpInvoicingRoutes(
         ))
         .limit(1);
 
-      if (!payment) {
-        return res.status(404).json({ success: false, error: 'Payment record not found' });
+      const attempt = await findStripePaymentAttempt(organizationId, inv.id, paymentIntentId);
+      if (!payment && !attempt) return res.status(404).json({ success: false, error: 'Payment attempt not found' });
+      if (pi.metadata.organizationId !== organizationId || pi.metadata.invoiceId !== inv.id ||
+        (attempt && attempt.stripeAccountId !== stripeAccountId) ||
+        (payment && (payment as any).metadata?.stripeAccountId !== stripeAccountId)) {
+        return res.status(409).json({ success: false, error: 'Payment identity changed' });
       }
+      if (attempt) assertStripeAttemptIntent(attempt as any, pi);
 
-      const currentStatus = String((payment as any).status || '').toLowerCase();
-      const paymentAttemptId = typeof (payment as any).metadata?.stripePaymentAttemptId === 'string'
+      const currentStatus = String((payment as any)?.status || '').toLowerCase();
+      const paymentAttemptId = typeof (payment as any)?.metadata?.stripePaymentAttemptId === 'string'
         ? (payment as any).metadata.stripePaymentAttemptId
-        : null;
+        : attempt?.id || null;
 
       if (["succeeded", "payment_failed", "requires_payment_method", "canceled"].includes(piStatus)) {
         const type = piStatus === "succeeded"
@@ -1470,8 +1386,8 @@ export async function registerMvpInvoicingRoutes(
             paymentIntentId,
             paymentAttemptId,
             stripeAccountId,
-            amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? (payment as any).amountCents ?? 0))),
-            currency: String((pi as any).currency || (payment as any).currency || "USD"),
+            amountCents: Math.max(0, Math.round(Number((pi as any).amount_received ?? (pi as any).amount ?? (payment as any)?.amountCents ?? 0))),
+            currency: String((pi as any).currency || (payment as any)?.currency || "USD"),
             occurredAt: new Date(),
           });
         } catch (captureError: any) {
@@ -1579,7 +1495,7 @@ export async function registerMvpInvoicingRoutes(
         .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .orderBy(desc(payments.createdAt));
 
-      const data = rows.map((r: any) => {
+      const data = rows.filter(r => isFinancialPaymentHistory(r.payment)).map((r: any) => {
         const u = r.createdBy as any;
         const name = u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : '';
         return {

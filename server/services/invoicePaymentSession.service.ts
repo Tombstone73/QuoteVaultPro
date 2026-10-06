@@ -38,7 +38,7 @@ export async function retireInvoicePaymentSessions(tx: Transaction, input: {
     throw new InvoicePaymentContextError('Invoice changed while saving. Reload and try again.');
   }
   const rows = await tx.select().from(payments).where(and(eq(payments.invoiceId, input.invoiceId), eq(payments.organizationId, input.organizationId)));
-  const attempts = await tx.select().from(stripePaymentAttempts).where(and(eq(stripePaymentAttempts.invoiceId, input.invoiceId), eq(stripePaymentAttempts.organizationId, input.organizationId), inArray(stripePaymentAttempts.status, ['reserved', 'pending'])));
+  const attempts = await tx.select().from(stripePaymentAttempts).where(and(eq(stripePaymentAttempts.invoiceId, input.invoiceId), eq(stripePaymentAttempts.organizationId, input.organizationId), inArray(stripePaymentAttempts.status, ['reserved', 'pending', 'failed'])));
   const batches = await tx.select().from(customerPaymentBatches).where(and(
     eq(customerPaymentBatches.organizationId, input.organizationId), eq(customerPaymentBatches.provider, 'stripe'), eq(customerPaymentBatches.status, 'pending'),
     sql`${customerPaymentBatches.providerEvidence}->'allocations' @> ${JSON.stringify([{ invoiceId: input.invoiceId }])}::jsonb`,
@@ -86,7 +86,7 @@ export async function retireInvoicePaymentSessions(tx: Transaction, input: {
       throw new InvoicePaymentContextError('Unable to verify or cancel the incomplete Stripe payment. Billing details were not changed; retry after checking the payment.');
     }
     await tx.update(payments).set({ status: 'canceled', canceledAt: new Date(), updatedAt: new Date() }).where(and(eq(payments.organizationId, input.organizationId), eq(payments.stripePaymentIntentId, intentId), inArray(payments.status, ['pending', 'failed', 'canceled'])));
-    await tx.update(stripePaymentAttempts).set({ status: 'canceled', updatedAt: new Date() }).where(and(eq(stripePaymentAttempts.organizationId, input.organizationId), eq(stripePaymentAttempts.stripePaymentIntentId, intentId), inArray(stripePaymentAttempts.status, ['reserved', 'pending'])));
+    await tx.update(stripePaymentAttempts).set({ status: 'canceled', updatedAt: new Date() }).where(and(eq(stripePaymentAttempts.organizationId, input.organizationId), eq(stripePaymentAttempts.stripePaymentIntentId, intentId), inArray(stripePaymentAttempts.status, ['reserved', 'pending', 'failed'])));
     await tx.update(customerPaymentBatches).set({ status: 'canceled', updatedAt: new Date() }).where(and(eq(customerPaymentBatches.organizationId, input.organizationId), eq(customerPaymentBatches.stripePaymentIntentId, intentId), eq(customerPaymentBatches.status, 'pending')));
   }
   if (input.ownerChange) await tx.update(invoiceGuestPaymentTokens).set({ revokedAt: new Date() }).where(and(eq(invoiceGuestPaymentTokens.organizationId, input.organizationId), eq(invoiceGuestPaymentTokens.invoiceId, input.invoiceId)));

@@ -80,7 +80,7 @@ describe("Stripe immediate browser confirmation", () => {
     expect(dialog).toContain("must not silently close onto a stale invoice");
     expect(staffInvoice).toContain("queryClient.invalidateQueries({ queryKey: ['invoices'] })");
     expect(staffInvoice).toContain("queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] })");
-    expect(staffInvoice).toContain("orderDetailQueryKey(orderId)");
+    expect(staffInvoice).toContain("queryClient.invalidateQueries({ queryKey: ['orders'] })");
     expect(staffInvoice).toContain("refreshAuthoritativePaymentState");
     expect(staffInvoice).toContain("hasReconciledStripePayment(paymentResult.data || [], paymentIntentId)");
     expect(staffInvoice).toContain("for (const delayMs of [1500, 3500, 7000, 8000, 8000, 8000, 10000, 10000, 6000])");
