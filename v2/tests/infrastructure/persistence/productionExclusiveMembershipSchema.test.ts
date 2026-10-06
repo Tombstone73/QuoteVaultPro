@@ -79,6 +79,41 @@ async function nativeRawRunParameterTyping() {
     assert.equal((await db.query<{ count: number }>("SELECT count(*)::int AS count FROM v2_production_runs")).rows[0].count, states.length);
     checks++;
     console.log("Native rawRun typing: uncast control 42P08; actual native SQL passes all six states. Supplemental in-memory SQL, not native concurrency proof.");
+
+    const updates = [...source.matchAll(/a\.query\("(UPDATE v2_production_runs SET state=\$1[^"\\\r\n]+)",\[(to|terminal)\]\)/g)];
+    assert.equal(updates.length, 2, "Expected both reviewed literal state UPDATEs with exact parameter bindings");
+    assert.equal([...source.matchAll(/UPDATE v2_production_runs SET state=\$/g)].length, 2, "Unreviewed parameterized state UPDATE");
+    assert.deepEqual(updates.map(match => match[2]), ["to", "terminal"]);
+    checks += 3;
+    const updateBaselines = [
+      "UPDATE v2_production_runs SET state=$1,cancelled_at=CASE WHEN $1='cancelled' THEN now() ELSE cancelled_at END WHERE id='r'",
+      "UPDATE v2_production_runs SET state=$1,completed_at=CASE WHEN $1='completed' THEN now() ELSE completed_at END,cancelled_at=CASE WHEN $1='cancelled' THEN now() ELSE cancelled_at END WHERE id='r'",
+    ];
+    for (const [index, match] of updates.entries()) {
+      const updateSql = match[1];
+      const uncastUpdate = updateSql.replace("SET state=$1::varchar,", "SET state=$1,");
+      assert.notEqual(uncastUpdate, updateSql, "Native state UPDATE must explicitly cast its assignment");
+      assert.equal(uncastUpdate, updateBaselines[index], "Native state UPDATE changed; review the regression contract");
+      checks += 2;
+      const transitions = index === 0 ? [["draft", "cancelled"], ["cancelled", "ready"]] : [["active", "completed"], ["active", "cancelled"]];
+      for (const [from, to] of transitions) {
+        await db.query(sql, ["r", from]);
+        const snapshotSql = "SELECT state,completed_at,cancelled_at FROM v2_production_runs WHERE id='r'";
+        const before = (await db.query(snapshotSql)).rows;
+        await assert.rejects(db.query(uncastUpdate, [to]), { code: "42P08" });
+        assert.deepEqual((await db.query(snapshotSql)).rows, before, "Rejected uncast UPDATE must preserve all state/timestamp facts");
+        await db.query(updateSql, [to]);
+        assert.deepEqual((await db.query("SELECT state,completed_at IS NOT NULL AS completed,cancelled_at IS NOT NULL AS cancelled FROM v2_production_runs WHERE id='r'")).rows,
+          [{ state: to, completed: to === "completed", cancelled: from === "cancelled" || to === "cancelled" }]);
+        checks += 3;
+        if (to === "ready") {
+          assert.deepEqual((await db.query(snapshotSql)).rows, [{ ...before[0], state: to }], "Nonterminal transition must retain existing timestamps exactly");
+          checks++;
+        }
+        await db.exec("DELETE FROM v2_production_runs WHERE id='r'");
+      }
+    }
+    console.log("Native state UPDATE typing: both uncast controls 42P08; actual SQL passes all four transitions/timestamps. Supplemental in-memory SQL only.");
   } finally { await db.close(); }
 }
 

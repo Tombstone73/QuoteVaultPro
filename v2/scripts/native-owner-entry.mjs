@@ -47,13 +47,13 @@ const productionCases = [
   ['runtime creation remains default disabled after all native scenarios', 'admission', [0,0,0,0,0,0]],
 ].map(([name, kind, values]) => Object.freeze({ name, kind, expectedCounts: Object.freeze(Object.fromEntries([...countKeys, ...(values.length === 7 ? ['historicalAllocations'] : [])].map((key, index) => [key, values[index]]))) }));
 const productionCoverage = Object.freeze({
-  hookSha256: '73615eadc9553f70e4bc2bf156fe8b9f59d2bdfef0fb0ca2f01c70b78a2d1510',
-  suiteHash: '6f135d20ad4ea4cf8c074250cad02da9787275af772ffaacb2001bcf0fa6dcbe',
+  hookSha256: 'ea82b8dbdaeb5360fbeffb70a853ca339e909cfa6122f89266ccd1abeeded81f',
+  suiteHash: 'a41ce28efee62dc5c51dce279b70d2241bf2b6943707c053e5aac65e24071bcb',
   summaryPidCase: productionCases[0].name,
   cases: Object.freeze(productionCases),
   // suiteHash covers only producer + proposal. The clean commit binds the runtime closure and lockfile.
   fileHashes: Object.freeze({
-    'v2/tests/infrastructure/productionRunExclusive.native.ts': '73615eadc9553f70e4bc2bf156fe8b9f59d2bdfef0fb0ca2f01c70b78a2d1510',
+    'v2/tests/infrastructure/productionRunExclusive.native.ts': 'ea82b8dbdaeb5360fbeffb70a853ca339e909cfa6122f89266ccd1abeeded81f',
     'v2/tests/infrastructure/productionRecoveryFixture.ts': '26157cc67f7557d28baa1b6a5196c415eb736f10817c726736b752266902f3e3',
     'v2/tests/infrastructure/productionExclusiveMembership.request.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
     'server/db/migrations_v2/0303_v2_production_exclusive_membership.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
