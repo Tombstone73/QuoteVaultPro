@@ -221,13 +221,15 @@ test('controlled taskkill nonzero/signaled close falls back exactly once; zero c
   }
 });
 
-test('Production28 matches the reviewed producer manifest and all six file-read dependencies without importing native code', () => {
+test('Production28 matches the reviewed producer manifest and all seven file-read dependencies without importing native code', () => {
   verifyNativeHooksForTests();
   const source = fs.readFileSync(new URL('./infrastructure/productionRunExclusive.native.ts', import.meta.url), 'utf8');
   const manifest = source.match(/const caseManifest = (\[[\s\S]*?\]) as const;/)[1];
   const parsed = JSON.parse(manifest.replace(/\b(name|kind|expectedCounts|runs|allocations|activeMemberships|operationReceipts|outputEvents|reworkCycles|historicalAllocations):/g, '"$1":').replace(/,\s*\]$/, ']'));
   assert.deepEqual(parsed, contract('production').cases);
   assert.equal(contract('production').hookSha256.length, 64);
+  assert.equal(nativeOwnerRegistry.production.files.length, 7);
+  assert.ok(nativeOwnerRegistry.production.files.includes('server/db/migrations_v2/0211_v2_order_line_material_requirements.sql'));
   assert.equal(contract('production').fileHashes['v2/tests/infrastructure/productionExclusiveMembership.request.sql'], contract('production').fileHashes['server/db/migrations_v2/0303_v2_production_exclusive_membership.sql']);
   console.log(JSON.stringify({ scope: 'static source hashes, not native execution', sourceHashes: contract('production').fileHashes, suiteHash: contract('production').suiteHash }));
 });

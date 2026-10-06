@@ -8,7 +8,12 @@ export async function productionRecoveryFixture(client: PoolClient, invariantSql
     CREATE TABLE v2_production_works(id varchar PRIMARY KEY,organization_id varchar,order_document_id varchar,order_line_id varchar,ordered_quantity integer,artwork_assignment_id varchar,artwork_file_id varchar,rework_cycle_id varchar,replacement_origin_production_work_id varchar,UNIQUE(id,organization_id));
     CREATE TABLE v2_artwork_assignments(id varchar PRIMARY KEY,organization_id varchar,artwork_file_id varchar,identity_fingerprint varchar,UNIQUE(id,organization_id,artwork_file_id));
     CREATE TABLE v2_artwork_files(id varchar PRIMARY KEY,organization_id varchar,object_version varchar);
-    CREATE TABLE v2_order_line_material_requirements(organization_id varchar,order_line_id varchar,material_id varchar,unit varchar);
+    CREATE TABLE v2_sales_documents(id varchar PRIMARY KEY);
+    CREATE TABLE v2_sales_document_lines(id varchar PRIMARY KEY);
+    CREATE TABLE pbv2_tree_versions(id varchar PRIMARY KEY);
+    CREATE TABLE v2_product_recipes(id varchar PRIMARY KEY);
+    CREATE TABLE v2_product_recipe_components(id varchar PRIMARY KEY);
+    CREATE TABLE materials(id varchar PRIMARY KEY);
     CREATE TABLE v2_production_rework_cycles(id varchar,organization_id varchar,destination_station_key varchar);
     CREATE TABLE v2_sales_line_workflow_exceptions(organization_id varchar,order_line_id varchar,production_destination varchar);
     CREATE TABLE v2_route_instances(id varchar,organization_id varchar,order_document_id varchar,order_line_id varchar,current_step_id varchar);
@@ -18,6 +23,8 @@ export async function productionRecoveryFixture(client: PoolClient, invariantSql
     CREATE UNIQUE INDEX production_fixture_active_attempt ON v2_production_attempts(organization_id,production_work_id) WHERE completed_at IS NULL;
     CREATE FUNCTION v2_usable_production_good_quantity(varchar,varchar) RETURNS integer LANGUAGE SQL AS 'SELECT COALESCE(sum(good_quantity),0)::integer FROM v2_production_attempts WHERE organization_id=$1 AND production_work_id=$2 AND completed_at IS NOT NULL';`);
   const migration = (name: string) => readFile(new URL(`../../../server/db/migrations_v2/${name}`, import.meta.url), "utf8");
+  const requirements = await migration("0211_v2_order_line_material_requirements.sql");
+  await client.query(requirements.slice(requirements.indexOf("CREATE TABLE v2_order_line_material_requirements")));
   const ledger = await migration("0180_v2_foundation_persistence.sql");
   await client.query(ledger.slice(ledger.indexOf("CREATE TABLE v2_operation_requests"), ledger.indexOf("CREATE TABLE v2_principal_attributions")));
   const runs = await migration("0279_v2_canonical_production_runs.sql");

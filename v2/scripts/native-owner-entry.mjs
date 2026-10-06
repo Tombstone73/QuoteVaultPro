@@ -54,10 +54,11 @@ const productionCoverage = Object.freeze({
   // suiteHash covers only producer + proposal. The clean commit binds the runtime closure and lockfile.
   fileHashes: Object.freeze({
     'v2/tests/infrastructure/productionRunExclusive.native.ts': 'ea82b8dbdaeb5360fbeffb70a853ca339e909cfa6122f89266ccd1abeeded81f',
-    'v2/tests/infrastructure/productionRecoveryFixture.ts': '26157cc67f7557d28baa1b6a5196c415eb736f10817c726736b752266902f3e3',
+    'v2/tests/infrastructure/productionRecoveryFixture.ts': '186e8bbd525bc4318d7e14278167a3c48dbb89e37600c5a232f6bc06197b3063',
     'v2/tests/infrastructure/productionExclusiveMembership.request.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
     'server/db/migrations_v2/0303_v2_production_exclusive_membership.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
     'server/db/migrations_v2/0180_v2_foundation_persistence.sql': 'ea8f8cbde5c34f0680dae244d1e0a4d633727be23346265d4bdf98c63baf28c0',
+    'server/db/migrations_v2/0211_v2_order_line_material_requirements.sql': 'a165eadccda549020686b114397fc82611050ae58aa1a5831fc9be1425c45c5f',
     'server/db/migrations_v2/0279_v2_canonical_production_runs.sql': '951058d4aa98d3f941e8e9e96c6ec5847778db4b94f4bda42cb216f8ccc5fe45',
   }),
 });

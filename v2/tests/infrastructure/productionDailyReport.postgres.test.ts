@@ -342,7 +342,7 @@ try {
   const runMigration = await migration("0279_v2_canonical_production_runs.sql");
   await db.exec(`ALTER TABLE v2_artwork_assignments ADD COLUMN identity_fingerprint text NOT NULL DEFAULT 'sha256:${"a".repeat(64)}';
     CREATE TABLE v2_artwork_files(id varchar,organization_id varchar,object_version text,PRIMARY KEY(id,organization_id));
-    CREATE TABLE v2_order_line_material_requirements(organization_id varchar,order_line_id varchar,material_id varchar,unit varchar);`);
+    CREATE TABLE v2_order_line_material_requirements(organization_id varchar,order_line_id varchar,material_id varchar,quantity_unit varchar);`);
   await db.exec(runMigration.slice(runMigration.indexOf("CREATE TABLE v2_production_run_events"), runMigration.indexOf("\n\nINSERT INTO v2_permission_capabilities")));
   const runPool = { connect: async () => { connections++; return client; } } as Pick<Pool, "connect">;
   const runRunner = new PostgresProductionRunTransactionRunner(runPool as Pool);

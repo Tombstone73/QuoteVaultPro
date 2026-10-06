@@ -93,7 +93,12 @@ try{
      (SELECT count(*)::integer FROM v2_production_run_allocations WHERE membership_active) memberships,
      (SELECT count(*)::integer FROM v2_production_run_events) events,
      (SELECT count(*)::integer FROM v2_operation_requests) receipts`)).rows[0];
-    const empty={runs:0,allocations:0,memberships:0,events:0,receipts:0};
+     const empty={runs:0,allocations:0,memberships:0,events:0,receipts:0};
+     transactions.length=0;
+     const wrongDestination=await requestHttp(createApp).post(createPath).send({...command,stationKey:"flatbed"});
+     assert.equal(wrongDestination.status,409,JSON.stringify(wrongDestination.body));
+     assert.equal(wrongDestination.body.error.code,"CONFLICT");
+     assert.deepEqual(transactions,["BEGIN","ROLLBACK","release"]);assert.deepEqual(await creationCounts(),empty);cases++;
     for(const approved of [undefined,false] as const){
      const disabled=approved===undefined?new PostgresProductionRunTransactionRunner(creationPool):new PostgresProductionRunTransactionRunner(creationPool,approved);
      const disabledApp=express();disabledApp.use(express.json());disabledApp.use("/v2/organizations/:organizationId/production",createProductionRouter({...runtime.dependencies,runs:new ProductionRunApplicationService(disabled)}));
@@ -163,6 +168,36 @@ try{
     assert.deepEqual(await creationCounts(),committedCounts);cases++;
    }finally{await creationDb.close();}
    const tx=new PostgresProductionRunTransaction(client,true);
+   // Canonical 0211 material DDL, not an adapter-shaped copy. All effects roll back.
+   await client.query("BEGIN");
+   const workIds=[brandedId<"ProductionWorkId">("work-a"),brandedId<"ProductionWorkId">("work-b")];
+   assert.deepEqual((await tx.lockCandidates(org,workIds)).map(row=>row.materialFingerprint),[null,null]);
+   await client.query(`INSERT INTO v2_sales_documents VALUES('order-a');
+     INSERT INTO v2_sales_document_lines VALUES('work-a'),('work-b');
+     INSERT INTO pbv2_tree_versions VALUES('version-a');
+     INSERT INTO v2_product_recipes VALUES('recipe-a');
+     INSERT INTO v2_product_recipe_components VALUES('component-z'),('component-a');
+     INSERT INTO materials VALUES('material-z'),('material-a');
+     INSERT INTO v2_order_line_material_requirements(organization_id,order_document_id,order_line_id,source_product_version_id,source_recipe_id,source_recipe_component_id,source_configuration_id,material_id,material_name_snapshot,quantity,quantity_unit,quantity_mode)
+       SELECT 'org-a','order-a',line,'version-a','recipe-a',component,'config-a',material,material,1,unit,'per_line'
+       FROM (VALUES('work-a'),('work-b')) lines(line)
+       CROSS JOIN (VALUES('component-z','material-z','roll'),('component-a','material-a','sheet')) requirements(component,material,unit);
+     ALTER TABLE v2_production_works ADD COLUMN side varchar, ADD COLUMN source_page_index integer, ADD COLUMN layer_key varchar, ADD COLUMN layer_order integer;
+     ALTER TABLE v2_artwork_assignments ADD COLUMN order_document_id varchar DEFAULT 'order-a', ADD COLUMN order_line_id varchar,
+       ADD COLUMN purpose varchar DEFAULT 'production', ADD COLUMN side varchar, ADD COLUMN source_page_index integer,
+       ADD COLUMN layer_key varchar, ADD COLUMN layer_order integer, ADD COLUMN supersedes_artwork_assignment_id varchar, ADD COLUMN created_at timestamp DEFAULT now();
+     UPDATE v2_artwork_assignments SET order_line_id=replace(id,'art-','');
+     CREATE VIEW v2_current_artwork_assignments AS SELECT * FROM v2_artwork_assignments;`);
+   const materialCandidates=await tx.lockCandidates(org,workIds);
+   const materialFingerprint="material-a:sheet,material-z:roll";
+   assert.deepEqual(materialCandidates.map(row=>row.materialFingerprint),[materialFingerprint,materialFingerprint]);
+   const materialRunId=brandedId<"ProductionRunId">("material-run");
+   await tx.create({id:materialRunId,organizationId:org,stationKey:"roll",materialFingerprint,layoutMetadata:{},members:materialCandidates,quantities:new Map(workIds.map(id=>[id,5])),principalKind:"staff",principalSubject:"actor-a"});
+   const refreshInput={organizationId:org,productionRunId:materialRunId,principalKind:"staff" as const,principalSubject:"actor-a"};
+   assert.equal((await tx.refreshPreparation(refreshInput)).allocations.length,2);
+   await client.query("UPDATE v2_order_line_material_requirements SET quantity_unit='each' WHERE order_line_id='work-b' AND material_id='material-a'");
+   await assert.rejects(()=>tx.refreshPreparation(refreshInput),/material/i);
+   await client.query("ROLLBACK");cases++;
   await client.query("BEGIN");
   const candidates=await tx.lockCandidates(org,[brandedId<"ProductionWorkId">("work-a")]);
   const input={id:runId,organizationId:org,stationKey:"roll" as const,materialFingerprint:null,layoutMetadata:{},members:candidates,quantities:new Map([["work-a",10]]),principalKind:"staff" as const,principalSubject:"actor-a",staffActorUserId:"actor-a"};
