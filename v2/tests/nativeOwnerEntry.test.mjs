@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import yaml from 'js-yaml';
 import { cleanEnvironment } from '../scripts/validate.mjs';
-import { NativeOwnerEntryError, nativeFailureForTests, parseNativeChildFailureCode, runNativeOwnerCliForTests, nativeOwnerRegistry, parseNativeArguments, prepareNativeEnvironment, nativeSocketAllowed, installNativeNetworkPolicyForTests, validateNativeReceipt, validateNativeReceiptForTests, runNativeOwnerEntryForTests, runOwnedProcessForTests, writeNativeArtifactForTests, stopWindowsOwnedTreeForTests, verifyNativeHooksForTests } from '../scripts/native-owner-entry.mjs';
+import { NativeOwnerEntryError, nativeFailureForTests, parseNativeChildFailureCode, parseNativeChildFailureForTests, runNativeOwnerCliForTests, nativeOwnerRegistry, parseNativeArguments, prepareNativeEnvironment, nativeSocketAllowed, installNativeNetworkPolicyForTests, validateNativeReceipt, validateNativeReceiptForTests, runNativeOwnerEntryForTests, runOwnedProcessForTests, writeNativeArtifactForTests, stopWindowsOwnedTreeForTests, verifyNativeHooksForTests } from '../scripts/native-owner-entry.mjs';
 
 // Synthetic unit contracts only. They are not B/E case names or native proof.
 const commit = 'a'.repeat(40);
@@ -549,6 +549,38 @@ test('strict bounded child protocol accepts only exact sanitized failure schema 
   assert.equal(parseNativeChildFailureCode(errors[0]), 'NATIVE_PROVIDER_OR_NETWORK_IO_FORBIDDEN');
   for (const altered of [{ ...raw, code: 'PRIVATE_CODE' }, { ...raw, code: 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' }, { ...raw, stage: 'private' }, { ...raw, receiptValid: true }, { ...raw, coverageAdjudicated: true }, { ...raw, allNativeProofClaimed: true }, { ...raw, status: 'pass' }, { ...raw, message: 'private' }, { ...raw, format: 'other' }]) assert.equal(parseNativeChildFailureCode(JSON.stringify(altered)), null);
   for (const invalid of [null, '{}', 'null', '[]', 'private Node trace\n' + errors[0], errors[0] + '\n' + errors[0], ' '.repeat(4097) + errors[0]]) assert.equal(parseNativeChildFailureCode(invalid), null);
+});
+
+test('native child progress is bounded, ordered and never parses raw or spoofed stderr', async () => {
+  const protocol = (progress, stage = 'producer') => JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status: 'error', receiptValid: false, coverageAdjudicated: false, allNativeProofClaimed: false, code: 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED', stage, progress });
+  const setup = { phase: 'setup', ordinal: 0, completed: 0, sqlstate: null };
+  const scenario = { phase: 'scenario', ordinal: 6, completed: 5, sqlstate: '40P01' };
+  // An ordinary producer assertion carries progress but no recognized child error code.
+  for (const phase of ['module-load', 'setup', 'db-connect', 'fixture']) {
+    const progress={...setup,phase,sqlstate:phase==='fixture'?'42P01':null};
+    assert.deepEqual(parseNativeChildFailureForTests(protocol(progress)),{code:null,progress});
+    const errors=[];
+    assert.equal(await runNativeOwnerCliForTests(['--native-child','production','--expected-commit',commit],environment('production'),{internalChild:async (_options,context)=>{context.stage='producer';context.progress=progress;throw new Error('private SQL SELECT password');}},()=>assert.fail('no receipt'),value=>errors.push(value)),1);
+    assert.deepEqual(parseNativeChildFailureForTests(errors[0]),{code:null,progress});
+    assert.doesNotMatch(errors.join(''),/private|password|SELECT/);
+  }
+  const valid = JSON.parse(protocol(scenario)); valid.code = 'NATIVE_CHILD_DEADLINE';
+  assert.deepEqual(parseNativeChildFailureForTests(JSON.stringify(valid)), { code: 'NATIVE_CHILD_DEADLINE', progress: scenario });
+  for (const progress of [{...scenario,sqlstate:'PRIVATE'}, {...scenario,ordinal:29}, {...scenario,completed:7}, {...setup,completed:1}, {...setup,phase:'module-load',sqlstate:'23505'}, {...setup,phase:'db-connect',ordinal:1}, {...setup,phase:'fixture',completed:1}, {...setup,phase:'production'}, {...scenario,error:'private'}, {...scenario,sqlstate:'23505\n::error::private'}]) {
+    assert.equal(parseNativeChildFailureForTests(JSON.stringify({...valid,progress})), null);
+  }
+  for (const text of [JSON.stringify({...valid,stage:'arguments'}),JSON.stringify({...valid,private:'customer'}),JSON.stringify(valid).slice(0,-1),'private stack\n'+JSON.stringify(valid),JSON.stringify(valid)+'\nprivate SQL']) assert.equal(parseNativeChildFailureForTests(text),null);
+  assert.equal(parseNativeChildFailureForTests(JSON.stringify({...valid,progress:null})).progress,null);
+  assert.deepEqual(parseNativeChildFailureForTests(JSON.stringify({...valid,progress:{phase:'scenario',ordinal:28,completed:28,sqlstate:null}})).progress,{phase:'scenario',ordinal:28,completed:28,sqlstate:null});
+  const errors=[];
+  assert.equal(await runNativeOwnerCliForTests(['--native-child','production','--expected-commit',commit],environment('production'),{internalChild:async (_options,context)=>{context.stage='producer';context.progress={...scenario};throw new Error('private SQL SELECT password');}},()=>assert.fail('no receipt'),value=>errors.push(value)),1);
+  assert.deepEqual(parseNativeChildFailureForTests(errors[0]),{code:null,progress:scenario});
+  assert.doesNotMatch(errors.join(''),/private|password|SELECT/);
+  const result = await diagnosticCli({ runChild: async () => ({code:1,stdout:'private SQL',diagnostics:{exitCode:1,timedOut:false,failureCode:'NATIVE_CHILD_DEADLINE',progress:scenario}}) });
+  assertPublicFailure(result,'NATIVE_CHILD_FAILED_OR_TIMED_OUT','child');
+  assert.equal(result.failure.childPhase,'scenario'); assert.equal(result.failure.childOrdinal,6);
+  assert.equal(result.failure.childCompleted,5); assert.equal(result.failure.childSqlstate,'40P01');
+  assert.doesNotMatch(result.errors.join(''),/private SQL|customer|postgresql:/);
 });
 
 test('internal child arbitrary/private error stays suppressed and cannot become public annotation or recognized child code', async () => {

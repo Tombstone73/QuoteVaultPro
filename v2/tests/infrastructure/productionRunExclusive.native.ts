@@ -4,6 +4,7 @@ import { randomUUID,createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { requireV2M0CloneDatabaseUrl } from "../../infrastructure/persistence/cloneSafety.js";
+import { reportNativeProductionProgress } from "../../scripts/native-owner-entry.mjs";
 
 // Public source contract only. Counts are queried and asserted by scenario(),
 // never substituted for observed values in a receipt.
@@ -46,6 +47,7 @@ const sourceCommit=execFileSync("git",["rev-parse","HEAD"],{cwd:sourceRoot,encod
 const sourceCleanBefore=!execFileSync("git",["status","--porcelain","--untracked-files=normal"],{cwd:sourceRoot,encoding:"utf8",timeout:5000}).trim();
 const expectedCommit=process.env.V2_L0_NATIVE_EXPECTED_COMMIT,githubSha=process.env.GITHUB_SHA;
 for(const sha of [expectedCommit,githubSha])if(sha!==undefined&&(!/^[a-f0-9]{40}$/i.test(sha)||sourceCommit!==sha||!sourceCleanBefore))throw Error("Native proof requires the exact clean reviewed checkout; no connection was opened.");
+reportNativeProductionProgress("setup");
 const {Pool}=await import("pg");
 const {PostgresProductionRunTransaction}=await import("../../infrastructure/production/postgresProductionRunTransaction.js");
 const {PostgresProductionTransaction}=await import("../../infrastructure/production/postgresProductionTransaction.js");
@@ -54,8 +56,10 @@ const {productionRecoveryFixture}=await import("./productionRecoveryFixture.js")
 const {brandedId}=await import("../../src/modules/shared/commercialValues.js");
 const invariant=await readFile(new URL("./productionExclusiveMembership.request.sql",import.meta.url),"utf8");
 const suiteHash=createHash("sha256").update(await readFile(new URL(import.meta.url))).update(invariant).digest("hex");
+reportNativeProductionProgress("db-connect");
 const pool=new Pool({connectionString:url,max:2,connectionTimeoutMillis:10000,query_timeout:15000,statement_timeout:15000,lock_timeout:10000});
-const a=await pool.connect(),b=await pool.connect().catch(async error=>{a.release();await pool.end();throw error;});
+const a=await pool.connect().catch(error=>{reportNativeProductionProgress("db-connect",0,error);throw error;}),b=await pool.connect().catch(async error=>{reportNativeProductionProgress("db-connect",0,error);a.release();await pool.end();throw error;});
+reportNativeProductionProgress("fixture");
 const schema=`l0_production_test_${randomUUID().replaceAll("-","")}`;
 let created=false,namespaceDropped=false,contender:Promise<unknown>|undefined;
 type Counts={runs:number;allocations:number;activeMemberships:number;operationReceipts:number;outputEvents:number;reworkCycles:number;historicalAllocations?:number};
@@ -101,25 +105,30 @@ const measureCounts=async():Promise<Counts>=>(await a.query<Counts>(`SELECT
  (SELECT count(*)::integer FROM v2_production_rework_cycles) "reworkCycles"`)).rows[0]!;
 const zeroCounts:Counts={runs:0,allocations:0,activeMemberships:0,operationReceipts:0,outputEvents:0,reworkCycles:0};
 const scenario=async(label:string,action:()=>Promise<void>)=>{
- const spec=caseManifest.find(item=>item.name===label);assert.ok(spec,"Every executed case must have an exact public manifest row");assert.ok(!passed.includes(label));
+  const spec=caseManifest.find(item=>item.name===label);assert.ok(spec,"Every executed case must have an exact public manifest row");assert.ok(!passed.includes(label));
+  reportNativeProductionProgress("scenario",passed.length+1);
  scenarioName=label;await cleanRows();executionSlots.clear();caseNamespaces=[schema];caseSpecificCounts={};
  casePids={a:(await a.query<{pid:number}>("SELECT pg_backend_pid() pid")).rows[0]!.pid,b:(await b.query<{pid:number}>("SELECT pg_backend_pid() pid")).rows[0]!.pid};
  assert.equal(casePids.a,connectionPids[0]);assert.equal(casePids.b,connectionPids[1]);
  let measured:Counts|undefined,cleanup:Counts|undefined;
  collectingExecution=true;
- try{await action();collectingExecution=false;measured={...await measureCounts(),...caseSpecificCounts};assert.deepEqual(measured,spec.expectedCounts);
-  const bad=(await a.query<{n:number}>("SELECT count(*)::integer n FROM v2_production_run_allocations x JOIN v2_production_runs r ON r.organization_id=x.organization_id AND r.id=x.production_run_id WHERE x.membership_active IS DISTINCT FROM (x.released_at IS NULL AND r.state IN ('draft','ready','active','held'))")).rows[0]!.n;assert.equal(bad,0);
- }finally{collectingExecution=false;await a.query("ROLLBACK");if(contender)await contender.catch(()=>undefined);contender=undefined;await b.query("ROLLBACK");await cleanRows();cleanup=await measureCounts();assert.deepEqual(cleanup,zeroCounts);}
+  try{await action();collectingExecution=false;measured={...await measureCounts(),...caseSpecificCounts};assert.deepEqual(measured,spec.expectedCounts);
+   const bad=(await a.query<{n:number}>("SELECT count(*)::integer n FROM v2_production_run_allocations x JOIN v2_production_runs r ON r.organization_id=x.organization_id AND r.id=x.production_run_id WHERE x.membership_active IS DISTINCT FROM (x.released_at IS NULL AND r.state IN ('draft','ready','active','held'))")).rows[0]!.n;assert.equal(bad,0);
+  }catch(error){reportNativeProductionProgress("scenario",passed.length+1,error);throw error;
+  }finally{collectingExecution=false;await a.query("ROLLBACK");if(contender)await contender.catch(()=>undefined);contender=undefined;await b.query("ROLLBACK");await cleanRows();cleanup=await measureCounts();assert.deepEqual(cleanup,zeroCounts);}
  assert.ok(measured&&cleanup);const observed=waits.filter(wait=>wait.scenario===label);
  const executingBackendPids=[...executionSlots].sort().map(slot=>casePids![slot]);assert.ok(executingBackendPids.length>0,"Case must execute on a measured backend");
  if(spec.kind==="concurrency"){assert.ok(executionSlots.has("a")&&executionSlots.has("b"));assert.notEqual(casePids.a,casePids.b);assert.ok(observed.length>0);}
  caseEvidence.push({name:label,kind:spec.kind,status:"pass",expectedCounts:spec.expectedCounts,measuredCounts:measured,cleanupCounts:cleanup,namespaceIdentifiers:[...caseNamespaces],executingBackendPids,contenders:spec.kind!=="concurrency"?"not_applicable":{backendPidA:casePids.a,backendPidB:casePids.b,distinct:true,blockedWaits:observed.map(wait=>({backendPid:wait.backendPid,waitEventType:"Lock",waitEvent:wait.waitEvent}))}});
- passed.push(label);
+  passed.push(label);
+  reportNativeProductionProgress("passed",passed.length);
 };
 try{
- const ia=(await a.query<{pid:number;db:string}>("SELECT pg_backend_pid() pid,current_database() db")).rows[0]!,ib=(await b.query<{pid:number;db:string}>("SELECT pg_backend_pid() pid,current_database() db")).rows[0]!;
- if(ia.db!==name||ib.db!==name)throw Error("Native target does not match approved clone; no schema created.");assert.notEqual(ia.pid,ib.pid);connectionPids=[ia.pid,ib.pid];serverVersion=Number((await a.query("SHOW server_version_num")).rows[0].server_version_num);assert.ok(serverVersion>=160000);
- await a.query(`CREATE SCHEMA ${schema}`);created=true;await a.query(`SET search_path TO ${schema},public`);await b.query(`SET search_path TO ${schema},public`);await productionRecoveryFixture(a,invariant);
+  try{
+  const ia=(await a.query<{pid:number;db:string}>("SELECT pg_backend_pid() pid,current_database() db")).rows[0]!,ib=(await b.query<{pid:number;db:string}>("SELECT pg_backend_pid() pid,current_database() db")).rows[0]!;
+  if(ia.db!==name||ib.db!==name)throw Error("Native target does not match approved clone; no schema created.");assert.notEqual(ia.pid,ib.pid);connectionPids=[ia.pid,ib.pid];serverVersion=Number((await a.query("SHOW server_version_num")).rows[0].server_version_num);assert.ok(serverVersion>=160000);
+   await a.query(`CREATE SCHEMA ${schema}`);created=true;await a.query(`SET search_path TO ${schema},public`);await b.query(`SET search_path TO ${schema},public`);await productionRecoveryFixture(a,invariant);
+  }catch(error){reportNativeProductionProgress("fixture",0,error);throw error;}
  await scenario("owner create/create: commit winner, conflicting membership and loser ledger rollback",async()=>{await begin();await create(ownerA,"a",["work-a"],"a");const denied=track(assert.rejects(()=>create(ownerB,"b",["work-a"],"b"),/already belongs/));await blocked();await a.query("COMMIT");await denied;await b.query("ROLLBACK");assert.equal((await a.query("SELECT count(*)::integer n FROM v2_production_runs")).rows[0].n,1);assert.equal((await a.query("SELECT count(*)::integer n FROM v2_operation_requests WHERE business_request_id='b'")).rows[0].n,0);});
  await scenario("owner create/create: rollback winner permits reversed-order retry",async()=>{await begin();await create(ownerA,"a",["work-b","work-a"],"a");const winner=track(create(ownerB,"b",["work-a","work-b"],"b"));await blocked();await a.query("ROLLBACK");await winner;await b.query("COMMIT");assert.equal((await a.query("SELECT count(*)::integer n FROM v2_production_run_allocations WHERE membership_active")).rows[0].n,2);});
  await scenario("concurrent same M0 identity replays exactly one owner result",async()=>{await begin();const first=await create(ownerA,"a",["work-a"],"same");const replay=track(create(ownerB,"alias",["work-a"],"same"));await blocked();await a.query("COMMIT");assert.deepEqual(await replay,JSON.parse(JSON.stringify(first)));await b.query("COMMIT");assert.equal((await a.query("SELECT count(*)::integer n FROM v2_production_runs")).rows[0].n,1);});

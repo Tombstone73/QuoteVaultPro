@@ -47,13 +47,13 @@ const productionCases = [
   ['runtime creation remains default disabled after all native scenarios', 'admission', [0,0,0,0,0,0]],
 ].map(([name, kind, values]) => Object.freeze({ name, kind, expectedCounts: Object.freeze(Object.fromEntries([...countKeys, ...(values.length === 7 ? ['historicalAllocations'] : [])].map((key, index) => [key, values[index]]))) }));
 const productionCoverage = Object.freeze({
-  hookSha256: 'ad223f192aa4844df557b67ae690b9d7d07afc12daa8f011335d2f2894fae759',
-  suiteHash: 'a27971d681f35097afb115ce0069bbf3521aa84ba0ab4458b845c2b84fcee80b',
+  hookSha256: '7d1a38f3c17c352bf6b81d0555713fccbd31f86cd2d7041a614676adf6fb3dc1',
+  suiteHash: '5af6e3bcc49a8ef5b5d83d4c85fc4861f124b648f36ae1e5b44b071f28097050',
   summaryPidCase: productionCases[0].name,
   cases: Object.freeze(productionCases),
   // suiteHash covers only producer + proposal. The clean commit binds the runtime closure and lockfile.
   fileHashes: Object.freeze({
-    'v2/tests/infrastructure/productionRunExclusive.native.ts': 'ad223f192aa4844df557b67ae690b9d7d07afc12daa8f011335d2f2894fae759',
+    'v2/tests/infrastructure/productionRunExclusive.native.ts': '7d1a38f3c17c352bf6b81d0555713fccbd31f86cd2d7041a614676adf6fb3dc1',
     'v2/tests/infrastructure/productionRecoveryFixture.ts': '26157cc67f7557d28baa1b6a5196c415eb736f10817c726736b752266902f3e3',
     'v2/tests/infrastructure/productionExclusiveMembership.request.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
     'server/db/migrations_v2/0303_v2_production_exclusive_membership.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
@@ -109,6 +109,24 @@ const failureCodes = new Set([
 const failureStages = new Set(['unknown', 'arguments', 'environment', 'guards', 'source', 'coverage', 'hooks', 'output-path', 'child', 'post-source', 'post-hooks', 'receipt', 'artifact', 'outputs', 'failure-artifact', 'child-marker', 'network-policy', 'producer']);
 const failureSignals = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGHUP', 'SIGQUIT', 'SIGPIPE']);
 const failureContexts = new WeakMap();
+const sqlstates = new Set(['23505', '23503', '40P01', '55P03', '57014', '42P01', '42703']);
+const setupPhases = ['module-load', 'setup', 'db-connect', 'fixture'];
+let producerProgress = null;
+export function reportNativeProductionProgress(phase, ordinal = 0, error = null) {
+  if (!producerProgress) throw new NativeOwnerEntryError('NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+  const progress = producerProgress;
+  check((setupPhases.includes(phase) && phase !== 'module-load' && ordinal === 0 && progress.completed === 0 &&
+      (phase === progress.phase || setupPhases.indexOf(phase) === setupPhases.indexOf(progress.phase) + 1)) ||
+    (phase === 'scenario' && Number.isInteger(ordinal) && ordinal >= 1 && ordinal <= 28 && ordinal === progress.completed + 1 &&
+      (progress.phase === 'fixture' || progress.phase === 'scenario')) ||
+    (phase === 'passed' && ordinal === progress.ordinal && progress.phase === 'scenario'), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+  if (phase === 'passed') { progress.completed = ordinal; progress.sqlstate = null; }
+  else {
+    progress.phase = phase; progress.ordinal = ordinal;
+    const code = error && Object.getOwnPropertyDescriptor(error, 'code')?.value;
+    progress.sqlstate = sqlstates.has(code) ? code : null;
+  }
+}
 function safeFailureCode(error) {
   try {
     const code = error instanceof NativeOwnerEntryError ? Object.getOwnPropertyDescriptor(error, 'code')?.value : null;
@@ -127,21 +145,28 @@ function failureDiagnostic(error, context = {}) {
     childSignal: failureSignals.has(child?.signal) ? child.signal : null,
     childTimedOut: typeof child?.timedOut === 'boolean' ? child.timedOut : null,
     childCode: failureCodes.has(child?.failureCode) && child.failureCode !== 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? child.failureCode : null,
+    childPhase: [...setupPhases, 'scenario'].includes(child?.progress?.phase) ? child.progress.phase : null,
+    childOrdinal: Number.isInteger(child?.progress?.ordinal) && child.progress.ordinal >= 0 && child.progress.ordinal <= 28 ? child.progress.ordinal : null,
+    childCompleted: Number.isInteger(child?.progress?.completed) && child.progress.completed >= 0 && child.progress.completed <= 28 ? child.progress.completed : null,
+    childSqlstate: sqlstates.has(child?.progress?.sqlstate) ? child.progress.sqlstate : null,
   };
 }
 export function nativeFailureForTests(error) { return failureDiagnostic(error, failureContexts.get(error)); }
 function childFailureProtocol(error, context) {
   const { status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage } = failureDiagnostic(error, context);
-  return JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage });
+  return JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage, progress: context.progress ? { ...context.progress } : null });
 }
-export function parseNativeChildFailureCode(text) {
+function parseNativeChildFailure(text) {
   if (typeof text !== 'string' || Buffer.byteLength(text) > 4096) return null;
   try {
     const raw = JSON.parse(text);
-    if (!raw || !same(Object.keys(raw).sort(), ['allNativeProofClaimed', 'code', 'coverageAdjudicated', 'format', 'receiptValid', 'stage', 'status']) || raw.format !== 'NATIVE_OWNER_CHILD_FAILURE_V1' || raw.status !== 'error' || raw.receiptValid !== false || raw.coverageAdjudicated !== false || raw.allNativeProofClaimed !== false || !failureStages.has(raw.stage)) return null;
-    return failureCodes.has(raw.code) && raw.code !== 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? raw.code : null;
+    if (!raw || !same(Object.keys(raw).sort(), ['allNativeProofClaimed', 'code', 'coverageAdjudicated', 'format', 'progress', 'receiptValid', 'stage', 'status']) || raw.format !== 'NATIVE_OWNER_CHILD_FAILURE_V1' || raw.status !== 'error' || raw.receiptValid !== false || raw.coverageAdjudicated !== false || raw.allNativeProofClaimed !== false || !failureStages.has(raw.stage)) return null;
+    if (raw.progress !== null && (raw.stage !== 'producer' || !raw.progress || !same(Object.keys(raw.progress).sort(), ['completed', 'ordinal', 'phase', 'sqlstate']) || ![...setupPhases, 'scenario'].includes(raw.progress.phase) || !Number.isInteger(raw.progress.completed) || raw.progress.completed < 0 || raw.progress.completed > 28 || !Number.isInteger(raw.progress.ordinal) || (raw.progress.phase !== 'scenario' ? raw.progress.ordinal !== 0 || raw.progress.completed !== 0 : raw.progress.ordinal < 1 || raw.progress.ordinal > 28 || ![raw.progress.ordinal,raw.progress.ordinal-1].includes(raw.progress.completed)) || (raw.progress.sqlstate !== null && (!sqlstates.has(raw.progress.sqlstate) || ['module-load', 'setup'].includes(raw.progress.phase))))) return null;
+    return failureCodes.has(raw.code) ? { code: raw.code === 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? null : raw.code, progress: raw.progress } : null;
   } catch { return null; }
 }
+export function parseNativeChildFailureCode(text) { return parseNativeChildFailure(text)?.code ?? null; }
+export function parseNativeChildFailureForTests(text) { return parseNativeChildFailure(text); }
 
 export function parseNativeArguments(argv, internal = false) {
   const result = {};
@@ -358,7 +383,8 @@ function runOwnedProcess(args, env, timeoutMs, signals = process, onOutput = nul
       clearTimeout(timer); clearTimeout(cleanupCap); clearTimeout(drainCap);
       signals.removeListener('SIGINT', interrupt); signals.removeListener('SIGTERM', interrupt);
       child.stdout?.destroy(); child.stderr?.destroy(); if (!closed) child.unref();
-      resolve({ code: timedOut || interrupted || limited || spawnFailed || cleanupBoundedOut || treeDiagnostics.treeCleanupFailed ? 1 : exitCode, stdout, diagnostics: { stdoutBytes, stderrBytes, timedOut, interrupted, outputLimited: limited, spawnFailed, cleanupBoundedOut, ...treeDiagnostics, exitCode: childExit, signal: childSignal, failureCode: parseNativeChildFailureCode(stderrProtocol) } });
+       const protocol = parseNativeChildFailure(stderrProtocol);
+       resolve({ code: timedOut || interrupted || limited || spawnFailed || cleanupBoundedOut || treeDiagnostics.treeCleanupFailed ? 1 : exitCode, stdout, diagnostics: { stdoutBytes, stderrBytes, timedOut, interrupted, outputLimited: limited, spawnFailed, cleanupBoundedOut, ...treeDiagnostics, exitCode: childExit, signal: childSignal, failureCode: protocol?.code ?? null, progress: protocol?.progress ?? null } });
     };
     const stop = () => {
       if (cleanup) return;
@@ -499,16 +525,21 @@ async function executeInternalChild(options, context) {
   context.stage = 'network-policy';
   installNetworkPolicy(prepared.target, { net, tls, http, https, dgram, global: globalThis }); syncBuiltinESMExports();
   process.argv = [process.execPath, path.join(root, prepared.profile.suite), ...prepared.profile.args];
+  if (prepared.lane === 'production') {
+    context.progress = { phase: 'module-load', ordinal: 0, completed: 0, sqlstate: null };
+    producerProgress = context.progress;
+  }
   const deadline = setTimeout(() => { console.error(childFailureProtocol(new NativeOwnerEntryError('NATIVE_CHILD_DEADLINE'), context)); process.exit(1); }, prepared.profile.timeoutMs);
   deadline.unref();
   try {
     context.stage = 'producer';
     await import(pathToFileURL(process.argv[1]).href);
+    context.progress = null;
     context.stage = 'post-source';
     const after = readSource(prepared.env);
     check(after.clean === true && after.commit === source.commit, 'POSTEXECUTION_EXACT_CLEAN_SOURCE_REQUIRED');
     context.stage = 'post-hooks'; verifyHooks(prepared.profile, coverage);
-  } finally { clearTimeout(deadline); }
+  } finally { producerProgress = null; clearTimeout(deadline); }
 }
 async function executeCli(argv, sourceEnv, services, write, writeError) {
   const internal = argv[0] === '--native-child';

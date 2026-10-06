@@ -572,6 +572,41 @@
       "campaignDisposition": { "startingL0": 10, "endingL0": 10, "rowsClosed": [], "sourceBlocked": ["ACCESS-05"], "nativeFailureAndConditionalEnablementBlocked": ["OPS-12"], "externalGuardedOrTargetedDevEvidenceBlocked": ["SALE-08", "SALE-09", "ACCESS-12", "OPS-09", "FUL-11", "FUL-26", "BILL-16", "PAY-22"], "native": "No accepted native PASS. Production17cd child failed without timeout, exact case count unknown and typed proof absent; Team NOT RUN due source/coexistence hold. PGlite/local SQL is not native concurrency proof.", "verdict": "C. SOME L0 REMAIN WITH PRECISE BLOCKERS", "nextCampaign": "Remaining-L0 acceptance only: resolve ACCESS-05 caller/lock coexistence within the V1 freeze; diagnose the native Production child with authorized failure evidence and prove28 cases before reviewed enablement; then guarded conversion/catalog/provider and exact approved DEV fixture actions for the eight evidence-blocked rows. No L1, UI polish or Storefront." },
       "status": "All recoverable bounded source packages are accepted and integrated; Sales union candidate passes all eleven gates and four builds. Auth candidate remains preserved outside coordinator. Exact-clean source milestone delivery is still conditional. TenL0 remain with precise source/proof/external blockers, no native PASS or environment-only verdict."
     },
+    "campaignCheckpoint8477": {
+      "checkpointUtc": "2026-10-06T01:09:09Z",
+      "startingBaseline": "8477cafe",
+      "originDev": "8477cafe",
+      "CURRENT_V1_MAIN": "a12bdbc52c835007c93550ef4050eba36dbc538a",
+      "v1RelevantDelta": { "comparison": "5cd..a12 after fetch", "result": "No relevant caller-path changes", "paths": ["scripts/qa/devQaOperator.ts", "scripts/qa/provisionDevQaUser.ts", "server/routes/users.routes.ts", "server/routes/invites.ts", "server/tenantContext.ts", "server/routes/proofing.routes.ts", "server/storage/shared.repo.ts", "v2/infrastructure/proofing/postgresProofingTransaction.ts"], "limits": "Narrow path comparison, not a broad V1 audit or permission to change frozen callers" },
+      "hosted8477": { "run": "37383045889", "canonical": "11/11 PASS at exact8477", "native": "RAN/FAILED", "childExit": 1, "childTimedOut": false, "childCode": null, "actualCaseCount": null, "sqlstate": null, "logs": "403", "production28Receipt": false, "runCreationEnabled": false, "limits": "No native proof or demonstrated setup/fixture/scenario failure stage" },
+      "diagnosticCandidate": {
+        "scope": "Narrow three-file setup/module-load/DB-connect/fixture/scenario bounded fail-only diagnostics and producer pin",
+        "review": "Independent final guard-order three-file review PASS; exact approval, clone and clean-source checks precede producer setup checkpoint. Reviewer also reran focused 13/13 and 47/47.",
+        "firstFinalCandidateCanonical": "10/11; harness registration failed because producer callback preceded approval. Failed receipt preserved.",
+        "correction": "Producer callback moved behind approval; no bypass of the approval guard",
+        "focused": { "validationRunnerPassed": 13, "validationRunnerTotal": 13, "nativeOwnerPassed": 47, "nativeOwnerTotal": 47, "nativeProof": false },
+        "finalCanonical": { "scope": "stable corrected precommit bytes", "gates": "11/11 PASS", "jest": "100 suites / 1246 tests PASS, zero failed/pending", "selected": "301 core, 102 UI", "architecture": 102, "runnerSafety": 13, "imports": "81/81", "sqlDebt": "189/169", "protectedMigrations": 299 },
+        "builds": "Backend, V2 foundation, V2 server and V2 UI PASS in sanitized production mode; packaged idx304/0303",
+        "limits": "Deployable but not yet live-validated. No future clean-SHA result, commit, push, hosted native PASS or DEV business mutation claimed"
+      },
+      "ACCESS05": {
+        "status": "HELD source/coexistence candidate",
+        "proposedLockProtocol": "Shared advisory(18706,405) for bound organization, exclusive for unbound; organization -> permission-state -> ordered membership/user/set locks",
+        "cycleRisks": "Prior DML/user holds in V1 QA bootstrap/cleanup, invitation/token and global-delete callers plus Proofing Portal-access transaction can cycle with the candidate protocol",
+        "M15": "Barrier incompatible and UNRUN",
+        "migration0304Adopted": false,
+        "teamCoverage": null,
+        "teamNative": "20 NOT RUN; NULL/OFF",
+        "limits": "Not externally blocked only; frozen-caller coexistence remains an unresolved source hold"
+      },
+      "eightRowActionAuthorization": "lane-f-qa-manifest executionPermitted=false, REQUIRED_COMMIT=null and approvedExactActions=null. bill16 approval=false, productId=null and providerIsolation unverified/false. No DEV mutations, QA fixture creation or external email/carrier/QBO calls.",
+      "PAY22": { "independentV2Review": "V2 transport does not call the V1 first-PaymentRefNum bridge", "inertRecoveryTests": "quickBooksPaymentRecovery111/111 PASS", "providerValidation": false },
+      "policies": "Fixed; no policy reopening, new row, L1 or Storefront scope",
+      "startingL0": 10,
+      "endingL0": 10,
+      "rowTransitions": [],
+      "status": "Zero closures. Distinct source/coexistence, native-proof and guarded/live exact-action authorization holds remain; not external-only completion. Preserve all prior observations, dirty updates and failed receipts."
+    },
     "status": "TenL0 remain open, zero closures. Reviewed Billing/Accounting/Shipping/Production/Artwork and corrected Sales source are integrated; Sales union candidate canonical11/11 and four builds PASS. ACCESS-05 remains source/coexistence-blocked with no0304 adoption. OPS-12 native17cd RAN/FAILED at child/non-timeout with no typed proof; creation remains disabled. Eight other rows await guarded/external/approved targeted DEV evidence. No native PASS, environment-only verdict, policy reopening, priority downgrade or L1 work."
   },
   "wave2DependencyUpdates": {

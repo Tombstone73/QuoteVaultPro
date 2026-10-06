@@ -325,6 +325,58 @@ coexistence problem, diagnose/prove native Production before reviewed enablement
 then run the guarded and specifically approved DEV proofs. No L1, UI polish or
 Storefront. All original worktrees/candidates and unrelated root changes remain.
 
+### October 6 Remaining-L0 Campaign Checkpoint: 8477cafe
+
+New campaign starts at exact baseline `8477cafe`; `origin/dev` is currently8477.
+After fetch, CURRENT_V1_MAIN is pinned to
+`a12bdbc52c835007c93550ef4050eba36dbc538a`. Relevant caller-path comparison
+5cd..a12 found no changes to `scripts/qa/devQaOperator.ts`,
+`scripts/qa/provisionDevQaUser.ts`, `server/routes/users.routes.ts`,
+`server/routes/invites.ts`, `server/tenantContext.ts`,
+`server/routes/proofing.routes.ts`, `server/storage/shared.repo.ts` or
+`v2/infrastructure/proofing/postgresProofingTransaction.ts`.
+No broader V1 audit or permission to alter frozen callers follows.
+
+Hosted exact8477 run `37383045889` passed canonical **11/11**, but native job
+**RAN / FAILED**: childExit1, non-timeout, childCode=null. Actual case count and
+SQLSTATE remain unknown; logs returned403. No Production28 typed receipt exists,
+and Run creation remains disabled. This does not establish a native failure stage
+or permit a speculative domain repair.
+
+Coordinator now has a narrow three-file fail-only diagnostic correction for
+setup/module-load/DB-connect/fixture/scenario stages and producer pinning.
+The final guard-order bytes were independently reviewed **PASS**. The **first
+final-candidate canonical run failed10/11** at harness
+registration because the producer callback preceded approval; that failed receipt
+is preserved. Callback ordering was fixed behind approval, then focused
+validationRunner **13/13** and nativeOwner **47/47** passed. The stable
+corrected candidate then passed **all 11 canonical gates**: 100 Jest suites /
+1,246 tests, zero failed or pending, 301 selected core and 102 UI suites,
+architecture102, runner safety13, imports81/81, SQL189/169 and protected
+migrations299. Backend, V2 foundation/server and V2 UI builds all passed;
+backend packaged through idx304/0303. This source milestone is deployable but
+not yet live-validated. No future clean-SHA, hosted native PASS, DEV business
+action, commit or push is inferred from these candidate-byte results.
+
+ACCESS-05 remains held. Its proposed advisory protocol uses shared `(18706,405)`
+for bound organizations, exclusive for unbound entry, then organization ->
+permission-state -> ordered membership/user/set locks. Prior DML/user holds in
+V1 QA bootstrap/cleanup, invitation/token and global-delete paths, plus the
+Proofing Portal-access transaction, can still cycle with that protocol. M15's
+barrier is incompatible and unrun. No0304 is adopted; Team coverage remains
+NULL/OFF and native20 **NOT RUN**. This is a source/coexistence hold, not an
+external-only blocker.
+
+For the eight other evidence-gated rows, the QA action manifest still has
+executionPermitted=false, REQUIRED_COMMIT=null and approvedExactActions=null.
+BILL-16 approval=false, productId=null and provider isolation unverified.
+No DEV mutations, QA fixture creation or external email/carrier/QBO calls occurred.
+PAY-22 independent V2 review confirms its transport does **not** call the V1
+first-PaymentRefNum bridge; inert quickBooksPaymentRecovery **111/111 PASS**
+is not provider validation. Policies stay fixed. Initial L0 **10**, ending **10**,
+closures **0**: source, proof and live/action-authorization holds remain distinct.
+All prior observations and failed receipts remain historical evidence.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit
