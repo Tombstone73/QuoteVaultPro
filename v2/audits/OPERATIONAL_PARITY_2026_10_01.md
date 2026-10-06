@@ -576,6 +576,78 @@ rows retain exact-action manifest, capability, isolation and disposable-fixture
 prerequisites. No further row transition, L1 work or future commit/push/native
 claim; all histories and concurrent candidate files remain preserved.
 
+### October 6 Successor Recovery: Delivered 518723f2
+
+This successor checkpoint supersedes the preceding candidate-only status without
+rewriting its historical receipts. Recovery began at `121b0df1`; fresh read-only
+Git checks now confirm clean coordinator and remote DEV
+`518723f2b0b8b222313941df82bcb1151ea65257`. All retained owner worktrees and the
+unrelated dirty caller root remain untouched. MAIN is externally at
+`a12bdbc52c835007c93550ef4050eba36dbc538a`; the four documented Auth-blocker
+caller paths are unchanged from the captured `fc46a73f` reference.
+
+| Package / Owner | Worktree / Branch | Commit Or Dirty | Review | Validation | Integration | Blocker |
+| --- | --- | --- | --- | --- | --- | --- |
+| Sales / Artwork: SALE-08, SALE-09, ACCESS-12 | `l0-sales-publication` / `kilo/l0-sales-publication` | `bbc38081` plus preserved dirty support/test paths | Accepted source and union; final test delta independently PASS `ses_eef4e89c3ffeow1Py6hlZO9y97` | Source union 11/11; final fixture independently 410 checks | Runtime delivered in `8477cafe`; exact 122-line test delta now copied into coordinator candidate | Guarded conversion and disposable published-Quote, Portal-binding and safe-delivery fixtures |
+| Production: OPS-09, OPS-12 | `l0-production-recovery` / `kilo/l0-production-recovery` | Preserved dirty candidate at `42b05955` | Recovery and Run opt-in independently accepted | Production28 CI PASS; opt-in 62 owner/HTTP/PGlite cases | Recovery delivered in `c595218c`; canonical Run creation opted in by `518723f2` | Disposable ordinary/existing-Run recovery and grouped create/list/reopen operator acceptance |
+| Shipping / Fulfillment: FUL-11, FUL-26 | `l0-shipping-recovery` / `kilo/l0-shipping-recovery` | Preserved dirty candidate at `42b05955` | Corrected source, schema, metadata and union accepted | 29 owner, 24 schema, 15 sender checks | Delivered in `c595218c` | Disposable addresses, original/replacement allocations, capabilities and exact finalization/recovery actions |
+| Billing / Accounting: BILL-16, PAY-22 | `l0-billing-accounting` / `kilo/l0-billing-accounting` | `e69b01f5` plus preserved dirty candidate | Source accepted; PAY-22 bounded closure independently accepted | 111 recovery, 9 UI, 107 SQL checks; historical PDF reads only | BILL-16 delivered in `48814c40` / `78cc04b2`; accounting delivered in `c595218c`; PAY-22 alone closed | BILL-16 before/after cash fixture and effective provider isolation; provider validation NOT RUN |
+| Authentication: ACCESS-05 | `l0-structural-floor` / `kilo/l0-structural-floor` | 17 owned plus five governance dirty files at `42b05955` | Bounded participant/governance PASS only | Lane 11/11; Team native20 NOT RUN | Not merged; no0304 or Team coverage adoption | Unchanged shared QA/V1 prior-lock and ancestor-cascade coexistence cycles |
+| Native validation / Coordinator | `v2-ordering-campaign` / `kilo/v2-ordering-campaign`; retained `l0-validation-support` | Delivered `518723f2`; this follow-up changes only one existing test and the audit pair | Diagnostics, fixture repairs, receipt gates, opt-in and three-file follow-up accepted | Follow-up candidate 11/11 and four builds; predecessor hosted Production PASS | Exact predecessor DEV fast-forward verified; follow-up not committed | Follow-up exact-clean commit/delivery gates pending; no new runtime repair |
+
+At `2026-10-06T10:10:38Z` public
+[run37424672616](https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37424672616)
+was successful on exact518723f2: canonical **11/11**, Payment **79/79**, isolated
+case7 and full Production proof passed. Native upload requires both
+`receiptValid=true` and `coverageAdjudicated=true`. Artifact11395196712 is
+2469 bytes, API digest
+`sha256:279b72fbad7f7b7fb9b67b31e16e76cba6d3e5bce441811a97581392bd481386`.
+Artifact bytes were not independently downloaded; this is strict CI-attested
+Production28 proof, not independently read PID/patch-version values. Team remains
+NULL/OFF. Native case28 tests the direct constructor's defaultfalse; canonical
+composition is now explicitly true, not disabled. Anonymous version/health/ready
+all returned200 with exact518723f2 and application ready; this is not business-live
+acceptance. Guarded QA was skipped.
+
+The final Sales worker's 122 additions were missing from the delivered fixture,
+although all five other final handoff blobs matched. Independent review and
+sanitized PGlite execution accepted exact test blob
+`153925c760b0ce5c55cd31c57ab45683ae17e126`, **410 checks PASS**. The copied delta
+exercises real send/lifecycle SQL/finalization/M0 receipt/exact replay for prior
+null and historical status; controlled old mappings fail receipt/cache-acceptance
+assertions. Persisted effects, audit and attribution remain unchanged by replay.
+Preparation/provider transport are inert; losing the response is simulated by
+retry after commit, not injected HTTP failure or mounted cache/UI proof.
+No runtime, migration, classifier, scanner or debt budget changed. Follow-up
+candidate `npm run v2:validate` passed **all11 gates**:100 Jest suites/1246 tests,
+zero failed/pending,301 selected core/102 UI suites,102 architecture/13 harness
+checks, imports81/81 and SQL189/169. Journal/integrity protects299 entries through
+idx304/0303; no history changed. All four sanitized production builds passed,
+including backend migration packaging; existing warnings remain. Independent
+three-file integration review `ses_eef4e89c3ffeow1Py6hlZO9y97` PASS. Exact-clean
+commit validation and delivery remain subsequent gates, not inferred here.
+
+ACCESS-05's held protocol takes shared gate -> organization -> permission state
+-> ordered dependencies for enrolled V2 callers; fresh unbound cleanup takes the
+exclusive gate. QA user DML/identity prelocks and legacy invitation/global-delete
+callers are not safely enrolled. Organization deletion's user SET NULL cascade
+can oppose those earlier locks; the M15 post-write barrier also conflicts with
+statement serialization. RowShare detection is not universal prior-lock or
+deadlock protection. The V1 freeze prevents treating those cycles as repaired.
+
+Starting10/current9 open L0s remain **SALE-08, SALE-09, ACCESS-12, OPS-09,
+OPS-12, FUL-11, FUL-26, BILL-16, ACCESS-05**; PAY-22 alone remains B/L0 for its
+bounded local contract, with provider NOT RUN. No new transition or priority
+change:277 classes **13/50/121/49/9/35**, remaining L1/L2/L3 **135/60/1**.
+Current QA authorization is not vetoed by historical false manifests, but the
+measured accounting-policy403 leaves autoSync unknown and worker suppression
+unresolved. Other rows have separate fixture/capability prerequisites, not a
+blanket configuration403 blocker. No business/provider writes occurred here.
+Verdict remains **C: SOME L0 REMAIN WITH PRECISE BLOCKERS**. Exactly one next
+campaign: **Remaining Nine-L0 Operational Acceptance**, resolving the Auth
+coexistence hold within the V1 freeze and proving the row-specific disposable
+operator/Portal/conversion/financial fixtures. No L1, UI polish or Storefront.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

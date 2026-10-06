@@ -17,6 +17,7 @@ import { OrderApplicationService } from "../../src/modules/sales/orderApplicatio
 import { canonicalJson } from "../../src/modules/shared/commercialValues.js";
 import { composePostgresSalesTax } from "../../infrastructure/sales/postgresSalesTaxComposition.js";
 import { QuoteApplicationService } from "../../src/modules/sales/quoteApplication.js";
+import { quoteCommercialSnapshot } from "../../src/modules/sales/contracts.js";
 
 assert.equal(process.env.V2_VALIDATION_MODE, "deterministic");
 const db = new PGlite();
@@ -98,6 +99,13 @@ try {
   // Genuine legacy NULL row is created before real 0299. It is never backfilled.
   await request("legacy-request");
   await db.exec("INSERT INTO v2_sales_quote_delivery_attempts(id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject) VALUES('legacy-attempt','org-a','quote-a','legacy-request','legacy@example.invalid','" + hash + "','staff','staff-a')");
+  for (const variant of ["old", "fixed"]) {
+    const id = `lost-${variant}-historical`;
+    await db.query("INSERT INTO v2_sales_documents(id,organization_id) VALUES($1,'org-a')", [id]);
+    await db.query("INSERT INTO v2_sales_quote_details(document_id,organization_id) VALUES($1,'org-a')", [id]);
+    await request(`${id}-legacy`);
+    await db.query("INSERT INTO v2_sales_quote_delivery_attempts(id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject) VALUES($1,'org-a',$2,$3,'legacy@example.invalid',$4,'staff','staff-a')", [`${id}-attempt`, id, `${id}-legacy`, hash]);
+  }
   await db.exec(migration("0299_v2_sales_quote_delivery_prepared_evidence.sql"));
   const immutable = migration("0187_v2_sales_commercial_persistence.sql");
   await db.exec(immutable.slice(immutable.indexOf("CREATE OR REPLACE FUNCTION v2_reject_sales_quote_checkpoint_mutation"), immutable.indexOf("CREATE TABLE v2_sales_quote_conversions")));
@@ -436,7 +444,121 @@ try {
   await db.exec("UPDATE v2_operation_requests SET status='permanent_failure' WHERE id='request-6'");
   const invalidReplay = await accept("accepted-internal-not-sent"); equal(invalidReplay.ok, false); if (!invalidReplay.ok) equal(invalidReplay.error.code, "CONFLICT");
   await restoreReceipt(); equal(orderWrites, 1); equal(artSnapshots, 1);
+  // Exercise actual send/finalization/receipt/exact replay after losing the
+  // first response. Only preparation and provider transport are inert; owner
+  // lifecycle SQL, M0 completion, qualification and replay remain real.
+  // pg returns bigint revisions as strings; PGlite returns numbers by default.
+  const lostClient: any = { ...client, query: async (sql: string, values?: unknown[]) => {
+    const result = await client.query(sql, values);
+    return { ...result, rows: result.rows.map((row: any) => row.revision === undefined ? row : { ...row, revision: String(row.revision) }) };
+  } };
+  const lostPool: any = { query: lostClient.query, connect: async () => lostClient };
+  const lostQuotePort = new PostgresQuoteTransaction(lostClient);
+  for (const oldMappings of [true, false]) for (const priorStatus of [null, "historical"] as const) {
+    const id = `lost-${oldMappings ? "old" : "fixed"}-${priorStatus ?? "null"}`;
+    if (priorStatus === null) {
+      await db.query("INSERT INTO v2_sales_documents(id,organization_id) VALUES($1,'org-a')", [id]);
+      await db.query("INSERT INTO v2_sales_quote_details(document_id,organization_id) VALUES($1,'org-a')", [id]);
+    }
+    const tax = await composePostgresSalesTax({ client: lostClient, organizationId: "org-a", customerId: "customer-internal", lines: [] });
+    await db.query("UPDATE v2_sales_quote_details SET tax_composition=$2::jsonb WHERE document_id=$1", [id, JSON.stringify(tax)]);
+    await lostQuotePort.freezeTaxComposition({ organizationId: "org-a" as any, quoteId: id as any, expectedRevision: "1" });
+    const draft = (await lostQuotePort.read("org-a" as any, id as any))!;
+    const packet = { ...evidence("1", "customer-internal", id, "contact-internal"), quoteId: id,
+      customerContact: draft.quote.customerContact, commercial: quoteCommercialSnapshot(draft.quote),
+      documentNumber: draft.number.display };
+    if (priorStatus === "historical") {
+      const legacy = { ...checkpoint("1", packet), checkpointId: `${id}-legacy-cp`, sourceDocument: { quoteId: id },
+        sentEvidence: { ...checkpoint("1", packet).sentEvidence, deliveryAttemptId: `${id}-attempt`, recipientEmail: "legacy@example.invalid", providerMessageId: `${id}-legacy-provider` } };
+      await db.query("INSERT INTO v2_sales_quote_checkpoints(id,organization_id,quote_document_id,checkpoint_sequence,checkpoint_kind,payload,occurred_at) VALUES($1,'org-a',$2,1,'quote_sent',$3::jsonb,$4)", [legacy.checkpointId, id, JSON.stringify(legacy), legacy.occurredAt]);
+      await db.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='succeeded',completed_at=now(),quote_checkpoint_id=$2,provider_message_id=$3 WHERE id=$1", [`${id}-attempt`, legacy.checkpointId, legacy.sentEvidence.providerMessageId]);
+      await requests.succeed(client, "org-a", `${id}-legacy`, { resourceType: "quote", resourceId: id,
+        resultJson: { checkpointId: legacy.checkpointId, quote: { ...draft, publishedCheckpointId: legacy.checkpointId, publishedEvidenceStatus: "historical", number: { ...draft.number, core: draft.number.core.toString() } } } });
+    }
+    equal((await lostQuotePort.read("org-a" as any, id as any))?.publishedEvidenceStatus, priorStatus);
+    const input = { quoteId: id as any, expectedRevision: draft.revision, businessRequestId: `${id}-send` };
+    const context = acceptContext(input.businessRequestId, ["quote.view", "quote.send"]);
+    const reserved = await requests.reserve(client, { organizationId: "org-a", operation: "sales.quote.delivery.v1", businessRequestId: input.businessRequestId,
+      payloadFingerprint: `sha256:${createHash("sha256").update(canonicalJson({ quoteId: id, expectedRevision: input.expectedRevision })).digest("hex")}`,
+      principalKind: "staff", principalSubject: "staff-b", staffActorUserId: "staff-b" });
+    const attempt = await persistPreparedQuoteDeliveryAttempt(client, { organizationId: "org-a", quoteId: id as any, requestId: reserved.request.id,
+      recipientEmail: packet.recipientEmail, preparedEvidence: packet as any, principalKind: "staff", principalSubject: "staff-b", staffActorUserId: "staff-b" });
+    const quoteApplication = new QuoteApplicationService({ transaction: async action => {
+      await db.exec("BEGIN");
+      try { const value = await action(lostQuotePort); await db.exec("COMMIT"); return value; }
+      catch (cause) { await db.exec("ROLLBACK"); throw cause; }
+    } });
+    let providerDeliveries = 0, lifecycleWrites = 0;
+    const recordDelivered = quoteApplication.recordDelivered.bind(quoteApplication);
+    quoteApplication.recordDelivered = async (...args) => {
+      lifecycleWrites++;
+      const recorded = await recordDelivered(...args);
+      assert.ok(recorded.ok, recorded.ok ? undefined : `${recorded.error.code}: ${recorded.error.publicMessage}`); checks++;
+      return recorded;
+    };
+    const sender: any = new PostgresQuoteDeliveryService(lostPool, quoteApplication,
+      { requireReady: async () => { throw Error("Exact replay must not prepare provider transport"); } } as any);
+    sender.deliver = async () => { providerDeliveries++; return `${id}-provider`; };
+    const actualPrepare = sender.prepare.bind(sender);
+    let firstSend = true;
+    sender.prepare = async (...args: any[]) => {
+      if (firstSend) {
+        firstSend = false;
+        return { requestId: reserved.request.id, attemptId: attempt.id, recipient: packet.recipientEmail,
+          preparedEvidence: packet, frozenTaxComposition: packet.commercial.taxComposition, integration: {}, document: {}, pdf: new Uint8Array() };
+      }
+      const prepared = await actualPrepare(...args);
+      if (oldMappings && "replay" in prepared) {
+        const saved = (await db.query<any>("SELECT result_json FROM v2_operation_requests WHERE id=$1", [reserved.request.id])).rows[0].result_json;
+        // Controlled old replay mapping, after all actual authorization and
+        // exact receipt/attempt/checkpoint checks have succeeded.
+        return { ...prepared, replay: { ...prepared.replay, quote: { ...prepared.replay.quote, publishedEvidenceStatus: saved.quote.publishedEvidenceStatus } } };
+      }
+      return prepared;
+    };
+    if (oldMappings) sender.requests = { reserve: requests.reserve.bind(requests), recordAttribution: requests.recordAttribution.bind(requests),
+      succeed: async (sqlClient: any, org: string, requestId: string, result: any) => requests.succeed(sqlClient, org, requestId,
+        { ...result, resultJson: { ...result.resultJson, quote: { ...result.resultJson.quote, publishedEvidenceStatus: priorStatus } } }) };
+    const lostResponse = await sender.send(context, input);
+    assert.ok(lostResponse.ok, lostResponse.ok ? undefined : lostResponse.error.publicMessage); checks++;
+    const committedCheckpoint = lostResponse.value.checkpointId;
+    equal(lostResponse.value.quote.publishedCheckpointId, committedCheckpoint);
+    equal(lostResponse.value.quote.publishedEvidenceStatus, "modern");
+    const current = (await lostQuotePort.read("org-a" as any, id as any))!;
+    equal(current.publishedCheckpointId, committedCheckpoint); equal(current.publishedEvidenceStatus, "modern");
+    const receipt = (await db.query<any>("SELECT * FROM v2_operation_requests WHERE id=$1", [reserved.request.id])).rows[0];
+    equal(receipt.status, "succeeded"); equal(receipt.result_json.checkpointId, committedCheckpoint);
+    equal(receipt.result_json.quote.publishedCheckpointId, committedCheckpoint);
+    const effects = async () => Promise.all([
+      db.query("SELECT * FROM v2_sales_documents WHERE id=$1", [id]),
+      db.query("SELECT * FROM v2_sales_quote_details WHERE document_id=$1", [id]),
+      db.query("SELECT * FROM v2_sales_quote_checkpoints WHERE quote_document_id=$1 ORDER BY id", [id]),
+      db.query("SELECT * FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1 ORDER BY id", [id]),
+      db.query("SELECT * FROM v2_operation_requests WHERE result_resource_id=$1 ORDER BY id", [id]),
+      db.query("SELECT * FROM v2_principal_attributions WHERE resource_id=$1 ORDER BY id", [id]),
+      db.query("SELECT * FROM v2_audit_events WHERE resource_id=$1 ORDER BY operation_request_id", [id]),
+    ]).then(results => results.map(result => result.rows));
+    const beforeReplay = await effects();
+    const replayed = await sender.send(context, input);
+    assert.ok(replayed.ok, replayed.ok ? undefined : replayed.error.publicMessage); checks++;
+    equal(replayed.value.quote.publishedCheckpointId, committedCheckpoint);
+    equal(replayed.value.quote.number.core, current.number.core);
+    const cachedDetail = replayed.value.quote;
+    const cacheAcceptable = !!cachedDetail.publishedCheckpointId && cachedDetail.publishedEvidenceStatus === "modern"
+      && cachedDetail.quote.acceptanceState === "not_accepted" && cachedDetail.quote.taxComposition?.status === "resolved";
+    if (oldMappings) {
+      equal(receipt.result_json.quote.publishedEvidenceStatus, priorStatus);
+      equal(cachedDetail.publishedEvidenceStatus, priorStatus);
+      assert.throws(() => assert.equal(receipt.result_json.quote.publishedEvidenceStatus, "modern"), assert.AssertionError); checks++;
+      assert.throws(() => assert.equal(cacheAcceptable, true), assert.AssertionError); checks++;
+    } else {
+      equal(receipt.result_json.quote.publishedEvidenceStatus, "modern");
+      equal(cachedDetail.publishedEvidenceStatus, "modern"); equal(cacheAcceptable, true);
+    }
+    equal(providerDeliveries, 1); equal(lifecycleWrites, 1); equal(await effects(), beforeReplay);
+  }
   equal(principal, originalPrincipal);
+  console.log("L0-A-P2 lost-response RED controls: old receipt/replay mappings fail modern receipt and cache acceptance for both null first-send and historical resend. Actual finalization, committed receipt and exact replay pass without duplicate provider/lifecycle/audit/attribution effects.");
   console.log("L0-A-P1-P2 RED controls: old attempt-only selector fails 13 receipt-exclusion assertions and exposes exact archived bytes; old sent-only SQL refuses qualified matching-CAS not_sent acceptance. Corrected reader, persistence and full application flow pass.");
   console.log(`L0-A-PG publication: ${checks} checks passed; actual owner SQL, real 0229/0299 and immutable checkpoint trigger; anticipated resend index fixture only; no native/provider writes.`);
 } finally { await db.close(); }
