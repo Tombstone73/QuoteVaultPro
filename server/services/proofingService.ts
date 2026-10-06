@@ -3479,6 +3479,9 @@ export async function listProofingQueue(tx: any, args: {
       and(
         eq(orders.organizationId, args.organizationId),
         notInArray(orders.state, ["closed", "canceled", "production_complete"]),
+        // A production bypass clears proof approval, but prior proof history can
+        // still satisfy the predicates below. It is not active proofing work.
+        ne(orderLineItems.workflowState, "no_production_required" as any),
         or(
           eq(orderLineItems.requiresProofApproval, true),
           isNotNull(orderLineItems.approvedProofVersionId),
