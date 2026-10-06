@@ -401,6 +401,45 @@ Initial10 -> ending10, zero closed. Narrow reviewed substep-harness follow-up is
 in progress, with no future validation/commit/push claim. No direct DB/provider
 activity or native proof follows from this audit observation.
 
+### October 6 Final Current-Campaign Checkpoint: 2fdb4f04
+
+Starting DEV was8477cafe. Reviewed clean milestone
+`d5fb164b23d6e174c70140ebae1783e5f451b891`, then exact-clean
+`2fdb4f04b89967cec5ff362069aba8bdf1152fa4`, were fast-forward delivered to
+origin/dev. Final exact-clean validation passed all **11 canonical gates**,
+100 Jest suites / **1,246 tests**, zero failed/pending, 301 core and102 UI selected
+suites; all four builds passed. Protected migration history remains299 entries
+through idx304 /0303, unchanged. Both native-diagnostic milestones have independent
+review **PASS**, with no source runtime changes; diagnostic acceptance is not
+native proof. Status remains **Deployable but NOT business-live-validated**.
+
+Hosted d5fb run37399176376 passed deterministic11/11 and Payment79/79 but native
+RAN/FAILED at scenario7, completed6, sqlstate=null. Final exact2fdb
+[run37401733195](https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37401733195)
+also passed deterministic11/11 and Payment79/79; native **RAN / FAILED**, phase
+scenario, ordinal7, substep `raw-parent-insert`, completed6, sqlstate=null,
+exit1, non-timeout, receipt invalid. No typed Production28 receipt or cleanup
+proof exists. No underlying error or source defect is proven. Production Run
+creation remains **DISABLED** and native proof is **NOT PASS**.
+
+Anonymous DEV `/version` advertises exact2fdb, healthok and ready/applicationok
+only; no authenticated workflow or fixture action ran. ACCESS-05's unresolved
+coexistence lock protocol remains a source hold: no0304, Team native20 **NOT RUN/OFF**.
+Eight evidence-blocked rows retain exact QA manifest executionPermitted=false,
+REQUIRED_COMMIT=null and approvedExactActions=null. BILL-16 approval=false,
+Product=null and provider isolation=false. No DEV mutations, provider connections,
+carrier labels or payment-processor actions occurred. PAY-22 inert V2 recovery
+111/111 PASS is not QBO provider acceptance. These are authorization/guarded/
+external evidence holds, not external-only closed rows.
+
+Starting L0 **10**, ending **10**, closures **0**. Remote MAIN a12bdbc was unchanged
+by us; V1/root work was untouched. Fixed policies and exclusions remain: no L1,
+UI polish or Storefront. Final verdict **C: SOME L0 REMAIN WITH PRECISE BLOCKERS**.
+Next campaign is bounded to case7's actual native DB error using authorized safe
+evidence, ACCESS caller-protocol coexistence and approved exact QA manifests.
+No future commit/push/CI success beyond2fdb is claimed; all preceding checkpoints
+and failed receipts are preserved.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit
