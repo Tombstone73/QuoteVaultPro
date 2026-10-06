@@ -10,6 +10,7 @@ export class PostgresProofRecipientAccess implements ProofRecipientAccess {
 
   async ensureForProofIssue(input: ProofRecipientAccessInput): Promise<ProofRecipientAccessResult> {
     if (!input.recipientContactId?.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "Choose a customer contact before issuing this Proof.");
+    await this.client.query("SELECT v2_assert_authority_entry($1)",[input.organizationId]);
     const recipient = await this.client.query<{ contact_id: string; customer_id: string; email: string; display_name: string }>(`SELECT c.id contact_id,d.customer_id,lower(btrim(c.email)) email,COALESCE(NULLIF(btrim(concat_ws(' ',c.first_name,c.last_name)),''),c.email) display_name
       FROM v2_proof_versions v JOIN v2_proof_works w ON w.organization_id=v.organization_id AND w.id=v.proof_work_id
       JOIN v2_sales_documents d ON d.organization_id=w.organization_id AND d.id=w.order_document_id
@@ -26,7 +27,7 @@ export class PostgresProofRecipientAccess implements ProofRecipientAccess {
     const permission = await this.client.query<{ id: string }>("SELECT id FROM v2_permission_sets WHERE organization_id=$1 AND source_template_key='customer_full_portal' AND active LIMIT 1", [input.organizationId]);
     if (!permission.rows[0]) throw new V2ApplicationError("CONFLICT", "Customer Portal permissions are not configured for this organization.");
     await this.client.query("INSERT INTO v2_portal_permission_set_assignments(organization_id,portal_access_id,permission_set_id,active) VALUES($1,$2,$3,true) ON CONFLICT(organization_id,portal_access_id,permission_set_id) DO UPDATE SET active=true,updated_at=now()", [input.organizationId, access.rows[0]!.id, permission.rows[0].id]);
-    await this.client.query("UPDATE v2_permission_organization_state SET authority_revision=authority_revision+1,updated_at=now() WHERE organization_id=$1", [input.organizationId]);
+    await this.client.query("SELECT v2_authority_changed($1)", [input.organizationId]);
     return { portalAccessId: access.rows[0]!.id, contactId: contact.contact_id, customerId: contact.customer_id, email: contact.email, displayName: contact.display_name };
   }
 }

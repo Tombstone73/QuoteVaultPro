@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { isAllowedQuoteSuppression } from "../communications/m77fQaQuoteDeliverySafety.js";
 import { PostgresCustomersCompatibilityReader } from "../compatibility/postgresCustomersRead.js";
 import { PostgresProductsCompatibilityReader } from "../compatibility/postgresProductsRead.js";
 import { PostgresOperationRequestRepository } from "../persistence/postgresOperationRequests.js";
@@ -146,6 +147,7 @@ export type QuotePersistenceTestHooks = Readonly<{
   afterConversionLineage?: () => Promise<void>;
 }>;
 export class PostgresQuoteTransaction implements QuoteConversionPersistencePort {
+  readonly canUseSuppressedDelivery = isAllowedQuoteSuppression;
   readonly customers;
   readonly products;
   readonly pricing = new V2PricingParityAdapter();
@@ -430,8 +432,9 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
         display: row.display_number,
       },
       revision: row.revision,
-      publishedCheckpointId: published ? brandedId<"QuoteCheckpointId">(published.id) : null,
+      publishedCheckpointId: published && publicationEvidenceStatus(published) ? brandedId<"QuoteCheckpointId">(published.id) : null,
       publishedEvidenceStatus: published ? publicationEvidenceStatus(published) : null,
+      ...(published && publicationEvidenceStatus(published) && published.delivery_state === "suppressed" ? { publicationDeliveryMode: "suppressed" as const } : {}),
       checkpoints: checkpoints.rows.map((c) => ({
         checkpointId: brandedId<"QuoteCheckpointId">(c.id),
         kind: c.checkpoint_kind,
@@ -575,7 +578,9 @@ export class PostgresQuoteTransaction implements QuoteConversionPersistencePort 
     return result.rows[0] ? asObject<QuoteCheckpoint>(result.rows[0].payload) : null;
   }
   async readPublishedCheckpoints(organizationId: OrganizationId, quoteId: QuoteId): Promise<readonly QuoteCheckpoint[]> {
-    return (await readPublishedQuoteCheckpoints(this.client, organizationId, quoteId))
+    const rows = await readPublishedQuoteCheckpoints(this.client, organizationId, quoteId);
+    if (rows[0] && !publicationEvidenceStatus(rows[0])) throw new Error("The latest Quote publication evidence is unavailable.");
+    return rows
       .filter(row => publicationEvidenceStatus(row) !== null).map(row => row.payload);
   }
   async appendConvertedCheckpoint(

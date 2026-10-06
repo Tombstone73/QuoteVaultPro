@@ -39,6 +39,7 @@ let bootstrap: UiBootstrap = { organizationId: org, userId: "staff-a", sessionSc
   capabilities: { quoteView: true, quoteEdit: true, quoteSend: true, quoteConvert: true, quoteCreate: false, quoteOverridePrice: false } };
 const calls: { path: string; method: string; body?: Record<string, unknown>; headers?: HeadersInit }[] = [];
 let loseSendResponse = false;
+let suppressedReadiness = false;
 let sendGate: Promise<void> | undefined;
 let heldSendResult: QuoteRead | undefined;
 let afterJson: (() => Promise<void>) | undefined;
@@ -64,7 +65,7 @@ globalThis.fetch = async (input, init) => {
   else if (path.endsWith("/form/products") || path.endsWith("/artwork")) data = [];
   else if (path.endsWith("/contact-selection")) data = { id: "contact-a", label: "Current contact" };
   else if (path.endsWith("/contacts/contact-a")) data = { contactId: "contact-a", displayName: "Current contact" };
-  else if (path.endsWith("/send-readiness")) data = { canSend: true, recipient: { status: "ready", email: "current@example.invalid" }, tax: { status: "ready" }, routability: { status: "ready" }, email: { provider: "gmail", status: "ready" } };
+   else if (path.endsWith("/send-readiness")) data = { canSend: true, recipient: { status: "ready", email: suppressedReadiness ? "quote-final-four@example.invalid" : "current@example.invalid" }, tax: { status: "ready" }, routability: { status: "ready" }, email: suppressedReadiness ? { provider: "none", status: "suppressed", actionRequired: "DEV QA publication only; email suppressed." } : { provider: "gmail", status: "ready" } };
   else if (method === "POST" && path.endsWith("/revise")) {
     quote = { ...quote, revision: String(Number(quote.revision) + 1), quote: { ...quote.quote, deliveryState: "not_sent" } };
     data = { quote };
@@ -311,6 +312,26 @@ try {
     assert.equal(writes[0].body?.expectedRevision, initial.revision); assert.equal(typeof writes[0].body?.businessRequestId, "string");
     assert.equal(new Headers(writes[0].headers).get("x-v2-csrf-token"), bootstrap.csrfToken);
     assert.ok(!calls.some(call => call.path.endsWith("/send")), "acceptance never sends the internal draft");
+  });
+  await check("actual App suppressed readiness and result never claim Gmail or delivered", async () => {
+    suppressedReadiness = true;
+    quote = { ...initial, publicationDeliveryMode: "suppressed" };
+    publishedItems = [{ ...publication, sentEvidence: { ...publication.sentEvidence, suppression: { deliveryMode: "suppressed" } } }];
+    try {
+      await mount(); await history();
+      assert.match(text(), /Published in DEV QA; email suppressed/);
+      await click("Resend Current Internal Revision");
+      await settle(() => !button("Publish DEV QA PDF (Email Suppressed)").disabled);
+      const dialog = document.querySelector('[role="dialog"][aria-label="Send Quote"]')!;
+      assert.match(dialog.textContent ?? "", /no provider call or provider message identity/);
+      assert.doesNotMatch(dialog.textContent ?? "", /configured tenant Gmail|Ready \(Gmail\)/);
+      await click("Publish DEV QA PDF (Email Suppressed)");
+      await settle(() => !document.querySelector('[role="dialog"]'));
+      assert.match(text(), /Published in DEV QA; email suppressed/);
+      assert.doesNotMatch(text(), /Quote PDF delivered/);
+      const sends = calls.filter(call => call.path.endsWith("/send")); assert.equal(sends.length, 1);
+      assert.deepEqual(Object.keys(sends[0].body!).sort(), ["businessRequestId", "expectedRevision"]);
+    } finally { suppressedReadiness = false; }
   });
   console.log(`Quote publication shared integration: ${cases} cases passed (inert transport only; no DB/provider/M0 proof).`);
 } finally {

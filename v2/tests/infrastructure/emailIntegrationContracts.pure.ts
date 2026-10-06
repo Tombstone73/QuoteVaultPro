@@ -67,8 +67,10 @@ assert.match(delivery, /this\.integrations\.requireReady\(context\.organizationI
 assert.match(delivery, /const prepared = await this\.prepare\(context, input\)/u);
 assert.match(delivery, /this\.deliver\(prepared\.integration/u);
 const preparation = delivery.slice(delivery.indexOf("private async prepare("), delivery.indexOf("private async routability("));
-const readiness = preparation.indexOf("const integration = await this.integrations.requireReady(context.organizationId)");
-assert.ok(readiness >= 0, "new delivery preparation must require tenant email readiness under the Quote lock");
+const readiness = preparation.indexOf("const integration = suppression ? undefined : await this.integrations.requireReady(context.organizationId)");
+assert.ok(readiness >= 0, "live Gmail delivery preparation must require tenant email readiness under the Quote lock");
+assert.ok(preparation.indexOf("quoteDeliverySuppression(context.organizationId, plannedRecipient)") < readiness,
+  "only the exact runtime/recipient suppression guard may bypass Gmail readiness");
 assert.ok(preparation.indexOf('if (reservation.kind === "replay")') >= 0 && preparation.indexOf('if (reservation.kind === "replay")') < readiness,
   "committed replay must qualify its receipt without preparing an email provider");
 assert.ok(preparation.indexOf("await persistPreparedQuoteDeliveryAttempt(") > readiness,

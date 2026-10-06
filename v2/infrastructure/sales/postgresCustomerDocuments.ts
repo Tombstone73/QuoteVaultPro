@@ -12,7 +12,7 @@ import { publicationEvidenceStatus, readPublishedQuoteCheckpoints } from "./post
 type HeaderRow = { id: string; display_number: string; currency: string; purchase_order_number: string | null; requested_due_date: Date | null; commercial_notes: string | null; customer_name: string | null; customer_email: string | null; contact_id: string | null; contact_exists: string | null; contact_name: string | null; contact_email: string | null; requested_fulfillment_method: string | null; selling_adjustment_cents: string; selling_adjustment_reason: string | null; commercial_charge: unknown; tax_composition: unknown; delivery_state?: "not_sent" | "sent"; };
 type LineRow = { description: string; quantity: number; selling_unit_cents: string; selling_line_cents: string; resolved_configuration: unknown };
 type CheckpointRow = { payload: unknown; occurred_at: Date };
-type DeliveryAttemptEvidenceRow = { id: string; organization_id: string; quote_document_id: string; operation_request_id: string; recipient_email: string; document_sha256: string; prepared_evidence_json: unknown | null; delivery_state: "pending" | "succeeded" | "failed" | "uncertain"; quote_checkpoint_id: string | null; provider_message_id: string | null };
+type DeliveryAttemptEvidenceRow = { id: string; organization_id: string; quote_document_id: string; operation_request_id: string; recipient_email: string; document_sha256: string; prepared_evidence_json: unknown | null; delivery_state: "pending" | "succeeded" | "failed" | "uncertain" | "suppressed"; quote_checkpoint_id: string | null; provider_message_id: string | null; transport: string; suppression_context: unknown };
 type AnyRecord = Record<string, unknown>;
 const record = (value: unknown): AnyRecord => value && typeof value === "object" && !Array.isArray(value) ? value as AnyRecord : {};
 const integer = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) ? value : typeof value === "string" && /^-?\d+$/.test(value) ? Number(value) : 0;
@@ -55,7 +55,7 @@ export class PostgresCustomerDocumentService {
       if (!publicationEvidenceStatus(sent[0])) throw new V2ApplicationError("CONFLICT", "Quote publication evidence is incomplete.");
       return this.fromCheckpoint(queryable, organizationId, quoteId, sent[0]);
     }
-    const unresolved = await queryable.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain','succeeded') LIMIT 1", [organizationId, quoteId]);
+    const unresolved = await queryable.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('pending','uncertain','succeeded','suppressed') LIMIT 1", [organizationId, quoteId]);
     if (unresolved.rows[0]) throw new V2ApplicationError("CONFLICT", "Quote delivery has no qualifying committed publication receipt.");
     const [header, branding] = await Promise.all([
       this.quoteHeader(queryable, organizationId, quoteId), this.branding(queryable, organizationId),
@@ -149,10 +149,12 @@ export class PostgresCustomerDocumentService {
     if (payload.kind !== "quote_sent" || payload.organizationId !== organizationId || record(payload.sourceDocument).quoteId !== quoteId)
       throw new V2ApplicationError("CONFLICT", "Quote publication evidence does not match its organization and document.");
     const attemptId = text(sentEvidence.deliveryAttemptId);
-    const attempt = attemptId ? await queryable.query<DeliveryAttemptEvidenceRow>("SELECT id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state,quote_checkpoint_id,provider_message_id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND id=$2", [organizationId, attemptId]) : { rows: [] as DeliveryAttemptEvidenceRow[] };
+    const attempt = attemptId ? await queryable.query<DeliveryAttemptEvidenceRow>("SELECT id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state,quote_checkpoint_id,provider_message_id,transport,suppression_context FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND id=$2", [organizationId, attemptId]) : { rows: [] as DeliveryAttemptEvidenceRow[] };
     const prepared = attempt.rows[0] && parsePreparedQuoteDeliveryEvidence(attempt.rows[0].prepared_evidence_json);
     const organization = organizationIdentity(payload.organizationPresentation);
-    if (!attempt.rows[0] || attempt.rows[0].delivery_state !== "succeeded" || attempt.rows[0].quote_document_id !== quoteId
+    const publication = (await readPublishedQuoteCheckpoints(queryable, organizationId, quoteId)).find(row => row.id === text(payload.checkpointId));
+    const qualified = publication && publicationEvidenceStatus(publication);
+    if (!attempt.rows[0] || !qualified || attempt.rows[0].quote_document_id !== quoteId
       || attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId))
       throw new V2ApplicationError("CONFLICT", "Quote document is not bound to a committed successful publication.");
     if (!prepared && attempt.rows[0].prepared_evidence_json == null) {
@@ -179,9 +181,11 @@ export class PostgresCustomerDocumentService {
     }
     if (!attempt.rows[0] || !prepared || !organization || !attempt.rows[0].operation_request_id
       || attempt.rows[0].quote_document_id !== quoteId || attempt.rows[0].id !== attemptId
-      || attempt.rows[0].delivery_state !== "succeeded"
+      || !qualified
       || attempt.rows[0].quote_checkpoint_id !== text(payload.checkpointId)
-      || attempt.rows[0].provider_message_id !== text(sentEvidence.providerMessageId)
+      || (attempt.rows[0].delivery_state === "suppressed"
+        ? attempt.rows[0].provider_message_id !== null || sentEvidence.providerMessageId !== undefined
+        : attempt.rows[0].provider_message_id !== text(sentEvidence.providerMessageId))
       || attempt.rows[0].recipient_email !== text(sentEvidence.recipientEmail)
       || attempt.rows[0].document_sha256 !== text(sentEvidence.documentSha256)
       || prepared.organizationId !== organizationId || prepared.quoteId !== quoteId

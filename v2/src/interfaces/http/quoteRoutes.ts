@@ -155,6 +155,7 @@ const quoteForUi = (value: QuoteReadModel) => {
     revision: value.revision,
     publishedCheckpointId: value.publishedCheckpointId,
     publishedEvidenceStatus: value.publishedEvidenceStatus,
+    ...(value.publicationDeliveryMode ? { publicationDeliveryMode: value.publicationDeliveryMode } : {}),
     checkpoints: value.checkpoints,
     totals: {
       currency,

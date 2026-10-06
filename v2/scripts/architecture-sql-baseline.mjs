@@ -11,7 +11,6 @@ const groups = {
     ["v2_sales_documents","UPDATE","270919f1f7ba72a60c56e7a381e07fb34a49257e5e235d86dbc36edb0d7ed42f","OBSERVED",1],
   ],
   "infrastructure/authentication/standaloneStaffAuth.ts": [
-    ["<unresolved>","UNRESOLVED","e265d66f3157f7cc143e32e34dc43e11b249e9829c1276cf2f13b5360d57e027","SQL-DYNAMIC",1],
     ["users","INSERT","ca9e656c210da5218fdcd20d8f924151972622b595ac902fbd3ee47a2f399227","LEGACY-COMPATIBILITY",1],
     ["auth_identities","INSERT","aacbfbccddb57c61591a243a0d4a3079d72bee94c236f501cdd33407cf2bc4ef","LEGACY-COMPATIBILITY",1],
     ["customer_portal_invite_tokens","UPDATE","3dcbe1082b9a1dbc156348218445238d7e595efd5eab4e0a70e34ff790692ab9","DEFERRED",1],
@@ -21,9 +20,6 @@ const groups = {
     ["v2_portal_password_reset_tokens","INSERT","50bead484adb3071d2bf550bddf874a77826f7b417263418714f56e0e1867d43","DEFERRED",1],
     ["auth_identities","UPDATE","515c1049ac8727ac47569ba0f53622c5beebff740ecab0194ac2319d5dfb1de5","LEGACY-COMPATIBILITY",1],
     ["v2_portal_password_reset_tokens","UPDATE","50cfaf4106a0c0b4afcb742fc48b01e7b9523aec99c420d49b838a45cccb989a","DEFERRED",1],
-  ],
-  "infrastructure/authorization/postgresPermissionAdministration.ts": [
-    ["<unresolved>","UNRESOLVED","e751817c8d84b9ed6f559c041a4d20205060cd1f56661b0b8d4561ccebf49ea0","SQL-DYNAMIC",1],
   ],
   // Reviewed BD-4 relocation: identical statements now execute inside Auth's
   // narrow proof-recipient authority operation. These pin a legacy physical
@@ -112,7 +108,6 @@ const groups = {
     ["v2_portal_permission_set_assignments","INSERT","dc64c9f7dba0f397014852ebdf2d4aaa0e66f008e13cfa2d3735672f8d6234bb","DEFERRED",2],
     ["v2_portal_invitation_delivery_attempts","INSERT","6befadc8de5ae725f4dce1465d91b271089bbe71caf397b1e8d7f80bb45ec211","DEFERRED",1],
     ["v2_permission_audit_events","INSERT","5bcc22370780f346a7f68b131e75b433b5d8a2a86eb99165c7b6568b12a269de","DEFERRED",1],
-    ["v2_permission_organization_state","UPDATE","f7954d023db8cfe27761c752da7fa31a0ffa41d95ba8eb519074e3dcbc539916","DEFERRED",2],
     ["v2_portal_invitation_delivery_attempts","UPDATE","2b82678c1edc66ec3d756f631dc224cf7c07d6f04d335f988c6a2b1f9703054a","DEFERRED",1],
     ["v2_permission_audit_events","INSERT","98d0b1ea78155834909c74569810dcb35e169e221e9630c73a180819cd66512c","DEFERRED",1],
     ["v2_portal_invitation_delivery_attempts","UPDATE","8101cc3366601883291cb3d415fd6c20e5d579c40b44072530d0510563186c1b","DEFERRED",1],

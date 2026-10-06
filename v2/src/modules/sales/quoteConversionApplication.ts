@@ -163,7 +163,10 @@ const readCorrespondingSentCheckpoint = async (
   const delivery = sent.sentEvidence;
   if (!delivery || !delivery.customerContact || delivery.customerContact.organizationId !== context.organizationId
     || !delivery.deliveryAttemptId || !delivery.recipientEmail || !/^sha256:[0-9a-f]{64}$/u.test(delivery.documentSha256)
-    || !delivery.documentNumber || !delivery.documentDate || !delivery.providerMessageId)
+    || !delivery.documentNumber || !delivery.documentDate
+    || (delivery.suppression
+      ? delivery.providerMessageId !== undefined || !quote.canUseSuppressedDelivery?.(context.organizationId, delivery.recipientEmail, delivery.suppression)
+      : !delivery.providerMessageId))
     throw new V2ApplicationError("CONFLICT", "The sent Quote checkpoint does not contain complete delivery evidence.");
 
   return sent;

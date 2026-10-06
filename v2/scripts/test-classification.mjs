@@ -47,6 +47,10 @@ add('v2/tests/infrastructure/', 'tsx', ['quotePublication.postgres.test.ts'],
   'safe-deterministic', 'Actual Sales publication, delivery receipt replay, Portal reads and conversion operations execute in disposable in-memory PGlite with inert owner ports; no external database, provider invocation, credentials or V1 initialization.');
 add('v2/tests/modules/', 'tsx', ['quotePublicationOwner.pure.ts'],
   'safe-deterministic', 'Sales revision and explicit immutable publication contracts execute with injected in-memory owner ports; no database or provider initialization.');
+add('v2/tests/infrastructure/', 'tsx', ['structuralAuthority.pure.ts'],
+  'safe-deterministic', 'Auth/Team entry, fresh actor, replay and credential-format contracts use an injected query client, a throwing provider double, local bcrypt and source assertions; no native connection, credentials or provider call.');
+add('v2/tests/infrastructure/', 'tsx', ['structuralAuthority.native.test.ts'],
+  'safe-db-guarded', 'Excluded from canonical execution. Native structural-authority proof requires a separate explicit ACCESS05 opt-in, unchanged safe test URL guard, exact disposable loopback target and reviewed fixture provenance before runtime imports/connections. Ordinary guarded execution does not supply the extra approval; registration is not native proof.');
 add('v2/ui/src/', 'tsx', ['quotePublication.test.tsx', 'quotePublicationIntegration.test.tsx'],
   'safe-deterministic', 'Mounted staff and Portal publication/history controls and actual App transport execute with JSDOM, intercepted fetch and inert receipts; no external network, database or provider effects.');
 add('v2/tests/', 'tsx', [

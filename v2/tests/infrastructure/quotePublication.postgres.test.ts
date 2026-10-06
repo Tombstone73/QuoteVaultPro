@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
-import { PostgresQuotePublicationRead, assertQuoteResendSchema } from "../../infrastructure/sales/postgresQuotePublication.js";
+import { PostgresQuotePublicationRead, assertQuoteResendSchema, publicationEvidenceStatus, readPublishedQuoteCheckpoints } from "../../infrastructure/sales/postgresQuotePublication.js";
+import { quoteDeliverySuppression, isAllowedQuoteSuppression, M77F_QUOTE_RECIPIENT } from "../../infrastructure/communications/m77fQaQuoteDeliverySafety.js";
+import { M77F_QA_ORGANIZATION_ID } from "../../infrastructure/communications/m77fQaProofDeliverySafety.js";
 import { PostgresPortalCommercialRead } from "../../infrastructure/portal/postgresPortalCommercialRead.js";
 import { persistPreparedQuoteDeliveryAttempt, PostgresQuoteDeliveryService } from "../../infrastructure/sales/postgresQuoteDelivery.js";
 import { PostgresCustomerDocumentService } from "../../infrastructure/sales/postgresCustomerDocuments.js";
@@ -107,6 +109,7 @@ try {
     await db.query("INSERT INTO v2_sales_quote_delivery_attempts(id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject) VALUES($1,'org-a',$2,$3,'legacy@example.invalid',$4,'staff','staff-a')", [`${id}-attempt`, id, `${id}-legacy`, hash]);
   }
   await db.exec(migration("0299_v2_sales_quote_delivery_prepared_evidence.sql"));
+  await db.exec(migration("0304_v2_quote_suppressed_publication.sql"));
   const immutable = migration("0187_v2_sales_commercial_persistence.sql");
   await db.exec(immutable.slice(immutable.indexOf("CREATE OR REPLACE FUNCTION v2_reject_sales_quote_checkpoint_mutation"), immutable.indexOf("CREATE TABLE v2_sales_quote_conversions")));
   await assert.rejects(() => assertQuoteResendSchema(client), /resend schema is unavailable/); checks++;
@@ -558,6 +561,196 @@ try {
     equal(providerDeliveries, 1); equal(lifecycleWrites, 1); equal(await effects(), beforeReplay);
   }
   equal(principal, originalPrincipal);
+  // Same real prepare -> Sales checkpoint -> final receipt pipeline, but no integration/provider.
+  const qaOrg = M77F_QA_ORGANIZATION_ID;
+  const dev = { NODE_ENV: "production", APP_ENV: "development", RAILWAY_PROJECT_NAME: "PrintersHero-DEV", RAILWAY_ENVIRONMENT_NAME: "Development", DATABASE_URL: "postgres://inert@ep-soft-frost-aef6c2jb-pooler.c-2.us-east-2.aws.neon.tech/neondb" };
+  const originalEnvironment = Object.fromEntries(Object.keys(dev).map(key => [key, process.env[key]]));
+  Object.assign(process.env, dev);
+  try {
+    const suppression = quoteDeliverySuppression(qaOrg, M77F_QUOTE_RECIPIENT)!;
+    equal(suppression.providerCall, "not_attempted");
+    for (const recipient of ["", "real@example.com", "other@example.invalid", `${M77F_QUOTE_RECIPIENT}\r\nBcc: real@example.com`, `${M77F_QUOTE_RECIPIENT},other@example.invalid`]) {
+      assert.throws(() => quoteDeliverySuppression(qaOrg, recipient)); checks++;
+    }
+    assert.throws(() => quoteDeliverySuppression("org-a", M77F_QUOTE_RECIPIENT)); checks++;
+    equal(quoteDeliverySuppression("org-a", "real@example.com"), undefined);
+    for (const [key, value] of Object.entries({ NODE_ENV: "test", APP_ENV: "production", RAILWAY_PROJECT_NAME: "PRODUCTION", RAILWAY_ENVIRONMENT_NAME: "Production", DATABASE_URL: "postgres://inert@prod.invalid/prod" })) {
+      process.env[key] = value;
+      equal(isAllowedQuoteSuppression(qaOrg, M77F_QUOTE_RECIPIENT, suppression), false);
+      assert.throws(() => quoteDeliverySuppression(qaOrg, M77F_QUOTE_RECIPIENT)); checks++;
+      Object.assign(process.env, dev);
+    }
+    delete process.env.DATABASE_URL;
+    assert.throws(() => quoteDeliverySuppression(qaOrg, M77F_QUOTE_RECIPIENT)); checks++;
+    Object.assign(process.env, dev);
+    await db.query("INSERT INTO organizations VALUES($1)", [qaOrg]);
+    await db.query("INSERT INTO v2_sales_tax_jurisdictions VALUES('qa-tax',$1,'QA tax','US','OR',NULL,750,true,true,'{}')", [qaOrg]);
+    const qaContext = (id: string): any => ({ ...acceptContext(id, ["quote.view", "quote.send", "quote.edit", "quote.convert"]), organizationId: qaOrg,
+      principal: { ...acceptContext(id).principal, organizationId: qaOrg, authority: { membershipId: "qa-member", capabilities: ["quote.view", "quote.send", "quote.edit", "quote.convert"] } } });
+    const qaApplication = new QuoteApplicationService({ transaction: async action => {
+      await db.exec("BEGIN");
+      try { const result = await action(lostQuotePort); await db.exec("COMMIT"); return result; }
+      catch (cause) { await db.exec("ROLLBACK"); throw cause; }
+    } });
+    let emailCalls = 0;
+    let publicationFailure = "";
+    const recordQa = qaApplication.recordDelivered.bind(qaApplication);
+    qaApplication.recordDelivered = async (...args) => { const result = await recordQa(...args); if (!result.ok) publicationFailure = `${result.error.code}: ${result.error.publicMessage}`; return result; };
+    const sender: any = new PostgresQuoteDeliveryService(lostPool, qaApplication, {
+      readiness: async () => { emailCalls++; throw Error("QA must not read Gmail readiness"); },
+      requireReady: async () => { emailCalls++; throw Error("QA must not load credentials"); },
+    } as any);
+    sender.deliver = async () => { emailCalls++; throw Error("QA must never call the provider"); };
+    sender.products = { resolveOrderRoutability: async () => ({ kind: "routable" }) };
+    sender.requireRoutability = async () => {};
+    const finalizeQa = sender.succeeded.bind(sender);
+    sender.succeeded = async (...args: any[]) => { try { return await finalizeQa(...args); } catch (cause) { publicationFailure = String(cause); throw cause; } };
+    let recipient = M77F_QUOTE_RECIPIENT;
+    sender.documents = {
+      quoteRecipientReadiness: async () => ({ status: "ready", email: recipient }),
+      quoteRecipientInTransaction: async () => recipient,
+      quoteDeliveryInTransaction: async () => ({ recipientEmail: recipient, document: {
+        kind: "quote", number: "QT-QA", issuedAt: "2026-10-06", organization: { name: "QA shop" },
+        customer: { displayName: "QA Customer", email: recipient }, lines: [{ description: "QA line", quantity: 2, unitCents: 100, totalCents: 200 }], currency: "USD",
+        lineSubtotalCents: 200, adjustmentCents: 0, chargeCents: 0, taxCents: 15, totalCents: 215,
+      } }),
+    };
+    const qaConfiguration = { ...configuration, organizationId: qaOrg };
+    const qaPricing = await new V2PricingParityAdapter().calculate({ organizationId: qaOrg, resolvedConfiguration: qaConfiguration,
+      sellableProduct: { organizationId: qaOrg, productId: "product-a", displayName: "Product", lifecycle: "active", requiresDimensions: false, pricingCurrency: "USD", pricingConfiguration: { id: "version-a", version: "1", contentHash: "sha256:version-a" } },
+      pricingContext: { channel: "staff", effectiveAt: "2026-10-06T00:00:00.000Z" }, rules: { base: { perPieceCents: 100 } } } as any);
+    const qaDecision = { ...frozenLine.sellingPriceDecision, pricingResultId: qaPricing.id,
+      calculatedUnitAmount: qaPricing.calculatedUnitAmount, calculatedLineAmount: qaPricing.calculatedLineAmount,
+      resultingUnitAmount: qaPricing.calculatedUnitAmount, resultingLineAmount: qaPricing.calculatedLineAmount };
+    const createQa = async (id: string) => {
+      await db.query("INSERT INTO v2_sales_documents(id,organization_id) VALUES($1,$2)", [id, qaOrg]);
+      await db.query("INSERT INTO v2_sales_quote_details(document_id,organization_id) VALUES($1,$2)", [id, qaOrg]);
+      await db.query("INSERT INTO v2_sales_document_lines VALUES($1,$2,$3,0,'product-a',NULL,'QA line',2,200,200,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb)",
+        [`${id}-line`, qaOrg, id, JSON.stringify(qaConfiguration), JSON.stringify(qaPricing), JSON.stringify(qaDecision), JSON.stringify(frozenLine.taxability)]);
+      return { quoteId: id, expectedRevision: "1", businessRequestId: `${id}-send` };
+    };
+    const qaInput = await createQa("qa-suppressed");
+    const readiness = await sender.readiness(qaContext("qa-readiness"), qaInput.quoteId);
+    equal(readiness.email.status, "suppressed"); equal(readiness.canSend, true); equal(emailCalls, 0);
+    recipient = "real@example.com";
+    equal((await sender.readiness(qaContext("qa-readiness"), qaInput.quoteId)).canSend, false);
+    equal((await sender.send(qaContext(qaInput.businessRequestId), qaInput)).ok, false);
+    equal((await db.query("SELECT id FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1", [qaInput.quoteId])).rows.length, 0);
+    recipient = M77F_QUOTE_RECIPIENT;
+    await db.query("UPDATE v2_sales_tax_jurisdictions SET active=false WHERE organization_id=$1", [qaOrg]);
+    equal((await sender.send(qaContext(qaInput.businessRequestId), qaInput)).ok, false);
+    equal(emailCalls, 0);
+    await db.query("UPDATE v2_sales_tax_jurisdictions SET active=true WHERE organization_id=$1", [qaOrg]);
+    const sent = await sender.send(qaContext(qaInput.businessRequestId), qaInput);
+    assert.ok(sent.ok, publicationFailure || sent.error?.publicMessage); checks++;
+    equal(sent.value.quote.publicationDeliveryMode, "suppressed");
+    const rows = await readPublishedQuoteCheckpoints(lostClient, qaOrg, qaInput.quoteId);
+    equal(rows.length, 1); equal(publicationEvidenceStatus(rows[0]), "modern");
+    equal(rows[0].provider_message_id, null); equal(rows[0].payload.sentEvidence?.providerMessageId, undefined);
+    equal(rows[0].payload.sentEvidence?.suppression, suppression);
+    equal(publicationEvidenceStatus({ ...rows[0], prepared_evidence_json: null }), null);
+    equal(publicationEvidenceStatus({ ...rows[0], suppression_context: null }), null);
+    equal(publicationEvidenceStatus({ ...rows[0], provider_message_id: "fake-provider" }), null);
+    equal(publicationEvidenceStatus({ ...rows[0], transport: "gmail" }), null);
+    equal(publicationEvidenceStatus({ ...rows[0], receipt_delivery_mode: null }), null);
+    equal(publicationEvidenceStatus({ ...rows[0], payload: { ...rows[0].payload, sentEvidence: { ...rows[0].payload.sentEvidence, suppression: { ...suppression, providerCall: undefined } } } } as any), null);
+    const originalPdf = await documents.quoteCheckpointPdf(qaOrg, qaInput.quoteId, sent.value.checkpointId);
+    equal(`sha256:${createHash("sha256").update(originalPdf).digest("hex")}`, rows[0].document_sha256);
+    const effects = async () => (await db.query("SELECT * FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1", [qaInput.quoteId])).rows;
+    const beforeReplay = await effects();
+    const replay = await sender.send(qaContext(qaInput.businessRequestId), qaInput);
+    assert.ok(replay.ok, replay.error?.publicMessage); checks++;
+    equal(replay.value, sent.value); equal(await effects(), beforeReplay); equal(emailCalls, 0);
+    equal((await sender.send(qaContext(qaInput.businessRequestId), { ...qaInput, expectedRevision: "999" })).ok, false);
+    const applicationInput: any = { ...qaInput, deliveryAttemptId: rows[0].attempt_id, suppression,
+      preparedSnapshot: rows[0].prepared_evidence_json, frozenTaxComposition: (rows[0].prepared_evidence_json as any).commercial.taxComposition };
+    equal((await qaApplication.recordDelivered(qaContext(qaInput.businessRequestId), applicationInput)).ok, true);
+    // Existing real acceptance/conversion owner ports consume the same frozen suppressed source.
+    const qaConverter = new QuoteConversionApplicationService({ transaction: async action => {
+      await db.exec("BEGIN");
+      try { const result = await action({ quote: lostQuotePort, order: orderPort, artwork: { snapshotAccepted: async () => {}, carryAcceptedToOrder: async () => {} } }); await db.exec("COMMIT"); return result; }
+      catch (cause) { publicationFailure = String(cause); await db.exec("ROLLBACK"); throw cause; }
+    } }, new OrderApplicationService({ transaction: async () => { throw Error("reuse transaction"); } }));
+    const acceptInput: any = { quoteId: qaInput.quoteId, businessRequestId: "qa-accept", expectedRevision: "2" };
+    const acceptedQa = await qaConverter.accept(qaContext("qa-accept"), acceptInput);
+    assert.ok(acceptedQa.ok, publicationFailure || (acceptedQa.ok ? undefined : acceptedQa.error.publicMessage)); checks++;
+    equal((await qaConverter.accept(qaContext("qa-accept"), acceptInput)).ok, true);
+    equal(await documents.quoteCheckpointPdf(qaOrg, qaInput.quoteId, sent.value.checkpointId), originalPdf);
+    process.env.APP_ENV = "production";
+    equal(publicationEvidenceStatus(rows[0]), null);
+    const driftRead = await lostQuotePort.read(qaOrg as any, qaInput.quoteId as any);
+    equal(driftRead?.publishedCheckpointId, null); equal(driftRead?.publishedEvidenceStatus, null);
+    await assert.rejects(() => lostQuotePort.readPublishedCheckpoints(qaOrg as any, qaInput.quoteId as any)); checks++;
+    await assert.rejects(() => documents.quoteCheckpointPdf(qaOrg, qaInput.quoteId, sent.value.checkpointId)); checks++;
+    equal(await publication.get(qaOrg, "customer-internal", qaInput.quoteId), null);
+    equal((await sender.send(qaContext(qaInput.businessRequestId), qaInput)).ok, false);
+    equal((await qaApplication.recordDelivered(qaContext(qaInput.businessRequestId), applicationInput)).ok, false);
+    equal((await qaConverter.accept(qaContext("qa-accept"), acceptInput)).ok, false);
+    equal((await sender.send(qaContext("new-after-drift"), { ...qaInput, businessRequestId: "new-after-drift" })).ok, false);
+    equal(emailCalls, 0); equal(await effects(), beforeReplay);
+    Object.assign(process.env, dev);
+    const revisedInput = await createQa("qa-revisions");
+    const firstPublication = await sender.send(qaContext(revisedInput.businessRequestId), revisedInput);
+    assert.ok(firstPublication.ok); checks++;
+    const nextInput = { ...revisedInput, businessRequestId: "qa-revisions-second", expectedRevision: "2" };
+    const secondPublication = await sender.send(qaContext(nextInput.businessRequestId), nextInput);
+    assert.ok(secondPublication.ok, secondPublication.error?.publicMessage); checks++;
+    const revisions = await readPublishedQuoteCheckpoints(lostClient, qaOrg, revisedInput.quoteId);
+    equal(revisions.length, 2); equal(revisions[0].id, secondPublication.value.checkpointId);
+    equal(revisions[1].id, firstPublication.value.checkpointId);
+    const latestRequest = (await db.query<any>("SELECT operation_request_id FROM v2_sales_quote_delivery_attempts WHERE id=$1", [revisions[0].attempt_id])).rows[0].operation_request_id;
+    await db.query("UPDATE v2_operation_requests SET result_json=jsonb_set(result_json,'{quote,publicationDeliveryMode}','null'::jsonb) WHERE id=$1", [latestRequest]);
+    equal((await readPublishedQuoteCheckpoints(lostClient, qaOrg, revisedInput.quoteId)).length, 2);
+    equal((await lostQuotePort.read(qaOrg as any, revisedInput.quoteId as any))?.publishedCheckpointId, null);
+    equal(await publication.get(qaOrg, "customer-internal", revisedInput.quoteId), null);
+    await assert.rejects(() => documents.quote(qaOrg, revisedInput.quoteId)); checks++;
+    const absentReceiptInput = await createQa("qa-unqualified-suppressed");
+    const absentReceipt = await sender.send(qaContext(absentReceiptInput.businessRequestId), absentReceiptInput);
+    assert.ok(absentReceipt.ok); checks++;
+    await db.query("UPDATE v2_operation_requests SET status='permanent_failure' WHERE operation='sales.quote.delivery.v1' AND result_resource_id=$1", [absentReceiptInput.quoteId]);
+    await assert.rejects(() => documents.quote(qaOrg, absentReceiptInput.quoteId), /no qualifying committed publication/); checks++;
+    // Interrupted checkpoint/final receipt commits stay provider-free and block retries.
+    const actualFinalize = sender.succeeded.bind(sender);
+    const lostAckInput = await createQa("qa-lost-commit-ack");
+    sender.succeeded = async (...args: any[]) => { await actualFinalize(...args); throw Error("inert lost commit acknowledgement"); };
+    const lostAck = await sender.send(qaContext(lostAckInput.businessRequestId), lostAckInput);
+    equal(lostAck.ok, false); equal(lostAck.error.code, "CONFLICT");
+    sender.succeeded = actualFinalize;
+    const recoveredAck = await sender.send(qaContext(lostAckInput.businessRequestId), lostAckInput);
+    assert.ok(recoveredAck.ok, recoveredAck.error?.publicMessage); checks++;
+    equal(recoveredAck.value.quote.publicationDeliveryMode, "suppressed");
+    equal((await readPublishedQuoteCheckpoints(lostClient, qaOrg, lostAckInput.quoteId)).length, 1);
+    const pendingInput = await createQa("qa-interrupted-preparation");
+    const actualPrepare = sender.prepare.bind(sender);
+    sender.prepare = async (...args: any[]) => { await actualPrepare(...args); throw Error("inert crash after prepare commit"); };
+    equal((await sender.send(qaContext(pendingInput.businessRequestId), pendingInput)).ok, false);
+    sender.prepare = actualPrepare;
+    const pendingAttempt = (await db.query<any>("SELECT * FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1", [pendingInput.quoteId])).rows[0];
+    equal(pendingAttempt.delivery_state, "pending"); equal(pendingAttempt.transport, "dev_qa_suppressed"); equal(pendingAttempt.provider_message_id, null);
+    equal((await sender.send(qaContext(pendingInput.businessRequestId), pendingInput)).ok, false);
+    equal((await sender.send(qaContext("qa-pending-new"), { ...pendingInput, businessRequestId: "qa-pending-new" })).ok, false);
+    for (const failurePoint of ["checkpoint", "receipt", "guard-drift"]) {
+      const input = await createQa(`qa-fail-${failurePoint}`);
+      const actualRecord = qaApplication.recordDelivered.bind(qaApplication);
+      if (failurePoint === "checkpoint") qaApplication.recordDelivered = async () => { throw Error("inert checkpoint failure"); };
+      sender.succeeded = async (...args: any[]) => {
+        if (failurePoint === "guard-drift") { process.env.APP_ENV = "production"; return actualFinalize(...args); }
+        throw Error("inert finalization failure");
+      };
+      const failed = await sender.send(qaContext(input.businessRequestId), input);
+      equal(failed.ok, false); equal(failed.error.code, "CONFLICT");
+      assert.match(failed.error.publicMessage, /no provider call was attempted/); checks++;
+      Object.assign(process.env, dev); qaApplication.recordDelivered = actualRecord; sender.succeeded = actualFinalize;
+      const attempt = (await db.query<any>("SELECT * FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1", [input.quoteId])).rows[0];
+      equal(attempt.delivery_state, "failed"); equal(attempt.transport, "dev_qa_suppressed"); equal(attempt.provider_message_id, null);
+      equal((await readPublishedQuoteCheckpoints(lostClient, qaOrg, input.quoteId)).length, 0);
+      equal((await sender.send(qaContext(input.businessRequestId), input)).ok, false);
+      equal((await sender.send(qaContext(`${input.businessRequestId}-new`), { ...input, businessRequestId: `${input.businessRequestId}-new`, expectedRevision: failurePoint === "checkpoint" ? "1" : "2" })).ok, false);
+    }
+    equal(emailCalls, 0);
+  } finally {
+    for (const [key, value] of Object.entries(originalEnvironment)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
   console.log("L0-A-P2 lost-response RED controls: old receipt/replay mappings fail modern receipt and cache acceptance for both null first-send and historical resend. Actual finalization, committed receipt and exact replay pass without duplicate provider/lifecycle/audit/attribution effects.");
   console.log("L0-A-P1-P2 RED controls: old attempt-only selector fails 13 receipt-exclusion assertions and exposes exact archived bytes; old sent-only SQL refuses qualified matching-CAS not_sent acceptance. Corrected reader, persistence and full application flow pass.");
   console.log(`L0-A-PG publication: ${checks} checks passed; actual owner SQL, real 0229/0299 and immutable checkpoint trigger; anticipated resend index fixture only; no native/provider writes.`);

@@ -109,6 +109,20 @@ try {
     assert.match(text(), /Original delivery or PDF evidence may be incomplete/); assert.doesNotMatch(text(), /INTERNAL_UNSENT_SECRET/);
     assert.equal(providerWrites, 0);
   });
+  await check("Portal suppression is publication, never claimed email delivery", async () => {
+    const before = calls.length;
+    await render(<PortalQuoteDetail key="suppressed" quoteId="quote-a" sessionScope="suppressed" />); await settle(() => calls.length === before + 1);
+    await respond(before, { ...detail("qa-checkpoint", "Suppressed frozen line"), deliveryMode: "suppressed", history: [{ ...summary("qa-checkpoint"), deliveryMode: "suppressed" }] });
+    await settle(() => text().includes("Suppressed frozen line"));
+    assert.match(text(), /Published in DEV QA; email suppressed/); assert.match(text(), /No provider call was attempted/);
+    assert.doesNotMatch(text(), /Sent Oct|delivered|Gmail/); assert.equal(providerWrites, 0);
+  });
+  await check("Staff suppressed checkpoint history has explicit no-provider evidence", async () => {
+    await render(<QuotePublicationPanel organizationId="org-a" sessionScope="suppressed-staff" quoteId="quote-a" revision="8" publishedCheckpointId="qa-cp" canView canResend busy={false}
+      loadHistory={async () => ({ items: [{ checkpointId: "qa-cp", occurredAt: "2026-10-06T00:00:00Z", customerPresentation: { customerDisplayName: "QA Customer" }, sentEvidence: { recipientEmail: "quote-final-four@example.invalid", suppression: { deliveryMode: "suppressed" } }, commercial: { terms: {} } }] })} onResend={() => resendInvocations++} />);
+    await settle(() => text().includes("QA Customer"));
+    assert.match(text(), /Published in DEV QA; email suppressed/); assert.doesNotMatch(text(), /successful sent revision|delivered/);
+  });
   console.log(`L0-A-UI: ${cases} mounted publication scenarios; inert read mocks, zero provider/network mutations.`);
 } finally {
   await act(async () => root.unmount()); client.clear(); clearV2ApiSessionState(); globalThis.fetch = originalFetch; dom.window.close();

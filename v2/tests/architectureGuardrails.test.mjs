@@ -372,6 +372,12 @@ test("harness safety API is not a general V1 bridge exemption", () => {
   assert.deepEqual(evaluateImports(files("scripts/guarded-test-entry.ts", importFixture("../../server/tests/helpers/safeTestDatabase.js", "{ requireSafeTestDatabaseUrl }"))), []);
   assert.ok(evaluateImports(files("scripts/guarded-test-entry.ts", importFixture("../../server/tests/helpers/safeTestDatabase.js", "{ requireSafeTestDatabaseUrl, unsafeHelper }"))).length);
   assert.ok(evaluateImports(files(adapterFile, importFixture("../../../server/tests/helpers/safeTestDatabase.js", "{ requireSafeTestDatabaseUrl }"))).length);
+  const nativeFile = "tests/infrastructure/structuralAuthority.native.test.ts";
+  const guardPath = "../../../server/tests/helpers/safeTestDatabase.js";
+  assert.deepEqual(evaluateImports(files(nativeFile, importFixture(guardPath, "{ requireSafeTestDatabaseUrl }"))), []);
+  assert.ok(evaluateImports(files(nativeFile, importFixture(guardPath, "{ requireSafeTestDatabaseUrl, unsafeHelper }"))).length);
+  assert.ok(evaluateImports(files(nativeFile, importFixture("../../../server/db.js", "{ db }"))).length);
+  assert.ok(evaluateImports(files("tests/infrastructure/another.native.test.ts", importFixture(guardPath, "{ requireSafeTestDatabaseUrl }"))).length);
 });
 
 test("real tree passes exactly while active debt stays visible and repaired debt stays retired", async () => {

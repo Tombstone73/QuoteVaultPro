@@ -125,10 +125,10 @@ export type QuoteLifecycleInput = Readonly<{
 }>;
 /** Only the delivery adapter may commit a sent lifecycle transition.  The
  * quote domain still owns the immutable checkpoint; this evidence prevents an
- * HTTP caller from representing a Quote as sent without a provider result. */
-export type QuoteDeliveredInput = QuoteLifecycleInput & Readonly<{
+ * HTTP caller from representing a Quote as published without a provider result
+ * or an adapter-verified DEV QA suppression outcome. */
+export type QuoteDeliveredInput = QuoteLifecycleInput & import("./contracts.js").QuoteDeliveryOutcome & Readonly<{
   deliveryAttemptId: string;
-  providerMessageId: string;
   /** Immutable pre-provider facts from the same prepared Quote and document. */
   preparedSnapshot: PreparedQuoteDeliveryEvidence;
   /** Captured by the delivery adapter before provider invocation. It is
@@ -145,6 +145,7 @@ export type QuoteReadModel = Readonly<{
    * explicitly identify the committed successful publication. */
   publishedCheckpointId?: QuoteCheckpointId | null;
   publishedEvidenceStatus?: "modern" | "historical" | null;
+  publicationDeliveryMode?: "suppressed";
   checkpoints: readonly Readonly<{
     checkpointId: QuoteCheckpointId;
     kind: QuoteCheckpoint["kind"];
@@ -169,9 +170,11 @@ export type QuoteReservation = Readonly<{
 export type QuoteAuditEvent = Readonly<{
   eventType: string;
   resourceId: string;
-  changes: readonly MeaningfulAuditChange[];
+  changes: readonly (MeaningfulAuditChange | Readonly<{ kind: "quote_delivery_suppressed"; checkpointId: string; deliveryAttemptId: string; suppression: import("./contracts.js").QuoteDeliverySuppression }>)[];
 }>;
 export interface QuoteTransaction {
+  /** Runtime isolation policy is supplied by the adapter, never by HTTP input. */
+  canUseSuppressedDelivery?(organizationId: string, recipient: string, evidence: unknown): boolean;
   readonly customers: CustomersReadPort;
   readonly products: ProductPricingCompatibilityPort;
   readonly pricing: PricingPort;
@@ -902,7 +905,7 @@ export class QuoteApplicationService {
     context: OperationContext,
     input: QuoteDeliveredInput,
   ): Promise<ApplicationResult<QuoteOperationResult>> {
-    if (!input.deliveryAttemptId.trim() || !input.providerMessageId.trim())
+    if (!input.deliveryAttemptId.trim() || (input.suppression ? input.providerMessageId !== undefined : !input.providerMessageId?.trim()))
       return failure(new V2ApplicationError("VALIDATION_ERROR", "Provider delivery evidence is required before recording a sent Quote."));
     const prepared = input.preparedSnapshot as PreparedQuoteDeliveryEvidence | undefined;
     if (!prepared || prepared.schemaVersion !== 1
@@ -959,7 +962,7 @@ export class QuoteApplicationService {
       quoteId: input.quoteId,
       expectedRevision: input.expectedRevision,
       deliveryAttemptId: input.deliveryAttemptId,
-      providerMessageId: input.providerMessageId,
+      ...(input.suppression ? { suppression: input.suppression } : { providerMessageId: input.providerMessageId }),
       ...(input.frozenTaxComposition ? { frozenTaxComposition: input.frozenTaxComposition } : {}),
       preparedSnapshot: input.preparedSnapshot,
     };
@@ -999,6 +1002,8 @@ export class QuoteApplicationService {
           || canonicalJson(current.quote.customerContact) !== canonicalJson(input.preparedSnapshot.customerContact)
           || canonicalJson(quoteCommercialSnapshot(current.quote)) !== canonicalJson(input.preparedSnapshot.commercial))
           throw new V2ApplicationError("STALE_STATE", "The Quote changed after its customer document was prepared.");
+        if (input.suppression && !tx.canUseSuppressedDelivery?.(context.organizationId, input.preparedSnapshot.recipientEmail, input.suppression))
+          throw new V2ApplicationError("CONFLICT", "Suppressed Quote publication is unavailable outside its DEV QA scope.");
         if (current.quote.acceptanceState === "accepted")
           throw new V2ApplicationError(
             "CONFLICT",
@@ -1017,7 +1022,7 @@ export class QuoteApplicationService {
           documentSha256: input.preparedSnapshot.documentSha256,
           documentNumber: input.preparedSnapshot.documentNumber,
           documentDate: input.preparedSnapshot.documentDate,
-          providerMessageId: input.providerMessageId,
+          ...(input.suppression ? { suppression: input.suppression } : { providerMessageId: input.providerMessageId! }),
         };
         const checkpoint = createQuoteLifecycleCheckpoint(
           current.quote,
@@ -1049,7 +1054,7 @@ export class QuoteApplicationService {
         );
         if (!read) throw new Error("Transitioned Quote could not be read.");
         await this.history(tx, context, request.id, operation, {
-          eventType: kind === "send" ? "quote_sent" : "quote_accepted",
+          eventType: input.suppression ? "quote_published_delivery_suppressed" : "quote_sent",
           resourceId: input.quoteId,
           changes: [],
         });
@@ -1106,6 +1111,14 @@ export class QuoteApplicationService {
             if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
             requireAllowed(this.authority, context, capability, current.quote.customerContact.customerId);
             requireAllowed(this.authority, context, capability, saved.quote.quote.customerContact.customerId);
+            if (operation === "sales.quote.send.v1") {
+              const checkpoint = saved.checkpointId && await tx.readCheckpoint?.(brandedId<"OrganizationId">(context.organizationId), saved.quote.quote.quoteId, saved.checkpointId);
+              const evidence = checkpoint && checkpoint.sentEvidence;
+              if (((command as QuoteDeliveredInput).suppression || saved.quote.publicationDeliveryMode === "suppressed") && !evidence?.suppression)
+                throw new V2ApplicationError("CONFLICT", "Suppressed Quote replay evidence is unavailable.");
+              if (evidence?.suppression && !tx.canUseSuppressedDelivery?.(context.organizationId, evidence.recipientEmail, evidence.suppression))
+                throw new V2ApplicationError("CONFLICT", "Suppressed Quote replay is unavailable outside its DEV QA scope.");
+            }
             return saved;
           }
           const result = await work(tx, reservation.request);

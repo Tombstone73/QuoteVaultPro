@@ -23,6 +23,11 @@ function fixture(options: { access?: Access; template?: boolean; eligible?: bool
       if (sql === "BEGIN") snapshot = structuredClone(state);
       else if (sql === "ROLLBACK") state = snapshot;
       else if (sql === "COMMIT") { /* Caller owns transaction completion. */ }
+      else if (sql.startsWith("SELECT v2_authority_entry") || sql.startsWith("SELECT v2_assert_authority_entry")) { /* Lock protocol is proved separately on native PostgreSQL. */ }
+      else if (sql.startsWith("SELECT v2_staff_login_ready")) rows=[{ready:true}];
+      else if (sql.includes("SELECT s.authority_revision")) rows=[{authority_revision:state.revision,status:"active",delete_state:"active",is_archived:false}];
+      else if (sql.includes("SELECT m.user_id")) rows=[{user_id:"staff",is_active:true,role:"member",is_platform_developer:false}];
+      else if (sql.includes("SELECT ps.id")) rows=[{id:"set",name:"Proof",active:true,revision:1,capability_id:"proof.issue"}];
       else if (sql.startsWith("SELECT c.id contact_id")) {
         assert.match(sql, /lower\(btrim\(c.email\)\)/);
         assert.match(sql, /c.organization_id=d.organization_id/);
@@ -51,7 +56,7 @@ function fixture(options: { access?: Access; template?: boolean; eligible?: bool
         assert.deepEqual(values, ["org", state.access!.id, "permission"]);
         assert.match(sql, /ON CONFLICT\(organization_id,portal_access_id,permission_set_id\) DO UPDATE SET active=true/);
         if (!state.assignments.includes("permission")) state.assignments.push("permission");
-      } else if (sql.startsWith("UPDATE v2_permission_organization_state")) { assert.deepEqual(values, ["org"]); state.revision++; }
+      } else if (sql.startsWith("SELECT v2_authority_changed")) { assert.deepEqual(values, ["org"]); state.revision++; }
       else if (sql.startsWith("UPDATE v2_proof_versions")) { if (!state.issued) { state.issued = true; rows = [version()]; } }
       else if (sql.startsWith("INSERT INTO v2_proof_delivery_jobs")) state.deliveries.push(values);
       else if (sql.startsWith("INSERT INTO v2_audit_events")) state.audits.push(values);
@@ -69,13 +74,13 @@ function fixture(options: { access?: Access; template?: boolean; eligible?: bool
     afterAudit: async () => { if (options.afterAudit) throw new Error("injected audit hook failure"); },
   });
   const runner: ProofingTransactionRunner = {
-    transaction: action => postgres.transaction(tx => {
+    transaction: (action, scope, principal) => postgres.transaction(tx => {
       // Only operation-request persistence is mocked; issuance, audit and transaction use real adapters.
       tx.reserve = async () => ({ kind: state.result ? "replay" : "new", request: { id: "request", resultJson: state.result ?? null } });
       tx.attribute = async () => {};
       tx.succeed = async (_org, _id, result) => { state.result = result; };
       return action(tx);
-    }),
+    },scope,principal),
   };
   return { client, calls, runner, state: () => state, released: () => released };
 }
@@ -111,7 +116,7 @@ async function main() {
   });
   for (const change of [{ organizationId: "wrong-tenant" }, { recipientContactId: "other-customer-contact" }, { proofVersionId: "foreign-proof" }]) await check(async () => {
     const f = fixture(); await assert.rejects(new PostgresProofRecipientAccess(f.client).ensureForProofIssue({ ...input, ...change }), /active customer contact/);
-    assert.equal(f.calls.length, 1); assert.equal(f.state().access, undefined);
+    assert.equal(f.calls.length, 2); assert.equal(f.state().access, undefined);
   });
   await check(async () => { const f = fixture(); await assert.rejects(new PostgresProofRecipientAccess(f.client).ensureForProofIssue({ ...input, recipientContactId: " " }), /Choose a customer contact/); assert.equal(f.calls.length, 0); });
   await check(async () => { const f = fixture({ eligible: false }); assert.equal((await issue(f)).ok, false); assert.equal(f.state().access, undefined); assert.equal(f.calls.at(-1)!.sql, "ROLLBACK"); });
@@ -124,7 +129,7 @@ async function main() {
     assert.equal(f.state().revision, 8); assert.equal(f.state().assignments.length, 1); assert.equal(f.state().deliveries.length, 1);
   });
   await check(async () => { const f = fixture(); assert.equal((await issue(f, "request", context("request", []))).ok, false); assert.equal(f.calls.length, 0); });
-  for (const options of [{ fail: "INSERT INTO v2_portal_permission_set_assignments" }, { fail: "UPDATE v2_permission_organization_state" }, { fail: "INSERT INTO v2_proof_delivery_jobs" }, { afterIssue: true }, { afterAudit: true }]) await check(async () => {
+  for (const options of [{ fail: "INSERT INTO v2_portal_permission_set_assignments" }, { fail: "SELECT v2_authority_changed" }, { fail: "INSERT INTO v2_proof_delivery_jobs" }, { afterIssue: true }, { afterAudit: true }]) await check(async () => {
     const f = fixture(options); assert.equal((await issue(f)).ok, false);
     assert.deepEqual(f.state(), { access: undefined, assignments: [], revision: 7, issued: false, deliveries: [], audits: [], result: undefined });
     assert.equal(f.calls.at(-1)!.sql, "ROLLBACK"); assert.equal(f.calls.filter(c => c.sql === "BEGIN").length, 1); assert.equal(f.released(), 1);

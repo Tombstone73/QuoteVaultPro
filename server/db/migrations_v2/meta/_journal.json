@@ -2094,6 +2094,20 @@
       "when": 1790827200007,
       "tag": "0303_v2_production_exclusive_membership",
       "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1791308659152,
+      "tag": "0304_v2_quote_suppressed_publication",
+      "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1791308659153,
+      "tag": "0305_v2_usable_structural_authority",
+      "breakpoints": true
     }
   ]
 }

@@ -144,6 +144,19 @@ type QuoteCheckpointBase = Readonly<{
   sourceCheckpointId?: QuoteCheckpointId;
   sentEvidence?: QuoteSentDeliveryEvidence;
 }>;
+export type QuoteDeliverySuppression = Readonly<{
+  schemaVersion: 1;
+  deliveryMode: "suppressed";
+  providerCall: "not_attempted";
+  environment: "dev_qa";
+  scope: "m77f_qa_dev_only";
+  organizationId: string;
+  recipientEmail: string;
+}>;
+export type QuoteDeliveryOutcome = Readonly<
+  { providerMessageId: string; suppression?: never }
+  | { providerMessageId?: never; suppression: QuoteDeliverySuppression }
+>;
 export type QuoteSentDeliveryEvidence = Readonly<{
   customerContact: CustomerContactReference;
   deliveryAttemptId: string;
@@ -151,8 +164,7 @@ export type QuoteSentDeliveryEvidence = Readonly<{
   documentSha256: string;
   documentNumber: string;
   documentDate: string;
-  providerMessageId: string;
-}>;
+}> & QuoteDeliveryOutcome;
 export type QuoteCheckpoint =
   | Readonly<QuoteCheckpointBase & { kind: "quote_sent"; sentEvidence: QuoteSentDeliveryEvidence; sourceDocument: Readonly<{ quoteId: QuoteId }> }>
   | Readonly<QuoteCheckpointBase & { kind: "quote_accepted"; sourceDocument: Readonly<{ quoteId: QuoteId }> }>

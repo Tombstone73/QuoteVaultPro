@@ -6,9 +6,11 @@ import session from "express-session";
 import rateLimit from "express-rate-limit";
 import type { Pool } from "pg";
 import { PermissionSetPrincipalIssuer } from "../../src/authorization/permissionSets.js";
+import { isUsableStaffPasswordHash, isUsableStaffLoginEmail } from "../../src/authorization/staffCredentialReadiness.js";
 import type { AuthenticatedIdentity } from "../../src/authorization/principalIssuer.js";
 import type { Principal } from "../../src/authorization/principals.js";
 import { PostgresPermissionAuthorityReader } from "../authorization/postgresPermissionAuthorityRead.js";
+import { enterAuthorityMutation } from "../authorization/postgresAuthorityMutation.js";
 import { PostgresEmailIntegrationService } from "../communications/postgresEmailIntegration.js";
 import type { TrustedHostIdentitySource } from "./trustedHostPrincipalProvider.js";
 import { issueV2CsrfToken, issueV2SessionScope, requireV2CsrfToken } from "./sessionCsrf.js";
@@ -128,7 +130,7 @@ export class PostgresStandaloneStaffCredentialVerifier implements V2StaffCredent
        FROM users u JOIN auth_identities ai ON ai.user_id = u.id AND ai.provider = 'password'
        WHERE u.id = $1 AND u.account_type = 'INTERNAL_USER' AND COALESCE(u.must_set_password, false) = false`, [userId]);
     const row = result.rows[0];
-    if (!row?.email) return null;
+    if (!row || !isUsableStaffLoginEmail(row.email) || !isUsableStaffPasswordHash(row.password_hash)) return null;
     return { id: row.id, email: row.email, displayName: [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email, ...(row.password_hash ? { passwordHash: row.password_hash } : {}) };
   }
   async authenticate(email: string, password: string): Promise<V2AuthenticatedStaff | null> {
@@ -162,7 +164,7 @@ export class PostgresStandaloneStaffCredentialVerifier implements V2StaffCredent
  * portal session through one active tenant/customer access record. */
 export class PostgresStandalonePortalCredentialVerifier implements V2PortalCredentialVerifier {
   constructor(private readonly pool: Pool) {}
-  private async find(where: string, values: readonly string[]): Promise<(V2AuthenticatedPortal & { passwordHash?: string }) | null> {
+  private async find(userId: string | null, email: string | null, organizationId: string | null): Promise<(V2AuthenticatedPortal & { passwordHash?: string }) | null> {
     const result = await this.pool.query<{ id:string; email:string; first_name:string|null; last_name:string|null; password_hash:string|null; password_set_at:Date; organization_id:string; customer_id:string; display_name:string|null }>(
       `SELECT u.id,u.email,u.first_name,u.last_name,ai.password_hash,ai.password_set_at,cpa.organization_id,cpa.customer_id,cpa.display_name
        FROM users u JOIN customer_portal_access cpa ON cpa.user_id=u.id AND cpa.status='ACTIVE'
@@ -172,14 +174,16 @@ export class PostgresStandalonePortalCredentialVerifier implements V2PortalCrede
        LEFT JOIN customer_contact_links l ON l.organization_id=cpa.organization_id AND l.customer_id=cpa.customer_id AND l.contact_id=cpa.contact_id
        WHERE u.account_type='PORTAL_CUSTOMER' AND COALESCE(u.must_set_password,false)=false
          AND c.is_active IS DISTINCT FROM false AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
-         AND (cpa.contact_id IS NULL OR (cc.status='active' AND l.status='active')) AND ${where}`,
-      [...values],
+          AND (cpa.contact_id IS NULL OR (cc.status='active' AND l.status='active'))
+          AND ($1::varchar IS NULL OR u.id=$1) AND ($2::text IS NULL OR lower(u.email)=lower($2))
+          AND ($3::varchar IS NULL OR cpa.organization_id=$3)`,
+      [userId,email,organizationId],
     );
     const row=result.rows[0]; if(!row?.email) return null;
     return { id:row.id,email:row.email,displayName:row.display_name?.trim() || [row.first_name,row.last_name].filter(Boolean).join(" ") || row.email,organizationId:row.organization_id,customerId:row.customer_id,credentialVersion:row.password_set_at.toISOString(),...(row.password_hash?{passwordHash:row.password_hash}:{}) };
   }
-  async authenticatePortal(email:string,password:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("lower(u.email)=lower($1)",[email]); if(!portal?.passwordHash || !(await bcrypt.compare(password,portal.passwordHash))) return null; return {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId,credentialVersion:portal.credentialVersion}; }
-  async currentPortal(userId:string,organizationId:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find("u.id=$1 AND cpa.organization_id=$2",[userId,organizationId]); return portal && {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId,credentialVersion:portal.credentialVersion}; }
+  async authenticatePortal(email:string,password:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find(null,email,null); if(!portal?.passwordHash || !(await bcrypt.compare(password,portal.passwordHash))) return null; return {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId,credentialVersion:portal.credentialVersion}; }
+  async currentPortal(userId:string,organizationId:string):Promise<V2AuthenticatedPortal|null>{ const portal=await this.find(userId,null,organizationId); return portal && {id:portal.id,email:portal.email,displayName:portal.displayName,organizationId:portal.organizationId,customerId:portal.customerId,credentialVersion:portal.credentialVersion}; }
 }
 
 /** Owns only the one-time credential handoff for a canonical portal-access
@@ -206,6 +210,7 @@ export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLife
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await enterAuthorityMutation(client,[],true);
       const invite = await client.query<{ id:string; access_id:string; organization_id:string; email:string; user_id:string|null; status:string }>(
         `SELECT t.id,t.access_id,t.organization_id,a.email,a.user_id,a.status::text
          FROM customer_portal_invite_tokens t
@@ -247,15 +252,18 @@ export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLife
     const client = await this.pool.connect(); let recipient = ""; let token = ""; let organizationId = "";
     try {
       await client.query("BEGIN");
+      const discovered=await client.query<{organization_id:string}>("SELECT organization_id FROM customer_portal_access WHERE lower(email)=lower($1)",[email]);
+      if(!discovered.rows.length){await client.query("COMMIT");return;}
+      await enterAuthorityMutation(client,discovered.rows.map(row=>row.organization_id));
       const access = await client.query<{ id:string; organization_id:string; email:string }>(
         `SELECT a.id,a.organization_id,a.email FROM customer_portal_access a
          JOIN users u ON u.id=a.user_id AND u.account_type='PORTAL_CUSTOMER'
          JOIN customers c ON c.id=a.customer_id AND c.organization_id=a.organization_id
          LEFT JOIN customer_contacts cc ON cc.id=a.contact_id AND cc.organization_id=a.organization_id
          LEFT JOIN customer_contact_links l ON l.organization_id=a.organization_id AND l.customer_id=a.customer_id AND l.contact_id=a.contact_id
-         WHERE a.status='ACTIVE' AND lower(a.email)=lower($1) AND c.is_active IS DISTINCT FROM false
+          WHERE a.status='ACTIVE' AND lower(a.email)=lower($1) AND a.organization_id=ANY($2::varchar[]) AND c.is_active IS DISTINCT FROM false
            AND COALESCE(c.status,'active') NOT IN ('archived','deleted','superseded') AND c.merged_into_customer_id IS NULL
-           AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE OF a`, [email]);
+            AND (a.contact_id IS NULL OR (cc.status='active' AND l.status='active')) FOR UPDATE OF a`, [email,discovered.rows.map(row=>row.organization_id)]);
       const row = access.rows[0];
       if (!row) { await client.query("COMMIT"); return; }
       token = randomBytes(32).toString("hex"); recipient = row.email; organizationId = row.organization_id;
@@ -271,6 +279,7 @@ export class PostgresPortalCredentialLifecycle implements V2PortalCredentialLife
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await enterAuthorityMutation(client,[],true);
       const reset = await client.query<{ id:string; access_id:string; user_id:string|null }>(
         `SELECT t.id,t.access_id,a.user_id FROM v2_portal_password_reset_tokens t
          JOIN customer_portal_access a ON a.id=t.access_id AND a.organization_id=t.organization_id

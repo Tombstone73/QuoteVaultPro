@@ -5,9 +5,12 @@ import { parsePreparedQuoteDeliveryEvidence } from "./preparedQuoteDeliveryEvide
 import type { PostgresCustomerDocumentService } from "./postgresCustomerDocuments.js";
 import { brandedId } from "../../src/modules/shared/commercialValues.js";
 import { preparedEvidenceMatchesCheckpoint, publishedQuoteProjection, type QuotePublicationReadPort, type PublishedQuoteSummary } from "../../src/modules/sales/quotePublication.js";
+import { isAllowedQuoteSuppression, QUOTE_SUPPRESSED_TRANSPORT } from "../communications/m77fQaQuoteDeliverySafety.js";
 
 type Row = { id: string; organization_id: string; quote_document_id: string; payload: QuoteCheckpoint; occurred_at: Date; checkpoint_sequence: number; prepared_evidence_json: unknown;
   attempt_id: string | null; recipient_email: string | null; document_sha256: string | null; provider_message_id: string | null;
+  delivery_state: string; transport: string; suppression_context: unknown;
+  receipt_delivery_mode: string | null;
   order_document_id: string | null; acceptance_state: string; lifecycle_state: string };
 
 /** Resend is unavailable before the coordinator's forward index migration.
@@ -23,12 +26,12 @@ export const assertQuoteResendSchema = async (db: Pick<PoolClient, "query">): Pr
 /** One qualification for every publication consumer. Provider/attempt success
  * alone is not publication: the exact delivery M0 receipt must have committed.
  * Never bind audience to the mutable header Customer or a receipt actor ID. */
-export const publishedQuoteCheckpointSql = `SELECT cp.id,cp.payload,cp.occurred_at,cp.checkpoint_sequence,cp.organization_id,cp.quote_document_id,a.prepared_evidence_json,a.id AS attempt_id,a.recipient_email,a.document_sha256,a.provider_message_id
+export const publishedQuoteCheckpointSql = `SELECT cp.id,cp.payload,cp.occurred_at,cp.checkpoint_sequence,cp.organization_id,cp.quote_document_id,a.prepared_evidence_json,a.id AS attempt_id,a.recipient_email,a.document_sha256,a.provider_message_id,a.delivery_state,a.transport,a.suppression_context,r.result_json#>>'{quote,publicationDeliveryMode}' AS receipt_delivery_mode
   FROM v2_sales_quote_checkpoints cp
   JOIN v2_sales_quote_delivery_attempts a ON a.organization_id=cp.organization_id AND a.quote_document_id=cp.quote_document_id AND a.quote_checkpoint_id=cp.id
   JOIN v2_operation_requests r ON r.organization_id=a.organization_id AND r.id=a.operation_request_id
   WHERE cp.organization_id=$1 AND ($2::varchar IS NULL OR cp.quote_document_id=$2) AND cp.checkpoint_kind='quote_sent'
-    AND a.delivery_state='succeeded'
+    AND a.delivery_state IN ('succeeded','suppressed')
     AND r.operation='sales.quote.delivery.v1' AND r.status='succeeded' AND r.completed_at IS NOT NULL
     AND r.result_resource_type='quote' AND r.result_resource_id=cp.quote_document_id
     AND jsonb_typeof(r.result_json)='object' AND r.result_json->>'checkpointId'=cp.id
@@ -40,10 +43,19 @@ export const publishedQuoteCheckpointSql = `SELECT cp.id,cp.payload,cp.occurred_
 export const readPublishedQuoteCheckpoints = async (db: Pool | PoolClient, organizationId: string, quoteId: string) =>
   (await db.query<Row>(publishedQuoteCheckpointSql, [organizationId, quoteId])).rows;
 
-export const publicationEvidenceStatus = (row: Pick<Row, "id" | "organization_id" | "quote_document_id" | "payload" | "prepared_evidence_json" | "attempt_id" | "recipient_email" | "document_sha256" | "provider_message_id">): "modern" | "historical" | null => {
+export const publicationEvidenceStatus = (row: Pick<Row, "id" | "organization_id" | "quote_document_id" | "payload" | "prepared_evidence_json" | "attempt_id" | "recipient_email" | "document_sha256" | "provider_message_id" | "delivery_state" | "transport" | "suppression_context" | "receipt_delivery_mode">): "modern" | "historical" | null => {
   if (row.payload.kind !== "quote_sent" || row.payload.checkpointId !== row.id || row.payload.organizationId !== row.organization_id
     || row.payload.sourceDocument?.quoteId !== row.quote_document_id) return null;
   const sent = row.payload.sentEvidence;
+  // Branch before historical fallback: missing suppression metadata is never legacy Gmail.
+  const suppressed = row.delivery_state === "suppressed";
+  if (suppressed) {
+    if (row.transport !== QUOTE_SUPPRESSED_TRANSPORT || row.provider_message_id !== null || row.receipt_delivery_mode !== "suppressed"
+      || !sent?.suppression || sent.providerMessageId !== undefined || row.prepared_evidence_json == null
+      || !isAllowedQuoteSuppression(row.organization_id, row.recipient_email ?? "", row.suppression_context)
+      || !isAllowedQuoteSuppression(row.organization_id, row.recipient_email ?? "", sent.suppression)) return null;
+  } else if (row.delivery_state !== "succeeded" || row.transport !== "gmail" || row.suppression_context != null
+    || sent?.suppression || !row.provider_message_id || row.receipt_delivery_mode != null) return null;
   if (sent && (sent.deliveryAttemptId && sent.deliveryAttemptId !== row.attempt_id
     || sent.recipientEmail && sent.recipientEmail !== row.recipient_email
     || sent.documentSha256 && sent.documentSha256 !== row.document_sha256
@@ -52,7 +64,8 @@ export const publicationEvidenceStatus = (row: Pick<Row, "id" | "organization_id
   const prepared = parsePreparedQuoteDeliveryEvidence(row.prepared_evidence_json);
   return prepared && prepared.commercial.taxComposition?.status === "resolved" && preparedEvidenceMatchesCheckpoint(row.payload, prepared) && sent?.deliveryAttemptId === row.attempt_id
     && sent.recipientEmail === row.recipient_email && sent.documentSha256 === row.document_sha256
-    && sent.providerMessageId === row.provider_message_id ? "modern" : null;
+    && (suppressed ? sent.providerMessageId === undefined && row.provider_message_id === null
+      : sent.providerMessageId === row.provider_message_id) ? "modern" : null;
 };
 
 export class PostgresQuotePublicationRead implements QuotePublicationReadPort {

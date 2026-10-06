@@ -7,6 +7,7 @@ export type PublishedQuoteSummary = Readonly<{
   quoteId: string; number: string; createdAt: string; requestedDueDate?: string;
   status: string; total: Readonly<{ cents: number; currency: string }>;
   checkpointId: string; evidenceStatus: "modern" | "historical";
+  deliveryMode?: "suppressed";
   convertedOrderId?: string;
 }>;
 export type PublishedQuoteDetail = PublishedQuoteSummary & Readonly<{
@@ -55,5 +56,6 @@ export const publishedQuoteProjection = (checkpoint: QuoteCheckpoint, organizati
   return { quoteId: checkpoint.sourceDocument.quoteId, number: checkpoint.sentEvidence?.documentNumber ?? "Historical Quote",
     createdAt: checkpoint.occurredAt, ...(commercial.requestedDueDate ? { requestedDueDate: commercial.requestedDueDate } : {}),
     status, total: { cents, currency: commercial.currency }, checkpointId: checkpoint.checkpointId, evidenceStatus,
+    ...(checkpoint.sentEvidence?.suppression ? { deliveryMode: "suppressed" as const } : {}),
     ...(convertedOrderId ? { convertedOrderId } : {}), lines };
 };

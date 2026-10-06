@@ -87,6 +87,8 @@ export const ownerOperations = {
   "infrastructure/billing/postgresShippingCharge.js": ["applyShippingChargeInTransaction"],
   "infrastructure/production/postgresSuccessorWorkCreation.js": ["PostgresSuccessorWorkCreation"],
   "infrastructure/authorization/postgresProofRecipientAccess.js": ["PostgresProofRecipientAccess"],
+  "infrastructure/authorization/postgresAuthorityMutation.js": ["enterAuthorityMutation", "freshAuthorityActor", "assertAuthorityReplay", "assertStructuralFloor", "markAuthorityChanged", "assertFreshAuthorityCapability"],
+  "infrastructure/communications/m77fQaQuoteDeliverySafety.js": ["QUOTE_SUPPRESSED_TRANSPORT", "quoteDeliverySuppression", "requireAllowedQuoteSuppression", "isAllowedQuoteSuppression"],
   "infrastructure/sales/postgresOrderAutomaticLifecycle.js": ["reconcileOrderInTransaction"],
   "infrastructure/billing/postgresReplacementInvoice.js": ["createOrReadReplacementInvoice", "ReplacementInvoiceProjection"],
   "infrastructure/persistence/types.js": ["TransactionalClient"],
@@ -181,7 +183,10 @@ export function evaluateImports(files) {
       if (/^#(?:call|reference):/.test(specifier)) fail("indirect V1 financial importer write or escaping reference", "BD-5");
       if (specifier === "<dynamic>" && /^(src|infrastructure|ui)\//.test(file)) fail("unresolved dynamic module target");
       if (has("v2-poc")) fail("production V2 must not import POC or V1 route/service code");
-      const safetyApi = file === "scripts/guarded-test-entry.ts" && specifier === "../../server/tests/helpers/safeTestDatabase.js" && symbols.length === 1 && symbols[0] === "requireSafeTestDatabaseUrl";
+      const safetyApi = symbols.length === 1 && symbols[0] === "requireSafeTestDatabaseUrl" && (
+        (file === "scripts/guarded-test-entry.ts" && specifier === "../../server/tests/helpers/safeTestDatabase.js")
+        || (file === "tests/infrastructure/structuralAuthority.native.test.ts" && specifier === "../../../server/tests/helpers/safeTestDatabase.js")
+      );
       if (/(^|\/|@)server\//.test(target) && !safetyApi) fail("V1 bridge requires exact file, specifier and symbols", symbols.includes("importQBInvoicesByIds") ? "BD-5" : "BRIDGE");
       const interfaces = file.startsWith("src/interfaces/");
       const authorization = file.startsWith("src/authorization/");

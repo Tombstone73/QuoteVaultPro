@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { assertPreparedQuoteDeliverySchema, checkV2CommercialPhysicalPostconditions } from "../../infrastructure/sales/commercialPhysicalPostconditions.js";
+import { assertQuoteSuppressionSchema } from "../../infrastructure/sales/quotePublicationPhysicalPostconditions.js";
 
 const db = new PGlite();
 let assertions = 0;
@@ -77,5 +78,41 @@ try {
   await db.exec("ALTER TABLE v2_sales_quote_delivery_attempts DISABLE TRIGGER v2_sales_quote_delivery_prepared_evidence_immutable");
   check((await checkV2CommercialPhysicalPostconditions(client)).some(finding => finding.id === ids[2] && !finding.passed), "disabled evidence trigger fails physical readiness");
   await assert.rejects(() => assertPreparedQuoteDeliverySchema(client), /schema is unavailable/); assertions += 1;
-  console.log(`Prepared Quote evidence migration: ${assertions} assertions passed; actual 0229/0299 SQL, in-memory PostgreSQL only.`);
+  await db.exec("ALTER TABLE v2_sales_quote_delivery_attempts ENABLE TRIGGER v2_sales_quote_delivery_prepared_evidence_immutable");
+  await assert.rejects(() => assertQuoteSuppressionSchema(client), /schema is unavailable/); assertions++;
+  const historicalBefore = (await db.query("SELECT * FROM v2_sales_quote_delivery_attempts WHERE id='historical'")).rows;
+  await db.exec(sql("0304_v2_quote_suppressed_publication.sql"));
+  await assertQuoteSuppressionSchema(client); assertions++;
+  const historicalAfter = (await db.query<any>("SELECT * FROM v2_sales_quote_delivery_attempts WHERE id='historical'")).rows.map(({ suppression_context, ...row }) => { assert.equal(suppression_context, null); return row; });
+  assert.deepEqual(historicalAfter, historicalBefore); assertions++;
+  const org = "b6f969b2-dda3-4133-9d75-c417dabb8f3a", recipient = "quote-final-four@example.invalid";
+  const suppression = { schemaVersion: 1, deliveryMode: "suppressed", providerCall: "not_attempted", environment: "dev_qa", scope: "m77f_qa_dev_only", organizationId: org, recipientEmail: recipient };
+  const packet = { ...evidence, organizationId: org, customerContact: { organizationId: org, contactId: "qa-contact" }, recipientEmail: recipient };
+  await db.query("INSERT INTO organizations VALUES($1)", [org]);
+  await db.query("INSERT INTO v2_sales_quote_details VALUES('quote-a',$1)", [org]);
+  await db.query("INSERT INTO v2_sales_quote_checkpoints VALUES('qa-cp',$1,'quote-a')", [org]);
+  let sequence = 0;
+  const isolated = async (context: unknown, changes: Record<string, unknown> = {}) => {
+    const id = `qa-${++sequence}`;
+    await db.query("INSERT INTO v2_operation_requests VALUES($1,$2)", [id, org]);
+    const row = { transport: "dev_qa_suppressed", state: "pending", provider: null, checkpoint: null, completed: null, prepared: packet, ...changes };
+    await db.query(`INSERT INTO v2_sales_quote_delivery_attempts(id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,initiated_principal_kind,initiated_principal_subject,prepared_evidence_json,transport,suppression_context,delivery_state,provider_message_id,quote_checkpoint_id,completed_at)
+      VALUES($1,$2,'quote-a',$1,$3,$4,'staff','staff-a',$5::jsonb,$6,$7::jsonb,$8,$9,$10,$11)`,
+    [id, org, recipient, digest, row.prepared === null ? null : JSON.stringify(row.prepared), row.transport, context === null ? null : JSON.stringify(context), row.state, row.provider, row.checkpoint, row.completed]);
+    return id;
+  };
+  for (const invalid of [null, {}, "suppressed", { ...suppression, schemaVersion: "1" }, { ...suppression, providerCall: undefined }, { ...suppression, environment: null }, { ...suppression, organizationId: "org-a" }, { ...suppression, recipientEmail: "real@example.com" }, { ...suppression, extra: true }])
+    await rejectsConstraint(() => isolated(invalid), "typed null-safe suppression context rejects malformed evidence");
+  for (const changes of [{ provider: "fake" }, { transport: "gmail" }, { state: "succeeded", provider: "fake", completed: new Date() }, { state: "suppressed" }, { state: "suppressed", completed: new Date() }, { state: "suppressed", completed: new Date(), checkpoint: "qa-cp", prepared: null }])
+    await rejectsConstraint(() => isolated(suppression, changes), "suppression cannot fabricate success or omit committed evidence");
+  const pending = await isolated(suppression);
+  await rejectsConstraint(() => db.query("UPDATE v2_sales_quote_delivery_attempts SET transport='gmail',suppression_context=NULL WHERE id=$1", [pending]), "attempt transport is immutable");
+  await rejectsConstraint(() => db.query("UPDATE v2_sales_quote_delivery_attempts SET suppression_context=NULL WHERE id=$1", [pending]), "attempt context is immutable");
+  await db.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='suppressed',quote_checkpoint_id='qa-cp',completed_at=now() WHERE id=$1", [pending]);
+  await rejectsConstraint(() => db.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='pending',quote_checkpoint_id=NULL,completed_at=NULL WHERE id=$1", [pending]), "terminal suppression is immutable");
+  await assert.rejects(() => isolated(suppression, { state: "suppressed", completed: new Date(), checkpoint: "qa-cp" }), (error: any) => error.code === "23505"); assertions++;
+  await assert.rejects(() => isolated(null, { transport: "gmail", state: "succeeded", provider: "real-provider-receipt", completed: new Date(), checkpoint: "qa-cp" }), (error: any) => error.code === "23505"); assertions++;
+  await db.exec("ALTER TABLE v2_sales_quote_delivery_attempts DISABLE TRIGGER v2_quote_delivery_mode_immutable");
+  await assert.rejects(() => assertQuoteSuppressionSchema(client), /schema is unavailable/); assertions++;
+  console.log(`Prepared Quote evidence migration: ${assertions} assertions passed; actual 0229/0299/0304 SQL, in-memory PostgreSQL only.`);
 } finally { await db.close(); }

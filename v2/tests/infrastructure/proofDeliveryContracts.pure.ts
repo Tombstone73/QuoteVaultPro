@@ -24,6 +24,10 @@ assert.match(proofing,/new PostgresProofRecipientAccess\(this.client\).ensureFor
 assert.doesNotMatch(proofing,/(?:INSERT INTO|UPDATE) (?:customer_portal_access|v2_portal_permission_set_assignments|v2_permission_organization_state)/u,"Proofing owns delivery intent, not access or permission writes");
 assert.match(proofing,/INSERT INTO v2_proof_delivery_jobs/u);
 assert.match(recipientAccess,/INSERT INTO v2_portal_permission_set_assignments/u);
-assert.match(recipientAccess,/UPDATE v2_permission_organization_state/u);
+assert.match(proofing,/await client\.query\("BEGIN"\);\s*if\(authorityOrganizationId\)\{\s*await enterAuthorityMutation\(client,\[authorityOrganizationId\]\);/u,"Proof issue enters Auth on the transaction client before dependent work");
+assert.match(proofing,/enterAuthorityMutation\(client,\[authorityOrganizationId\]\)[\s\S]*assertFreshAuthorityCapability\(client,principal,authorityOrganizationId,"proof.issue"\)[\s\S]*action\(new PostgresProofingTransaction\(client/u,"Fresh authority is checked after entry and before the transaction callback");
+assert.match(recipientAccess,/SELECT v2_authority_changed\(\$1\)/u,"Auth marks the revision through its canonical transaction operation");
+assert.match(recipientAccess,/SELECT v2_assert_authority_entry\(\$1\)[\s\S]*FOR UPDATE[\s\S]*INSERT INTO v2_portal_permission_set_assignments[\s\S]*SELECT v2_authority_changed\(\$1\)/u,"Entry assertion precedes access locks, grants precede the authority change mark");
+assert.doesNotMatch(recipientAccess,/UPDATE v2_permission_organization_state/u,"The recipient operation must not restore an inline authority-state write");
 assert.doesNotMatch(recipientAccess,/(?:BEGIN|COMMIT|ROLLBACK|\.connect\()/u,"The Auth operation must not start a separate transaction");
 console.log("V2 proof delivery reliability and portal scope contracts passed.");

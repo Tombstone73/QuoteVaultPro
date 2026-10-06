@@ -281,7 +281,8 @@ describe("sent Quote preparation evidence", () => {
     expect(statements[1]?.sql).toContain("FOR UPDATE OF d,q");
     const attemptUpdate = statements.find(statement => statement.sql.startsWith("UPDATE v2_sales_quote_delivery_attempts"));
     expect(attemptUpdate?.sql).toContain("quote_document_id=$3 AND operation_request_id=$4 AND delivery_state='pending' AND recipient_email=$7 AND document_sha256=$8 AND prepared_evidence_json=$9::jsonb");
-    expect(attemptUpdate?.parameters).toEqual(["contract-org", "delivery-a", "quote-send-a", "send-request", "checkpoint-a", "provider-a", "prepared@example.test", hash, preparedEvidenceJson]);
+    expect(attemptUpdate?.parameters).toEqual(["contract-org", "delivery-a", "quote-send-a", "send-request", "checkpoint-a", "provider-a", "prepared@example.test", hash, preparedEvidenceJson, "succeeded", "gmail", null]);
+    expect(attemptUpdate?.sql).toContain("transport=$11 AND suppression_context IS NOT DISTINCT FROM $12::jsonb");
 
     statements.length = 0;
     updateRowCount = 1;
@@ -306,7 +307,7 @@ describe("sent Quote preparation evidence", () => {
     let sentPayload: any = fixture.sentCheckpoint();
     const client: any = { query: async (sql: string) => {
       if (sql.includes("FROM v2_sales_quote_checkpoints")) return { rows: hasSentCheckpoint ? [{ id: fixture.sentCheckpoint().checkpointId, organization_id: "contract-org", quote_document_id: "quote-send-a", payload: sentPayload,
-        occurred_at: new Date("2026-10-03T02:00:00.000Z"), prepared_evidence_json: fixture.input.preparedSnapshot, attempt_id: "delivery-a", recipient_email: "prepared@example.test", document_sha256: `sha256:${"b".repeat(64)}`, provider_message_id: "provider-a" }] : [] };
+        occurred_at: new Date("2026-10-03T02:00:00.000Z"), prepared_evidence_json: fixture.input.preparedSnapshot, attempt_id: "delivery-a", recipient_email: "prepared@example.test", document_sha256: `sha256:${"b".repeat(64)}`, provider_message_id: "provider-a", delivery_state: "succeeded", transport: "gmail", suppression_context: null, receipt_delivery_mode: null }] : [] };
       if (sql.includes("FROM v2_sales_quote_delivery_attempts") && sql.includes("quote_document_id=$2")) return { rows: unresolvedAttempt ? [{ id: "pending-delivery" }] : [] };
       if (sql.includes("FROM v2_sales_quote_delivery_attempts") && sql.includes("id=$2")) return { rows: [{ id: "delivery-a", organization_id: "contract-org", quote_document_id: "quote-send-a", operation_request_id: "send-request", recipient_email: "prepared@example.test", document_sha256: `sha256:${"b".repeat(64)}`, prepared_evidence_json: fixture.input.preparedSnapshot, delivery_state: "succeeded", quote_checkpoint_id: fixture.sentCheckpoint().checkpointId, provider_message_id: "provider-a" }] };
       if (sql.includes("FROM organizations o LEFT JOIN company_settings")) return { rows: [{ name: "Live Organization" }] };
@@ -341,11 +342,12 @@ describe("sent Quote preparation evidence", () => {
     if (!recorded.ok) return;
     let cached: any = recorded.value, linked = true, connections = 0;
     const client: any = { query: async (sql: string, parameters?: unknown[]) => {
+      if (sql.startsWith("SELECT recipient_email,suppression_context")) return { rows: [] };
       if (sql === publishedQuoteCheckpointSql) {
         expect(parameters).toEqual(["contract-org", "quote-send-a"]);
         return { rows: [{ id: fixture.sentCheckpoint().checkpointId, organization_id: "contract-org", quote_document_id: "quote-send-a", payload: fixture.sentCheckpoint(),
           prepared_evidence_json: fixture.input.preparedSnapshot, attempt_id: "delivery-a", recipient_email: "prepared@example.test",
-          document_sha256: fixture.input.preparedSnapshot.documentSha256, provider_message_id: "provider-a" }] };
+          document_sha256: fixture.input.preparedSnapshot.documentSha256, provider_message_id: "provider-a", delivery_state: "succeeded", transport: "gmail", suppression_context: null, receipt_delivery_mode: null }] };
       }
       if (sql.startsWith("SELECT id FROM v2_sales_quote_delivery_attempts")) {
         expect(parameters).toEqual(["contract-org", "quote-send-a", "send-request", fixture.sentCheckpoint().checkpointId,

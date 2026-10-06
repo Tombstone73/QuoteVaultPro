@@ -17,6 +17,7 @@ import * as numbering from "../../infrastructure/sales/postgresCommercialPrimiti
 import * as productionRequirements from "../../infrastructure/sales/postgresProductionRequirements.js";
 import * as salesTax from "../../infrastructure/sales/postgresSalesTaxComposition.js";
 import { publicationEvidenceStatus, readPublishedQuoteCheckpoints } from "../../infrastructure/sales/postgresQuotePublication.js";
+import { isAllowedQuoteSuppression } from "../../infrastructure/communications/m77fQaQuoteDeliverySafety.js";
 import * as orderApplication from "../../src/modules/sales/orderApplication.js";
 import * as orderLifecycle from "../../src/modules/sales/orderLifecycle.js";
 import * as persistence from "../../src/modules/sales/persistenceContracts.js";
@@ -57,6 +58,7 @@ const dependencyExports = new Map<string, object>([
   ["./postgresCommercialPrimitives.js", numbering], ["./postgresProductionRequirements.js", productionRequirements],
   ["./postgresSalesTaxComposition.js", salesTax], ["../../src/modules/sales/orderApplication.js", orderApplication],
   ["./postgresQuotePublication.js", { publicationEvidenceStatus, readPublishedQuoteCheckpoints }],
+  ["../communications/m77fQaQuoteDeliverySafety.js", { isAllowedQuoteSuppression }],
   ["../../src/modules/sales/orderLifecycle.js", orderLifecycle], ["../../src/modules/sales/persistenceContracts.js", persistence],
   ["../../src/modules/pricing/v2PricingAdapter.js", pricingAdapter], ["../../src/modules/shared/commercialValues.js", commercialValues],
   ["../billing/postgresBillingDraftInvoiceTransaction.js", { PostgresBillingDraftInvoiceTransaction: SqlWritingBillingFixture }],

@@ -2,6 +2,7 @@ import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { isCapability, type Capability } from "../../src/authorization/capabilities.js";
 import type { StaffPrincipal } from "../../src/authorization/principals.js";
 import type { TransactionalClient } from "../persistence/types.js";
+import { enterAuthorityMutation, freshAuthorityActor, assertStructuralFloor, markAuthorityChanged } from "./postgresAuthorityMutation.js";
 
 type AuditTarget = Readonly<{ permissionSetId?: string; userId?: string; portalAccessId?: string; customerId?: string }>;
 export type PermissionAdministrationOperationContext = Readonly<{
@@ -44,7 +45,7 @@ export class PostgresPermissionAdministration {
     const set = await this.client.query<{ capability_id: string | null; capability_active: boolean | null }>(`SELECT c.capability_id,catalog.active AS capability_active FROM v2_permission_sets s
       LEFT JOIN v2_permission_set_capabilities c ON c.organization_id=s.organization_id AND c.permission_set_id=s.id
       LEFT JOIN v2_permission_capabilities catalog ON catalog.id=c.capability_id AND catalog.active=true
-      WHERE s.id=$1 AND s.organization_id=$2${kind ? ` AND s.principal_kind='${kind}'` : ""} FOR UPDATE OF s`, [permissionSetId, organizationId]);
+      WHERE s.id=$1 AND s.organization_id=$2 AND ($3::text IS NULL OR s.principal_kind=$3) FOR UPDATE OF s`, [permissionSetId, organizationId, kind ?? null]);
     if (set.rowCount === 0) throw new V2ApplicationError("NOT_FOUND", "Scoped permission set was not found.");
     this.ensureGrantCeiling(actor, set.rows.flatMap((row) => row.capability_id && row.capability_active ? [row.capability_id] : []));
     return [...new Set(set.rows.flatMap((row) => row.capability_id ? [row.capability_id] : []))].sort() as Capability[];
@@ -65,27 +66,20 @@ export class PostgresPermissionAdministration {
     return state.rows[0].authority_revision;
   }
   private async floor(organizationId: string): Promise<void> {
-    const result = await this.client.query<{ user_id: string }>(`SELECT a.user_id FROM v2_staff_permission_set_assignments a
-      JOIN user_organizations m ON m.user_id=a.user_id AND m.organization_id=a.organization_id AND m.is_active=true
-      JOIN v2_permission_sets s ON s.id=a.permission_set_id AND s.organization_id=a.organization_id AND s.active=true
-      JOIN v2_permission_set_capabilities c ON c.permission_set_id=s.id AND c.organization_id=s.organization_id
-      JOIN v2_permission_capabilities catalog ON catalog.id=c.capability_id AND catalog.active=true
-      WHERE a.organization_id=$1 AND a.active=true AND c.capability_id IN ('permissions.manageSets','permissions.assignStaff')
-      GROUP BY a.user_id HAVING count(DISTINCT c.capability_id)=2 LIMIT 1`, [organizationId]);
-    if (result.rowCount === 0) throw new V2ApplicationError("CONFLICT", "The final permission administrator cannot be removed or weakened.");
+    await assertStructuralFloor(this.client,organizationId);
   }
   private async audit(actor: StaffPrincipal, organizationId: string, eventType: string, target: AuditTarget, detail: Record<string, unknown>, context: PermissionAdministrationOperationContext): Promise<void> {
     await this.client.query(`INSERT INTO v2_permission_audit_events(organization_id,event_type,actor_principal_kind,actor_principal_subject,staff_actor_user_id,permission_set_id,target_user_id,portal_access_id,customer_id,correlation_id,detail)
       VALUES($1,$2,'staff',$3,$3,$4,$5,$6,$7,$8,$9::jsonb)`, [organizationId,eventType,actor.userId,target.permissionSetId ?? null,target.userId ?? null,target.portalAccessId ?? null,target.customerId ?? null,context.correlationId,JSON.stringify({...detail,businessRequestId:context.businessRequestId})]);
   }
   private async advanceRevision(organizationId: string): Promise<void> {
-    await this.client.query("UPDATE v2_permission_organization_state SET authority_revision=authority_revision+1, updated_at=now() WHERE organization_id=$1", [organizationId]);
+    await markAuthorityChanged(this.client,organizationId);
   }
   private async mutate(actor: StaffPrincipal, organizationId: string, required: Capability, eventType: string, target: AuditTarget, detail: Record<string, unknown>, context: PermissionAdministrationOperationContext, action: () => Promise<boolean>, needsFloor = true): Promise<void> {
     if (actor.organizationId !== organizationId) throw new V2ApplicationError("WRONG_TENANT", "Permission administration is organization scoped.");
     if (!context.correlationId.trim() || !context.businessRequestId.trim()) throw new V2ApplicationError("VALIDATION_ERROR", "Permission administration requires correlation and business request identity.");
     this.require(actor, required); await this.client.query("BEGIN");
-    try { await this.testHook?.beforeOrganizationLock?.(eventType); const currentRevision=await this.lock(organizationId); if (actor.authority.authorityRevision !== currentRevision) throw new V2ApplicationError("STALE_STATE","Permission authority must be re-issued before administration."); const changed=await action(); if (!changed) { await this.client.query("COMMIT"); return; } await this.testHook?.afterMutation?.(eventType); if (needsFloor) await this.floor(organizationId); await this.audit(actor,organizationId,eventType,target,detail,context); await this.testHook?.afterAudit?.(eventType); await this.advanceRevision(organizationId); await this.testHook?.afterRevision?.(eventType); await this.client.query("COMMIT"); }
+    try { await this.testHook?.beforeOrganizationLock?.(eventType); await enterAuthorityMutation(this.client,[organizationId]); const fresh=await freshAuthorityActor(this.client,actor,organizationId); this.require(fresh,required); if (actor.authority.authorityRevision !== fresh.authority.authorityRevision) throw new V2ApplicationError("STALE_STATE","Permission authority must be re-issued before administration."); const changed=await action(); if (!changed) { await this.client.query("COMMIT"); return; } await this.testHook?.afterMutation?.(eventType); if (needsFloor) await this.floor(organizationId); await this.audit(fresh,organizationId,eventType,target,detail,context); await this.testHook?.afterAudit?.(eventType); await this.advanceRevision(organizationId); await this.testHook?.afterRevision?.(eventType); await this.client.query("COMMIT"); }
     catch (error) { try { await this.client.query("ROLLBACK"); } catch { /* preserve the original error */ } throw error; }
   }
   async createSet(actor: StaffPrincipal, input: { organizationId: string; name: string; description?: string; principalKind?: "staff" | "portal"; capabilities: readonly string[] }, context: PermissionAdministrationOperationContext): Promise<string> {

@@ -2228,7 +2228,9 @@ const QuoteWorkspace = ({
       completeRequest("action:send");
       applyQuoteResult(result, organizationId, sessionScope);
       setSendDialogOpen(false);
-      setNotice("Quote PDF delivered to the selected contact and recorded as immutable Sales evidence.");
+      setNotice(result.quote.publicationDeliveryMode === "suppressed"
+        ? "Published in DEV QA; email suppressed. The prepared PDF and selected recipient are recorded as immutable Sales evidence. No provider call was attempted."
+        : "Quote PDF delivered to the selected contact and recorded as immutable Sales evidence.");
     },
     onError: (error, _variables, scope) => handleMutationError(error, scope),
   });
@@ -2846,7 +2848,7 @@ const QuoteWorkspace = ({
                 Close
               </button>
             </header>
-            <p className="v2-quote-send-notice">This sends the authoritative Quote PDF through the configured tenant Gmail connection. The recipient is the selected Quote contact; recipient, document fingerprint, provider message identity, and immutable Quote checkpoint are recorded server-side.</p>
+            <p className="v2-quote-send-notice">{sendReadiness.data?.email.status === "suppressed" ? "This publishes the authoritative Quote PDF in isolated DEV QA. Email is suppressed; no provider call or provider message identity is created. The selected recipient, PDF fingerprint, and immutable Quote checkpoint are recorded server-side." : "This sends the authoritative Quote PDF through the configured tenant Gmail connection. The recipient is the selected Quote contact; recipient, document fingerprint, provider message identity, and immutable Quote checkpoint are recorded server-side."}</p>
             <p className="v2-quote-send-notice"><strong>Recipient:</strong> {sendReadinessError ? (sendReadinessError.code === "FORBIDDEN" ? "Your session or permission no longer allows Quote delivery. Reload and sign in again if needed." : sendReadinessError.message ?? "Quote send readiness is temporarily unavailable.") : sendReadiness.data?.recipient.status === "ready" ? sendReadiness.data.recipient.email : sendReadiness.data?.recipient.status === "contact_missing" ? "Select a Quote contact before sending." : sendReadiness.data?.recipient.status === "contact_unavailable" ? "The selected Quote contact is unavailable." : "The selected Quote contact needs a valid email address."}</p>
             <p className="v2-quote-send-notice"><strong>Tenant email:</strong> {sendReadinessError ? "Readiness could not be confirmed." : sendReadiness.data?.email.status === "ready" ? `Ready (${sendReadiness.data.email.sendingAddress ?? "Gmail"})` : sendReadiness.data?.email.actionRequired ?? "Email integration is not configured."}</p>
             {sendReadiness.data?.tax.status === "unresolved" && <p className="v2-quote-send-notice">Authoritative tax must be resolved before a customer document can be sent.</p>}
@@ -2872,7 +2874,7 @@ const QuoteWorkspace = ({
                   !currentSendRequest || !canSend || dirty || !csrfReady || publicationBusy || sendReadiness.isLoading || sendReadiness.isFetching || sendReadiness.isError || sendReadiness.data?.canSend !== true
                 }
               >
-                {action.isPending ? "Sending…" : quote.publishedCheckpointId ? "Resend Current Internal Revision PDF" : "Send Quote PDF"}
+                {sendReadiness.data?.email.status === "suppressed" ? (action.isPending ? "Publishing..." : "Publish DEV QA PDF (Email Suppressed)") : action.isPending ? "Sending…" : quote.publishedCheckpointId ? "Resend Current Internal Revision PDF" : "Send Quote PDF"}
               </button>
             </footer>
           </div>
