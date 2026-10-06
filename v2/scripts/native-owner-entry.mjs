@@ -47,13 +47,13 @@ const productionCases = [
   ['runtime creation remains default disabled after all native scenarios', 'admission', [0,0,0,0,0,0]],
 ].map(([name, kind, values]) => Object.freeze({ name, kind, expectedCounts: Object.freeze(Object.fromEntries([...countKeys, ...(values.length === 7 ? ['historicalAllocations'] : [])].map((key, index) => [key, values[index]]))) }));
 const productionCoverage = Object.freeze({
-  hookSha256: '487aee5cd0cd5d015f26390541f228310af78c086983f735600a92fe408f839d',
-  suiteHash: '78a0d494bdd7b0c022e6981e73db1c67236061394c5fb09c513641e587b89199',
+  hookSha256: 'f4ebd780958d472c8032ef71dffd0e60265823dc5a86161271c1a0d6e44066a2',
+  suiteHash: 'd00afac3d5e31fec0df24be11a4a189cfd44a44ecf58548f06423e5968428818',
   summaryPidCase: productionCases[0].name,
   cases: Object.freeze(productionCases),
   // suiteHash covers only producer + proposal. The clean commit binds the runtime closure and lockfile.
   fileHashes: Object.freeze({
-    'v2/tests/infrastructure/productionRunExclusive.native.ts': '487aee5cd0cd5d015f26390541f228310af78c086983f735600a92fe408f839d',
+    'v2/tests/infrastructure/productionRunExclusive.native.ts': 'f4ebd780958d472c8032ef71dffd0e60265823dc5a86161271c1a0d6e44066a2',
     'v2/tests/infrastructure/productionRecoveryFixture.ts': '26157cc67f7557d28baa1b6a5196c415eb736f10817c726736b752266902f3e3',
     'v2/tests/infrastructure/productionExclusiveMembership.request.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
     'server/db/migrations_v2/0303_v2_production_exclusive_membership.sql': '585b16c36d2219b4b4f2bf7971fb61c23910340abce42ddbc4ac0b321182a882',
@@ -110,6 +110,53 @@ const failureStages = new Set(['unknown', 'arguments', 'environment', 'guards', 
 const failureSignals = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGHUP', 'SIGQUIT', 'SIGPIPE']);
 const failureContexts = new WeakMap();
 const sqlstates = new Set(['23505', '23503', '40P01', '55P03', '57014', '42P01', '42703']);
+const diagnosticErrors = Object.freeze({
+  '23505': ['integrity', 'Unique constraint rejected the statement.'],
+  '23503': ['integrity', 'Foreign key constraint rejected the statement.'],
+  '40P01': ['transaction', 'Deadlock rejected the statement.'],
+  '55P03': ['lock', 'Lock acquisition failed.'],
+  '57014': ['cancellation', 'Statement was cancelled.'],
+  '42P01': ['schema', 'Required relation was unavailable.'],
+  '42703': ['schema', 'Required column was unavailable.'],
+  '42804': ['datatype', 'Statement datatype mismatch.'],
+  '42P08': ['ambiguous_parameter', 'Inconsistent parameter types.'],
+  '25P02': ['transaction', 'Transaction is aborted.'],
+});
+for (const code of Object.keys(diagnosticErrors)) sqlstates.add(code);
+export function safeNativeError(error) {
+  let code;
+  try { code = error && Object.getOwnPropertyDescriptor(error, 'code')?.value; } catch {}
+  const sqlstate = sqlstates.has(code) ? code : null;
+  const [errorClass, safeMessage] = diagnosticErrors[sqlstate] ?? (code === 'ERR_ASSERTION' ? ['assertion', 'Native assertion failed.'] : ['unknown', 'Native failure details suppressed.']);
+  return { sqlstate, errorClass, safeMessage };
+}
+export async function withNativeCleanup(work, cleanup) {
+  let failed = false;
+  try { return await work(); } catch (error) { failed = true; throw error; }
+  finally { try { await cleanup(); } catch (error) { if (!failed) throw error; } }
+}
+const txStates = ['idle', 'transaction', 'aborted', 'unknown'];
+const cleanupStates = ['unknown', 'observed', 'failed'];
+let diagnosticMode = false;
+let diagnosticEvidence = null;
+export function reportNativeDiagnostic(update) {
+  if (!diagnosticMode) return;
+  check(update && Object.keys(update).every(key => ['error', 'txstate', 'cleanup'].includes(key)), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+  if (Object.hasOwn(update, 'error')) {
+    const mapped = safeNativeError(update.error);
+    // assert.rejects may wrap the unexpected PostgreSQL rejection in an assertion.
+    if (!(mapped.errorClass === 'assertion' && diagnosticEvidence.error?.sqlstate && diagnosticEvidence.error.sqlstate !== '23505')) diagnosticEvidence.error = mapped;
+  }
+  if (update.txstate) {
+    check(same(Object.keys(update.txstate).sort(), ['a', 'b']) && Object.values(update.txstate).every(value => txStates.includes(value)), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+    diagnosticEvidence.txstate = { ...update.txstate };
+  }
+  if (update.cleanup) {
+    check(same(Object.keys(update.cleanup).sort(), ['namespace', 'rows']) && Object.values(update.cleanup).every(value => cleanupStates.includes(value)), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
+    diagnosticEvidence.cleanup = { ...update.cleanup };
+  }
+}
+export function nativeDiagnosticSnapshot() { return diagnosticMode ? structuredClone(diagnosticEvidence) : null; }
 const setupPhases = ['module-load', 'setup', 'db-connect', 'fixture'];
 const caseSevenSubsteps = ['raw-parent-insert', 'first-member-insert', 'duplicate-insert', 'duplicate-rejection', 'post-action-counts', 'cleanup-evidence'];
 let producerProgress = null;
@@ -119,18 +166,18 @@ export function reportNativeProductionProgress(phase, ordinal = 0, error = null,
   const previous = progress.substep;
   check((setupPhases.includes(phase) && phase !== 'module-load' && ordinal === 0 && progress.completed === 0 &&
       (phase === progress.phase || setupPhases.indexOf(phase) === setupPhases.indexOf(progress.phase) + 1)) ||
-    (phase === 'scenario' && Number.isInteger(ordinal) && ordinal >= 1 && ordinal <= 28 && ordinal === progress.completed + 1 &&
+    (phase === 'scenario' && Number.isInteger(ordinal) && ordinal >= 1 && ordinal <= 28 && (diagnosticMode ? ordinal === 7 && progress.completed === 0 : ordinal === progress.completed + 1) &&
       (progress.phase === 'fixture' || progress.phase === 'scenario')) ||
     (phase === 'passed' && ordinal === progress.ordinal && progress.phase === 'scenario'), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
   check(substep === undefined || (phase === 'scenario' && ordinal === 7 && progress.phase === 'scenario' &&
     ((previous === null && substep === caseSevenSubsteps[0]) ||
       (caseSevenSubsteps.indexOf(substep) === caseSevenSubsteps.indexOf(previous) + 1 && caseSevenSubsteps.includes(substep)))), 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED');
-  if (phase === 'passed') { progress.completed = ordinal; progress.sqlstate = null; progress.substep = null; }
+  if (phase === 'passed') { progress.completed = diagnosticMode ? 1 : ordinal; progress.sqlstate = null; progress.substep = null; }
   else {
     const keepRejectedSqlstate = phase === 'scenario' && ordinal === 7 && progress.phase === 'scenario' && progress.substep === 'duplicate-rejection' && substep === undefined;
     progress.substep = substep ?? (phase === 'scenario' && progress.phase === 'scenario' && progress.ordinal === ordinal ? previous : null);
     progress.phase = phase; progress.ordinal = ordinal;
-    const code = error && Object.getOwnPropertyDescriptor(error, 'code')?.value;
+    const code = safeNativeError(error).sqlstate;
     progress.sqlstate = sqlstates.has(code) ? code : keepRejectedSqlstate ? progress.sqlstate : null;
   }
 }
@@ -156,21 +203,35 @@ function failureDiagnostic(error, context = {}) {
     childOrdinal: Number.isInteger(child?.progress?.ordinal) && child.progress.ordinal >= 0 && child.progress.ordinal <= 28 ? child.progress.ordinal : null,
     childCompleted: Number.isInteger(child?.progress?.completed) && child.progress.completed >= 0 && child.progress.completed <= 28 ? child.progress.completed : null,
     childSqlstate: sqlstates.has(child?.progress?.sqlstate) ? child.progress.sqlstate : null,
-    childSubstep: child?.progress?.phase === 'scenario' && child.progress.ordinal === 7 && child.progress.completed === 6 && caseSevenSubsteps.includes(child.progress.substep) ? child.progress.substep : null,
+    childSubstep: child?.progress?.phase === 'scenario' && child.progress.ordinal === 7 && [0,6].includes(child.progress.completed) && caseSevenSubsteps.includes(child.progress.substep) ? child.progress.substep : null,
+    ...(context.diagnostic === 'case7' ? { format: 'OWNER_NATIVE_DIAGNOSTIC_V1', diagnostic: 'case7', diagnosticPassed: false, exactCase: productionCases[6].name, txstateBasis: 'latest-ready-for-query', ...safeDiagnosticEvidence(child?.evidence), exitReason: child?.timedOut ? 'timeout' : child?.interrupted ? 'interrupted' : child?.outputLimited ? 'output-limit' : child?.treeCleanupFailed || child?.cleanupBoundedOut ? 'process-cleanup-failed' : child ? 'child-failed' : 'preflight-failed' } : {}),
   };
 }
 export function nativeFailureForTests(error) { return failureDiagnostic(error, failureContexts.get(error)); }
 function childFailureProtocol(error, context) {
   const { status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage } = failureDiagnostic(error, context);
-  return JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage, progress: context.progress ? { ...context.progress } : null });
+  const evidence = safeDiagnosticEvidence(diagnosticEvidence);
+  const mapped = safeNativeError(error);
+  evidence.error = mapped.errorClass === 'assertion' && evidence.error.sqlstate && evidence.error.sqlstate !== '23505' ? evidence.error : mapped;
+  return JSON.stringify({ format: 'NATIVE_OWNER_CHILD_FAILURE_V1', status, receiptValid, coverageAdjudicated, allNativeProofClaimed, code, stage, progress: context.progress ? { ...context.progress } : null, ...(context.diagnostic === 'case7' ? { diagnostic: 'case7', evidence } : {}) });
+}
+function safeDiagnosticEvidence(value) {
+  const error = value?.error;
+  const mapped = safeNativeError({ code: error?.sqlstate ?? (error?.errorClass === 'assertion' ? 'ERR_ASSERTION' : null) });
+  return { error: mapped, txstate: { a: txStates.includes(value?.txstate?.a) ? value.txstate.a : 'unknown', b: txStates.includes(value?.txstate?.b) ? value.txstate.b : 'unknown' }, cleanup: { rows: cleanupStates.includes(value?.cleanup?.rows) ? value.cleanup.rows : 'unknown', namespace: cleanupStates.includes(value?.cleanup?.namespace) ? value.cleanup.namespace : 'unknown' } };
 }
 function parseNativeChildFailure(text) {
   if (typeof text !== 'string' || Buffer.byteLength(text) > 4096) return null;
   try {
     const raw = JSON.parse(text);
-    if (!raw || !same(Object.keys(raw).sort(), ['allNativeProofClaimed', 'code', 'coverageAdjudicated', 'format', 'progress', 'receiptValid', 'stage', 'status']) || raw.format !== 'NATIVE_OWNER_CHILD_FAILURE_V1' || raw.status !== 'error' || raw.receiptValid !== false || raw.coverageAdjudicated !== false || raw.allNativeProofClaimed !== false || !failureStages.has(raw.stage)) return null;
+    const diagnostic = raw?.diagnostic === 'case7';
+    if (!raw || !same(Object.keys(raw).sort(), ['allNativeProofClaimed', 'code', 'coverageAdjudicated', 'format', 'progress', 'receiptValid', 'stage', 'status', ...(diagnostic ? ['diagnostic', 'evidence'] : [])].sort()) || raw.format !== 'NATIVE_OWNER_CHILD_FAILURE_V1' || raw.status !== 'error' || raw.receiptValid !== false || raw.coverageAdjudicated !== false || raw.allNativeProofClaimed !== false || !failureStages.has(raw.stage)) return null;
+    if (diagnostic && (!same(raw.evidence, safeDiagnosticEvidence(raw.evidence)) || (raw.progress?.phase === 'scenario' && (raw.progress.ordinal !== 7 || ![0,1].includes(raw.progress.completed))))) return null;
+    // Validate the common sequential shape without inventing six completed diagnostic cases.
+    const progress = raw.progress;
+    if (diagnostic && progress?.phase === 'scenario') raw.progress = { ...progress, completed: progress.completed === 0 ? 6 : 7 };
     if (raw.progress !== null && (raw.stage !== 'producer' || !raw.progress || !same(Object.keys(raw.progress).sort(), ['completed', 'ordinal', 'phase', 'sqlstate', 'substep']) || ![...setupPhases, 'scenario'].includes(raw.progress.phase) || !Number.isInteger(raw.progress.completed) || raw.progress.completed < 0 || raw.progress.completed > 28 || !Number.isInteger(raw.progress.ordinal) || (raw.progress.phase !== 'scenario' ? raw.progress.ordinal !== 0 || raw.progress.completed !== 0 : raw.progress.ordinal < 1 || raw.progress.ordinal > 28 || ![raw.progress.ordinal,raw.progress.ordinal-1].includes(raw.progress.completed)) || (raw.progress.sqlstate !== null && (!sqlstates.has(raw.progress.sqlstate) || ['module-load', 'setup'].includes(raw.progress.phase))) || (raw.progress.substep !== null && !(raw.progress.phase === 'scenario' && raw.progress.ordinal === 7 && raw.progress.completed === 6 && caseSevenSubsteps.includes(raw.progress.substep))))) return null;
-    return failureCodes.has(raw.code) ? { code: raw.code === 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? null : raw.code, progress: raw.progress } : null;
+    return failureCodes.has(raw.code) ? { code: raw.code === 'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED' ? null : raw.code, progress, ...(diagnostic ? { evidence: raw.evidence } : {}) } : null;
   } catch { return null; }
 }
 export function parseNativeChildFailureCode(text) { return parseNativeChildFailure(text)?.code ?? null; }
@@ -178,19 +239,19 @@ export function parseNativeChildFailureForTests(text) { return parseNativeChildF
 
 export function parseNativeArguments(argv, internal = false) {
   const result = {};
-  const allowed = internal ? ['--native-child', '--expected-commit'] : ['--lane', '--expected-commit'];
+  const allowed = internal ? ['--native-child', '--expected-commit', '--diagnostic'] : ['--lane', '--expected-commit', '--diagnostic'];
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index], value = argv[index + 1];
     check(allowed.includes(key) && typeof value === 'string' && !value.startsWith('--'), 'INVALID_ARGUMENTS');
-    const name = key === '--expected-commit' ? 'expectedCommit' : 'lane';
+    const name = key === '--expected-commit' ? 'expectedCommit' : key === '--diagnostic' ? 'diagnostic' : 'lane';
     check(result[name] === undefined, 'DUPLICATE_ARGUMENT'); result[name] = value;
   }
-  check(Object.keys(result).length === 2 && Object.hasOwn(nativeOwnerRegistry, result.lane) && sha(result.expectedCommit), 'CLOSED_LANE_AND_EXACT_COMMIT_REQUIRED');
+  check(Object.keys(result).length === (result.diagnostic === undefined ? 2 : 3) && Object.hasOwn(nativeOwnerRegistry, result.lane) && sha(result.expectedCommit) && (result.diagnostic === undefined || result.lane === 'production' && result.diagnostic === 'case7'), 'CLOSED_LANE_AND_EXACT_COMMIT_REQUIRED');
   return result;
 }
 
 export function prepareNativeEnvironment(options, source) {
-  check(options && Object.keys(options).every(key => ['lane', 'expectedCommit'].includes(key)) && Object.hasOwn(nativeOwnerRegistry, options.lane) && sha(options.expectedCommit), 'CLOSED_LANE_AND_EXACT_COMMIT_REQUIRED');
+  check(options && Object.keys(options).every(key => ['lane', 'expectedCommit', 'diagnostic'].includes(key)) && Object.hasOwn(nativeOwnerRegistry, options.lane) && sha(options.expectedCommit) && (options.diagnostic === undefined || options.lane === 'production' && options.diagnostic === 'case7'), 'CLOSED_LANE_AND_EXACT_COMMIT_REQUIRED');
   const profile = nativeOwnerRegistry[options.lane];
   check(source.V2_M0_POSTGRES_INTEGRATION === '1', 'NATIVE_OPT_IN_REQUIRED');
   check(source.GITHUB_ACTIONS === 'true' && source.GITHUB_REF === 'refs/heads/dev' && ['push', 'workflow_dispatch'].includes(source.GITHUB_EVENT_NAME), 'REVIEWED_DEV_CI_EVENT_REQUIRED');
@@ -215,7 +276,7 @@ export function prepareNativeEnvironment(options, source) {
   }
   // The child repeats this preflight; these are nonsecret CI gates, not tokens.
   Object.assign(env, { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/dev', GITHUB_EVENT_NAME: source.GITHUB_EVENT_NAME, ...(source.GITHUB_EVENT_NAME === 'push' ? { V2_NATIVE_OWNER_EVENT_AFTER: source.V2_NATIVE_OWNER_EVENT_AFTER } : { V2_NATIVE_OWNER_MANUAL_OPT_IN: '1' }) });
-  return { profile, env, target, expectedCommit: options.expectedCommit, lane: options.lane };
+  return { profile, env, target, expectedCommit: options.expectedCommit, lane: options.lane, ...(options.diagnostic ? { diagnostic: options.diagnostic } : {}) };
 }
 
 function loadActualGuards() {
@@ -282,6 +343,7 @@ function installNetworkPolicy(target, transports) {
 export function installNativeNetworkPolicyForTests(target, transports) { installNetworkPolicy(target, transports); }
 
 function validateProductionReceipt(raw, prepared, source, contract) {
+  check(raw.format !== 'OWNER_NATIVE_DIAGNOSTIC_V1' && raw.diagnostic === undefined, 'PRODUCTION_RECEIPT_IDENTITY_MISMATCH');
   check(contract === productionCoverage, 'EXACT_PRODUCTION_CONTRACT_REQUIRED');
   check(raw.receiptVersion === 1 && raw.status === 'pass' && raw.suite === 'production-exclusive-membership', 'PRODUCTION_RECEIPT_IDENTITY_MISMATCH');
   check(raw.sourceCommit === prepared.expectedCommit && raw.GITHUB_SHA === prepared.expectedCommit && raw.sourceCommitAfter === prepared.expectedCommit && raw.sourceCleanBefore === true && raw.sourceCleanAfter === true, 'PRODUCTION_RECEIPT_SOURCE_MISMATCH');
@@ -332,6 +394,7 @@ function validateReceipt(stdout, prepared, source, contract) {
   check(candidates.length === 1 && candidates[0], 'EXACTLY_ONE_NATIVE_RECEIPT_REQUIRED');
   const raw = candidates[0];
   check(raw.lane === prepared.lane && raw.gate === prepared.profile.gate && raw.runner === 'tsx', 'RECEIPT_LANE_GATE_OR_RUNNER_MISMATCH');
+  if (prepared.diagnostic === 'case7') return validateDiagnosticReceipt(raw, prepared, source, contract);
   check(raw.passedCases === contract.cases.length && raw.failedCases === 0 && raw.skippedCases === 0 && raw.pendingCases === 0, 'EXACT_PASSED_FAILED_SKIPPED_PENDING_COUNTS_REQUIRED');
   for (const key of ['failed', 'skipped', 'pending', 'failedTests', 'skippedTests', 'pendingTests']) if (raw[key] !== undefined) check(raw[key] === 0, 'FAILED_SKIPPED_OR_PENDING_NATIVE_CASES');
   if (prepared.lane === 'production') return validateProductionReceipt(raw, prepared, source, contract);
@@ -355,6 +418,20 @@ function validateReceipt(stdout, prepared, source, contract) {
 }
 export function validateNativeReceipt(stdout, prepared, source) { return validateReceipt(stdout, prepared, source, prepared.profile.coverageContract); }
 export function validateNativeReceiptForTests(stdout, prepared, source, contract) { return validateReceipt(stdout, prepared, source, contract); }
+
+function validateDiagnosticReceipt(raw, prepared, source, contract) {
+  check(contract === productionCoverage && raw.format === 'OWNER_NATIVE_DIAGNOSTIC_V1' && raw.diagnostic === 'case7' && raw.receiptVersion === 1 && raw.status === 'pass' && raw.receiptValid === false && raw.coverageAdjudicated === false && raw.allNativeProofClaimed === false, 'PRODUCTION_RECEIPT_IDENTITY_MISMATCH');
+  check(raw.sourceCommit === prepared.expectedCommit && raw.GITHUB_SHA === prepared.expectedCommit && raw.sourceCommitAfter === prepared.expectedCommit && raw.sourceCleanBefore === true && raw.sourceCleanAfter === true, 'PRODUCTION_RECEIPT_SOURCE_MISMATCH');
+  check(raw.suite === 'production-exclusive-membership' && raw.suiteHash === contract.suiteHash && Number.isSafeInteger(raw.serverVersionNum) && raw.serverVersionNum >= 160000 && raw.runtimeCreationEnabled === false, 'PRODUCTION_VERSION_HASH_OR_RUNTIME_MISMATCH');
+  check(raw.ordinal === 7 && raw.passedCases === 1 && raw.failedCases === 0 && raw.skippedCases === 0 && raw.pendingCases === 0 && same(raw.manifest, [contract.cases[6]]) && Array.isArray(raw.cases) && raw.cases.length === 1, 'EXACT_ORDERED_PRODUCTION_CASES_REQUIRED');
+  const actual = raw.cases[0], expected = contract.cases[6];
+  check(actual.name === expected.name && actual.kind === expected.kind && actual.status === 'pass' && same(actual.expectedCounts, expected.expectedCounts) && same(actual.measuredCounts, expected.expectedCounts) && same(actual.cleanupCounts, Object.fromEntries(countKeys.map(key => [key, 0]))), 'FIXED_PRODUCTION_MEASUREMENTS_OR_CLEANUP_MISMATCH');
+  check(pair(actual.executingBackendPids) && actual.contenders === 'not_applicable', 'NONCONTENTION_CASE_MUST_NOT_INVENT_CONTENDERS');
+  const namespace = actual.namespaceIdentifiers?.[0];
+  check(typeof namespace === 'string' && /^l0_production_test_[a-f0-9]{32}$/.test(namespace) && same(actual.namespaceIdentifiers, [namespace]) && same(actual.namespaces, [{ identifier: namespace, removed: true }]), 'ACTUAL_NAMESPACE_REMOVAL_REQUIRED');
+  check(same(raw.evidence, safeDiagnosticEvidence(raw.evidence)) && raw.evidence.error.sqlstate === '23505' && same(raw.evidence.txstate, { a: 'idle', b: 'idle' }) && same(raw.evidence.cleanup, { rows: 'observed', namespace: 'observed' }) && raw.exitReason === 'completed', 'FIXED_PRODUCTION_MEASUREMENTS_OR_CLEANUP_MISMATCH');
+  return { format: 'OWNER_NATIVE_DIAGNOSTIC_V1', diagnostic: 'case7', status: 'pass', diagnosticPassed: true, receiptValid: false, coverageAdjudicated: false, allNativeProofClaimed: false, lane: 'production', sha: source.commit, sourceClean: true, suiteHash: raw.suiteHash, serverVersionNum: raw.serverVersionNum, ordinal: 7, executedCases: 1, exactCase: expected.name, phase: 'completed', measuredCounts: { ...actual.measuredCounts }, cleanupCounts: { ...actual.cleanupCounts }, executingBackendPids: [...actual.executingBackendPids], namespace, namespaceRemoved: true, runtimeCreationEnabled: false, txstateBasis: 'latest-ready-for-query', evidence: safeDiagnosticEvidence(raw.evidence), exitReason: 'completed' };
+}
 
 function stopWindowsOwnedTree(child, env, spawnKiller = spawn) {
   return new Promise(resolve => {
@@ -392,7 +469,7 @@ function runOwnedProcess(args, env, timeoutMs, signals = process, onOutput = nul
       signals.removeListener('SIGINT', interrupt); signals.removeListener('SIGTERM', interrupt);
       child.stdout?.destroy(); child.stderr?.destroy(); if (!closed) child.unref();
        const protocol = parseNativeChildFailure(stderrProtocol);
-       resolve({ code: timedOut || interrupted || limited || spawnFailed || cleanupBoundedOut || treeDiagnostics.treeCleanupFailed ? 1 : exitCode, stdout, diagnostics: { stdoutBytes, stderrBytes, timedOut, interrupted, outputLimited: limited, spawnFailed, cleanupBoundedOut, ...treeDiagnostics, exitCode: childExit, signal: childSignal, failureCode: protocol?.code ?? null, progress: protocol?.progress ?? null } });
+       resolve({ code: timedOut || interrupted || limited || spawnFailed || cleanupBoundedOut || treeDiagnostics.treeCleanupFailed ? 1 : exitCode, stdout, diagnostics: { stdoutBytes, stderrBytes, timedOut, interrupted, outputLimited: limited, spawnFailed, cleanupBoundedOut, ...treeDiagnostics, exitCode: childExit, signal: childSignal, failureCode: protocol?.code ?? null, progress: protocol?.progress ?? null, ...(protocol?.evidence ? { evidence: protocol.evidence } : {}) } });
     };
     const stop = () => {
       if (cleanup) return;
@@ -433,7 +510,7 @@ function githubOutputFile(source) {
   return file;
 }
 function writeArtifact(repositoryRoot, lane, result, nonce = randomUUID()) {
-  check(Object.hasOwn(nativeOwnerRegistry, lane) && /^[a-f0-9-]{36}$/i.test(nonce), 'SAFE_ARTIFACT_ID_REQUIRED');
+  check((Object.hasOwn(nativeOwnerRegistry, lane) || lane === 'production-case7-diagnostic') && /^[a-f0-9-]{36}$/i.test(nonce), 'SAFE_ARTIFACT_ID_REQUIRED');
   const directory = path.join(repositoryRoot, '.cache/v2-validation/native-owner');
   for (const relative of ['.cache', '.cache/v2-validation', '.cache/v2-validation/native-owner']) {
     const folder = path.join(repositoryRoot, relative);
@@ -454,6 +531,11 @@ function saveArtifact(lane, result) { writeArtifact(root, lane, result); }
 export function writeNativeArtifactForTests(repositoryRoot, lane, result, nonce) { writeArtifact(repositoryRoot, lane, result, nonce); }
 function appendOutputs(file, receipt) {
   if (!file) return;
+  if (receipt.format === 'OWNER_NATIVE_DIAGNOSTIC_V1') {
+    check(receipt.diagnosticPassed === true && receipt.receiptValid === false && receipt.coverageAdjudicated === false && receipt.allNativeProofClaimed === false, 'CURRENT_CASE_COVERAGE_NOT_ADJUDICATED');
+    fs.appendFileSync(file, 'diagnosticPassed=true\nreceiptValid=false\ncoverageAdjudicated=false\n');
+    return;
+  }
   check(receipt.receiptValid === true && receipt.coverageAdjudicated === true, 'CURRENT_CASE_COVERAGE_NOT_ADJUDICATED');
   const publicName = 'OWNER_NATIVE_RECEIPT_V1 ' + JSON.stringify({ lane: receipt.lane, gate: receipt.gate, sha: receipt.sha, cases: receipt.cases, pidCase: receipt.pidCase, pidA: receipt.backendPidA, pidB: receipt.backendPidB, server: receipt.serverVersionNum, removed: receipt.namespaceRemoved, namespace: receipt.namespace });
   const fields = { lane: receipt.lane, sha: receipt.sha, pidA: receipt.backendPidA, pidB: receipt.backendPidB, pids: JSON.stringify([receipt.backendPidA, receipt.backendPidB]), cases: receipt.cases, namespace: receipt.namespace, namespaceNameEmitted: receipt.namespaceNameEmitted, serverVersionNum: receipt.serverVersionNum, receiptValid: receipt.receiptValid, coverageAdjudicated: receipt.coverageAdjudicated, publicName };
@@ -463,6 +545,7 @@ const dependencies = { loadGuards: loadActualGuards, readSource, readCoverage: p
 async function executeController(options, sourceEnv, services, context) {
   context.stage = 'environment';
   const prepared = prepareNativeEnvironment(options, sourceEnv);
+  const artifactLane = prepared.diagnostic ? 'production-case7-diagnostic' : prepared.lane;
   context.stage = 'guards';
   guardPrepared(prepared, services.loadGuards());
   context.stage = 'source';
@@ -480,7 +563,7 @@ async function executeController(options, sourceEnv, services, context) {
   let result, cleanupFailureCode;
   try {
     context.stage = 'child';
-    const child = await services.runChild(['--import', 'tsx', entry, '--native-child', prepared.lane, '--expected-commit', prepared.expectedCommit], env, prepared.profile.timeoutMs);
+    const child = await services.runChild(['--import', 'tsx', entry, '--native-child', prepared.lane, '--expected-commit', prepared.expectedCommit, ...(prepared.diagnostic ? ['--diagnostic', 'case7'] : [])], env, prepared.profile.timeoutMs);
     context.child = child.diagnostics;
     if (child.diagnostics.treeCleanupFailed) {
       cleanupFailureCode = ['WINDOWS_TREE_KILL_SPAWN_FAILED', 'WINDOWS_TREE_KILL_SIGNALED', 'WINDOWS_TREE_KILL_EXIT_FAILED', 'WINDOWS_TREE_KILL_TIMEOUT'].includes(child.diagnostics.treeCleanupFailureCode) ? child.diagnostics.treeCleanupFailureCode : 'OWNED_TREE_CLEANUP_FAILED';
@@ -492,21 +575,21 @@ async function executeController(options, sourceEnv, services, context) {
     check(after.clean === true && after.commit === source.commit && after.commit === prepared.expectedCommit, 'POSTEXECUTION_EXACT_CLEAN_SOURCE_REQUIRED');
     context.stage = 'post-hooks'; services.verifyHooks(prepared.profile, coverage);
     context.stage = 'receipt';
-    result = { ...validateReceipt(child.stdout, prepared, after, coverage), diagnostics: child.diagnostics };
+    result = { ...validateReceipt(child.stdout, prepared, after, coverage), ...(prepared.diagnostic ? {} : { diagnostics: child.diagnostics }) };
     context.stage = 'artifact';
-    services.saveArtifact(prepared.lane, result);
+    services.saveArtifact(artifactLane, result);
     context.stage = 'outputs';
     services.appendOutputs(outputFile, result);
     return result;
   } catch (error) {
     const failure = failureDiagnostic(error, context);
-    try { services.saveArtifact(prepared.lane, { ...failure, lane: prepared.lane, sha: source.commit, ...(cleanupFailureCode ? { treeCleanupFailed: true, treeCleanupFailureCode: cleanupFailureCode, rootFallbackIsNotFullTreeCleanup: true } : {}) }); }
+    try { services.saveArtifact(artifactLane, { ...failure, lane: prepared.lane, sha: source.commit, ...(cleanupFailureCode ? { treeCleanupFailed: true, treeCleanupFailureCode: cleanupFailureCode, rootFallbackIsNotFullTreeCleanup: true } : {}) }); }
     catch (artifactError) { context.stage = 'failure-artifact'; throw artifactError; }
     throw error;
   }
 }
 async function runController(options, sourceEnv, services) {
-  const context = { requestedSha: options?.expectedCommit };
+  const context = { requestedSha: options?.expectedCommit, diagnostic: options?.diagnostic };
   try { return await executeController(options, sourceEnv, services, context); }
   catch (error) {
     const safe = new NativeOwnerEntryError(safeFailureCode(error));
@@ -518,6 +601,7 @@ export function runNativeOwnerEntry(options, sourceEnv = process.env) { return r
 export function runNativeOwnerEntryForTests(options, sourceEnv, overrides) { return runController(options, sourceEnv, { ...dependencies, ...overrides }); }
 
 async function executeInternalChild(options, context) {
+  context.diagnostic = options.diagnostic;
   context.stage = 'child-marker';
   check(process.env.V2_NATIVE_OWNER_CHILD === '1', 'INTERNAL_CHILD_MARKER_REQUIRED');
   context.stage = 'environment';
@@ -532,8 +616,10 @@ async function executeInternalChild(options, context) {
   context.stage = 'hooks'; verifyHooks(prepared.profile, coverage);
   context.stage = 'network-policy';
   installNetworkPolicy(prepared.target, { net, tls, http, https, dgram, global: globalThis }); syncBuiltinESMExports();
-  process.argv = [process.execPath, path.join(root, prepared.profile.suite), ...prepared.profile.args];
+  process.argv = [process.execPath, path.join(root, prepared.profile.suite), ...prepared.profile.args, ...(prepared.diagnostic ? ['--diagnostic', 'case7'] : [])];
   if (prepared.lane === 'production') {
+    diagnosticMode = prepared.diagnostic === 'case7';
+    diagnosticEvidence = diagnosticMode ? { error: null, txstate: { a: 'unknown', b: 'unknown' }, cleanup: { rows: 'unknown', namespace: 'unknown' } } : null;
     context.progress = { phase: 'module-load', ordinal: 0, completed: 0, sqlstate: null, substep: null };
     producerProgress = context.progress;
   }
@@ -553,7 +639,7 @@ async function executeCli(argv, sourceEnv, services, write, writeError) {
   const internal = argv[0] === '--native-child';
   const context = { stage: 'arguments' };
   try {
-    const options = parseNativeArguments(argv, internal); context.requestedSha = options.expectedCommit;
+    const options = parseNativeArguments(argv, internal); context.requestedSha = options.expectedCommit; context.diagnostic = options.diagnostic;
     if (internal) { await services.internalChild(options, context); return 0; }
     const result = await runController(options, sourceEnv, services);
     write(JSON.stringify(result)); return 0;

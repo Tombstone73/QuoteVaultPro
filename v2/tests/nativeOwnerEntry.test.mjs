@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import yaml from 'js-yaml';
+import { safeNativeError, withNativeCleanup } from '../scripts/native-owner-entry.mjs';
 import { cleanEnvironment } from '../scripts/validate.mjs';
 import { NativeOwnerEntryError, nativeFailureForTests, parseNativeChildFailureCode, parseNativeChildFailureForTests, runNativeOwnerCliForTests, nativeOwnerRegistry, parseNativeArguments, prepareNativeEnvironment, nativeSocketAllowed, installNativeNetworkPolicyForTests, validateNativeReceipt, validateNativeReceiptForTests, runNativeOwnerEntryForTests, runOwnedProcessForTests, writeNativeArtifactForTests, stopWindowsOwnedTreeForTests, verifyNativeHooksForTests } from '../scripts/native-owner-entry.mjs';
 
@@ -417,9 +418,14 @@ test('Production service job has only disposable credentials, closed command and
   assert.equal(job.env.V2_NATIVE_OWNER_MANUAL_OPT_IN, "${{ github.event_name == 'workflow_dispatch' && inputs.production_native == true && '1' || '0' }}");
   assert.deepEqual(job.steps[0], { uses: 'actions/checkout@v4', with: { ref: '${{ github.sha }}', 'persist-credentials': false } });
   assert.deepEqual(job.steps[1], { uses: 'actions/setup-node@v4', with: { 'node-version': '20', cache: 'npm' } });
-  assert.deepEqual(job.steps.filter(step => step.run).map(step => step.run), ['npm ci --include=dev --include=optional', 'node v2/scripts/native-owner-entry.mjs --lane production --expected-commit "$GITHUB_SHA"']);
-  assert.equal(job.steps.length, 5);
-  const upload = job.steps[4];
+  assert.deepEqual(job.steps.filter(step => step.run).map(step => step.run), ['npm ci --include=dev --include=optional', 'node v2/scripts/native-owner-entry.mjs --lane production --expected-commit "$GITHUB_SHA" --diagnostic case7', 'node v2/scripts/native-owner-entry.mjs --lane production --expected-commit "$GITHUB_SHA"']);
+  assert.equal(job.steps.length, 7);
+  assert.equal(job.steps[3].id, 'production_case7');
+  assert.equal(job.steps[4].id, 'production_proof');
+  assert.equal(job.steps[4].if, "success() && steps.production_case7.outputs.diagnosticPassed == 'true'");
+  assert.equal(job.steps[5].if, 'always()');
+  assert.equal(job.steps[5].with.path, '.cache/v2-validation/native-owner/production-case7-diagnostic.json');
+  const upload = job.steps[6];
   assert.equal(upload.if, "success() && steps.production_proof.outputs.receiptValid == 'true' && steps.production_proof.outputs.coverageAdjudicated == 'true'");
   assert.equal(upload.with.path, '.cache/v2-validation/native-owner/production.json');
   assert.equal(upload.with['if-no-files-found'], 'error');
@@ -616,4 +622,115 @@ test('synthetic CLI success emits only validated success and never a failure ann
   assert.equal(JSON.parse(result.output[0]).receiptValid, true);
   assert.equal(result.calls.filter(value => value?.output).length, 1);
   assert.doesNotMatch(result.output[0], /::error|childCode|requestedSha|verifiedSourceSha/);
+});
+
+const case7Options = { ...options('production'), diagnostic: 'case7' };
+function case7Receipt() {
+  const full = receipt('production');
+  const actual = structuredClone(full.cases[6]); actual.executingBackendPids = [101,102];
+  return { ...full, format: 'OWNER_NATIVE_DIAGNOSTIC_V1', diagnostic: 'case7', ordinal: 7, receiptValid: false, coverageAdjudicated: false, allNativeProofClaimed: false, manifest: [full.manifest[6]], cases: [actual], passedCases: 1, evidence: { error: safeNativeError({code:'23505'}), txstate: {a:'idle',b:'idle'}, cleanup: {rows:'observed',namespace:'observed'} }, exitReason: 'completed' };
+}
+const parseCase7 = raw => validateNativeReceipt(JSON.stringify(raw), prepareNativeEnvironment(case7Options, environment('production')), {commit,clean:true});
+
+test('CASE7 CLI selector is production-only, closed and never ambient', () => {
+  assert.deepEqual(parseNativeArguments(['--lane','production','--expected-commit',commit,'--diagnostic','case7']),case7Options);
+  assert.deepEqual(parseNativeArguments(['--native-child','production','--expected-commit',commit,'--diagnostic','case7'],true),case7Options);
+  for (const [lane,diagnostic] of [['team','case7'],['production','case8'],['production','all'],['production','../private']]) {
+    assert.throws(()=>parseNativeArguments(['--lane',lane,'--expected-commit',commit,'--diagnostic',diagnostic]));
+    assert.throws(()=>prepareNativeEnvironment({...options(lane),diagnostic},environment(lane)));
+  }
+  assert.throws(()=>parseNativeArguments(['--lane','production','--expected-commit',commit,'--diagnostic','case7','--diagnostic','case7']));
+  assert.equal(prepareNativeEnvironment(options('production'),{...environment('production'),V2_NATIVE_DIAGNOSTIC:'case7'}).diagnostic,undefined);
+});
+
+test('CASE7 unapproved target/event/source/hash never constructs native child', async () => {
+  for (const stage of ['approval','url','event','source','hash']) {
+    const env=environment('production'),mock=services('production');
+    if(stage==='approval')delete env.V2_L0_LANE_F_NATIVE_APPROVED;
+    if(stage==='url')env.TEST_DATABASE_URL='postgresql://private:private@other.invalid/shared';
+    if(stage==='event')env.GITHUB_EVENT_NAME='pull_request';
+    if(stage==='source')mock.dependencies.readSource=()=>({commit,clean:false});
+    if(stage==='hash')mock.dependencies.verifyHooks=()=>{throw new NativeOwnerEntryError('NATIVE_HOOK_DEPENDENCY_HASH_MISMATCH');};
+    await assert.rejects(runNativeOwnerEntryForTests(case7Options,env,mock.dependencies));
+    assert.equal(mock.calls.some(value=>value?.args||value?.output),false);
+  }
+});
+
+test('CASE7 validates exactly one measured canonical seventh case and never full proof', () => {
+  const parsed=parseCase7(case7Receipt());
+  assert.equal(parsed.ordinal,7);assert.equal(parsed.executedCases,1);assert.equal(parsed.diagnosticPassed,true);
+  for(const key of ['receiptValid','coverageAdjudicated','allNativeProofClaimed'])assert.equal(parsed[key],false);
+  assert.throws(()=>parseReceipt('production',case7Receipt()));
+  assert.throws(()=>parseCase7(receipt('production')));
+  for(const alter of [raw=>raw.ordinal=1,raw=>raw.passedCases=7,raw=>raw.cases.push(raw.cases[0]),raw=>raw.manifest[0]=receipt('production').manifest[0],raw=>raw.cases[0].measuredCounts.runs=0,raw=>raw.evidence.error=safeNativeError({code:'23503'}),raw=>raw.evidence.txstate.b='unknown',raw=>raw.evidence.cleanup.rows='failed',raw=>raw.evidence.cleanup.namespace='unknown',raw=>raw.cases[0].namespaces[0].removed=false,raw=>raw.coverageAdjudicated=true,raw=>raw.runtimeCreationEnabled=true,raw=>raw.sourceCleanAfter=false]) {
+    const raw=case7Receipt();alter(raw);assert.throws(()=>parseCase7(raw));
+  }
+  const disguised=receipt('production');disguised.format='OWNER_NATIVE_DIAGNOSTIC_V1';assert.throws(()=>parseReceipt('production',disguised));
+});
+
+test('CASE7 controller propagates closed mode, rechecks guards and separates artifacts/outputs', async()=>{
+  const mock=services('production');mock.result.stdout=JSON.stringify(case7Receipt());
+  mock.dependencies.saveArtifact=(lane,value)=>mock.calls.push({artifactLane:lane,artifact:value});
+  const result=await runNativeOwnerEntryForTests(case7Options,environment('production'),mock.dependencies);
+  assert.equal(result.diagnosticPassed,true);
+  assert.deepEqual(mock.calls.find(value=>value?.args).args.slice(-2),['--diagnostic','case7']);
+  assert.equal(mock.calls.filter(value=>value==='source').length,2);assert.equal(mock.calls.filter(value=>value==='hooks').length,2);
+  assert.equal(mock.calls.find(value=>value?.artifact).artifactLane,'production-case7-diagnostic');
+  assert.equal(mock.calls.find(value=>value?.output).output.receiptValid,false);
+});
+
+test('CASE7 real CI outputs cannot publish adjudicated full28 flags',()=>temporary(async directory=>{
+  const commands=path.join(directory,'_runner_file_commands');fs.mkdirSync(commands);
+  const output=path.join(commands,'set_output_55555555-5555-4555-8555-555555555555');fs.writeFileSync(output,'');
+  const mock=services('production');mock.result.stdout=JSON.stringify(case7Receipt());delete mock.dependencies.githubOutputFile;delete mock.dependencies.appendOutputs;
+  await runNativeOwnerEntryForTests(case7Options,{...environment('production'),RUNNER_TEMP:directory,GITHUB_OUTPUT:output},mock.dependencies);
+  assert.equal(fs.readFileSync(output,'utf8'),'diagnosticPassed=true\nreceiptValid=false\ncoverageAdjudicated=false\n');
+}));
+
+test('safe diagnostic errors use finite SQLSTATE/classes/messages, never raw properties or getters',()=>{
+  assert.deepEqual(safeNativeError({code:'42P08',message:'private token',detail:'customer SQL'}),{sqlstate:'42P08',errorClass:'ambiguous_parameter',safeMessage:'Inconsistent parameter types.'});
+  for(const error of [new Error('private token'),{code:'42P08\n::error::private'},Object.defineProperty({},'code',{get(){throw Error('private');}}),{code:'PRIVATE',message:'postgresql://private',detail:'private'}]){
+    assert.equal(safeNativeError(error).sqlstate,null);assert.doesNotMatch(JSON.stringify(safeNativeError(error)),/private|token|customer|postgresql|::error/);
+  }
+});
+
+test('cleanup preserves original failure including falsy throws and rejects cleanup-only failure',async()=>{
+  const cleanupError=Error('cleanup private');let count=0;
+  for(const original of [Error('original private'),null,undefined]){
+    try{await withNativeCleanup(async()=>{throw original;},async()=>{count++;throw cleanupError;});assert.fail('must reject');}catch(error){assert.equal(error,original);}
+  }
+  assert.equal(count,3);
+  await assert.rejects(withNativeCleanup(async()=>{},async()=>{throw cleanupError;}),error=>error===cleanupError);
+  assert.equal(await withNativeCleanup(async()=>7,async()=>{}),7);
+});
+
+test('CASE7 strict failure protocol retains actual zero completed count and safe cleanup evidence',async()=>{
+  const progress={phase:'scenario',ordinal:7,completed:0,sqlstate:'42P08',substep:'raw-parent-insert'};
+  const evidence={error:safeNativeError({code:'42P08'}),txstate:{a:'idle',b:'idle'},cleanup:{rows:'observed',namespace:'observed'}};
+  const raw={format:'NATIVE_OWNER_CHILD_FAILURE_V1',status:'error',receiptValid:false,coverageAdjudicated:false,allNativeProofClaimed:false,code:'NATIVE_ENTRY_FAILURE_DETAILS_SUPPRESSED',stage:'producer',progress,diagnostic:'case7',evidence};
+  assert.deepEqual(parseNativeChildFailureForTests(JSON.stringify(raw)),{code:null,progress,evidence});
+  for(const alter of [value=>value.progress.ordinal=1,value=>value.progress.completed=6,value=>value.evidence.error.safeMessage='private SQL',value=>value.evidence.txstate.a='private',value=>value.evidence.cleanup.rows='true',value=>value.evidence.detail='private',value=>value.diagnostic='case8']){
+    const value=structuredClone(raw);alter(value);assert.equal(parseNativeChildFailureForTests(JSON.stringify(value)),null);
+  }
+  const mock=services('production');mock.result.code=1;mock.result.diagnostics={exitCode:1,timedOut:false,progress,evidence};
+  let failure;try{await runNativeOwnerEntryForTests(case7Options,environment('production'),mock.dependencies);}catch(error){failure=nativeFailureForTests(error);}
+  assert.equal(failure.childOrdinal,7);assert.equal(failure.childCompleted,0);assert.equal(failure.childSubstep,'raw-parent-insert');
+  assert.equal(failure.error.sqlstate,'42P08');assert.equal(failure.cleanup.namespace,'observed');assert.equal(failure.exitReason,'child-failed');
+  assert.equal(failure.diagnosticPassed,false);assert.equal(mock.calls.some(value=>value?.output),false);
+});
+
+test('CASE7 timeout without trusted protocol reports unknown observations rather than invented cleanup',async()=>{
+  const mock=services('production');mock.result.code=1;mock.result.diagnostics={timedOut:true,exitCode:null};
+  let failure;try{await runNativeOwnerEntryForTests(case7Options,environment('production'),mock.dependencies);}catch(error){failure=nativeFailureForTests(error);}
+  assert.equal(failure.exitReason,'timeout');assert.deepEqual(failure.cleanup,{rows:'unknown',namespace:'unknown'});assert.deepEqual(failure.txstate,{a:'unknown',b:'unknown'});assert.equal(failure.childCompleted,null);
+});
+
+test('producer uses manifest ordinal filter before any CASE7-only scenario effects and retains SQL predicate',()=>{
+  const source=fs.readFileSync(new URL('./infrastructure/productionRunExclusive.native.ts',import.meta.url),'utf8');
+  assert.ok(source.indexOf('if(diagnostic&&ordinal!==7)return;')<source.indexOf('scenarioName=label;await cleanRows()'));
+  assert.match(source,/const ordinal=caseManifest\.indexOf\(spec\)\+1/);
+  assert.match(source,/reportNativeProductionProgress\("passed",ordinal\)/);
+  assert.match(source,/\.code==="23505"/);
+  assert.match(source,/\$1,'org-a','roll',\$2,'staff'/);
+  assert.doesNotMatch(source,/\$2::varchar/);
 });

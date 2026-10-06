@@ -111,9 +111,19 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci --include=dev --include=optional
+      - name: Diagnose isolated Production CASE7 first
+        id: production_case7
+        run: node v2/scripts/native-owner-entry.mjs --lane production --expected-commit "$GITHUB_SHA" --diagnostic case7
       - name: Validate selected Production native proof
         id: production_proof
+        if: success() && steps.production_case7.outputs.diagnosticPassed == 'true'
         run: node v2/scripts/native-owner-entry.mjs --lane production --expected-commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v2-production-case7-diagnostic
+          path: .cache/v2-validation/native-owner/production-case7-diagnostic.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: success() && steps.production_proof.outputs.receiptValid == 'true' && steps.production_proof.outputs.coverageAdjudicated == 'true'
         with:

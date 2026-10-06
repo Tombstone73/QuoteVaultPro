@@ -4,7 +4,7 @@ import { randomUUID,createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { requireV2M0CloneDatabaseUrl } from "../../infrastructure/persistence/cloneSafety.js";
-import { reportNativeProductionProgress } from "../../scripts/native-owner-entry.mjs";
+import { reportNativeProductionProgress, reportNativeDiagnostic, nativeDiagnosticSnapshot, withNativeCleanup } from "../../scripts/native-owner-entry.mjs";
 
 // Public source contract only. Counts are queried and asserted by scenario(),
 // never substituted for observed values in a receipt.
@@ -38,6 +38,9 @@ const caseManifest = [
  {name:"existing rework reservation guard under pre-held Work cycle rejects after rollback retry",kind:"concurrency",expectedCounts:{runs:1,allocations:1,activeMemberships:1,operationReceipts:0,outputEvents:0,reworkCycles:0}},
  {name:"runtime creation remains default disabled after all native scenarios",kind:"admission",expectedCounts:{runs:0,allocations:0,activeMemberships:0,operationReceipts:0,outputEvents:0,reworkCycles:0}},
 ] as const;
+const diagnostic=process.argv.length===4&&process.argv[2]==="--diagnostic"&&process.argv[3]==="case7";
+assert.ok(process.argv.length===2||diagnostic,"Closed native arguments required");
+const selectedManifest=diagnostic?[caseManifest[6]]:caseManifest;
 
 if(process.env.V2_L0_LANE_F_NATIVE_APPROVED!=="1")throw Error("Lane F native clone approval is required; no connection was opened.");
 const url=requireV2M0CloneDatabaseUrl(),name=decodeURIComponent(new URL(url).pathname.slice(1));
@@ -58,7 +61,13 @@ const invariant=await readFile(new URL("./productionExclusiveMembership.request.
 const suiteHash=createHash("sha256").update(await readFile(new URL(import.meta.url))).update(invariant).digest("hex");
 reportNativeProductionProgress("db-connect");
 const pool=new Pool({connectionString:url,max:2,connectionTimeoutMillis:10000,query_timeout:15000,statement_timeout:15000,lock_timeout:10000});
-const a=await pool.connect().catch(error=>{reportNativeProductionProgress("db-connect",0,error);throw error;}),b=await pool.connect().catch(async error=>{reportNativeProductionProgress("db-connect",0,error);a.release();await pool.end();throw error;});
+const a=await pool.connect().catch(error=>{reportNativeProductionProgress("db-connect",0,error);throw error;}),b=await pool.connect().catch(async error=>{reportNativeProductionProgress("db-connect",0,error);return withNativeCleanup(async()=>{throw error;},async()=>{a.release();await pool.end();});});
+const txstate:{a:string;b:string}={a:"unknown",b:"unknown"};
+// Observe PostgreSQL ReadyForQuery, not an inferred state after a rejected query.
+if(diagnostic)for(const [client,slot] of [[a,"a"],[b,"b"]] as const){
+ const connection=(client as unknown as {connection:{on:(event:string,listener:(message:{status:string})=>void)=>void}}).connection;
+ connection.on("readyForQuery",message=>{txstate[slot]=({I:"idle",T:"transaction",E:"aborted"} as Record<string,string>)[message.status]??"unknown";reportNativeDiagnostic({txstate});});
+}
 reportNativeProductionProgress("fixture");
 const schema=`l0_production_test_${randomUUID().replaceAll("-","")}`;
 let created=false,namespaceDropped=false,contender:Promise<unknown>|undefined;
@@ -106,25 +115,29 @@ const measureCounts=async():Promise<Counts>=>(await a.query<Counts>(`SELECT
 const zeroCounts:Counts={runs:0,allocations:0,activeMemberships:0,operationReceipts:0,outputEvents:0,reworkCycles:0};
 const scenario=async(label:string,action:()=>Promise<void>)=>{
   const spec=caseManifest.find(item=>item.name===label);assert.ok(spec,"Every executed case must have an exact public manifest row");assert.ok(!passed.includes(label));
-  reportNativeProductionProgress("scenario",passed.length+1);
+  const ordinal=caseManifest.indexOf(spec)+1;
+  if(diagnostic&&ordinal!==7)return;
+   reportNativeProductionProgress("scenario",ordinal);
  scenarioName=label;await cleanRows();executionSlots.clear();caseNamespaces=[schema];caseSpecificCounts={};
  casePids={a:(await a.query<{pid:number}>("SELECT pg_backend_pid() pid")).rows[0]!.pid,b:(await b.query<{pid:number}>("SELECT pg_backend_pid() pid")).rows[0]!.pid};
  assert.equal(casePids.a,connectionPids[0]);assert.equal(casePids.b,connectionPids[1]);
  let measured:Counts|undefined,cleanup:Counts|undefined;
  collectingExecution=true;
-   try{await action();collectingExecution=false;if(passed.length===6)reportNativeProductionProgress("scenario",7,null,"post-action-counts");measured={...await measureCounts(),...caseSpecificCounts};assert.deepEqual(measured,spec.expectedCounts);
+    await withNativeCleanup(async()=>{try{await action();collectingExecution=false;if(ordinal===7)reportNativeProductionProgress("scenario",7,null,"post-action-counts");measured={...await measureCounts(),...caseSpecificCounts};assert.deepEqual(measured,spec.expectedCounts);
     const bad=(await a.query<{n:number}>("SELECT count(*)::integer n FROM v2_production_run_allocations x JOIN v2_production_runs r ON r.organization_id=x.organization_id AND r.id=x.production_run_id WHERE x.membership_active IS DISTINCT FROM (x.released_at IS NULL AND r.state IN ('draft','ready','active','held'))")).rows[0]!.n;assert.equal(bad,0);
-    if(passed.length===6)reportNativeProductionProgress("scenario",7,null,"cleanup-evidence");
-  }catch(error){reportNativeProductionProgress("scenario",passed.length+1,error);throw error;
-  }finally{collectingExecution=false;await a.query("ROLLBACK");if(contender)await contender.catch(()=>undefined);contender=undefined;await b.query("ROLLBACK");await cleanRows();cleanup=await measureCounts();assert.deepEqual(cleanup,zeroCounts);}
+     if(ordinal===7)reportNativeProductionProgress("scenario",7,null,"cleanup-evidence");
+   }catch(error){reportNativeProductionProgress("scenario",ordinal,error);throw error;}},async()=>{
+    try{collectingExecution=false;await a.query("ROLLBACK");if(contender)await contender.catch(()=>undefined);contender=undefined;await b.query("ROLLBACK");await cleanRows();cleanup=await measureCounts();assert.deepEqual(cleanup,zeroCounts);reportNativeDiagnostic({cleanup:{rows:"observed",namespace:"unknown"}});}
+    catch(error){reportNativeDiagnostic({cleanup:{rows:"failed",namespace:"unknown"}});throw error;}
+   });
  assert.ok(measured&&cleanup);const observed=waits.filter(wait=>wait.scenario===label);
  const executingBackendPids=[...executionSlots].sort().map(slot=>casePids![slot]);assert.ok(executingBackendPids.length>0,"Case must execute on a measured backend");
  if(spec.kind==="concurrency"){assert.ok(executionSlots.has("a")&&executionSlots.has("b"));assert.notEqual(casePids.a,casePids.b);assert.ok(observed.length>0);}
  caseEvidence.push({name:label,kind:spec.kind,status:"pass",expectedCounts:spec.expectedCounts,measuredCounts:measured,cleanupCounts:cleanup,namespaceIdentifiers:[...caseNamespaces],executingBackendPids,contenders:spec.kind!=="concurrency"?"not_applicable":{backendPidA:casePids.a,backendPidB:casePids.b,distinct:true,blockedWaits:observed.map(wait=>({backendPid:wait.backendPid,waitEventType:"Lock",waitEvent:wait.waitEvent}))}});
   passed.push(label);
-  reportNativeProductionProgress("passed",passed.length);
+   reportNativeProductionProgress("passed",ordinal);
 };
-try{
+await withNativeCleanup(async()=>{try{
   try{
   const ia=(await a.query<{pid:number;db:string}>("SELECT pg_backend_pid() pid,current_database() db")).rows[0]!,ib=(await b.query<{pid:number;db:string}>("SELECT pg_backend_pid() pid,current_database() db")).rows[0]!;
   if(ia.db!==name||ib.db!==name)throw Error("Native target does not match approved clone; no schema created.");assert.notEqual(ia.pid,ib.pid);connectionPids=[ia.pid,ib.pid];serverVersion=Number((await a.query("SHOW server_version_num")).rows[0].server_version_num);assert.ok(serverVersion>=160000);
@@ -151,7 +164,7 @@ try{
    assert.deepEqual(calls,["BEGIN","reserve","rejection","ROLLBACK"]);assert.equal(reservedRows,1,"The real reservation is visible before rollback, not retained afterward.");
    assert.deepEqual(await measureCounts(),zeroCounts);
   });
-  await scenario("raw duplicate same Run member is physically rejected",async()=>{reportNativeProductionProgress("scenario",7,null,"raw-parent-insert");await rawRun("r");reportNativeProductionProgress("scenario",7,null,"first-member-insert");await rawMember(a,"x","r");reportNativeProductionProgress("scenario",7,null,"duplicate-insert");await assert.rejects(()=>rawMember(b,"y","r"),error=>{reportNativeProductionProgress("scenario",7,error,"duplicate-rejection");return (error as {code:string}).code==="23505";});});
+   await scenario("raw duplicate same Run member is physically rejected",async()=>{reportNativeProductionProgress("scenario",7,null,"raw-parent-insert");await rawRun("r");reportNativeProductionProgress("scenario",7,null,"first-member-insert");await rawMember(a,"x","r");reportNativeProductionProgress("scenario",7,null,"duplicate-insert");await assert.rejects(()=>rawMember(b,"y","r"),error=>{reportNativeProductionProgress("scenario",7,error,"duplicate-rejection");reportNativeDiagnostic({error});return (error as {code:string}).code==="23505";});});
  await scenario("raw conflicting Run membership is physically rejected",async()=>{await rawRun("r");await rawRun("s");await rawMember(a,"x","r");await assert.rejects(()=>rawMember(b,"y","s"),error=>(error as {code:string}).code==="23505");});
  for(const [from,to,active] of [["draft","cancelled",false],["cancelled","ready",true]] as const)await scenario(`empty-parent state/INSERT serialized ${from}->${to} (database derivation, not reopen authorization)`,async()=>{await rawRun("r",from);await begin();await a.query("UPDATE v2_production_runs SET state=$1,cancelled_at=CASE WHEN $1='cancelled' THEN now() ELSE cancelled_at END WHERE id='r'",[to]);const insertion=track(rawMember(b,"x","r"));await blocked();await a.query("COMMIT");await insertion;await b.query("COMMIT");assert.equal((await a.query("SELECT membership_active FROM v2_production_run_allocations WHERE id='x'")).rows[0].membership_active,active);});
  await scenario("allocation UPDATE versus parent state takes parent before member tuple",async()=>{await rawRun("r","active");await rawMember(a,"x","r");await begin();await ownerA.transition({...actor,productionRunId:brandedId<"ProductionRunId">("r"),state:"held",transition:"hold"});const update=track(b.query("UPDATE v2_production_run_allocations SET released_at=now() WHERE id='x'"));await blocked();await a.query("COMMIT");await update;await b.query("COMMIT");assert.equal((await a.query("SELECT membership_active FROM v2_production_run_allocations WHERE id='x'")).rows[0].membership_active,false);});
@@ -171,10 +184,13 @@ try{
  await scenario("pre-held Work then statement gate cycle rolls back without membership drift",async()=>{await rawRun("r","active");await rawMember(a,"x","r");await begin();await a.query("SELECT id FROM v2_production_works WHERE id='work-a' FOR UPDATE");const other=track(outcome(ownerB.transition({...actor,productionRunId:brandedId<"ProductionRunId">("r"),state:"held",transition:"hold"})));await blocked();const first=await outcome(a.query("UPDATE v2_production_run_allocations SET position=position WHERE id='x'"));if(first.error)await a.query("ROLLBACK");const second=await other;assert.equal([first.error,second.error].filter(error=>(error as {code?:string}|undefined)?.code==="40P01").length,1);await a.query("ROLLBACK");await b.query("ROLLBACK");await b.query("BEGIN");await ownerB.transition({...actor,productionRunId:brandedId<"ProductionRunId">("r"),state:"held",transition:"hold"});await b.query("COMMIT");});
  await scenario("existing rework reservation guard under pre-held Work cycle rejects after rollback retry",async()=>{await rawRun("r","active");await rawMember(a,"x","r");await begin();await a.query("SELECT id FROM v2_production_works WHERE id='work-a' FOR UPDATE");const other=track(outcome(ownerB.transition({...actor,productionRunId:brandedId<"ProductionRunId">("r"),state:"held",transition:"hold"})));await blocked();const rework=new PostgresProductionTransaction(a);const input={...actor,productionWorkId:brandedId<"ProductionWorkId">("work-a"),reason:"Native existing rework lock interaction",recordedGoodQuantity:0,recordedWasteQuantity:0};const first=await outcome(rework.createReworkSuccessor(input));if(first.error)await a.query("ROLLBACK");const second=await other;assert.equal([first.error,second.error].filter(error=>(error as {code?:string}|undefined)?.code==="40P01").length,1);await a.query("ROLLBACK");await b.query("ROLLBACK");await a.query("BEGIN");await assert.rejects(()=>rework.createReworkSuccessor(input),/Release the active Production Run member/);await a.query("ROLLBACK");assert.equal((await a.query("SELECT count(*)::integer n FROM v2_production_rework_cycles")).rows[0].n,0,"no new lineage or quantity policy is exercised");});
  await scenario("runtime creation remains default disabled after all native scenarios",async()=>{await a.query("BEGIN");const members=await ownerA.lockCandidates(org,[brandedId<"ProductionWorkId">("work-a")]);await assert.rejects(()=>new PostgresProductionRunTransaction(a).create({id:brandedId<"ProductionRunId">("off"),stationKey:"roll",materialFingerprint:null,layoutMetadata:{},members,quantities:new Map([["work-a",5]]),...actor}),/disabled/);await a.query("ROLLBACK");});
-}finally{try{collectingExecution=false;await a.query("ROLLBACK");if(contender)await contender.catch(()=>undefined);await b.query("ROLLBACK");if(created){await a.query(`DROP SCHEMA ${schema} CASCADE`);namespaceDropped=(await a.query<{removed:boolean}>("SELECT to_regnamespace($1) IS NULL removed",[schema])).rows[0]!.removed;assert.equal(namespaceDropped,true);removedNamespaces.add(schema);}}finally{a.release();b.release();await pool.end();}}
-assert.equal(caseManifest.length,28);assert.deepEqual(passed,caseManifest.map(item=>item.name));assert.equal(caseEvidence.length,28);
+}catch(error){reportNativeDiagnostic({error});throw error;}},async()=>{
+ await withNativeCleanup(async()=>{try{collectingExecution=false;await a.query("ROLLBACK");if(contender)await contender.catch(()=>undefined);await b.query("ROLLBACK");if(created){await a.query(`DROP SCHEMA ${schema} CASCADE`);namespaceDropped=(await a.query<{removed:boolean}>("SELECT to_regnamespace($1) IS NULL removed",[schema])).rows[0]!.removed;assert.equal(namespaceDropped,true);removedNamespaces.add(schema);reportNativeDiagnostic({cleanup:{rows:nativeDiagnosticSnapshot()?.cleanup.rows??"unknown",namespace:"observed"}});}}
+ catch(error){reportNativeDiagnostic({cleanup:{rows:nativeDiagnosticSnapshot()?.cleanup.rows??"unknown",namespace:"failed"}});throw error;}},async()=>{a.release();b.release();await pool.end();});
+});
+assert.equal(caseManifest.length,28);assert.deepEqual(passed,selectedManifest.map(item=>item.name));assert.equal(caseEvidence.length,selectedManifest.length);
 const sourceCommitAfter=execFileSync("git",["rev-parse","HEAD"],{cwd:sourceRoot,encoding:"utf8",timeout:5000}).trim();
 const sourceCleanAfter=!execFileSync("git",["status","--porcelain","--untracked-files=normal"],{cwd:sourceRoot,encoding:"utf8",timeout:5000}).trim();
 assert.equal(sourceCommitAfter,sourceCommit);assert.equal(sourceCleanAfter,sourceCleanBefore);
 const caseReceipts=caseEvidence.map(item=>{const namespaces=item.namespaceIdentifiers.map(identifier=>{assert.ok(removedNamespaces.has(identifier));return {identifier,removed:true as const};});return {...item,namespaces};});
-console.log(JSON.stringify({receiptVersion:1,lane:"production",gate:"OPS12-native",suite:"production-exclusive-membership",runner:"tsx",status:"pass",sourceCommit,GITHUB_SHA:githubSha??null,sourceCommitAfter,sourceCleanBefore,sourceCleanAfter,serverVersionNum:serverVersion,suiteHash,manifest:caseManifest,passedCases:caseReceipts.length,failedCases:0,skippedCases:0,pendingCases:0,cases:caseReceipts,runtimeCreationEnabled:false}));
+console.log(JSON.stringify({receiptVersion:1,lane:"production",gate:"OPS12-native",suite:"production-exclusive-membership",runner:"tsx",status:"pass",sourceCommit,GITHUB_SHA:githubSha??null,sourceCommitAfter,sourceCleanBefore,sourceCleanAfter,serverVersionNum:serverVersion,suiteHash,manifest:selectedManifest,passedCases:caseReceipts.length,failedCases:0,skippedCases:0,pendingCases:0,cases:caseReceipts,runtimeCreationEnabled:false,...(diagnostic?{format:"OWNER_NATIVE_DIAGNOSTIC_V1",diagnostic:"case7",ordinal:7,receiptValid:false,coverageAdjudicated:false,allNativeProofClaimed:false,evidence:nativeDiagnosticSnapshot(),exitReason:"completed"}:{})}));
