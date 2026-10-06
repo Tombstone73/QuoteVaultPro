@@ -5046,6 +5046,11 @@ export const invoices = pgTable("invoices", {
   importSource: varchar("import_source", { length: 30 }),            // 'quickbooks' | null
   isHistorical: boolean("is_historical").notNull().default(false),   // true = closed/paid, read-only A/R record
   qbImportBalanceDue: decimal("qb_import_balance_due", { precision: 10, scale: 2 }), // QB Balance snapshot at import time
+  historicalArState: varchar("historical_ar_state", { length: 40 }),
+  historicalArSourceBalanceCents: integer("historical_ar_source_balance_cents"),
+  historicalArApprovedAt: timestamp("historical_ar_approved_at", { withTimezone: true }),
+  historicalArApprovedByUserId: varchar("historical_ar_approved_by_user_id").references(() => users.id, { onDelete: 'restrict' }),
+  historicalArApprovalEvidence: jsonb("historical_ar_approval_evidence").$type<Record<string, unknown>>(),
   importedAt: timestamp("imported_at", { withTimezone: true }),
   lockedReason: text("locked_reason"),                               // e.g. 'historical_import'
   qbDocNumber: text("qb_doc_number"),                                // QB DocNumber (human-readable invoice #)
@@ -5077,6 +5082,7 @@ export const invoices = pgTable("invoices", {
   index("invoices_sync_status_idx").on(table.syncStatus),
   index("invoices_import_source_org_idx").on(table.organizationId, table.importSource),
   index("invoices_is_historical_org_idx").on(table.organizationId, table.isHistorical),
+  index("invoices_historical_ar_state_org_idx").on(table.organizationId, table.historicalArState),
   index("invoices_customer_po_number_org_idx").on(table.organizationId, table.customerPoNumber),
   index("invoices_creation_source_org_idx").on(table.organizationId, table.invoiceCreationSource),
   index("invoices_billing_milestone_org_idx").on(table.organizationId, table.billingMilestone),
@@ -5100,6 +5106,11 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   accountingApprovalRevokedAt: true,
   customerReleasedAt: true,
   customerReleasedByUserId: true,
+  historicalArState: true,
+  historicalArSourceBalanceCents: true,
+  historicalArApprovedAt: true,
+  historicalArApprovedByUserId: true,
+  historicalArApprovalEvidence: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
   status: z.enum(['draft','finalized','billed','paid','void','sent','partially_paid','credit','overdue']).default('draft'),

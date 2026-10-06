@@ -1,5 +1,6 @@
 import { getInvoiceFinancialPaymentEligibility } from '../../shared/paymentOrchestration';
 import { isInvoiceCustomerVisible } from './invoiceCustomerRelease';
+import { resolveHistoricalArState } from '../../shared/historicalArAuthority';
 
 export type CustomerPaymentInvoice = {
   status: string | null;
@@ -13,6 +14,7 @@ export type CustomerPaymentInvoice = {
   externalAccountingId?: string | null;
   lastQbSyncedVersion?: number | null;
   importSource?: string | null;
+  importedAt?: Date | string | null;
   isHistorical?: boolean | null;
 };
 
@@ -21,7 +23,7 @@ export type CustomerPaymentInvoice = {
 export function getInvoiceCustomerPaymentEligibility(invoice: CustomerPaymentInvoice, remainingCents: number) {
   const financial = getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents });
   if (!financial.payable) return financial;
-  if (invoice.isHistorical || invoice.importSource?.trim().toLowerCase() === 'quickbooks') {
+  if (resolveHistoricalArState(invoice) !== null) {
     return { payable: false, blockedReason: 'Payment is not available online for this invoice.' };
   }
   if (!isInvoiceCustomerVisible(invoice)) return { payable: false, blockedReason: 'Not released to customer' };

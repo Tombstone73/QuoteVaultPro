@@ -35,9 +35,10 @@ test.each(['void', 'voided', 'canceled', 'cancelled'])('release cannot make %s p
 test('paid and partially paid balance rules, imported history, and ownership guards remain separate', () => {
   expect(getInvoiceCustomerPaymentEligibility(released, 0).payable).toBe(false);
   expect(getInvoiceCustomerPaymentEligibility({ ...released, status: 'partially_paid' }, 2000).payable).toBe(true);
-  const imported = { ...internal, status: 'paid', importSource: 'quickbooks' };
+  const imported = { ...internal, status: 'paid', importSource: 'quickbooks', historicalArState: 'historical_closed' };
   expect(isInvoiceCustomerVisible(imported)).toBe(true);
   expect(getInvoiceCustomerPaymentEligibility(imported, 5000).payable).toBe(false);
   expect(getInvoiceCustomerReleaseEligibility(imported).eligible).toBe(false);
+  expect(isInvoiceCustomerVisible({ ...imported, historicalArState: 'historical_review_required', customerReleasedAt: new Date() })).toBe(false);
   expect(getInvoiceCustomerReleaseEligibility({ ...internal, customerId: null }).eligible).toBe(false);
 });

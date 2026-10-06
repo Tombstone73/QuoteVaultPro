@@ -47,6 +47,7 @@ import {
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { canonicalInvoiceCustomerId } from "../services/invoiceCustomerProjection";
+import { approvedImportedArSql, importedHistoricalInvoiceSql } from "../lib/historicalArAuthoritySql";
 import {
   CanonicalCustomerContactError,
   canonicalCustomerContactOperations,
@@ -65,6 +66,11 @@ import {
   buildStatementSummary,
 } from "../lib/customerStatementHelpers";
 import { getCustomerAccountCreditSummary, issueCustomerCredit, recordCustomerAdvance, reverseCustomerCredit, reverseCustomerCreditApplication } from "../services/billing/customerAccountCreditOperations";
+
+const customerSafeInvoiceBalanceSql = sql<string>`case
+  when ${importedHistoricalInvoiceSql} then case when ${approvedImportedArSql}
+    then (${invoices.historicalArSourceBalanceCents}::numeric / 100)::text else '0' end
+  else coalesce(${invoices.balanceDue}, '0')::text end`;
 
 const linkExistingContactSchema = z.object({
   setPrimary: z.boolean().optional().default(false),
@@ -876,7 +882,7 @@ export function registerCustomerRelationsRoutes(
             customerPoNumber: invoices.customerPoNumber,
             status: invoices.status,
             total: invoices.total,
-            balanceDue: invoices.balanceDue,
+            balanceDue: customerSafeInvoiceBalanceSql,
             notesPublic: invoices.notesPublic,
           })
           .from(invoices)
@@ -1075,7 +1081,7 @@ export function registerCustomerRelationsRoutes(
 
       // â”€â”€ SUMMARY TOTALS (always from full unfiltered dataset) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const allInvoicesForSummary = await db
-        .select({ total: invoices.total, balanceDue: invoices.balanceDue, status: invoices.status })
+        .select({ total: invoices.total, balanceDue: customerSafeInvoiceBalanceSql, status: invoices.status })
         .from(invoices)
         .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
         .where(and(eq(invoices.organizationId, organizationId), eq(canonicalInvoiceCustomerId, customerId)));
@@ -1386,7 +1392,7 @@ export function registerCustomerRelationsRoutes(
           status:            invoices.status,
           total:             invoices.total,
           amountPaid:        invoices.amountPaid,
-          balanceDue:        invoices.balanceDue,
+          balanceDue:        customerSafeInvoiceBalanceSql,
           customerPoNumber:  invoices.customerPoNumber,
           notesPublic:       invoices.notesPublic,
         })

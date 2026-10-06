@@ -145,7 +145,7 @@ export class PaymentOperationsService {
       if (!intake.invoiceId || !intake.method || intake.amount === undefined) throw new PaymentOperationError("PAYMENT_INPUT_REQUIRED", "Invoice, amount, and method are required.");
       const context = await this.resolveInvoiceContext(organizationId, intake.invoiceId);
       if (isCanceledOrder(context.order)) throw new PaymentOperationError("ORDER_CANCELLED", "Cancelled orders cannot receive payments.");
-      if (String((context.invoice as any).importSource || "").toLowerCase() === "quickbooks") throw new PaymentOperationError("IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "Imported QuickBooks invoices must be reconciled from QuickBooks.");
+      if ((context.invoice as any).importSource || (context.invoice as any).importedAt || (context.invoice as any).isHistorical) throw new PaymentOperationError("IMPORTED_PAYMENT_RECONCILIATION_REQUIRED", "Imported invoice payments require accounting reconciliation.");
       const rollup = computeInvoicePaymentRollup({
         invoiceTotalCents: Math.max(0, Math.round(Number((context.invoice as any).totalCents || 0))),
         payments: context.payments.map((payment) => ({ id: payment.id, status: payment.status, amountCents: Number(payment.amountCents || 0) })),

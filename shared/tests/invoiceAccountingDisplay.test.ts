@@ -90,6 +90,7 @@ describe('normalizeInvoiceAccountingDisplay', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',
       isHistorical: true,
+      historicalArState: 'historical_closed',
       total: '103.55',
       totalCents: 10355,
       amountPaid: '0.00',
@@ -108,6 +109,9 @@ describe('normalizeInvoiceAccountingDisplay', () => {
   test('open imported unpaid invoice uses QuickBooks balance as remaining', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',
+      customerId: 'customer-1', externalAccountingId: 'qb-1',
+      historicalArState: 'historical_open_ar_reconciled', historicalArSourceBalanceCents: 95475,
+      historicalArApprovedAt: '2026-01-01', historicalArApprovedByUserId: 'reviewer', historicalArApprovalEvidence: { sourceInvoiceId: 'qb-1', customerId: 'customer-1', originalCents: 95475, remainingCents: 95475, sourceStatus: 'open', sourceDate: '2025-01-01', paymentEvidence: 'source-ledger' },
       isHistorical: false,
       total: '954.75',
       totalCents: 95475,
@@ -125,6 +129,9 @@ describe('normalizeInvoiceAccountingDisplay', () => {
   test('open imported partial invoice derives paid from total minus QuickBooks balance', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',
+      customerId: 'customer-1', externalAccountingId: 'qb-2',
+      historicalArState: 'historical_open_ar_reconciled', historicalArSourceBalanceCents: 2500,
+      historicalArApprovedAt: '2026-01-01', historicalArApprovedByUserId: 'reviewer', historicalArApprovalEvidence: { sourceInvoiceId: 'qb-2', customerId: 'customer-1', originalCents: 10000, remainingCents: 2500, sourceStatus: 'open', sourceDate: '2025-01-01', paymentEvidence: 'source-ledger' },
       isHistorical: false,
       total: '100.00',
       totalCents: 10000,
@@ -139,9 +146,12 @@ describe('normalizeInvoiceAccountingDisplay', () => {
     expect(normalized.displayStatus).toBe('Partially Paid');
   });
 
-  test('open imported invoice subtracts unreconciled local payments from QuickBooks snapshot', () => {
+  test('approved source balance is authoritative; local Payment rows are diagnostics, not inferred debt changes', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',
+      customerId: 'customer-1', externalAccountingId: 'qb-3',
+      historicalArState: 'historical_open_ar_reconciled', historicalArSourceBalanceCents: 10000,
+      historicalArApprovedAt: '2026-01-01', historicalArApprovedByUserId: 'reviewer', historicalArApprovalEvidence: { sourceInvoiceId: 'qb-3', customerId: 'customer-1', originalCents: 10000, remainingCents: 10000, sourceStatus: 'open', sourceDate: '2025-01-01', paymentEvidence: 'source-ledger' },
       isHistorical: false,
       total: '100.00',
       totalCents: 10000,
@@ -155,9 +165,9 @@ describe('normalizeInvoiceAccountingDisplay', () => {
       ],
     });
 
-    expect(normalized.displayPaid).toBe(40);
-    expect(normalized.displayRemaining).toBe(60);
-    expect(normalized.displayStatus).toBe('Partially Paid');
+    expect(normalized.displayPaid).toBe(0);
+    expect(normalized.displayRemaining).toBe(100);
+    expect(normalized.displayStatus).toBe('Unpaid');
     expect(normalized.importedQuickBooksPaymentSummary.pendingSyncCents).toBe(2500);
     expect(normalized.importedQuickBooksPaymentSummary.syncedUnreconciledCents).toBe(1500);
     expect(normalized.importedQuickBooksPaymentSummary.unreconciledCents).toBe(4000);
@@ -166,6 +176,9 @@ describe('normalizeInvoiceAccountingDisplay', () => {
   test('reconciled imported payments stop reducing remaining balance twice', () => {
     const normalized = normalizeInvoiceAccountingDisplay({
       importSource: 'quickbooks',
+      customerId: 'customer-1', externalAccountingId: 'qb-4',
+      historicalArState: 'historical_open_ar_reconciled', historicalArSourceBalanceCents: 6000,
+      historicalArApprovedAt: '2026-01-01', historicalArApprovedByUserId: 'reviewer', historicalArApprovalEvidence: { sourceInvoiceId: 'qb-4', customerId: 'customer-1', originalCents: 10000, remainingCents: 6000, sourceStatus: 'open', sourceDate: '2025-01-01', paymentEvidence: 'source-ledger' },
       isHistorical: false,
       total: '100.00',
       totalCents: 10000,
@@ -198,9 +211,9 @@ describe('resolveInvoicePdfFinancialSummary', () => {
     ['native partial', { totalCents: 10000, status: 'billed', payments: [{ status: 'succeeded', amountCents: 6000 }] }, { totalCents: 10000, amountPaidCents: 6000, amountDueCents: 4000, creditCents: 0, statusLabel: 'Partially Paid' }],
     ['native paid', { totalCents: 10000, status: 'paid', payments: [{ status: 'captured', amountCents: 10000 }] }, { totalCents: 10000, amountPaidCents: 10000, amountDueCents: 0, creditCents: 0, statusLabel: 'Paid' }],
     ['native credit due after Order price decrease', { totalCents: 45000, status: 'credit', payments: [{ status: 'succeeded', amountCents: 50000 }] }, { totalCents: 45000, amountPaidCents: 50000, amountDueCents: 0, creditCents: 5000, statusLabel: 'Credit / Refund Due' }],
-    ['imported QuickBooks unpaid', { totalCents: 10000, status: 'billed', importSource: 'quickbooks', qbImportBalanceDue: '100.00' }, { totalCents: 10000, amountPaidCents: 0, amountDueCents: 10000, creditCents: 0, statusLabel: 'Unpaid' }],
-    ['imported QuickBooks partial', { totalCents: 10000, status: 'billed', importSource: 'quickbooks', qbImportBalanceDue: '40.00' }, { totalCents: 10000, amountPaidCents: 6000, amountDueCents: 4000, creditCents: 0, statusLabel: 'Partially Paid' }],
-    ['historical QuickBooks paid without local payments', { totalCents: 6000, status: 'paid', importSource: 'quickbooks', isHistorical: true, qbImportBalanceDue: '0.00', payments: [] }, { totalCents: 6000, amountPaidCents: 6000, amountDueCents: 0, creditCents: 0, statusLabel: 'Paid' }],
+    ['unapproved QuickBooks balance', { totalCents: 10000, status: 'billed', importSource: 'quickbooks', qbImportBalanceDue: '100.00' }, { totalCents: 10000, amountPaidCents: 0, amountDueCents: 0, creditCents: 0, statusLabel: 'Historical Review Required' }],
+    ['approved imported partial', { totalCents: 10000, status: 'billed', importSource: 'quickbooks', customerId: 'customer-1', externalAccountingId: 'qb-5', historicalArState: 'historical_open_ar_reconciled', historicalArSourceBalanceCents: 4000, historicalArApprovedAt: '2026-01-01', historicalArApprovedByUserId: 'reviewer', historicalArApprovalEvidence: { sourceInvoiceId: 'qb-5', customerId: 'customer-1', originalCents: 10000, remainingCents: 4000, sourceStatus: 'open', sourceDate: '2025-01-01', paymentEvidence: 'source-ledger' } }, { totalCents: 10000, amountPaidCents: 6000, amountDueCents: 4000, creditCents: 0, statusLabel: 'Partially Paid' }],
+    ['historical QuickBooks paid without local payments', { totalCents: 6000, status: 'paid', importSource: 'quickbooks', isHistorical: true, historicalArState: 'historical_closed', qbImportBalanceDue: '0.00', payments: [] }, { totalCents: 6000, amountPaidCents: 6000, amountDueCents: 0, creditCents: 0, statusLabel: 'Paid' }],
     ['native refund', { totalCents: 750, status: 'paid', payments: [{ status: 'succeeded', amountCents: 750 }, { status: 'refunded', amountCents: 200 }] }, { totalCents: 750, amountPaidCents: 550, amountDueCents: 200, creditCents: 0, statusLabel: 'Partially Paid' }],
   ])('%s keeps every PDF field on the canonical financial projection', (_name, invoice, expected) => {
     expect(resolveInvoicePdfFinancialSummary(invoice)).toEqual(expected);

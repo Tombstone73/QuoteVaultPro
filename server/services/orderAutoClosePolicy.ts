@@ -2,6 +2,7 @@ import { assessOrderCloseEligibility, type OrderCloseEligibility } from "./order
 
 import { deriveOrderPaymentSummary, isApplicableOrderInvoice } from '@shared/orderPaymentSummary';
 import type { InvoiceAccountingDisplayInput } from '@shared/invoiceAccountingDisplay';
+import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 export { isApplicableOrderInvoice } from '@shared/orderPaymentSummary';
 type ReconciliationInvoice = InvoiceAccountingDisplayInput;
 
@@ -15,6 +16,7 @@ function isTerminalFulfillment(fulfillmentStatus: unknown): boolean {
 }
 
 function isFinanciallySettled(invoice: ReconciliationInvoice): boolean {
+  if (resolveHistoricalArState(invoice) === 'historical_review_required') return false;
   return deriveOrderPaymentSummary([invoice]).remainingCents === 0;
 }
 

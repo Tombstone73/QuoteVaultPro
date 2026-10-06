@@ -18,6 +18,7 @@
 
 import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db } from './db';
+import { importedHistoricalInvoiceSql } from './lib/historicalArAuthoritySql';
 import {
   customers,
   invoiceReminderLogs,
@@ -257,6 +258,7 @@ export async function getCandidateInvoicesForReminderRun(
       and(
         eq(invoices.organizationId, organizationId),
         eq(invoices.isHistorical, false),
+        sql`not (${importedHistoricalInvoiceSql})`,
         sql`${invoices.status} NOT IN ('draft', 'void')`,
         isNotNull(invoices.dueDate),
         sql`${invoices.balanceDue}::numeric > 0`,

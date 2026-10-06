@@ -32,8 +32,10 @@ test('historical QuickBooks imports cannot become outbound queue candidates', ()
 
   expect(importer).toContain("importSource: 'quickbooks'");
   expect(importer).toContain("qbSyncStatus: 'synced'");
-  expect(worker).toContain("ne(invoices.importSource, 'quickbooks')");
-  expect(worker).toContain("QuickBooks-imported invoices are not exported back to QuickBooks.");
+  expect(worker).toContain('sql`not (${importedHistoricalInvoiceSql})`');
+  expect(worker).toContain("and nullif(trim(coalesce(i.import_source, '')), '') is null");
+  expect(worker).toContain('and i.historical_ar_state is null');
+  expect(worker).toContain('Imported invoices are not exported to QuickBooks through native sync.');
   expect(worker).toContain("Invoice is no longer pending sync.");
 });
 

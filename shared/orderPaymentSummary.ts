@@ -1,8 +1,9 @@
 import { normalizeInvoiceAccountingDisplay, type InvoiceAccountingDisplayInput } from './invoiceAccountingDisplay';
 import { blockedInvoiceStatuses } from './paymentOrchestration';
+import { resolveHistoricalArState } from './historicalArAuthority';
 
 export type OrderPaymentSummary = {
-  status: 'not_invoiced' | 'unpaid' | 'partial' | 'paid' | 'credit';
+  status: 'not_invoiced' | 'unpaid' | 'partial' | 'paid' | 'credit' | 'review_required';
   label: string;
   invoiceCount: number;
   totalCents: number;
@@ -25,12 +26,13 @@ export function deriveOrderPaymentSummary(invoices: readonly InvoiceAccountingDi
     remainingCents: sum.remainingCents + invoice.displayRemainingCents,
     creditCents: sum.creditCents + invoice.creditCents,
   }), { totalCents: 0, paidCents: 0, remainingCents: 0, creditCents: 0 });
-  const status: OrderPaymentSummary['status'] = active.length === 0 ? 'not_invoiced'
+  const status: OrderPaymentSummary['status'] = active.some((invoice) => resolveHistoricalArState(invoice) === 'historical_review_required') ? 'review_required'
+    : active.length === 0 ? 'not_invoiced'
     : totals.remainingCents > 0 ? (totals.paidCents > 0 ? 'partial' : 'unpaid')
     : totals.creditCents > 0 ? 'credit'
     : totals.totalCents > 0 ? 'paid'
     // Invoice accounting/PDF payment labels do not call zero-value invoices Paid.
     : 'unpaid';
-  const labels = { not_invoiced: 'Not invoiced', unpaid: 'Unpaid', partial: 'Partially Paid', paid: 'Paid', credit: 'Credit / Refund Due' };
+  const labels = { not_invoiced: 'Not invoiced', unpaid: 'Unpaid', partial: 'Partially Paid', paid: 'Paid', credit: 'Credit / Refund Due', review_required: 'Accounting review required' };
   return { status, label: labels[status], invoiceCount: active.length, ...totals };
 }

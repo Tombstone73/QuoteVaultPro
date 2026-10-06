@@ -69,10 +69,11 @@ describe("order auto-close policy adapter", () => {
    expect(assess({ invoices: [{ status: 'billed', totalCents: 0, payments: [] }] }).action).toBe('closed');
    expect(assess({ invoices: [] }).action).toBe('not_eligible');
  });
- test('QB imported balance and unreconciled canonical payment follow display authority', () => {
+ test('unapproved QB imported balance cannot close an Order based on missing local Payment evidence', () => {
    const imported = { status: 'billed', importSource: 'quickbooks', totalCents: 13000, qbImportBalanceDue: '130', payments: [{ status: 'succeeded', amountCents: 13000 }] };
-   expect(assess({ invoices: [imported] }).action).toBe('closed');
+   expect(assess({ invoices: [imported] }).action).toBe('not_eligible');
    expect(assess({ invoices: [{ ...imported, payments: [{ ...imported.payments[0], qbReconciledAt: '2026-09-28' }] }] }).action).toBe('not_eligible');
+   expect(assess({ invoices: [{ ...imported, historicalArState: 'historical_closed' }] }).action).toBe('closed');
  });
  test('refund does not silently reopen an already closed Order', () => {
    expect(assess({ state: 'closed', invoices: [unpaidInvoice] })).toEqual({ action: 'no_op', reason: 'ORDER_CLOSED' });

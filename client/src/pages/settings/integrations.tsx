@@ -230,6 +230,7 @@ type QBInvoiceImportResult = {
   failed: number;
   importedOpenAr: number;
   importedHistorical: number;
+  stagedForReview?: number;
   errors: string[];
 };
 
@@ -785,6 +786,7 @@ export default function SettingsIntegrations() {
       const parts: string[] = [];
       if (r.importedOpenAr > 0) parts.push(`${r.importedOpenAr} as Open A/R`);
       if (r.importedHistorical > 0) parts.push(`${r.importedHistorical} as Historical`);
+      if (r.stagedForReview) parts.push(`${r.stagedForReview} staged for A/R review (not customer debt)`);
       if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
       if (r.excluded > 0) parts.push(`${r.excluded} excluded`);
       if (r.failed > 0) parts.push(`${r.failed} failed`);
@@ -1218,15 +1220,15 @@ export default function SettingsIntegrations() {
                       </div>
                       {importSummary && importSummary.importable > 0 && (
                         <p className="text-xs text-muted-foreground">
-                          {[importSummary.openAr > 0 && `${importSummary.openAr} as Open A/R`, importSummary.historical > 0 && `${importSummary.historical} as Historical`, importSummary.skipped > 0 && `${importSummary.skipped} skip`, importSummary.excluded > 0 && `${importSummary.excluded} excluded`].filter(Boolean).join(' · ')}
+                          {[importSummary.openAr > 0 && `${importSummary.openAr} will be staged for A/R review`, importSummary.historical > 0 && `${importSummary.historical} zero-balance historical`, importSummary.skipped > 0 && `${importSummary.skipped} skip`, importSummary.excluded > 0 && `${importSummary.excluded} excluded`].filter(Boolean).join(' · ')}
                         </p>
                       )}
                       <div className="grid grid-cols-2 gap-2">
                         <Button className="w-full" onClick={() => handleImportInvoices('open_ar')} disabled={selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview} variant="outline" size="sm" title="Override only the selected records on this page">
-                          Override selected → Open A/R
+                          Stage selected for A/R review
                         </Button>
                         <Button className="w-full" onClick={() => handleImportInvoices('historical')} disabled={selectedQBIds.size === 0 || isImportingInvoices || isLoadingPreview} variant="outline" size="sm" title="Override only the selected records on this page">
-                          Override selected → Historical
+                          Mark selected zero-balance historical
                         </Button>
                       </div>
                     </div>
@@ -1386,7 +1388,7 @@ export default function SettingsIntegrations() {
                                       <SelectContent>
                                         <SelectItem value="suggested">Suggested</SelectItem>
                                         <SelectItem value="historical">Historical</SelectItem>
-                                        <SelectItem value="open_ar">Open A/R</SelectItem>
+                                        <SelectItem value="open_ar">Open source balance — stage for review</SelectItem>
                                         <SelectItem value="skip">Skip</SelectItem>
                                       </SelectContent>
                                     </Select>
@@ -1567,7 +1569,7 @@ export default function SettingsIntegrations() {
                       </Table>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      "Import as Open A/R" or "Import as Historical" applies the chosen classification to all selected rows. Historical invoices are read-only records and do not trigger production workflows.
+                      Positive-balance records are staff-only review items, never customer debt at import. Only source-verified zero-balance records become closed historical invoices. This screen cannot approve open A/R.
                     </p>
                   </div>
                 )}

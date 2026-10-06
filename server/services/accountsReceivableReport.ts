@@ -6,6 +6,7 @@ import { getOrganizationTimezone } from './orderDueDateService';
 import { getInvoiceSendStatuses } from '../invoicesService';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
 import { normalizeInvoiceAccountingDisplay } from '@shared/invoiceAccountingDisplay';
+import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 import {
   getAccountsReceivableAging,
   isAccountsReceivableRowOverdue,
@@ -123,7 +124,9 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
   const rows: AccountsReceivableRow[] = [];
   for (const source of sourceRows) {
     const invoice = source.invoice;
-    const accountingApproval = getInvoiceAccountingApprovalState(invoice as any);
+    const accountingApproval = resolveHistoricalArState(invoice) === 'historical_open_ar_reconciled'
+      ? 'approved'
+      : getInvoiceAccountingApprovalState(invoice as any);
     const display = normalizeInvoiceAccountingDisplay({ ...(invoice as any), payments: paymentsByInvoice.get(invoice.id) || [] });
     if (!qualifiesForAccountsReceivable({
       accountingApproval,

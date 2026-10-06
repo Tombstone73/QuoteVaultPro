@@ -67,6 +67,11 @@ export async function reconcileOrderAutoClose(input: {
       amountPaid: invoices.amountPaid, balanceDue: invoices.balanceDue,
       importSource: invoices.importSource, isHistorical: invoices.isHistorical,
       qbImportBalanceDue: invoices.qbImportBalanceDue,
+      historicalArState: invoices.historicalArState,
+      historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+      historicalArApprovedAt: invoices.historicalArApprovedAt,
+      historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+      historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
     })
       .from(invoices).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.orderId, input.orderId)));
     const invoiceRows = await loadOrderInvoicePaymentEvidence(tx, input.organizationId, invoiceFacts);

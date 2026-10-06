@@ -1093,6 +1093,11 @@ export class OrdersRepository {
                 importSource: invoices.importSource,
                 isHistorical: invoices.isHistorical,
                 qbImportBalanceDue: invoices.qbImportBalanceDue,
+                historicalArState: invoices.historicalArState,
+                historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+                historicalArApprovedAt: invoices.historicalArApprovedAt,
+                historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+                historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
             }).from(invoices).where(and(
                 eq(invoices.organizationId, organizationId),
                 inArray(invoices.orderId, orderIds),
@@ -1297,6 +1302,11 @@ export class OrdersRepository {
                     importSource: invoices.importSource,
                     isHistorical: invoices.isHistorical,
                     qbImportBalanceDue: invoices.qbImportBalanceDue,
+                    historicalArState: invoices.historicalArState,
+                    historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+                    historicalArApprovedAt: invoices.historicalArApprovedAt,
+                    historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+                    historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
                 })
                 .from(invoices)
                 .where(and(eq(invoices.organizationId, organizationId), inArray(invoices.orderId, orderIds)))

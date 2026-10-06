@@ -2,6 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../../db";
 import { invoices, orders, payments } from "../../../shared/schema";
 import { normalizeInvoiceAccountingDisplay } from "../../../shared/invoiceAccountingDisplay";
+import { resolveHistoricalArState } from "../../../shared/historicalArAuthority";
 import { resolveHostedPaymentProvider, type ConfiguredPaymentProvider, type HostedPaymentProvider } from "../../../shared/paymentProviderResolution";
 import {
   getInvoiceFinancialPaymentEligibility,
@@ -33,6 +34,7 @@ function buildDisplayNumber(invoice: Record<string, any>): string | null {
 
 function getImportedQuickBooksBlockReason(invoice: Record<string, any>, remainingBalanceCents: number): string | null {
   if (String(invoice.importSource || "").trim().toLowerCase() !== "quickbooks") return null;
+  if (resolveHistoricalArState(invoice) !== 'historical_open_ar_reconciled') return "Imported invoice is not approved as open A/R.";
   if (Boolean(invoice.isHistorical)) return "Historical imported QuickBooks invoices cannot accept payments.";
   if (!String(invoice.qbInvoiceId || "").trim()) return "Imported QuickBooks invoice is missing its QuickBooks Invoice ID.";
   if (remainingBalanceCents <= 0) return "Invoice is already paid.";

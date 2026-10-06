@@ -5,6 +5,7 @@ import { asc, count, desc, eq, and, ilike, inArray, isNull, notInArray, or, sql,
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
 import { normalizeInvoiceAccountingDisplay } from '../shared/invoiceAccountingDisplay';
+import { approvedImportedArSql, importedHistoricalInvoiceSql } from './lib/historicalArAuthoritySql';
 import { formatSharedInvoiceNumber } from '../shared/documentNumbering';
 import {
   allocateDocumentNumber,
@@ -379,20 +380,10 @@ function canonicalInvoiceRemainingCentsExpression(organizationId: string) {
     where ${payments.invoiceId} = ${invoices.id}
       and ${payments.organizationId} = ${organizationId}
   ), 0)`;
-  const quickBooksUnreconciledCents = sql`coalesce((
-    select sum(${payments.amountCents})
-    from ${payments}
-    where ${payments.invoiceId} = ${invoices.id}
-      and ${payments.organizationId} = ${organizationId}
-      and lower(${payments.status}) in ('succeeded', 'captured')
-      and ${payments.qbReconciledAt} is null
-  ), 0)`;
   return sql`case
-    when lower(coalesce(${invoices.importSource}, '')) = 'quickbooks' then least(
-      greatest(coalesce(${invoices.totalCents}, 0), 0),
-      greatest(0, round(coalesce(${invoices.qbImportBalanceDue}, ${invoices.balanceDue}, '0')::numeric * 100) -
-        case when coalesce(${invoices.isHistorical}, false) then 0 else ${quickBooksUnreconciledCents} end)
-    )
+    when ${importedHistoricalInvoiceSql} then case when ${approvedImportedArSql}
+      then least(greatest(coalesce(${invoices.totalCents}, 0), 0), ${invoices.historicalArSourceBalanceCents})
+      else 0 end
     else greatest(0, coalesce(${invoices.totalCents}, 0) - greatest(0, ${paymentNetCents}))
   end`;
 }
@@ -405,8 +396,7 @@ function canonicalInvoiceRemainingCentsExpression(organizationId: string) {
 function canonicalInvoiceUnpaidDisplayExpression(organizationId: string) {
   const remainingCents = canonicalInvoiceRemainingCentsExpression(organizationId);
   const totalCents = sql`greatest(0, coalesce(${invoices.totalCents}, 0))`;
-  const isQuickBooks = sql`lower(coalesce(${invoices.importSource}, '')) = 'quickbooks'`;
-  const isHistorical = sql`coalesce(${invoices.isHistorical}, false)`;
+  const isQuickBooks = importedHistoricalInvoiceSql;
   const isVoided = sql`lower(coalesce(${invoices.status}, '')) in ('void', 'voided')`;
 
   // Native invoices are Unpaid precisely when their settlement rollup has no
@@ -415,7 +405,7 @@ function canonicalInvoiceUnpaidDisplayExpression(organizationId: string) {
   // non-historical, still have a balance, and have no paid portion.
   return sql`not (${isVoided}) and (
     (not (${isQuickBooks}) and ${remainingCents} >= ${totalCents})
-    or (${isQuickBooks} and not (${isHistorical}) and ${remainingCents} > 0
+    or (${isQuickBooks} and ${approvedImportedArSql} and ${remainingCents} > 0
       and greatest(0, ${totalCents} - ${remainingCents}) <= 0)
   )`;
 }

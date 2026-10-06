@@ -1,6 +1,7 @@
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from './rollups/invoicePaymentRollup';
+import { approvedHistoricalArBalanceCents, resolveHistoricalArState, type HistoricalArAuthorityInput } from './historicalArAuthority';
 
-export type InvoiceAccountingDisplayInput = {
+export type InvoiceAccountingDisplayInput = HistoricalArAuthorityInput & {
   status?: string | null;
   total?: string | number | null;
   totalCents?: number | null;
@@ -222,6 +223,7 @@ export function normalizeInvoiceAccountingDisplay(
 ): InvoiceAccountingDisplay {
   const rawStatus = String(invoice.status || '').trim().toLowerCase();
   const isImportedFromQuickBooks = String(invoice.importSource || '').trim().toLowerCase() === 'quickbooks';
+  const historicalArState = resolveHistoricalArState(invoice);
   const isHistorical = Boolean(invoice.isHistorical);
   const importedQuickBooksPaymentSummary = summarizeImportedQuickBooksPayments(invoice.payments);
   const hasPaymentRows = Array.isArray(invoice.payments);
@@ -229,12 +231,6 @@ export function normalizeInvoiceAccountingDisplay(
   const displayTotalCents = invoice.totalCents != null
     ? Math.max(0, Math.round(Number(invoice.totalCents)))
     : moneyToCents(invoice.total);
-
-  const qbBalanceSnapshotCents = isImportedFromQuickBooks && invoice.qbImportBalanceDue != null
-    ? moneyToCents(invoice.qbImportBalanceDue)
-    : invoice.balanceDue != null
-      ? moneyToCents(invoice.balanceDue)
-      : Math.max(0, displayTotalCents - moneyToCents(invoice.amountPaid));
 
   const nativePaymentRollup = computeInvoicePaymentRollup({
     invoiceTotalCents: displayTotalCents,
@@ -247,22 +243,23 @@ export function normalizeInvoiceAccountingDisplay(
       : [],
   });
 
-  const rawRemainingCents = isImportedFromQuickBooks
-    ? (!isHistorical && hasPaymentRows
-        ? Math.max(0, qbBalanceSnapshotCents - importedQuickBooksPaymentSummary.unreconciledCents)
-        : qbBalanceSnapshotCents)
+  const rawRemainingCents = historicalArState
+    ? approvedHistoricalArBalanceCents(invoice)
     : nativePaymentRollup.amountDueCents;
 
   const displayRemainingCents = Math.max(0, Math.min(displayTotalCents, rawRemainingCents));
 
-  const rawPaidCents = isImportedFromQuickBooks
-    ? Math.max(0, displayTotalCents - displayRemainingCents)
+  const rawPaidCents = historicalArState
+    ? historicalArState === 'historical_review_required'
+      ? moneyToCents(invoice.amountPaid)
+      : Math.max(0, displayTotalCents - displayRemainingCents)
     : nativePaymentRollup.amountPaidCents;
 
   const displayPaidCents = Math.max(0, rawPaidCents);
-  const creditCents = isImportedFromQuickBooks ? 0 : Math.max(0, displayPaidCents - displayTotalCents);
-  const isFullyPaid = creditCents === 0 && displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents >= displayTotalCents;
-  const paymentStatusLabel = centsToPaymentStatusLabel({
+  const creditCents = historicalArState ? 0 : Math.max(0, displayPaidCents - displayTotalCents);
+  const isFullyPaid = historicalArState !== 'historical_review_required'
+    && creditCents === 0 && displayTotalCents > 0 && displayRemainingCents <= 0 && displayPaidCents >= displayTotalCents;
+  const paymentStatusLabel = historicalArState === 'historical_review_required' ? 'Historical Review Required' : centsToPaymentStatusLabel({
     rawStatus,
     paidCents: displayPaidCents,
     remainingCents: displayRemainingCents,
@@ -275,20 +272,12 @@ export function normalizeInvoiceAccountingDisplay(
     displayStatus = 'Voided';
   } else if (rawStatus === 'draft') {
     displayStatus = creditCents > 0 ? 'Credit / Refund Due' : paymentStatusLabel;
-  } else if (isImportedFromQuickBooks) {
-    if (isHistorical) {
-      if (displayRemainingCents <= 0) displayStatus = 'Paid Historical';
-      else if (displayPaidCents <= 0) displayStatus = 'Historical Unpaid';
-      else displayStatus = 'Historical Partial';
-    } else if (displayRemainingCents <= 0 && importedQuickBooksPaymentSummary.unreconciledCents > 0) {
-      displayStatus = 'Paid, pending QB sync';
-    } else if (displayRemainingCents <= 0) {
-      displayStatus = 'Paid';
-    } else if (displayPaidCents <= 0) {
-      displayStatus = INVOICE_UNPAID_DISPLAY_STATUS;
-    } else {
-      displayStatus = 'Partially Paid';
-    }
+  } else if (historicalArState) {
+    if (historicalArState === 'historical_review_required') displayStatus = 'Historical Review Required';
+    else if (historicalArState === 'historical_closed') displayStatus = 'Paid Historical';
+    else if (displayRemainingCents <= 0) displayStatus = 'Paid';
+    else if (displayPaidCents <= 0) displayStatus = INVOICE_UNPAID_DISPLAY_STATUS;
+    else displayStatus = 'Partially Paid';
   } else if (creditCents > 0) {
     displayStatus = 'Credit / Refund Due';
   } else if (!rawStatus) {

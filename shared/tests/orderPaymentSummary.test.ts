@@ -1,5 +1,10 @@
 import { describe, expect, test } from '@jest/globals';
 import { deriveOrderPaymentSummary } from '../orderPaymentSummary';
+
+test('unapproved imported invoice is accounting review, not paid or customer debt', () => {
+  expect(deriveOrderPaymentSummary([{ status: 'billed', importSource: 'quickbooks', totalCents: 13000, payments: [] }]))
+    .toMatchObject({ status: 'review_required', remainingCents: 0 });
+});
 import type { InvoiceAccountingDisplayInput } from '../invoiceAccountingDisplay';
 
 const invoice = (totalCents = 13000, paidCents = 0, overrides: InvoiceAccountingDisplayInput = {}) => ({
@@ -28,7 +33,7 @@ describe('canonical Order payment summary', () => {
   test('20222-style legacy Unpaid never overrides canonical Paid, including QB imports', () => {
     const order = { orderNumber: '20222', paymentStatus: 'unpaid' };
     for (const associatedInvoice of [invoice(13000, 13000), invoice(13000, 0, {
-      importSource: 'quickbooks', qbImportBalanceDue: '0.00', status: 'paid',
+      importSource: 'quickbooks', historicalArState: 'historical_closed', qbImportBalanceDue: '0.00', status: 'paid',
     })]) {
       const projected = { ...order, paymentSummary: deriveOrderPaymentSummary([associatedInvoice]) };
       expect(projected.paymentSummary).toMatchObject({ label: 'Paid', paidCents: 13000, remainingCents: 0 });

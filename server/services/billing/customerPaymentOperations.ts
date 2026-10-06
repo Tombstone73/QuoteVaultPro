@@ -7,6 +7,7 @@ import { getInvoiceFinancialPaymentEligibility } from "../../../shared/paymentOr
 import { resolveCanonicalInvoiceCustomerOwnership } from "../../../shared/invoiceCustomerOwnership";
 import { lockInvoicePaymentContext } from "../invoicePaymentSession.service";
 import { isCanceledOrder } from "../../../shared/operationalState";
+import { resolveHistoricalArState } from "../../../shared/historicalArAuthority";
 
 export class CustomerPaymentOperationError extends Error { constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); } }
 const heldQuickBooksReason = "Grouped customer payment is held for accounting review; grouped QuickBooks payment sync is not yet enabled.";
@@ -27,6 +28,7 @@ async function load(tx: any, organizationId: string, ids: string[], staffSelecti
   const byInvoice = new Map<string, any[]>(); for (const row of paymentRows) byInvoice.set(row.invoiceId, [...(byInvoice.get(row.invoiceId) || []), row]);
   return rows.map((row: any) => {
     const invoice = row.invoice; const order = row.order;
+    if (resolveHistoricalArState(invoice) !== null) throw new CustomerPaymentOperationError("IMPORTED_AR_PAYMENT_REVIEW_REQUIRED", "Imported invoice payments require a separately approved reconciliation workflow.");
     if (!staffSelection && String(invoice.importSource || "").toLowerCase() === "quickbooks") throw new CustomerPaymentOperationError("IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "Imported QuickBooks invoices must be reconciled from QuickBooks.");
     if (invoice.orderId && (!order || (!staffSelection && isCanceledOrder(order)))) throw new CustomerPaymentOperationError(order ? "ORDER_CANCELLED" : "ORDER_NOT_FOUND", order ? "Cancelled orders cannot receive payments." : "The invoice order is unavailable.");
     const owner = resolveCanonicalInvoiceCustomerOwnership({ invoiceCustomerId: invoice.customerId, invoiceContactId: invoice.contactId, invoiceImportSource: invoice.importSource, linkedOrderId: invoice.orderId, linkedOrderCustomerId: order?.customerId, linkedOrderContactId: order?.contactId });

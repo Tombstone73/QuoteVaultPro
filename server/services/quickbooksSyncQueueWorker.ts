@@ -1,4 +1,6 @@
-import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { resolveHistoricalArState } from '@shared/historicalArAuthority';
+import { importedHistoricalInvoiceSql } from '../lib/historicalArAuthoritySql';
 import { randomUUID } from "node:crypto";
 import { db } from "../db";
 import { auditLogs, customers, invoices, oauthConnections, payments } from "../../shared/schema";
@@ -218,8 +220,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
     .from(invoices)
     .where(and(
       eq(invoices.organizationId, organizationId),
-      or(isNull(invoices.importSource), ne(invoices.importSource, 'quickbooks')),
-      eq(invoices.isHistorical, false),
+      sql`not (${importedHistoricalInvoiceSql})`,
     ));
 
   const [paymentCounts] = await db
@@ -234,8 +235,7 @@ export async function getQuickBooksSyncQueueCountsForOrg(params: {
     .innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId)))
     .where(and(
       eq(payments.organizationId, organizationId),
-      or(isNull(invoices.importSource), ne(invoices.importSource, 'quickbooks')),
-      eq(invoices.isHistorical, false),
+      sql`not (${importedHistoricalInvoiceSql})`,
     ));
 
   return {
@@ -598,8 +598,10 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       left join orders o on o.id = i.order_id and o.organization_id = i.organization_id
       left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
       where i.organization_id = ${params.organizationId}
-        and (i.import_source is null or i.import_source <> 'quickbooks')
+        and nullif(trim(coalesce(i.import_source, '')), '') is null
+        and i.imported_at is null
         and i.is_historical = false
+        and i.historical_ar_state is null
         and (
           i.qb_sync_status = 'synced'
           or (i.accounting_approved_at is not null and i.accounting_approval_revoked_at is null and i.accounting_approved_version = i.invoice_version)
@@ -669,8 +671,10 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       left join customers bc on bc.id = b.customer_id and bc.organization_id = b.organization_id
       left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
       where p.organization_id = ${params.organizationId}
-        and (i.import_source is null or i.import_source <> 'quickbooks')
+        and nullif(trim(coalesce(i.import_source, '')), '') is null
+        and i.imported_at is null
         and i.is_historical = false
+        and i.historical_ar_state is null
         and (
           p.external_accounting_id is not null
           or p.sync_status in ('synced', 'pending', 'failed', 'error')
@@ -883,7 +887,7 @@ export async function enqueueSelectedQuickBooksSyncForOrg(params: {
     if (item.resourceType === 'invoice') {
       const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, item.id), eq(invoices.organizationId, params.organizationId))).limit(1);
       if (!invoice) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
-      if (String(invoice.importSource || '').toLowerCase() === 'quickbooks' || invoice.isHistorical) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'QuickBooks-imported invoices are not exported back to QuickBooks.' }); continue; }
+      if (resolveHistoricalArState(invoice) !== null) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Imported invoices are not exported to QuickBooks through native sync.' }); continue; }
       if (!isQuickBooksInvoiceExportableStatus(invoice.status)) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Void or canceled invoices cannot sync.' }); continue; }
       const approvalEligibility = getInvoiceQuickBooksApprovalEligibility(invoice as any);
       if (!approvalEligibility.eligible) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: approvalEligibility.reason || 'Approve invoice for accounting before syncing.' }); continue; }
@@ -894,9 +898,9 @@ export async function enqueueSelectedQuickBooksSyncForOrg(params: {
       continue;
     }
 
-    const [payment] = await db.select({ id: payments.id, status: payments.status, syncStatus: payments.syncStatus, externalAccountingId: payments.externalAccountingId, qbInvoiceId: invoices.qbInvoiceId, importSource: invoices.importSource, isHistorical: invoices.isHistorical, invoiceVersion: invoices.invoiceVersion, accountingApprovedAt: invoices.accountingApprovedAt, accountingApprovedVersion: invoices.accountingApprovedVersion, accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt, qbSyncStatus: invoices.qbSyncStatus }).from(payments).innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId))).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId))).limit(1);
+    const [payment] = await db.select({ id: payments.id, status: payments.status, syncStatus: payments.syncStatus, externalAccountingId: payments.externalAccountingId, qbInvoiceId: invoices.qbInvoiceId, importSource: invoices.importSource, importedAt: invoices.importedAt, isHistorical: invoices.isHistorical, historicalArState: invoices.historicalArState, invoiceVersion: invoices.invoiceVersion, accountingApprovedAt: invoices.accountingApprovedAt, accountingApprovedVersion: invoices.accountingApprovedVersion, accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt, qbSyncStatus: invoices.qbSyncStatus }).from(payments).innerJoin(invoices, and(eq(payments.invoiceId, invoices.id), eq(payments.organizationId, invoices.organizationId))).where(and(eq(payments.id, item.id), eq(payments.organizationId, params.organizationId))).limit(1);
     if (!payment) { result.rejected++; result.results.push({ ...item, outcome: 'rejected', reason: 'Record not found or not permitted.' }); continue; }
-    if (String(payment.importSource || '').toLowerCase() === 'quickbooks' || payment.isHistorical) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Payments on imported QuickBooks invoices are not exported back.' }); continue; }
+    if (resolveHistoricalArState(payment) !== null) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Payments on imported invoices require reconciliation.' }); continue; }
     if (!['succeeded', 'captured'].includes(String(payment.status).toLowerCase())) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Only captured or succeeded payments can sync.' }); continue; }
     if (!payment.qbInvoiceId) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Invoice must synchronize before its payment can queue.' }); continue; }
     if (!isInvoiceApprovedForAccounting(payment as any)) { result.skipped++; result.results.push({ ...item, outcome: 'skipped', reason: 'Approve the invoice for accounting before syncing its payment.' }); continue; }

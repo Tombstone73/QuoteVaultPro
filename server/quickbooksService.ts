@@ -9,6 +9,7 @@ import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
 import { buildDocumentNumberParts } from './services/documentNumberingService';
 import { getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from './lib/invoiceAccountingApproval';
+import { resolveHistoricalArState } from '../shared/historicalArAuthority';
 import {
   assertQuickBooksDocumentNumber,
   buildQuickBooksPaymentPayload,
@@ -1337,6 +1338,9 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
     .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found');
+  if (resolveHistoricalArState(invoice) !== null) {
+    throw Object.assign(new Error('Imported invoices cannot enter native QuickBooks Invoice sync.'), { code: 'IMPORTED_INVOICE_QB_SYNC_BLOCKED', statusCode: 409 });
+  }
   if (invoice.contactId && !invoice.customerId) {
     const error: any = new Error('Invoice billing owner is a Contact without a QuickBooks customer mapping. Review before syncing.');
     error.code = 'CONTACT_INVOICE_QB_MAPPING_REQUIRED';
@@ -1506,6 +1510,9 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     .where(and(eq(invoices.id, (payment as any).invoiceId), eq(invoices.organizationId, organizationId)))
     .limit(1);
   if (!invoice) throw new Error('Invoice not found for payment');
+  if (resolveHistoricalArState(invoice) !== null) {
+    throw Object.assign(new Error('Imported invoice payments require source reconciliation, not native QuickBooks sync.'), { code: 'IMPORTED_PAYMENT_QB_SYNC_BLOCKED', statusCode: 409 });
+  }
   await assertBillingOwnershipReconciled(organizationId, invoice.id);
   if (invoice.contactId && !invoice.customerId) {
     const error: any = new Error('Contact-owned Invoice payments require a QuickBooks customer mapping review.');
@@ -3250,24 +3257,27 @@ function buildQBInvoiceMappedDraft(params: {
   const totalAmt = Number(qbInvoice.TotalAmt ?? 0);
   const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
   const amountPaid = Math.max(0, totalAmt - balance);
-  const isHistorical = classification === 'historical';
+  const isHistorical = classification === 'historical' && balance === 0;
+  const historicalArState = isHistorical ? 'historical_closed' : 'historical_review_required';
 
   return {
     customerId: localCustomerId,
-    status: isHistorical ? 'paid' : (balance > 0 ? 'billed' : 'paid'),
+    status: isHistorical ? 'paid' : 'billed',
     issueDate: qbInvoice.TxnDate ?? null,
     dueDate: qbInvoice.DueDate ?? null,
     subtotal: totalAmt.toFixed(2),
     tax: taxAmt.toFixed(2),
     total: totalAmt.toFixed(2),
     amountPaid: amountPaid.toFixed(2),
-    balanceDue: balance.toFixed(2),
+    balanceDue: '0.00',
     externalAccountingId: qbInvoice.Id ?? null,
     qbInvoiceId: qbInvoice.Id ?? null,
     qbSyncStatus: 'synced',
     syncStatus: 'synced',
     importSource: 'quickbooks',
     isHistorical,
+    historicalArState,
+    historicalArSourceBalanceCents: Math.max(0, Math.round(balance * 100)),
     qbImportBalanceDue: balance.toFixed(2),
     qbDocNumber: qbInvoice.DocNumber ?? null,
     qbLineItemsSnapshot: Array.isArray(qbInvoice.Line) ? qbInvoice.Line : null,
@@ -3584,6 +3594,7 @@ export type QBInvoiceImportResult = {
   failed: number;
   importedOpenAr: number;
   importedHistorical: number;
+  stagedForReview: number;
   numberingConflicts: number;
   errors: string[];
 };
@@ -3595,7 +3606,7 @@ export async function importQBInvoicesByIds(
   createdByUserId: string,
   perInvoiceModes: Record<string, QBInvoiceImportOverride> = {},
 ): Promise<QBInvoiceImportResult> {
-  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, numberingConflicts: 0, errors: [] };
+  const result: QBInvoiceImportResult = { created: 0, updated: 0, skipped: 0, excluded: 0, failed: 0, importedOpenAr: 0, importedHistorical: 0, stagedForReview: 0, numberingConflicts: 0, errors: [] };
 
   if (qbInvoiceIds.length === 0) return result;
 
@@ -3635,8 +3646,16 @@ export async function importQBInvoicesByIds(
           : mode === 'auto'
           ? classifyQBInvoice(qbInvoice)
           : mode;
-      const isHistorical = classification === 'historical';
       const balance = Number(qbInvoice.Balance ?? 0);
+      if (!Number.isFinite(balance) || balance < 0) {
+        result.skipped++;
+        result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: invalid source balance; accounting review required`);
+        continue;
+      }
+      // UI mode/override is a staging hint, never an A/R approval. A source
+      // balance above zero cannot be silently activated or classified closed.
+      const isHistorical = classification === 'historical' && balance === 0;
+      const historicalArState = isHistorical ? 'historical_closed' : 'historical_review_required';
       const totalAmt = Number(qbInvoice.TotalAmt ?? 0);
       const taxAmt = Number(qbInvoice.TxnTaxDetail?.TotalTax ?? 0);
       const amountPaid = Math.max(0, totalAmt - balance);
@@ -3688,60 +3707,10 @@ export async function importQBInvoicesByIds(
         continue;
       }
 
-      const status = isHistorical ? 'paid' : (balance > 0 ? 'billed' : 'paid');
+      const status = isHistorical ? 'paid' : 'billed';
       const issueDate = qbInvoice.TxnDate ? new Date(qbInvoice.TxnDate) : new Date();
       const dueDate = qbInvoice.DueDate ? new Date(qbInvoice.DueDate) : null;
       const lockedReason = isHistorical ? 'historical_import' : 'quickbooks_import';
-
-      const reconcileImportedInvoicePayments = async (params: {
-        invoiceId: string;
-        previousBalanceDue: string | null;
-        nextBalanceDue: string;
-      }) => {
-        const previousBalanceCents = Math.max(0, Math.round(Number(params.previousBalanceDue ?? 0) * 100));
-        const nextBalanceCents = Math.max(0, Math.round(Number(params.nextBalanceDue || 0) * 100));
-        const reflectedDeltaCents = previousBalanceCents - nextBalanceCents;
-        if (reflectedDeltaCents <= 0) return;
-
-        const syncedUnreconciledPayments = await db
-          .select({
-            id: payments.id,
-            amountCents: payments.amountCents,
-          })
-          .from(payments)
-          .where(and(
-            eq(payments.organizationId, organizationId),
-            eq(payments.invoiceId, params.invoiceId),
-            sql`lower(${payments.status}) in ('succeeded','captured')`,
-            eq(payments.syncStatus, 'synced'),
-            isNotNull(payments.externalAccountingId),
-            isNull(payments.qbReconciledAt),
-          ))
-          .orderBy(asc(payments.appliedAt), asc(payments.createdAt));
-
-        let remainingReflectedCents = reflectedDeltaCents;
-        const paymentIdsToReconcile: string[] = [];
-        for (const payment of syncedUnreconciledPayments) {
-          const amountCents = Number(payment.amountCents || 0);
-          if (amountCents <= 0 || amountCents > remainingReflectedCents) continue;
-          paymentIdsToReconcile.push(payment.id);
-          remainingReflectedCents -= amountCents;
-          if (remainingReflectedCents <= 0) break;
-        }
-
-        if (paymentIdsToReconcile.length === 0) return;
-
-        await db
-          .update(payments)
-          .set({
-            qbReconciledAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(payments.organizationId, organizationId),
-            sql`${payments.id} = ANY(${paymentIdsToReconcile})`,
-          ));
-      };
 
       // Check for existing invoice (by QB Invoice Id, org-scoped)
       // Fetch customerPoNumber and importSource to apply PO preservation rules.
@@ -3753,6 +3722,7 @@ export async function importQBInvoicesByIds(
           qbImportBalanceDue: invoices.qbImportBalanceDue,
           balanceDue: invoices.balanceDue,
           orderId: invoices.orderId,
+          historicalArState: invoices.historicalArState,
         })
         .from(invoices)
         .where(and(
@@ -3765,6 +3735,16 @@ export async function importQBInvoicesByIds(
         .limit(1);
 
       if (existing) {
+        if (existing.importSource !== 'quickbooks') {
+          result.skipped++;
+          result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: QB identity belongs to a native invoice; import skipped`);
+          continue;
+        }
+        if (existing.historicalArState === 'historical_open_ar_reconciled') {
+          result.skipped++;
+          result.errors.push(`Invoice ${qbInvoice.DocNumber ?? qbInvoice.Id}: approved imported A/R requires explicit re-reconciliation; import skipped`);
+          continue;
+        }
         // PO preservation: only update PO if QB has a value AND (invoice is QB-imported OR had no PO before)
         const isQBImported = existing.importSource === 'quickbooks';
         const existingHasPo = !!existing.customerPoNumber;
@@ -3783,9 +3763,14 @@ export async function importQBInvoicesByIds(
             tax: taxAmt.toFixed(2),
             total: totalAmt.toFixed(2),
             amountPaid: amountPaid.toFixed(2),
-            balanceDue: balance.toFixed(2),
+            balanceDue: '0.00',
             importSource: 'quickbooks',
             isHistorical,
+            historicalArState,
+            historicalArSourceBalanceCents: Math.round(balance * 100),
+            historicalArApprovedAt: null,
+            historicalArApprovedByUserId: null,
+            historicalArApprovalEvidence: null,
             qbImportBalanceDue: balance.toFixed(2),
             qbDocNumber: qbInvoice.DocNumber ?? null,
             qbLineItemsSnapshot: lineItemsSnapshot,
@@ -3796,20 +3781,8 @@ export async function importQBInvoicesByIds(
           })
           .where(eq(invoices.id, existing.id));
 
-        if (!isHistorical) {
-          await reconcileImportedInvoicePayments({
-            invoiceId: existing.id,
-            previousBalanceDue: existing.qbImportBalanceDue,
-            nextBalanceDue: balance.toFixed(2),
-          });
-        }
-        if (existing.orderId && balance < Number(existing.qbImportBalanceDue ?? existing.balanceDue)) {
-          const { reconcileOrderAutoCloseFailSoft } = await import('./services/orderAutoCloseService');
-          await reconcileOrderAutoCloseFailSoft({ organizationId, orderId: existing.orderId,
-            actorUserId: createdByUserId, source: 'quickbooks_invoice_balance', metadata: { invoiceId: existing.id } });
-        }
         result.updated++;
-        if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
+        if (isHistorical) result.importedHistorical++; else result.stagedForReview++;
       } else {
         const historicalNumber = isHistorical
           ? resolveHistoricalQuickBooksInvoiceNumber(qbInvoice.DocNumber)
@@ -3856,7 +3829,7 @@ export async function importQBInvoicesByIds(
           totalCents: Math.round(totalAmt * 100),
           currency: 'USD',
           amountPaid: amountPaid.toFixed(2),
-          balanceDue: balance.toFixed(2),
+          balanceDue: '0.00',
           externalAccountingId: qbInvoice.Id,
           qbInvoiceId: qbInvoice.Id,
           // Already in QB — do not enqueue a push back to QB
@@ -3864,6 +3837,8 @@ export async function importQBInvoicesByIds(
           syncStatus: 'synced',
           importSource: 'quickbooks',
           isHistorical,
+          historicalArState,
+          historicalArSourceBalanceCents: Math.round(balance * 100),
           qbImportBalanceDue: balance.toFixed(2),
           importedAt: new Date(),
           qbDocNumber: qbInvoice.DocNumber ?? null,
@@ -3874,7 +3849,7 @@ export async function importQBInvoicesByIds(
           createdByUserId,
         });
         result.created++;
-        if (isHistorical) result.importedHistorical++; else result.importedOpenAr++;
+        if (isHistorical) result.importedHistorical++; else result.stagedForReview++;
       }
     } catch (error: any) {
       result.failed++;
@@ -3886,7 +3861,7 @@ export async function importQBInvoicesByIds(
     }
   }
 
-  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, openAr: ${result.importedOpenAr}, historical: ${result.importedHistorical}, numberingConflicts: ${result.numberingConflicts}, errors: ${result.errors.length}`, { organizationId });
+  console.log(`[QB Import Invoices] Done — created: ${result.created}, updated: ${result.updated}, skipped: ${result.skipped}, excluded: ${result.excluded}, failed: ${result.failed}, stagedForReview: ${result.stagedForReview}, historical: ${result.importedHistorical}, numberingConflicts: ${result.numberingConflicts}, errors: ${result.errors.length}`, { organizationId });
   return result;
 }
 

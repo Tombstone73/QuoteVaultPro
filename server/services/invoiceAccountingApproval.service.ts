@@ -6,6 +6,7 @@ import { db } from '../db';
 import { lockInvoicePaymentContext } from './invoicePaymentSession.service';
 export { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
+import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 import { resolveQuickBooksPreferencesFromOrgPreferences } from '@shared/quickBooksPreferences';
 import {
   hasInvoicePaymentTermsStartedOrApprovalHistory,
@@ -37,8 +38,8 @@ export async function approveInvoicesForAccounting(input: {
       if (await getBillingOwnershipReview(input.organizationId, invoice.id, tx)) {
         results.push({ id: invoiceId, outcome: 'skipped', reason: BILLING_OWNERSHIP_REVIEW_MESSAGE, code: 'BILLING_OWNERSHIP_REVIEW_REQUIRED' }); continue;
       }
-      if (String(invoice.importSource || '').toLowerCase() === 'quickbooks' || invoice.isHistorical) {
-        results.push({ id: invoiceId, outcome: 'skipped', reason: 'Imported QuickBooks invoices do not require accounting approval.' }); continue;
+      if (resolveHistoricalArState(invoice) !== null) {
+        results.push({ id: invoiceId, outcome: 'skipped', reason: 'Imported invoices require historical A/R reconciliation, not native accounting approval.' }); continue;
       }
       if (['void', 'canceled', 'cancelled'].includes(String(invoice.status || '').toLowerCase())) {
         results.push({ id: invoiceId, outcome: 'skipped', reason: 'Void or canceled invoices cannot be approved for accounting.' }); continue;

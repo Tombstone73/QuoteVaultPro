@@ -22,6 +22,7 @@ import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
 import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot, resolveInvoicePdfFinancialSummary } from "../../shared/invoiceAccountingDisplay";
+import { resolveHistoricalArState } from "../../shared/historicalArAuthority";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "../../shared/paymentProviderResolution";
 import { emailService } from "../emailService";
 import { storage } from "../storage";
@@ -148,7 +149,9 @@ function withNormalizedInvoiceDisplay<T extends Record<string, any>>(invoice: T,
 }
 
 function getImportedQuickBooksPaymentBlockReason(invoice: Record<string, any>, paymentRows: Array<Record<string, any>>) {
-  if (!isImportedQuickBooksInvoice(invoice)) return null;
+  if (resolveHistoricalArState(invoice) === null) return null;
+  if (!isImportedQuickBooksInvoice(invoice)) return 'Imported invoices require an accounting-approved payment workflow.';
+  if (resolveHistoricalArState(invoice) !== 'historical_open_ar_reconciled') return 'Imported invoice is not approved as open A/R.';
 
   const normalized = withNormalizedInvoiceDisplay(invoice, paymentRows) as any;
   if (Boolean(invoice.isHistorical)) return 'Historical imported QuickBooks invoices cannot accept payments.';
@@ -523,6 +526,9 @@ export async function registerMvpInvoicingRoutes(
     });
     await logQueueDeliveryStage("recipient_resolution_completed");
     let inv: any = recipientResolution.invoice;
+    if (resolveHistoricalArState(inv) === 'historical_review_required') {
+      throw Object.assign(new Error('Imported invoice requires accounting review before customer delivery.'), { statusCode: 409, code: 'HISTORICAL_AR_REVIEW_REQUIRED' });
+    }
     const cust: any = recipientResolution.customer;
     const recipientsToSend = requestedRecipients
       ?? (requestedRecipient ? [requestedRecipient] : recipientResolution.recipients.map((recipient) => recipient.email));
@@ -885,6 +891,9 @@ export async function registerMvpInvoicingRoutes(
       invoiceId: input.invoiceId,
     });
     const invoice = resolution.invoice as any;
+    if (resolveHistoricalArState(invoice) === 'historical_review_required') {
+      throw Object.assign(new Error('Imported invoice requires accounting review before customer delivery.'), { statusCode: 409, code: 'HISTORICAL_AR_REVIEW_REQUIRED' });
+    }
     const recipients = requestedRecipients
       ?? (requestedRecipient ? [requestedRecipient] : resolution.recipients.map((recipient) => recipient.email));
     if (recipients.length === 0) {

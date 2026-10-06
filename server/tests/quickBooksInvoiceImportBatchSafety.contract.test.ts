@@ -53,3 +53,14 @@ test('canonical source IDs, historical numbering, and financial snapshots remain
   expect(service).toContain('generateNextInvoiceNumber(organizationId)');
   expect(service).toContain('qbImportBalanceDue: balance.toFixed(2)');
 });
+
+test('QuickBooks import stages positive balances and cannot activate A/R from a preview override', () => {
+  const service = read('server/quickbooksService.ts');
+  expect(service).toContain("const isHistorical = classification === 'historical' && balance === 0;");
+  expect(service).toContain("const historicalArState = isHistorical ? 'historical_closed' : 'historical_review_required';");
+  expect(service).toContain("balanceDue: '0.00'");
+  expect(service).toContain("existing.historicalArState === 'historical_open_ar_reconciled'");
+  expect(service).not.toContain('result.importedOpenAr++');
+  expect(service).toContain('IMPORTED_INVOICE_QB_SYNC_BLOCKED');
+  expect(service).toContain('IMPORTED_PAYMENT_QB_SYNC_BLOCKED');
+});

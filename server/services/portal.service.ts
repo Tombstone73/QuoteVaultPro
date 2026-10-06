@@ -1,6 +1,8 @@
 import { getInvoiceCustomerPaymentEligibility, type CustomerPaymentInvoice } from '../lib/invoiceCustomerPaymentEligibility';
 import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
 import { isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
+import { normalizeInvoiceAccountingDisplay } from '@shared/invoiceAccountingDisplay';
+import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 import { withInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
@@ -38,7 +40,6 @@ import {
 } from "@shared/schema";
 import {
   computeInvoicePaymentRollup,
-  getInvoicePaymentStatusLabel,
 } from "@shared/rollups/invoicePaymentRollup";
 import { resolveInvoicePdfFinancialSummary } from "@shared/invoiceAccountingDisplay";
 import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared/portalFileVisibility";
@@ -544,6 +545,14 @@ type InvoicePortalRow = CustomerPaymentInvoice & Pick<
   | "totalCents"
   | "currency"
   | "customerPoNumber"
+  | "importSource"
+  | "importedAt"
+  | "isHistorical"
+  | "historicalArState"
+  | "historicalArSourceBalanceCents"
+  | "historicalArApprovedAt"
+  | "historicalArApprovedByUserId"
+  | "historicalArApprovalEvidence"
 >;
 
 type InvoicePortalContextRow = InvoicePortalRow & {
@@ -595,6 +604,7 @@ type InvoicePaymentPortalRow = CustomerPaymentInvoice & Pick<
   | "terms"
   | "customTerms"
   | "importSource"
+  | "importedAt"
   | "isHistorical"
 > & { storedCustomerId: string | null; billingCustomerId: string | null };
 
@@ -1592,8 +1602,8 @@ export async function updatePortalProfile(req: Request): Promise<PortalProfileDt
 }
 
 function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[]): InvoicePortalDto {
-  const rollup = computeInvoicePaymentRollup({
-    invoiceTotalCents: Number(row.totalCents || 0),
+  const accounting = normalizeInvoiceAccountingDisplay({
+    ...row,
     payments: paymentRows.map((payment) => ({
       id: payment.id,
       status: payment.status,
@@ -1627,15 +1637,15 @@ function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[
     subtotal: row.subtotalCents ? centsToMoney(row.subtotalCents) : toMoney(row.subtotal),
     tax: row.taxCents ? centsToMoney(row.taxCents) : toMoney(row.tax),
     total: row.totalCents ? centsToMoney(row.totalCents) : toMoney(row.total),
-    amountPaid: centsToMoney(rollup.amountPaidCents),
-    amountDue: centsToMoney(rollup.amountDueCents),
+    amountPaid: centsToMoney(accounting.paidCents),
+    amountDue: centsToMoney(accounting.remainingCents),
     currency: String(row.currency || "USD"),
     customerPoNumber: identity.customerPoNumber,
     jobLabel: identity.jobLabel,
     orderNumber: identity.orderNumber,
     pdfAvailable: isInvoiceCustomerVisible(row),
-    paymentStatusLabel: getInvoicePaymentStatusLabel({ invoiceStatus: row.status, rollup }),
-    paymentEligibility: getInvoiceCustomerPaymentEligibility(row, rollup.amountDueCents),
+    paymentStatusLabel: accounting.paymentStatusLabel,
+    paymentEligibility: getInvoiceCustomerPaymentEligibility(row, accounting.remainingCents),
   };
 }
 
@@ -1680,7 +1690,13 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       externalAccountingId: invoices.externalAccountingId,
       lastQbSyncedVersion: invoices.lastQbSyncedVersion,
       importSource: invoices.importSource,
+      importedAt: invoices.importedAt,
       isHistorical: invoices.isHistorical,
+      historicalArState: invoices.historicalArState,
+      historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+      historicalArApprovedAt: invoices.historicalArApprovedAt,
+      historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+      historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
@@ -1736,7 +1752,13 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
       externalAccountingId: invoices.externalAccountingId,
       lastQbSyncedVersion: invoices.lastQbSyncedVersion,
       importSource: invoices.importSource,
+      importedAt: invoices.importedAt,
       isHistorical: invoices.isHistorical,
+      historicalArState: invoices.historicalArState,
+      historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+      historicalArApprovedAt: invoices.historicalArApprovedAt,
+      historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+      historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
@@ -1793,7 +1815,13 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
       externalAccountingId: invoices.externalAccountingId,
       lastQbSyncedVersion: invoices.lastQbSyncedVersion,
       importSource: invoices.importSource,
+      importedAt: invoices.importedAt,
       isHistorical: invoices.isHistorical,
+      historicalArState: invoices.historicalArState,
+      historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+      historicalArApprovedAt: invoices.historicalArApprovedAt,
+      historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+      historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
@@ -1850,15 +1878,11 @@ function invoiceRollup(invoice: Pick<InvoicePaymentPortalRow, "totalCents">, pay
   });
 }
 
-function isImportedQuickBooksInvoice(invoice: InvoicePaymentPortalRow): boolean {
-  return String(invoice.importSource || "").trim().toLowerCase() === "quickbooks";
-}
-
 function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRows: PaymentPortalRow[]): number {
   if (invoice.storedCustomerId !== invoice.billingCustomerId) {
     throw new PortalAccessError(409, "Invoice billing details need staff review before payment. Please contact us.");
   }
-  if (isImportedQuickBooksInvoice(invoice) || Boolean(invoice.isHistorical)) {
+  if (resolveHistoricalArState(invoice) !== null) {
     throw new PortalAccessError(409, "Invoice is not payable in the portal");
   }
 
@@ -3805,7 +3829,13 @@ async function loadInvoiceSummariesForOrders(organizationId: string, customerId:
       externalAccountingId: invoices.externalAccountingId,
       lastQbSyncedVersion: invoices.lastQbSyncedVersion,
       importSource: invoices.importSource,
+      importedAt: invoices.importedAt,
       isHistorical: invoices.isHistorical,
+      historicalArState: invoices.historicalArState,
+      historicalArSourceBalanceCents: invoices.historicalArSourceBalanceCents,
+      historicalArApprovedAt: invoices.historicalArApprovedAt,
+      historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
+      historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       status: invoices.status,
       totalCents: invoices.totalCents,
       currency: invoices.currency,
@@ -3825,8 +3855,8 @@ async function loadInvoiceSummariesForOrders(organizationId: string, customerId:
   const byOrderId = new Map<string, OrderPortalInvoiceSummaryDto>();
   for (const row of rows.filter(isInvoiceCustomerVisible) as OrderInvoiceSummaryRow[]) {
     if (!row.orderId) continue;
-    const rollup = computeInvoicePaymentRollup({
-      invoiceTotalCents: Number(row.totalCents || 0),
+    const accounting = normalizeInvoiceAccountingDisplay({
+      ...row,
       payments: (paymentsByInvoiceId.get(row.id) ?? []).map((payment) => ({
         id: payment.id,
         status: payment.status,
@@ -3842,9 +3872,9 @@ async function loadInvoiceSummariesForOrders(organizationId: string, customerId:
       currency: String(row.currency || "USD"),
     };
     current.invoiceCount += 1;
-    current.amountDue += centsToMoney(rollup.amountDueCents);
+    current.amountDue += centsToMoney(accounting.remainingCents);
     current.total += centsToMoney(row.totalCents);
-    if (rollup.amountDueCents <= 0) current.paidInvoiceCount += 1;
+    if (accounting.remainingCents <= 0) current.paidInvoiceCount += 1;
     else current.openInvoiceCount += 1;
     byOrderId.set(row.orderId, current);
   }

@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 
 import { invoices, orderLineItems, orders, payments, products } from "@shared/schema";
 import { buildCustomerCreditExposure, parseMoneyToCents, type CustomerCreditExposure, type CustomerExposureInvoice } from "@shared/customerCreditExposure";
+import { resolveHistoricalArState } from "@shared/historicalArAuthority";
 import { normalizeInvoiceAccountingDisplay } from "@shared/invoiceAccountingDisplay";
 import { unbilledOrderExposureCents } from "@shared/orderCreditHold";
 import { db } from "../db";
@@ -98,7 +99,8 @@ export async function getCustomerCreditExposures(
     const customerInvoices = invoiceRowsByCustomer.get(customerId) ?? [];
     customerInvoices.push({
       status: invoice.status,
-      approvedForAccounting: isInvoiceApprovedForAccounting(invoice),
+      approvedForAccounting: resolveHistoricalArState(invoice) === 'historical_open_ar_reconciled'
+        || isInvoiceApprovedForAccounting(invoice),
       remainingCents: display.remainingCents,
       creditCents: display.creditCents,
       displayStatus: display.displayStatus,
