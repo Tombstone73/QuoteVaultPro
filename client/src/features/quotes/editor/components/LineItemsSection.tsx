@@ -1260,7 +1260,7 @@ export function LineItemsSection({
 
   return (
     <Card className={createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
-      <CardHeader className={createTarget === "order" ? "sticky top-0 z-20 rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
+      <CardHeader className={createTarget === "order" ? "rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
         <div className={createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
           {createTarget === "order" && (
             <h2 className="text-sm font-semibold text-foreground">Line items</h2>
@@ -1391,6 +1391,9 @@ export function LineItemsSection({
                             isExpanded={isExpanded}
                             onToggleExpand={() => onExpandedKeyChange(isExpanded ? null : itemKey)}
                             title={item.productName}
+                            lineLabel={createTarget === "order" ? `Line ${itemIndex + 1}` : undefined}
+                            artworkSummary={createTarget === "order" && item.pendingOrderAttachments?.length ? `${item.pendingOrderAttachments.length} staged` : undefined}
+                            artworkSummaryKind={createTarget === "order" ? "file" : undefined}
                             sizeLabel={formatLineItemMeasurementLabel(product, item.width, item.height)}
                             qtyLabel={`Qty ${item.quantity}`}
                             unitPriceLabel={`${formatMoney(visiblePrice.displayPerEach)}/ea`}
@@ -1598,6 +1601,9 @@ export function LineItemsSection({
                               <>
                                 {isExpandedTreeV2 && expandedOptionTreeJson ? (
                                   <ProductOptionsPanelV2
+                                    compact={createTarget === "order"}
+                                    orderWorkspace={createTarget === "order"}
+                                    helpPresentation={createTarget === "order" ? "popover" : undefined}
                                     tree={expandedOptionTreeJson}
                                     selections={optionSelectionsV2}
                                     onSelectionsChange={handleOptionSelectionsV2Change}
@@ -1605,6 +1611,8 @@ export function LineItemsSection({
                                   />
                                 ) : (
                                   <ProductOptionsPanel
+                                    compact={createTarget === "order"}
+                                    orderWorkspace={createTarget === "order"}
                                     product={expandedProduct}
                                     productOptions={expandedProductOptions}
                                     optionSelections={optionSelections}
@@ -1615,10 +1623,10 @@ export function LineItemsSection({
                             }
                             artworkSlot={
                               !fulfillmentOnly || Boolean((item as any).requiresDesign || (item as any).requiresPrepress || (item as any).requiresProofApproval) ? (
-                              <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                <div className="flex items-center justify-between mb-2">
+                              <div className={createTarget === "order" ? "min-w-0" : cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                {createTarget !== "order" && <div className="flex items-center justify-between mb-2">
                                   <div className="text-sm font-medium">Artwork</div>
-                                </div>
+                                </div>}
                                 <LineItemAttachmentsPanel
                                   quoteId={quoteId}
                                   parentType={createTarget === "order" ? "order" : "quote"}

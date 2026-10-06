@@ -273,6 +273,58 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.querySelector("select")?.parentElement?.className).toContain("grid");
   });
 
+  test("exposes complete data-driven help on demand without changing selections", async () => {
+    const onSelectionsChange = jest.fn();
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["finish"],
+      nodes: {
+        finish: {
+          id: "finish", kind: "question", label: "Lamination",
+          description: "Choose whether lamination is applied.",
+          ui: { helpText: "Protects the printed surface during installation." },
+          input: { type: "select", selectionKey: "finish", defaultValue: "gloss" },
+          choices: [{ value: "gloss", label: "Gloss", description: "A reflective finish for saturated colors." }],
+        },
+      },
+    };
+    await act(async () => root.render(
+      <ProductOptionsPanelV2 tree={tree} selections={{ schemaVersion: 2, selected: { finish: { value: "gloss" } } }}
+        onSelectionsChange={onSelectionsChange} persistAutomaticSelections={false} compact orderWorkspace helpPresentation="popover" />,
+    ));
+    expect(container.textContent).not.toContain("Choose whether");
+    expect(container.textContent).not.toContain("Protects the printed");
+    expect(container.textContent).not.toContain("A reflective finish");
+    const help = container.querySelector('button[aria-label="Help for Lamination"]') as HTMLButtonElement;
+    expect(help).not.toBeNull();
+    expect(help.type).toBe("button");
+    expect(help.closest("label")).toBeNull();
+    await act(async () => { help.focus(); help.click(); });
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Choose whether lamination is applied.");
+    expect(dialog?.textContent).toContain("Protects the printed surface during installation.");
+    expect(dialog?.textContent).toContain("A reflective finish for saturated colors.");
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onSelectionsChange).not.toHaveBeenCalled();
+    expect((container.querySelector("select") as HTMLSelectElement).value).toBe("gloss");
+  });
+
+  test("retains inline descriptions by default and omits empty help affordances", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2, rootNodeIds: ["finish"], nodes: {
+        finish: { id: "finish", kind: "question", label: "Finish", description: "Existing inline description.",
+          input: { type: "select", selectionKey: "finish" }, choices: [{ value: "gloss", label: "Gloss" }] },
+      },
+    };
+    act(() => root.render(<ProductOptionsPanelV2 tree={tree} selections={{ schemaVersion: 2, selected: {} }} onSelectionsChange={jest.fn()} />));
+    expect(container.textContent).toContain("Existing inline description.");
+    expect(container.querySelector('button[aria-label="Help for Finish"]')).toBeNull();
+    const noHelpTree = { ...tree, nodes: { finish: { ...tree.nodes.finish, description: undefined } } };
+    act(() => root.render(<ProductOptionsPanelV2 tree={noHelpTree} selections={{ schemaVersion: 2, selected: {} }} onSelectionsChange={jest.fn()} compact helpPresentation="popover" />));
+    expect(container.querySelector('button[aria-label="Help for Finish"]')).toBeNull();
+  });
+
   test("uses a non-empty internal value for an optional select's empty choice", () => {
     const tree: OptionTreeV2 = {
       schemaVersion: 2,

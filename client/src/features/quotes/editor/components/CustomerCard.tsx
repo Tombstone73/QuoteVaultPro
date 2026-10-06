@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,8 @@ type CustomerCardProps = {
     promisedDate?: string; // YYYY-MM-DD
     priority?: string;
     showOrderFields?: boolean;
+    orderInternalNotes?: ReactNode;
+    orderFulfillment?: ReactNode;
     tags?: string[];
     effectiveTaxRate: number;
     pricingTier: string;
@@ -60,6 +62,8 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     promisedDate = "",
     priority = "normal",
     showOrderFields = false,
+    orderInternalNotes,
+    orderFulfillment,
     tags = [],
     effectiveTaxRate,
     pricingTier,
@@ -171,12 +175,8 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
         const distinctCustomerPhone = customerPhone?.replace(/\D/g, "") !== contactPhone?.replace(/\D/g, "") ? customerPhone : null;
 
         return (
-            <DocumentMetaCard className="border-border/60 bg-card shadow-sm" contentClassName="space-y-0 p-0">
-                <div className="border-b border-border/60 px-4 py-3">
-                    <h2 className="text-sm font-semibold text-foreground">Order identity</h2>
-                </div>
-                <div className="grid min-w-0 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] xl:gap-5">
-                    <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+            <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                    <section aria-label="Customer and contact" className="grid min-w-0 gap-4 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
                         <div className="min-w-0 space-y-2">
                             {readOnly ? (
                                 <div className="space-y-2">
@@ -222,14 +222,14 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                 </div>
                             )}
                         </div>
-                    </div>
-                    <div className="min-w-0 space-y-3 border-t border-border/60 pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
-                        <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
+                    </section>
+                    <section aria-label="Order details" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+                        <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
                             <div className="space-y-1.5">
                                 <label htmlFor="order-po-number" className="text-sm font-medium">PO #</label>
                                 <Input id="order-po-number" value={poNumber} onChange={e => onPoNumberChange?.(e.target.value)} placeholder="Customer PO" readOnly={readOnly} className="h-9" />
                             </div>
-                            <div className="space-y-1.5 sm:col-span-2">
+                            <div className="min-w-0 space-y-1.5">
                                 <label htmlFor="order-job-label" className="text-sm font-medium">Job Label</label>
                                 <Input id="order-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="Job name or reference" readOnly={readOnly} className="h-9" />
                             </div>
@@ -241,13 +241,6 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                 <label htmlFor="order-promised-date" className="text-sm font-medium">Promised date</label>
                                 <Input id="order-promised-date" type="date" value={promisedDate} onChange={e => onPromisedDateChange?.(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
                             </div>
-                            <div className="space-y-1.5">
-                                <label htmlFor="order-priority" className="text-sm font-medium">Priority</label>
-                                <Select value={priority || "normal"} onValueChange={value => onPriorityChange?.(value)} disabled={readOnly}>
-                                    <SelectTrigger id="order-priority" className="h-9"><SelectValue /></SelectTrigger>
-                                    <SelectContent><SelectItem value="rush">Rush</SelectItem><SelectItem value="normal">Normal</SelectItem><SelectItem value="low">Low</SelectItem></SelectContent>
-                                </Select>
-                            </div>
                         </div>
                         {onAddTag && onRemoveTag && (
                             <div className="flex items-start gap-3">
@@ -258,9 +251,20 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                 </div>
                             </div>
                         )}
-                    </div>
-                </div>
-            </DocumentMetaCard>
+                        {orderInternalNotes}
+                    </section>
+                    <section aria-label="Commercial and fulfillment" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Commercial &amp; Fulfillment</div>
+                        <div className="grid min-w-0 gap-1.5">
+                            <label htmlFor="order-priority" className="text-sm font-medium text-muted-foreground">Priority</label>
+                            <Select value={priority || "normal"} onValueChange={value => onPriorityChange?.(value)} disabled={readOnly}>
+                                <SelectTrigger id="order-priority" className="h-9 min-w-0"><SelectValue /></SelectTrigger>
+                                <SelectContent><SelectItem value="rush">Rush</SelectItem><SelectItem value="normal">Normal</SelectItem><SelectItem value="low">Low</SelectItem></SelectContent>
+                            </Select>
+                        </div>
+                        {orderFulfillment}
+                    </section>
+            </div>
         );
     }
 

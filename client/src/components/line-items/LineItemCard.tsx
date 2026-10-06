@@ -1096,12 +1096,12 @@ export function LineItemCard({
                   !containerResponsiveLayout && optionsSlot && !artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)]",
                   !containerResponsiveLayout && !optionsSlot && artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(19rem,1.15fr)]",
                 )} data-testid="order-line-main-editing">
-                  <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1_1_24rem]")} aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
+                  <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[0.85_1_17rem]")} aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
                     <h3 className="mb-3 text-sm font-semibold">{dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}</h3>
                     {commercialControls}
                   </section>
-                  {optionsSlot ? <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1_1_24rem]")} aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
-                  {artworkSlot ? <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1_1_28rem]")} aria-label="Artwork"><h3 className="mb-2 text-sm font-semibold">Artwork</h3>{artworkSlot}</section> : null}
+                  {optionsSlot ? <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1.2_1_21rem]")} aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
+                  {artworkSlot ? <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[0.95_1_19rem]")} aria-label="Artwork"><h3 className="mb-2 text-sm font-semibold">Artwork</h3>{artworkSlot}</section> : null}
                 </div>
                 <div className="grid min-w-0 items-start gap-3" data-testid="order-line-lower-editing">
                   {compactNotesSection}

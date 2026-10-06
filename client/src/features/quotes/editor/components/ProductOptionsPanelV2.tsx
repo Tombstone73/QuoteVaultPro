@@ -15,6 +15,7 @@ import { normalizeSelectionMap, resolveRuntimeVisibility } from "@shared/optionT
 import { filterPbv2ChoicesForRuntime, hasInvalidPbv2RuntimeChoices, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
 import { evaluateProductOptionRules, type ProductOptionRule } from "@shared/productOptionRules";
 import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import { OptionHelp } from "./OptionHelp";
 
 type ProductOptionsPanelV2Props = {
   tree: OptionTreeV2;
@@ -27,6 +28,7 @@ type ProductOptionsPanelV2Props = {
   className?: string;
   compact?: boolean;
   orderWorkspace?: boolean;
+  helpPresentation?: "inline" | "popover";
 };
 
 export type ProductOptionsPanelV2RenderStats = {
@@ -293,6 +295,7 @@ export function ProductOptionsPanelV2({
   className,
   compact = false,
   orderWorkspace = false,
+  helpPresentation = "inline",
 }: ProductOptionsPanelV2Props) {
   const tree = useMemo(
     () => normalizePbv2Tree(rawTree) ?? { schemaVersion: 2 as const, rootNodeIds: [], nodes: {} },
@@ -739,7 +742,24 @@ export function ProductOptionsPanelV2({
               disabledOptionGroupSet.has((node as any).key);
 
             const helperText = [node.description, helpText].filter(Boolean).join(" ");
-            const commonHeader = compact ? (
+            const optionHelp = helpPresentation === "popover" ? (
+              <OptionHelp
+                label={node.label}
+                description={node.description}
+                helpText={helpText}
+                choices={getRuntimeChoices(node, runtimeVisibility?.visibleChoiceIds ?? null)}
+              />
+            ) : null;
+            const commonHeader = helpPresentation === "popover" ? (
+              <div className="min-w-0">
+                <div className="flex items-center gap-1">
+                  <Label className="min-w-0 text-xs">{node.label}{node.input.required || isRuleRequired ? " *" : ""}</Label>
+                  {optionHelp}
+                  {node.ui?.badge ? <Badge variant="outline" className="text-[11px] shrink-0">{node.ui.badge}</Badge> : null}
+                </div>
+                {isDisabled ? <div className="mt-0.5 text-xs text-muted-foreground">Not available for the current selections.</div> : null}
+              </div>
+            ) : compact ? (
               <Label className="min-w-0 text-xs" title={helperText || undefined}>
                 {node.label}{node.input.required || isRuleRequired ? " *" : ""}
               </Label>
@@ -840,7 +860,7 @@ export function ProductOptionsPanelV2({
                           <RadioGroupItem value={choice.value} id={choiceId} disabled={isDisabled} />
                           <span className="min-w-0">
                             <span className="block truncate">{choice.label}</span>
-                            {!compact && choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
+                            {!compact && helpPresentation === "inline" && choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
                           </span>
                         </Label>
                       );
@@ -884,7 +904,7 @@ export function ProductOptionsPanelV2({
                           />
                           <span className="min-w-0">
                             <span className="block truncate">{choice.label}</span>
-                            {!compact && choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
+                            {!compact && helpPresentation === "inline" && choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
                           </span>
                         </Label>
                       );
@@ -957,9 +977,10 @@ export function ProductOptionsPanelV2({
               <div key={nodeId} className="rounded-md border border-border/50 bg-muted/10 p-2 space-y-1">
                 <div className="flex items-center gap-2">
                   <div className="text-sm font-medium">{node.label}</div>
+                  {optionHelp}
                   <Badge variant="outline" className="text-[11px]">Unsupported: {inputType}</Badge>
                 </div>
-                {node.description ? <div className="text-xs text-muted-foreground">{node.description}</div> : null}
+                {helpPresentation === "inline" && node.description ? <div className="text-xs text-muted-foreground">{node.description}</div> : null}
                 {node.input.required ? <div className="text-xs text-muted-foreground">Required field is not supported yet.</div> : null}
               </div>
             );

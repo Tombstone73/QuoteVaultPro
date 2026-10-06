@@ -486,7 +486,7 @@ const OptionRow = memo(function OptionRow({
                     }}
                 >
                     <SelectTrigger
-                        className={cn("h-8 w-[220px]", ui.required && isInvalid && "border-destructive/40")}
+                        className={cn("h-8", compact && orderWorkspace ? "w-full min-w-0" : "w-[220px]", ui.required && isInvalid && "border-destructive/40")}
                     >
                         <SelectValue placeholder={choices.length > 0 ? "Select" : "No choices"} />
                     </SelectTrigger>

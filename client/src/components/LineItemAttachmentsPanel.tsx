@@ -982,10 +982,10 @@ export function LineItemAttachmentsPanel({
       <div className="px-3 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            <Paperclip className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Artwork</span>
+            <Paperclip className={cn("w-4 h-4 text-muted-foreground", parentType === "order" && !orderId && "shrink-0")} />
+            <span className={cn("text-sm font-medium", parentType === "order" && !orderId && "shrink-0 whitespace-nowrap")}>Artwork</span>
             {fileCount > 0 && (
-              <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
+              <span className={cn("text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full", parentType === "order" && !orderId && "shrink-0 whitespace-nowrap")}>
                 <span data-testid="line-item-artwork-count">{fileCount}</span>
               </span>
             )}

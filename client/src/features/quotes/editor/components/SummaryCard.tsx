@@ -19,10 +19,12 @@ import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
 import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteActionEligibility";
+import { OrderCreateActions } from "./OrderCreateActions";
 
 type SummaryCardProps = {
     presentation?: "quote" | "order";
     orderActionSettings?: ReactNode;
+    showOrderActions?: boolean;
     lineItems: QuoteLineItemDraft[];
     products: Product[];
     subtotal: number;
@@ -78,6 +80,7 @@ type SummaryCardProps = {
 export function SummaryCard({
     presentation = "quote",
     orderActionSettings,
+    showOrderActions = true,
     lineItems,
     products,
     subtotal,
@@ -186,7 +189,7 @@ export function SummaryCard({
         <Card className={presentation === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
             {presentation === "order" && (
                 <CardHeader className="border-b border-border/60 px-4 py-3">
-                    <CardTitle className="text-sm font-semibold">Order summary</CardTitle>
+                    <CardTitle className="text-base font-medium">Totals</CardTitle>
                 </CardHeader>
             )}
             <CardContent className={presentation === "order" ? "space-y-3 p-4" : "space-y-4 px-4 py-3 pt-4"}>
@@ -330,23 +333,15 @@ export function SummaryCard({
                             </Badge>
                         )}
                     </div>
-                    <span className={presentation === "order" ? "text-2xl font-bold font-mono tracking-tight sm:text-3xl" : "text-3xl font-bold font-mono tracking-tight"}>${grandTotal.toFixed(2)}</span>
+                    <span className={presentation === "order" ? "text-xl font-semibold tabular-nums" : "text-3xl font-bold font-mono tracking-tight"}>${grandTotal.toFixed(2)}</span>
                 </div>
             </CardContent>
 
-            <CardFooter className={presentation === "order" ? "flex flex-col gap-3 border-t border-border/60 p-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
+            {(presentation !== "order" || showOrderActions) && <CardFooter className={presentation === "order" ? "flex flex-col gap-3 border-t border-border/60 p-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
                 {presentation === "order" ? (
                     <>
                         {orderActionSettings}
-                        <Button className="h-11 w-full font-semibold" onClick={onSave} disabled={!canSaveQuote || isSaving}>
-                            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                            {isSaving ? (primaryActionSavingLabel || "Creating Order…") : (primaryActionLabel || "Create Order")}
-                        </Button>
-                        {showDiscard && (
-                            <Button variant="outline" className="w-full" onClick={onDiscard} disabled={isSaving}>
-                                <X className="mr-2 h-4 w-4" />Discard draft
-                            </Button>
-                        )}
+                        <OrderCreateActions canSaveQuote={canSaveQuote} isSaving={isSaving} onSave={onSave} onDiscard={onDiscard} showDiscard={showDiscard} primaryActionLabel={primaryActionLabel} primaryActionSavingLabel={primaryActionSavingLabel} />
                     </>
                 ) : !readOnly ? (
                     <>
@@ -612,7 +607,7 @@ export function SummaryCard({
                         </Button>
                     </>
                 )}
-            </CardFooter>
+            </CardFooter>}
         </Card>
     );
 }

@@ -19,7 +19,7 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Lock, ExternalLink } from "lucide-react";
+import { ArrowLeft, Lock, ExternalLink, StickyNote, ChevronDown } from "lucide-react";
 import { PageHeader } from "@/components/titan";
 import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
@@ -44,6 +44,7 @@ import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
 import { OrderEntryWorkspace } from "./components/OrderEntryWorkspace";
+import { OrderCreateActions } from "./components/OrderCreateActions";
 import { QuoteRecipientFallbackDialog } from "./components/QuoteRecipientFallbackDialog";
 import { getQuoteSendEligibility } from "./quoteActionEligibility";
 import {
@@ -1184,6 +1185,28 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         setPendingNavigation(null);
     };
 
+    const orderInternalNotesPanel = (
+        <details className="group rounded-md border border-border/60 bg-muted/20" data-testid="order-internal-notes">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium">
+                <StickyNote className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1">Internal Notes<span className="block text-xs font-normal text-muted-foreground">{state.orderInternalNotes.trim() ? "Notes added" : "Staff only"}</span></span>
+                <ChevronDown className="h-4 w-4 text-muted-foreground group-open:rotate-180" />
+            </summary>
+            <div className="px-3 pb-3">
+                <Label htmlFor="order-internal-notes" className="sr-only">Internal notes</Label>
+                <Textarea
+                    id="order-internal-notes"
+                    placeholder="Visible to internal staff only"
+                    value={state.orderInternalNotes}
+                    onChange={e => state.handlers.setOrderInternalNotes(e.target.value)}
+                    readOnly={readOnly}
+                    rows={3}
+                    className="min-h-[80px]"
+                />
+            </div>
+        </details>
+    );
+
     const identityPanel = (
         <CustomerCard
             ref={customerSelectRef}
@@ -1205,6 +1228,19 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             promisedDate={state.orderPromisedDate}
             priority={state.orderPriority}
             showOrderFields={createTarget === "order"}
+            orderInternalNotes={createTarget === "order" ? orderInternalNotesPanel : undefined}
+            orderFulfillment={createTarget === "order" ? (
+                <>
+                    <div className="space-y-1.5">
+                        <div className="text-sm font-medium text-muted-foreground">Fulfillment</div>
+                        <div className="text-sm font-medium">{state.deliveryMethod === "pickup" ? "Pickup" : state.deliveryMethod === "deliver" ? "Deliver" : "Ship"}</div>
+                    </div>
+                    <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm text-muted-foreground">
+                        <span className="min-w-0 break-words">{state.deliveryMethod === "pickup" ? "Pickup by customer" : (fulfillmentShipToData.company || fulfillmentShipToData.name || "Address pending")}</span>
+                        <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2" onClick={() => document.getElementById("new-order-fulfillment")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Edit</Button>
+                    </div>
+                </>
+            ) : undefined}
             tags={state.tags}
             onCustomerChange={state.handlers.setCustomer}
             onContactChange={state.handlers.setContactId}
@@ -1309,14 +1345,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             isApproving={approveMutation.isPending}
             isApprovingAndSending={approveAndSendMutation.isPending}
             isRequestingApproval={requestApprovalMutation.isPending}
-            orderActionSettings={createTarget === "order" ? orderRoutingPanel : undefined}
+            showOrderActions={createTarget !== "order"}
             presentation={createTarget === "order" ? "order" : "quote"}
         />
     );
 
     const orderRoutingPanel = createTarget === "order" && !readOnly ? (
-        <div className="w-full space-y-2">
-            <Label htmlFor="order-route-after-save" className="text-sm font-medium">After creating the order</Label>
+        <div className="min-w-0 space-y-1 sm:w-60">
+            <Label htmlFor="order-route-after-save" className="text-xs font-medium text-muted-foreground">After creating the order</Label>
             <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible")}>
                 <SelectTrigger id="order-route-after-save" className="h-9">
                     <SelectValue placeholder="Choose routing" />
@@ -1326,7 +1362,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     <SelectItem value="route_eligible">Route eligible line items</SelectItem>
                 </SelectContent>
             </Select>
-            <p className="text-xs leading-5 text-muted-foreground">
+            <p className="sr-only">
                 {orderRouteAfterSave === "route_eligible"
                     ? "Eligible lines enter Design, Proofing, or Prepress after artwork checks."
                     : "Create the order without starting production workflows."}
@@ -1434,28 +1470,25 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     <OrderEntryWorkspace
                         identity={identityPanel}
                         lineItems={lineItemsPanel}
-                        settings={
-                            <div className="space-y-4">
-                                {fulfillmentPanel}
-                                <details className="group rounded-lg border border-border/60 bg-card shadow-sm">
-                                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold marker:text-muted-foreground">
-                                        Internal notes
-                                        {state.orderInternalNotes.trim() && <span className="ml-2 text-xs font-normal text-muted-foreground">Notes added</span>}
-                                    </summary>
-                                    <div className="border-t border-border/60 p-4">
-                                        <Label htmlFor="order-internal-notes" className="sr-only">Internal notes</Label>
-                                        <Textarea
-                                            id="order-internal-notes"
-                                            placeholder="Visible to internal staff only"
-                                            value={state.orderInternalNotes}
-                                            onChange={e => state.handlers.setOrderInternalNotes(e.target.value)}
-                                            readOnly={readOnly}
-                                            rows={3}
-                                            className="min-h-[80px]"
-                                        />
-                                        <p className="mt-2 text-xs text-muted-foreground">Internal order notes. Not shown to the customer.</p>
+                        fulfillment={fulfillmentPanel}
+                        actions={
+                            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+                                <div className="flex min-w-0 flex-1 items-center gap-4">
+                                    <div className="shrink-0">
+                                        <div className="text-xs font-medium text-muted-foreground">Order Total</div>
+                                        <div className="text-xl font-semibold tabular-nums">${state.grandTotal.toFixed(2)}</div>
                                     </div>
-                                </details>
+                                    {orderRoutingPanel}
+                                </div>
+                                <OrderCreateActions
+                                    inline
+                                    canSaveQuote={state.canSaveQuote}
+                                    isSaving={createOrderSubmitting || createDirectOrderMutation.isPending}
+                                    onSave={handleCreateOrder}
+                                    onDiscard={handleDiscard}
+                                    primaryActionLabel={orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order"}
+                                    primaryActionSavingLabel="Creating Order…"
+                                />
                             </div>
                         }
                         summary={renderSummaryCard()}
