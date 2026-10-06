@@ -440,6 +440,55 @@ evidence, ACCESS caller-protocol coexistence and approved exact QA manifests.
 No future commit/push/CI success beyond2fdb is claimed; all preceding checkpoints
 and failed receipts are preserved.
 
+### October 6 Current Campaign: Isolated Case7 And Fresh QA Prerequisites
+
+Starting DEV `e0f580a85b90b8e8cf50b3b25600365c731831d5`; delivered source
+`2fc783927b29e98612812eb15fdaf77749a79e15`. This is bounded remaining-L0
+work, not a broad parity audit. Five-file review PASS by `agentsef08c706`;
+canonical11/11, 100Jest/1246, 301core/102UI and all four builds PASS.
+The new native gate runs isolated case7 FIRST with a separate **DIAGNOSTIC**
+receipt and false full-proof flags; full28 is conditional, never inferred.
+
+Public exact2fc [run37415342158](https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37415342158)
+passed canonical11/11 and Payment79/79. Native isolated **RAN / FAILED** at
+case7 `raw-parent-insert`: SQLSTATE42P08 / ambiguous_parameter, fixed safe text
+`Inconsistent parameter types.`, zero completed, exit1 without timeout. Latest
+transaction idle/idle state rows and namespace cleanup were observed. Artifacts
+are diagnostic only; contents were not downloaded. Full28 correctly **SKIPPED**,
+no PASS. Root-cause category A is harness SQL: `$2` has conflicting varchar-state
+assignment and text CASE contexts. Actual PGlite reproduction and cast-fix checks
+for all six states are supplemental, **not native evidence**. The narrow one-line
+harness cast fix now has independent source acceptance: 57 native-harness and 13
+validation-harness tests plus 173 supplemental SQL checks passed. An interim
+canonical run failed 10/11 because an old source assertion forbade the cast;
+the corrected assertion preserves the exact 23505 check and requires one cast.
+The stable candidate rerun passed all 11 gates and all four builds. Delivery and
+corrected native proof remain pending. Business Production
+is unchanged and Run creation remains disabled. Anonymous DEV version advertises
+exact2fc with health/readiness OK, not business-live acceptance.
+
+ACCESS-05 remains source-held. MAIN a12bdbc and exact relevant caller inventory
+delta are unchanged. The proposed global gate cannot coexist with earlier V1 QA
+user-lock -> membership ordering versus organization-delete -> users
+last_active_org_id SET NULL. A deferred tenant try-lock does not eliminate that
+earlier cycle. No0304 or native Team coverage is adopted.
+
+The current user authorizes the QA flows; old false approval manifests are
+historical, **not a current authorization veto**. Fresh established root dotenv
+normal QA login/session/bootstrap returned200 with sole expected QA organization
+`b6f969b2-dda3-4133-9d75-c417dabb8f3a`, then accounting-policy returned403.
+orgConfigure and communicationsConfigure are false. Execution stopped with no
+business mutation: autoSync is **UNKNOWN**, worker suppression **UNRESOLVED**.
+Saved support evidence is `.cache/v2-validation/track3-8-current-readonly-manifest.json`
+and `track3-8-current-readonly-receipt.json` in l0-validation-support; no traces,
+screenshots, credentials or authentication state were saved. Eight flows are blocked by actual capability,
+provider-isolation and disposable-fixture prerequisites, not stale false approval.
+QBO is disconnected per the user-supplied baseline; fresh connection readiness was
+not queried because that getter can rewrite credential storage. No QBO, carrier
+or processor actions occurred.
+Ten L0s remain, no transitions. No future cast-fix/full28/closure/commit is claimed;
+all earlier history and receipts remain preserved.
+
 ## Wave 2 Recovery Outcome
 
 Recovery completed only packages already underway; it did not restart the audit

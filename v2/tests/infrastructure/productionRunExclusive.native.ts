@@ -97,7 +97,7 @@ const create=async(owner:InstanceType<typeof PostgresProductionRunTransaction>,i
  const members=await owner.lockCandidates(org,ids.map(id=>brandedId<"ProductionWorkId">(id)));
  const result=await owner.create({id:brandedId<"ProductionRunId">(id),stationKey:"roll",materialFingerprint:null,layoutMetadata:{},members,quantities:new Map(ids.map(id=>[id,5])),...actor});await owner.succeed(org,reserved.requestId,result);return result;
 };
-const rawRun=async(id:string,state="draft")=>a.query("INSERT INTO v2_production_runs(id,organization_id,station_key,state,created_principal_kind,created_principal_subject,completed_at,cancelled_at) VALUES($1,'org-a','roll',$2,'staff','actor-a',CASE WHEN $2='completed' THEN now() END,CASE WHEN $2='cancelled' THEN now() END)",[id,state]);
+const rawRun=async(id:string,state="draft")=>a.query("INSERT INTO v2_production_runs(id,organization_id,station_key,state,created_principal_kind,created_principal_subject,completed_at,cancelled_at) VALUES($1,'org-a','roll',$2::varchar,'staff','actor-a',CASE WHEN $2='completed' THEN now() END,CASE WHEN $2='cancelled' THEN now() END)",[id,state]);
 const memberSql="INSERT INTO v2_production_run_allocations(id,organization_id,production_run_id,production_work_id,allocated_quantity,artwork_assignment_id,artwork_file_id,artwork_identity_fingerprint,artwork_object_version,position) VALUES($1,'org-a',$2,$3,5,$4,$5,$6,'version-a',0)";
 const rawMember=(client:typeof a,id:string,run:string,work="work-a")=>client.query(memberSql,[id,run,work,`art-${work}`,`file-${work}`,`sha256:${"a".repeat(64)}`]);
 const begin=async()=>{await a.query("BEGIN");await b.query("BEGIN");};

@@ -664,7 +664,47 @@
       "nextCampaign": "Narrow case7 actual native DB error using authorized safe evidence, ACCESS caller-protocol coexistence, and approved exact QA manifests. No speculative source defect or broader campaign.",
       "limits": "Preserve all prior checkpoints and failed receipts. No future validation, commit, push, deployment or CI/native success beyond2fdb claimed."
     },
-    "status": "Final current campaign: DEV8477->reviewed d5fb->exact-clean2fdb delivered;11 canonical gates and four builds PASS, hosted2fdb deterministic11/11 Payment79/79. Native RAN/FAILED scenario7 raw-parent-insert,6completed, sqlstate null, exit1/non-timeout; no typed28 or cleanup proof, Run creation disabled. ACCESS-05 source/coexistence hold and Team20 NOT RUN/OFF unchanged; eight rows authorization/guarded/external evidence blocked. Ten->ten, zero closures, verdictC precise blockers. No business-live/native PASS, external-only closure, policy reopening or L1 work. Earlier observations remain history."
+    "currentCampaignIsolatedCase7AndQa": {
+      "checkpointUtc": "2026-10-06T05:00:25Z",
+      "startingDev": "e0f580a85b90b8e8cf50b3b25600365c731831d5",
+      "deliveredSource": "2fc783927b29e98612812eb15fdaf77749a79e15",
+      "scope": "Bounded remaining-L0 campaign, not broad parity audit; preserve all previous observations/history",
+      "review": "Five-file PASS agentsef08c706",
+      "sourceValidation": "Canonical11/11,100Jest1246,301core102UI and all4builds PASS",
+      "nativeGate": "Isolated case7 FIRST, separate DIAGNOSTIC receipt with false full-proof flags; full28 conditional",
+      "publicRun": {
+        "run": "https://github.com/Tombstone73/QuoteVaultPro/actions/runs/37415342158",
+        "sha": "2fc783927b29e98612812eb15fdaf77749a79e15",
+        "canonical": "11/11 PASS; Payment79/79",
+        "isolatedNative": "RAN/FAILED",
+        "ordinal": 7,
+        "substep": "raw-parent-insert",
+        "sqlstate": "42P08",
+        "category": "ambiguous_parameter",
+        "safeFixedMessage": "Inconsistent parameter types.",
+        "completed": 0,
+        "exit": 1,
+        "timedOut": false,
+        "cleanup": "Latest transaction idle/idle state rows and namespace cleanup observed; scoped diagnostic evidence only",
+        "artifacts": "Diagnostic only; contents not downloaded",
+        "full28": "SKIPPED appropriately; no PASS or full native proof"
+      },
+      "harnessFinding": "CategoryA harness SQL: parameter$2 varchar-state assignment conflicts with text CASE context. Actual PGlite reproduction and supplemental cast-fix verification for all6states are NOT native evidence.",
+      "castFix": "One-line harness cast independently accepted; 57 native-harness +13 validation-harness tests and173 supplemental SQL checks PASS. Interim canonical10/11 failed stale source assertion forbidding cast; corrected test requires exactly one cast while retaining23505. Stable candidate canonical11/11 and four builds PASS. Delivery and corrected native/full28 proof remain pending, not inferred.",
+      "production": "Business runtime unchanged; Run creation disabled",
+      "dev": "Anonymous version exact2fc, health/readiness OK observed; not business-live acceptance",
+      "ACCESS05": "Source hold. CurrentMAINa12bdbc and exact relevant caller inventory delta unchanged. Global gate cannot coexist with earlier V1QAuserlock->membership versus orgdelete->users.last_active_org_id SETNULL; deferred tenant try-lock does not remove the earlier cycle. No0304/native Team coverage adopted.",
+      "currentQaAuthorization": "Current user authorizes QA flows; old false manifests are historical, NOT current authorization veto. Do not misclassify live prerequisite blockers as stale approval.",
+      "freshQaPrerequisites": { "method": "Established root dotenv normal QA login/session/bootstrap; no credential values recorded", "loginSessionBootstrap": "200", "soleExpectedOrganization": "b6f969b2-dda3-4133-9d75-c417dabb8f3a", "accountingPolicy": "403", "orgConfigure": false, "communicationsConfigure": false, "businessMutations": "NOT RUN; stopped", "autoSync": "UNKNOWN", "workerSuppression": "UNRESOLVED" },
+      "supportEvidence": ["l0-validation-support/.cache/v2-validation/track3-8-current-readonly-manifest.json", "l0-validation-support/.cache/v2-validation/track3-8-current-readonly-receipt.json"],
+      "evidencePrivacy": "No traces, screenshots, credentials or authentication state saved",
+      "eightFlows": "Actual capability/isolation/disposable-fixture prerequisites blocked, not stale false approval",
+      "providers": "QBO disconnected per user-supplied baseline, not a fresh connection observation; readiness getter excluded because it can rewrite credential storage. No QBO, carrier, processor or business actions.",
+      "remainingL0": 10,
+      "rowTransitions": [],
+      "limits": "No future cast-fix acceptance/delivery, full28 proof, closure or commit claimed; no unrelated changes or broad parity audit"
+    },
+    "status": "Current campaign e0f580->reviewed2fc delivered, canonical11/11 and four builds PASS. Isolated case7 diagnostic RAN/FAILED42P08 raw-parent-insert,0completed; scoped cleanup observed, full28 correctly SKIPPED. Harness cast source fix independently accepted and stable candidate canonical11/11/four builds PASS; delivery and corrected native proof pending. Business Production unchanged/creation disabled. ACCESS-05 source/coexistence hold remains. QA currently authorized but eight flows have actual capability/isolation/disposable-fixture prerequisites; autoSyncUNKNOWN/workersuppressionUNRESOLVED, not stale approval veto. TenL0, no transitions or native/business-live proof; prior history preserved."
   },
   "wave2DependencyUpdates": {
     "ART-04": "No remaining gap in its preauthorization intent. ART-10 exact-layer selection is now closed; intake-format breadth and production-art replacement remain separate open rows. No live storage validation.",

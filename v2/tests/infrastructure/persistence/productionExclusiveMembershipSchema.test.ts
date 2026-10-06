@@ -56,30 +56,29 @@ async function nativeRawRunParameterTyping() {
   assert.equal([...source.matchAll(/\bconst\s+rawRun\b/g)].length, 1, "Ambiguous rawRun declaration");
   const sql = matches[0][1];
   const baseline = "INSERT INTO v2_production_runs(id,organization_id,station_key,state,created_principal_kind,created_principal_subject,completed_at,cancelled_at) VALUES($1,'org-a','roll',$2,'staff','actor-a',CASE WHEN $2='completed' THEN now() END,CASE WHEN $2='cancelled' THEN now() END)";
-  // Temporary reproduction contract: after native author confirmation, assert the
-  // actual corrected helper succeeds and retain this uncast SQL as the red control.
-  assert.equal(sql, baseline, "Native rawRun changed; review and update the regression contract");
-  const castSql = sql.replace("'roll',$2,", "'roll',$2::varchar,");
-  assert.notEqual(castSql, sql);
+  // Remove only the reviewed assignment cast to retain the failing red control.
+  const uncastSql = sql.replace("'roll',$2::varchar,", "'roll',$2,");
+  assert.notEqual(uncastSql, sql, "Native rawRun must explicitly cast its state assignment");
+  assert.equal(uncastSql, baseline, "Native rawRun changed; review and update the regression contract");
   checks += 4;
 
   const db = await schema();
   try {
     await db.exec(membershipDdl);
-    await assert.rejects(db.query(sql, ["uncast", "draft"]), { code: "42P08" });
+    await assert.rejects(db.query(uncastSql, ["uncast", "draft"]), { code: "42P08" });
     assert.equal((await db.query<{ count: number }>("SELECT count(*)::int AS count FROM v2_production_runs")).rows[0].count, 0);
     checks += 2;
     const states = ["draft", "ready", "active", "held", "completed", "cancelled"];
     for (const state of states) {
       const id = `cast-${state}`;
-      await db.query(castSql, [id, state]);
+      await db.query(sql, [id, state]);
       const result = await db.query("SELECT id,state,completed_at IS NOT NULL AS completed,cancelled_at IS NOT NULL AS cancelled FROM v2_production_runs WHERE id=$1", [id]);
       assert.deepEqual(result.rows, [{ id, state, completed: state === "completed", cancelled: state === "cancelled" }]);
       checks++;
     }
     assert.equal((await db.query<{ count: number }>("SELECT count(*)::int AS count FROM v2_production_runs")).rows[0].count, states.length);
     checks++;
-    console.log("Native rawRun typing: uncast 42P08; assignment-only varchar cast passes all six states. Supplemental in-memory SQL, not native concurrency proof.");
+    console.log("Native rawRun typing: uncast control 42P08; actual native SQL passes all six states. Supplemental in-memory SQL, not native concurrency proof.");
   } finally { await db.close(); }
 }
 

@@ -731,6 +731,6 @@ test('producer uses manifest ordinal filter before any CASE7-only scenario effec
   assert.match(source,/const ordinal=caseManifest\.indexOf\(spec\)\+1/);
   assert.match(source,/reportNativeProductionProgress\("passed",ordinal\)/);
   assert.match(source,/\.code==="23505"/);
-  assert.match(source,/\$1,'org-a','roll',\$2,'staff'/);
-  assert.doesNotMatch(source,/\$2::varchar/);
+  assert.match(source,/\$1,'org-a','roll',\$2::varchar,'staff'/);
+  assert.equal((source.match(/\$2::varchar/g)??[]).length,1);
 });
