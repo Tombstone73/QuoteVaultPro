@@ -1,5 +1,175 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+## October 6 Remaining-Nine Acceptance
+
+Current campaign began with **nine** open L0 rows. Requested baseline
+`518723f2b0b8b222313941df82bcb1151ea65257`; actual clean campaign worktree and
+deployed DEV were `05be26f0cb07712b7decd68bf59ca20735dc7e8f`, verified descendant.
+Exact `/version`, `/health` and `/ready` passed. The dirty original workspace
+was not changed. Historical campaign sections below are retained as evidence,
+not current acceptance or authorization limits.
+
+**BILL-16 CLOSED (B/L0):** canonical disposable Invoice `0e14ed10-e30d-49a1-b378-5b56bbbfa223`
+for Order `a987054f-09f9-40e4-a184-04ce358c5ff5` (`ORD-1029`) was captured as draft,
+issued without email, then settled with one authorized USD0.50 manual cash payment
+`afd81e32-e8d9-405c-a129-d7ff6578def8`. Current paid changed0->50 cents and balance
+100->50 cents. The issue checkpoint stayed deeply equal; both downloaded PDFs
+are byte-identical (1557bytes), SHA256
+`8270add5939882327724f7f3a29eeffb65229c181825f72d2b051ad79855ee0c`.
+Independent review `ses_eee2b3543ffeV3yQytrlt40A7W` parsed both PDFs and confirmed
+the historical disclaimer, absence of misleading current-balance labels, exact
+receipt linkage and one payment fact. Source milestone78cc04b2 is unchanged.
+User-confirmed QuickBooks disconnection, unapproved new Invoice export gates,
+and absent provider Invoice/Customer links isolate this fixture; no email,
+processor or QuickBooks action was invoked. Worker shutdown/autoSync=false are
+not claimed. Detailed IDs, checkpoint hash and local evidence paths are retained
+in the reconciliation ledger's `closures.BILL-16`.
+
+**FUL-11 CLOSED (B/L0):** normal organization, blind Customer billing and Custom
+sender paths passed on disposable Order `307b0aa1-2a00-40af-9396-823f30af6fc9`.
+Incomplete Custom and incompatible combined senders fail without fallback;
+corrections retain history, stale finalization creates no handoff, and exact
+retry preserves sender. Finalized document text retains the original billing
+sender after CRM changes, while Custom documents retain the corrected sender.
+Rerendered Shipping PDF byte equality is not claimed. Independent review
+`ses_eee1e4970ffeP850eSOTM18cMK` accepted this bounded closure: the unexposed live
+Customer-default=true field is covered by existing accepted pure default/override
+tests, not a reason to invent a new CRM endpoint. No carrier action occurred.
+Replacement physical-operation recovery is evaluated separately as FUL-26 below.
+
+**OPS-09 and OPS-12 CLOSED (B/L0):** after exact repaired deployment, Run
+`7f29fee2-f205-45c3-9f92-768f4f40b3fc` passed grouped creation, fresh-session
+list/detail persistence, holds/destination/exclusive membership/controller guards,
+and `draft -> ready -> active -> held -> active -> completed`. Members finished
+good3 each, waste1/0; terminal reversal was rejected and reopening detail passed.
+Ordinary05be26f and Runb0e66fe actual browser-response-loss evidence each recovers
+one exact succeeded owner result after context closure. Replay does not duplicate
+attempts, good/waste or Run events; three route projections remain unchanged.
+Anonymous, revoked-session and unbound foreign-org reads are denied. Existing
+local actor/grant tests supply separate coverage; no live role-revocation or full
+mounted UI claim. Independent effect-level review
+`ses_eee2093b6ffeWDFbJqCgHXdydt` PASS. Snapshots froze16:01:56Z before later
+ordinary completion and Shipping prerequisites; historical evidence is preserved.
+
+**FUL-26 CLOSED (B/L0):** original pickup browser-abort/context-loss recovery,
+original shipment bounded lost-result recovery and replacement pickup/shipment
+admission/receipt/exact replay all passed. Completed original Production was
+advanced through canonical Routing, safe Sales destination correction and
+original pickup2 before taking the preservation baseline. Replacement
+`a3c83e89-f439-4c7e-83bd-a9bc2a5f7c38` quantity2 generated successor Work
+`d18c2812-b986-4766-9826-8e7515e85846`, completedgood2/waste0; replacement pickup1
+and shipment1 produced exactly two handoffs, with all replacement remaining and
+reserved quantities0. Original ordered3/produced3/pickup2/shipment0/remaining1
+and original Work/history stayed unchanged; history SHA256
+`24a09cb62beea3e1fb925d5782f01ba8a04cf8f1416e97164c3009097bd67e0a`.
+Independent raw-evidence review `ses_eee1e4970ffeP850eSOTM18cMK` PASS. Replacement
+loss is bounded consumer-result discard, not browser abortion. Different-actor,
+grant-change and foreign-tenant cases retain separately identified local8-case
+coverage; no live second actor, provider or global exactly-once claim.
+
+**Final campaign disposition: nine -> four remaining L0s.** Closed: OPS-09,
+OPS-12, FUL-11, FUL-26, BILL-16. Environment-limited: SALE-08, SALE-09,
+ACCESS-12. Technical/proof hold: ACCESS-05. Verdict **C: SOME L0 REMAIN WITH
+PRECISE BLOCKERS**. No row priority downgraded. Current inventory277, classes
+A13/B55/C116/D49/E9/F35; remainingCDF L0=4, L1=135, L2=60, L3=1, L4=0.
+PAY-22 and Production28 remain accepted
+without reopening their prior closures/proof. No L1, UI polish, Storefront,
+MAIN/PROD or V1 change.
+
+### Production Acceptance Repair
+
+Actual disposable DEV Run creation failed with `column mr.unit does not exist`.
+Canonical migration0211 defines `quantity_unit`; the accepted adapter's candidate
+and preparation queries both used `unit`, and copied test schema had masked the
+error. Commit **`b0e66fe4e3137fe9fd8ca6ee5749508f5a4fb387`** changes only those two
+runtime expressions, adds exact-canonical-material-schema regressions, aligns a
+daily-report fixture, and updates reviewed native dependency pins for the changed
+fixture and newly consumed immutable0211 DDL. No migration, locking, authority,
+native producer, ordered28-case contract, hook hash or suite hash changed. No
+Production28 diagnosis or manual native proof rerun was started; the existing
+DEV-push CI workflow may run its normal checks automatically.
+
+Independent six-file review `ses_eee2093b6ffeWDFbJqCgHXdydt` PASS. Red canonical
+query regression became green; PGlite recovery64 cases and daily-report query
+tests passed. Final candidate `npm run v2:validate` passed all11 gates,100 Jest
+suites/1246 tests,301 core and102 UI entries,102 architecture and13 runner checks;
+imports81/81 and SQL189/169 stayed unchanged. The earlier overlapping baseline
+run's10/11 result correctly caught stale fixture hashes; no gate was waived.
+All three applicable V2 foundation/server/UI builds passed with credentials
+removed; UI retains its existing large-chunk warning. Migration journal/integrity
+and `git diff --check` passed. The exact repair was fast-forward pushed only to
+`origin/dev`. At2026-10-06T16:00:19Z exact deployed versionb0e66fe4, health and
+readiness passed with TLS verification; polling was slower than once per minute.
+Row retest remains separate required evidence, not inferred from deployment.
+
+### ACCESS-05 Runtime Classification And Hold
+
+Independent caller trace `ses_eee313ee7ffe2yYdiBV4oRvXsM` and design review
+`ses_eee29e9f5ffet1lEUiv7OJYZ75` distinguish actual coexistence from historical code:
+
+| Class | Actual caller evidence | Disposition |
+| --- | --- | --- |
+| A: historical V1 | `server/routes/users.routes.ts`, `invites.ts`, and platform routes mount through `server/index.ts`/`server/routes.ts`, not `v2/src/deployment/entry.ts`/`server.ts`. | Excluded from the V2 HTTP participant set. Separate V1 process/database coexistence was not proved or assumed. No V1 edits. |
+| B: registered legacy/shared structural routes | No legacy structural-user/invite/platform router is mounted in the inspected standalone V2 composition. | Shared product/customer imports do not imply legacy Auth route registration. |
+| C: relevant tooling | `scripts/qa/provisionDevQaUser.ts`, `scripts/qa/devQaOperator.ts`, optional `scripts/db/bootstrapAdmin.ts` use shared database/authority tables. | Genuine coordination participants when run against V2. Earlier user/membership/state locks require transaction-entry enrollment; frozen bootstrap service owns its own transaction. |
+| D: migration/test | M15 bootstrap/administration and cleanup rehearsals are not deployed HTTP callers. Migrations0182/0186/0235 install live floor/bootstrap triggers. | Historical files stay immutable; installed triggers are live participants, not excluded as test-only. |
+| E: deployed V2 | Team Access, Proofing's Auth recipient operation, standalone Portal credentials, conditional proof delivery worker; organization settings also lock the organization. | Team state->Portal-access and Proof access->state invert. Credential setup access/token->user opposes Team user->access. |
+
+Proposed order, **reviewed direction but not adopted implementation**:
+transaction-entry shared maintenance gate -> ordered organization rows -> ordered
+permission-state rows -> fresh actor authorization -> exact reservation/replay ->
+ordered dependencies -> mutation/post-state structural floor/audit/receipt.
+New mutations enforce expected revision; successful exact replay must not become
+stale solely because its own first execution advanced the revision. Global
+destructive maintenance takes the exclusive gate at entry, never upgrades, then
+discovers/locks affected scopes in order and protects every surviving tenant.
+Organization deletion must account for `users.last_active_org_id SET NULL`, not
+only membership cascades. Ordinary unrelated tenants must not share an exclusive
+global mutation lock.
+
+Implementation remains held: the independently reviewed design still needs a
+precise usable-authority/enrollment/bootstrap contract and an enforceable policy
+for the frozen transaction-owning bootstrap service. BDR-3 does not prohibit
+narrow lock-only coordination and generic migration authorization is already
+present; neither is used as a blanket permission blocker. No claim that a late
+trigger fixes arbitrary earlier user DML or that absent evidence proves tooling
+cannot coexist. No old candidate adopted. No migration added; frontier remains
+idx304/tag0303. The configured `TEST_DATABASE_URL` fails the existing guard
+because its database name lacks a standalone test/testing/ci marker. The guard
+was not weakened and no connection occurred. Docker/PostgreSQL CLI tools are
+absent from PATH. Native ACCESS-05 proof **NOT RUN**, rather than inferred from
+PGlite or existing Production28 evidence.
+
+### Sales And Portal Acceptance Limits
+
+Canonical Operations created Customer `102436dd-c1fd-4303-ad26-3cc599fbc9b3`,
+active Contact `e085c11d-1b37-4dd8-be88-b8553b0856ce`, and Quote `QT-1002`
+(`781faaa6-4036-43e0-bfb5-66e502404f37`, revision1; direct canonical Quote entry,
+not a TEMP workspace). Its one configured Product line is USD1.00. Recipient
+and routing prerequisites are ready, but tax jurisdiction is unconfigured and
+Gmail readiness is `not_configured`, `canSend:false`. No send request was made.
+Accept and Revise each correctly return409 without changing the Quote; no
+publication/checkpoint/evidence exists. Evidence: `nine-l0-sales.json` in the
+campaign validation cache. The UUID-shaped original fixture label is retained;
+no PDF/publication claim is made from it.
+
+SALE-08 and SALE-09 remain **environment-limited**, not reopened source defects:
+the canonical publication path requires actual delivery evidence and has no
+established DEV-safe Quote suppression seam. The Proof/Portal suppression helper
+does not suppress Quote delivery. This is missing positive A/B publication and
+conversion evidence, not an unnecessary external-mailbox receipt requirement.
+No provider connection, fake success, direct checkpoint insertion or redesign.
+
+ACCESS-12 remains **environment-limited** by that publication prerequisite and
+the absent usable administrative QA login for canonical Portal setup. The
+Operations actor has `teamAccessManage:false`; no Dale/Owner credentials were
+found in the configured QA credential source. Existing membership is not claimed
+absent. The bounded canonical QA setup seam exists; no general BDR-3 lifecycle
+policy was invented, no Operations grant broadened and no Portal binding/reset
+or foreign Customer identity fabricated. Existing source reviews and canonical
+automated publication/Portal tests remain credited separately from the unrun
+positive Portal DEV acceptance.
+
 ## Remaining L0 Campaign: October 3, 2026
 
 The campaign starts from delivered DEV
