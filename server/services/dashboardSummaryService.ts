@@ -9,8 +9,11 @@ import {
   getOrganizationTimezone,
 } from "./orderDueDateService";
 import { listPayments, paymentDateWindow } from "./paymentListService";
+import { getActiveProductionValue } from "./activeProductionValueService";
+import type { ActiveProductionValue } from "../lib/activeProductionValue";
 
 export type DashboardSummary = {
+  activeProductionValue: ActiveProductionValue | null;
   criticalAlerts: {
     dueToday: number | null;
     dueTomorrow: number | null;
@@ -58,6 +61,7 @@ export type LowInventoryDashboardItem = {
 };
 
 const DEFAULT_SUMMARY: DashboardSummary = {
+  activeProductionValue: null,
   criticalAlerts: {
     dueToday: null,
     dueTomorrow: null,
@@ -208,6 +212,12 @@ export async function getDashboardSummary(organizationId: string, now = new Date
     productionJobs: { ...DEFAULT_SUMMARY.productionJobs },
     fulfillmentFinance: { ...DEFAULT_SUMMARY.fulfillmentFinance },
   };
+
+  try {
+    summary.activeProductionValue = await getActiveProductionValue(organizationId);
+  } catch (error) {
+    console.error("[dashboard-summary] activeProductionValue failed:", error);
+  }
 
   // Critical Alerts
   try {

@@ -1,4 +1,5 @@
 import ActivityFeedPanel from "@/components/dashboard/ActivityFeedPanel";
+import ActiveProductionValueCard from "@/components/dashboard/ActiveProductionValueCard";
 import CriticalAlertsRow from "@/components/dashboard/CriticalAlertsRow";
 import DashboardDetailPanel from "@/components/dashboard/DashboardDetailPanel";
 import FulfillmentFinanceCard from "@/components/dashboard/FulfillmentFinanceCard";
@@ -64,6 +65,8 @@ export default function TitanDashboard() {
         onSelectPanel={handleSelectPanel}
         actions={dashboardActions}
       />
+
+      <ActiveProductionValueCard value={summary?.activeProductionValue} />
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <OrdersPipelineCard {...summary?.ordersPipeline} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />

@@ -1,6 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 
 export type DashboardSummary = {
+  activeProductionValue: {
+    totalCents: number;
+    newCents: number;
+    inProductionCents: number;
+  } | null;
   criticalAlerts: {
     dueToday: number | null;
     dueTomorrow: number | null;

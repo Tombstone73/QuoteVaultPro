@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { getOrganizationTimezone } from "./orderDueDateService";
 import {
@@ -13,7 +13,7 @@ import {
 } from "@shared/schema";
 import type { DailyProductionReport } from "@shared/dailyProductionReport";
 import { buildDailyProductionReport } from "@shared/dailyProductionReportProjection";
-import { DAILY_PRODUCTION_STATUS_KEYS } from "./dailyProductionReportStatus";
+import { currentProductionStatusPillPredicate } from "./dailyProductionReportStatus";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 
 export { buildDailyProductionReport, getDailyProductionDueState, sortDailyProductionRows } from "@shared/dailyProductionReportProjection";
@@ -31,25 +31,7 @@ function calendarDateInTimezone(now: Date, timezone: string): string {
 
 /** Reads report data only after the authenticated endpoint is requested. */
 export async function getDailyProductionReport(organizationId: string): Promise<DailyProductionReport> {
-  const normalizedPillValue = sql<string>`lower(regexp_replace(regexp_replace(trim(coalesce(${orders.statusPillValue}, '')), '[_-]+', ' ', 'g'), '\\s+', ' ', 'g'))`;
-  const hasNoPillValue = sql<boolean>`${normalizedPillValue} = ''`;
-  const reportStatusKeys = [...DAILY_PRODUCTION_STATUS_KEYS];
-  const reportStatusValues = ["new", "in production"];
-  const isQualifiedCurrentStatus = or(
-    and(
-      isNotNull(orders.statusPillId),
-      inArray(orderStatusPills.key, reportStatusKeys),
-    ),
-    and(
-      isNull(orders.statusPillId),
-      inArray(normalizedPillValue, reportStatusValues),
-    ),
-    and(
-      isNull(orders.statusPillId),
-      hasNoPillValue,
-      inArray(orders.status, reportStatusKeys),
-    ),
-  );
+  const isQualifiedCurrentStatus = currentProductionStatusPillPredicate();
 
   const [organization, timezone, rows, fulfillmentCandidates] = await Promise.all([
     db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, organizationId)).limit(1),
