@@ -844,7 +844,7 @@ export function LineItemsSection({
         lineQuantity: qtyNum,
         members: expandedItem.pendingOrderAttachments.map((attachment) => ({
           id: attachment.uploadId,
-          role: "artwork",
+          role: attachment.role ?? "artwork",
           productionQuantity: attachment.productionQuantity ?? null,
           productionGroupId: attachment.productionGroupId ?? null,
         })),

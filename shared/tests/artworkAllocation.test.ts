@@ -59,6 +59,40 @@ describe("artwork allocation", () => {
     expect(result.issue).toContain("Assign 3 more");
   });
 
+  test("allocates a sole production file to the full line quantity after a reference file is classified", () => {
+    const staged = reconcileStagedArtworkAllocations({
+      lineQuantity: 6,
+      attachments: [
+        { uploadId: "proof", role: "reference" as const, productionQuantity: null, allocationSource: "automatic" as const },
+        { uploadId: "final", role: "artwork" as const, productionQuantity: null, allocationSource: "automatic" as const },
+      ],
+    });
+    const status = buildArtworkAllocationStatus({
+      lineQuantity: 6,
+      members: staged.map((file) => ({ id: file.uploadId, role: file.role, productionQuantity: file.productionQuantity })),
+    });
+
+    expect(staged).toEqual(expect.arrayContaining([
+      expect.objectContaining({ uploadId: "proof", productionQuantity: null }),
+      expect.objectContaining({ uploadId: "final", productionQuantity: 6, allocationSource: "automatic" }),
+    ]));
+    expect(status).toMatchObject({ allocatedTotal: 6, valid: true, issue: null });
+  });
+
+  test("keeps explicit multi-output quantities and rejects incomplete staged allocations", () => {
+    const complete = buildArtworkAllocationStatus({ lineQuantity: 10, members: [
+      { id: "design-a", role: "artwork", productionQuantity: 6 },
+      { id: "design-b", role: "artwork", productionQuantity: 4 },
+    ] });
+    const incomplete = buildArtworkAllocationStatus({ lineQuantity: 10, members: [
+      { id: "design-a", role: "artwork", productionQuantity: 6 },
+      { id: "design-b", role: "artwork", productionQuantity: 3 },
+    ] });
+
+    expect(complete).toMatchObject({ allocatedTotal: 10, valid: true });
+    expect(incomplete).toMatchObject({ allocatedTotal: 9, valid: false });
+  });
+
   test("defaults each new production artwork relationship to one finished piece", () => {
     expect(defaultNewProductionArtworkAllocation("artwork")).toBe(1);
     expect(defaultNewProductionArtworkAllocation("final")).toBe(1);

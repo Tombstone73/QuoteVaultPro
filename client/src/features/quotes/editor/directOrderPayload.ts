@@ -98,6 +98,7 @@ export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPa
                     .filter((attachment) => typeof attachment?.uploadId === "string" && attachment.uploadId.trim().length > 0)
                     .map((attachment) => ({
                         uploadId: attachment.uploadId,
+                        role: attachment.role === "reference" ? "reference" : "artwork",
                         productionQuantity: attachment.productionQuantity ?? null,
                         productionGroupId: attachment.productionGroupId ?? null,
                         allocationSource: attachment.allocationSource === "manual" ? "manual" : "automatic",

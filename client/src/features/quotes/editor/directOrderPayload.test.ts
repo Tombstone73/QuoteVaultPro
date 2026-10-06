@@ -55,6 +55,7 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
           mimeType: "application/pdf",
           sizeBytes: 12345,
           uploadedAt: "2026-06-03T12:00:00.000Z",
+          role: "artwork",
           productionQuantity: 2,
           productionGroupId: "banner-a",
           allocationSource: "manual",
@@ -118,6 +119,7 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
       pendingOrderAttachmentUploadIds: ["upload-temp-1"],
       pendingOrderArtworkAllocations: [{
         uploadId: "upload-temp-1",
+        role: "artwork",
         productionQuantity: 2,
         productionGroupId: "banner-a",
         allocationSource: "manual",

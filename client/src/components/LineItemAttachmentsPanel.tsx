@@ -113,7 +113,7 @@ interface LineItemAttachmentsPanelProps {
   /** Remove a staged attachment from the unsaved order draft. */
   onTemporaryOrderAttachmentRemove?: (uploadId: string) => void;
   /** Update allocation metadata for an unsaved direct-order artwork upload. */
-  onTemporaryOrderAttachmentUpdate?: (uploadId: string, patch: Pick<TemporaryOrderAttachmentUpload, "productionQuantity" | "productionGroupId" | "allocationSource">) => void;
+  onTemporaryOrderAttachmentUpdate?: (uploadId: string, patch: Pick<TemporaryOrderAttachmentUpload, "role" | "productionQuantity" | "productionGroupId" | "allocationSource">) => void;
   /** Atomically update the staged members of one finished Artwork Set. */
   onTemporaryOrderArtworkSetUpdate?: (uploadIds: string[], patch: Pick<TemporaryOrderAttachmentUpload, "productionQuantity" | "productionGroupId" | "allocationSource">) => void;
   /** Notify the line-item editor after a persisted attachment is unlinked. */
@@ -292,7 +292,7 @@ export function LineItemAttachmentsPanel({
     lineQuantity,
     members: pendingOrderAttachments.map((file) => ({
       id: file.uploadId,
-      role: "artwork",
+      role: file.role ?? "artwork",
       productionQuantity: file.productionQuantity ?? null,
       productionGroupId: file.productionGroupId ?? null,
     })),
@@ -300,14 +300,16 @@ export function LineItemAttachmentsPanel({
   const artworkSets = useMemo(() => buildArtworkOutputSets(productionRows), [productionRows]);
   const stagedArtworkSets = useMemo(() => buildArtworkOutputSets(pendingOrderAttachments.map((file) => ({
     id: file.uploadId,
-    role: "artwork",
+    role: file.role ?? "artwork",
     productionQuantity: file.productionQuantity ?? null,
     productionGroupId: file.productionGroupId ?? null,
   }))), [pendingOrderAttachments]);
   const displayedArtworkSets = parentType === "order" && orderId ? artworkSets : stagedArtworkSets;
   const displayedArtworkMembers: Array<{ id: string; fileName: string; productionGroupId?: string | null }> = parentType === "order" && orderId
     ? productionRows.map((file) => ({ id: file.id, fileName: getAttachmentDisplayName(file), productionGroupId: file.productionGroupId ?? null }))
-    : pendingOrderAttachments.map((file) => ({ id: file.uploadId, fileName: file.fileName, productionGroupId: file.productionGroupId ?? null }));
+    : pendingOrderAttachments
+      .filter((file) => file.role !== "reference")
+      .map((file) => ({ id: file.uploadId, fileName: file.fileName, productionGroupId: file.productionGroupId ?? null }));
   const hasComplexArtworkSets = displayedArtworkSets.some((set) => set.explicit || set.memberIds.length > 1);
   const canCreateArtworkSet = displayedArtworkMembers.filter((member) => !member.productionGroupId?.trim()).length >= 2;
   const primaryProductionAttachment = productionRows[0] ?? null;
@@ -417,7 +419,12 @@ export function LineItemAttachmentsPanel({
   };
 
   const createArtworkSetFromSelection = async () => {
-    const selectedIds = Array.from(new Set(selectedArtworkIds));
+    const selectableMemberIds = new Set(
+      displayedArtworkMembers.map((member) => member.id),
+    );
+    const selectedIds = Array.from(
+      new Set(selectedArtworkIds.filter((id) => selectableMemberIds.has(id))),
+    );
     const quantity = Number(newArtworkSetQuantity || lineQuantity);
     if (selectedIds.length < 2) {
       toast({ title: "Select artwork files", description: "Select two or more files that make the same finished output.", variant: "destructive" });
@@ -1290,7 +1297,8 @@ export function LineItemAttachmentsPanel({
           {pendingOrderAttachments.length > 0 && (
             <div className="space-y-2 pt-2" data-testid="staged-artwork-allocation">
               {pendingOrderAttachments.map((file) => (
-                <div key={file.uploadId} className="flex items-center gap-2 p-1.5 rounded bg-background">
+                <div key={file.uploadId} className="rounded-md border border-border/60 bg-background p-2">
+                  <div className="flex items-start gap-2">
                   <File className="w-4 h-4 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-medium truncate">{file.fileName}</div>
@@ -1298,10 +1306,10 @@ export function LineItemAttachmentsPanel({
                       {formatFileSize(file.sizeBytes)} · staged
                     </div>
                     {file.allocationSource === "automatic" && (
-                      <div className="text-[11px] text-muted-foreground">Auto-filled from line quantity</div>
+                      <div className="text-[11px] text-muted-foreground">Auto-filled from line quantity when unambiguous</div>
                     )}
                   </div>
-                  {!file.productionGroupId?.trim() && onTemporaryOrderArtworkSetUpdate ? (
+                  {file.role !== "reference" && !file.productionGroupId?.trim() && onTemporaryOrderArtworkSetUpdate ? (
                     <label className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
                       <Checkbox
                         checked={selectedArtworkIds.includes(file.uploadId)}
@@ -1328,15 +1336,62 @@ export function LineItemAttachmentsPanel({
                       <X className="h-3 w-3" />
                     </Button>
                   ) : null}
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,1fr)_8rem]">
+                    <label className="grid gap-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Artwork role
+                      <select
+                        className="h-8 rounded border border-input bg-background px-2 text-xs text-foreground"
+                        aria-label={`Artwork role for staged ${file.fileName}`}
+                        value={file.role === "reference" ? "reference" : "artwork"}
+                        onChange={(event) => onTemporaryOrderAttachmentUpdate?.(file.uploadId, event.target.value === "reference"
+                          ? { role: "reference", productionQuantity: null, productionGroupId: null, allocationSource: "automatic" }
+                          : { role: "artwork", productionQuantity: file.productionQuantity ?? null, productionGroupId: file.productionGroupId ?? null, allocationSource: "automatic" })}
+                      >
+                        <option value="artwork">Production artwork</option>
+                        <option value="reference">Reference / proof</option>
+                      </select>
+                    </label>
+                    {file.role !== "reference" && !file.productionGroupId?.trim() && (
+                      <label className="grid gap-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Qty to Produce
+                        <input
+                          className="h-8 rounded border border-input bg-background px-2 text-sm tabular-nums text-foreground"
+                          type="number"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          aria-label={`Qty to Produce for staged ${file.fileName}`}
+                          value={file.productionQuantity ?? ""}
+                          placeholder={lineQuantity ? String(lineQuantity) : "Qty"}
+                          onChange={(event) => {
+                            const raw = event.currentTarget.value.trim();
+                            const next = raw === "" ? null : Number(raw);
+                            onTemporaryOrderAttachmentUpdate?.(file.uploadId, {
+                              role: "artwork",
+                              productionQuantity: Number.isInteger(next) && Number(next) > 0 ? Number(next) : null,
+                              productionGroupId: null,
+                              allocationSource: "manual",
+                            });
+                          }}
+                        />
+                      </label>
+                    )}
+                    {file.role !== "reference" && file.productionGroupId?.trim() && (
+                      <p className="self-end text-xs text-muted-foreground">Quantity is controlled by its Artwork Set.</p>
+                    )}
+                  </div>
                 </div>
               ))}
-              {stagedAllocationStatus.requiredQuantity != null && !stagedAllocationStatus.valid && (
+              {stagedAllocationStatus.requiredQuantity != null && (
                 <div className="rounded border border-border/70 bg-muted/20 px-2 py-1.5 text-xs" aria-live="polite">
                   <div className="font-medium">Artwork allocation: Assigned {stagedAllocationStatus.allocatedTotal} of {stagedAllocationStatus.requiredQuantity}</div>
                   <div className="text-muted-foreground">
-                    {stagedAllocationStatus.allocatedTotal < stagedAllocationStatus.requiredQuantity
-                      ? `Remaining ${stagedAllocationStatus.requiredQuantity - stagedAllocationStatus.allocatedTotal}`
-                      : stagedAllocationStatus.issue}
+                    {stagedAllocationStatus.valid
+                      ? "Remaining 0"
+                      : stagedAllocationStatus.allocatedTotal < stagedAllocationStatus.requiredQuantity
+                        ? `Remaining ${stagedAllocationStatus.requiredQuantity - stagedAllocationStatus.allocatedTotal}`
+                        : stagedAllocationStatus.issue}
                   </div>
                 </div>
               )}

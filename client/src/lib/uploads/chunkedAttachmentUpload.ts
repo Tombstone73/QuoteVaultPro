@@ -149,6 +149,7 @@ export type TemporaryOrderAttachmentUpload = {
   mimeType: string;
   sizeBytes: number;
   uploadedAt: string;
+  role?: "artwork" | "reference";
   productionQuantity?: number | null;
   productionGroupId?: string | null;
   allocationSource?: "automatic" | "manual";
@@ -176,5 +177,6 @@ export async function uploadTemporaryOrderAttachmentViaChunked(
     mimeType: file.type || "application/octet-stream",
     sizeBytes: file.size,
     uploadedAt: new Date().toISOString(),
+    role: "artwork",
   };
 }

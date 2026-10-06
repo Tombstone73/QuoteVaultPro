@@ -163,6 +163,8 @@ export function getSafeArtworkAllocationDefaults(args: {
 }
 
 export type StagedArtworkAllocation = {
+  /** Draft Order Entry uses the same production/reference distinction as saved artwork. */
+  role?: "artwork" | "reference" | null;
   productionQuantity?: number | null;
   productionGroupId?: string | null;
   allocationSource?: "automatic" | "manual";
@@ -177,7 +179,8 @@ export function reconcileStagedArtworkAllocations<T extends StagedArtworkAllocat
   attachments: T[];
 }): T[] {
   const lineQuantity = finiteInteger(args.lineQuantity);
-  const count = args.attachments.length;
+  const productionAttachments = args.attachments.filter((attachment) => attachment.role !== "reference");
+  const count = productionAttachments.length;
   const automaticQuantity = lineQuantity == null
     ? null
     : count === 1
@@ -188,6 +191,18 @@ export function reconcileStagedArtworkAllocations<T extends StagedArtworkAllocat
 
   let changed = false;
   const next = args.attachments.map((attachment) => {
+    if (attachment.role === "reference") {
+      if (attachment.productionQuantity == null && attachment.productionGroupId == null && attachment.allocationSource === "automatic") {
+        return attachment;
+      }
+      changed = true;
+      return {
+        ...attachment,
+        productionQuantity: null,
+        productionGroupId: null,
+        allocationSource: "automatic" as const,
+      };
+    }
     if (attachment.allocationSource === "manual") return attachment;
     const currentQuantity = attachment.productionQuantity ?? null;
     if (attachment.allocationSource === "automatic" && currentQuantity === automaticQuantity) return attachment;

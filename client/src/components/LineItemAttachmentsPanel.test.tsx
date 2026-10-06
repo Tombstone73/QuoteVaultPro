@@ -442,7 +442,7 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(html).not.toContain("Assigned 3 of 2");
   });
 
-  test("keeps a complete staged single-artwork allocation quiet before the line is saved", () => {
+  test("shows the resolved staged single-artwork allocation before the line is saved", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <LineItemAttachmentsPanel
@@ -467,8 +467,34 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     );
 
     expect(html).toContain("Auto-filled from line quantity");
-    expect(html).not.toContain("Artwork allocation:");
-    expect(html).not.toContain("Allocation complete");
+    expect(html).toContain("Artwork allocation: Assigned 4 of 4");
+    expect(html).toContain("Remaining 0");
+  });
+
+  test("shows role and quantity controls for staged reference and production artwork", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <LineItemAttachmentsPanel
+          quoteId={null}
+          parentType="order"
+          orderId={null}
+          lineItemId="temp-line-1"
+          defaultExpanded
+          lineQuantity={6}
+          pendingOrderAttachments={[
+            { uploadId: "reference", fileName: "proof.pdf", mimeType: "application/pdf", sizeBytes: 1200, uploadedAt: "2026-07-31T00:00:00.000Z", role: "reference", productionQuantity: null, allocationSource: "automatic" },
+            { uploadId: "production", fileName: "final.pdf", mimeType: "application/pdf", sizeBytes: 1200, uploadedAt: "2026-07-31T00:00:00.000Z", role: "artwork", productionQuantity: 6, allocationSource: "automatic" },
+          ]}
+          onTemporaryOrderAttachmentUpdate={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(html).toContain("Reference / proof");
+    expect(html).toContain("Qty to Produce");
+    expect(html).toContain('aria-label="Qty to Produce for staged final.pdf"');
+    expect(html).toContain("Artwork allocation: Assigned 6 of 6");
+    expect(html).toContain("Remaining 0");
   });
 
   test("renders a multilayer staged artwork group as one finished-output quantity", () => {
@@ -491,7 +517,8 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     );
 
     expect(html).toContain("Artwork Set 1 · 2 required layers");
-    expect(html).not.toContain("Artwork allocation:");
+    expect(html).toContain("Artwork allocation: Assigned 250 of 250");
+    expect(html).toContain("Remaining 0");
     expect(html).not.toContain("Assigned 500 of 250");
   });
 

@@ -1487,6 +1487,7 @@ export async function registerOrderRoutes(
         quantity?: unknown;
     }): Array<{
         uploadId: string;
+        role: "artwork" | "reference";
         productionQuantity: number | null;
         productionGroupId: string | null;
         allocationSource: "automatic" | "manual";
@@ -1500,12 +1501,14 @@ export async function registerOrderRoutes(
             productionQuantity: number | null;
             productionGroupId: string | null;
             allocationSource: "automatic" | "manual";
+            role: "artwork" | "reference";
         }>();
         if (Array.isArray(lineItem.pendingOrderArtworkAllocations)) {
             for (const value of lineItem.pendingOrderArtworkAllocations) {
                 const allocation = asRecordOrEmpty(value);
                 if (typeof allocation.uploadId !== "string" || !allocation.uploadId.trim()) continue;
                 allocationByUploadId.set(allocation.uploadId.trim(), {
+                    role: allocation.role === "reference" ? "reference" : "artwork",
                     productionQuantity: allocation.productionQuantity == null || allocation.productionQuantity === ""
                         ? null
                         : Number(allocation.productionQuantity),
@@ -1523,6 +1526,7 @@ export async function registerOrderRoutes(
                 .filter((uploadId: string) => uploadId.length > 0)
         )).map((uploadId) => ({
             uploadId,
+            role: allocationByUploadId.get(uploadId)?.role ?? "artwork" as const,
             productionQuantity: allocationByUploadId.get(uploadId)?.productionQuantity ?? null,
             productionGroupId: allocationByUploadId.get(uploadId)?.productionGroupId ?? null,
             allocationSource: allocationByUploadId.get(uploadId)?.allocationSource ?? "automatic" as const,
@@ -1577,7 +1581,7 @@ export async function registerOrderRoutes(
                         userName: args.userName,
                         requestedTarget: args.requestedTarget,
                         orderNumber: args.order.orderNumber ? String(args.order.orderNumber) : undefined,
-                        role: "artwork",
+                        role: upload.role,
                         side: "na",
                         isPrimary: false,
                         productionQuantity: upload.productionQuantity,
@@ -2468,7 +2472,7 @@ export async function registerOrderRoutes(
                     lineQuantity: lineItem.quantity,
                     members: uploads.map((upload) => ({
                         id: upload.uploadId,
-                        role: "artwork",
+                        role: upload.role,
                         productionQuantity: upload.productionQuantity,
                         productionGroupId: upload.productionGroupId,
                     })),
