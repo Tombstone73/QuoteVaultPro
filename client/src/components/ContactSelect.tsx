@@ -134,6 +134,7 @@ export function ContactSelect({
               type="button"
               variant="outline"
               role="combobox"
+              aria-label={label || undefined}
               aria-expanded={open}
               disabled={disabled}
               className="h-9 flex-1 justify-between font-normal"

@@ -151,6 +151,8 @@ export type LineItemCardProps = {
   detailsSide?: "left" | "right";
   collapseSecondaryDetails?: boolean;
   compactExpandedLayout?: boolean;
+  /** Size compact editor columns to their workspace rather than the browser viewport. */
+  containerResponsiveLayout?: boolean;
   fulfillmentOnly?: boolean;
   serviceFee?: boolean;
   quantityOnly?: boolean;
@@ -318,6 +320,7 @@ export function LineItemCard({
   detailsSide = "left",
   collapseSecondaryDetails = false,
   compactExpandedLayout = false,
+  containerResponsiveLayout = false,
   fulfillmentOnly = false,
   serviceFee = false,
   quantityOnly = false,
@@ -557,7 +560,9 @@ export function LineItemCard({
       <div
         className={cn(
           "grid min-w-0 gap-3",
-          dimsRequired ? "grid-cols-1 sm:grid-cols-3" : "max-w-[10rem] grid-cols-1",
+          dimsRequired
+            ? containerResponsiveLayout ? "grid-cols-[repeat(auto-fit,minmax(min(100%,7rem),1fr))]" : "grid-cols-1 sm:grid-cols-3"
+            : "max-w-[10rem] grid-cols-1",
         )}
         data-testid="order-line-dimensions-row"
       >
@@ -584,7 +589,9 @@ export function LineItemCard({
         </div>
       </div>
       <div
-        className="grid min-w-0 grid-cols-2 items-start gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,9rem)_minmax(0,12rem)_auto]"
+        className={cn("grid min-w-0 items-start gap-x-3 gap-y-2", containerResponsiveLayout
+          ? "grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]"
+          : "grid-cols-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,9rem)_minmax(0,12rem)_auto]")}
         data-testid="order-line-pricing-row"
       >
         <label className="grid min-w-0 gap-1 text-center text-xs text-muted-foreground">
@@ -616,7 +623,7 @@ export function LineItemCard({
           </div>
           {priceOverride != null && <div className="flex items-center justify-center gap-1 text-[11px] text-amber-700 dark:text-amber-400"><span>{priceOverrideLabel}</span>{canEditPrice && onUndoOverride ? <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onUndoOverride} title="Undo override"><Undo2 className="h-3 w-3" /></Button> : null}</div>}
         </div>
-        <div className="col-span-full flex items-center text-[11px]">
+        <div className={cn("col-span-full flex items-center text-[11px]", containerResponsiveLayout && "min-w-0 [&>div]:max-w-full")}>
           {isCalculating ? <div className="text-muted-foreground">Calculating…</div> : null}
           {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" ? <div className="font-medium text-amber-600 dark:text-amber-500">⚠️ Outdated PBV2 config</div> : null}
           {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" ? <div className="max-w-[420px] truncate text-destructive" title={calcError}>{calcError.trim().startsWith("{") || /^\d+:\s*{/.test(calcError) ? "Calculation failed. Check required options." : calcError}</div> : null}
@@ -1083,17 +1090,18 @@ export function LineItemCard({
             {compactExpandedLayout ? (
               <div className="space-y-3" data-testid="order-line-editor">
                 <div className={cn(
-                  "grid items-start gap-3",
-                  optionsSlot && artworkSlot && "2xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)_minmax(19rem,0.95fr)]",
-                  optionsSlot && !artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)]",
-                  !optionsSlot && artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(19rem,1.15fr)]",
+                  "items-start gap-3",
+                  containerResponsiveLayout ? "flex min-w-0 flex-wrap" : "grid",
+                  !containerResponsiveLayout && optionsSlot && artworkSlot && "2xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)_minmax(19rem,0.95fr)]",
+                  !containerResponsiveLayout && optionsSlot && !artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(21rem,1.2fr)]",
+                  !containerResponsiveLayout && !optionsSlot && artworkSlot && "xl:grid-cols-[minmax(17rem,0.85fr)_minmax(19rem,1.15fr)]",
                 )} data-testid="order-line-main-editing">
-                  <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
+                  <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1_1_24rem]")} aria-label={dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}>
                     <h3 className="mb-3 text-sm font-semibold">{dimsRequired ? "Dimensions & Pricing" : "Quantity & Pricing"}</h3>
                     {commercialControls}
                   </section>
-                  {optionsSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
-                  {artworkSlot ? <section className="min-w-0 rounded-md border border-border/40 bg-background/40 p-3" aria-label="Artwork"><h3 className="mb-2 text-sm font-semibold">Artwork</h3>{artworkSlot}</section> : null}
+                  {optionsSlot ? <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1_1_24rem]")} aria-label="Product Options"><h3 className="mb-2 text-sm font-semibold">Product Options</h3>{optionsSlot}</section> : null}
+                  {artworkSlot ? <section className={cn("min-w-0 rounded-md border border-border/40 bg-background/40 p-3", containerResponsiveLayout && "flex-[1_1_28rem]")} aria-label="Artwork"><h3 className="mb-2 text-sm font-semibold">Artwork</h3>{artworkSlot}</section> : null}
                 </div>
                 <div className="grid min-w-0 items-start gap-3" data-testid="order-line-lower-editing">
                   {compactNotesSection}

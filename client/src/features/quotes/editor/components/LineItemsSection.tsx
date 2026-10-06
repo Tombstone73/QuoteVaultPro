@@ -1204,6 +1204,7 @@ export function LineItemsSection({
           type="button"
           disabled={isCreatingDraft}
           role="combobox"
+          aria-label={createTarget === "order" ? "Add Product" : undefined}
           aria-expanded={searchOpen}
           className={inHeader ? "h-9 gap-2 border-primary/40 bg-primary/[0.03] font-medium hover:bg-primary/[0.07]" : "w-full justify-between h-9 font-normal"}
         >
@@ -1259,13 +1260,10 @@ export function LineItemsSection({
 
   return (
     <Card className={createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
-      <CardHeader className={createTarget === "order" ? "sticky top-0 z-20 border-b border-border/60 bg-card px-5 py-4" : "px-4 py-2.5 border-b border-border/40"}>
+      <CardHeader className={createTarget === "order" ? "sticky top-0 z-20 rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
         <div className={createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
           {createTarget === "order" && (
-            <div>
-              <h2 className="text-base font-semibold tracking-tight text-foreground">Line items</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">Add products, then expand a line to set specifications and pricing.</p>
-            </div>
+            <h2 className="text-sm font-semibold text-foreground">Line items</h2>
           )}
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="border-border/60 text-xs">
@@ -1276,13 +1274,13 @@ export function LineItemsSection({
         </div>
       </CardHeader>
 
-      <CardContent className={createTarget === "order" ? "px-3 py-4 sm:px-5" : "px-4 py-3"}>
+      <CardContent className={createTarget === "order" ? "p-3 sm:p-4" : "px-4 py-3"}>
         {(createTarget === "order" ? count === 0 : lineItems.length === 0) ? (
-          <div className={createTarget === "order" ? "rounded-md border border-dashed border-border/70 bg-muted/20 px-5 py-10 text-center" : "py-6 text-center text-xs text-muted-foreground"}>
+          <div className={createTarget === "order" ? "rounded-md bg-muted/30 px-4 py-4" : "py-6 text-center text-xs text-muted-foreground"}>
             {createTarget === "order" ? (
               <>
                 <p className="text-sm font-medium text-foreground">No line items yet</p>
-                <p className="mt-1 text-sm text-muted-foreground">Use Add Product below to start building this order.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Use Add Product above to start the order.</p>
               </>
             ) : "—"}
           </div>
@@ -1385,6 +1383,8 @@ export function LineItemsSection({
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
                         {({ dragAttributes, dragListeners }) => (
                           <LineItemCard
+                            compactExpandedLayout={createTarget === "order"}
+                            containerResponsiveLayout={createTarget === "order"}
                             id={item.id || ""}
                             itemKey={itemKey}
                             contentId={contentId || ""}
@@ -1572,12 +1572,12 @@ export function LineItemsSection({
                             }}
                             priceControlSlot={
                               isExpanded ? (
-                                <div>
+                                <div className={createTarget === "order" ? "min-w-0 max-w-full" : undefined}>
                                   <select
                                     aria-label="Price override mode"
                                     value={overrideUiState.selectValue}
                                     onChange={(event) => void handlePriceOverrideModeChange(event.target.value)}
-                                    className="h-8 w-36 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                    className={createTarget === "order" ? "h-8 w-36 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring" : "h-8 w-36 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"}
                                     disabled={readOnly}
                                   >
                                     <option value="__none">No override</option>
@@ -1707,22 +1707,9 @@ export function LineItemsSection({
         )}
 
         {/* Add Product (edit mode only) */}
-        {!readOnly && (
-          <div className={createTarget === "order" ? "mt-4 border-t border-border/60 pt-4" : "mt-4 pt-4 border-t border-border/40"}>
-            {createTarget === "order" ? (
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 w-full justify-between border-primary/40 bg-primary/[0.03] font-medium"
-                onClick={() => {
-                  orderProductPickerTriggerRef.current?.scrollIntoView({ block: "nearest" });
-                  setSearchOpen(true);
-                }}
-                disabled={isCreatingDraft}
-              >
-                Add Product <Plus className="h-4 w-4" />
-              </Button>
-            ) : renderProductPicker(false)}
+        {!readOnly && createTarget !== "order" && (
+          <div className="mt-4 pt-4 border-t border-border/40">
+            {renderProductPicker(false)}
           </div>
         )}
       </CardContent>

@@ -1337,11 +1337,11 @@ export function LineItemAttachmentsPanel({
                     </Button>
                   ) : null}
                   </div>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,1fr)_8rem]">
-                    <label className="grid gap-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="mt-2 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-2">
+                    <label className="grid min-w-0 gap-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                       Artwork role
                       <select
-                        className="h-8 rounded border border-input bg-background px-2 text-xs text-foreground"
+                        className="h-8 w-full min-w-0 rounded border border-input bg-background px-2 text-xs text-foreground"
                         aria-label={`Artwork role for staged ${file.fileName}`}
                         value={file.role === "reference" ? "reference" : "artwork"}
                         onChange={(event) => onTemporaryOrderAttachmentUpdate?.(file.uploadId, event.target.value === "reference"
@@ -1353,10 +1353,10 @@ export function LineItemAttachmentsPanel({
                       </select>
                     </label>
                     {file.role !== "reference" && !file.productionGroupId?.trim() && (
-                      <label className="grid gap-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      <label className="grid min-w-0 gap-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                         Qty to Produce
                         <input
-                          className="h-8 rounded border border-input bg-background px-2 text-sm tabular-nums text-foreground"
+                          className="h-8 w-full min-w-0 rounded border border-input bg-background px-2 text-sm tabular-nums text-foreground"
                           type="number"
                           min="1"
                           step="1"

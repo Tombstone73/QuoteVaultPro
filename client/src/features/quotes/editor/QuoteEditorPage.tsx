@@ -19,7 +19,7 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Lock, ExternalLink, Loader2 } from "lucide-react";
+import { ArrowLeft, Lock, ExternalLink } from "lucide-react";
 import { PageHeader } from "@/components/titan";
 import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
@@ -43,6 +43,7 @@ import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
+import { OrderEntryWorkspace } from "./components/OrderEntryWorkspace";
 import { QuoteRecipientFallbackDialog } from "./components/QuoteRecipientFallbackDialog";
 import { getQuoteSendEligibility } from "./quoteActionEligibility";
 import {
@@ -179,7 +180,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         postalCode: draftShipToData.postalCode ?? (state.quote as any)?.shipToPostalCode,
         country: draftShipToData.country ?? (state.quote as any)?.shipToCountry,
     }), [draftShipToData, state.quote]);
-    
+
     // Revise quote mutation (creates new draft from approved/converted)
     const reviseMutation = useMutation({
         mutationFn: async (quoteId: string) => {
@@ -197,10 +198,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Invalidate old quote detail and list
             queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
             queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-            
+
             // Navigate to new draft quote
             navigate(`/quotes/${data.id}`);
-            
+
             toast({
                 title: "Quote Revised",
                 description: `Created new draft quote #${data.quoteNumber}`,
@@ -304,7 +305,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             portalVisibilityMutation.mutate(checked);
         }
     };
-    
+
     const handleReviseQuote = () => {
         if (!state.quoteId) return;
         reviseMutation.mutate(state.quoteId);
@@ -637,7 +638,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // Stored as lineItemId (tempId || id) - persists across refetches
     // NOT derived from quote object identity, so it survives quote refetches
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
-    
+
     // Track whether we've already attempted restoration (one-shot)
     const didRestoreRef = useRef<boolean>(false);
 
@@ -666,7 +667,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // Only clear expandedKey if the line item was actually removed (not just refetched)
     useEffect(() => {
         if (!expandedKey) return;
-        
+
         // Check if the expanded line item still exists in the current lineItems
         // Match by checking both tempId and id (handles tempId→id transitions during save)
         const stillExists = state.lineItems.some(li => {
@@ -677,7 +678,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                    li.tempId === expandedKey || 
                    li.id === expandedKey;
         });
-        
+
         // If the item no longer exists, clear expandedKey (item was removed)
         // Otherwise, keep it (item still exists, just refetched or transitioned tempId→id)
         if (!stillExists) {
@@ -703,33 +704,33 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     useEffect(() => {
         // Guard 1: One-shot restoration (prevent repeated attempts)
         if (didRestoreRef.current) return;
-        
+
         // Guard 2: Only attempt restoration if we don't already have an expanded item
         if (expandedKey) return;
-        
+
         // Guard 3: Must have a pending restoration
         const pending = getPendingExpandedLineItemId();
         if (!pending.key && pending.index === null) return;
-        
+
         // Guard 4: Data must be loaded (wait for permanent quote with line items)
         // This prevents running during /quotes/new phase or before data arrives
         const dataLoaded = state.quoteId && // Have permanent quote ID
                           state.lineItems.length > 0 && // Have line items
                           !state.isInitialQuoteLoading; // Not in initial load
-        
+
         if (!dataLoaded) return;
-        
+
         // Try to find matching line item by key first
         let matchingItem = state.lineItems.find(li => {
             const itemKey = li.tempId || li.id || "";
             return itemKey === pending.key || li.tempId === pending.key || li.id === pending.key;
         });
-        
+
         // Fallback: If key doesn't match (first-save transition), try index
         if (!matchingItem && pending.index !== null && pending.index >= 0 && pending.index < state.lineItems.length) {
             matchingItem = state.lineItems[pending.index];
         }
-        
+
         if (matchingItem) {
             // Restore expansion to the current key (prefer tempId, fall back to id)
             const currentKey = matchingItem.tempId || matchingItem.id || "";
@@ -770,14 +771,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     useEffect(() => {
         const pendingScrollY = getPendingScrollPosition();
         if (pendingScrollY === null) return;
-        
+
         // Data must be loaded before restoring scroll (same guard as expansion restore)
         const dataLoaded = state.quoteId && 
                           state.lineItems.length > 0 && 
                           !state.isInitialQuoteLoading;
-        
+
         if (!dataLoaded) return;
-        
+
         // Restore scroll position immediately (no smooth scroll - instant)
         // Use requestAnimationFrame to ensure DOM layout is complete
         requestAnimationFrame(() => {
@@ -820,7 +821,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     useEffect(() => {
         // Only attempt focus once per route
         if (hasAttemptedFocusRef.current === location.pathname) return;
-        
+
         // Only focus if:
         // 1. Not read-only (edit mode)
         // 2. On new quote/new order route OR no customer selected yet
@@ -830,10 +831,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         if (readOnly) return;
         if (showConvertDialog) return;
         if (state.isInitialQuoteLoading) return; // Wait for initial load to complete
-        
+
         // Check if we're on a new quote/new order route
         const isNewRoute = location.pathname === ROUTES.quotes.new || location.pathname === ROUTES.orders.new;
-        
+
         // Only focus on new routes or when customer is not selected
         const shouldFocus = isNewRoute || !state.selectedCustomerId;
         if (!shouldFocus) {
@@ -868,7 +869,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     if (readOnly || showConvertDialog) return;
                     const stillNewRoute = location.pathname === ROUTES.quotes.new || location.pathname === ROUTES.orders.new;
                     if (!stillNewRoute && state.selectedCustomerId) return;
-                    
+
                     customerSelectRef.current?.focus();
                 }, 250);
             });
@@ -933,7 +934,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
-            
+
             const result = await state.handlers.saveQuote();
             await persistDraftShipToData(result.quoteId);
             handlePostSaveNavigation(result);
@@ -1018,7 +1019,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 state: { quoteId: result.quoteId },
             });
         }
-        
+
         return result.quoteId;
     };
 
@@ -1029,7 +1030,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         try {
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
-            
+
             await state.handlers.saveQuote();
             navigate(backPath, { replace: true });
         } catch (err) {
@@ -1052,22 +1053,22 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleConfirmVoid = async (reason: string) => {
         if (!state.quoteId) return;
-        
+
         try {
             // Update quote status to 'canceled'
             await apiRequest("PATCH", `/api/quotes/${state.quoteId}`, {
                 status: "canceled",
             });
-            
+
             toast({
                 title: "Quote voided",
                 description: `Quote has been marked as canceled. Reason: "${reason}" (Note: Reason not saved to database yet - no server support).`,
             });
-            
+
             // Invalidate queries to refresh data
             await queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
             await queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-            
+
             // Navigate back to quotes list
             navigate(backPath, { replace: true });
         } catch (error) {
@@ -1084,33 +1085,33 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const handleDiscard = async () => {
         // Prevent any autosave during discard
         discardInProgressRef.current = true;
-        
+
         try {
             // If quote exists (persisted), delete it from server
             if (state.quoteId) {
                 const confirmed = window.confirm(
                     "Discard this draft quote? This will permanently remove the quote and all line items/attachments."
                 );
-                
+
                 if (!confirmed) {
                     discardInProgressRef.current = false;
                     return;
                 }
-                
+
                 // Call DELETE API
                 await apiRequest("DELETE", `/api/quotes/${state.quoteId}`);
-                
+
                 toast({
                     title: "Draft discarded",
                     description: "Quote has been deleted.",
                 });
             }
-            
+
             // Reset local state (for both persisted and unpersisted quotes)
             await state.handlers.discardAllChanges();
             setExpandedKey(null);
             setEditMode(false);
-            
+
             // Navigate back to quotes list
             navigate(backPath, { replace: true });
         } catch (error) {
@@ -1147,7 +1148,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         try {
             await state.handlers.saveQuote();
             setShowUnsavedChangesDialog(false);
-            
+
             if (pendingNavigation) {
                 pendingNavigation();
                 setPendingNavigation(null);
@@ -1166,7 +1167,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleDiscardAndLeave = () => {
         setShowUnsavedChangesDialog(false);
-        
+
         if (pendingNavigation) {
             pendingNavigation();
             setPendingNavigation(null);
@@ -1182,6 +1183,82 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         setShowUnsavedChangesDialog(false);
         setPendingNavigation(null);
     };
+
+    const identityPanel = (
+        <CustomerCard
+            ref={customerSelectRef}
+            selectedCustomerId={state.selectedCustomerId}
+            selectedCustomer={state.selectedCustomer}
+            selectedContactId={state.selectedContactId}
+            selectedContact={state.selectedContact}
+            contacts={state.contacts}
+            effectiveTaxRate={state.effectiveTaxRate}
+            pricingTier={state.pricingTier}
+            discountPercent={state.discountPercent}
+            markupPercent={state.markupPercent}
+            marginPercent={state.marginPercent}
+            deliveryMethod={state.deliveryMethod}
+            readOnly={readOnly}
+            jobLabel={state.jobLabel}
+            requestedDueDate={state.requestedDueDate}
+            poNumber={state.orderPoNumber}
+            promisedDate={state.orderPromisedDate}
+            priority={state.orderPriority}
+            showOrderFields={createTarget === "order"}
+            tags={state.tags}
+            onCustomerChange={state.handlers.setCustomer}
+            onContactChange={state.handlers.setContactId}
+            onContactResolved={state.handlers.setResolvedContact}
+            onJobLabelChange={state.handlers.setJobLabel}
+            onRequestedDueDateChange={state.handlers.setRequestedDueDate}
+            onPoNumberChange={state.handlers.setOrderPoNumber}
+            onPromisedDateChange={state.handlers.setOrderPromisedDate}
+            onPriorityChange={state.handlers.setOrderPriority}
+            onAddTag={state.handlers.addTag}
+            onRemoveTag={state.handlers.removeTag}
+        />
+    );
+
+    const lineItemsPanel = (
+        <LineItemsSection
+            quoteId={state.quoteId}
+            customerId={state.selectedCustomerId}
+            readOnly={readOnly}
+            lineItems={state.lineItems}
+            products={state.products}
+            expandedKey={expandedKey}
+            onExpandedKeyChange={setExpandedKey}
+            isCreatingDraft={state.isCreatingDraft}
+            onCreateDraftLineItem={state.handlers.createDraftLineItem}
+            onUpdateLineItem={state.handlers.updateLineItemLocal}
+            onSaveLineItem={state.handlers.saveLineItem}
+            onDuplicateLineItem={state.handlers.duplicateLineItem}
+            onRemoveLineItem={state.handlers.removeLineItem}
+            onReorderLineItems={state.handlers.reorderLineItemsByKeys}
+            ensureQuoteId={createTarget === "order" ? undefined : ensureQuoteId}
+            ensureLineItemId={createTarget === "order" ? undefined : state.handlers.ensureLineItemId}
+            createTarget={createTarget}
+        />
+    );
+
+    const fulfillmentPanel = (
+        <OrderFulfillmentPanel
+            presentation={createTarget === "order" ? "order-entry" : "default"}
+            mode="quote"
+            parentType="quote"
+            fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
+            shipToData={fulfillmentShipToData}
+            shippingInstructions={state.quoteNotes}
+            shippingCents={state.shippingCents}
+            canEditOrder={!readOnly}
+            isEditingFulfillment={!readOnly}
+            onFulfillmentMethodChange={!readOnly ? saveFulfillmentMethod : undefined}
+            onShippingInstructionsChange={!readOnly ? ((instructions: string | null) => state.handlers.setQuoteNotes(instructions ?? '')) : undefined}
+            onShipToChange={!readOnly ? saveShipTo : undefined}
+            onShippingCentsChange={!readOnly ? saveShippingCents : undefined}
+            defaultCustomer={state.selectedCustomer}
+        />
+    );
 
     const renderSummaryCard = () => (
         <SummaryCard
@@ -1232,34 +1309,29 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             isApproving={approveMutation.isPending}
             isApprovingAndSending={approveAndSendMutation.isPending}
             isRequestingApproval={requestApprovalMutation.isPending}
+            orderActionSettings={createTarget === "order" ? orderRoutingPanel : undefined}
             presentation={createTarget === "order" ? "order" : "quote"}
         />
     );
 
     const orderRoutingPanel = createTarget === "order" && !readOnly ? (
-        <Card className="border-border/60 shadow-sm">
-            <CardHeader className="border-b border-border/60 px-5 py-4">
-                <CardTitle className="text-sm font-semibold">After creating the order</CardTitle>
-                <CardDescription>Choose when eligible line items enter production workflows.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2 p-5">
-                <Label htmlFor="order-route-after-save" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Routing</Label>
-                <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible") }>
-                    <SelectTrigger id="order-route-after-save">
-                        <SelectValue placeholder="Choose what happens after save" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="save_only">Keep line items on Order</SelectItem>
-                        <SelectItem value="route_eligible">Route eligible line items</SelectItem>
-                    </SelectContent>
-                </Select>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                    {orderRouteAfterSave === "route_eligible"
-                        ? "Saved lines enter Design, Proofing, or Prepress only after artwork promotion and eligibility checks pass."
-                        : "The order is saved without starting workflow ownership."}
-                </p>
-            </CardContent>
-        </Card>
+        <div className="w-full space-y-2">
+            <Label htmlFor="order-route-after-save" className="text-sm font-medium">After creating the order</Label>
+            <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible")}>
+                <SelectTrigger id="order-route-after-save" className="h-9">
+                    <SelectValue placeholder="Choose routing" />
+                </SelectTrigger>
+                <SelectContent>
+                    <SelectItem value="save_only">Keep line items on Order</SelectItem>
+                    <SelectItem value="route_eligible">Route eligible line items</SelectItem>
+                </SelectContent>
+            </Select>
+            <p className="text-xs leading-5 text-muted-foreground">
+                {orderRouteAfterSave === "route_eligible"
+                    ? "Eligible lines enter Design, Proofing, or Prepress after artwork checks."
+                    : "Create the order without starting production workflows."}
+            </p>
+        </div>
     ) : null;
 
     // EARLY RETURNS MUST COME AFTER ALL HOOKS
@@ -1304,14 +1376,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     return (
         <div className="min-h-screen bg-background">
-            <div className={createTarget === "order" ? "mx-auto w-full max-w-none px-4 pb-36 pt-6 sm:px-6 xl:px-8 xl:pb-40" : "mx-auto w-full max-w-[1600px] px-6 py-4"}>
+            <div className={createTarget === "order" ? "mx-auto w-full max-w-none px-4 py-6 sm:px-6 lg:px-8" : "mx-auto w-full max-w-[1600px] px-6 py-4"}>
                 {/* Top bar: Back + Quote # + Status + Actions */}
                 {createTarget === "order" ? (
                     <PageHeader
                         title="New Order"
-                        subtitle="Select a customer, build the line items, and review fulfillment before creating the order."
+                        subtitle="Build line items and review the order."
                         backButton={<Button type="button" variant="outline" size="sm" onClick={handleBack} className="shrink-0 gap-2"><ArrowLeft className="h-4 w-4" />Orders</Button>}
-                        className="items-start gap-4 border-b border-border/60 pb-5 [&>div:first-child]:items-start"
+                        className="items-start gap-4 pb-3 [&>div:first-child]:items-start"
                     />
                 ) : <QuoteHeader
                     quoteNumber={(state.quote as any)?.quoteNumber || ""}
@@ -1358,248 +1430,180 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     </Alert>
                 )}
 
-                {/* Two-column layout: Left (Customer + Line Items + Totals) | Right (Fulfillment + Attachments) */}
-                <div className={createTarget === "order" ? "mt-6 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]" : "grid gap-6 mt-6 lg:grid-cols-[1fr_400px]"}>
-                    {/* LEFT COLUMN: Customer + Line Items + Totals */}
-                    <div className={createTarget === "order" ? "contents" : "space-y-6"}>
-                        {/* Customer & Details Panel */}
-                        <div className={createTarget === "order" ? "min-w-0 xl:col-span-2" : ""}>
-                        <CustomerCard
-                            ref={customerSelectRef}
-                            selectedCustomerId={state.selectedCustomerId}
-                            selectedCustomer={state.selectedCustomer}
-                            selectedContactId={state.selectedContactId}
-                            selectedContact={state.selectedContact}
-                            contacts={state.contacts}
-                            effectiveTaxRate={state.effectiveTaxRate}
-                            pricingTier={state.pricingTier}
-                            discountPercent={state.discountPercent}
-                            markupPercent={state.markupPercent}
-                            marginPercent={state.marginPercent}
-                            deliveryMethod={state.deliveryMethod}
-                            readOnly={readOnly}
-                            jobLabel={state.jobLabel}
-                            requestedDueDate={state.requestedDueDate}
-                            poNumber={state.orderPoNumber}
-                            promisedDate={state.orderPromisedDate}
-                            priority={state.orderPriority}
-                            showOrderFields={createTarget === "order"}
-                            tags={state.tags}
-                            onCustomerChange={state.handlers.setCustomer}
-                            onContactChange={state.handlers.setContactId}
-                            onContactResolved={state.handlers.setResolvedContact}
-                            onJobLabelChange={state.handlers.setJobLabel}
-                            onRequestedDueDateChange={state.handlers.setRequestedDueDate}
-                            onPoNumberChange={state.handlers.setOrderPoNumber}
-                            onPromisedDateChange={state.handlers.setOrderPromisedDate}
-                            onPriorityChange={state.handlers.setOrderPriority}
-                            onAddTag={state.handlers.addTag}
-                            onRemoveTag={state.handlers.removeTag}
-                        />
-                        </div>
-
-                        {/* Line Items Section */}
-                        <div className={createTarget === "order" ? "min-w-0 xl:col-start-1 xl:row-start-2" : ""}>
-                        <LineItemsSection
-                            quoteId={state.quoteId}
-                            customerId={state.selectedCustomerId}
-                            readOnly={readOnly}
-                            lineItems={state.lineItems}
-                            products={state.products}
-                            expandedKey={expandedKey}
-                            onExpandedKeyChange={setExpandedKey}
-                            isCreatingDraft={state.isCreatingDraft}
-                            onCreateDraftLineItem={state.handlers.createDraftLineItem}
-                            onUpdateLineItem={state.handlers.updateLineItemLocal}
-                            onSaveLineItem={state.handlers.saveLineItem}
-                            onDuplicateLineItem={state.handlers.duplicateLineItem}
-                            onRemoveLineItem={state.handlers.removeLineItem}
-                            onReorderLineItems={state.handlers.reorderLineItemsByKeys}
-                            ensureQuoteId={createTarget === "order" ? undefined : ensureQuoteId}
-                            ensureLineItemId={createTarget === "order" ? undefined : state.handlers.ensureLineItemId}
-                            createTarget={createTarget}
-                        />
-                        </div>
-
-                        {/* Quote summary retains its original position. Order actions sit beside the line list. */}
-                        {createTarget !== "order" && renderSummaryCard()}
-                    </div>
-
-                    {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
-                    <div className={createTarget === "order" ? "min-w-0 space-y-6 xl:col-start-2 xl:row-start-2 h-fit" : "space-y-6 lg:sticky lg:top-4 h-fit"}>
-                        {state.isInternalUser && createTarget !== "order" && (
-                            <Card className="rounded-lg border border-border/40 bg-card/50">
-                                <CardHeader className="pb-3">
-                                    <CardTitle className="text-base font-medium">Customer Portal</CardTitle>
-                                    <CardDescription>
-                                        Staff can control whether this saved quote appears for the customer.
-                                    </CardDescription>
-                                </CardHeader>
-                                <CardContent>
-                                    <div className="flex items-start justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
-                                        <div className="space-y-1">
-                                            <Label htmlFor="quote-portal-visibility" className="cursor-pointer text-sm font-medium">
-                                                Visible in customer portal
-                                            </Label>
-                                            <p className="text-xs text-muted-foreground">
-                                                {state.visibleInCustomerPortal
-                                                    ? "Customers can see this quote in Dashboard and Quotes."
-                                                    : "Hidden from customer portal until staff turns this on."}
-                                            </p>
-                                        </div>
-                                        <Switch
-                                            id="quote-portal-visibility"
-                                            checked={state.visibleInCustomerPortal}
-                                            onCheckedChange={handlePortalVisibilityChange}
-                                            disabled={state.isSaving || portalVisibilityMutation.isPending}
-                                        />
-                                    </div>
-                                </CardContent>
-                            </Card>
-                        )}
-
-                        {/* Fulfillment & Shipping Panel - Reuses Orders component */}
-                        <OrderFulfillmentPanel
-                            mode="quote"
-                            parentType="quote"
-                            fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
-                            shipToData={fulfillmentShipToData}
-                            shippingInstructions={state.quoteNotes}
-                            shippingCents={state.shippingCents}
-                            canEditOrder={!readOnly}
-                            isEditingFulfillment={!readOnly}
-                            onFulfillmentMethodChange={!readOnly ? saveFulfillmentMethod : undefined}
-                            onShippingInstructionsChange={!readOnly ? ((instructions: string | null) => state.handlers.setQuoteNotes(instructions ?? '')) : undefined}
-                            onShipToChange={!readOnly ? saveShipTo : undefined}
-                            onShippingCentsChange={!readOnly ? saveShippingCents : undefined}
-                            defaultCustomer={state.selectedCustomer}
-                        />
-
-                        {createTarget === "order" && (
+                {createTarget === "order" ? (
+                    <OrderEntryWorkspace
+                        identity={identityPanel}
+                        lineItems={lineItemsPanel}
+                        settings={
                             <div className="space-y-4">
-                                {orderRoutingPanel}
-                                {renderSummaryCard()}
+                                {fulfillmentPanel}
+                                <details className="group rounded-lg border border-border/60 bg-card shadow-sm">
+                                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold marker:text-muted-foreground">
+                                        Internal notes
+                                        {state.orderInternalNotes.trim() && <span className="ml-2 text-xs font-normal text-muted-foreground">Notes added</span>}
+                                    </summary>
+                                    <div className="border-t border-border/60 p-4">
+                                        <Label htmlFor="order-internal-notes" className="sr-only">Internal notes</Label>
+                                        <Textarea
+                                            id="order-internal-notes"
+                                            placeholder="Visible to internal staff only"
+                                            value={state.orderInternalNotes}
+                                            onChange={e => state.handlers.setOrderInternalNotes(e.target.value)}
+                                            readOnly={readOnly}
+                                            rows={3}
+                                            className="min-h-[80px]"
+                                        />
+                                        <p className="mt-2 text-xs text-muted-foreground">Internal order notes. Not shown to the customer.</p>
+                                    </div>
+                                </details>
                             </div>
-                        )}
+                        }
+                        summary={renderSummaryCard()}
+                    />
+                ) : (
+                    <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
+                        {/* LEFT COLUMN: Customer + Line Items + Totals */}
+                        <div className="space-y-6">
+                            {/* Customer & Details Panel */}
+                            <div className="">
+                            {identityPanel}
+                            </div>
 
-                        {/* Attachments - Now more prominent in right column */}
-                        {!!state.quoteId && (
-                            <Card>
-                                <CardHeader className="pb-3">
-                                    <CardTitle className="text-base font-medium">Attachments</CardTitle>
-                                    <CardDescription>Add POs, instructions, artwork files, etc.</CardDescription>
-                                </CardHeader>
-                                <CardContent>
-                                    <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isLocked} />
-                                </CardContent>
-                            </Card>
-                        )}
+                            {/* Line Items Section */}
+                            <div className="">
+                            {lineItemsPanel}
+                            </div>
 
-                        {createTarget === "quote" && (
+                            {/* Quote summary retains its original position. */}
+                            {renderSummaryCard()}
+                        </div>
+
+                        {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
+                        <div className="space-y-6 lg:sticky lg:top-4 h-fit">
+                            {state.isInternalUser && (
+                                <Card className="rounded-lg border border-border/40 bg-card/50">
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-base font-medium">Customer Portal</CardTitle>
+                                        <CardDescription>
+                                            Staff can control whether this saved quote appears for the customer.
+                                        </CardDescription>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="flex items-start justify-between gap-4 rounded-md border border-border/50 bg-background/40 p-3">
+                                            <div className="space-y-1">
+                                                <Label htmlFor="quote-portal-visibility" className="cursor-pointer text-sm font-medium">
+                                                    Visible in customer portal
+                                                </Label>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {state.visibleInCustomerPortal
+                                                        ? "Customers can see this quote in Dashboard and Quotes."
+                                                        : "Hidden from customer portal until staff turns this on."}
+                                                </p>
+                                            </div>
+                                            <Switch
+                                                id="quote-portal-visibility"
+                                                checked={state.visibleInCustomerPortal}
+                                                onCheckedChange={handlePortalVisibilityChange}
+                                                disabled={state.isSaving || portalVisibilityMutation.isPending}
+                                            />
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            )}
+
+                            {/* Fulfillment & Shipping Panel - Reuses Orders component */}
+                            {fulfillmentPanel}
+
+
+                            {/* Attachments - Now more prominent in right column */}
+                            {!!state.quoteId && (
+                                <Card>
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-base font-medium">Attachments</CardTitle>
+                                        <CardDescription>Add POs, instructions, artwork files, etc.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isLocked} />
+                                    </CardContent>
+                                </Card>
+                            )}
+
+                            {createTarget === "quote" && (
+                                <Card>
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-base font-medium">
+                                            <label htmlFor="quote-customer-notes">Customer-Facing Notes</label>
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <Textarea
+                                            id="quote-customer-notes"
+                                            value={state.customerNotes}
+                                            onChange={(e) => state.handlers.setCustomerNotes(e.target.value)}
+                                            placeholder="Shown on the customer Quote"
+                                            readOnly={readOnly}
+                                            rows={4}
+                                            className="w-full"
+                                        />
+                                        <p className="mt-2 text-xs text-muted-foreground">Shown on the customer Quote, PDF, email, and portal.</p>
+                                    </CardContent>
+                                </Card>
+                            )}
+
+                            {/* Internal Notes (uses existing quote shippingInstructions / editor quoteNotes field) */}
                             <Card>
                                 <CardHeader className="pb-3">
                                     <CardTitle className="text-base font-medium">
-                                        <label htmlFor="quote-customer-notes">Customer-Facing Notes</label>
+                                        <label htmlFor="quote-job-notes">Internal Quote / Job Notes</label>
                                     </CardTitle>
                                 </CardHeader>
                                 <CardContent>
                                     <Textarea
-                                        id="quote-customer-notes"
-                                        value={state.customerNotes}
-                                        onChange={(e) => state.handlers.setCustomerNotes(e.target.value)}
-                                        placeholder="Shown on the customer Quote"
+                                        id="quote-job-notes"
+                                        placeholder="Visible to internal staff only"
+                                        value={state.quoteNotes}
+                                        onChange={(e) => state.handlers.setQuoteNotes(e.target.value)}
                                         readOnly={readOnly}
-                                        rows={4}
+                                        rows={5}
                                         className="w-full"
                                     />
-                                    <p className="mt-2 text-xs text-muted-foreground">Shown on the customer Quote, PDF, email, and portal.</p>
+                                    {!readOnly && state.quoteNotes.trim().length === 0 && (
+                                        <div className="mt-2 text-xs text-muted-foreground">
+                                            Saved with the Quote; carried into the Order on conversion. Not shown on the customer Quote.
+                                        </div>
+                                    )}
                                 </CardContent>
                             </Card>
-                        )}
 
-                        {/* Internal Notes (uses existing quote shippingInstructions / editor quoteNotes field) */}
-                        <Card>
-                            <CardHeader className="pb-3">
-                                <CardTitle className="text-base font-medium">
-                                    <label htmlFor="quote-job-notes">{createTarget === "order" ? "Internal Notes" : "Internal Quote / Job Notes"}</label>
-                                </CardTitle>
-                            </CardHeader>
-                            <CardContent>
-                                <Textarea
-                                    id="quote-job-notes"
-                                    placeholder="Visible to internal staff only"
-                                    value={createTarget === "order" ? state.orderInternalNotes : state.quoteNotes}
-                                    onChange={(e) => {
-                                        if (createTarget === "order") {
-                                            state.handlers.setOrderInternalNotes(e.target.value);
-                                        } else {
-                                            state.handlers.setQuoteNotes(e.target.value);
-                                        }
-                                    }}
-                                    readOnly={readOnly}
-                                    rows={5}
-                                    className="w-full"
-                                />
-                                {!readOnly && (createTarget === "order" ? state.orderInternalNotes : state.quoteNotes).trim().length === 0 && (
-                                    <div className="mt-2 text-xs text-muted-foreground">
-                                        {createTarget === "order"
-                                            ? "Add internal order notes before creating the order (optional)"
-                                            : "Saved with the Quote; carried into the Order on conversion. Not shown on the customer Quote."}
+                            {/* Timeline */}
+                            <Card className="rounded-lg border border-border/40 bg-card/30">
+                                <CardContent className="p-4">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="text-[11px] font-medium text-muted-foreground">Timeline</div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setTimelineOpen(v => !v)}
+                                            className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4"
+                                        >
+                                            {timelineOpen ? "Hide" : "Show"}
+                                        </button>
                                     </div>
-                                )}
-                            </CardContent>
-                        </Card>
 
-                        {/* Timeline */}
-                        <Card className="rounded-lg border border-border/40 bg-card/30">
-                            <CardContent className="p-4">
-                                <div className="flex items-start justify-between gap-3">
-                                    <div className="text-[11px] font-medium text-muted-foreground">Timeline</div>
-                                    <button
-                                        type="button"
-                                        onClick={() => setTimelineOpen(v => !v)}
-                                        className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4"
-                                    >
-                                        {timelineOpen ? "Hide" : "Show"}
-                                    </button>
-                                </div>
-
-                                {timelineOpen ? (
-                                    <div className="mt-3">
-                                        <TimelinePanel
-                                            quoteId={state.quoteId ?? undefined}
-                                            orderId={convertedToOrderId ?? undefined}
-                                            limit={100}
-                                        />
-                                    </div>
-                                ) : null}
-                            </CardContent>
-                        </Card>
-                    </div>
-                </div>
-            </div>
-
-            {createTarget === "order" && !readOnly && (
-                <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card px-4 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] sm:px-6 xl:inset-x-auto xl:bottom-6 xl:right-8 xl:w-[360px] xl:rounded-lg xl:border xl:px-4 xl:shadow-lg">
-                    <div className="mx-auto flex max-w-3xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4 xl:items-stretch xl:flex-col xl:gap-2">
-                        <div className="flex items-baseline justify-between gap-3 sm:block xl:flex">
-                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Order total</span>
-                            <div className="font-mono text-xl font-bold tabular-nums text-foreground">${state.grandTotal.toFixed(2)}</div>
+                                    {timelineOpen ? (
+                                        <div className="mt-3">
+                                            <TimelinePanel
+                                                quoteId={state.quoteId ?? undefined}
+                                                orderId={convertedToOrderId ?? undefined}
+                                                limit={100}
+                                            />
+                                        </div>
+                                    ) : null}
+                                </CardContent>
+                            </Card>
                         </div>
-                        <Button
-                            type="button"
-                            className="h-11 w-full font-semibold sm:w-auto sm:min-w-48 xl:w-full"
-                            onClick={handleCreateOrder}
-                            disabled={!state.canSaveQuote || createOrderSubmitting || createDirectOrderMutation.isPending}
-                        >
-                            {(createOrderSubmitting || createDirectOrderMutation.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                            {createOrderSubmitting || createDirectOrderMutation.isPending
-                                ? "Creating Order…"
-                                : orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order"}
-                        </Button>
                     </div>
-                </div>
-            )}
+                )}
+            </div>
 
             {/* Convert to Order Dialog */}
             <ConvertQuoteToOrderDialog

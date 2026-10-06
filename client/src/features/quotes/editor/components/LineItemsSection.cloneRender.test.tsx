@@ -56,3 +56,35 @@ test("renders an expanded duplicate as its own editable Quote editor card", () =
   expect(markup).toContain("Qty 5");
   expect(markup).toContain("Save Item");
 });
+
+test.each([
+  { lineItems: [] },
+  { lineItems: [original] },
+  { lineItems: [original, { ...original, id: "line-two", displayOrder: 1 }] },
+])(
+  "Order Entry exposes one Add Product picker for $lineItems.length lines",
+  ({ lineItems }) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const host = document.createElement("div");
+    try {
+      host.innerHTML = renderToString(
+        <QueryClientProvider client={client}>
+          <LineItemsSection
+            createTarget="order" quoteId={null} customerId="customer-1" readOnly={false}
+            lineItems={lineItems} products={[{ id: "product-1", name: "Banner", measurementMode: "dimensions_required", optionsJson: [] } as any]}
+            expandedKey={null} onExpandedKeyChange={() => undefined}
+            onCreateDraftLineItem={async () => null} onUpdateLineItem={() => undefined}
+            onSaveLineItem={async () => true} onDuplicateLineItem={() => undefined} onRemoveLineItem={() => undefined}
+          />
+        </QueryClientProvider>,
+      );
+      const addButtons = Array.from(host.querySelectorAll("button")).filter((button) => /add product/i.test(button.textContent ?? ""));
+      expect(addButtons).toHaveLength(1);
+      expect(host.textContent?.includes("No line items yet")).toBe(lineItems.length === 0);
+      if (lineItems.length) expect(host.textContent).toContain("Original description");
+    } finally {
+      errorSpy.mockRestore(); client.clear();
+    }
+  },
+);

@@ -166,6 +166,104 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
         }
     };
 
+    if (showOrderFields) {
+        const distinctCustomerEmail = customerEmail?.trim().toLowerCase() !== contactEmail?.trim().toLowerCase() ? customerEmail : null;
+        const distinctCustomerPhone = customerPhone?.replace(/\D/g, "") !== contactPhone?.replace(/\D/g, "") ? customerPhone : null;
+
+        return (
+            <DocumentMetaCard className="border-border/60 bg-card shadow-sm" contentClassName="space-y-0 p-0">
+                <div className="border-b border-border/60 px-4 py-3">
+                    <h2 className="text-sm font-semibold text-foreground">Order identity</h2>
+                </div>
+                <div className="grid min-w-0 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] xl:gap-5">
+                    <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+                        <div className="min-w-0 space-y-2">
+                            {readOnly ? (
+                                <div className="space-y-2">
+                                    <div className="text-sm font-medium">Customer</div>
+                                    <div className="break-words text-sm font-semibold">{customerDisplayLabel}</div>
+                                </div>
+                            ) : (
+                                <CustomerSelect ref={customerSelectRef} value={selectedCustomerId} onChange={onCustomerChange} autoFocus={false} label="Customer" placeholder="Search customers..." />
+                            )}
+                            {(distinctCustomerEmail || distinctCustomerPhone) && (
+                                <div className="space-y-1 text-sm leading-5 text-muted-foreground">
+                                    {distinctCustomerEmail && <a className="block break-words hover:text-foreground hover:underline" href={`mailto:${distinctCustomerEmail}`}>{distinctCustomerEmail}</a>}
+                                    {distinctCustomerPhone && <a className="block hover:text-foreground hover:underline" href={phoneToTelHref(distinctCustomerPhone)}>{formatPhoneForDisplay(distinctCustomerPhone)}</a>}
+                                </div>
+                            )}
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                {hasCustomerAddress && (
+                                    <button type="button" onClick={() => setShowCustomerAddress(v => !v)} className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">
+                                        {showCustomerAddress ? "Hide address" : "Show address"}
+                                    </button>
+                                )}
+                                {!readOnly && selectedCustomerId && (
+                                    <button type="button" className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground" aria-label="Clear customer" onClick={() => onCustomerChange(null, undefined)}>Clear customer</button>
+                                )}
+                            </div>
+                            {showCustomerAddress && hasCustomerAddress && (
+                                <div className="text-sm leading-5 text-muted-foreground">{customerAddress.line1}<br />{customerAddress.line2}</div>
+                            )}
+                        </div>
+                        <div className="min-w-0 space-y-2">
+                            {readOnly ? (
+                                <div className="space-y-2">
+                                    <div className="text-sm font-medium">Contact</div>
+                                    <div className="break-words text-sm font-semibold">{displayContactLabel}</div>
+                                </div>
+                            ) : (
+                                <ContactSelect value={selectedContactId} customerId={selectedCustomerId} onChange={onContactChange} onResolvedContact={onContactResolved} label="Contact" placeholder="Search contacts..." />
+                            )}
+                            {(contactEmail || contactPhone) && (
+                                <div className="space-y-1 text-sm leading-5 text-muted-foreground">
+                                    {contactEmail && <a className="block break-words hover:text-foreground hover:underline" href={`mailto:${contactEmail}`}>{contactEmail}</a>}
+                                    {contactPhone && <a className="block hover:text-foreground hover:underline" href={phoneToTelHref(contactPhone)}>{formatPhoneForDisplay(contactPhone)}</a>}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    <div className="min-w-0 space-y-3 border-t border-border/60 pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
+                        <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
+                            <div className="space-y-1.5">
+                                <label htmlFor="order-po-number" className="text-sm font-medium">PO #</label>
+                                <Input id="order-po-number" value={poNumber} onChange={e => onPoNumberChange?.(e.target.value)} placeholder="Customer PO" readOnly={readOnly} className="h-9" />
+                            </div>
+                            <div className="space-y-1.5 sm:col-span-2">
+                                <label htmlFor="order-job-label" className="text-sm font-medium">Job Label</label>
+                                <Input id="order-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="Job name or reference" readOnly={readOnly} className="h-9" />
+                            </div>
+                            <div className="min-w-0 space-y-1.5">
+                                <label htmlFor="order-due-date" className="text-sm font-medium">Due date</label>
+                                <Input id="order-due-date" type="date" value={requestedDueDate} onChange={e => onRequestedDueDateChange(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
+                            </div>
+                            <div className="min-w-0 space-y-1.5">
+                                <label htmlFor="order-promised-date" className="text-sm font-medium">Promised date</label>
+                                <Input id="order-promised-date" type="date" value={promisedDate} onChange={e => onPromisedDateChange?.(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
+                            </div>
+                            <div className="space-y-1.5">
+                                <label htmlFor="order-priority" className="text-sm font-medium">Priority</label>
+                                <Select value={priority || "normal"} onValueChange={value => onPriorityChange?.(value)} disabled={readOnly}>
+                                    <SelectTrigger id="order-priority" className="h-9"><SelectValue /></SelectTrigger>
+                                    <SelectContent><SelectItem value="rush">Rush</SelectItem><SelectItem value="normal">Normal</SelectItem><SelectItem value="low">Low</SelectItem></SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+                        {onAddTag && onRemoveTag && (
+                            <div className="flex items-start gap-3">
+                                <label htmlFor="order-flags" className="shrink-0 pt-2 text-sm font-medium">Flags</label>
+                                <div role="group" aria-label="Flags" className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1 focus-within:ring-1 focus-within:ring-ring" onClick={() => tagInputRef.current?.focus()}>
+                                    {tags.map(t => <Badge key={t} variant="secondary" className="gap-1 text-xs">{t}{!readOnly && <button type="button" aria-label={`Remove flag ${t}`} onClick={() => onRemoveTag(t)}><X className="h-3 w-3" /></button>}</Badge>)}
+                                    {!readOnly ? <input id="order-flags" ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </DocumentMetaCard>
+        );
+    }
+
     return (
         <DocumentMetaCard
             className={showOrderFields ? "border-border/60 bg-card shadow-sm" : undefined}

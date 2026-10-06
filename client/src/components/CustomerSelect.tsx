@@ -119,6 +119,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
           <Button
             variant="outline"
             role="combobox"
+            aria-label={label || undefined}
             aria-expanded={open}
             disabled={disabled}
             className="w-full justify-between font-normal h-9"

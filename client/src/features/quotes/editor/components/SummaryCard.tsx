@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteAct
 
 type SummaryCardProps = {
     presentation?: "quote" | "order";
+    orderActionSettings?: ReactNode;
     lineItems: QuoteLineItemDraft[];
     products: Product[];
     subtotal: number;
@@ -76,6 +77,7 @@ type SummaryCardProps = {
 
 export function SummaryCard({
     presentation = "quote",
+    orderActionSettings,
     lineItems,
     products,
     subtotal,
@@ -183,12 +185,11 @@ export function SummaryCard({
     return (
         <Card className={presentation === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
             {presentation === "order" && (
-                <CardHeader className="border-b border-border/60 px-5 py-4">
-                    <CardTitle className="text-base font-semibold tracking-tight">Order totals</CardTitle>
-                    <p className="text-xs text-muted-foreground">Review pricing before creating the order.</p>
+                <CardHeader className="border-b border-border/60 px-4 py-3">
+                    <CardTitle className="text-sm font-semibold">Order summary</CardTitle>
                 </CardHeader>
             )}
-            <CardContent className={presentation === "order" ? "space-y-4 px-5 py-4" : "space-y-4 px-4 py-3 pt-4"}>
+            <CardContent className={presentation === "order" ? "space-y-3 p-4" : "space-y-4 px-4 py-3 pt-4"}>
                 {/* Dev-only diagnostics */}
                 {import.meta.env.DEV && presentation !== "order" && (
                     <div className="bg-muted/50 text-muted-foreground p-2 mb-3 font-mono text-xs rounded border border-border/40">
@@ -211,6 +212,7 @@ export function SummaryCard({
                     ) : (
                         <div className="w-28">
                             <Input
+                                aria-label={presentation === "order" ? "Order discount" : undefined}
                                 value={safeDiscount === 0 ? "" : String(safeDiscount.toFixed(2))}
                                 onChange={(e) => {
                                     const raw = e.target.value.replace(/[$,]/g, "").trim();
@@ -332,9 +334,10 @@ export function SummaryCard({
                 </div>
             </CardContent>
 
-            <CardFooter className={presentation === "order" ? "flex flex-col gap-2.5 border-t border-border/60 px-5 py-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
+            <CardFooter className={presentation === "order" ? "flex flex-col gap-3 border-t border-border/60 p-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
                 {presentation === "order" ? (
                     <>
+                        {orderActionSettings}
                         <Button className="h-11 w-full font-semibold" onClick={onSave} disabled={!canSaveQuote || isSaving}>
                             {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {isSaving ? (primaryActionSavingLabel || "Creating Order…") : (primaryActionLabel || "Create Order")}

@@ -414,14 +414,14 @@ describe("LineItemCard operational sections", () => {
 
 
 describe("Order workspace composition", () => {
-  it("keeps normal controls and both notes directly usable while history starts collapsed", async () => {
+  it.each([false, true])("keeps controls and notes usable with container-responsive layout %s", async (containerResponsiveLayout) => {
     const onPriceClick = jest.fn();
     const onUndoOverride = jest.fn();
     const onSave = jest.fn();
     const onDescriptionChange = jest.fn();
     const onProductionNotesChange = jest.fn();
     const { container, cleanup } = await renderInteractiveLineItemCard({
-      isExpanded: true, compactExpandedLayout: true, isDirty: true,
+      isExpanded: true, compactExpandedLayout: true, containerResponsiveLayout, isDirty: true,
       requiresDesign: true, requiresPrepress: true,
       primaryControlSlot: <select aria-label="Product"><option>Banner</option></select>,
       optionsSlot: <select aria-label="Print sides"><option>Single-sided</option></select>,

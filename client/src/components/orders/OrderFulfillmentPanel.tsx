@@ -42,6 +42,7 @@ type Customer = CustomerAddressLike & {
 };
 
 type OrderFulfillmentPanelProps = {
+  presentation?: "default" | "order-entry";
   mode?: Mode;
   parentType?: "order" | "quote"; // Controls which sections to show
   fulfillmentMethod: "pickup" | "ship" | "deliver";
@@ -101,6 +102,7 @@ function normalizeNullableString(value: string): string | null {
 }
 
 export function OrderFulfillmentPanel({
+  presentation = "default",
   mode = "order",
   parentType = "order", // Default to order for backward compat
   fulfillmentMethod,
@@ -213,10 +215,10 @@ export function OrderFulfillmentPanel({
   };
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className={presentation === "order-entry" ? "border-border/60 shadow-sm" : undefined}>
+      <CardHeader className={presentation === "order-entry" ? "border-b border-border/60 px-4 py-3" : undefined}>
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
+          <CardTitle className={presentation === "order-entry" ? "text-sm font-semibold" : "text-lg font-medium"}>Fulfillment</CardTitle>
           <div className="flex items-center gap-2">
             <Select
               value={fulfillmentMethod}
@@ -233,7 +235,7 @@ export function OrderFulfillmentPanel({
               }}
               disabled={!canEditOrder}
             >
-              <SelectTrigger className="h-8 w-[140px]">
+              <SelectTrigger aria-label={presentation === "order-entry" ? "Fulfillment method" : undefined} className={presentation === "order-entry" ? "h-9 w-[128px]" : "h-8 w-[140px]"}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -268,13 +270,16 @@ export function OrderFulfillmentPanel({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className={presentation === "order-entry" ? "space-y-3 p-4 [&_input]:h-9" : "space-y-4"}>
         {fulfillmentMethod === "pickup" ? (
           <div className="space-y-2">
             <label className="text-sm font-medium">
               Pickup notes
             </label>
             <Textarea
+              aria-label={presentation === "order-entry" ? "Pickup notes" : undefined}
+              rows={presentation === "order-entry" ? 2 : undefined}
+              className={presentation === "order-entry" ? "min-h-[64px]" : undefined}
               placeholder="Add pickup instructions, contact info, dock hours, etc."
               defaultValue={shippingInstructions ?? ""}
               disabled={!canEditOrder || (!isQuoteMode && !isEditingFulfillment)}
@@ -289,7 +294,7 @@ export function OrderFulfillmentPanel({
           <>
             {/* Ship To */}
             <div className="space-y-3">
-              <div className="text-sm font-medium">Ship To</div>
+              <div className="text-sm font-medium">{presentation === "order-entry" && fulfillmentMethod === "deliver" ? "Deliver to" : "Ship To"}</div>
 
               {isEditingFulfillment && defaultCustomer && (
                 <div className="flex flex-wrap items-center gap-2">
@@ -527,7 +532,7 @@ export function OrderFulfillmentPanel({
             {(fulfillmentMethod === "ship" || fulfillmentMethod === "deliver") && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">
-                  {parentType === "order" && fulfillmentMethod === "deliver" ? "Delivery Fee" : "Shipping Price"}
+                  {(parentType === "order" || presentation === "order-entry") && fulfillmentMethod === "deliver" ? "Delivery Fee" : "Shipping Price"}
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
@@ -570,6 +575,27 @@ export function OrderFulfillmentPanel({
                     disabled={!isEditingFulfillment}
                   />
                 </div>
+              </div>
+            )}
+
+            {presentation === "order-entry" && (
+              <div className="space-y-2">
+                <label htmlFor="order-fulfillment-instructions" className="text-sm font-medium">
+                  {fulfillmentMethod === "deliver" ? "Delivery instructions" : "Shipping instructions"}
+                </label>
+                <Textarea
+                  id="order-fulfillment-instructions"
+                  defaultValue={shippingInstructions ?? ""}
+                  placeholder="Access details, timing, or handling instructions"
+                  rows={2}
+                  className="min-h-[64px]"
+                  disabled={!canEditOrder || (!isQuoteMode && !isEditingFulfillment)}
+                  onBlur={(event) => {
+                    const nextValue = normalizeNullableString(event.target.value);
+                    if ((shippingInstructions ?? null) === nextValue) return;
+                    onShippingInstructionsChange?.(nextValue);
+                  }}
+                />
               </div>
             )}
 
