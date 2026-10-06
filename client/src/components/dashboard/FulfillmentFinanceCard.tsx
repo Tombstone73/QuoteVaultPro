@@ -1,6 +1,7 @@
 import { DollarSign, Truck } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { DashboardPanel } from "@/components/dashboard/dashboardPanels";
 import { ROUTES } from "@/config/routes";
@@ -121,6 +122,7 @@ export default function FulfillmentFinanceCard({
             </div>
           </button>
         </div>
+        <Button asChild variant="outline" size="sm" className="w-full"><Link to={ROUTES.workValue}>Work Value</Link></Button>
       </CardContent>
     </Card>
   );

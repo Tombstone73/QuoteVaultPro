@@ -196,14 +196,15 @@ export async function getLowInventoryDashboardItems(
   }));
 }
 
-export async function getDashboardSummary(organizationId: string, now = new Date()): Promise<DashboardSummary> {
+export async function getDashboardSummary(organizationId: string, now = new Date(), options: { canReadFinance?: boolean } = {}): Promise<DashboardSummary> {
+  const canReadFinance = options.canReadFinance === true;
   const organizationTimezone = await getOrganizationTimezone(organizationId);
   const shipmentToday = paymentDateWindow("today", organizationTimezone, now);
   const dueToday = businessDateForOrderDueFilter("today", now, organizationTimezone);
   const dueTomorrow = businessDateForOrderDueFilter("tomorrow", now, organizationTimezone);
   // One authoritative A/R projection supplies both dashboard overdue metrics.
   // It owns approval, remaining-balance, historical, and tenant-business-date semantics.
-  const accountsReceivableReport = getAccountsReceivableReport({ organizationId, now });
+  const accountsReceivableReport = canReadFinance ? getAccountsReceivableReport({ organizationId, now }) : null;
 
   const summary: DashboardSummary = {
     ...DEFAULT_SUMMARY,
@@ -213,7 +214,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
     fulfillmentFinance: { ...DEFAULT_SUMMARY.fulfillmentFinance },
   };
 
-  try {
+  if (canReadFinance) try {
     summary.activeProductionValue = await getActiveProductionValue(organizationId);
   } catch (error) {
     console.error("[dashboard-summary] activeProductionValue failed:", error);
@@ -270,7 +271,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
         ),
     );
 
-    summary.criticalAlerts.overdueInvoices = (await accountsReceivableReport).summary.overdueInvoiceCount;
+    if (accountsReceivableReport) summary.criticalAlerts.overdueInvoices = (await accountsReceivableReport).summary.overdueInvoiceCount;
   } catch (error) {
     console.error("[dashboard-summary] criticalAlerts failed:", error);
   }
@@ -369,7 +370,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
   }
 
   // Fulfillment & Finance
-  try {
+  if (canReadFinance) try {
     summary.fulfillmentFinance.readyToShip = await new FulfillmentDashboardRepo(db).countReadyForFulfillment(organizationId);
 
     if (shipmentToday.start && shipmentToday.endExclusive) {
@@ -389,7 +390,7 @@ export async function getDashboardSummary(organizationId: string, now = new Date
 
     // A/R owns approved/open eligibility, partial payments, credits, voids,
     // and the current remaining balance. Do not use stale invoice.balanceDue.
-    const arSummary = (await accountsReceivableReport).summary;
+    const arSummary = (await accountsReceivableReport!).summary;
     summary.fulfillmentFinance.invoicesUnpaid = arSummary.invoiceCount;
     summary.fulfillmentFinance.unpaidAmountCents = arSummary.totalOutstandingCents;
 

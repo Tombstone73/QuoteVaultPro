@@ -35,12 +35,12 @@ describe("Active Production Value from visible Order status pills", () => {
       .toEqual({ newCents: 0, inProductionCents: 0, totalCents: 0 });
   });
 
-  test("a mixed Order counts only lines that have not completed production", () => {
+  test("a mixed Order follows its visible In Production pill for all billable value", () => {
     const pill = { statusPillId: "pill-production", statusPillKey: "in_production", statusPillValue: "In Production" };
     expect(projectActiveProductionValue(org, [
       line({ ...pill, workflowState: "completed", lifecycleStatus: "complete", valueCents: 50_000 }),
       line({ ...pill, workflowState: "in_production", valueCents: 30_000 }),
-    ])).toEqual({ newCents: 0, inProductionCents: 30_000, totalCents: 30_000 });
+    ])).toEqual({ newCents: 0, inProductionCents: 80_000, totalCents: 80_000 });
   });
 
   test("multiple active lines contribute once each under their Order pill", () => {
@@ -66,21 +66,21 @@ describe("Active Production Value from visible Order status pills", () => {
     ])).toEqual({ newCents: 50_000, inProductionCents: 0, totalCents: 50_000 });
   });
 
-  test("a completed bundle child cannot retain its share of active production value", () => {
+  test("a completed bundle child remains represented once by the billable wrapper while its Order pill is New", () => {
     expect(projectActiveProductionValue(org, [
       line({ id: "parent", lineItemRole: "parent", parentPriceMode: "manual_override", valueCents: 50_000 }),
       line({ id: "child-a", parentLineItemId: "parent", lineItemRole: "child", valueCents: 20_000, workflowState: "completed" }),
       line({ id: "child-b", parentLineItemId: "parent", lineItemRole: "child", valueCents: 20_000 }),
-    ])).toEqual({ newCents: 20_000, inProductionCents: 0, totalCents: 20_000 });
+    ])).toEqual({ newCents: 50_000, inProductionCents: 0, totalCents: 50_000 });
   });
 
-  test("canceled lines and Orders are excluded", () => {
+  test("commercially canceled lines and terminal Orders are excluded; workflow state alone does not remove a sold line", () => {
     expect(projectActiveProductionValue(org, [
       line({ workflowState: "canceled", valueCents: 12_000 }),
       line({ lifecycleStatus: "canceled", valueCents: 13_000 }),
       line({ orderState: "canceled", valueCents: 14_000 }),
       line({ orderCanceledAt: new Date(), valueCents: 15_000 }),
-    ])).toEqual({ newCents: 0, inProductionCents: 0, totalCents: 0 });
+    ])).toEqual({ newCents: 12_000, inProductionCents: 0, totalCents: 12_000 });
   });
 
   test("another tenant's line is excluded", () => {

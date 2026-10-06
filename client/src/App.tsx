@@ -19,6 +19,7 @@ import ResetPassword from "@/pages/reset-password";
 import SetPasswordPage from "@/pages/set-password";
 import ForcePasswordChange from "@/pages/force-password-change";
 import TitanDashboard from "@/pages/titan-dashboard";
+import WorkValuePage from "@/pages/work-value";
 import AdminDashboard from "@/pages/admin-dashboard";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -263,6 +264,7 @@ function Router() {
 
         {/* Dashboard route compatibility */}
         <Route path="/dashboard" element={<TitanDashboard />} />
+        <Route path={ROUTES.workValue} element={<WorkValuePage />} />
 
         {/* Quote routes */}
         <Route path={ROUTES.quotes.new} element={<QuoteEditorRoute />} />

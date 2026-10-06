@@ -6,6 +6,7 @@ import TitanDashboard from "./titan-dashboard";
 Object.assign(globalThis, { TextDecoder, TextEncoder });
 
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
+let mockRole = "owner";
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
@@ -16,6 +17,10 @@ jest.mock("@/hooks/useDashboardSelection", () => ({
     selectedPanel: "orders_due_today",
     selectPanel: jest.fn(),
   }),
+}));
+
+jest.mock("@/hooks/useActiveOrganizationRole", () => ({
+  useActiveOrganizationRole: () => ({ role: mockRole }),
 }));
 
 jest.mock("@/hooks/useDashboardSummary", () => ({
@@ -62,6 +67,7 @@ jest.mock("@/components/dashboard/ActivityFeedPanel", () => ({
 
 describe("TitanDashboard layout", () => {
   it("starts with operational content instead of the redundant page title block", () => {
+    mockRole = "owner";
     const markup = renderToStaticMarkup(<TitanDashboard />);
 
     expect(markup).not.toContain("Titan Dashboard");
@@ -69,5 +75,13 @@ describe("TitanDashboard layout", () => {
     expect(markup).toContain("New Quote");
     expect(markup).toContain("New Order");
     expect(markup.indexOf("Critical Alerts")).toBeLessThan(markup.indexOf("Orders pipeline"));
+  });
+
+  it("hides dashboard selling values and the Financials entry for staff without finance.read", () => {
+    mockRole = "employee";
+    const markup = renderToStaticMarkup(<TitanDashboard />);
+    expect(markup).not.toContain("Active Production Value");
+    expect(markup).not.toContain("Fulfillment finance");
+    expect(markup).toContain("Orders pipeline");
   });
 });

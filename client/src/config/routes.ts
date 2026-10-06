@@ -97,6 +97,7 @@ export const ROUTES = {
   root: "/",
   titanDashboard: "/dashboard",
   dashboard: "/dashboard",
+  workValue: "/dashboard/work-value",
 
   // Portal (customer-facing)
   portal: {

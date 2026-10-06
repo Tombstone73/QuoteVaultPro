@@ -1,4 +1,5 @@
 import { InvoiceCustomerReleaseAction } from "@/components/InvoiceCustomerReleaseAction";
+import { READY_TO_FINALIZE_JOB_STATUSES, READY_TO_FINALIZE_SEND_STATUS } from "@shared/invoiceReadyToFinalize";
 import { InvoiceEmailQueueDialog } from "@/components/invoices/InvoiceEmailQueueDialog";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -241,7 +242,7 @@ type InvoiceBuiltinPreset = {
 
 const INVOICE_BUILTIN_PRESETS: InvoiceBuiltinPreset[] = [
   { id: "all", label: "All Invoices", changes: {} },
-  { id: "ready_to_finalize", label: "Ready to Finalize", changes: { jobStatus: "job_complete,fulfillment_complete", sendStatus: "never_sent" } },
+  { id: "ready_to_finalize", label: "Ready to Finalize", changes: { jobStatus: READY_TO_FINALIZE_JOB_STATUSES.join(","), sendStatus: READY_TO_FINALIZE_SEND_STATUS } },
   { id: "approved_unsent", label: "Approved + Unsent", changes: { accountingApproval: "approved", sendStatus: "never_sent" } },
   { id: "overdue", label: "Overdue", changes: { status: "overdue" } },
   { id: "unpaid", label: "Unpaid", changes: { status: "unpaid" } },

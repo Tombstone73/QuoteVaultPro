@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { ROUTES } from "@/config/routes";
 import { useDashboardSelection } from "@/hooks/useDashboardSelection";
 import { useDashboardSummary } from "@/hooks/useDashboardSummary";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
+import { canReadWorkValue } from "@shared/workValueAccess";
 import { FilePlus2, ShoppingCart } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -16,6 +18,8 @@ import { useNavigate } from "react-router-dom";
 export default function TitanDashboard() {
   const navigate = useNavigate();
   const { data: summary } = useDashboardSummary();
+  const { role } = useActiveOrganizationRole();
+  const canReadFinance = canReadWorkValue(role);
   const { selectedPanel, selectPanel } = useDashboardSelection();
   const [activeTab, setActiveTab] = useState<"my_work" | "details">("my_work");
   const [isActivityCollapsed, setIsActivityCollapsed] = useState<boolean>(() => {
@@ -66,12 +70,12 @@ export default function TitanDashboard() {
         actions={dashboardActions}
       />
 
-      <ActiveProductionValueCard value={summary?.activeProductionValue} />
+      {canReadFinance && <ActiveProductionValueCard value={summary?.activeProductionValue} />}
 
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+      <section className={`grid grid-cols-1 gap-4 ${canReadFinance ? "xl:grid-cols-3" : "xl:grid-cols-2"}`}>
         <OrdersPipelineCard {...summary?.ordersPipeline} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />
         <ProductionJobsCard {...summary?.productionJobs} />
-        <FulfillmentFinanceCard {...summary?.fulfillmentFinance} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />
+        {canReadFinance && <FulfillmentFinanceCard {...summary?.fulfillmentFinance} selectedPanel={selectedPanel} onSelectPanel={handleSelectPanel} />}
       </section>
 
       <section className="flex items-stretch gap-4">

@@ -9,6 +9,7 @@
  */
 
 import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
+import { READY_TO_FINALIZE_JOB_STATUSES, READY_TO_FINALIZE_SEND_STATUS } from "@shared/invoiceReadyToFinalize";
 import { db } from "../db";
 import {
   customers,
@@ -207,8 +208,8 @@ export async function computeOperationalSummary(organizationId: string): Promise
       includePaidHistorical: false,
       includeCanceled: false,
       columnFilters: {
-        jobStatus: ["job_complete", "fulfillment_complete"],
-        sendStatus: "never_sent",
+        jobStatus: [...READY_TO_FINALIZE_JOB_STATUSES],
+        sendStatus: READY_TO_FINALIZE_SEND_STATUS,
       },
     }),
   ]);

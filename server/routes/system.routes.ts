@@ -21,6 +21,9 @@ import { getDashboardSummary, getLowInventoryDashboardItems } from "../services/
 import { getAppEnv, getCookieDomain, getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getRuntimeEnvironmentSummary } from "../lib/runtimeEnvironment";
 import { getRequestOrganizationId } from "../tenantContext";
+import { canReadWorkValue } from "@shared/workValueAccess";
+import { getWorkValuePage } from "../services/workValueService";
+import type { WorkValueDuePreset, WorkValueStatus } from "../lib/workValueProjection";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -35,6 +38,7 @@ export function registerSystemRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdmin } = middleware;
+  const canReadFinance = (req: any) => canReadWorkValue(req.orgRole);
 
   // Health check endpoint (no auth required)
   app.get('/api/health', (req, res) => {
@@ -56,11 +60,46 @@ export function registerSystemRoutes(
         return res.status(500).json({ success: false, message: 'Missing organization context' });
       }
 
-      const data = await getDashboardSummary(organizationId);
+      const data = await getDashboardSummary(organizationId, new Date(), { canReadFinance: canReadFinance(req) });
       return res.json({ success: true, data, message: 'Dashboard summary fetched' });
     } catch (error) {
       console.error('[DashboardSummary:GET] failed:', error);
       return res.status(500).json({ success: false, message: 'Failed to fetch dashboard summary' });
+    }
+  });
+
+  app.get('/api/dashboard/work-value', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!canReadFinance(req)) return res.status(403).json({ success: false, message: 'Financial access required' });
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+    const one = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+    const status = one(req.query.status) || 'active_production';
+    const duePreset = one(req.query.duePreset) || 'all';
+    const dateFrom = one(req.query.dateFrom);
+    const dateTo = one(req.query.dateTo);
+    const validDay = (value: string) => {
+      if (!value) return true;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const date = new Date(`${value}T00:00:00Z`);
+      return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+    };
+    const requestedPage = Number(one(req.query.page) || '1');
+    if (!(['active_production', 'new', 'in_production', 'complete_not_sent'] as string[]).includes(status)
+      || !(['all', 'today', 'tomorrow', 'this_week', 'overdue', 'custom'] as string[]).includes(duePreset)
+      || !Number.isSafeInteger(requestedPage) || requestedPage < 1 || requestedPage > 100000
+      || !validDay(dateFrom) || !validDay(dateTo) || (dateFrom && dateTo && dateFrom > dateTo)
+      || one(req.query.search).length > 200) return res.status(400).json({ success: false, message: 'Invalid Work Value filters' });
+    try {
+      const data = await getWorkValuePage(organizationId, {
+        status: status as WorkValueStatus, duePreset: duePreset as WorkValueDuePreset,
+        customerId: one(req.query.customerId) || undefined,
+        dateFrom: dateFrom || undefined, dateTo: dateTo || undefined,
+        search: one(req.query.search) || undefined, page: requestedPage,
+      });
+      return res.json({ success: true, data });
+    } catch (error) {
+      console.error('[WorkValue:GET] failed:', error);
+      return res.status(500).json({ success: false, message: 'Failed to fetch Work Value' });
     }
   });
 

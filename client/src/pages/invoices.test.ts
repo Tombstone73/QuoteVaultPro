@@ -89,8 +89,8 @@ describe("Invoices List payment entry point", () => {
     expect(invoiceHooksSource).toContain("includeCanceled");
     expect(invoicesPageSource).toContain("Ready to Finalize");
     const readyToFinalize = invoicesPageSource.slice(invoicesPageSource.indexOf('id: "ready_to_finalize"'), invoicesPageSource.indexOf('id: "approved_unsent"'));
-    expect(readyToFinalize).toContain('jobStatus: "job_complete,fulfillment_complete"');
-    expect(readyToFinalize).toContain('sendStatus: "never_sent"');
+    expect(readyToFinalize).toContain('jobStatus: READY_TO_FINALIZE_JOB_STATUSES.join(",")');
+    expect(readyToFinalize).toContain('sendStatus: READY_TO_FINALIZE_SEND_STATUS');
     expect(readyToFinalize).not.toContain("accountingApproval");
   });
 

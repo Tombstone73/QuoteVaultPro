@@ -313,6 +313,7 @@ export interface ListInvoicesForOrganizationOptions {
 }
 
 export type EnrichedInvoiceListItem = Invoice & {
+  effectiveCustomerId: string | null;
   customerName: string | null;
   companyName: string | null;
   contactName: string | null;
@@ -332,6 +333,7 @@ export type InvoiceListPage = {
   page: number;
   pageSize: number;
   totalCount: number;
+  totalValueCents: number;
   totalPages: number;
   summary?: InvoiceDashboardSummary;
 };
@@ -671,6 +673,7 @@ export async function listInvoicesPageForOrganization(
   const rowsQuery = db
     .select({
       invoice: invoices,
+      effectiveCustomerId: canonicalInvoiceCustomerId,
       customerName: sql<string | null>`coalesce(${customers.companyName}, nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), ''), ${customerContacts.email})`,
       companyName: customers.companyName,
       contactName: sql<string | null>`nullif(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')), '')`,
@@ -705,7 +708,7 @@ export async function listInvoicesPageForOrganization(
   // The joins above are all single-record enrichment joins.  Count the same
   // scoped query rather than inferring a total from the bounded result set.
   const countQuery = db
-    .select({ totalCount: count() })
+    .select({ totalCount: count(), totalValueCents: sql<string>`coalesce(sum(${invoices.totalCents}), 0)::bigint` })
     .from(invoices)
     .leftJoin(orders, and(
       eq(orders.id, invoices.orderId),
@@ -763,10 +766,13 @@ export async function listInvoicesPageForOrganization(
 
   const [rows, countRows, summary] = await Promise.all([rowsQuery, countQuery, summaryPromise]);
   const totalCount = Math.max(0, Number(countRows[0]?.totalCount ?? 0));
+  const totalValueCents = Number(countRows[0]?.totalValueCents ?? 0);
+  if (!Number.isSafeInteger(totalValueCents)) throw new Error('Invoice list value exceeds safe integer cents');
 
   return {
     items: rows.map((row) => ({
     ...row.invoice,
+    effectiveCustomerId: row.effectiveCustomerId ?? null,
     customerName: row.customerName ?? null,
     companyName: row.companyName ?? null,
     contactName: row.contactName ?? null,
@@ -783,6 +789,7 @@ export async function listInvoicesPageForOrganization(
     page: Math.floor(offset / limit) + 1,
     pageSize: limit,
     totalCount,
+    totalValueCents,
     totalPages: Math.max(1, Math.ceil(totalCount / limit)),
     summary,
   };
