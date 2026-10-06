@@ -21,6 +21,8 @@ import { ROUTES } from "@/config/routes";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { SHIELD_LOGO_SRC } from "@/lib/branding";
 import { filterNavByRole, NAV_CONFIG, type NavItemConfig, type NavSectionConfig } from "@/lib/titanNavigation";
+import { apiFetch } from "@/lib/queryClient";
+import { buildBadgeCounts, type OperationalSummaryBadgeData } from "@/lib/navBadgeCounts";
 
 export { filterNavByRole, NAV_CONFIG };
 export type { NavItemConfig, NavSectionConfig };
@@ -179,57 +181,6 @@ function NavSection({ section, isCollapsed, isExpanded, onToggle, badgeCounts }:
 // OPERATIONAL SUMMARY RESPONSE SHAPE
 // ============================================================
 
-interface OperationalSummaryData {
-  orders: number;
-  inboundOrders: number;
-  overview: number;
-  design: number;
-  proofing: number;
-  prepress: number;
-  flatbed: number;
-  roll: number;
-  fulfillment: number;
-  invoices: {
-    readyToFinalizeNeverSent?: number;
-    pendingSend: number;
-    unpaid: number;
-  };
-}
-
-// Map operational summary data to per-nav-item-id counts.
-// Invoice badge mirrors the staff Invoices Ready to Finalize + Never Sent queue.
-function buildBadgeCounts(
-  summary: OperationalSummaryData | undefined,
-  approvalCount: number,
-): Record<string, number> {
-  const emptySummary: OperationalSummaryData = {
-    orders: 0,
-    inboundOrders: 0,
-    overview: 0,
-    design: 0,
-    proofing: 0,
-    prepress: 0,
-    flatbed: 0,
-    roll: 0,
-    fulfillment: 0,
-    invoices: { readyToFinalizeNeverSent: 0, pendingSend: 0, unpaid: 0 },
-  };
-  const safeSummary = summary ?? emptySummary;
-  return {
-    approvals: approvalCount,
-    orders: safeSummary.orders ?? 0,
-    "inbound-orders": safeSummary.inboundOrders,
-    "production-overview": safeSummary.overview,
-    "production-design": safeSummary.design,
-    "production-proofing": safeSummary.proofing,
-    "production-prepress": safeSummary.prepress,
-    "production-flatbed": safeSummary.flatbed,
-    "production-roll": safeSummary.roll,
-    fulfillment: safeSummary.fulfillment,
-    invoices: safeSummary.invoices.readyToFinalizeNeverSent ?? 0,
-  };
-}
-
 // ============================================================
 // MAIN SIDEBAR COMPONENT
 // ============================================================
@@ -243,7 +194,7 @@ interface TitanSidebarNavProps {
 
 export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse, mobile = false }: TitanSidebarNavProps) {
   const { user } = useAuth();
-  const { role, isApprover } = useActiveOrganizationRole({ enabled: Boolean(user) });
+  const { activeOrgId, role, isApprover } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { preferences } = useOrgPreferences();
   const inboundEmailSettingsQuery = useInboundEmailIntakeSettings();
   const location = useLocation();
@@ -261,13 +212,13 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse, mobile 
 
   // Approvals badge (legacy single-item query — kept as separate query per existing pattern)
   const approvalsQuery = useQuery({
-    queryKey: ["/api/quotes/pending-approvals"],
+    queryKey: ["/api/quotes/pending-approvals", activeOrgId],
     queryFn: async () => {
-      const res = await fetch("/api/quotes/pending-approvals", { credentials: "include" });
-      if (!res.ok) return { count: 0 };
-      return res.json();
+      const res = await apiFetch("/api/quotes/pending-approvals");
+      if (!res.ok) throw new Error(`Approval count request failed: ${res.status}`);
+      return res.json() as Promise<{ count: number }>;
     },
-    enabled: showBadges && isApprover && requireApproval,
+    enabled: showBadges && Boolean(activeOrgId) && isApprover && requireApproval,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     refetchInterval: false,
@@ -275,14 +226,15 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse, mobile 
 
   // Operational summary — single payload for all other sidebar badges
   const summaryQuery = useQuery({
-    queryKey: ["/api/operational-summary"],
+    queryKey: ["/api/operational-summary", activeOrgId],
     queryFn: async () => {
-      const res = await fetch("/api/operational-summary", { credentials: "include" });
-      if (!res.ok) return null;
+      const res = await apiFetch("/api/operational-summary");
+      if (!res.ok) throw new Error(`Operational counts request failed: ${res.status}`);
       const json = await res.json();
-      return (json.data ?? null) as OperationalSummaryData | null;
+      if (!json.success || !json.data) throw new Error("Operational counts response is unavailable");
+      return json.data as OperationalSummaryBadgeData;
     },
-    enabled: showBadges,
+    enabled: showBadges && Boolean(activeOrgId),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     // Refresh counts every 2 minutes in the background — lightweight count queries,
@@ -291,8 +243,8 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse, mobile 
   });
 
   const badgeCounts = buildBadgeCounts(
-    summaryQuery.isError ? undefined : summaryQuery.data ?? undefined,
-    approvalsQuery.data?.count ?? 0,
+    summaryQuery.isError ? undefined : summaryQuery.data,
+    approvalsQuery.isError ? undefined : approvalsQuery.data?.count,
   );
 
   // Initialize section open/close state

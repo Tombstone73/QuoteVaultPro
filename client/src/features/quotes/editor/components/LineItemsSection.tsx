@@ -517,6 +517,7 @@ export function LineItemsSection({
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
   const [editingPriceItemKey, setEditingPriceItemKey] = useState<string | null>(null);
+  const [editingPriceFieldByKey, setEditingPriceFieldByKey] = useState<Record<string, "unit" | "total">>({});
   const [priceEditTextByKey, setPriceEditTextByKey] = useState<Record<string, string>>({});
   const [priceOverrideModeByKey, setPriceOverrideModeByKey] = useState<Record<string, LineItemPriceOverrideMode>>({});
   
@@ -1319,6 +1320,12 @@ export function LineItemsSection({
                       source: "QuoteLineItemsSection.visible",
                     });
                     const editorPriceValue = overrideValueCents != null ? overrideValueCents / 100 : visiblePrice.displayTotal;
+                    const unitPriceEditorValue = persistedOverrideMode === "override_unit_after_margin" && overrideValueCents != null
+                      ? overrideValueCents / 100
+                      : visiblePrice.displayPerEach;
+                    const editingUnitPrice = createTarget === "order" && editingPriceItemKey === itemKey && editingPriceFieldByKey[itemKey] === "unit";
+                    const editingTotalPrice = editingPriceItemKey === itemKey && !editingUnitPrice;
+                    const unitOverrideSelected = selectedOverrideMode === "override_unit_after_margin" || selectedOverrideMode === "override_unit_before_margin";
                     const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
                     const childCount = item.id ? lineItems.filter((candidate) => candidate.parentLineItemId === item.id).length : 0;
                     const parentLineNumber = item.parentLineItemId
@@ -1354,7 +1361,14 @@ export function LineItemsSection({
 
                       const nextMode = selectedValue as LineItemPriceOverrideMode;
                       setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: nextMode }));
-                      const rawValue = priceEditTextByKey[itemKey] ?? editorPriceValue.toFixed(2);
+                      const modeDisplayValue = createTarget === "order" && nextMode === "override_unit_after_margin"
+                        ? unitPriceEditorValue
+                        : createTarget === "order" && nextMode === "override_total_after_margin"
+                          ? visiblePrice.displayTotal
+                          : editorPriceValue;
+                      const rawValue = createTarget === "order" && (nextMode === "override_unit_after_margin" || nextMode === "override_total_after_margin")
+                        ? modeDisplayValue.toFixed(2)
+                        : priceEditTextByKey[itemKey] ?? editorPriceValue.toFixed(2);
                       const nextOverride = resolveQuoteLineItemOverrideModeChange({
                         baseCalculatedTotalCents,
                         quantity: Number(item.quantity) > 0 ? Number(item.quantity) : 1,
@@ -1431,15 +1445,16 @@ export function LineItemsSection({
                             price={visiblePrice.displayTotal}
                             priceOverride={hasOverride ? visiblePrice.displayTotal : null}
                             priceOverrideLabel={overrideLabel}
-                            editingPrice={editingPriceItemKey === itemKey}
+                            editingPrice={editingTotalPrice}
                             priceEditText={
                               priceEditTextByKey[itemKey] ??
                               (editorPriceValue || 0).toFixed(2)
                             }
                             onPriceClick={
-                              readOnly
+                              readOnly || (createTarget === "order" && unitOverrideSelected)
                                 ? undefined
                                 : () => {
+                                    if (createTarget === "order") setEditingPriceFieldByKey((prev) => ({ ...prev, [itemKey]: "total" }));
                                     setEditingPriceItemKey(itemKey);
                                     setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: editorPriceValue.toFixed(2) }));
                                   }
@@ -1526,6 +1541,61 @@ export function LineItemsSection({
                                 e.preventDefault();
                                 setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
                                 setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: editorPriceValue.toFixed(2) }));
+                              }
+                            }}
+                            editingUnitPrice={editingUnitPrice}
+                            unitPriceEditText={priceEditTextByKey[itemKey] ?? unitPriceEditorValue.toFixed(2)}
+                            onUnitPriceClick={createTarget !== "order" || readOnly ? undefined : () => {
+                              setEditingPriceFieldByKey((prev) => ({ ...prev, [itemKey]: "unit" }));
+                              setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: unitPriceEditorValue.toFixed(2) }));
+                              setEditingPriceItemKey(itemKey);
+                            }}
+                            onUnitPriceChange={createTarget !== "order" || readOnly ? undefined : (value) => {
+                              setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: value }));
+                            }}
+                            onUnitPriceBlur={createTarget !== "order" || readOnly ? undefined : async () => {
+                              const rawValue = priceEditTextByKey[itemKey] ?? unitPriceEditorValue.toFixed(2);
+                              const parsed = Number.parseFloat(rawValue);
+                              if (!Number.isFinite(parsed) || parsed < 0) {
+                                setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: unitPriceEditorValue.toFixed(2) }));
+                                setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
+                                return;
+                              }
+                              const nextValueCents = Math.round(parsed * 100);
+                              const previousOverrideCents = hasOverride && typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                                ? item.overridePriceCents : null;
+                              const mode: LineItemPriceOverrideMode = "override_unit_after_margin";
+                              const nextPricing = applyLineItemEditPriceOverride({
+                                baseCalculatedTotalCents,
+                                quantity: Number(item.quantity) > 0 ? Number(item.quantity) : 1,
+                                mode,
+                                valueCents: nextValueCents,
+                              });
+                              try {
+                                if (previousOverrideCents === nextPricing.effectiveTotalCents && persistedOverrideMode === mode) return;
+                                setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: mode }));
+                                await refreshQuotePricingAfterOverrideChange({
+                                  item,
+                                  itemKey,
+                                  nextOverrideCents: nextPricing.effectiveTotalCents,
+                                  priceOverrideMode: mode,
+                                  priceOverrideValueCents: nextValueCents,
+                                  previousOverrideCents,
+                                });
+                                setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: (nextValueCents / 100).toFixed(2) }));
+                              } finally {
+                                setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
+                              }
+                            }}
+                            onUnitPriceKeyDown={createTarget !== "order" || readOnly ? undefined : (event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                (event.currentTarget as HTMLInputElement).blur();
+                              }
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
+                                setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: unitPriceEditorValue.toFixed(2) }));
                               }
                             }}
                             onUndoOverride={
