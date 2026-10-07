@@ -1,5 +1,53 @@
 {
   "schemaVersion": 1,
+  "disposableDevCleanup20261007": {
+    "startingOriginDevSha": "9ad4dc015e79234a3f00176bc6590c143e2ae516",
+    "discovery": "Fresh git fetch origin dev and rev-parse origin/dev; correct clean campaign worktree matched",
+    "scope": ["SALE-08", "SALE-09", "ACCESS-12", "ACCESS-05"],
+    "startingL0": 4,
+    "endingL0": 4,
+    "rowsClosed": [],
+    "policy": "Previous KEEP AS HISTORY designation is explicitly WITHDRAWN for exact p7c-1a2701e9-960b-4a5e-a38d-efed970d7cae. Exact DEV database cleanup now authorized; no historical-tenant feature, fake Owner or ID exemption. Prior sections retain past evidence only.",
+    "deploymentRootCause": "Exact current9ad failed during0305 structural authority preflight on the authorized p7c target; no build/packaging source defect identified",
+    "cleanup": {
+      "status": "POST_COMMIT_SCOPED_RESTORATION_VERIFIED_WITH_RAW_CATALOG_DRIFT",
+      "target": "p7c-1a2701e9-960b-4a5e-a38d-efed970d7cae",
+      "deleted": true,
+      "scope": "Only exact authorized organization; remaining113 floorless IDs, including p7c-other, untouched",
+      "preDelete": { "ownedRows": 272, "populatedTables": 29, "reachableRelations": 333, "publicTableBaselines": 345, "foreignOwnedRows": 0, "foreignParentReferences": 0, "activeAcceptanceFixtureReference": "Exact current nine-l0/final-four artifact search found only historical deployment receipts, not active M7 fixtures", "limits": "Reference scans are bounded, not universal opaque-provider reference proof" },
+      "method": "Strict exact DEV project/environment/service/URL/TLS guard; reject ambientPGOPTIONS; origin/trusted search path/RLS error-on-filter/session identity checks. Migration/maintenance advisory and sorted ACCESS EXCLUSIVE locks before DDL. Temporarily suspend only Work and completed-Prepress row guards; attempt/RI/floor/history/subtype/count guards remain enabled.28 explicit exact organization/durable-identity deletions plus one existing owned Product-version cascade; org last. Restore original guards, force deferred constraints, check all outside hashes before ending transaction.",
+      "explicitDeletedRows": 271,
+      "cascadeDeletedRows": 1,
+      "totalDeletedRows": 272,
+      "rehearsal": { "receipt": "p7c-cleanup-rehearsal-1791377437085.json", "sha256": "7b733ecb559db14ff136ef50bbb14eaf86555c51f194e7cb2aeb8f6dc16e62dd", "status": "REHEARSAL_ROLLED_BACK_VERIFIED", "freshFullBaselineRestored": true },
+      "commit": { "receipt": "p7c-cleanup-commit-1791378046762.json", "sha256": "4aa64ea2540bc2b676d80516a87cf2ad1eacd2cb38335ecbd17cc3cbb3bb1edf", "acknowledged": true, "unknownOutcome": false },
+      "postVerification": { "allOutsideTableCountsAndFullHashesMatch": 345, "oldOwnedIdentitySelectorsZero": 29, "protectedOrganizationsUnchanged": 3, "savedUserTriggersAndFunctionsMatch": 116, "savedForeignKeysMatch": 1082, "internalTriggersOriginEnabled": 4361, "catalogHealthFailures": 0, "diagnosticReceipt": "p7c-cleanup-schema-diagnostic-1791378843766.json", "diagnosticSha256": "d64bc63d3b99d8caeda73354c8c3fdf3f1324a0dc4b46d34dc44590a1338634f" },
+      "catalogProofLimit": { "initialCheckerStatus": "FAILED; preserved, never relabeled PASS", "rawBeforeSha256": "cd7e3aeeb5c7fa57fa6ed4485c70bef36f9ec62c4bdea64b0e43e6ab5f32e7df", "rawAfterSha256": "68b9ae7aa718f36ab6432337c3bfdac5b4723792360fb936784ad2d779a3ecfb", "evidence": "Automatic ANALYZE on materials and route steps about18.5secs aftercommit during first checker strongly supports physical statistics drift, but exact changed-field set unproved because original baseline stores only aggregate raw hash", "acceptedScope": "Verified data plus recorded critical schema/enforcement restoration, not universal postcommit structural equality or retroactively invented stable-profile hash", "futureProfile": "Proposed only, not adopted as before/after proof" },
+      "independentReview": "ses_ee9c5100cffe1kkLSBruCSsCed: exact script, actual rollback, one commit, postverify helper and qualified final restoration accepted; no gate waived",
+      "approvalManifestSha256": "732f1d23f0ae65693113ec45b6bb48226d9d9e4c37df961e43cf343ec95c9370",
+      "maintenanceScriptSha256": "f6ba3f4b1bfc6466df50f75386f63b4e5bbd10025aca16433a7ca249647465a8",
+      "localGuardTests": "42 PASS; five maintenance TypeScript helpers PASS"
+    },
+    "authorityPreflightBefore": { "readOnly": true, "observedAt": "2026-10-07T11:53:20.603Z", "operationalTenants": 117, "floorless": 114, "authorizedTarget": 1, "otherFloorlessNotAuthorized": 113, "otherGroups": { "m21": 2, "m22": 2, "m23": 6, "p7b": 7, "p7c": 23, "p7d": 70, "routing-http": 3 }, "predicateReview": "ses_ee9c889ccffeeXC7tNRmj9CYtl APPROVED: byte-exact expansion of immutable0305 predicate", "querySha256": "8808263e9f7681d7964d5733c65611cc0247fd7800545cf8e7a4ec968e437c18", "evidence": ".cache/v2-validation/p7c-authority-preflight-before.json and p7c-authority-query.sql", "limits": "Metadata preflight is not permission to clean other113tenants or a production architecture requirement" },
+    "protectedTenants": [
+      { "id": "56e0f644-bb25-43ef-8ee1-473831115849", "name": "Titan Graphics", "usableStructuralAuthorities": 3 },
+      { "id": "d51ff3e7-75aa-462f-b0ab-3751bd888306", "name": "Sandbox Titan Graphics", "usableStructuralAuthorities": 2 },
+      { "id": "b6f969b2-dda3-4133-9d75-c417dabb8f3a", "name": "PrintersHero M7 QA", "usableStructuralAuthorities": 2 }
+    ],
+    "nativeProofApplicability": "Existing58/58 PASS,58cleanups,12lockwitnesses retained;1545 current source digests match9ad with0missing/mismatch. No native contention rerun or DEV adoption inferred.",
+    "authorityPreflightAfter": { "readOnly": true, "observedAt": "2026-10-07T13:10:30.432Z", "operationalTenants": 116, "floorless": 113, "authorizedTargetPresent": false, "protectedAuthorityCounts": "Titan3/M7QA2/Sandbox2 unchanged", "evidence": ".cache/v2-validation/p7c-authority-preflight-after.json", "limits": "No deletion authorization inferred for those113 other IDs" },
+    "postCleanupDeployment": { "mechanism": "Explicit DEV railway redeploy --from-source --yes using exact project/environment/service", "commit": "9ad4dc015e79234a3f00176bc6590c143e2ae516", "deploymentId": "449e7a42-43b3-4873-9d2b-d4bedce67043", "status": "FAILED at normal0305 preflight", "firstReportedTenant": "p7c-other-1a2701e9-960b-4a5e-a38d-efed970d7cae", "evidence": ".cache/v2-validation/final-four-deploy-diagnostic-449e7a42-43b3-4873-9d2b-d4bedce67043.json", "servingCommit": "cdc75fa735f40bc5474ecadb21ff49f5a97e7eeb", "normalMigrationStatus": "298 applied rows,maxid299,maxcreated_at1790827200007/frontier0303;0304/0305 remain pending", "legacyHistory": "No baseline/gap/name-label repair or invented ledger entry" },
+    "qaAuthentication": { "configuration": "Only Operations credentials configured", "manualAction": "Requested normal Dale Staff login/M7 selection and opened dedicated reviewed QA window; browser blocked non-auth mutating requests and required actual verified scope before exclusive ignored state export", "result": "Bounded manual handoff timed out without producing a verified automation session; not proof of broken login or missing membership", "evidence": ".cache/v2-validation/p7c-owner-manual-login-result.json", "safety": "No elevation/reset/OS-profile or improper cookie extraction; no QA business/config/provider action" },
+    "rows": {
+      "ACCESS-05": { "classification": "F", "priority": "L0", "source": "Accepted unchanged implementation", "automated": "Fresh11/11 PASS", "native": "Applicable retained58 PASS, no contention rerun", "review": "Source/native and p7c maintenance separately accepted", "dev": "No new implementation deployed;113 remaining data failures block adoption, Owner-authenticated Team acceptance not run", "provider": "None required or contacted" },
+      "SALE-08": { "classification": "C", "priority": "L0", "source": "Accepted unchanged suppressed-publication implementation", "automated": "Fresh canonical11/11 includes existing publication/conversion evidence", "native": "No new Sales concurrency proof required", "review": "Existing independent source review retained", "dev": "Positive publication/conversion not run against stale version; tax/Owner prerequisites still absent", "provider": "No real email or fabricated suppression/provider identity" },
+      "SALE-09": { "classification": "C", "priority": "L0", "source": "Accepted last-explicit-publication policy unchanged", "automated": "Existing revision/history/replay regressions pass", "native": "Not required for new acceptance-only work", "review": "Existing source review retained", "dev": "A/internalB/republishedB not executed; exact deployment prerequisite fails", "provider": "No provider operation" },
+      "ACCESS-12": { "classification": "C", "priority": "L0", "source": "Accepted customer-scoped publication qualification unchanged", "automated": "Existing Portal/revision qualification coverage retained", "native": "Not a substitute for customer-bound live acceptance", "review": "Existing source review retained", "dev": "No new bound Portal fixture or visibility acceptance; Owner handoff not established and exact deployed source absent", "provider": "No Portal communication or real Customer action" }
+    },
+    "finalVerdict": "C. TECHNICAL L0 REMAINS",
+    "freshValidation": { "canonicalGates": "11/11 PASS", "coreSuites": 302, "uiSuites": 102, "jestSuites": 100, "jestTests": 1246, "architectureChecks": 102, "runnerSafetyChecks": 13, "migrationIntegrity": "301 protected entries unchanged", "builds": "Allfour requested builds PASS;301 packaged migrations,idx306/tag0305", "validationReportSha256": "739bb398a04880c4d17f4f95c5e4ca33bd7de4ddaf01f55e514cb04dfcfc2d51", "buildReportSha256": "a37288c2701598196f2d831b4ebcf428c6240bb1df59957bd64ebe97deffba2f", "evidence": ".cache/v2-validation/campaign-cleanup-20261007-validation/", "limits": "Baseline deterministic/build validation, not fresh native or actual live acceptance" },
+    "preservation": "Prior closure/accounting objects unchanged; no MAIN/PROD/V1 source, L1, Storefront, UI polish or provider action. Cleanup is environment maintenance, not a new product feature."
+  },
   "authorizedPrerequisiteRecheck": {
     "baseCommit": "172287be245553928bf3447153f81cf4cd116b70",
     "baselineDiscovery": "Fresh git ls-remote origin refs/heads/dev at October6 23:52UTC, matching clean worktree HEAD; not an older hardcoded campaign baseline.",

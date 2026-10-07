@@ -1,5 +1,97 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+## October 7 Authorized Disposable DEV Cleanup
+
+Fresh `git fetch origin dev` establishes starting REQUIRED_COMMIT
+`9ad4dc015e79234a3f00176bc6590c143e2ae516`. The user explicitly withdrew the
+previous KEEP AS HISTORY instruction for the exact disposable rehearsal tenant
+`p7c-1a2701e9-960b-4a5e-a38d-efed970d7cae` and authorized scoped DEV database
+cleanup. The historical sections below are retained as past evidence, not a
+current prohibition on deleting that fixture. A missing V2 tenant-retirement
+feature is not a blocker for this authorized maintenance. No fake Owner, tenant
+exception, product lifecycle feature or V1 application change is warranted.
+
+Fresh failure logs identify the exact9ad rollout as stopped in0305 structural
+authority preflight, not build or packaging. The accepted native58 proof remains
+applicable: all1545 source hashes match current9ad bytes, and migration0305 hash
+remainsf33c69874e30395d974e494a43767052a74d9f28fe96e3934a845dcd5745893b.
+Native contention was not rerun. New read-only canonical predicate verification
+finds117 active operational tenants,114 without usable structural authority.
+The exact authorized target accounts forone;113 other IDs are not cleanup-authorized.
+This is existing DEV fixture data, not a production lifecycle requirement. No
+product exception or permission-floor weakening is proposed for those rows.
+
+Protected organizations are confirmed distinct and qualifying: Titan Graphics
+`56e0f644-bb25-43ef-8ee1-473831115849` has3 usable structural authorities, Sandbox
+Titan Graphics `d51ff3e7-75aa-462f-b0ab-3751bd888306` has2, and M7 QA
+`b6f969b2-dda3-4133-9d75-c417dabb8f3a` has2. The target hasnone. The exact target
+is now **deleted** under authorized DEV maintenance, following independent review
+and successful actual delete-and-rollback rehearsal. Maintenance is not row closure.
+
+Pre-delete inventory identified272 owned rows across29 populated tables, composite
+FK relationships and345 public-table baselines. Protected tenants and active M7
+acceptance fixtures were excluded. The reviewed transaction acquired migration/
+maintenance and sorted table locks before temporarily suspending only named Work
+and completed-Prepress DELETE guards. The legal incomplete-attempt guard, RI,
+floor, history, count and subtype checks stayed enabled. Exact organization and
+durable-identity predicates removed271 rows in28 explicit table deletions; one
+owned Product version cascaded. The organization was deleted last. Guards were
+restored and deferred constraints flushed before ending the transaction.
+
+Rehearsal receipt `p7c-cleanup-rehearsal-1791377437085.json` SHA256
+`7b733ecb559db14ff136ef50bbb14eaf86555c51f194e7cb2aeb8f6dc16e62dd`
+proves rollback and fresh-connection full restoration. Separately approved single
+commit receipt `p7c-cleanup-commit-1791378046762.json`, SHA256
+`4aa64ea2540bc2b676d80516a87cf2ad1eacd2cb38335ecbd17cc3cbb3bb1edf`,
+records commit acknowledgment. Postcommit read-only checks confirm target/old
+identities absent and all345 outside full-row hashes/counts unchanged. All116
+recorded USER triggers/functions,1082 FK definitions and4361 origin-enabled internal
+triggers are verified; catalog health is zero and protected organizations unchanged.
+
+The first two postcommit checkers remain **FAILED** on a raw catalog fingerprint
+including PostgreSQL physical statistics. Automatic ANALYZE on Materials and Route
+steps occurred about18.5seconds after commit during the first checker, strongly
+supporting statistics drift but not proving the exact changed-field set. No
+historical component baseline exists. Failures and both raw hashes are preserved;
+no expected hash was substituted or retroactive structural hash invented.
+Independent review `ses_ee9c5100cffe1kkLSBruCSsCed` accepts
+**POST_COMMIT_SCOPED_RESTORATION_VERIFIED_WITH_RAW_CATALOG_DRIFT**: verified data
+and recorded critical schema/enforcement restoration, not universal postcommit
+catalog equality. Diagnostic receipt1791378843766 SHA256
+`d64bc63d3b99d8caeda73354c8c3fdf3f1324a0dc4b46d34dc44590a1338634f`
+and earlier receipts remain intact. No application or migration source changed.
+
+Normal DEV redeployment of9ad was requested afterward. Deployment
+`449e7a42-43b3-4873-9d2b-d4bedce67043` failed0305 preflight on the different
+organization `p7c-other-1a2701e9-960b-4a5e-a38d-efed970d7cae`. This is not failed
+deletion of the authorized target. Postcleanup preflight finds116 operational
+tenants and113 other floorless IDs; protected authority counts remain3/2/2.
+No other tenant was deleted or granted fake authority. Canonical read-only migration
+status confirms298 applied rows, highestid299/maxcreated_at1790827200007/frontier0303;
+0304/0305 remain pending.
+
+Fresh canonical baseline validation passed11/11 and allfour builds on unchanged
+9ad source. Deterministic coverage404 suites (302core,102UI), Jest100/1246 tests,
+architecture102, runner safety13, journal/integrity301 all passed. Evidence:
+`.cache/v2-validation/campaign-cleanup-20261007-validation/`.
+
+The user-specific manual authentication action was requested while maintenance
+continued. An independently reviewed headed QA browser permitted only normal auth
+mutations and required verified Dale/M7 scope before saving an ignored auth state.
+The bounded attempt timed out without producing a validated session; it does not
+prove product login failure or missing membership. No password reset, grant elevation
+or OS-profile/cookie extraction occurred. No tax/Portal configuration, new Quote,
+real email, carrier, processor or QuickBooks action was performed. Business acceptance
+remains fenced behind exact deployment and administrative prerequisites.
+
+**Final disposition: four L0s remain; zero new closures.** SALE-08/SALE-09/ACCESS-12
+remain counted C/L0; ACCESS-05 remains counted F/L0. Accepted source/native proof is
+retained, but migration/adoption and positive DEV acceptance are blocked by remaining
+113 data-preflight failures and unavailable verified Owner automation session.
+Resolution requires bounded DEV fixture cleanup authorization and normal login,
+not a new production lifecycle feature. Existing closures/accounting/priority totals
+are unchanged. Verdict **C: TECHNICAL L0 REMAINS**.
+
 ## Authorized QA Prerequisite Recheck
 
 Freshly discovered `origin/dev` and clean worktree BASE_COMMIT on October6 at
