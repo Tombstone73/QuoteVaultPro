@@ -22,7 +22,8 @@ import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteAct
 import { OrderCreateActions } from "./OrderCreateActions";
 
 type SummaryCardProps = {
-    presentation?: "quote" | "order";
+    presentation?: "quote" | "order" | "detail";
+    showSaveInFooter?: boolean;
     orderActionSettings?: ReactNode;
     showOrderActions?: boolean;
     lineItems: QuoteLineItemDraft[];
@@ -79,6 +80,7 @@ type SummaryCardProps = {
 
 export function SummaryCard({
     presentation = "quote",
+    showSaveInFooter = true,
     orderActionSettings,
     showOrderActions = true,
     lineItems,
@@ -186,15 +188,15 @@ export function SummaryCard({
         : sendEligibility.reason;
     
     return (
-        <Card className={presentation === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
-            {presentation === "order" && (
-                <CardHeader className="border-b border-border/60 px-4 py-3">
+        <Card className={presentation === "order" || presentation === "detail" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
+            {(presentation === "order" || presentation === "detail") && (
+                <CardHeader className="px-4 py-3">
                     <CardTitle className="text-base font-medium">Totals</CardTitle>
                 </CardHeader>
             )}
-            <CardContent className={presentation === "order" ? "space-y-3 p-4" : "space-y-4 px-4 py-3 pt-4"}>
+            <CardContent className={presentation === "order" || presentation === "detail" ? "space-y-3 px-4 pb-4 pt-0" : "space-y-4 px-4 py-3 pt-4"}>
                 {/* Dev-only diagnostics */}
-                {import.meta.env.DEV && presentation !== "order" && (
+                {import.meta.env.DEV && presentation === "quote" && (
                     <div className="bg-muted/50 text-muted-foreground p-2 mb-3 font-mono text-xs rounded border border-border/40">
                         <div className="font-bold text-sm mb-1">Dev Diagnostics:</div>
                         <div>Line Items: {lineItems.length} ({lineItems.filter(li => li.status === 'draft').length} draft, {lineItems.filter(li => li.status === 'canceled').length} canceled)</div>
@@ -203,13 +205,13 @@ export function SummaryCard({
 
                 <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Subtotal</span>
-                    <span className="font-mono font-medium">${subtotal.toFixed(2)}</span>
+                    <span className={presentation === "detail" ? "tabular-nums" : "font-mono font-medium"}>${subtotal.toFixed(2)}</span>
                 </div>
 
                 <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Discount</span>
                     {readOnly ? (
-                        <span className={safeDiscount > 0 ? "font-mono text-green-600" : "font-mono text-muted-foreground"}>
+                        <span className={safeDiscount > 0 ? (presentation === "detail" ? "tabular-nums text-green-600" : "font-mono text-green-600") : (presentation === "detail" ? "text-muted-foreground" : "font-mono text-muted-foreground")}>
                             {safeDiscount > 0 ? `-${safeDiscount.toFixed(2)}` : "—"}
                         </span>
                     ) : (
@@ -238,7 +240,7 @@ export function SummaryCard({
                         <span className="text-muted-foreground">
                             {deliveryMethod === 'deliver' ? 'Delivery' : 'Shipping'}
                         </span>
-                        <span className="font-mono">
+                        <span className={presentation === "detail" ? "tabular-nums" : "font-mono"}>
                             {shippingCents != null ? `$${(shippingCents / 100).toFixed(2)}` : <span className="text-muted-foreground">—</span>}
                         </span>
                     </div>
@@ -262,7 +264,7 @@ export function SummaryCard({
                             </button>
                         )}
                     </div>
-                    <span className="font-mono">${taxAmount.toFixed(2)}</span>
+                    <span className={presentation === "detail" ? "tabular-nums" : "font-mono"}>${taxAmount.toFixed(2)}</span>
                 </div>
                 {!readOnly && showTaxOverride && (
                     <div className="pl-4 space-y-2 border-l-2 border-border/50">
@@ -324,16 +326,16 @@ export function SummaryCard({
                 <Separator className="my-4" />
 
                 {/* Grand Total - emphasized */}
-                <div className={presentation === "order" ? "flex flex-wrap justify-between items-baseline gap-2 pt-2 pb-2" : "flex justify-between items-baseline pt-2 pb-2"}>
+                <div className={presentation === "order" || presentation === "detail" ? "flex flex-wrap justify-between items-baseline gap-2 pt-2 pb-2" : "flex justify-between items-baseline pt-2 pb-2"}>
                     <div className="flex items-center gap-2">
-                        <span className="text-base font-semibold">Grand Total</span>
+                        <span className="text-base font-semibold">{presentation === "detail" ? "Total" : "Grand Total"}</span>
                         {pricingStale && (
                             <Badge variant="outline" className="text-[10px]">
                                 Totals out of date
                             </Badge>
                         )}
                     </div>
-                    <span className={presentation === "order" ? "text-xl font-semibold tabular-nums" : "text-3xl font-bold font-mono tracking-tight"}>${grandTotal.toFixed(2)}</span>
+                    <span className={presentation === "order" || presentation === "detail" ? "text-lg font-bold tabular-nums" : "text-3xl font-bold font-mono tracking-tight"}>${grandTotal.toFixed(2)}</span>
                 </div>
             </CardContent>
 
@@ -347,7 +349,7 @@ export function SummaryCard({
                     <>
                         {/* EDIT MODE */}
                         {/* Row 1: Save Changes */}
-                        <Button
+                        {showSaveInFooter && <Button
                             className="w-full h-10"
                             onClick={onSave}
                             disabled={!canSaveQuote || isSaving}
@@ -360,7 +362,7 @@ export function SummaryCard({
                                     : afterSaveNavigation === "back"
                                         ? "Save & Back"
                                         : "Save Changes")}
-                        </Button>
+                        </Button>}
 
                         {/* Row 2: Save & Back (conditional, only shown when preference is "stay") */}
                         {onSaveAndBack && afterSaveNavigation === "stay" && (

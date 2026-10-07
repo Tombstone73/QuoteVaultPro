@@ -73,6 +73,7 @@ type LineItemsSectionProps = {
   ensureQuoteId?: () => Promise<string>;
   ensureLineItemId?: (itemKey: string) => Promise<{ quoteId: string; lineItemId: string }>;
   createTarget?: "quote" | "order";
+  detailPresentation?: boolean;
 };
 
 function getItemKey(item: QuoteLineItemDraft): string {
@@ -326,6 +327,7 @@ export function LineItemsSection({
   ensureQuoteId,
   ensureLineItemId,
   createTarget = "quote",
+  detailPresentation = false,
 }: LineItemsSectionProps) {
   const queryClient = useQueryClient();
   const { preferences: orgPreferences } = useOrgPreferences();
@@ -1260,22 +1262,22 @@ export function LineItemsSection({
   );
 
   return (
-    <Card className={createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
-      <CardHeader className={createTarget === "order" ? "rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
-        <div className={createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
-          {createTarget === "order" && (
-            <h2 className="text-sm font-semibold text-foreground">Line items</h2>
+    <Card className={detailPresentation ? "border-0 bg-transparent shadow-none" : createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
+      <CardHeader className={detailPresentation ? "px-0 pb-2 pt-0" : createTarget === "order" ? "rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
+        <div className={detailPresentation ? "flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5" : createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
+          {detailPresentation ? <div className="min-w-0"><div className="text-sm font-semibold">Line Items</div><div className="text-xs text-muted-foreground">{count} {count === 1 ? "item" : "items"}</div></div> : createTarget === "order" && (
+            <h2 className="text-sm font-semibold text-foreground">Line Items</h2>
           )}
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="border-border/60 text-xs">
+            {!detailPresentation && <Badge variant="outline" className="border-border/60 text-xs">
               {count} {count === 1 ? 'item' : 'items'}
-            </Badge>
-            {createTarget === "order" && !readOnly && renderProductPicker(true)}
+            </Badge>}
+            {(createTarget === "order" || detailPresentation) && !readOnly && renderProductPicker(true)}
           </div>
         </div>
       </CardHeader>
 
-      <CardContent className={createTarget === "order" ? "p-3 sm:p-4" : "px-4 py-3"}>
+      <CardContent className={detailPresentation ? "overflow-x-hidden px-0 py-0" : createTarget === "order" ? "p-3 sm:p-4" : "px-4 py-3"}>
         {(createTarget === "order" ? count === 0 : lineItems.length === 0) ? (
           <div className={createTarget === "order" ? "rounded-md bg-muted/30 px-4 py-4" : "py-6 text-center text-xs text-muted-foreground"}>
             {createTarget === "order" ? (
@@ -1397,7 +1399,7 @@ export function LineItemsSection({
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
                         {({ dragAttributes, dragListeners }) => (
                           <LineItemCard
-                            compactExpandedLayout={createTarget === "order"}
+                            compactExpandedLayout={createTarget === "order" || detailPresentation}
                             containerResponsiveLayout={createTarget === "order"}
                             id={item.id || ""}
                             itemKey={itemKey}
@@ -1405,7 +1407,7 @@ export function LineItemsSection({
                             isExpanded={isExpanded}
                             onToggleExpand={() => onExpandedKeyChange(isExpanded ? null : itemKey)}
                             title={item.productName}
-                            lineLabel={createTarget === "order" ? `Line ${itemIndex + 1}` : undefined}
+                            lineLabel={createTarget === "order" || detailPresentation ? `Line ${itemIndex + 1}` : undefined}
                             artworkSummary={createTarget === "order" && item.pendingOrderAttachments?.length ? `${item.pendingOrderAttachments.length} staged` : undefined}
                             artworkSummaryKind={createTarget === "order" ? "file" : undefined}
                             sizeLabel={formatLineItemMeasurementLabel(product, item.width, item.height)}
@@ -1671,9 +1673,9 @@ export function LineItemsSection({
                               <>
                                 {isExpandedTreeV2 && expandedOptionTreeJson ? (
                                   <ProductOptionsPanelV2
-                                    compact={createTarget === "order"}
-                                    orderWorkspace={createTarget === "order"}
-                                    helpPresentation={createTarget === "order" ? "popover" : undefined}
+                                    compact={createTarget === "order" || detailPresentation}
+                                    orderWorkspace={createTarget === "order" || detailPresentation}
+                                    helpPresentation={createTarget === "order" || detailPresentation ? "popover" : undefined}
                                     tree={expandedOptionTreeJson}
                                     selections={optionSelectionsV2}
                                     onSelectionsChange={handleOptionSelectionsV2Change}
@@ -1681,8 +1683,8 @@ export function LineItemsSection({
                                   />
                                 ) : (
                                   <ProductOptionsPanel
-                                    compact={createTarget === "order"}
-                                    orderWorkspace={createTarget === "order"}
+                                    compact={createTarget === "order" || detailPresentation}
+                                    orderWorkspace={createTarget === "order" || detailPresentation}
                                     product={expandedProduct}
                                     productOptions={expandedProductOptions}
                                     optionSelections={optionSelections}
@@ -1693,8 +1695,8 @@ export function LineItemsSection({
                             }
                             artworkSlot={
                               !fulfillmentOnly || Boolean((item as any).requiresDesign || (item as any).requiresPrepress || (item as any).requiresProofApproval) ? (
-                              <div className={createTarget === "order" ? "min-w-0" : cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                {createTarget !== "order" && <div className="flex items-center justify-between mb-2">
+                              <div className={createTarget === "order" || detailPresentation ? "min-w-0" : cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                {createTarget !== "order" && !detailPresentation && <div className="flex items-center justify-between mb-2">
                                   <div className="text-sm font-medium">Artwork</div>
                                 </div>}
                                 <LineItemAttachmentsPanel
@@ -1785,7 +1787,7 @@ export function LineItemsSection({
         )}
 
         {/* Add Product (edit mode only) */}
-        {!readOnly && createTarget !== "order" && (
+        {!readOnly && createTarget !== "order" && !detailPresentation && (
           <div className="mt-4 pt-4 border-t border-border/40">
             {renderProductPicker(false)}
           </div>

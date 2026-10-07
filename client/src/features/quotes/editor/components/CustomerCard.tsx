@@ -1,4 +1,5 @@
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -7,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Separator } from "@/components/ui/separator";
 import { formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
-import { Calendar, X } from "lucide-react";
+import { Calendar, Pencil, X } from "lucide-react";
 import { CustomerSelect, type CustomerWithContacts, type CustomerSelectRef } from "@/components/CustomerSelect";
 import { ContactSelect } from "@/components/ContactSelect";
 import { getContactDisplayName, type ContactPickerContact } from "@/lib/contactPicker";
@@ -28,6 +29,8 @@ type CustomerCardProps = {
     promisedDate?: string; // YYYY-MM-DD
     priority?: string;
     showOrderFields?: boolean;
+    detailPresentation?: boolean;
+    quoteValidUntil?: string | null;
     orderInternalNotes?: ReactNode;
     orderFulfillment?: ReactNode;
     tags?: string[];
@@ -62,6 +65,8 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     promisedDate = "",
     priority = "normal",
     showOrderFields = false,
+    detailPresentation = false,
+    quoteValidUntil,
     orderInternalNotes,
     orderFulfillment,
     tags = [],
@@ -70,6 +75,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     discountPercent,
     markupPercent,
     marginPercent,
+    deliveryMethod,
     readOnly = false,
     onCustomerChange,
     onContactChange,
@@ -86,6 +92,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     const tagInputRef = useRef<HTMLInputElement | null>(null);
     const customerSelectRef = useRef<CustomerSelectRef | null>(null);
     const [showCustomerAddress, setShowCustomerAddress] = useState(false);
+    const [isEditingIdentity, setIsEditingIdentity] = useState(false);
 
     const selectedContact = selectedContactId
         ? (selectedContactFromPicker?.id === selectedContactId ? selectedContactFromPicker : null)
@@ -169,6 +176,54 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
             onRemoveTag?.(tags[tags.length - 1]);
         }
     };
+
+    if (detailPresentation) {
+        const distinctCustomerEmail = customerEmail?.trim().toLowerCase() !== contactEmail?.trim().toLowerCase() ? customerEmail : null;
+        const distinctCustomerPhone = customerPhone?.replace(/\D/g, "") !== contactPhone?.replace(/\D/g, "") ? customerPhone : null;
+        return (
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(20rem,1fr)_minmax(24rem,1.2fr)_minmax(18rem,0.8fr)]">
+                <section aria-label="Customer and contact" className="grid gap-4 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                    <div className="min-w-0 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Customer</div>
+                                {isEditingIdentity && !readOnly ? (
+                                    <CustomerSelect ref={customerSelectRef} value={selectedCustomerId} onChange={onCustomerChange} autoFocus={false} label="" placeholder="Search customers..." />
+                                ) : (
+                                    selectedCustomerId ? <Link to={`/customers/${selectedCustomerId}`} className="block truncate text-lg font-semibold leading-6 text-foreground hover:underline" title={customerDisplayLabel}>{customerDisplayLabel}</Link> : <div className="truncate text-lg font-semibold leading-6 text-foreground" title={customerDisplayLabel}>{customerDisplayLabel}</div>
+                                )}
+                            </div>
+                            {!readOnly && <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={() => setIsEditingIdentity(v => !v)} aria-label="Change customer or contact"><Pencil className="h-3 w-3" /></Button>}
+                        </div>
+                        {hasCustomerAddress && <div className="space-y-0.5 text-sm leading-5 text-foreground/80">{customerAddress.line1 && <div>{customerAddress.line1}</div>}{customerAddress.line2 && <div>{customerAddress.line2}</div>}</div>}
+                        {distinctCustomerEmail && <a href={`mailto:${distinctCustomerEmail}`} className="block truncate text-sm leading-5 text-foreground/80 hover:underline">{distinctCustomerEmail}</a>}
+                        {distinctCustomerPhone && <a href={phoneToTelHref(distinctCustomerPhone)} className="block text-sm leading-5 text-foreground/80 hover:underline">{formatPhoneForDisplay(distinctCustomerPhone)}</a>}
+                        {isEditingIdentity && !readOnly && selectedCustomerId && <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onCustomerChange(null, undefined)}>Clear customer</Button>}
+                    </div>
+                    <div className="min-w-0 space-y-2">
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Contact</div>
+                        {isEditingIdentity && !readOnly ? (
+                            <ContactSelect value={selectedContactId} customerId={selectedCustomerId} onChange={onContactChange} onResolvedContact={onContactResolved} label="" placeholder="Search contacts..." />
+                        ) : selectedContactId ? <Link to={`/contacts/${selectedContactId}`} className="block truncate text-base font-semibold leading-5 text-foreground hover:underline" title={displayContactLabel}>{displayContactLabel}</Link> : <div className="truncate text-base font-semibold leading-5 text-foreground" title={displayContactLabel}>{displayContactLabel}</div>}
+                        {contactEmail && <a href={`mailto:${contactEmail}`} className="block truncate text-sm leading-5 text-foreground/80 hover:underline">{contactEmail}</a>}
+                        {contactPhone && <a href={phoneToTelHref(contactPhone)} className="block text-sm leading-5 text-foreground/80 hover:underline">{formatPhoneForDisplay(contactPhone)}</a>}
+                    </div>
+                </section>
+                <section aria-label="Quote details" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+                    <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
+                        <div className="flex min-w-0 items-center gap-2"><label htmlFor="quote-detail-job-label" className="whitespace-nowrap text-sm font-medium text-muted-foreground">Job Label</label><Input id="quote-detail-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="—" readOnly={readOnly} className="h-8 min-w-0 flex-1" /></div>
+                        <div className="flex min-w-0 items-center gap-2"><label htmlFor="quote-detail-due-date" className="whitespace-nowrap text-sm font-medium text-muted-foreground">Due Date</label><Input id="quote-detail-due-date" type="date" value={requestedDueDate} onChange={e => onRequestedDueDateChange(e.target.value)} readOnly={readOnly} className="h-8 min-w-0 flex-1" /></div>
+                    </div>
+                    {onAddTag && onRemoveTag && <div className="flex items-start gap-3"><label htmlFor="quote-detail-flags" className="shrink-0 pt-2 text-sm font-medium text-muted-foreground">Flags</label><div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1" role="group" aria-label="Flags">{tags.map(t => <Badge key={t} variant="secondary" className="gap-1 text-xs">{t}{!readOnly && <button type="button" aria-label={`Remove flag ${t}`} onClick={() => onRemoveTag(t)}><X className="h-3 w-3" /></button>}</Badge>)}{!readOnly ? <input id="quote-detail-flags" ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}</div></div>}
+                </section>
+                <section aria-label="Commercial and fulfillment" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Commercial &amp; Fulfillment</div>
+                    {quoteValidUntil && <div className="space-y-1"><div className="text-sm font-medium text-muted-foreground">Valid Until</div><div className="text-sm">{quoteValidUntil.slice(0, 10)}</div></div>}
+                    <div className="space-y-1"><div className="text-sm font-medium text-muted-foreground">Fulfillment</div><div className="text-sm font-medium capitalize">{deliveryMethod}</div></div>
+                </section>
+            </div>
+        );
+    }
 
     if (showOrderFields) {
         const distinctCustomerEmail = customerEmail?.trim().toLowerCase() !== contactEmail?.trim().toLowerCase() ? customerEmail : null;

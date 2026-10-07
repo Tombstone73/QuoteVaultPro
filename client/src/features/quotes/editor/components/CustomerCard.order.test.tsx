@@ -1,8 +1,8 @@
 import React, { act } from "react";
 import { Simulate } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
+import { TextDecoder, TextEncoder } from "node:util";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
-import { CustomerCard } from "./CustomerCard";
 
 // The selector suites cover searching/link resolution. These adapters exercise
 // the identity layout's integration with the existing selector contracts.
@@ -24,6 +24,10 @@ jest.mock("@/components/ContactSelect", () => ({
     </select></label>
   ),
 }));
+
+Object.assign(globalThis, { TextEncoder, TextDecoder });
+const { MemoryRouter } = require("react-router-dom");
+const { CustomerCard } = require("./CustomerCard");
 
 describe("direct Order customer and job identity", () => {
   let host: HTMLDivElement;
@@ -101,5 +105,35 @@ describe("direct Order customer and job identity", () => {
     act(() => { flagInput.value = "Rush"; Simulate.change(flagInput); });
     act(() => Simulate.keyDown(flagInput, { key: "Enter" }));
     expect(props.onAddTag).toHaveBeenCalledWith("Rush");
+  });
+
+  test("saved Quote detail uses Order-style identity without Order-only fields", () => {
+    const props = baseProps();
+    act(() => root.render(<MemoryRouter><CustomerCard {...props} showOrderFields={false} detailPresentation quoteValidUntil="2026-11-15T00:00:00Z" /></MemoryRouter>));
+    expect(host.querySelector('section[aria-label="Customer and contact"]')).not.toBeNull();
+    expect(host.querySelector('section[aria-label="Quote details"]')).not.toBeNull();
+    expect(host.querySelector('section[aria-label="Commercial and fulfillment"]')).not.toBeNull();
+    expect(host.textContent?.match(/Offset House/g)).toHaveLength(1);
+    expect(host.textContent).toContain("John Smith");
+    expect(host.querySelector('a[href="/customers/customer-1"]')).not.toBeNull();
+    expect(host.querySelector('a[href="/contacts/contact-1"]')).not.toBeNull();
+    expect(host.textContent).toContain("2026-11-15");
+    expect(host.textContent).not.toContain("PO #");
+    expect(host.textContent).not.toContain("Promised date");
+    expect(host.querySelector('select[aria-label="Customer"]')).toBeNull();
+    act(() => (host.querySelector('button[aria-label="Change customer or contact"]') as HTMLButtonElement).click());
+    expect(host.querySelector('select[aria-label="Customer"]')).not.toBeNull();
+    expect(host.querySelector('select[aria-label="Contact"]')).not.toBeNull();
+    const jobLabel = host.querySelector('#quote-detail-job-label') as HTMLInputElement;
+    act(() => { jobLabel.value = "Autumn signs"; Simulate.change(jobLabel); });
+    expect(props.onJobLabelChange).toHaveBeenCalledWith("Autumn signs");
+  });
+
+  test("locked Quote detail keeps all identity fields read only", () => {
+    act(() => root.render(<MemoryRouter><CustomerCard {...baseProps()} showOrderFields={false} detailPresentation readOnly /></MemoryRouter>));
+    expect(host.querySelector('button[aria-label="Change customer or contact"]')).toBeNull();
+    expect((host.querySelector('#quote-detail-job-label') as HTMLInputElement).readOnly).toBe(true);
+    expect((host.querySelector('#quote-detail-due-date') as HTMLInputElement).readOnly).toBe(true);
+    expect(host.querySelector('input[placeholder="Add flag…"]')).toBeNull();
   });
 });

@@ -79,6 +79,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
     const state = useQuoteEditorState({ contactOnlyOrder: createTarget === "order" });
+    const isQuoteDetail = createTarget === "quote" && !state.isNewQuote;
+    const [newQuoteEditMode, setNewQuoteEditMode] = useState(true);
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
     const [orderRouteAfterSave, setOrderRouteAfterSave] = useState<"save_only" | "route_eligible" | null>(null);
@@ -617,23 +619,18 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
     };
 
-    // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
-    const [editMode, setEditMode] = useState(createTarget === "order" ? true : mode !== "view");
-    const readOnly = !editMode || isLocked;
+    // Existing Quotes edit inline; workflow locks remain authoritative.
+    const readOnly = isLocked || (createTarget === "quote" && state.isNewQuote && !newQuoteEditMode);
 
     // Enforce enterprise locking: approved/converted quotes are view-only
     useEffect(() => {
         if (!isLocked) return;
 
-        if (editMode) {
-            setEditMode(false);
-        }
-
         if (!lockToastShownRef.current) {
             lockToastShownRef.current = true;
             toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
         }
-    }, [isLocked, editMode, toast, lockedHint]);
+    }, [isLocked, toast, lockedHint]);
 
     // Expanded line item (accordion) state
     // Stored as lineItemId (tempId || id) - persists across refetches
@@ -658,10 +655,6 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     // Ref to prevent autosave when discard is in progress
     const discardInProgressRef = useRef<boolean>(false);
-
-    useEffect(() => {
-        if (!editMode) setExpandedKey(null);
-    }, [editMode]);
 
     // Preserve expanded state across refetches: ensure expandedKey still matches a line item
     // This prevents collapse when quote refetches after attachment upload
@@ -902,7 +895,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      * Respects user preference for after-save navigation behavior.
      */
     const handlePostSaveNavigation = (result: { kind: "created" | "updated"; quoteId: string; quoteNumber?: string }) => {
-        // For NEW quotes, always navigate to edit route with the new quoteId
+        // Newly saved quotes use the canonical detail route.
         // (this is required for the quote to be properly loaded)
         if (result.kind === "created") {
             // /orders/new is handled by handleCreateOrder so direct orders do not
@@ -911,7 +904,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 return;
             }
 
-            navigate(ROUTES.quotes.edit(result.quoteId), {
+            navigate(ROUTES.quotes.detail(result.quoteId), {
                 replace: true,
                 preventScrollReset: true,
                 state: { quoteId: result.quoteId },
@@ -1014,7 +1007,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         if (createTarget !== "order") {
             // CRITICAL: Navigate to the newly created quote so the editor adopts it as canonical.
             // This prevents "Save Changes" from creating a duplicate quote and orphaning attachments.
-            navigate(ROUTES.quotes.edit(result.quoteId), {
+            navigate(ROUTES.quotes.detail(result.quoteId), {
                 replace: true,
                 preventScrollReset: true,
                 state: { quoteId: result.quoteId },
@@ -1111,7 +1104,6 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Reset local state (for both persisted and unpersisted quotes)
             await state.handlers.discardAllChanges();
             setExpandedKey(null);
-            setEditMode(false);
 
             // Navigate back to quotes list
             navigate(backPath, { replace: true });
@@ -1222,6 +1214,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             marginPercent={state.marginPercent}
             deliveryMethod={state.deliveryMethod}
             readOnly={readOnly}
+            detailPresentation={isQuoteDetail}
+            quoteValidUntil={(state.quote as any)?.validUntil ?? null}
             jobLabel={state.jobLabel}
             requestedDueDate={state.requestedDueDate}
             poNumber={state.orderPoNumber}
@@ -1274,12 +1268,13 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             ensureQuoteId={createTarget === "order" ? undefined : ensureQuoteId}
             ensureLineItemId={createTarget === "order" ? undefined : state.handlers.ensureLineItemId}
             createTarget={createTarget}
+            detailPresentation={isQuoteDetail}
         />
     );
 
     const fulfillmentPanel = (
         <OrderFulfillmentPanel
-            presentation={createTarget === "order" ? "order-entry" : "default"}
+            presentation={createTarget === "order" || isQuoteDetail ? "order-entry" : "default"}
             mode="quote"
             parentType="quote"
             fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
@@ -1315,6 +1310,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
             hasUnsavedChanges={state.hasUnsavedChanges}
             readOnly={readOnly}
+            showSaveInFooter={!isQuoteDetail}
             onSave={createTarget === "order" ? handleCreateOrder : handleSave}
             onSaveAndBack={createTarget === "order" ? undefined : (preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack)}
             afterSaveNavigation={preferences.afterSaveNavigation}
@@ -1323,7 +1319,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             onConvertToOrder={createTarget === "order" ? (() => {}) : (() => setShowConvertDialog(true))}
             canConvertToOrder={state.canConvertToOrder}
             convertToOrderPending={state.convertToOrderHook?.isPending}
-            showConvertToOrder={createTarget === "order" ? false : (!editMode && !!state.quoteId)}
+            showConvertToOrder={createTarget !== "order" && !!state.quoteId}
             onDiscard={handleDiscard}
             quoteId={state.quoteId}
             quoteNumber={(state.quote as any)?.quoteNumber ?? null}
@@ -1346,7 +1342,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             isApprovingAndSending={approveAndSendMutation.isPending}
             isRequestingApproval={requestApprovalMutation.isPending}
             showOrderActions={createTarget !== "order"}
-            presentation={createTarget === "order" ? "order" : "quote"}
+            presentation={createTarget === "order" ? "order" : isQuoteDetail ? "detail" : "quote"}
         />
     );
 
@@ -1412,7 +1408,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     return (
         <div className="min-h-screen bg-background">
-            <div className={createTarget === "order" ? "mx-auto w-full max-w-none px-4 py-6 sm:px-6 lg:px-8" : "mx-auto w-full max-w-[1600px] px-6 py-4"}>
+            <div className={createTarget === "order" ? "mx-auto w-full max-w-none px-4 py-6 sm:px-6 lg:px-8" : isQuoteDetail ? "w-full px-4 py-6 sm:px-5 lg:px-5" : "mx-auto w-full max-w-[1600px] px-6 py-4"}>
                 {/* Top bar: Back + Quote # + Status + Actions */}
                 {createTarget === "order" ? (
                     <PageHeader
@@ -1429,22 +1425,18 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     isDuplicatingQuote={state.isDuplicatingQuote}
                     status={(state.quote as any)?.status}
                     effectiveWorkflowState={workflowState}
+                    detailPresentation={isQuoteDetail}
+                    editMode={newQuoteEditMode}
+                    editModeDisabled={state.isSaving || isLocked}
+                    onEditModeChange={setNewQuoteEditMode}
                     showReviseButton={isLocked}
                     isRevisingQuote={reviseMutation.isPending}
-                    editMode={editMode}
-                    editModeDisabled={state.isSaving || isLocked}
-                    showEditModeToggle
                     onBack={handleBack}
                     onDuplicateQuote={() => setShowDuplicateDialog(true)}
                     onReviseQuote={handleReviseQuote}
-                    onEditModeChange={(next) => {
-                        if (isLocked) {
-                            toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
-                            setEditMode(false);
-                            return;
-                        }
-                        setEditMode(next);
-                    }}
+                    onSave={handleSave}
+                    canSaveQuote={!readOnly && state.canSaveQuote}
+                    isSaving={state.isSaving}
                 />}
 
                 {isLocked && lockedHint && (
@@ -1494,25 +1486,16 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                         summary={renderSummaryCard()}
                     />
                 ) : (
-                    <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
-                        {/* LEFT COLUMN: Customer + Line Items + Totals */}
-                        <div className="space-y-6">
-                            {/* Customer & Details Panel */}
-                            <div className="">
+                    <div className={isQuoteDetail ? "space-y-4" : "mt-6 grid gap-6 lg:grid-cols-[1fr_400px]"}>
+                        <div className={isQuoteDetail ? "space-y-4" : "space-y-6"}>
                             {identityPanel}
-                            </div>
-
-                            {/* Line Items Section */}
-                            <div className="">
                             {lineItemsPanel}
-                            </div>
-
-                            {/* Quote summary retains its original position. */}
-                            {renderSummaryCard()}
+                            {!isQuoteDetail && renderSummaryCard()}
                         </div>
-
-                        {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
-                        <div className="space-y-6 lg:sticky lg:top-4 h-fit">
+                        <div className={isQuoteDetail ? "grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]" : "h-fit space-y-6 lg:sticky lg:top-4"}>
+                          {isQuoteDetail && <div className="min-w-0 xl:order-1">{renderSummaryCard()}</div>}
+                          <div className={isQuoteDetail ? "min-w-0 xl:order-2" : "min-w-0"}>{fulfillmentPanel}</div>
+                          <div className={isQuoteDetail ? "min-w-0 space-y-3 xl:order-3" : "space-y-6"}>
                             {state.isInternalUser && (
                                 <Card className="rounded-lg border border-border/40 bg-card/50">
                                     <CardHeader className="pb-3">
@@ -1544,18 +1527,13 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                 </Card>
                             )}
 
-                            {/* Fulfillment & Shipping Panel - Reuses Orders component */}
-                            {fulfillmentPanel}
-
-
-                            {/* Attachments - Now more prominent in right column */}
+                            {/* Quote documents and attachments use the Order utility column. */}
                             {!!state.quoteId && (
                                 <Card>
-                                    <CardHeader className="pb-3">
+                                    <CardHeader className="px-4 py-3">
                                         <CardTitle className="text-base font-medium">Attachments</CardTitle>
-                                        <CardDescription>Add POs, instructions, artwork files, etc.</CardDescription>
                                     </CardHeader>
-                                    <CardContent>
+                                    <CardContent className="px-4 pb-4 pt-0">
                                         <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isLocked} />
                                     </CardContent>
                                 </Card>
@@ -1609,7 +1587,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             </Card>
 
                             {/* Timeline */}
-                            <Card className="rounded-lg border border-border/40 bg-card/30">
+                            <Card>
                                 <CardContent className="p-4">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="text-[11px] font-medium text-muted-foreground">Timeline</div>
@@ -1634,6 +1612,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                 </CardContent>
                             </Card>
                         </div>
+                    </div>
                     </div>
                 )}
             </div>

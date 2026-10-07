@@ -62,6 +62,34 @@ test("renders an expanded duplicate as its own editable Quote editor card", () =
   expect(markup).toContain("Save Item");
 });
 
+test("saved Quote detail uses the Order line-item section and expanded column geometry", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+  const host = document.createElement("div");
+  try {
+    host.innerHTML = renderToString(
+      <QueryClientProvider client={client}>
+        <LineItemsSection
+          detailPresentation quoteId="quote-1" customerId="customer-1" readOnly={false}
+          lineItems={[original]} products={[{ id: "product-1", name: "Banner", measurementMode: "dimensions_required", optionsJson: [] } as any]}
+          expandedKey={original.id!} onExpandedKeyChange={() => undefined}
+          onCreateDraftLineItem={async () => null} onUpdateLineItem={() => undefined}
+          onSaveLineItem={async () => true} onDuplicateLineItem={() => undefined} onRemoveLineItem={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+    expect(host.querySelector(".border-0.bg-transparent.shadow-none")).not.toBeNull();
+    expect(host.textContent).toContain("Line Items");
+    expect(host.textContent).toContain("1 item");
+    expect(host.querySelectorAll('section[aria-label="Dimensions & Pricing"]')).toHaveLength(1);
+    expect(host.querySelectorAll('section[aria-label="Product Options"]')).toHaveLength(1);
+    expect(host.querySelectorAll('section[aria-label="Artwork"]')).toHaveLength(1);
+    expect(Array.from(host.querySelectorAll("button")).filter(button => /add product/i.test(button.textContent ?? ""))).toHaveLength(1);
+  } finally {
+    errorSpy.mockRestore(); client.clear();
+  }
+});
+
 test.each([
   { lineItems: [] },
   { lineItems: [original] },
