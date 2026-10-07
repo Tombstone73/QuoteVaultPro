@@ -1,7 +1,7 @@
 import { assertProductionCredit } from "./orderCreditHoldService";
 import { and, eq } from "drizzle-orm";
 
-import { productionJobs } from "@shared/schema";
+import { orderLineItems, productionJobs } from "@shared/schema";
 import { db } from "../db";
 import { appendEvent, getTimerStateForJob } from "../routes/production.shared";
 import { isTerminalProductionStatus } from "@shared/operationalState";
@@ -33,6 +33,12 @@ export class CanonicalProductionOperations {
     if (!job) throw new CanonicalProductionOperationError("Production job not found.", 404, "PRODUCTION_JOB_NOT_FOUND");
     if (!job.orderId || !job.lineItemId) throw new CanonicalProductionOperationError("Production job is missing its order line item.", 409, "PRODUCTION_JOB_LINE_ITEM_MISSING");
     if (isTerminalProductionStatus(job.status)) throw new CanonicalProductionOperationError("Job is terminal; reopen or restore first.", 409, "PRODUCTION_JOB_TERMINAL");
+    const [line] = await tx.select({ productionBypassed: orderLineItems.productionBypassed }).from(orderLineItems)
+      .where(and(eq(orderLineItems.id, job.lineItemId), eq(orderLineItems.orderId, job.orderId))).for("update").limit(1);
+    if (!line) throw new CanonicalProductionOperationError("Production job line item was not found.", 409, "PRODUCTION_JOB_LINE_ITEM_MISSING");
+    if (line.productionBypassed) throw new CanonicalProductionOperationError(
+      "Production was bypassed for this line. Restore or reconcile the bypass before starting work.", 409, "PRODUCTION_BYPASSED",
+    );
     await assertParentOrderInProductionForJob(tx, { organizationId: input.organizationId, job, action: "start production job" });
     const timerState = await getTimerStateForJob(input.organizationId, input.jobId, tx);
     if (timerState.isRunning) return job;

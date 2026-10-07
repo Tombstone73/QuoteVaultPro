@@ -12,13 +12,14 @@ const runner: any = {
     const q: any = {
       from: (t: any) => { table = getTableName(t); return q; },
       where: (condition: any) => { queries.push(new PgDialect().sqlToQuery(condition).sql); return q; },
-      leftJoin: () => q, innerJoin: () => q, orderBy: () => q,
+      leftJoin: () => q, innerJoin: () => q, orderBy: () => q, for: () => q,
       limit: async () => (rows[table] ?? []).slice(0, 1),
       then: (resolve: any, reject: any) => Promise.resolve(rows[table] ?? []).then(resolve, reject),
     };
     return q;
   },
   insert: (table: any) => ({ values: async (value: any) => { writes.push(value); (rows[getTableName(table)] ??= []).unshift({ createdAt: new Date(), ...value }); } }),
+  update: (table: any) => ({ set: (patch: any) => ({ where: async () => { for (const row of rows[getTableName(table)] ?? []) Object.assign(row, patch); } }) }),
   transaction: async (fn: any) => fn(runner),
 };
 jest.unstable_mockModule('../db', () => ({ db: runner }));
@@ -41,7 +42,7 @@ beforeEach(() => {
     orders: [{ id: 'order', customerId: 'customer', total: '500.00', state: 'open', status: 'new' }],
     customers: [{ id: 'customer', creditLimit: '0.00', creditLimitConfiguredAt: new Date() }],
     invoices: [{ canonicalCustomerId: 'customer', invoice: { id: 'invoice', orderId: 'order', totalCents: 50000, status: 'billed' } }],
-    payments: [], audit_logs: [], order_line_items: [],
+    payments: [], audit_logs: [], order_line_items: [{ id: 'line', orderId: 'order', productionBypassed: false }],
     production_jobs: [{ id: 'job', orderId: 'order', lineItemId: 'line', stationKey: 'roll', stepKey: 'queued', status: 'queued' }],
   };
   writes = []; queries = [];
@@ -100,11 +101,28 @@ describe('authoritative production boundaries', () => {
   test('direct route fails before physical job insertion', async () => {
     await expect(route({ tx: runner, organizationId: 'org', orderId: 'order', lineItemId: 'line', stationKey: 'roll', stepKey: 'queued', trigger: 'intake' })).rejects.toMatchObject({ code: 'PRODUCTION_CREDIT_HOLD' }); expect(writes).toEqual([]);
   });
+  test('direct routing cannot recreate a production owner on a bypassed line', async () => {
+    rows.order_line_items[0].productionBypassed = true;
+    await expect(route({ tx: runner, organizationId: 'org', orderId: 'order', lineItemId: 'line', stationKey: 'roll', stepKey: 'queued', trigger: 'intake' }))
+      .rejects.toMatchObject({ code: 'PRODUCTION_BYPASSED', statusCode: 409 });
+    expect(writes).toEqual([]);
+  });
   test('station handoff fails before closing the current preparatory owner', async () => {
     await expect(transition(runner, { organizationId: 'org', orderId: 'order', lineItemId: 'line', targetStationKey: 'flatbed', targetStepKey: 'queued', reason: 'handoff' })).rejects.toMatchObject({ code: 'PRODUCTION_CREDIT_HOLD' }); expect(writes).toEqual([]);
   });
   test('Start Production rechecks legacy queued jobs', async () => {
     await expect(start.startJobInTransaction(runner, { organizationId: 'org', jobId: 'job' })).rejects.toMatchObject({ code: 'PRODUCTION_CREDIT_HOLD', statusCode: 409 }); expect(writes).toEqual([]);
+  });
+  test('Start Production rejects a bypassed physical line before credit or timer changes', async () => {
+    rows.order_line_items[0].productionBypassed = true;
+    await expect(start.startJobInTransaction(runner, { organizationId: 'org', jobId: 'job' }))
+      .rejects.toMatchObject({ code: 'PRODUCTION_BYPASSED', statusCode: 409 });
+    expect(writes).toEqual([]);
+  });
+  test('Start Production remains available for a non-bypassed line after credit clears', async () => {
+    payment(50000);
+    await expect(start.startJobInTransaction(runner, { organizationId: 'org', jobId: 'job' }))
+      .resolves.toMatchObject({ id: 'job', status: 'in_progress' });
   });
   test('after sufficient payment the authoritative guard allows release', async () => {
     payment(50000); await expect(policy.assertProductionCredit(runner, { organizationId: 'org', orderId: 'order', stationKey: 'roll' })).resolves.toBeUndefined();

@@ -306,7 +306,30 @@ async function restoreOrderProductionStateAfterUndo(
   return { changed: true, reason: "order_restored_to_production" as const };
 }
 
-// Exported for the Order-level production shortcut.  The shortcut must use this
+// Shared by canonical completion and cancellation so a terminal job never
+// retains an open timer or loses elapsed time.
+async function stopRunningProductionTimerInTransaction(tx: any, args: {
+  organizationId: string; job: typeof productionJobs.$inferSelect; actorUserId: string | null; now: Date;
+}) {
+  const lastTimer = await tx
+    .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
+    .from(productionEvents)
+    .where(and(
+      eq(productionEvents.organizationId, args.organizationId),
+      eq(productionEvents.productionJobId, args.job.id),
+      inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+    ))
+    .orderBy(desc(productionEvents.createdAt))
+    .limit(1);
+  if (lastTimer[0]?.type !== "timer_started") return false;
+  const deltaSeconds = toSeconds(args.now.getTime() - new Date(lastTimer[0].createdAt as any).getTime());
+  await appendEvent({ tx, organizationId: args.organizationId, productionJobId: args.job.id, type: "timer_stopped", actorUserId: args.actorUserId, payload: { seconds: deltaSeconds } });
+  await tx.update(productionJobs).set({ totalSeconds: (Number(args.job.totalSeconds) || 0) + deltaSeconds })
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.job.id)));
+  return true;
+}
+
+// Exported for the Order-level production shortcut. The shortcut must use this
 // exact operation so station completion, material consumption, audit events,
 // and fulfillment handoff remain owned by Production.
 export async function completeProductionJobWorkflow(
@@ -347,6 +370,7 @@ export async function completeProductionJobWorkflow(
     .select()
     .from(productionJobs)
     .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .for("update")
     .limit(1);
   const job = jobRows[0];
   if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
@@ -356,6 +380,13 @@ export async function completeProductionJobWorkflow(
   if (job.status === "done") return job;
   if (isTerminalProductionStatus(job.status)) {
     throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
+  }
+  if (job.lineItemId) {
+    const [line] = await tx.select({ productionBypassed: orderLineItems.productionBypassed }).from(orderLineItems)
+      .where(and(eq(orderLineItems.id, job.lineItemId), eq(orderLineItems.orderId, job.orderId))).limit(1);
+    if (line?.productionBypassed) throw Object.assign(new Error("Production was bypassed for this line. Use the audited production conflict reconciliation first."), {
+      statusCode: 409, code: "PRODUCTION_BYPASSED",
+    });
   }
 
   if (!args.historicalTerminalRepair && !job.startedAt) {
@@ -400,35 +431,7 @@ export async function completeProductionJobWorkflow(
     throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
   }
 
-  const lastTimer = await tx
-    .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
-    .from(productionEvents)
-    .where(
-      and(
-        eq(productionEvents.organizationId, args.organizationId),
-        eq(productionEvents.productionJobId, args.jobId),
-        inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
-      ),
-    )
-    .orderBy(desc(productionEvents.createdAt))
-    .limit(1);
-  const last = lastTimer[0];
-  if (last?.type === "timer_started") {
-    const startedAtMs = new Date(last.createdAt as any).getTime();
-    const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
-    await appendEvent({
-      tx,
-      organizationId: args.organizationId,
-      productionJobId: args.jobId,
-      type: "timer_stopped",
-      actorUserId: args.userId,
-      payload: { seconds: deltaSeconds },
-    });
-    await tx
-      .update(productionJobs)
-      .set({ totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds })
-      .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
-  }
+  await stopRunningProductionTimerInTransaction(tx, { organizationId: args.organizationId, job, actorUserId: args.userId, now });
 
   await tx
     .update(productionJobs)
@@ -637,13 +640,14 @@ export async function completeProductionJobWorkflow(
  * this in one workflow is important because a bulk action must produce the
  * same events and audit trail as an individual change.
  */
-async function updateProductionJobStatusWorkflow(
+export async function updateProductionJobStatusWorkflow(
   tx: any,
   args: {
     organizationId: string;
     userId?: string | null;
     jobId: string;
     status: string;
+    reason?: string | null;
     stepKey?: string | null;
     auditUserName?: string | null;
     ipAddress?: string | null;
@@ -655,6 +659,7 @@ async function updateProductionJobStatusWorkflow(
     .select()
     .from(productionJobs)
     .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .for("update")
     .limit(1);
   const job = jobRows[0];
   if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
@@ -666,6 +671,13 @@ async function updateProductionJobStatusWorkflow(
   if (job.status === args.status && stepKeyUnchanged) return job;
 
   if (args.status !== "canceled") {
+    if (args.status === "in_progress" && job.lineItemId) {
+      const [line] = await tx.select({ productionBypassed: orderLineItems.productionBypassed }).from(orderLineItems)
+        .where(and(eq(orderLineItems.id, job.lineItemId), eq(orderLineItems.orderId, job.orderId))).limit(1);
+      if (line?.productionBypassed) throw Object.assign(new Error("Production was bypassed for this line. Restore or reconcile the bypass before resuming work."), {
+        statusCode: 409, code: "PRODUCTION_BYPASSED",
+      });
+    }
     await assertParentOrderInProductionForJob(tx, {
       organizationId: args.organizationId,
       job,
@@ -675,6 +687,9 @@ async function updateProductionJobStatusWorkflow(
 
   if (args.status === "in_progress" || (args.status === "done" && !job.startedAt)) {
     await assertProductionCredit(tx, { organizationId: args.organizationId, orderId: job.orderId, stationKey: job.stationKey, stepKey: args.stepKey ?? job.stepKey });
+  }
+  if (args.status === "canceled") {
+    await stopRunningProductionTimerInTransaction(tx, { organizationId: args.organizationId, job, actorUserId: args.userId ?? null, now });
   }
   const updateData: any = { status: args.status, updatedAt: now };
   if (args.stepKey !== undefined) updateData.stepKey = args.stepKey;
@@ -696,6 +711,7 @@ async function updateProductionJobStatusWorkflow(
       previousStepKey: job.stepKey,
       newStepKey: args.stepKey === undefined ? job.stepKey : args.stepKey,
       actorUserId: args.userId ?? null,
+      reason: args.reason ?? null,
     },
   });
 
@@ -709,7 +725,7 @@ async function updateProductionJobStatusWorkflow(
     entityName: args.jobId,
     description: `Production job status changed to ${args.status}`,
     oldValues: { status: job.status },
-    newValues: { status: args.status },
+    newValues: { status: args.status, reason: args.reason ?? null },
     ipAddress: args.ipAddress || null,
     userAgent: args.userAgent || null,
   } as any);

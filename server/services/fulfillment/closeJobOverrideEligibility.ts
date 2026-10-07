@@ -6,6 +6,9 @@ export function canCloseJobOverrideFromCanonicalObligations(input: {
   canceled: boolean;
   remainingProductionQuantity: number;
   remainingFulfillmentQuantity: number;
+  activeNonRequiredProductionConflictCount?: number;
 }) {
-  return !input.canceled && (input.remainingProductionQuantity > 0 || input.remainingFulfillmentQuantity > 0);
+  return !input.canceled
+    && (input.activeNonRequiredProductionConflictCount ?? 0) === 0
+    && (input.remainingProductionQuantity > 0 || input.remainingFulfillmentQuantity > 0);
 }

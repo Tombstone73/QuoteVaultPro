@@ -32,4 +32,19 @@ describe("Close Job Override eligibility projection", () => {
       remainingFulfillmentQuantity: 1,
     })).toBe(false);
   });
+
+  test("blocks an active owner on a not-production-required line even when fulfillment remains", () => {
+    expect(canCloseJobOverrideFromCanonicalObligations({
+      canceled: false,
+      remainingProductionQuantity: 0,
+      remainingFulfillmentQuantity: 1,
+      activeNonRequiredProductionConflictCount: 1,
+    })).toBe(false);
+    expect(canCloseJobOverrideFromCanonicalObligations({
+      canceled: false,
+      remainingProductionQuantity: 0,
+      remainingFulfillmentQuantity: 1,
+      activeNonRequiredProductionConflictCount: 0,
+    })).toBe(true);
+  });
 });

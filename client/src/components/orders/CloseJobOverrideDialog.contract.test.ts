@@ -37,6 +37,14 @@ test('Close Job Override turns structured backend failures into an operator-safe
   expect(source).toContain('description: overrideErrorDescription(error)');
 });
 
+test('a production conflict offers an explicit resolution and blocks ordinary close submission', () => {
+  expect(source).toContain('if (hasProductionBypassConflict(previewQuery.data)) return;');
+  expect(source).toContain('Production was completed');
+  expect(source).toContain('Production was not required');
+  expect(source).toContain('/production-bypass-conflict/reconcile');
+  expect(source).toContain('Review the refreshed preview before closing the job. Fulfillment was not reconciled.');
+});
+
 test('closed Orders display Closed ahead of their terminal fulfillment history', () => {
   expect(source).toContain('orderState || "").toLowerCase() === "closed") return "Closed"');
   expect(source.indexOf('return "Closed"')).toBeLessThan(source.indexOf('return "Fulfillment Complete"'));

@@ -13,6 +13,7 @@ import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, shipmentDateValue, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
+import { listProductionExecutionConflicts } from '../productionBypassConflictService';
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
 import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
 import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
@@ -128,6 +129,7 @@ export class FulfillmentService {
     const [productionLines, productionJobRows] = await Promise.all([
       this.dbInstance.select({
         id: orderLineItems.id,
+        description: orderLineItems.description,
         lineItemRole: orderLineItems.lineItemRole,
         productionBypassed: orderLineItems.productionBypassed,
         requiresProductionJob: products.requiresProductionJob,
@@ -153,6 +155,10 @@ export class FulfillmentService {
       activeOwnerCountByLineItemId.set(job.lineItemId, (activeOwnerCountByLineItemId.get(job.lineItemId) ?? 0) + 1);
     }
     const productionObligations = projectCanonicalProductionObligations({ lines: productionLines, activeOwnerCountByLineItemId });
+    const bypassedPhysicalLineIds = productionLines.filter((line) => line.productionBypassed === true && line.lineItemRole !== 'parent'
+      && productionObligations.some((obligation) => obligation.lineItemId === line.id && obligation.state === 'not_production_required'))
+      .map((line) => line.id);
+    const productionConflicts = await listProductionExecutionConflicts(this.dbInstance, orgId, orderId, bypassedPhysicalLineIds);
     const productionBootstrapLineCount = productionObligations.filter((obligation) => obligation.state === 'needs_bootstrap').length;
     const productionStarted = nonFulfillmentProductionJobs.length > 0;
     const requiresProductionBootstrap = productionBootstrapLineCount > 0;
@@ -173,6 +179,7 @@ export class FulfillmentService {
       remainingFulfillmentQuantity,
       productionStarted,
       activeProductionJobCount,
+      productionConflicts,
       requiresProductionBootstrap,
       productionBootstrapLineCount,
       requiresParentProductionRecovery,
@@ -188,6 +195,7 @@ export class FulfillmentService {
         canceled: isCanceledOrder(order),
         remainingProductionQuantity,
         remainingFulfillmentQuantity,
+        activeNonRequiredProductionConflictCount: productionConflicts.length,
       }),
     };
   }

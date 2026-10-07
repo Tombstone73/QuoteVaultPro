@@ -10,6 +10,7 @@ describe("admin and owner permission contract", () => {
 
     expect(routes).toContain('app.post("/api/order-line-items", isAuthenticated, tenantContext, isAdminOrOwner');
     expect(routes).toContain('app.post("/api/order-line-items/:id/production-bypass", isAuthenticated, tenantContext, isAdminOrOwner');
+    expect(routes).toContain('app.post("/api/orders/:orderId/production-bypass-conflict/reconcile", isAuthenticated, tenantContext, isAdminOrOwner');
     expect(routes).toContain('app.patch("/api/order-line-items/:id/parent", isAuthenticated, tenantContext, isAdminOrOwner');
     expect(routes).toContain('app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner');
     expect(routes).toContain("LINE_ITEM_EDIT_LOCKED_STATES");

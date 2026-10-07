@@ -100,6 +100,8 @@ import {
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { addLineItemNote, addOrderInternalNote, deleteOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
+import { listProductionExecutionConflicts } from "../services/productionBypassConflictService";
+import { reconcileProductionBypassConflict } from "../services/productionBypassReconciliationService";
 import { autoSyncCanonicalProofForLineItem, reconcileLineItemProofGateRelease } from "../services/proofingService";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
@@ -8240,21 +8242,33 @@ export async function registerOrderRoutes(
                 .limit(1);
             if (!lineItem) return res.status(404).json({ success: false, message: "Order line item not found" });
 
-            const now = new Date();
-            const groupCondition = lineItem.lineItemRole === "parent"
-                ? or(eq(orderLineItems.id, lineItem.id), eq(orderLineItems.parentLineItemId, lineItem.id))
-                : eq(orderLineItems.id, lineItem.id);
-            const updated = await db.transaction(async (tx) => tx.update(orderLineItems).set({
-                productionBypassed: true,
-                productionBypassReason: parsed.data.reason,
-                productionBypassedByUserId: userId,
-                productionBypassedAt: now,
-                requiresDesign: false,
-                requiresPrepress: false,
-                requiresProofApproval: false,
-                workflowState: "no_production_required" as any,
-                updatedAt: now,
-            }).where(and(eq(orderLineItems.orderId, lineItem.orderId), groupCondition)).returning());
+            const updated = await db.transaction(async (tx) => {
+                const now = new Date();
+                const groupCondition = lineItem.lineItemRole === "parent"
+                    ? or(eq(orderLineItems.id, lineItem.id), eq(orderLineItems.parentLineItemId, lineItem.id))
+                    : eq(orderLineItems.id, lineItem.id);
+                // Serialize with job start and conflict reconciliation on the same line.
+                const affected = await tx.select({ id: orderLineItems.id }).from(orderLineItems)
+                    .where(and(eq(orderLineItems.orderId, lineItem.orderId), groupCondition)).for("update");
+                const conflicts = await listProductionExecutionConflicts(tx, organizationId, lineItem.orderId, affected.map((row) => row.id));
+                if (conflicts.length) {
+                    const conflict = conflicts[0];
+                    throw Object.assign(new Error(`Production cannot be bypassed while ${conflict.stationKey} production is active. Complete or cancel the active work first.`), {
+                        statusCode: 409, code: "ACTIVE_PRODUCTION_BYPASS_CONFLICT", conflicts,
+                    });
+                }
+                return tx.update(orderLineItems).set({
+                    productionBypassed: true,
+                    productionBypassReason: parsed.data.reason,
+                    productionBypassedByUserId: userId,
+                    productionBypassedAt: now,
+                    requiresDesign: false,
+                    requiresPrepress: false,
+                    requiresProofApproval: false,
+                    workflowState: "no_production_required" as any,
+                    updatedAt: now,
+                }).where(and(eq(orderLineItems.orderId, lineItem.orderId), groupCondition)).returning();
+            });
 
             await db.insert(auditLogs).values({
                 organizationId,
@@ -8274,7 +8288,29 @@ export async function registerOrderRoutes(
             const updatedParent = updated.find((item) => item.id === lineItem.id) ?? updated[0];
             return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updatedParent as any), groupedChildCount: Math.max(0, updated.length - 1) });
         } catch (error: any) {
-            return res.status(error?.statusCode ?? 500).json({ success: false, message: error?.message ?? "Failed to bypass production" });
+            return res.status(error?.statusCode ?? 500).json({ success: false, code: error?.code, message: error?.message ?? "Failed to bypass production" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/production-bypass-conflict/reconcile", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const actorUserId = getUserId(req.user);
+            if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Missing organization or user context" });
+            const parsed = z.object({
+                lineItemId: z.string().uuid(), jobId: z.string().uuid(),
+                resolution: z.enum(["production_completed", "production_not_required"]),
+                reason: z.string().trim().min(3).max(2000), note: z.string().trim().max(2000).optional(),
+            }).safeParse(req.body ?? {});
+            if (!parsed.success) return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? "Invalid reconciliation request" });
+            const result = await reconcileProductionBypassConflict({
+                organizationId, orderId: String(req.params.orderId), actorUserId,
+                ...parsed.data, actorName: req.user?.email || req.user?.name || null,
+                ipAddress: req.ip || null, userAgent: req.headers["user-agent"] || null,
+            });
+            return res.json({ success: true, data: result });
+        } catch (error: any) {
+            return res.status(error?.statusCode ?? 500).json({ success: false, code: error?.code, message: error?.message ?? "Failed to reconcile production conflict" });
         }
     });
 

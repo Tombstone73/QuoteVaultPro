@@ -1,4 +1,5 @@
 import { beforeAll, expect, jest, test } from "@jest/globals";
+import { getTableName } from "drizzle-orm";
 
 jest.unstable_mockModule("../db", () => ({ db: {} }));
 jest.unstable_mockModule("../emailService", () => ({ emailService: { sendEmail: jest.fn() } }));
@@ -210,5 +211,40 @@ test("historical reconciliation preview requires bootstrap for an unowned line e
     requiresProductionBootstrap: true,
     productionBootstrapLineCount: 1,
     remainingProductionQuantity: 2,
+  });
+});
+
+test("preview detects Order 20577's bypassed line with an active Roll owner and blocks close", async () => {
+  const tableRows: Record<string, any[]> = {
+    orders: [{ id: "order-1", state: "open", status: "in_production", canceledAt: null, fulfillmentStatus: "pending" }],
+    order_line_items: [{ id: "line-1", description: "Posters", lineItemRole: "standalone", productionBypassed: true, requiresProductionJob: true, workflowIntent: "standard_production", workflowState: "no_production_required", lifecycleStatus: "in_production" }],
+    production_jobs: [{ id: "job-1", lineItemId: "line-1", stationKey: "roll", status: "in_progress" }],
+    production_run_members: [],
+    production_events: [{ productionJobId: "job-1", type: "timer_started" }],
+  };
+  const fakeDb = { select: () => {
+    let table = "";
+    const query: any = {
+      from: (source: any) => { table = getTableName(source); return query; },
+      innerJoin: () => query, where: () => query, orderBy: () => query,
+      limit: async () => (tableRows[table] ?? []).slice(0, 1),
+      then: (resolve: any, reject: any) => Promise.resolve(tableRows[table] ?? []).then(resolve, reject),
+    };
+    return query;
+  } };
+  const service = new FulfillmentService({
+    dbInstance: fakeDb as any,
+    dashboardRepo: { listLineEligibility: jest.fn(async () => [{
+      id: "line-1", orderId: "order-1", projection: {
+        requiresFulfillment: true, orderedQuantity: 1, productionCompleteQuantity: 1,
+        fulfilledQuantity: 0, remainingQuantity: 1,
+      },
+    }]) } as any,
+    shipmentRepo: {} as any, pickupRepo: {} as any,
+  });
+  await expect(service.getHistoricalFulfillmentReconciliationPreview("org-1", "order-1")).resolves.toMatchObject({
+    remainingProductionQuantity: 0, remainingFulfillmentQuantity: 1,
+    activeProductionJobCount: 1, canCloseJobOverride: false,
+    productionConflicts: [{ lineItemId: "line-1", jobId: "job-1", stationKey: "roll", runningTimer: true }],
   });
 });

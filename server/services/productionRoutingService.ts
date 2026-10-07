@@ -16,7 +16,7 @@ import { assertPhysicalProductionProofGate } from "./proofGateService";
 
 import { db } from "../db";
 import { and, eq, notInArray, sql } from "drizzle-orm";
-import { orders, productionJobs } from "@shared/schema";
+import { orderLineItems, orders, productionJobs } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 import { TERMINAL_JOB_STATUSES } from "./productionOwnership";
 import { isCanceledOrder } from "@shared/operationalState";
@@ -259,6 +259,18 @@ export async function routeLineItemToProduction(args: RouteLineItemArgs): Promis
         new Error("[productionRoutingService] cancelled orders cannot receive production jobs"),
         { statusCode: 409, code: "ORDER_CANCELLED", orderId, lineItemId },
       );
+    }
+
+    // A bypassed physical line cannot acquire a fresh production owner through
+    // direct routing after the scheduler has excluded it.
+    if (stationKey !== FULFILLMENT_STATION_KEY) {
+      const [line] = await runner.select({ productionBypassed: orderLineItems.productionBypassed })
+        .from(orderLineItems).where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
+        .for("update").limit(1);
+      if (!line) throw Object.assign(new Error("Production line item not found."), { statusCode: 404, code: "PRODUCTION_LINE_NOT_FOUND" });
+      if (line.productionBypassed) throw Object.assign(new Error("Production was bypassed for this line. Restore or reconcile the bypass before routing work."), {
+        statusCode: 409, code: "PRODUCTION_BYPASSED",
+      });
     }
 
     await assertProductionCredit(runner, { organizationId, orderId, stationKey, stepKey });
