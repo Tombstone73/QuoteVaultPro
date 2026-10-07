@@ -12,7 +12,7 @@ export function ListDetailNavigator({
   onPrevious,
   onNext,
 }: {
-  label: "invoice" | "order";
+  label: "invoice" | "order" | "quote";
   position: number | null;
   total: number;
   loading?: boolean;

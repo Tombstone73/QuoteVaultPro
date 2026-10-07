@@ -27,6 +27,15 @@ describe("list detail navigation context", () => {
     expect(parseListDetailContext("invoice", url.searchParams)).toBeNull();
   });
 
+  it("carries Quote list filters, sort, and absolute position to the detail page", () => {
+    const source = "/quotes?source=internal&status=draft&sortBy=date&sortDir=desc&page=2&pageSize=25";
+    const href = buildListDetailPath("quote", "quote-26", source, 25);
+    const url = new URL(href, window.location.origin);
+    expect(url.pathname).toBe("/quotes/quote-26");
+    expect(parseListDetailContext("quote", url.searchParams)).toEqual({ source, index: 25 });
+    expect(parseListDetailContext("order", url.searchParams)).toBeNull();
+  });
+
   it("preserves a customer return path while list navigation stays on the canonical workspace API", () => {
     const source = "/invoices?customerId=customer-1&status=unpaid&sortBy=dueDate&sortDir=asc&page=2&pageSize=50";
     const returnTo = "/customers/customer-1?tab=invoices";

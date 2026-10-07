@@ -19,7 +19,7 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Lock, ExternalLink, StickyNote, ChevronDown } from "lucide-react";
+import { ArrowLeft, Lock, ExternalLink, StickyNote, ChevronDown, Eye, Mail, CheckCircle, Loader2 } from "lucide-react";
 import { PageHeader } from "@/components/titan";
 import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
@@ -46,7 +46,7 @@ import { SummaryCard } from "./components/SummaryCard";
 import { OrderEntryWorkspace } from "./components/OrderEntryWorkspace";
 import { OrderCreateActions } from "./components/OrderCreateActions";
 import { QuoteRecipientFallbackDialog } from "./components/QuoteRecipientFallbackDialog";
-import { getQuoteSendEligibility } from "./quoteActionEligibility";
+import { getQuotePreviewEligibility, getQuoteSendEligibility } from "./quoteActionEligibility";
 import {
     buildQuoteEmailDraftDefaults,
     getContactDisplayName,
@@ -60,14 +60,22 @@ import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/p
 import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { OrderFulfillmentPanel } from "@/components/orders/OrderFulfillmentPanel";
+import { DetailBottomGrid, DetailUtilitySection } from "@/components/orders/DetailSurface";
+import { ORDER_DETAIL_SECONDARY_ACTION_CLASS } from "@/components/orders/orderDetailActionStyles";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
+import { useListDetailNavigation } from "@/lib/listDetailNavigation";
+import type { ReactNode } from "react";
 
 type QuoteEditorPageProps = {
     mode?: "view" | "edit";
     createTarget?: "quote" | "order";
 };
+
+function QuoteBottomLayout({ detail, children }: { detail: boolean; children: ReactNode }) {
+    return detail ? <DetailBottomGrid>{children}</DetailBottomGrid> : <div className="h-fit space-y-6 lg:sticky lg:top-4">{children}</div>;
+}
 
 export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: QuoteEditorPageProps = {}) {
     // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
@@ -79,8 +87,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
     const state = useQuoteEditorState({ contactOnlyOrder: createTarget === "order" });
+    const quoteListNavigation = useListDetailNavigation("quote", createTarget === "quote" ? state.quoteId ?? undefined : undefined);
     const isQuoteDetail = createTarget === "quote" && !state.isNewQuote;
     const [newQuoteEditMode, setNewQuoteEditMode] = useState(true);
+    const [detailActionTarget, setDetailActionTarget] = useState<HTMLDivElement | null>(null);
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
     const [orderRouteAfterSave, setOrderRouteAfterSave] = useState<"save_only" | "route_eligible" | null>(null);
@@ -99,7 +109,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         setOrderRouteAfterSave(configuredOrderSaveRouting === "ask_each_time" ? null : configuredOrderSaveRouting);
     }, [createTarget, configuredOrderSaveRouting]);
 
-    const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
+    const backPath = createTarget === "order" ? ROUTES.orders.list : quoteListNavigation.backPath ?? ROUTES.quotes.list;
 
     // Get effective workflow state (includes derived states like converted)
     const workflowState = useQuoteWorkflowState(state.quote as any);
@@ -1134,6 +1144,15 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
     };
 
+    const handleQuoteListStep = async (direction: -1 | 1) => {
+        if (state.hasUnsavedChanges) {
+            setPendingNavigation(() => () => { void quoteListNavigation.go(direction); });
+            setShowUnsavedChangesDialog(true);
+            return;
+        }
+        await quoteListNavigation.go(direction);
+    };
+
     /**
      * Handle "Save & Leave" from unsaved changes dialog
      */
@@ -1216,6 +1235,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             readOnly={readOnly}
             detailPresentation={isQuoteDetail}
             quoteValidUntil={(state.quote as any)?.validUntil ?? null}
+            detailInternalNotes={isQuoteDetail ? <details className="group rounded-md border border-border/60 bg-muted/20" data-testid="quote-internal-notes"><summary className="cursor-pointer px-3 py-2 text-sm font-medium">Internal Notes{state.quoteNotes.trim() ? ` · ${state.quoteNotes.trim().slice(0, 60)}` : ""}</summary><div className="border-t border-border/50 p-3"><Textarea id="quote-job-notes" placeholder="Visible to internal staff only" value={state.quoteNotes} onChange={e => state.handlers.setQuoteNotes(e.target.value)} readOnly={readOnly} rows={3} className="min-h-[80px]" /></div></details> : undefined}
+            detailFulfillmentControl={isQuoteDetail ? <Select value={state.deliveryMethod} onValueChange={value => saveFulfillmentMethod(value as "pickup" | "ship" | "deliver")} disabled={readOnly}><SelectTrigger className="h-9 min-w-0" aria-label="Quote fulfillment method"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="pickup">Pickup</SelectItem><SelectItem value="ship">Ship</SelectItem><SelectItem value="deliver">Deliver</SelectItem></SelectContent></Select> : undefined}
             jobLabel={state.jobLabel}
             requestedDueDate={state.requestedDueDate}
             poNumber={state.orderPoNumber}
@@ -1274,7 +1295,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     const fulfillmentPanel = (
         <OrderFulfillmentPanel
-            presentation={createTarget === "order" || isQuoteDetail ? "order-entry" : "default"}
+            presentation={createTarget === "order" ? "order-entry" : isQuoteDetail ? "order-detail" : "default"}
             mode="quote"
             parentType="quote"
             fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
@@ -1342,9 +1363,39 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             isApprovingAndSending={approveAndSendMutation.isPending}
             isRequestingApproval={requestApprovalMutation.isPending}
             showOrderActions={createTarget !== "order"}
+            actionPortalTarget={isQuoteDetail ? detailActionTarget : undefined}
             presentation={createTarget === "order" ? "order" : isQuoteDetail ? "detail" : "quote"}
         />
     );
+
+    const quotePrimaryActions = isQuoteDetail ? (() => {
+        const preview = getQuotePreviewEligibility({ quoteId: state.quoteId, isSaving: state.isSaving, lineItems: state.lineItems });
+        const send = getQuoteSendEligibility({
+            quoteId: state.quoteId,
+            isSaving: state.isSaving,
+            lineItems: state.lineItems,
+            selectedCustomer: state.selectedCustomer,
+            selectedContactId: state.selectedContactId,
+            selectedContact: state.selectedContact as QuoteRecipientContactLike | null,
+            workflowState: workflowState || undefined,
+            requireApproval: orgPreferences?.quotes?.requireApproval || false,
+        });
+        const requiresApproval = orgPreferences?.quotes?.requireApproval || false;
+        const isApprover = user ? ["owner", "admin", "manager", "employee"].includes((user.role || "").toLowerCase()) : false;
+        const approvalStage = workflowState === "draft" || workflowState === "pending_approval";
+        const actionClass = "h-10 rounded-md px-3 text-xs font-semibold";
+        return <>
+            <Button type="button" variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS} onClick={handlePreviewQuote} disabled={!preview.enabled} title={preview.reason ?? "Preview Quote"}><Eye className="mr-1.5 h-4 w-4" />Preview</Button>
+            {requiresApproval && approvalStage && isApprover ? <>
+                <Button type="button" size="sm" className={actionClass} onClick={handleApprove} disabled={approveMutation.isPending || approveAndSendMutation.isPending || state.isSaving}><CheckCircle className="mr-1.5 h-4 w-4" />{approveMutation.isPending ? "Approving…" : "Approve"}</Button>
+                <Button type="button" size="sm" className={actionClass} onClick={handleApproveAndSend} disabled={approveMutation.isPending || approveAndSendMutation.isPending || state.isSaving}>{approveAndSendMutation.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Mail className="mr-1.5 h-4 w-4" />}{approveAndSendMutation.isPending ? "Sending…" : "Approve & Send"}</Button>
+            </> : requiresApproval && workflowState === "draft" && !isApprover ?
+                <Button type="button" size="sm" className={actionClass} onClick={handleRequestApproval} disabled={requestApprovalMutation.isPending || state.isSaving}>{requestApprovalMutation.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <CheckCircle className="mr-1.5 h-4 w-4" />}{requestApprovalMutation.isPending ? "Requesting…" : "Request Approval"}</Button>
+            : !(requiresApproval && approvalStage) ?
+                <Button type="button" size="sm" className={actionClass} onClick={handleSendQuote} disabled={send.actionState === "blocked" || !send.enabled} title={send.reason ?? "Send Quote"}><Mail className="mr-1.5 h-4 w-4" />Send Quote</Button>
+            : null}
+        </>;
+    })() : null;
 
     const orderRoutingPanel = createTarget === "order" && !readOnly ? (
         <div className="min-w-0 space-y-1 sm:w-60">
@@ -1432,6 +1483,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     showReviseButton={isLocked}
                     isRevisingQuote={reviseMutation.isPending}
                     onBack={handleBack}
+                    onSectionHome={handleBack}
+                    listNavigation={isQuoteDetail ? { ...quoteListNavigation, go: handleQuoteListStep } : undefined}
+                    primaryActions={quotePrimaryActions}
                     onDuplicateQuote={() => setShowDuplicateDialog(true)}
                     onReviseQuote={handleReviseQuote}
                     onSave={handleSave}
@@ -1492,10 +1546,17 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             {lineItemsPanel}
                             {!isQuoteDetail && renderSummaryCard()}
                         </div>
-                        <div className={isQuoteDetail ? "grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]" : "h-fit space-y-6 lg:sticky lg:top-4"}>
+                        <QuoteBottomLayout detail={isQuoteDetail}>
                           {isQuoteDetail && <div className="min-w-0 xl:order-1">{renderSummaryCard()}</div>}
                           <div className={isQuoteDetail ? "min-w-0 xl:order-2" : "min-w-0"}>{fulfillmentPanel}</div>
                           <div className={isQuoteDetail ? "min-w-0 space-y-3 xl:order-3" : "space-y-6"}>
+                            {isQuoteDetail ? <>
+                                {!!state.quoteId && <DetailUtilitySection title="Attachments"><QuoteAttachmentsPanel quoteId={state.quoteId} locked={isLocked} /></DetailUtilitySection>}
+                                {state.isInternalUser && <DetailUtilitySection title="Customer Portal"><div className="flex items-start justify-between gap-3"><div><Label htmlFor="quote-portal-visibility" className="text-sm font-medium">Visible in customer portal</Label><p className="text-xs text-muted-foreground">{state.visibleInCustomerPortal ? "Customers can see this quote." : "Hidden until staff turns this on."}</p></div><Switch id="quote-portal-visibility" checked={state.visibleInCustomerPortal} onCheckedChange={handlePortalVisibilityChange} disabled={state.isSaving || portalVisibilityMutation.isPending} /></div></DetailUtilitySection>}
+                                <DetailUtilitySection title="Customer-Facing Notes" icon={<StickyNote className="h-4 w-4 text-muted-foreground" />}><Textarea id="quote-customer-notes" value={state.customerNotes} onChange={e => state.handlers.setCustomerNotes(e.target.value)} placeholder="Shown on the customer Quote" readOnly={readOnly} rows={4} className="w-full" /><p className="mt-2 text-xs text-muted-foreground">Shown on the customer Quote, PDF, email, and portal.</p></DetailUtilitySection>
+                                <DetailUtilitySection title="Timeline"><TimelinePanel quoteId={state.quoteId ?? undefined} orderId={convertedToOrderId ?? undefined} limit={100} /></DetailUtilitySection>
+                                <DetailUtilitySection title="Secondary Actions" forceMount><div ref={setDetailActionTarget} /></DetailUtilitySection>
+                            </> : <>
                             {state.isInternalUser && (
                                 <Card className="rounded-lg border border-border/40 bg-card/50">
                                     <CardHeader className="pb-3">
@@ -1611,8 +1672,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                     ) : null}
                                 </CardContent>
                             </Card>
+                            </>}
                         </div>
-                    </div>
+                    </QuoteBottomLayout>
                     </div>
                 )}
             </div>

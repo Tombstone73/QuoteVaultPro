@@ -44,6 +44,24 @@ describe("Quote detail header", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
+  test("places Quote primary actions in the shared Order header action strip", () => {
+    const onPreview = jest.fn();
+    act(() => root.render(<QuoteHeader quoteId="quote-1" quoteNumber="123" onBack={jest.fn()} primaryActions={<button type="button" onClick={onPreview}>Preview</button>} />));
+    const strip = host.querySelector('[aria-label="Quote controls"]');
+    expect(strip?.textContent).toContain("Preview");
+    act(() => (Array.from(strip!.querySelectorAll("button")).find(button => button.textContent === "Preview") as HTMLButtonElement).click());
+    expect(onPreview).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows the Order-style list position controls when opened from the Quote list", () => {
+    const go = jest.fn(async (_direction: -1 | 1) => {});
+    act(() => root.render(<QuoteHeader quoteId="quote-1" quoteNumber="123" onBack={jest.fn()} onSectionHome={jest.fn()} listNavigation={{ context: {}, position: 2, total: 5, isLoading: false, canPrevious: true, canNext: true, go }} />));
+    expect(host.textContent).toContain("Open Quotes");
+    expect(host.textContent).toContain("2 of 5");
+    act(() => (host.querySelector('[aria-label="Next quote"]') as HTMLButtonElement).click());
+    expect(go).toHaveBeenCalledWith(1);
+  });
+
   test("keeps New Quote entry's existing header and edit toggle", () => {
     const onEditModeChange = jest.fn();
     act(() => root.render(<QuoteHeader quoteId={null} detailPresentation={false} editMode onEditModeChange={onEditModeChange} onBack={jest.fn()} />));

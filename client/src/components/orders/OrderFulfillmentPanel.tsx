@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,6 +12,15 @@ import { Edit, Truck, ExternalLink, Check, Edit as EditIcon, Trash2, FileText, C
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
 import { format } from "date-fns";
 import { hasEnteredShipToAddress, resolveCustomerShipTo, type CustomerAddressLike } from "@/lib/customerShipTo";
+import { DetailFulfillmentBody, DetailFulfillmentDisclosure } from "@/components/orders/DetailSurface";
+
+function FulfillmentPanelFrame({ detail, open, onOpenChange, children }: { detail: boolean; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
+  return detail ? <DetailFulfillmentDisclosure open={open} onOpenChange={onOpenChange}>{children}</DetailFulfillmentDisclosure> : <>{children}</>;
+}
+
+function FulfillmentPanelBody({ detail, children }: { detail: boolean; children: ReactNode }) {
+  return detail ? <DetailFulfillmentBody>{children}</DetailFulfillmentBody> : <>{children}</>;
+}
 
 type Mode = "order" | "quote";
 
@@ -42,7 +51,7 @@ type Customer = CustomerAddressLike & {
 };
 
 type OrderFulfillmentPanelProps = {
-  presentation?: "default" | "order-entry";
+  presentation?: "default" | "order-entry" | "order-detail";
   mode?: Mode;
   parentType?: "order" | "quote"; // Controls which sections to show
   fulfillmentMethod: "pickup" | "ship" | "deliver";
@@ -139,6 +148,7 @@ export function OrderFulfillmentPanel({
   isAdminOrOwner = false,
 }: OrderFulfillmentPanelProps) {
   const isQuoteMode = mode === "quote";
+  const [detailOpen, setDetailOpen] = useState(false);
   const suppressBlurRef = useRef(false);
 
   // Local draft state for shipping price input (allows typing without blocking)
@@ -215,8 +225,9 @@ export function OrderFulfillmentPanel({
   };
 
   return (
+    <FulfillmentPanelFrame detail={presentation === "order-detail"} open={detailOpen} onOpenChange={setDetailOpen}>
     <Card className={presentation === "order-entry" ? "border-border/60 shadow-sm" : undefined}>
-      <CardHeader className={presentation === "order-entry" ? "border-b border-border/60 px-4 py-3" : undefined}>
+      <CardHeader className={presentation === "order-entry" ? "border-b border-border/60 px-4 py-3" : presentation === "order-detail" ? "px-4 py-3" : undefined}>
         <div className="flex items-center justify-between">
           <CardTitle className={presentation === "order-entry" ? "text-sm font-semibold" : "text-lg font-medium"}>Fulfillment</CardTitle>
           <div className="flex items-center gap-2">
@@ -267,11 +278,16 @@ export function OrderFulfillmentPanel({
                 Done
               </Button>
             )}
+            {presentation === "order-detail" && <Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => setDetailOpen(open => !open)}>{detailOpen ? "Collapse" : "Details"}</Button>}
           </div>
         </div>
+        {presentation === "order-detail" && !detailOpen && <div className="mt-2 text-sm text-muted-foreground">{fulfillmentMethod === "pickup" ? "Pickup" : shipToData?.company || shipToData?.name || "Ship To pending"}</div>}
       </CardHeader>
-      <CardContent className={presentation === "order-entry" ? "space-y-3 p-4 [&_input]:h-9" : "space-y-4"}>
-        {fulfillmentMethod === "pickup" ? (
+      <FulfillmentPanelBody detail={presentation === "order-detail"}>
+      <CardContent className={presentation === "order-entry" ? "space-y-3 p-4 [&_input]:h-9" : presentation === "order-detail" ? "space-y-3 px-4 pb-4 pt-0" : "space-y-4"}>
+        {fulfillmentMethod === "pickup" && presentation === "order-detail" && isQuoteMode ? (
+          <p className="text-sm text-muted-foreground">Pickup by customer</p>
+        ) : fulfillmentMethod === "pickup" ? (
           <div className="space-y-2">
             <label className="text-sm font-medium">
               Pickup notes
@@ -750,6 +766,8 @@ export function OrderFulfillmentPanel({
           </>
         )}
       </CardContent>
+      </FulfillmentPanelBody>
     </Card>
+    </FulfillmentPanelFrame>
   );
 }

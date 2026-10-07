@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,12 +21,14 @@ import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
 import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteActionEligibility";
 import { OrderCreateActions } from "./OrderCreateActions";
+import { DetailTotalsCard } from "@/components/orders/DetailSurface";
 
 type SummaryCardProps = {
     presentation?: "quote" | "order" | "detail";
     showSaveInFooter?: boolean;
     orderActionSettings?: ReactNode;
     showOrderActions?: boolean;
+    actionPortalTarget?: Element | null;
     lineItems: QuoteLineItemDraft[];
     products: Product[];
     subtotal: number;
@@ -78,11 +81,17 @@ type SummaryCardProps = {
     emailConfigured?: boolean;
 };
 
+function QuoteActionPortal({ enabled, target, children }: { enabled: boolean; target?: Element | null; children: ReactNode }) {
+    if (!enabled) return <>{children}</>;
+    return target ? createPortal(children, target) : null;
+}
+
 export function SummaryCard({
     presentation = "quote",
     showSaveInFooter = true,
     orderActionSettings,
     showOrderActions = true,
+    actionPortalTarget,
     lineItems,
     products,
     subtotal,
@@ -186,15 +195,16 @@ export function SummaryCard({
     const sendDisabledReason = !onSendQuote
         ? sendEligibility.reason ?? "Quote email sending is not configured."
         : sendEligibility.reason;
+    const TotalsContainer = presentation === "detail" ? DetailTotalsCard : Card;
     
     return (
-        <Card className={presentation === "order" || presentation === "detail" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
+        <TotalsContainer className={presentation === "order" || presentation === "detail" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
             {(presentation === "order" || presentation === "detail") && (
                 <CardHeader className="px-4 py-3">
                     <CardTitle className="text-base font-medium">Totals</CardTitle>
                 </CardHeader>
             )}
-            <CardContent className={presentation === "order" || presentation === "detail" ? "space-y-3 px-4 pb-4 pt-0" : "space-y-4 px-4 py-3 pt-4"}>
+            <CardContent className={presentation === "detail" ? "space-y-2 px-4 pb-4 pt-0" : presentation === "order" ? "space-y-3 px-4 pb-4 pt-0" : "space-y-4 px-4 py-3 pt-4"}>
                 {/* Dev-only diagnostics */}
                 {import.meta.env.DEV && presentation === "quote" && (
                     <div className="bg-muted/50 text-muted-foreground p-2 mb-3 font-mono text-xs rounded border border-border/40">
@@ -339,7 +349,7 @@ export function SummaryCard({
                 </div>
             </CardContent>
 
-            {(presentation !== "order" || showOrderActions) && <CardFooter className={presentation === "order" ? "flex flex-col gap-3 border-t border-border/60 p-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
+            {(presentation !== "order" || showOrderActions) && <QuoteActionPortal enabled={presentation === "detail"} target={actionPortalTarget}><CardFooter className={presentation === "detail" ? "flex flex-col gap-2 p-0" : presentation === "order" ? "flex flex-col gap-3 border-t border-border/60 p-4" : "flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40"}>
                 {presentation === "order" ? (
                     <>
                         {orderActionSettings}
@@ -378,7 +388,7 @@ export function SummaryCard({
                         )}
 
                         {/* Row 3: Approval Workflow Actions */}
-                        {showApprovalActions ? (
+                        {presentation === "detail" ? null : showApprovalActions ? (
                             // Approvers see Approve + Approve & Send buttons
                             <>
                                 <Button
@@ -477,7 +487,7 @@ export function SummaryCard({
                         )}
 
                         {/* Row 5: Small button row - Discard + Preview */}
-                        <div className="grid grid-cols-2 gap-2 w-full">
+                        {presentation !== "detail" && <div className="grid grid-cols-2 gap-2 w-full">
                             {showDiscard && (
                                 <TooltipProvider>
                                     <Tooltip>
@@ -529,7 +539,7 @@ export function SummaryCard({
                                     <p className="text-xs text-muted-foreground">{previewDisabledReason}</p>
                                 )}
                             </div>
-                        </div>
+                        </div>}
 
                         {quoteId && onDownloadQuote && <Button variant="outline" className="w-full" onClick={onDownloadQuote} disabled={previewDisabled}>
                             <Download className="w-4 h-4 mr-2" /> Download Quote
@@ -551,7 +561,7 @@ export function SummaryCard({
                     <>
                         {/* VIEW MODE */}
                         {/* Row 1: Small button row - Email Quote + Preview */}
-                        <div className="grid grid-cols-2 gap-2 w-full">
+                        {presentation !== "detail" && <div className="grid grid-cols-2 gap-2 w-full">
                             <div className="w-full space-y-1">
                                 <TooltipProvider>
                                     <Tooltip>
@@ -592,7 +602,7 @@ export function SummaryCard({
                                 </TooltipProvider>
                                 {previewDisabledReason && <p className="text-xs text-muted-foreground">{previewDisabledReason}</p>}
                             </div>
-                        </div>
+                        </div>}
 
                         {quoteId && onDownloadQuote && <Button variant="outline" className="w-full" onClick={onDownloadQuote} disabled={previewDisabled}>
                             <Download className="w-4 h-4 mr-2" /> Download Quote
@@ -609,7 +619,7 @@ export function SummaryCard({
                         </Button>
                     </>
                 )}
-            </CardFooter>}
-        </Card>
+            </CardFooter></QuoteActionPortal>}
+        </TotalsContainer>
     );
 }

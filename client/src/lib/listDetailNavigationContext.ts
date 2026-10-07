@@ -1,4 +1,4 @@
-export type ListNavigationEntity = "invoice" | "order";
+export type ListNavigationEntity = "invoice" | "order" | "quote";
 
 export type ListDetailContext = {
   source: string;
@@ -9,6 +9,7 @@ export type ListDetailContext = {
 const allowedSourcePath: Record<ListNavigationEntity, string> = {
   invoice: "/invoices",
   order: "/orders",
+  quote: "/quotes",
 };
 
 const allowedDetailReturnPath = [

@@ -136,4 +136,13 @@ describe("direct Order customer and job identity", () => {
     expect((host.querySelector('#quote-detail-due-date') as HTMLInputElement).readOnly).toBe(true);
     expect(host.querySelector('input[placeholder="Add flag…"]')).toBeNull();
   });
+
+  test("saved Quote internal notes occupy the center metadata card", () => {
+    act(() => root.render(<MemoryRouter><CustomerCard {...baseProps()} showOrderFields={false} detailPresentation detailInternalNotes={<details data-testid="quote-notes"><summary>Internal Notes</summary></details>} /></MemoryRouter>));
+    const metadata = host.querySelector('[aria-label="Quote details"]');
+    expect(metadata?.querySelector('[data-testid="quote-notes"]')).not.toBeNull();
+    expect(host.querySelector('[aria-label="Commercial and fulfillment"] [data-testid="quote-notes"]')).toBeNull();
+    expect(metadata?.textContent).not.toContain("PO-123");
+    expect(metadata?.textContent).not.toContain("Promised Date");
+  });
 });

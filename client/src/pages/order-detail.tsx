@@ -85,6 +85,7 @@ import {
   OrderDetailSecondaryActions,
 } from "@/components/orders/OrderDetailActionPanels";
 import { ORDER_DETAIL_SECONDARY_ACTION_CLASS } from "@/components/orders/orderDetailActionStyles";
+import { DetailBottomGrid, DetailFulfillmentBody, DetailFulfillmentDisclosure, DetailPageHeaderShell, DetailTopCard, DetailTopGrid, DetailTotalsCard, DetailUtilitySection as OrderUtilitySection } from "@/components/orders/DetailSurface";
 import { orchestrateOrderSave } from "@/pages/orderSaveOrchestration";
 import { createOrderNavigationGuard } from "@/pages/orderNavigationGuard";
 import { ManualReservationsCard } from "@/components/orders/ManualReservationsCard";
@@ -271,45 +272,6 @@ function formatCustomerPaymentTerms(value: string | null | undefined): string {
 
 const ORDER_DETAIL_DEV_DIAGNOSTICS =
   typeof process !== "undefined" && process.env?.NODE_ENV === "development";
-
-function OrderUtilitySection({
-  title,
-  badge,
-  icon,
-  children,
-  defaultOpen = false,
-  open,
-  onOpenChange,
-}: {
-  title: string;
-  badge?: ReactNode;
-  icon?: ReactNode;
-  children: ReactNode;
-  defaultOpen?: boolean;
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-}) {
-  return (
-    <Collapsible defaultOpen={defaultOpen} open={open} onOpenChange={onOpenChange} className="rounded-lg border bg-card">
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
-        >
-          <div className="flex items-center gap-2 text-sm font-medium">
-            {icon}
-            {title}
-            {badge}
-          </div>
-          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="border-t">
-        <div className="p-4">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
 
 export default function OrderDetail() {
   const { user } = useAuth();
@@ -2255,9 +2217,7 @@ export default function OrderDetail() {
   return (
     <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
       <div className="w-full max-w-none">
-        <header className="mb-5 border-b border-border/60 pb-3">
-          <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 xl:shrink-0">
+        <DetailPageHeaderShell actionsLabel="Order controls" identity={<>
             <BackNavControls
               onBack={() => guardedNavigate(orderBackPath)}
               onSectionHome={() => guardedNavigate("/orders")}
@@ -2290,9 +2250,7 @@ export default function OrderDetail() {
               onPrevious={() => void listNavigation.go(-1)}
               onNext={() => void listNavigation.go(1)}
             />
-          </div>
-
-            <div className="flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto" aria-label="Order controls">
+          </>} actions={<>
             {isOrderEditRoute && (
               <Button asChild variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS}>
                 <Link to={orderDetailPath} state={location.state}>
@@ -2360,9 +2318,7 @@ export default function OrderDetail() {
                 setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
               }}
             />
-          </div>
-          </div>
-        </header>
+          </>} />
 
         <Dialog open={orderInvoiceSelectorOpen} onOpenChange={setOrderInvoiceSelectorOpen}>
           <DialogContent className="max-w-2xl">
@@ -2455,9 +2411,9 @@ export default function OrderDetail() {
           <div className="min-w-0 space-y-4">
             <Card className="border-0 bg-transparent shadow-none">
               <CardContent className="p-0">
-                <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(20rem,1fr)_minmax(24rem,1.2fr)_minmax(18rem,0.8fr)]">
+                <DetailTopGrid>
                   {/* Customer + Contact */}
-                  <section className={cn("grid gap-4 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4", !isEditingCustomer && "sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2")} aria-label="Customer and contact">
+                  <DetailTopCard label="Customer and contact" customer className={isEditingCustomer ? "sm:grid-cols-1 xl:grid-cols-1 2xl:grid-cols-1" : undefined}>
                     <div className="space-y-2">
                       {isEditingCustomer ? (
                         <div className="space-y-2">
@@ -2690,10 +2646,10 @@ export default function OrderDetail() {
                         </div>
                       )}
                     </div>
-                  </section>
+                  </DetailTopCard>
 
                   {/* Order meta */}
-                  <section className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4" aria-label="Order details">
+                  <DetailTopCard label="Order details">
                     {/* TitanOS State Architecture */}
                     {(showPaymentStatus || showRoutedTo) && (
                       <div
@@ -2990,9 +2946,9 @@ export default function OrderDetail() {
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
-                  </section>
+                  </DetailTopCard>
 
-                  <section className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4" aria-label="Commercial and fulfillment">
+                  <DetailTopCard label="Commercial and fulfillment">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Commercial &amp; Fulfillment</div>
                     <div className="grid gap-3">
                       <div className="grid min-w-0 gap-1.5">
@@ -3022,8 +2978,8 @@ export default function OrderDetail() {
                       <span className="min-w-0 truncate">{currentFulfillmentMethod === "pickup" ? "Pickup by customer" : (order.shipToCompany || order.shipToName || "Ship to address pending")}</span>
                       {canEditSafeOrderMetadata ? <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2" onClick={enterFulfillmentEdit}>Edit</Button> : null}
                     </div>
-                  </section>
-                </div>
+                  </DetailTopCard>
+                </DetailTopGrid>
               </CardContent>
             </Card>
 
@@ -3100,10 +3056,9 @@ export default function OrderDetail() {
           </div>
 
           {/* Inline fulfillment and lower-order utilities */}
-          <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]">
+          <DetailBottomGrid>
             {/* Fulfillment stays in the Order flow; detailed shipment work lives in Fulfillment. */}
-            <Collapsible
-              className="xl:order-2"
+            <DetailFulfillmentDisclosure
               open={isFulfillmentExpanded || isEditingFulfillment}
               onOpenChange={(open) => {
                 setIsFulfillmentExpanded(open);
@@ -3172,7 +3127,7 @@ export default function OrderDetail() {
                   </div>
                 )}
               </CardHeader>
-              <CollapsibleContent>
+              <DetailFulfillmentBody>
               <CardContent className="space-y-3 px-4 pb-4 pt-0">
                 {currentFulfillmentMethod === "pickup" ? (
                     <div className="space-y-2">
@@ -3596,13 +3551,13 @@ export default function OrderDetail() {
                     </div>
                   )}
               </CardContent>
-              </CollapsibleContent>
+              </DetailFulfillmentBody>
             </Card>
-            </Collapsible>
+            </DetailFulfillmentDisclosure>
 
             <div className="contents">
               {/* Totals */}
-              <Card className="h-fit xl:order-1">
+              <DetailTotalsCard>
                 <CardHeader className="px-4 py-3">
                   <CardTitle className="text-base font-medium">Totals</CardTitle>
                 </CardHeader>
@@ -3616,7 +3571,7 @@ export default function OrderDetail() {
                     <div className="flex justify-between font-bold text-lg"><span>Total</span><span>{formatCurrency(displayedOrderTotals.total)}</span></div>
                   </div>
                 </CardContent>
-              </Card>
+              </DetailTotalsCard>
 
             <div className="space-y-2 xl:order-3">
             <OrderUtilitySection title="Order Documents" icon={<FileText className="h-4 w-4 text-muted-foreground" />}>
@@ -3790,7 +3745,7 @@ export default function OrderDetail() {
             )}
             </div>
             </div>
-          </div>
+          </DetailBottomGrid>
         </div>
       </ContentLayout>
 

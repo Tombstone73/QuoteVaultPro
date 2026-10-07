@@ -4,6 +4,9 @@ import { Switch } from "@/components/ui/switch";
 import { ArrowLeft, Copy, FileEdit, Save } from "lucide-react";
 import BackNavControls from "@/components/BackNavControls";
 import { ORDER_DETAIL_SECONDARY_ACTION_CLASS } from "@/components/orders/orderDetailActionStyles";
+import { DetailPageHeaderShell } from "@/components/orders/DetailSurface";
+import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
+import type { ReactNode } from "react";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import { WORKFLOW_LABELS, WORKFLOW_BADGE_VARIANTS } from "@shared/quoteWorkflow";
 
@@ -27,6 +30,9 @@ type QuoteHeaderProps = {
     showReviseButton?: boolean;
     isRevisingQuote?: boolean;
     onBack: () => void;
+    onSectionHome?: () => void;
+    listNavigation?: { context: unknown; position: number | null; total: number; isLoading: boolean; canPrevious: boolean; canNext: boolean; go: (direction: -1 | 1) => Promise<void> };
+    primaryActions?: ReactNode;
     onDuplicateQuote?: () => void;
     onReviseQuote?: () => void;
 };
@@ -51,6 +57,9 @@ export function QuoteHeader({
     showReviseButton = false,
     isRevisingQuote = false,
     onBack,
+    onSectionHome,
+    listNavigation,
+    primaryActions,
     onDuplicateQuote,
     onReviseQuote,
 }: QuoteHeaderProps) {
@@ -98,10 +107,8 @@ export function QuoteHeader({
     }
 
     return (
-        <header className="mb-5 border-b border-border/60 pb-3">
-          <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 xl:shrink-0">
-                <BackNavControls onBack={onBack} />
+        <DetailPageHeaderShell actionsLabel="Quote controls" identity={<>
+                <BackNavControls onBack={onBack} onSectionHome={onSectionHome} sectionLabel="Quotes" />
                 <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
                     {quoteNumber ? `Quote #${quoteNumber}` : (newTitle || "New Quote")}
                 </h1>
@@ -110,8 +117,9 @@ export function QuoteHeader({
                         {statusUi.label}
                     </Badge>
                 )}
-            </div>
-            <div className="flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto" aria-label="Quote controls">
+                {listNavigation?.context && <ListDetailNavigator label="quote" position={listNavigation.position} total={listNavigation.total} loading={listNavigation.isLoading} canPrevious={listNavigation.canPrevious} canNext={listNavigation.canNext} onPrevious={() => void listNavigation.go(-1)} onNext={() => void listNavigation.go(1)} />}
+            </>} actions={<>
+                {primaryActions}
                 {!showReviseButton && !!quoteId && onSave && <Button size="sm" onClick={onSave} disabled={!canSaveQuote || isSaving}><Save className="mr-2 h-4 w-4" />{isSaving ? "Saving…" : "Save Changes"}</Button>}
                 {showReviseButton && !!quoteId && (
                     <Button
@@ -138,8 +146,6 @@ export function QuoteHeader({
                         {isDuplicatingQuote ? "Duplicating…" : "Duplicate"}
                     </Button>
                 )}
-            </div>
-          </div>
-        </header>
+            </>} />
     );
 }

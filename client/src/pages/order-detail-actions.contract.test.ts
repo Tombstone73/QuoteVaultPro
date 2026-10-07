@@ -4,6 +4,7 @@ import path from "node:path";
 describe("order detail action contracts", () => {
   const root = process.cwd();
   const detail = fs.readFileSync(path.join(root, "client/src/pages/order-detail.tsx"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "client/src/components/orders/DetailSurface.tsx"), "utf8");
   const hooks = fs.readFileSync(path.join(root, "client/src/hooks/useOrders.ts"), "utf8");
   const routes = fs.readFileSync(path.join(root, "server/routes/orders.routes.ts"), "utf8");
 
@@ -54,8 +55,8 @@ describe("order detail action contracts", () => {
   });
 
   test("keeps header action controls text-first without inline action icons", () => {
-    const actionStart = detail.indexOf('aria-label="Order controls"');
-    const actionEnd = detail.indexOf('</header>', actionStart);
+    const actionStart = detail.indexOf('actionsLabel="Order controls"');
+    const actionEnd = detail.indexOf('<Dialog open={orderInvoiceSelectorOpen}', actionStart);
     const actions = detail.slice(actionStart, actionEnd);
     expect(actions).not.toContain('<FileText');
     expect(actions).not.toContain('<Truck');
@@ -67,9 +68,10 @@ describe("order detail action contracts", () => {
   });
 
   test("keeps identity and action controls in one responsive header region", () => {
-    expect(detail).toContain('className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center"');
-    expect(detail).toContain('aria-label="Order controls"');
-    expect(detail).toContain('className="flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto"');
+    expect(detail).toContain('DetailPageHeaderShell actionsLabel="Order controls"');
+    expect(surface).toContain('flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center');
+    expect(surface).toContain('aria-label={actionsLabel}');
+    expect(surface).toContain('flex w-fit max-w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-1 xl:ml-auto');
     expect(detail).not.toContain('xl:grid-cols-[minmax(0,0.65fr)_minmax(0,1.35fr)]');
   });
 
@@ -87,9 +89,12 @@ describe("order detail action contracts", () => {
   });
 
   test("places totals before fulfillment on desktop while preserving the existing mobile source order", () => {
-    expect(detail).toContain('xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]');
-    expect(detail).toContain('className="xl:order-2"');
-    expect(detail).toContain('className="h-fit xl:order-1"');
+    expect(detail).toContain('<DetailBottomGrid>');
+    expect(detail).toContain('<DetailFulfillmentDisclosure');
+    expect(detail).toContain('<DetailTotalsCard>');
+    expect(surface).toContain('xl:grid-cols-[minmax(240px,0.75fr)_minmax(280px,1fr)_minmax(320px,1fr)]');
+    expect(surface).toContain('className="xl:order-2"');
+    expect(surface).toContain('h-fit xl:order-1');
     expect(detail).toContain('className="space-y-2 xl:order-3"');
   });
 

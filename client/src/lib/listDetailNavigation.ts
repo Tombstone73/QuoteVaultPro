@@ -37,7 +37,7 @@ function requestForIndex(entity: ListNavigationEntity, source: string, index: nu
     params.set("pageSize", "1");
     params.set("includeThumbnails", "false");
   }
-  return `/api/${entity === "invoice" ? "invoices" : "orders"}?${params.toString()}`;
+  return `/api/${entity === "invoice" ? "invoices" : entity === "quote" ? "quotes" : "orders"}?${params.toString()}`;
 }
 
 async function fetchRecordAt(entity: ListNavigationEntity, source: string, index: number) {

@@ -3,6 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
+import { buildListDetailPath } from "@/lib/listDetailNavigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -412,6 +413,20 @@ export default function InternalQuotes() {
 
   // Server already filters by status, so we just use the returned list directly
   const filteredAndSortedQuotes = quotesList;
+  const quoteListSource = useMemo(() => {
+    const params = new URLSearchParams({ source: "internal", sortBy: sortKey, sortDir: sortDirection, page: String(page), pageSize: String(pageSize), includeThumbnails: "false" });
+    if (searchCustomer) params.set("searchCustomer", searchCustomer);
+    if (searchProduct && searchProduct !== "all") params.set("searchProduct", searchProduct);
+    if (startDate) params.set("startDate", startDate);
+    if (endDate) params.set("endDate", endDate);
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (portalVisibilityFilter !== "all") params.set("portalVisibility", portalVisibilityFilter);
+    return `/quotes?${params.toString()}`;
+  }, [sortKey, sortDirection, page, pageSize, searchCustomer, searchProduct, startDate, endDate, statusFilter, portalVisibilityFilter]);
+  const quoteDetailPath = (id: string) => {
+    const pageIndex = filteredAndSortedQuotes.findIndex((quote) => quote.id === id);
+    return pageIndex < 0 ? ROUTES.quotes.detail(id) : buildListDetailPath("quote", id, quoteListSource, (page - 1) * pageSize + pageIndex);
+  };
 
   const exportableColumns = useMemo(() => {
     // Export ONLY visible columns, in current configured order.
@@ -989,7 +1004,7 @@ export default function InternalQuotes() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
+                onClick={() => navigate(quoteDetailPath(quote.id))}
                 title="View quote"
               >
                 <Eye className="h-4 w-4" />
@@ -1489,7 +1504,7 @@ export default function InternalQuotes() {
                     <TableRow
                       key={quote.id}
                       className="cursor-pointer"
-                      onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
+                      onClick={() => navigate(quoteDetailPath(quote.id))}
                     >
                       {orderedColumns.map((col) => {
                         if (!isVisible(col.key)) return null;

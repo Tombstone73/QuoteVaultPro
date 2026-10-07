@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -36,6 +35,7 @@ import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValida
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import { DetailLineItemsCard, DetailLineItemsContent, DetailLineItemsHeader, DetailLineItemsHeadingRow } from "@/components/orders/DetailSurface";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import {
   applyLineItemEditPriceOverride,
@@ -1262,9 +1262,9 @@ export function LineItemsSection({
   );
 
   return (
-    <Card className={detailPresentation ? "border-0 bg-transparent shadow-none" : createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
-      <CardHeader className={detailPresentation ? "px-0 pb-2 pt-0" : createTarget === "order" ? "rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
-        <div className={detailPresentation ? "flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5" : createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
+    <DetailLineItemsCard detail={detailPresentation} className={createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
+      <DetailLineItemsHeader detail={detailPresentation} className={createTarget === "order" ? "rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
+        <DetailLineItemsHeadingRow detail={detailPresentation} className={createTarget === "order" ? "flex flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
           {detailPresentation ? <div className="min-w-0"><div className="text-sm font-semibold">Line Items</div><div className="text-xs text-muted-foreground">{count} {count === 1 ? "item" : "items"}</div></div> : createTarget === "order" && (
             <h2 className="text-sm font-semibold text-foreground">Line Items</h2>
           )}
@@ -1274,10 +1274,10 @@ export function LineItemsSection({
             </Badge>}
             {(createTarget === "order" || detailPresentation) && !readOnly && renderProductPicker(true)}
           </div>
-        </div>
-      </CardHeader>
+        </DetailLineItemsHeadingRow>
+      </DetailLineItemsHeader>
 
-      <CardContent className={detailPresentation ? "overflow-x-hidden px-0 py-0" : createTarget === "order" ? "p-3 sm:p-4" : "px-4 py-3"}>
+      <DetailLineItemsContent detail={detailPresentation} className={createTarget === "order" ? "p-3 sm:p-4" : "px-4 py-3"}>
         {(createTarget === "order" ? count === 0 : lineItems.length === 0) ? (
           <div className={createTarget === "order" ? "rounded-md bg-muted/30 px-4 py-4" : "py-6 text-center text-xs text-muted-foreground"}>
             {createTarget === "order" ? (
@@ -1290,7 +1290,7 @@ export function LineItemsSection({
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={displayLineItems.map(getItemKey)} strategy={verticalListSortingStrategy}>
-              <div className="space-y-2">
+              <div className={detailPresentation ? "space-y-1 overflow-x-hidden" : "space-y-2"}>
                 {displayLineItems
                   .filter((li) => li.status !== "canceled")
                   .map((item, itemIndex) => {
@@ -1545,6 +1545,7 @@ export function LineItemsSection({
                                 setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: editorPriceValue.toFixed(2) }));
                               }
                             }}
+                            showNoteLabel={false}
                             editingUnitPrice={editingUnitPrice}
                             unitPriceEditText={priceEditTextByKey[itemKey] ?? unitPriceEditorValue.toFixed(2)}
                             onUnitPriceClick={createTarget !== "order" || readOnly ? undefined : () => {
@@ -1792,7 +1793,7 @@ export function LineItemsSection({
             {renderProductPicker(false)}
           </div>
         )}
-      </CardContent>
+      </DetailLineItemsContent>
       <Dialog open={parentLinkTarget !== null} onOpenChange={(open) => { if (!open && !isSavingParentLink) setParentLinkTargetKey(null); }}>
         <DialogContent>
           <DialogHeader>
@@ -1819,7 +1820,7 @@ export function LineItemsSection({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </DetailLineItemsCard>
   );
 }
 

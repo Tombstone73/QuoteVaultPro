@@ -4,7 +4,6 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -90,6 +89,7 @@ import {
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import { DetailLineItemsCard, DetailLineItemsContent, DetailLineItemsHeader, DetailLineItemsHeadingRow } from "@/components/orders/DetailSurface";
 import {
   getOrderLineItemActiveWorkWarning,
   buildOrderLineNumberMap,
@@ -2893,9 +2893,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         }
       }}
     >
-    <Card className="border-0 bg-transparent shadow-none">
-      <CardHeader className="px-0 pt-0 pb-2">
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5">
+    <DetailLineItemsCard>
+      <DetailLineItemsHeader>
+        <DetailLineItemsHeadingRow>
           <div className="min-w-0">
             <div className="text-sm font-semibold">Line Items</div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -2968,10 +2968,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               )}
             </div>
           )}
-        </div>
-      </CardHeader>
+        </DetailLineItemsHeadingRow>
+      </DetailLineItemsHeader>
 
-      <CardContent className="px-0 py-0 overflow-x-hidden">
+      <DetailLineItemsContent>
         {displayLineItems.length === 0 ? (
           <div className="py-4 text-center text-sm text-muted-foreground">—</div>
         ) : (
@@ -4698,7 +4698,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               </PopoverContent>
           </div>
         )}
-      </CardContent>
+      </DetailLineItemsContent>
 
       <AttachmentViewerDialog
         attachments={artworkViewerAttachments}
@@ -4875,7 +4875,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         </DialogContent>
       </Dialog>
       <ReturnUpstreamDialog target={proofReturnTarget} destination={proofReturnTarget ? "proofing" : null} onClose={() => setProofReturnTarget(null)} />
-    </Card>
+    </DetailLineItemsCard>
     </Popover>
   );
 });
