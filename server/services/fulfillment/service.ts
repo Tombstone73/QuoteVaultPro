@@ -377,6 +377,7 @@ export class FulfillmentService {
       ...detail,
       permissions: {
         canEditHistoryNotes: canEditFulfillmentHistoryNotes(actorOrgRole),
+        canEditPickupDate: ['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase()),
         canRevertStatus: canRevertFulfillmentStatus(actorOrgRole),
         revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION,
         canReverseTerminalFulfillment: ['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase()),
@@ -452,6 +453,18 @@ export class FulfillmentService {
     }
     const parsed = fulfillmentHistoryNoteSchema.parse({ note });
     const result = await this.dashboardRepo.updatePickupHistoryNote(orgId, orderId, handoffId, parsed.note, actorUserId);
+    if (!result.ok) throw new FulfillmentHttpError(404, result.message, result.code);
+    return { pickupHandoffId: handoffId };
+  }
+
+  async updatePickupDetails(orgId: string, orderId: string, handoffId: string, payload: { effectivePickupDate?: string; note?: string }, actorUserId?: string | null, actorOrgRole?: string | null) {
+    if (payload.effectivePickupDate !== undefined && !['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase())) {
+      throw new FulfillmentHttpError(403, 'Owner or Admin authority is required to adjust a recorded pickup date.', 'PICKUP_DATE_EDIT_FORBIDDEN');
+    }
+    if (payload.note !== undefined && !canEditFulfillmentHistoryNotes(actorOrgRole)) {
+      throw new FulfillmentHttpError(403, 'Fulfillment note edit permission is required', 'FULFILLMENT_NOTE_FORBIDDEN');
+    }
+    const result = await this.dashboardRepo.updatePickupDetails(orgId, orderId, handoffId, payload, actorUserId);
     if (!result.ok) throw new FulfillmentHttpError(404, result.message, result.code);
     return { pickupHandoffId: handoffId };
   }
@@ -1173,6 +1186,7 @@ export class FulfillmentService {
     travelerJobIds?: string[];
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
+    effectivePickupDate?: string;
     clientRequestId?: string | null;
   }, actorUserId?: string | null) {
     const [ticketWithOrder] = await this.dbInstance.select({

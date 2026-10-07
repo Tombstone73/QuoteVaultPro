@@ -43,6 +43,7 @@ import {
   patchShipmentSchema as patchFulfillmentShipmentSchema,
   pickupReadySchema,
   pickupHandoffSchema,
+  pickupDetailsSchema,
   terminalFulfillmentReversalSchema,
 } from "../services/fulfillment/schemas";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
@@ -226,6 +227,22 @@ export function registerFulfillmentRoutes(
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       console.error('Failed to save pickup history note:', error);
       res.status(500).json({ success: false, message: 'Failed to save pickup history note' });
+    }
+  });
+
+  app.patch('/api/fulfillment/orders/:orderId/pickup-handoffs/:handoffId/details', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const data = await canonicalFulfillmentOperations.updatePickupDetails(
+        getRequestOrganizationId(req), fulfillmentOrderIdSchema.parse(req.params.orderId),
+        fulfillmentOrderIdSchema.parse(req.params.handoffId), pickupDetailsSchema.parse(req.body || {}),
+        getUserId(req.user) || null, req.actorOrgRole ?? req.orgRole ?? null,
+      );
+      return res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Invalid pickup details', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] update pickup details failed', error);
+      return res.status(500).json({ success: false, message: 'Failed to update pickup details' });
     }
   });
 

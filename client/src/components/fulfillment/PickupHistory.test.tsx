@@ -7,75 +7,62 @@ import { PickupHistory } from "./PickupHistory";
 let root: Root;
 let container: HTMLDivElement;
 let detail: any;
-let save: jest.Mock<(id: string, text: string) => Promise<void>>;
+const save = jest.fn<(id: string, changes: { effectivePickupDate?: string; note?: string }) => Promise<void>>(async () => {});
 const reprint = jest.fn();
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
   detail = {
-    orderId: "order", status: "operationally_complete", remainingQuantity: 0, fulfilledQuantity: 400,
-    permissions: { canEditHistoryNotes: true },
-    pickupTravelers: [{ id: "traveler", pickupHandoffId: "a", createdAt: "2026-09-28T12:00:00Z", lines: [{ quantity: 250, description: "Signs" }] }],
-    pickupHandoffs: ["a", "b"].map((id, i) => ({ id, status: i ? "REVERSED" : "COMPLETED", handedOffAt: "2026-09-28T12:00:00Z", notes: "Original pickup note", items: [{ orderLineItemId: id, quantity: i ? 150 : 250, productName: "Signs" }], reversals: i ? [{ id: "r", reason: "Quantity entered incorrectly" }] : [] })),
+    orderId: "order", fulfillmentType: "PICKUP", remainingQuantity: 0,
+    permissions: { canEditHistoryNotes: true, canEditPickupDate: true },
+    pickupTravelers: [{ id: "traveler", pickupHandoffId: "a", createdAt: "2026-10-07T12:00:00Z", lines: [{ quantity: 250, description: "Signs" }] }],
+    pickupHandoffs: [
+      { id: "a", status: "COMPLETED", handedOffAt: "2026-10-07T12:00:00Z", recordedAt: "2026-10-07T12:00:00Z", effectivePickupDate: "2026-10-02", handedOffByName: "Dale", notes: "Confirmed by email", items: [{ orderLineItemId: "line-a", quantity: 250, productName: "Signs" }], dateAdjustments: [{ previousEffectiveDate: "2026-10-07", newEffectiveDate: "2026-10-02", editedAt: "2026-10-07T13:00:00Z", actorName: "Dale" }], reversals: [] },
+      { id: "b", status: "REVERSED", handedOffAt: "2026-10-07T14:00:00Z", recordedAt: "2026-10-07T14:00:00Z", effectivePickupDate: "2026-10-07", notes: null, items: [{ orderLineItemId: "line-b", quantity: 150, productName: "Signs" }], reversals: [{ id: "r", reason: "Wrong quantity" }] },
+    ],
   };
-  save = jest.fn(async (id: string, text: string) => {
-    detail = { ...detail, pickupHandoffs: detail.pickupHandoffs.map((h: any) => h.id === id ? { ...h, historyNote: text ? { text, updatedAt: "2026-09-28T13:00:00Z", actorName: "Dale", actorUserId: "staff" } : null } : h) };
-    render();
-  });
+  save.mockClear();
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); jest.clearAllMocks(); });
-function render() { root.render(<PickupHistory detail={detail} selectedTravelerIds={[]} onToggle={() => {}} onReverse={() => {}} onReprint={reprint} onSaveHistoryNote={save} />); }
-function noteRow(id: string) { return container.querySelector(`[data-testid="pickup-note-${id}"]`)!; }
-async function click(id: string, text: string) { const button = Array.from(noteRow(id).querySelectorAll("button")).find(b => b.textContent === text)!; await act(async () => { Simulate.click(button); }); }
-function fill(id: string, value: string) { act(() => { Simulate.change(noteRow(id).querySelector("textarea")!, { target: { value } } as any); }); }
+function render() { root.render(<PickupHistory detail={detail} selectedTravelerIds={[]} onToggle={() => {}} onReverse={() => {}} onReprint={reprint} onSaveDetails={save} />); }
+function row(id: string) { return container.querySelector(`[data-testid="pickup-${id}"]`)!; }
+async function click(id: string, label: string) {
+  const button = Array.from(row(id).querySelectorAll("button")).find(button => button.textContent === label)!;
+  await act(async () => { Simulate.click(button); });
+}
 
-test("completed/reversed pickups support isolated add, edit, and clear without altering workflow or Traveler", async () => {
+test("shows effective and recorded dates, adjustment attribution, quantity and note without altering traveler", async () => {
   act(render);
-  const before = JSON.stringify(detail);
-  expect(container.textContent).toContain("Completed");
-  expect(container.textContent).toContain("Reversed");
-  expect(noteRow("a").textContent).toBe("Add note");
-  await click("a", "Add note"); fill("a", "  3 boxes  "); await click("a", "Save note");
-  expect(save).toHaveBeenLastCalledWith("a", "3 boxes");
-  expect(noteRow("a").textContent).toContain("3 boxes");
-  expect(noteRow("a").textContent).toContain("Dale");
-  expect(noteRow("b").textContent).not.toContain("3 boxes");
-  await click("a", "Edit note"); fill("a", "2 pallets\nJohn picked up"); await click("a", "Save note");
-  expect(noteRow("a").textContent).toContain("2 pallets\nJohn picked up");
-  await click("b", "Add note"); fill("b", "Customer returned before leaving"); await click("b", "Save note");
-  expect(container.textContent).toContain("Quantity entered incorrectly");
-  expect(container.textContent).toContain("Reversed");
-  await click("a", "Edit note"); fill("a", "  "); await click("a", "Save note");
-  expect(noteRow("a").textContent).toBe("Add note");
-  expect(noteRow("b").textContent).toContain("Customer returned before leaving");
-  const withoutNotes = { ...detail, pickupHandoffs: detail.pickupHandoffs.map(({ historyNote, ...rest }: any) => rest) };
-  expect(JSON.stringify(withoutNotes)).toBe(before);
-  const button = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Reprint Traveler")!;
-  act(() => Simulate.click(button));
+  expect(row("a").textContent).toContain("250 Signs picked up");
+  expect(row("a").textContent).toContain("Oct 2, 2026");
+  expect(row("a").textContent).toContain("Recorded");
+  expect(row("a").textContent).toContain("Pickup date adjusted from Oct 7, 2026 to Oct 2, 2026");
+  expect(row("a").textContent).toContain("Confirmed by email");
+  expect(row("b").textContent).toContain("Reversed");
+  await click("a", "Edit details");
+  expect(row("a").querySelector('input[type="number"]')).toBeNull();
+  act(() => {
+    Simulate.change(row("a").querySelector('input[type="date"]')!, { target: { value: "2026-10-03" } } as any);
+    Simulate.change(row("a").querySelector("textarea")!, { target: { value: "Updated note" } } as any);
+  });
+  await click("a", "Save details");
+  expect(save).toHaveBeenCalledWith("a", { effectivePickupDate: "2026-10-03", note: "Updated note" });
+  const traveler = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Reprint Traveler")!;
+  act(() => Simulate.click(traveler));
   expect(reprint).toHaveBeenCalledWith(detail.pickupTravelers[0]);
 });
-test("plain text escapes HTML and wraps long content; viewers cannot edit", () => {
-  const text = '<script>alert("x")</script><img src=x onerror=alert(1)>' + "x".repeat(1000);
-  detail.pickupHandoffs[0].historyNote = { text, updatedAt: "2026-09-28T13:00:00Z", actorName: null, actorUserId: null };
+
+test("ordinary fulfillment staff can edit notes but not historical dates; viewers cannot edit", async () => {
+  detail.permissions.canEditPickupDate = false;
+  act(render);
+  await click("a", "Edit details");
+  expect(row("a").querySelector('input[type="date"]')).toBeNull();
+  act(() => Simulate.change(row("a").querySelector("textarea")!, { target: { value: "Staff note" } } as any));
+  await click("a", "Save details");
+  expect(save).toHaveBeenCalledWith("a", { note: "Staff note" });
   detail.permissions.canEditHistoryNotes = false;
   act(render);
-  expect(noteRow("a").textContent).toContain(text);
-  expect(noteRow("a").querySelector("script,img")).toBeNull();
-  expect(noteRow("a").querySelector(".whitespace-pre-wrap")).not.toBeNull();
-  expect(container.textContent).not.toContain("Add note");
-  expect(container.textContent).not.toContain("Edit note");
-});
-test("failed save retains the draft for retry; Cancel makes no mutation; length is bounded", async () => {
-  save.mockRejectedValueOnce(new Error("Save failed"));
-  act(render);
-  await click("a", "Add note"); fill("a", "3 boxes");
-  expect(noteRow("a").querySelector("textarea")!.maxLength).toBe(2000);
-  await click("a", "Save note");
-  expect(noteRow("a").querySelector('[role="alert"]')!.textContent).toBe("Save failed");
-  expect(noteRow("a").querySelector("textarea")!.value).toBe("3 boxes");
-  await click("a", "Save note");
-  expect(noteRow("a").textContent).toContain("3 boxes");
-  await click("a", "Edit note"); fill("a", "discard"); await click("a", "Cancel");
-  expect(save).toHaveBeenCalledTimes(2);
-  expect(noteRow("a").textContent).not.toContain("discard");
+  expect(row("a").textContent).not.toContain("Edit details");
 });

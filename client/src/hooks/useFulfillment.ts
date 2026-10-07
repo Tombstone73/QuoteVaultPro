@@ -57,6 +57,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     revertPermission: string;
     canReverseTerminalFulfillment?: boolean;
     canEditHistoryNotes?: boolean;
+    canEditPickupDate?: boolean;
   };
   billingAutomation?: {
     status: string;
@@ -168,9 +169,14 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     contactPhone: string | null;
   } | null;
   pickupTravelers?: PickupTravelerHistoryEntry[];
+  operationalPickupDate?: string;
   pickupHandoffs: Array<Partial<PickupReversalHistory> & {
     id: string;
     handedOffAt: string;
+    recordedAt: string;
+    recordedDate: string;
+    effectivePickupDate: string;
+    dateAdjustments: Array<{ previousEffectiveDate: string; newEffectiveDate: string; editedAt: string; actorName: string | null }>;
     handedOffByUserId: string | null;
     handedOffByName: string | null;
     notes: string | null;
@@ -439,6 +445,17 @@ export function useUpdatePickupHistoryNoteMutation(orderId: string) {
   });
 }
 
+export function useUpdatePickupDetailsMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ handoffId, effectivePickupDate, note }: { handoffId: string; effectivePickupDate?: string; note?: string }) =>
+      apiCall<{ pickupHandoffId: string }>(`/api/fulfillment/orders/${orderId}/pickup-handoffs/${handoffId}/details`, {
+        method: "PATCH", body: JSON.stringify({ ...(effectivePickupDate === undefined ? {} : { effectivePickupDate }), ...(note === undefined ? {} : { note }) }),
+      }),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
 export function useAddFulfillmentNoteMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -654,10 +671,10 @@ export function useMarkPickupPickedUpMutation(ticketId: string, orderId?: string
 export function useRecordPickupHandoffMutation(orderId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { ticketId: string; travelerJobIds?: string[]; items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null; clientRequestId?: string }) => apiCall<any>(`/api/fulfillment/pickup/${payload.ticketId}/handoffs`, {
+    mutationFn: (payload: { ticketId: string; travelerJobIds?: string[]; items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null; effectivePickupDate?: string; clientRequestId?: string }) => apiCall<any>(`/api/fulfillment/pickup/${payload.ticketId}/handoffs`, {
       method: "POST",
       headers: payload.clientRequestId ? { "Idempotency-Key": payload.clientRequestId } : undefined,
-      body: JSON.stringify({ items: payload.items, notes: payload.notes, clientRequestId: payload.clientRequestId, ...(payload.travelerJobIds?.length ? { travelerJobIds: payload.travelerJobIds } : {}) }),
+      body: JSON.stringify({ items: payload.items, notes: payload.notes, effectivePickupDate: payload.effectivePickupDate, clientRequestId: payload.clientRequestId, ...(payload.travelerJobIds?.length ? { travelerJobIds: payload.travelerJobIds } : {}) }),
     }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });

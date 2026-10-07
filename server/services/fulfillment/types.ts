@@ -58,6 +58,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     revertPermission: string;
     canReverseTerminalFulfillment?: boolean;
     canEditHistoryNotes?: boolean;
+    canEditPickupDate?: boolean;
   };
   billingAutomation?: {
     status: string;
@@ -171,9 +172,14 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     contactPhone: string | null;
   } | null;
   pickupTravelers?: PickupTravelerHistoryEntry[];
+  operationalPickupDate: string;
   pickupHandoffs: Array<Partial<PickupReversalHistory> & {
     id: string;
     handedOffAt: string;
+    recordedAt: string;
+    recordedDate: string;
+    effectivePickupDate: string;
+    dateAdjustments: Array<{ previousEffectiveDate: string; newEffectiveDate: string; editedAt: string; actorName: string | null }>;
     handedOffByUserId: string | null;
     handedOffByName: string | null;
     notes: string | null;

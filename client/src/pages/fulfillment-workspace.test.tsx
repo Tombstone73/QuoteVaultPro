@@ -21,7 +21,7 @@ const createTicket = jest.fn(async () => ({ id: "ticket-1", status: "DRAFT" }));
 const markOrderReady = jest.fn(async () => {
   detail = { ...detail, pickupTicket: { ...detail.pickupTicket, id: "ticket-1", status: "READY_FOR_PICKUP" } };
 });
-const recordHandoff = jest.fn(async ({ items }: any) => {
+const recordHandoff = jest.fn(async ({ items, notes, effectivePickupDate }: any) => {
   const byLine = new Map(items.map((item: any) => [item.orderLineItemId, item.quantity]));
   const handoffItems = detail.lineItems.flatMap((line: any) => {
     const quantity = byLine.get(line.id);
@@ -37,7 +37,7 @@ const recordHandoff = jest.fn(async ({ items }: any) => {
       const quantity = Number(byLine.get(line.id) || 0);
       return { ...line, production: { ...line.production, pickedUpQuantity: line.production.pickedUpQuantity + quantity, fulfilledQuantity: line.production.fulfilledQuantity + quantity, remainingQuantity: line.production.remainingQuantity - quantity } };
     }),
-    pickupHandoffs: [...detail.pickupHandoffs, { id: `handoff-${detail.pickupHandoffs.length + 1}`, handedOffAt: "2026-08-14T12:00:00Z", handedOffByUserId: "user-1", handedOffByName: "Dale", notes: null, items: handoffItems }],
+    pickupHandoffs: [...detail.pickupHandoffs, { id: `handoff-${detail.pickupHandoffs.length + 1}`, handedOffAt: "2026-08-14T12:00:00Z", recordedAt: "2026-08-14T12:00:00Z", effectivePickupDate, handedOffByUserId: "user-1", handedOffByName: "Dale", notes, items: handoffItems }],
   };
   return { terminal: detail.remainingQuantity === 0 };
 });
@@ -52,7 +52,7 @@ jest.mock("@/hooks/useFulfillment", () => ({
   useCreateShipmentMutation: () => ({ mutateAsync: createShipment, isPending: false }),
   useCreatePickupTicketMutation: () => ({ mutateAsync: createTicket, isPending: false }),
   useMarkOrderReadyForPickupMutation: () => ({ mutateAsync: markOrderReady, isPending: false }),
-  useUpdatePickupHistoryNoteMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
+  useUpdatePickupDetailsMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useAddFulfillmentNoteMutation: () => ({ mutateAsync: addNote, isPending: false }),
   useReverseTerminalFulfillmentMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useRecordPickupHandoffMutation: () => ({ mutateAsync: recordHandoff, isPending: false }),
@@ -139,6 +139,21 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     expect(detail.lineItems[0].production.remainingQuantity).toBe(900);
     expect(detail.lineItems[0].production.productionCompleteQuantity).toBe(0);
     expect(container.textContent).toContain("100 Economy Yard Sign Stakes");
+    act(() => root.unmount());
+  });
+
+  test("sends a backdated pickup date and event note without changing quantity math", async () => {
+    detail = makeDetail(); const { container, root, rerender } = render();
+    await act(async () => {
+      change(container.querySelector('input[aria-label="Pickup quantity: Economy Yard Sign Stakes"]') as HTMLInputElement, "250");
+      change(container.querySelector('input[aria-label="Pickup date"]') as HTMLInputElement, "2026-10-02");
+      change(container.querySelector('textarea[aria-label="Pickup note"]') as HTMLTextAreaElement, "Confirmed by email");
+    });
+    await act(async () => { Simulate.click(button(container, "Complete Pickup")); await Promise.resolve(); });
+    act(rerender);
+    expect(recordHandoff).toHaveBeenCalledWith(expect.objectContaining({ effectivePickupDate: "2026-10-02", notes: "Confirmed by email", items: [{ orderLineItemId: "line-1", quantity: 250 }] }));
+    expect(detail.lineItems[0].production.remainingQuantity).toBe(750);
+    expect(detail.pickupHandoffs[0].notes).toBe("Confirmed by email");
     act(() => root.unmount());
   });
 

@@ -1,6 +1,7 @@
 import { AdministrativeCorrection } from "@/components/fulfillment/AdministrativeCorrection";
 import { PickupHistory } from "@/components/fulfillment/PickupHistory";
 import type { PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
+import { currentLocalPickupDate } from "@shared/pickupEffectiveDate";
 import { useEffect, useState } from "react";
 import { ArrowLeft, ExternalLink, PackagePlus, RefreshCw, Truck } from "lucide-react";
 import { useLocation, useParams } from "react-router-dom";
@@ -16,7 +17,7 @@ import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import {
   toFulfillmentError,
   useAddFulfillmentNoteMutation,
-  useUpdatePickupHistoryNoteMutation,
+  useUpdatePickupDetailsMutation,
   useCreatePickupTicketMutation,
   useCreateShipmentMutation,
   useFulfillmentOrderDetailQuery,
@@ -34,7 +35,7 @@ export default function FulfillmentWorkspacePage() {
   const { toast } = useToast();
   const { orderId } = useParams<{ orderId: string }>();
   const detailQuery = useFulfillmentOrderDetailQuery(orderId);
-  const updateHistoryNote = useUpdatePickupHistoryNoteMutation(orderId || "");
+  const updatePickupDetails = useUpdatePickupDetailsMutation(orderId || "");
   const createShipment = useCreateShipmentMutation();
   const createPickupTicket = useCreatePickupTicketMutation();
   const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId || "");
@@ -43,6 +44,8 @@ export default function FulfillmentWorkspacePage() {
   const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation(orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
+  const [pickupDate, setPickupDate] = useState("");
+  const [pickupNote, setPickupNote] = useState("");
   const [note, setNote] = useState("");
   const [pickupRequestId, setPickupRequestId] = useState<string | null>(null);
   const [selectedTravelerIds, setSelectedTravelerIds] = useState<string[]>([]);
@@ -53,6 +56,7 @@ export default function FulfillmentWorkspacePage() {
   const [pickupReversalQuantities, setPickupReversalQuantities] = useState<Record<string, number>>({});
   const [pickupReversalConfirmed, setPickupReversalConfirmed] = useState(false);
   const detail = detailQuery.data;
+  const selectedPickupDate = pickupDate || detail?.operationalPickupDate || currentLocalPickupDate();
   const queryError = detailQuery.isError ? toFulfillmentError(detailQuery.error) : null;
   const loadState = getFulfillmentWorkspaceLoadState({ orderId, isLoading: detailQuery.isLoading, isError: detailQuery.isError, errorStatus: queryError?.status, hasDetail: !!detail });
   useEffect(() => { setCreatedShipmentId(null); }, [orderId]);
@@ -112,9 +116,11 @@ export default function FulfillmentWorkspacePage() {
       }
       const clientRequestId = pickupRequestId || crypto.randomUUID();
       setPickupRequestId(clientRequestId);
-      await recordPickupHandoff.mutateAsync({ ticketId, items, clientRequestId, ...(selectedTravelerIds.length ? { travelerJobIds: selectedTravelerIds } : {}) });
+      await recordPickupHandoff.mutateAsync({ ticketId, items, clientRequestId, effectivePickupDate: selectedPickupDate, notes: pickupNote.trim() || null, ...(selectedTravelerIds.length ? { travelerJobIds: selectedTravelerIds } : {}) });
       setSelectedTravelerIds([]);
       setPickupQuantityByLine({});
+      setPickupDate("");
+      setPickupNote("");
       setPickupRequestId(null);
     } catch (error) {
       showError("Could not complete pickup", error);
@@ -187,7 +193,11 @@ export default function FulfillmentWorkspacePage() {
           {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
-      {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => { setReprintTraveler(null); setPickupTravelerOpen(true); }}>Print Pickup Travelers</button><button type="button" disabled={pickupPending} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
+      {isPickup && detail.remainingQuantity > 0 && <div className="grid gap-3 border-t px-4 py-3 sm:grid-cols-[180px_1fr]">
+        <label className="grid gap-1 text-sm font-medium">Pickup date<Input type="date" aria-label="Pickup date" value={selectedPickupDate} max={detail.operationalPickupDate || currentLocalPickupDate()} disabled={pickupPending} onChange={event => setPickupDate(event.target.value)} /></label>
+        <label className="grid gap-1 text-sm font-medium">Pickup note <span className="sr-only">(optional)</span><Textarea aria-label="Pickup note" value={pickupNote} maxLength={2000} className="min-h-10" placeholder="Optional note for this pickup" disabled={pickupPending} onChange={event => setPickupNote(event.target.value)} /></label>
+      </div>}
+      {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => { setReprintTraveler(null); setPickupTravelerOpen(true); }}>Print Pickup Travelers</button><button type="button" disabled={pickupPending || !selectedPickupDate} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
     </section>}
 
     <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} reprint={reprintTraveler} onQueued={(id) => { setSelectedTravelerIds(ids => [...ids, id]); void detailQuery.refetch(); }} />
@@ -205,7 +215,7 @@ export default function FulfillmentWorkspacePage() {
       </div>)}
     </section>}
 
-    <PickupHistory key={orderId} onSaveHistoryNote={(handoffId, note) => updateHistoryNote.mutateAsync({ handoffId, note })} detail={detail} selectedTravelerIds={selectedTravelerIds}
+    <PickupHistory key={orderId} onSaveDetails={(handoffId, changes) => updatePickupDetails.mutateAsync({ handoffId, ...changes })} detail={detail} selectedTravelerIds={selectedTravelerIds}
       onToggle={(id, selected) => setSelectedTravelerIds(ids => selected ? [...ids, id] : ids.filter(value => value !== id))}
       onReprint={traveler => { setReprintTraveler(traveler); setPickupTravelerOpen(true); }} onReverse={openPickupReversal} />
 

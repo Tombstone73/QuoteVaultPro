@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { effectivePickupDateSchema } from '@shared/pickupEffectiveDate';
 import { shipmentShippingContextSchema } from '@shared/shippingDocuments';
 
 /** Canonical route identity for an order-centric fulfillment workspace. */
@@ -81,6 +82,7 @@ export const pickupReadySchema = z.object({
 });
 
 export const pickupHandoffSchema = z.object({
+  effectivePickupDate: effectivePickupDateSchema.optional(),
   travelerJobIds: z.array(z.string().min(1)).max(100).optional(),
   items: z.array(z.object({
     orderLineItemId: z.string().min(1),
@@ -89,6 +91,11 @@ export const pickupHandoffSchema = z.object({
   notes: z.string().trim().max(2000).optional().nullable(),
   clientRequestId: z.string().trim().min(1).max(128).optional(),
 });
+
+export const pickupDetailsSchema = z.object({
+  effectivePickupDate: effectivePickupDateSchema.optional(),
+  note: z.string().trim().max(2000).optional(),
+}).strict().refine(value => value.effectivePickupDate !== undefined || value.note !== undefined);
 
 export const terminalFulfillmentReversalSchema = z.object({
   items: z.array(z.object({

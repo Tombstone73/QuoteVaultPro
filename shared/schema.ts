@@ -5775,6 +5775,7 @@ export const fulfillmentEventTypeSchema = z.enum([
   'FULFILLMENT_READY',
   'FULFILLMENT_NOTE',
   'PICKUP_HISTORY_NOTE_UPDATED',
+  'PICKUP_EFFECTIVE_DATE_UPDATED',
   'FULFILLMENT_AUTO_ARCHIVED',
   'FULFILLMENT_CHECKLIST_ITEM_UPDATED',
   'FULFILLMENT_CHECKLIST_VERIFIED',
@@ -5982,8 +5983,8 @@ export type InsertPickupTicket = z.infer<typeof insertPickupTicketSchema>;
 export type UpdatePickupTicket = z.infer<typeof updatePickupTicketSchema>;
 export type PickupTicket = typeof pickupTickets.$inferSelect;
 
-/** Immutable record of a customer collection. A ticket is the current pickup
- * workflow state; handoffs preserve every partial collection. */
+/** Durable record of a customer collection. Quantity, actor, and entry time
+ * stay fixed; date-only pickup metadata and notes can be audited corrections. */
 export const pickupHandoffs = pgTable("pickup_handoffs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -5993,6 +5994,7 @@ export const pickupHandoffs = pgTable("pickup_handoffs", {
   /** Client supplied replay key; nullable for historical handoffs. */
   clientRequestId: varchar("client_request_id", { length: 128 }),
   notes: text("notes"),
+  effectivePickupDate: date("effective_pickup_date"),
   handedOffAt: timestamp("handed_off_at", { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [

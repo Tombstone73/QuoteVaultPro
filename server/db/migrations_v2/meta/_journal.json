@@ -1520,6 +1520,13 @@
       "when": 1788048000068,
       "tag": "0223_historical_ar_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1788048000069,
+      "tag": "0224_pickup_effective_date",
+      "breakpoints": true
     }
   ]
 }

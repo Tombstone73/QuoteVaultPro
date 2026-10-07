@@ -6,6 +6,8 @@ import { getShippingDocumentSource } from '../shippingDocumentService';
 import { administrativeCorrectionPreview, administrativeReopenedByLine, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { currentPickupHistoryNote, fulfillmentHistoryNoteSchema, PICKUP_HISTORY_NOTE_UPDATED } from "@shared/fulfillmentHistoryNote";
+import { effectivePickupDateSchema } from '@shared/pickupEffectiveDate';
+import { organizationBusinessToday, validOrganizationTimezone } from '../../lib/orderDueDate';
 import { bindPickupTravelers, lockPickupTravelers, listPickupTravelers } from '../pickupTravelerLifecycle';
 import { getOrderTravelerSource } from '../orderTravelerSourceService';
 import type { PickupTravelerPrintContext } from '@shared/productionTicket';
@@ -1109,6 +1111,7 @@ export class PickupRepo {
     travelerJobIds?: string[];
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
+    effectivePickupDate?: string;
     clientRequestId?: string | null;
   }, actorUserId?: string | null) {
     return this.dbInstance.transaction(async (tx) => {
@@ -1189,7 +1192,13 @@ export class PickupRepo {
         const { pickupPrintContext: ignoredContext, pickupStatus: ignoredStatus, ...documentSnapshot } = source;
         travelerContext.documentSnapshot = documentSnapshot;
       }
-      const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null, clientRequestId: payload.clientRequestId ?? null }).returning();
+      const [orgSettings] = payload.effectivePickupDate === undefined
+        ? await tx.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId)).limit(1)
+        : [];
+      const settings = orgSettings?.settings as Record<string, any> | null | undefined;
+      const timezone = validOrganizationTimezone(settings?.timezone ?? settings?.preferences?.timezone);
+      const effectivePickupDate = effectivePickupDateSchema.parse(payload.effectivePickupDate ?? organizationBusinessToday(new Date(), timezone));
+      const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null, effectivePickupDate, clientRequestId: payload.clientRequestId ?? null }).returning();
       await bindPickupTravelers(tx, orgId, travelerJobs, handoff.id);
       await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({ organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity })));
       const now = new Date();
@@ -2586,6 +2595,49 @@ export class FulfillmentDashboardRepo {
     return { ok: true as const };
   }
 
+  async updatePickupDetails(orgId: string, orderId: string, handoffId: string, payload: { effectivePickupDate?: string; note?: string }, actorUserId?: string | null) {
+    return this.dbInstance.transaction(async (tx) => {
+      await tx.execute(sql`SELECT ${pickupHandoffs.id} FROM ${pickupHandoffs} WHERE ${pickupHandoffs.id} = ${handoffId} AND ${pickupHandoffs.organizationId} = ${orgId} AND ${pickupHandoffs.orderId} = ${orderId} FOR UPDATE`);
+      const [handoff] = await tx.select({
+        id: pickupHandoffs.id, pickupTicketId: pickupHandoffs.pickupTicketId,
+        notes: pickupHandoffs.notes, effectivePickupDate: pickupHandoffs.effectivePickupDate,
+        handedOffAt: pickupHandoffs.handedOffAt,
+      }).from(pickupHandoffs).innerJoin(orders, and(eq(orders.id, pickupHandoffs.orderId), eq(orders.organizationId, orgId)))
+        .where(and(eq(pickupHandoffs.organizationId, orgId), eq(pickupHandoffs.orderId, orderId), eq(pickupHandoffs.id, handoffId))).limit(1);
+      if (!handoff) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup history record not found' };
+      const [orgSettings] = await tx.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      const settings = orgSettings?.settings as Record<string, any> | null | undefined;
+      const timezone = validOrganizationTimezone(settings?.timezone ?? settings?.preferences?.timezone);
+      const previousDate = handoff.effectivePickupDate ?? organizationBusinessToday(handoff.handedOffAt, timezone);
+      const nextDate = payload.effectivePickupDate === undefined ? previousDate : effectivePickupDateSchema.parse(payload.effectivePickupDate);
+      const priorNoteEvents = await tx.select({ payloadJson: fulfillmentEvents.payloadJson }).from(fulfillmentEvents)
+        .where(and(eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'PICKUP_TICKET'),
+          eq(fulfillmentEvents.entityId, handoff.pickupTicketId), eq(fulfillmentEvents.eventType, PICKUP_HISTORY_NOTE_UPDATED)))
+        .orderBy(desc(fulfillmentEvents.createdAt), desc(fulfillmentEvents.id));
+      const priorNoteEvent = priorNoteEvents.find(event => event.payloadJson?.orderId === orderId
+        && event.payloadJson?.pickupHandoffId === handoffId && typeof event.payloadJson?.note === 'string');
+      const previousNote = priorNoteEvent ? String(priorNoteEvent.payloadJson.note) : handoff.notes ?? '';
+      const nextNote = payload.note === undefined ? previousNote : fulfillmentHistoryNoteSchema.parse({ note: payload.note }).note;
+      if (nextDate === previousDate && nextNote === previousNote) return { ok: true as const };
+      const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+      await tx.update(pickupHandoffs).set({
+        ...(nextDate !== previousDate ? { effectivePickupDate: nextDate } : {}),
+        ...(nextNote !== previousNote ? { notes: nextNote || null } : {}),
+      }).where(and(eq(pickupHandoffs.organizationId, orgId), eq(pickupHandoffs.orderId, orderId), eq(pickupHandoffs.id, handoffId)));
+      if (nextDate !== previousDate) await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId, actorUserId: safeActorUserId, entityType: 'PICKUP_TICKET', entityId: handoff.pickupTicketId,
+        eventType: 'PICKUP_EFFECTIVE_DATE_UPDATED',
+        payloadJson: { orderId, pickupHandoffId: handoffId, previousEffectiveDate: previousDate, newEffectiveDate: nextDate },
+      });
+      if (nextNote !== previousNote) await tx.insert(fulfillmentEvents).values({
+        organizationId: orgId, actorUserId: safeActorUserId, entityType: 'PICKUP_TICKET', entityId: handoff.pickupTicketId,
+        eventType: PICKUP_HISTORY_NOTE_UPDATED,
+        payloadJson: { orderId, pickupHandoffId: handoffId, previousNote, note: nextNote },
+      });
+      return { ok: true as const };
+    });
+  }
+
   async addOrderNote(orgId: string, orderId: string, note: string, actorUserId?: string | null) {
     const [order] = await this.dbInstance
       .select({ id: orders.id })
@@ -2632,6 +2684,9 @@ export class FulfillmentDashboardRepo {
       .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
       .limit(1);
     if (!orderRow) return null;
+    const [orgSettings] = await this.dbInstance.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    const settings = orgSettings?.settings as Record<string, any> | null | undefined;
+    const timezone = validOrganizationTimezone(settings?.timezone ?? settings?.preferences?.timezone);
 
     const lineItems = await this.dbInstance
       .select({
@@ -2716,6 +2771,8 @@ export class FulfillmentDashboardRepo {
       ? await this.dbInstance.select({
         id: pickupHandoffs.id,
         handedOffAt: pickupHandoffs.handedOffAt,
+        createdAt: pickupHandoffs.createdAt,
+        effectivePickupDate: pickupHandoffs.effectivePickupDate,
         handedOffByUserId: pickupHandoffs.handedOffByUserId,
         notes: pickupHandoffs.notes,
         actorFirstName: users.firstName,
@@ -2924,13 +2981,27 @@ export class FulfillmentDashboardRepo {
         contactPhone: pickupTicket.contactPhone ?? null,
       } : null,
       pickupTravelers: await listPickupTravelers(this.dbInstance, orgId, orderId),
+      operationalPickupDate: organizationBusinessToday(new Date(), timezone),
       pickupHandoffs: handoffRows.map((handoff) => ({
         ...pickupReversalHistory(handoff.id, handoffItemsByHandoffId.get(handoff.id) ?? [], events),
         id: handoff.id,
         handedOffAt: toIso(handoff.handedOffAt) || new Date().toISOString(),
+        recordedAt: toIso(handoff.createdAt) || toIso(handoff.handedOffAt) || new Date().toISOString(),
+        recordedDate: organizationBusinessToday(handoff.createdAt, timezone),
+        effectivePickupDate: handoff.effectivePickupDate ?? organizationBusinessToday(handoff.handedOffAt, timezone),
+        dateAdjustments: events.filter(event => event.eventType === 'PICKUP_EFFECTIVE_DATE_UPDATED'
+          && event.payloadJson?.orderId === orderId && event.payloadJson?.pickupHandoffId === handoff.id)
+          .map(event => ({ previousEffectiveDate: String(event.payloadJson.previousEffectiveDate),
+            newEffectiveDate: String(event.payloadJson.newEffectiveDate), editedAt: toIso(event.createdAt)!,
+            actorName: [event.actorFirstName, event.actorLastName].filter(Boolean).join(' ') || null })),
         handedOffByUserId: handoff.handedOffByUserId ?? null,
         handedOffByName: [handoff.actorFirstName, handoff.actorLastName].filter(Boolean).join(' ') || null,
-        notes: handoff.notes ?? null,
+        notes: (() => {
+          const latest = events.find(event => event.eventType === PICKUP_HISTORY_NOTE_UPDATED
+            && event.payloadJson?.orderId === orderId && event.payloadJson?.pickupHandoffId === handoff.id
+            && typeof event.payloadJson?.note === 'string');
+          return latest ? String(latest.payloadJson.note) || null : handoff.notes ?? null;
+        })(),
         historyNote: currentPickupHistoryNote(orderId, handoff.id, events),
         items: (handoffItemsByHandoffId.get(handoff.id) ?? []).map((item) => ({
           orderLineItemId: item.orderLineItemId,
