@@ -1,5 +1,79 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+## Authorized QA Prerequisite Recheck
+
+Freshly discovered `origin/dev` and clean worktree BASE_COMMIT on October6 at
+23:52UTC: `172287be245553928bf3447153f81cf4cd116b70`. The later explicit user
+policy in the new request is **KEEP AS HISTORY / Do NOT delete p7c**; the earlier
+conflicting cleanup paragraph does not authorize deletion under that policy.
+Scope remains SALE-08, SALE-09, ACCESS-12 and ACCESS-05. Zero new closures or
+classification/priority changes; previous acceptance records below remain intact.
+
+At23:54:18UTC exact version/health/ready recheck still finds serving DEVcdc75fa,
+healthy/ready but not BASE_COMMIT. A guarded, explicitly scoped DEV READ ONLY
+transaction confirms p7c is not M7 QA: p7c is statusactive, is_archivedfalse,
+delete_stateactive and has no membership rows; M7 QA is active and has three
+memberships, two structural. These counts do not prove password usability.
+P7C retains one Sales document, one Production Work/attempt, one Route instance,
+Artwork/Prepress/material requirements and two Materials, plus recipe, audit and
+request history. Direct organization FK/count/cascade metadata was inspected;
+no exhaustive transitive/JSON or global worker-quiescence claim follows. No
+record, membership, lifecycle flag or constraint was mutated. New0304/0305 remain
+unapplied: read-only ledger maximum timestamp1790827200007 still matches0303.
+
+**ACCESS-05 adoption stops on the exact missing lifecycle capability.** The
+reviewed0305 invariant already scopes to operational tenants: active/trial,
+unarchived and delete_stateactive. Existing native58 proof includes lifecycle
+reactivation checks, and its source is unchanged; native contention was not redone.
+Staff/Portal issuance denies nonoperational tenants, but this alone does not prove
+all mutations are impossible: public Portal credential setup/reset and background
+Proof delivery transactions lack a universal operational-state check. No mounted
+V2 archive/retire transition was found. The existing history-preserving archive
+editor is a V1 platform route requiring platform authority and step-up; it is not
+mounted by V2 or enrolled in0305. Calling the SQL lock-entry function or directly
+setting flags is not a canonical retirement command. No new lifecycle architecture,
+UUID exemption, fake authority or V1 modification was introduced. Independent
+read-only review `ses_eec5a9f99ffesz2WD6J7BMx5xU` confirms this bounded stop.
+
+**Administrative acceptance stops separately.** Fresh secret-redacted local
+configuration inspection confirms root.env.playwright still contains only the
+Operations credential keys; worktree.env.playwright is absent. Configured QA
+identity/scope match Operations/M7, not a usable Dale Owner automation login.
+Worktree.e2e/.auth contains only.gitkeep. No password guessing/reset, browser-profile
+or cookie extraction, grant elevation, tax change or Portal provisioning occurred.
+Manual prerequisite: sign in at dev.printershero.com with Dale's existing Staff
+credentials, select PrintersHero M7 QA using the normal organization selector,
+and verify that session's activeOrganizationId equals b6f969b2-dda3-4133-9d75-c417dabb8f3a.
+Settings/Sales/Sales Tax requires pricing.configure; Team & Access/Customer Portal
+Access requires canonical Team management authority. An Operations-only test
+fixture's single-membership guard must not be imposed on or bypassed for Dale.
+No secret or full session response should be copied into campaign evidence.
+
+SALE-08/SALE-09/ACCESS-12 stay open: safe suppression source remains reviewed but
+undeployed, and positive publication, QA tax/Portal configuration and Customer-bound
+visibility still lack their required prerequisites. Existing QT-1003 is retained;
+no new Quote fixture, provider call or acceptance command was executed here.
+Evidence: `.cache/v2-validation/retained-tenant-dev-read.json`,
+`retained-tenant-auth-config.json` and the fresh deployment gate. Independent
+fingerprint verification `ses_eec57092cffeO21eKSAJ40asp0` matched all1545 retained
+native source digests to current files and BASE_COMMIT Git blobs,58 unique PASS
+cases/cleanups and12 recorded waits. Source/native acceptance remains valid;
+this is proof verification, not new native execution or successful DEV adoption.
+
+Fresh final canonical validation completed naturally: **11/11 gates PASS**,302
+core suites plus102 UI suites; Jest100 suites/1246 assertions, zero failed/pending.
+Architecture102/102, runner safety13/13, imports81 baseline instances, SQL185
+instances/166 fingerprints, journal/integrity and diff-check passed. All four
+requested builds passed; backend packaged301 entries throughidx306/tag0305.
+Attempt1's outer600-second interruption is preserved as incomplete, not relabeled
+PASS; attempt2 used the unchanged canonical command/internal gate limits and
+completed normally. Fresh evidence is under
+`.cache/v2-validation/campaign-validation-new2351-attempt2/`. Existing nonfatal
+build warnings remain; no source change, native rerun or provider operation was
+used to make these gates pass. Verdict **C: SOME L0 REMAIN WITH PRECISE TECHNICAL
+BLOCKERS**. New accepted configuration authority does not supply a missing mounted
+history-preserving retirement command or a usable authenticated Owner session.
+
 ## October 6 Final-Four Campaign
 
 Starting clean source and exact healthy/ready DEV:
