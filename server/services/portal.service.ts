@@ -4,6 +4,8 @@ import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeL
 import { isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
 import { normalizeInvoiceAccountingDisplay } from '@shared/invoiceAccountingDisplay';
 import { resolveHistoricalArState } from '@shared/historicalArAuthority';
+import { hasEstablishedInvoiceDate, hasFirstApprovalInvoiceDateAnchor } from '@shared/invoicePaymentTerms';
+import { invoiceDocumentDatePart } from '../lib/invoiceDocumentDate';
 import { withInvoicePaymentContext } from './invoicePaymentSession.service';
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
@@ -539,6 +541,7 @@ type InvoicePortalRow = CustomerPaymentInvoice & Pick<
   | "numberCore"
   | "status"
   | "issueDate"
+  | "issuedAt"
   | "dueDate"
   | "subtotal"
   | "tax"
@@ -1635,8 +1638,13 @@ function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[
     }),
     numberCore: row.numberCore,
     status: normalizeInvoiceStatus(row.status),
-    issueDate: toIso(row.issueDate),
-    dueDate: toIso(row.dueDate),
+    issueDate: !hasEstablishedInvoiceDate(row as Record<string, unknown>) ? null
+      : hasFirstApprovalInvoiceDateAnchor(row as Record<string, unknown>)
+        ? invoiceDocumentDatePart(row.issueDate)
+        : toIso(row.issueDate),
+    dueDate: hasFirstApprovalInvoiceDateAnchor(row as Record<string, unknown>)
+      ? invoiceDocumentDatePart(row.dueDate)
+      : toIso(row.dueDate),
     subtotal: row.subtotalCents ? centsToMoney(row.subtotalCents) : toMoney(row.subtotal),
     tax: row.taxCents ? centsToMoney(row.taxCents) : toMoney(row.tax),
     total: row.totalCents ? centsToMoney(row.totalCents) : toMoney(row.total),
@@ -1701,6 +1709,7 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
       historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
       historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       issueDate: invoices.issueDate,
+      issuedAt: invoices.issuedAt,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
       tax: invoices.tax,
@@ -1763,6 +1772,7 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
       historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
       historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       issueDate: invoices.issueDate,
+      issuedAt: invoices.issuedAt,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
       tax: invoices.tax,
@@ -1826,6 +1836,7 @@ async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string)
       historicalArApprovedByUserId: invoices.historicalArApprovedByUserId,
       historicalArApprovalEvidence: invoices.historicalArApprovalEvidence,
       issueDate: invoices.issueDate,
+      issuedAt: invoices.issuedAt,
       dueDate: invoices.dueDate,
       subtotal: invoices.subtotal,
       tax: invoices.tax,

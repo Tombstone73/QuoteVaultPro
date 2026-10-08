@@ -1,9 +1,19 @@
 import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, buildQuickBooksInvoiceProjection } from '../lib/quickBooksInvoiceProjection';
+import { firstApprovalInvoiceDate } from '../lib/invoiceDocumentDate';
 
 const invoice = { subtotalCents: 40000, shippingCents: 2500, taxCents: 4250, totalCents: 46750 };
 const productLines = [{ LineNum: 1, Amount: 400, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { Qty: 1, UnitPrice: 400 }, Description: 'Product' }];
 
 describe('QuickBooks canonical invoice projection', () => {
+  it('uses the persisted first-approval business date for TxnDate', () => {
+    const documentDate = firstApprovalInvoiceDate(new Date('2026-10-09T03:30:00.000Z'), 'America/New_York');
+    const result = buildQuickBooksInvoiceProjection({
+      invoice, qbCustomerId: 'customer-1', docNumber: 'INV-1',
+      txnDate: documentDate.toISOString().slice(0, 10), productLines,
+    });
+    expect(result.payload.TxnDate).toBe('2026-10-08');
+  });
+
   it('adds the canonical customer shipping charge exactly once and carries canonical tax', () => {
     const result = buildQuickBooksInvoiceProjection({ invoice, qbCustomerId: 'customer-1', docNumber: 'INV-1', txnDate: '2026-09-22', productLines });
     expect(result.payload.Line).toHaveLength(2);

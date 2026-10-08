@@ -52,7 +52,7 @@ function formatCurrency(amount: number, currency = "USD") {
 function formatDate(value: string | null) {
   if (!value) return "Not set";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Not set" : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+  return Number.isNaN(date.getTime()) ? "Not set" : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", ...(/^\d{4}-\d{2}-\d{2}$/.test(value) ? { timeZone: "UTC" } : {}) }).format(date);
 }
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "paid") return "default";
@@ -126,7 +126,7 @@ export function PortalInvoiceMobileCard({ invoice, selected = false, onSelection
     <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2"><input aria-label={`Select invoice ${invoiceLabel(invoice)}`} type="checkbox" disabled={!selectable} checked={selected} onChange={(event) => onSelectionChange?.(event.target.checked)} /><Link to={`/portal/invoices/${invoice.id}`} className="font-semibold text-foreground hover:underline">Invoice {invoiceLabel(invoice)}</Link></div><Badge variant={statusVariant(invoice.status)}>{invoice.paymentEligibility?.blockedReason === "Awaiting approval" ? "Awaiting approval" : invoice.paymentStatusLabel}</Badge></div>
     <div className="mt-3 min-w-0 space-y-1 text-sm"><p className="break-words font-medium text-foreground" title={job}>{job}</p><p className="break-words text-muted-foreground">PO # {invoice.customerPoNumber || "—"}</p><p className="break-words text-muted-foreground">Order # {invoice.orderNumber || "—"}</p></div>
     <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-      <div><dt className="text-muted-foreground">Issued</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.issueDate)}</dd></div><div><dt className="text-muted-foreground">Due</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.dueDate)}</dd></div>
+      <div><dt className="text-muted-foreground">Issued</dt><dd className="mt-0.5 font-medium text-foreground">{invoice.issueDate ? formatDate(invoice.issueDate) : "Pending approval"}</dd></div><div><dt className="text-muted-foreground">Due</dt><dd className="mt-0.5 font-medium text-foreground">{formatDate(invoice.dueDate)}</dd></div>
       <div><dt className="text-muted-foreground">Amount due</dt><dd className="mt-0.5 font-semibold text-foreground">{formatCurrency(invoice.amountDue, invoice.currency)}</dd></div><div><dt className="text-muted-foreground">Total</dt><dd className="mt-0.5 font-medium text-foreground">{formatCurrency(invoice.total, invoice.currency)}</dd></div>
     </dl><div className="mt-4"><InvoiceActions invoice={invoice} mobile /></div>
   </article>;
@@ -148,7 +148,7 @@ function InvoiceInfoCell({ column, invoice }: { column: PortalInvoiceInfoColumnI
     case "po": return <td className="px-3 py-3 align-middle"><p className="truncate text-foreground" title={invoice.customerPoNumber || undefined}>{invoice.customerPoNumber || "—"}</p></td>;
     case "job": return <td className="min-w-0 px-3 py-3 align-middle"><p className="truncate font-medium text-foreground" title={invoice.jobLabel?.trim() || undefined}>{job}</p></td>;
     case "order": return <td className="min-w-0 px-3 py-3 align-middle"><p className="truncate text-foreground" title={invoice.orderNumber || undefined}>{invoice.orderNumber || "—"}</p></td>;
-    case "issued": return <td className="whitespace-nowrap px-3 py-3 align-middle text-foreground">{formatDate(invoice.issueDate)}</td>;
+    case "issued": return <td className="whitespace-nowrap px-3 py-3 align-middle text-foreground">{invoice.issueDate ? formatDate(invoice.issueDate) : "Pending approval"}</td>;
     case "due": return <td className="whitespace-nowrap px-3 py-3 align-middle text-foreground">{formatDate(invoice.dueDate)}</td>;
     case "amountDue": return <td className="whitespace-nowrap px-3 py-3 text-right align-middle font-semibold text-foreground">{formatCurrency(invoice.amountDue, invoice.currency)}</td>;
     case "total": return <td className="whitespace-nowrap px-3 py-3 text-right align-middle text-foreground">{formatCurrency(invoice.total, invoice.currency)}</td>;

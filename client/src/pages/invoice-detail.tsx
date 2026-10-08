@@ -1,4 +1,5 @@
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
+import { formatInvoiceDocumentDate, invoiceDueDateInputValue } from "@/lib/invoiceDocumentDate";
 import { InvoiceCustomerReleaseAction } from "@/components/InvoiceCustomerReleaseAction";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import { useActiveOrganizationRole } from '@/hooks/useActiveOrganizationRole';
@@ -457,6 +458,9 @@ export default function InvoiceDetailPage() {
       return "-";
     }
   };
+  const formatInvoiceDate = () => invoice
+    ? formatInvoiceDocumentDate(invoice as unknown as Record<string, unknown>, formatDate)
+    : formatDate(null);
 
   const formatPoSource = (source: string | null | undefined) => {
     const raw = String(source || '').trim();
@@ -820,7 +824,7 @@ export default function InvoiceDetailPage() {
     if (!invoice) return;
 
     setTermsDraft(String((invoice as any).terms || 'due_on_receipt'));
-    setDueDateDraft(invoice.dueDate ? format(new Date(invoice.dueDate as any), 'yyyy-MM-dd') : '');
+    setDueDateDraft(invoiceDueDateInputValue(invoice as unknown as Record<string, unknown>));
     setNotesPublicDraft(String(invoice.notesPublic || ''));
     setNotesInternalDraft(String(invoice.notesInternal || ''));
     setSubtotalDraft(toMoneyDraft((invoice as any).subtotalCents));
@@ -1252,7 +1256,7 @@ export default function InvoiceDetailPage() {
 
   const commitDueDate = async () => {
     if (!invoiceId || !invoice || !canEditInvoiceReceivable) return;
-    const existing = invoice.dueDate ? format(new Date(invoice.dueDate as any), 'yyyy-MM-dd') : '';
+    const existing = invoiceDueDateInputValue(invoice as unknown as Record<string, unknown>);
     const next = dueDateDraft.trim();
     if (existing === next) return;
 
@@ -1888,7 +1892,7 @@ export default function InvoiceDetailPage() {
                   }) || invoice.invoiceNumber}
                 </div>
                 <div className="text-sm text-muted-foreground truncate">
-                  Issued {formatDate((invoice as any).issuedAt || invoice.issueDate)}
+                  Issued {formatInvoiceDate()}
                 </div>
                 {isImportedFromQuickBooks ? (
                   <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -3204,7 +3208,7 @@ export default function InvoiceDetailPage() {
 
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-sm text-muted-foreground">Issue Date</span>
-                    <span className="text-sm">{formatDate(invoice.issueDate)}</span>
+                    <span className="text-sm">{formatInvoiceDate()}</span>
                   </div>
                 </div>
 

@@ -15,7 +15,7 @@ test("first accounting approval starts and audits the invoice terms clock withou
   expect(service).toContain("hasInvoicePaymentTermsStartedOrApprovalHistory");
   expect(service).toContain("termsStartedAt: now");
   expect(service).toContain("terms: termsStart.terms");
-  expect(service).toContain("dueDate: termsStart.dueDate");
+  expect(service).toContain("dueDate: firstDueDate");
   expect(service).toContain("CUSTOM_PAYMENT_TERMS_DUE_DATE_REQUIRED");
   expect(service).toContain("quickBooksAutoQueued: shouldQueueInitialSync");
 });

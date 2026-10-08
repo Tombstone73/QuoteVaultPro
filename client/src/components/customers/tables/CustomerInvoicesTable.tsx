@@ -1,4 +1,5 @@
 import * as React from "react";
+import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDocumentDate";
 import { Check, ExternalLink, Eye, ListFilter, RotateCcw, Settings2, X } from "lucide-react";
 import { useApproveInvoicesForAccounting, useInvoices, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useAuth } from "@/hooks/useAuth";
@@ -110,9 +111,9 @@ export function CustomerInvoicesTable({ customerId }: { customerId: string }) {
                 case "jobOrder": return <td className="max-w-56 px-3 py-2" key={column.id}>{invoice.jobName || invoice.orderName || invoice.orderNumber || "—"}</td>;
                 case "poNumber": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{invoice.purchaseOrderNumber || "—"}</td>;
                 case "orderNumber": return <td className="whitespace-nowrap px-3 py-2 font-mono" key={column.id}><OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} /></td>;
-                case "invoiceDate": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{formatDate(invoice.issueDate || invoice.createdAt)}</td>;
+                case "invoiceDate": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{formatInvoiceDocumentDate(invoice as unknown as Record<string, unknown>, formatDate, 'numeric')}</td>;
                 case "lastSent": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{invoice.lastSentAt ? `${formatDate(invoice.lastSentAt)}${invoice.emailStatus === "sent_outdated" ? " (updated)" : ""}` : "Not sent"}</td>;
-                case "dueDate": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{formatDate(invoice.dueDate)}</td>;
+                case "dueDate": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{formatInvoiceDueDate(invoice as unknown as Record<string, unknown>, formatDate, 'numeric')}</td>;
                 case "approval": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{approvalLabel(invoice)}</td>;
                 case "jobStatus": return <td className="whitespace-nowrap px-3 py-2" key={column.id}>{getOrderJobStatus(invoice)}</td>;
                 case "total": return <td className="whitespace-nowrap px-3 py-2 text-right" key={column.id}>{formatMoney(invoice.displayTotal ?? invoice.total)}</td>;

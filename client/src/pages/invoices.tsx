@@ -1,5 +1,6 @@
 import { InvoiceCustomerReleaseAction } from "@/components/InvoiceCustomerReleaseAction";
 import { READY_TO_FINALIZE_JOB_STATUSES, READY_TO_FINALIZE_SEND_STATUS } from "@shared/invoiceReadyToFinalize";
+import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDocumentDate";
 import { InvoiceEmailQueueDialog } from "@/components/invoices/InvoiceEmailQueueDialog";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -403,6 +404,8 @@ export default function InvoicesListPage() {
       return EMPTY_VALUE;
     }
   };
+  const formatInvoiceDate = (invoice: InvoiceListItem) =>
+    formatInvoiceDocumentDate(invoice as unknown as Record<string, unknown>, formatDate);
 
   const filteredInvoices = invoiceResponse?.items || [];
   const pagination = invoiceResponse?.pagination;
@@ -909,8 +912,8 @@ export default function InvoicesListPage() {
       case "purchaseOrderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.purchaseOrderNumber)}>{textOrEmpty(invoice.purchaseOrderNumber)}</div></TitanTableCell>;
       case "orderNumber": return <TitanTableCell key={column.id} className="max-w-[140px]"><div className="truncate" title={textOrEmpty(invoice.orderNumber)}><OrderNumberLink orderId={invoice.orderId} orderNumber={invoice.orderNumber} /></div></TitanTableCell>;
       case "invoiceNumber": return <TitanTableCell key={column.id} className="font-medium"><Link to={invoiceDetailPath(invoice)} className="text-titan-accent hover:underline" onClick={(event) => event.stopPropagation()}>{resolveDocumentDisplayNumber({ displayNumber: invoice.displayNumber, numberCore: invoice.numberCore, legacyNumber: invoice.invoiceNumber }) || invoice.invoiceNumber}</Link></TitanTableCell>;
-      case "issueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.issueDate)}</TitanTableCell>;
-      case "dueDate": return <TitanTableCell key={column.id}>{formatDate(invoice.dueDate)}</TitanTableCell>;
+      case "issueDate": return <TitanTableCell key={column.id}>{formatInvoiceDate(invoice)}</TitanTableCell>;
+      case "dueDate": return <TitanTableCell key={column.id}>{formatInvoiceDueDate(invoice as unknown as Record<string, unknown>, formatDate)}</TitanTableCell>;
       case "status": return <TitanTableCell key={column.id}><StatusPill variant={getStatusVariant(invoice.status)}>{invoice.displayStatus || statusLabels[invoice.status] || invoice.status}</StatusPill></TitanTableCell>;
       case "approval": return <TitanTableCell key={column.id} className="w-[116px] min-w-[116px]" onClick={(event) => event.stopPropagation()}>{approvalState(invoice) === "Approved for Accounting" ? <StatusPill variant="info">Approved</StatusPill> : isAdminOrOwner ? <Button type="button" variant="outline" size="sm" className="h-7 whitespace-nowrap px-2 text-xs" aria-label={`Approve invoice ${invoice.invoiceNumber} for accounting`} disabled={approveInvoices.isPending} onClick={(event) => { event.stopPropagation(); void handleApproveInvoice(invoice); }}><Check className="mr-1 h-3.5 w-3.5" aria-hidden="true" />{approvingInvoiceId === invoice.id && approveInvoices.isPending ? "Approving…" : "Approve"}</Button> : <StatusPill variant={approvalState(invoice) === "Needs Reapproval" ? "warning" : "muted"}>Not Approved</StatusPill>}</TitanTableCell>;
       case "jobStatus": return <TitanTableCell key={column.id}>{getOrderJobStatus(invoice)}</TitanTableCell>;
@@ -1220,8 +1223,8 @@ export default function InvoicesListPage() {
                       }) || invoice.invoiceNumber}
                     </Link>
                   </TitanTableCell>
-                  <TitanTableCell>{formatDate(invoice.issueDate)}</TitanTableCell>
-                  <TitanTableCell>{formatDate(invoice.dueDate)}</TitanTableCell>
+                  <TitanTableCell>{formatInvoiceDate(invoice)}</TitanTableCell>
+                  <TitanTableCell>{formatInvoiceDueDate(invoice as unknown as Record<string, unknown>, formatDate)}</TitanTableCell>
                   <TitanTableCell>
                     <StatusPill variant={getStatusVariant(invoice.status)}>
                       {invoice.displayStatus || statusLabels[invoice.status] || invoice.status}

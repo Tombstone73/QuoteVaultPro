@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, type ReactNode } from "react";
+import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDocumentDate";
 import { useLocation, useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -2848,9 +2849,9 @@ function InvoicesTable({
                   case "jobOrder": { const jobOrder = inv.jobName || inv.orderName || inv.orderNumber || "—"; return <td key={column.id} className="min-w-[180px] max-w-sm px-3 py-3 text-titan-sm text-titan-text-secondary"><span className="block truncate" title={jobOrder}>{jobOrder}</span></td>; }
                   case "poNumber": return <td key={column.id} className="min-w-[110px] px-3 py-3 text-titan-sm text-titan-text-secondary"><span className="block truncate" title={inv.purchaseOrderNumber || undefined}>{inv.purchaseOrderNumber || "—"}</span></td>;
                   case "orderNumber": return <td key={column.id} className="min-w-[120px] whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.orderNumber || "—"}</td>;
-                  case "invoiceDate": return <td key={column.id} className="min-w-[132px] whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.issueDate || inv.createdAt)}</td>;
+                  case "invoiceDate": return <td key={column.id} className="min-w-[132px] whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatInvoiceDocumentDate(inv as unknown as Record<string, unknown>, formatDate)}</td>;
                   case "lastSent": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{inv.lastSentAt ? formatDate(inv.lastSentAt) : "Not sent"}</td>;
-                  case "dueDate": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatDate(inv.dueDate)}</td>;
+                  case "dueDate": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{formatInvoiceDueDate(inv as unknown as Record<string, unknown>, formatDate)}</td>;
                   case "approval": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{approvalLabel(inv)}</td>;
                   case "jobStatus": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-titan-sm text-titan-text-secondary">{getOrderJobStatus(inv)}</td>;
                   case "total": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">{formatCurrency(inv.displayTotal || inv.total)}</td>;

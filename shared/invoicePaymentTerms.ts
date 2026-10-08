@@ -45,6 +45,25 @@ export function hasInvoicePaymentTermsStartedOrApprovalHistory(invoice: Record<s
   );
 }
 
+/** Native living invoices can carry a provisional date until first approval.
+ * Imported and provider-linked invoices retain their source document dates. */
+export function hasEstablishedInvoiceDate(invoice: Record<string, unknown>): boolean {
+  return hasInvoicePaymentTermsStartedOrApprovalHistory(invoice)
+    || Boolean(invoice.importSource || invoice.importedAt || invoice.isHistorical || invoice.historicalArState
+      || invoice.qbInvoiceId || invoice.externalAccountingId);
+}
+
+/** First approvals written by the current rule store the business day at UTC
+ * noon in both document-date columns. Legacy/imported timestamps keep their
+ * existing display behavior. */
+export function hasFirstApprovalInvoiceDateAnchor(invoice: Record<string, unknown>): boolean {
+  if (!hasInvoicePaymentTermsStartedOrApprovalHistory(invoice)) return false;
+  const issue = invoice.issueDate ? new Date(invoice.issueDate as string | Date) : null;
+  const issued = invoice.issuedAt ? new Date(invoice.issuedAt as string | Date) : null;
+  if (!issue || !issued || Number.isNaN(issue.getTime()) || Number.isNaN(issued.getTime())) return false;
+  return issue.getTime() === issued.getTime() && issue.toISOString().endsWith('T12:00:00.000Z');
+}
+
 export function resolveFirstInvoiceTermsStart(input: {
   customerPaymentTerms?: string | null;
   invoiceTerms?: string | null;

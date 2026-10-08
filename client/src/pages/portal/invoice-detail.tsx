@@ -32,7 +32,7 @@ function formatDate(value: string | null) {
   if (!value) return "Not set";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Not set";
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", ...(/^\d{4}-\d{2}-\d{2}$/.test(value) ? { timeZone: "UTC" } : {}) }).format(date);
 }
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
@@ -152,7 +152,7 @@ export default function PortalInvoiceDetailPage() {
             <Badge variant={statusVariant(invoice.status)}>{invoice.paymentStatusLabel}</Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Issued {formatDate(invoice.issueDate)} · Due {formatDate(invoice.dueDate)}
+            Issued {invoice.issueDate ? formatDate(invoice.issueDate) : "Pending approval"} · Due {formatDate(invoice.dueDate)}
           </p>
         </div>
 

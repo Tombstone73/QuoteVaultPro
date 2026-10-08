@@ -9,9 +9,11 @@ import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingAppro
 import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 import { resolveQuickBooksPreferencesFromOrgPreferences } from '@shared/quickBooksPreferences';
 import {
+  calculateInvoiceDueDateFromTerms,
   hasInvoicePaymentTermsStartedOrApprovalHistory,
   resolveFirstInvoiceTermsStart,
 } from '@shared/invoicePaymentTerms';
+import { firstApprovalInvoiceDate, invoiceDocumentDatePart } from '../lib/invoiceDocumentDate';
 
 export async function approveInvoicesForAccounting(input: {
   organizationId: string;
@@ -49,6 +51,11 @@ export async function approveInvoicesForAccounting(input: {
       }
       const now = new Date();
       const startsTermsOnThisApproval = !hasInvoicePaymentTermsStartedOrApprovalHistory(invoice as Record<string, unknown>);
+      const hasProviderInvoiceLink = Boolean(String(invoice.qbInvoiceId || invoice.externalAccountingId || '').trim());
+      const establishesInvoiceDate = startsTermsOnThisApproval && !hasProviderInvoiceLink;
+      const invoiceDate = establishesInvoiceDate
+        ? firstApprovalInvoiceDate(now, (organization?.settings as any)?.timezone ?? preferences?.timezone)
+        : invoice.issueDate;
       const [customer] = invoice.customerId
         ? await tx.select({ paymentTerms: customers.paymentTerms }).from(customers).where(and(
           eq(customers.id, invoice.customerId),
@@ -66,11 +73,14 @@ export async function approveInvoicesForAccounting(input: {
       if (termsStart?.validationError) {
         results.push({ id: invoiceId, outcome: 'failed', reason: termsStart.validationError, code: 'CUSTOM_PAYMENT_TERMS_DUE_DATE_REQUIRED' }); continue;
       }
+      const firstDueDate = establishesInvoiceDate && termsStart && termsStart.terms !== 'custom'
+        ? calculateInvoiceDueDateFromTerms({ termsStartedAt: invoiceDate, terms: termsStart.terms })
+        : termsStart?.dueDate ?? null;
       const approvedVersion = Number(invoice.invoiceVersion || 1);
-      const hasProviderInvoiceLink = Boolean(String(invoice.qbInvoiceId || invoice.externalAccountingId || '').trim());
       const contactQuickBooksHold = Boolean(invoice.contactId && !invoice.customerId);
       const shouldQueueInitialSync = autoQueueApprovedInvoices && !hasProviderInvoiceLink && !contactQuickBooksHold;
       await tx.update(invoices).set({
+        ...(establishesInvoiceDate ? { issueDate: invoiceDate, issuedAt: invoiceDate } : {}),
         accountingApprovedAt: now,
         accountingApprovedByUserId: input.actorUserId,
         accountingApprovedVersion: approvedVersion,
@@ -78,7 +88,7 @@ export async function approveInvoicesForAccounting(input: {
         ...(termsStart ? {
           termsStartedAt: now,
           terms: termsStart.terms,
-          dueDate: termsStart.dueDate,
+          dueDate: firstDueDate,
         } : {}),
         // Approval changes only local queue state. Existing provider-linked
         // invoices retain their established update/resync behavior.
@@ -105,13 +115,14 @@ export async function approveInvoicesForAccounting(input: {
         newValues: {
           approvedAccountingVersion: approvedVersion,
           approvedAt: now.toISOString(),
+          invoiceDate: invoiceDocumentDatePart(invoiceDate),
           source: input.source || 'manual',
           quickBooksAutoQueued: shouldQueueInitialSync,
           quickBooksReviewHold: contactQuickBooksHold,
           ...(termsStart ? {
             terms: termsStart.terms,
             termsStartedAt: now.toISOString(),
-            dueDate: termsStart.dueDate?.toISOString() ?? null,
+            dueDate: firstDueDate?.toISOString() ?? null,
           } : {}),
         } as any,
       } as any);

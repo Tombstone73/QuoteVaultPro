@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { resolveInvoicePdfFinancialSummary } from '../../shared/invoiceAccountingDisplay';
+import { hasEstablishedInvoiceDate } from '../../shared/invoicePaymentTerms';
 
 import {
   type RemittanceAddress,
@@ -50,6 +51,16 @@ type InvoiceLike = {
   invoiceNumber?: number | null;
   displayNumber?: string | null;
   issueDate?: Date | string | null;
+  accountingApprovedAt?: Date | string | null;
+  accountingApprovalRevokedAt?: Date | string | null;
+  accountingApprovedVersion?: number | null;
+  termsStartedAt?: Date | string | null;
+  importSource?: string | null;
+  importedAt?: Date | string | null;
+  isHistorical?: boolean | null;
+  historicalArState?: string | null;
+  qbInvoiceId?: string | null;
+  externalAccountingId?: string | null;
   dueDate?: Date | string | null;
   status?: string | null;
   currency?: string | null;
@@ -565,7 +576,11 @@ export async function generateInvoicePdfBytes(
   // Header
   // -----------------
   const invoiceNumber = invoice.displayNumber || (invoice.invoiceNumber ? String(invoice.invoiceNumber) : '');
-  const issueDate = fmtDate(invoice.issueDate);
+  const hasApprovalFields = ['accountingApprovedAt', 'accountingApprovalRevokedAt', 'accountingApprovedVersion', 'termsStartedAt']
+    .some((field) => field in invoice);
+  const issueDate = hasApprovalFields && !hasEstablishedInvoiceDate(invoice as Record<string, unknown>)
+    ? 'Pending approval'
+    : fmtDate(invoice.issueDate);
   const dueDate = fmtDate(invoice.dueDate);
 
   const headerTopY = y;
@@ -617,7 +632,7 @@ export async function generateInvoicePdfBytes(
 
   let metaY = headerTopY - theme.header.metaStartOffsetY;
   if (issueDate) {
-    drawTextRight(`ISSUE: ${issueDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
+    drawTextRight(`INVOICE DATE: ${issueDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
     metaY -= theme.header.metaLineHeight;
   }
   if (dueDate) {

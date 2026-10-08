@@ -7,6 +7,8 @@ import { getInvoiceSendStatuses } from '../invoicesService';
 import { getInvoiceAccountingApprovalState } from '../lib/invoiceAccountingApproval';
 import { normalizeInvoiceAccountingDisplay } from '@shared/invoiceAccountingDisplay';
 import { resolveHistoricalArState } from '@shared/historicalArAuthority';
+import { hasFirstApprovalInvoiceDateAnchor } from '@shared/invoicePaymentTerms';
+import { invoiceDocumentDatePart } from '../lib/invoiceDocumentDate';
 import {
   getAccountsReceivableAging,
   isAccountsReceivableRowOverdue,
@@ -137,14 +139,22 @@ export async function getAccountsReceivableReport(input: { organizationId: strin
     })) continue;
     const sendTracking = sendStatuses.get(invoice.id);
     const sendStatus = mapSendStatus(sendTracking?.customerSendStatus);
-    const aging = getAccountsReceivableAging(isoDate(invoice.dueDate, timezone), asOf);
+    const firstApprovalDateAnchor = hasFirstApprovalInvoiceDateAnchor(invoice as Record<string, unknown>);
+    const dueDate = firstApprovalDateAnchor
+      ? invoiceDocumentDatePart(invoice.dueDate)
+      : isoDate(invoice.dueDate, timezone);
+    const aging = getAccountsReceivableAging(dueDate, asOf);
     const row: AccountsReceivableRow = {
       id: invoice.id, customerId: source.customer?.id ?? null, customerName: source.customer?.companyName ?? null,
       contactName: [source.contact?.firstName, source.contact?.lastName].filter(Boolean).join(' ') || null,
       invoiceNumber: invoice.displayNumber || invoice.qbDocNumber || String(invoice.invoiceNumber), orderId: source.order?.id ?? null,
       orderNumber: source.order?.displayNumber || (source.order?.orderNumber != null ? String(source.order.orderNumber) : null),
       jobName: source.order?.label ?? null, purchaseOrderNumber: invoice.customerPoNumber || source.order?.poNumber || null,
-      issueDate: isoDate(invoice.issuedAt || invoice.issueDate, timezone), dueDate: isoDate(invoice.dueDate, timezone), ...aging,
+      issueDate: firstApprovalDateAnchor
+        ? invoiceDocumentDatePart(invoice.issueDate)
+        : isoDate(invoice.issuedAt || invoice.issueDate, timezone),
+      dueDate,
+      ...aging,
       invoiceStatus: display.displayStatus, approvalStatus: 'Approved', sendStatus, terms: invoice.customTerms || invoice.terms,
       totalCents: display.totalCents, paidCents: display.paidCents, remainingCents: display.remainingCents,
       lastSentAt: sendTracking?.lastSentAt ? new Date(sendTracking.lastSentAt).toISOString() : null, qbSyncStatus: invoice.qbSyncStatus || invoice.syncStatus || 'not_synced', jobStatus: mapJobStatus(source.order),

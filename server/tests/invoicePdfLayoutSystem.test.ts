@@ -12,6 +12,27 @@ function readPdfContentStream(bytes: Uint8Array): string {
 }
 
 describe('Invoice PDF v1 layout system', () => {
+  test('prints the persisted first-approval Invoice Date and hides a provisional draft date', async () => {
+    const invoice = {
+      invoiceNumber: 20001, status: 'billed', currency: 'USD',
+      issueDate: '2026-10-08T12:00:00.000Z', dueDate: '2026-11-07T12:00:00.000Z',
+      accountingApprovedAt: '2026-10-09T03:30:00.000Z', accountingApprovedVersion: 1,
+      subtotalCents: 1000, totalCents: 1000,
+    };
+    const params = {
+      invoice, customer: { companyName: 'Customer' }, companySettings: { companyName: 'Titan Printing' },
+      paymentSummary: { totalCents: 1000, amountPaidCents: 0, amountDueCents: 1000, statusLabel: 'Unpaid' },
+      lineItems: [{ description: 'Print', quantity: 1, unitPriceCents: 1000, lineTotalCents: 1000 }],
+    };
+    const approvedText = readPdfContentStream(await generateInvoicePdfBytes(params as any));
+    expect(approvedText).toContain('INVOICE DATE: Oct 08, 2026');
+    expect(approvedText).toContain('Nov 07, 2026');
+    expect(approvedText).not.toContain('Oct 5, 2026');
+    const draftText = readPdfContentStream(await generateInvoicePdfBytes({ ...params, invoice: { ...invoice, accountingApprovedAt: null, accountingApprovedVersion: null, issueDate: '2026-10-05T16:00:00.000Z' } } as any));
+    expect(draftText).toContain('INVOICE DATE: Pending approval');
+    expect(draftText).not.toContain('Oct 5, 2026');
+  });
+
   test('badge color + watermark + footer are theme-driven and deterministic', async () => {
     const theme = {
       ...DEFAULT_INVOICE_PDF_THEME,
