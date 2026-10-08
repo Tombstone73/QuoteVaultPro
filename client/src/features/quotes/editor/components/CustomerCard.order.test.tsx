@@ -49,11 +49,19 @@ describe("direct Order customer and job identity", () => {
   });
   afterEach(() => { act(() => root.unmount()); host.remove(); });
 
-  test("labels both entities and presents selected contact details while editing", () => {
+  test("presents selected customer and contact using the Order Detail hierarchy", () => {
     act(() => root.render(<CustomerCard {...baseProps()} />));
-    expect(host.querySelector('select[aria-label="Customer"]')).not.toBeNull();
-    expect(host.querySelector('select[aria-label="Contact"]')).not.toBeNull();
+    const card = host.querySelector('section[aria-label="Customer and contact"]')!;
+    expect(card.className).toContain("sm:grid-cols-2");
+    expect(card.className).toContain("p-4");
+    expect(card.textContent).toContain("Customer");
+    expect(card.textContent).toContain("Contact");
+    expect(card.querySelectorAll(".uppercase.tracking-\\[0\\.12em\\]")).toHaveLength(2);
+    expect(host.querySelector('select[aria-label="Customer"]')).toBeNull();
+    expect(host.querySelector('select[aria-label="Contact"]')).toBeNull();
     expect(host.textContent?.match(/Offset House/g)).toHaveLength(1);
+    expect(card.querySelector(".text-lg.font-semibold")?.textContent).toBe("Offset House");
+    expect(card.querySelector(".text-base.font-semibold")?.textContent).toBe("John Smith");
     expect(host.querySelector('a[href="mailto:john@example.com"]')?.textContent).toBe("john@example.com");
     expect(host.querySelector('a[href^="tel:"]')).not.toBeNull();
     expect(host.querySelector('a[href="mailto:john@example.com"]')?.className).not.toContain("font-mono");
@@ -62,28 +70,74 @@ describe("direct Order customer and job identity", () => {
   test("clearing the customer and changing a contact use the canonical callbacks", () => {
     const props = baseProps();
     act(() => root.render(<CustomerCard {...props} />));
+    expect(host.querySelector('[aria-label="Clear customer"]')).toBeNull();
+    act(() => (host.querySelector('button[aria-label="Change customer"]') as HTMLButtonElement).click());
+    expect(host.querySelector('select[aria-label="Customer"]')).not.toBeNull();
     const clear = Array.from(host.querySelectorAll("button")).find((button) => /clear customer/i.test(button.getAttribute("aria-label") ?? button.textContent ?? ""));
     expect(clear).toBeDefined();
     act(() => clear!.click());
     expect(props.onCustomerChange).toHaveBeenCalledWith(null, undefined);
+    act(() => (host.querySelector('button[aria-label="Change contact"]') as HTMLButtonElement).click());
     const select = host.querySelector('select[aria-label="Contact"]') as HTMLSelectElement;
     act(() => { select.value = "contact-2"; Simulate.change(select); });
     expect(props.onContactChange).toHaveBeenCalledWith("contact-2", expect.objectContaining({ firstName: "Jane", lastName: "Doe" }));
+    act(() => (host.querySelector('button[aria-label="Change contact"]') as HTMLButtonElement).click());
+    act(() => (host.querySelector('button[aria-label="Clear contact"]') as HTMLButtonElement).click());
+    expect(props.onContactChange).toHaveBeenCalledWith(null, null);
   });
 
-  test("presents shared customer/contact details once under the contact", () => {
+  test("presents each entity's own email and phone even when they match", () => {
     const props = baseProps();
     act(() => root.render(<CustomerCard {...props} selectedCustomer={{ ...props.selectedCustomer, email: "JOHN@example.com ", phone: "(317) 849-5155" }} />));
-    expect(host.querySelectorAll('a[href^="mailto:"]')).toHaveLength(1);
-    expect(host.querySelectorAll('a[href^="tel:"]')).toHaveLength(1);
-    expect(host.querySelector('a[href^="mailto:"]')?.textContent).toBe("john@example.com");
+    expect(host.querySelectorAll('a[href^="mailto:"]')).toHaveLength(2);
+    expect(host.querySelectorAll('a[href^="tel:"]')).toHaveLength(2);
   });
 
   test("supports selecting a contact without a customer account", () => {
     act(() => root.render(<CustomerCard {...baseProps()} selectedCustomerId={null} selectedCustomer={undefined} />));
+    expect(host.querySelector('select[aria-label="Customer"]')).not.toBeNull();
+    expect(host.querySelector('select[aria-label="Contact"]')).toBeNull();
+    expect(host.textContent).toContain("John Smith");
+    act(() => (host.querySelector('button[aria-label="Change contact"]') as HTMLButtonElement).click());
     const select = host.querySelector('select[aria-label="Contact"]') as HTMLSelectElement;
     expect(select.disabled).toBe(false);
     expect(select.dataset.customerId).toBe("");
+  });
+
+  test("keeps the existing searchable selectors available for an empty order", () => {
+    const props = baseProps();
+    act(() => root.render(<CustomerCard {...props} selectedCustomerId={null} selectedCustomer={undefined} selectedContactId={null} selectedContact={null} />));
+    expect(host.querySelector('select[aria-label="Customer"]')).not.toBeNull();
+    expect(host.querySelector('select[aria-label="Contact"]')).not.toBeNull();
+    expect(host.querySelector('button[aria-label="Change customer"]')).toBeNull();
+    expect(host.querySelector('button[aria-label="Change contact"]')).toBeNull();
+  });
+
+  test("shows the address immediately and has no empty address control", () => {
+    const props = baseProps();
+    act(() => root.render(<CustomerCard {...props} selectedCustomer={{ ...props.selectedCustomer, shippingStreet1: "330 Windmill Trail", shippingCity: "Greenwood", shippingPostalCode: "46142-7290" }} />));
+    expect(host.textContent).toContain("330 Windmill Trail");
+    expect(host.textContent).toContain("Greenwood, 46142-7290");
+    expect(host.textContent).not.toContain("Show address");
+    act(() => root.render(<CustomerCard {...props} />));
+    expect(host.textContent).not.toContain("330 Windmill Trail");
+    expect(host.textContent).not.toContain("Show address");
+  });
+
+  test("returns to detail presentation after customer and contact changes", () => {
+    const props = baseProps();
+    act(() => root.render(<CustomerCard {...props} />));
+    act(() => (host.querySelector('button[aria-label="Change customer"]') as HTMLButtonElement).click());
+    const customerSelect = host.querySelector('select[aria-label="Customer"]') as HTMLSelectElement;
+    act(() => { customerSelect.value = "customer-1"; Simulate.change(customerSelect); });
+    expect(props.onCustomerChange).toHaveBeenCalledWith("customer-1", undefined, undefined);
+    expect(host.querySelector('select[aria-label="Customer"]')).toBeNull();
+    act(() => (host.querySelector('button[aria-label="Change contact"]') as HTMLButtonElement).click());
+    const contactSelect = host.querySelector('select[aria-label="Contact"]') as HTMLSelectElement;
+    act(() => { contactSelect.value = "contact-2"; Simulate.change(contactSelect); });
+    expect(host.querySelector('select[aria-label="Contact"]')).toBeNull();
+    act(() => root.render(<CustomerCard {...props} selectedContactId={null} selectedContact={null} />));
+    expect(host.querySelector('select[aria-label="Contact"]')).not.toBeNull();
   });
 
   test("edits job identity and commits flags through existing handlers", () => {
