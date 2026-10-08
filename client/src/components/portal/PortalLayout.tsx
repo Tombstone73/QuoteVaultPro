@@ -12,6 +12,7 @@ import {
   ReceiptText,
   ScrollText,
   ShoppingBag,
+  Store,
   Sun,
   UserCircle,
 } from "lucide-react";
@@ -40,6 +41,7 @@ import { apiRequest } from "@/lib/queryClient";
 
 const NAV_ICONS = {
   home: Home,
+  store: Store,
   quotes: FileText,
   orders: ShoppingBag,
   proofs: FileCheck,

@@ -22,6 +22,7 @@ describe("portal shell", () => {
   test("orders customer portal navigation for customer workflows", () => {
     expect(portalNavItems.map((item) => item.label)).toEqual([
       "Dashboard",
+      "Storefront",
       "Quotes",
       "Orders",
       "Proofs",

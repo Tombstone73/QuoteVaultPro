@@ -210,6 +210,7 @@ export default function ProductsPage() {
       optionsJson: [],
       storeUrl: "",
       showStoreLink: true,
+      storefrontVisible: false,
       thumbnailUrls: [],
       priceBreaks: { enabled: false, type: "quantity", tiers: [] },
       useNestingCalculator: false,

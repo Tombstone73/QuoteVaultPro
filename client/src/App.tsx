@@ -51,6 +51,8 @@ import PortalQuoteDetailPage from "@/pages/portal/quote-detail";
 import PortalInvoicesPage from "@/pages/portal/invoices";
 import PortalInvoiceDetailPage from "@/pages/portal/invoice-detail";
 import PortalStatementPage from "@/pages/portal/statement";
+import PortalStorePage from "@/pages/portal/store";
+import PortalStoreProductPage from "@/pages/portal/store-product";
 import { PortalLayout } from "@/components/portal/PortalLayout";
 import PortalProofPage from "@/pages/portal/portal-proof";
 import ProductionBoard from "@/pages/production";
@@ -221,6 +223,8 @@ function Router() {
         <Route path="/portal" element={<PortalLayout />}>
           <Route index element={<PortalDashboardPage />} />
           <Route path="dashboard" element={<Navigate to="/portal" replace />} />
+          <Route path="store" element={<PortalStorePage />} />
+          <Route path="store/:id" element={<PortalStoreProductPage />} />
           <Route path="invoices" element={<PortalInvoicesPage />} />
           <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
           <Route path="statement" element={<PortalStatementPage />} />
@@ -422,6 +426,8 @@ function Router() {
       <Route path="/portal" element={<PortalLayout />}>
         <Route index element={<PortalDashboardPage />} />
         <Route path="dashboard" element={<Navigate to="/portal" replace />} />
+        <Route path="store" element={<PortalStorePage />} />
+        <Route path="store/:id" element={<PortalStoreProductPage />} />
         <Route path="invoices" element={<PortalInvoicesPage />} />
         <Route path="invoices/:id" element={<PortalInvoiceDetailPage />} />
         <Route path="statement" element={<PortalStatementPage />} />

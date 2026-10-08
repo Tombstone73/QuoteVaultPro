@@ -1,12 +1,13 @@
 export type PortalNavItem = {
   to: string;
   label: string;
-  icon: "home" | "quotes" | "orders" | "proofs" | "invoices" | "statement" | "documents" | "profile";
+  icon: "home" | "store" | "quotes" | "orders" | "proofs" | "invoices" | "statement" | "documents" | "profile";
   end?: boolean;
 };
 
 export const portalNavItems: PortalNavItem[] = [
   { to: "/portal", label: "Dashboard", icon: "home", end: true },
+  { to: "/portal/store", label: "Storefront", icon: "store" },
   { to: "/portal/quotes", label: "Quotes", icon: "quotes" },
   { to: "/portal/orders", label: "Orders", icon: "orders" },
   { to: "/portal/proofs", label: "Proofs", icon: "proofs" },

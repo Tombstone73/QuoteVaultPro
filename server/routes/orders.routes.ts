@@ -31,7 +31,6 @@ import {
     invoices,
     orderListNotes,
     users,
-    customerVisibleProducts,
     materials,
     materialFamilies,
     materialFamilyVariantDimensions,
@@ -10765,36 +10764,6 @@ export async function registerOrderRoutes(
         } catch (error) {
             const err: any = error;
             res.status(500).json({ message: err?.message ?? "Failed to delete manual reservation" });
-        }
-    });
-
-    // Customer portal: Products (filtered by visibility settings)
-    app.get('/api/portal/products', isAuthenticated, portalContext, async (req: any, res) => {
-        try {
-            const portalCustomer = getPortalCustomer(req);
-            if (!portalCustomer) {
-                return res.status(403).json({ error: 'No customer account linked to this user' });
-            }
-            const { organizationId, id: customerId, productVisibilityMode } =
-                portalCustomer as any;
-
-            const allProducts = await storage.getAllProducts(organizationId);
-            let visibleProducts = allProducts;
-
-            if (productVisibilityMode === 'linked-only') {
-                const visibleProductIds = await db
-                    .select({ productId: customerVisibleProducts.productId })
-                    .from(customerVisibleProducts)
-                    .where(eq(customerVisibleProducts.customerId, customerId));
-
-                const visibleIdSet = new Set(visibleProductIds.map(row => row.productId));
-                visibleProducts = allProducts.filter(p => visibleIdSet.has(p.id));
-            }
-
-            res.json({ success: true, data: visibleProducts });
-        } catch (error) {
-            console.error('Error fetching portal products:', error);
-            res.status(500).json({ error: 'Failed to fetch products' });
         }
     });
 

@@ -771,7 +771,7 @@ type PortalProofRow = {
 };
 
 
-class PortalAccessError extends Error {
+export class PortalAccessError extends Error {
   statusCode: number;
 
   constructor(statusCode: number, message: string) {

@@ -30,6 +30,65 @@ export type PortalSessionDto = {
   };
 };
 
+export type PortalStoreProductSummaryDto = {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  imageUrl: string | null;
+};
+
+export type PortalStoreCatalogDto = {
+  items: PortalStoreProductSummaryDto[];
+  categories: string[];
+  hasMore: boolean;
+  page: number;
+};
+
+export type PortalStoreCatalogFilters = { search: string; category: string | null; page: number };
+
+export type PortalStoreOptionValue = string | number | boolean | string[];
+
+export type PortalStoreOptionDto = {
+  key: string;
+  label: string;
+  type: "boolean" | "checkbox" | "select" | "radio" | "multiselect" | "number" | "text" | "textarea";
+  required: boolean;
+  helpText: string | null;
+  choices: Array<{ value: string; label: string; description: string | null }>;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+};
+
+export type PortalStoreProductDto = PortalStoreProductSummaryDto & {
+  measurementMode: string | null;
+  dimensionsRequired: boolean;
+  fixedDimensions: { widthIn: number; heightIn: number } | null;
+  defaults: {
+    quantity: number;
+    widthIn: number | null;
+    heightIn: number | null;
+    selections: Record<string, PortalStoreOptionValue>;
+  };
+  options: PortalStoreOptionDto[];
+};
+
+export type PortalStorePriceRequest = {
+  quantity: number;
+  widthIn?: number;
+  heightIn?: number;
+  selections: Record<string, PortalStoreOptionValue>;
+};
+
+export type PortalStorePriceDto = {
+  priceAvailable: boolean;
+  unitPriceCents: number | null;
+  totalCents: number | null;
+  options: PortalStoreOptionDto[];
+  effectiveSelections: Record<string, PortalStoreOptionValue>;
+};
+
 export type PortalInvoiceDto = {
   paymentEligibility?: { payable: boolean; blockedReason: string | null };
   id: string;
@@ -403,6 +462,13 @@ export const portalProfileKeys = {
   current: ["portal", "profile"] as const,
 };
 
+export const portalStoreKeys = {
+  catalog: (filters: PortalStoreCatalogFilters) => ["portal", "store", "products", filters.search, filters.category, filters.page] as const,
+  detail: (productId: string | undefined) => ["portal", "store", "products", productId] as const,
+  price: (productId: string | undefined, configuration: PortalStorePriceRequest | null) =>
+    ["portal", "store", "products", productId, "price", configuration] as const,
+};
+
 async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!path.startsWith("/api/portal/")) {
     throw new Error("Portal requests must use the portal API boundary");
@@ -466,6 +532,46 @@ export function usePortalProfile() {
   return useQuery({
     queryKey: portalProfileKeys.current,
     queryFn: () => portalFetch<PortalProfileDto>("/api/portal/profile"),
+  });
+}
+
+export function portalStoreCatalogPath(filters: PortalStoreCatalogFilters) {
+  const params = new URLSearchParams({ page: String(filters.page) });
+  if (filters.search) params.set("search", filters.search);
+  if (filters.category) params.set("category", filters.category);
+  return `/api/portal/products?${params.toString()}`;
+}
+
+export function usePortalStoreProducts(filters: PortalStoreCatalogFilters) {
+  return useQuery({
+    queryKey: portalStoreKeys.catalog(filters),
+    queryFn: () => portalFetch<PortalStoreCatalogDto>(portalStoreCatalogPath(filters)),
+  });
+}
+
+export function usePortalStoreProduct(productId: string | undefined) {
+  return useQuery({
+    queryKey: portalStoreKeys.detail(productId),
+    queryFn: () => {
+      if (!productId) throw new Error("Product ID required");
+      return portalFetch<PortalStoreProductDto>(`/api/portal/products/${encodeURIComponent(productId)}`);
+    },
+    enabled: !!productId,
+  });
+}
+
+export function usePortalStorePrice(productId: string | undefined, configuration: PortalStorePriceRequest | null) {
+  return useQuery({
+    queryKey: portalStoreKeys.price(productId, configuration),
+    queryFn: () => {
+      if (!productId || !configuration) throw new Error("Product configuration required");
+      return portalFetch<PortalStorePriceDto>(`/api/portal/products/${encodeURIComponent(productId)}/price`, {
+        method: "POST",
+        body: JSON.stringify(configuration),
+      });
+    },
+    enabled: !!productId && !!configuration,
+    retry: false,
   });
 }
 

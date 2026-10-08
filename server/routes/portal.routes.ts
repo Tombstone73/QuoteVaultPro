@@ -50,6 +50,7 @@ import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { isStaffPortalPreviewReadMethod } from "../services/staffPortalPreviewService";
 import { authorizeStaffPreviewPayment } from "../middleware/authorizeStaffPreviewPayment";
+import { getPortalStorefrontProduct, listPortalStorefrontProducts, previewPortalStorefrontPrice } from "../services/portalStorefront.service";
 
 type PortalHandler<T> = (req: Request) => Promise<T>;
 
@@ -372,6 +373,9 @@ export function registerPortalRoutes(
   app.get("/api/portal/statement/pdf", ...portalMiddlewares, portalStatementPdf());
   app.get("/api/portal/profile", ...portalMiddlewares, portalGet(getPortalProfile));
   app.patch("/api/portal/profile", ...portalMiddlewares, portalPatch(updatePortalProfile));
+  app.get("/api/portal/products", ...portalMiddlewares, portalGet(listPortalStorefrontProducts));
+  app.get("/api/portal/products/:id", ...portalMiddlewares, portalGetById("id", getPortalStorefrontProduct));
+  app.post("/api/portal/products/:id/price", ...portalMiddlewares, portalPostById("id", previewPortalStorefrontPrice));
   app.get("/api/portal/debug/customer-quotes", isAuthenticated, tenantContext, requireNonProductionStaff, async (req: Request, res: Response) => {
     try {
       const customerId = String(req.query.customerId || "").trim();
@@ -430,7 +434,8 @@ export function registerPortalRoutes(
   app.get("/api/portal/my-orders", ...portalMiddlewares, portalGet(listPortalOrders));
   app.get("/api/portal/my-quotes", ...portalMiddlewares, portalGet(listPortalQuotes));
 
-  // Phase 0 is read-only: block legacy state-transition/storefront surfaces registered later.
+  // Storefront Beta allows only the scoped catalog/detail/price-preview routes above.
+  // Keep all other legacy storefront and quote-conversion methods unavailable.
   app.all("/api/portal/convert-quote/:id", ...portalMiddlewares, denyOutOfPhasePortalSurface);
   app.all("/api/portal/products", ...portalMiddlewares, denyOutOfPhasePortalSurface);
 }

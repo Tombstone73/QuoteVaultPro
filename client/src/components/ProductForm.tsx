@@ -271,6 +271,22 @@ export const ProductForm = ({
 
         <FormField
           control={form.control}
+          name="storefrontVisible"
+          render={({ field }) => (
+            <FormItem className="flex items-center justify-between gap-4 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2">
+              <div>
+                <FormLabel className="text-sm text-slate-100">Show in Customer Portal Storefront Beta</FormLabel>
+                <FormDescription className="text-xs text-slate-400">
+                  Customers can preview pricing only after this product is active and its PBV2 tree is published.
+                </FormDescription>
+              </div>
+              <FormControl><Switch checked={field.value === true} onCheckedChange={field.onChange} aria-label="Show in Customer Portal Storefront Beta" /></FormControl>
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
           name="shopName"
           render={({ field }) => (
             <FormItem>
