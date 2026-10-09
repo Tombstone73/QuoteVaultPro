@@ -24,6 +24,8 @@ import { preparedEvidenceMatchesCheckpoint } from "../../src/modules/sales/quote
 import type { QuoteDeliverySuppression } from "../../src/modules/sales/contracts.js";
 import { quoteDeliverySuppression, requireAllowedQuoteSuppression, QUOTE_SUPPRESSED_TRANSPORT } from "../communications/m77fQaQuoteDeliverySafety.js";
 import { assertQuoteSuppressionSchema } from "./quotePublicationPhysicalPostconditions.js";
+import { createConsoleLogger, type V2Logger } from "../../src/observability/logger.js";
+import { createQuotePublicationDiagnostics, type QuotePublicationDiagnostics } from "./quotePublicationDiagnostics.js";
 
 type AttemptRow = {
   id: string;
@@ -145,7 +147,7 @@ export class PostgresQuoteDeliveryService {
   private readonly documents: PostgresCustomerDocumentService;
   private readonly integrations: PostgresEmailIntegrationService;
   private readonly products: ProductsReadPort;
-  constructor(private readonly pool: Pool, private readonly quoteService: QuoteApplicationService, integrations?: PostgresEmailIntegrationService) { this.documents = new PostgresCustomerDocumentService(pool); this.integrations = integrations ?? new PostgresEmailIntegrationService(pool); this.products = new PostgresProductsCompatibilityReader(pool); }
+  constructor(private readonly pool: Pool, private readonly quoteService: QuoteApplicationService, integrations?: PostgresEmailIntegrationService, private readonly logger: V2Logger = createConsoleLogger()) { this.documents = new PostgresCustomerDocumentService(pool); this.integrations = integrations ?? new PostgresEmailIntegrationService(pool); this.products = new PostgresProductsCompatibilityReader(pool); }
 
   async readiness(context: OperationContext, quoteId: QuoteId): Promise<QuoteSendReadiness> {
     requireOperationPrincipalScope(context);
@@ -169,25 +171,32 @@ export class PostgresQuoteDeliveryService {
   }
 
   async send(context: OperationContext, input: QuoteLifecycleInput): Promise<ApplicationResult<QuoteOperationResult>> {
+    const diagnostics = createQuotePublicationDiagnostics(context, input, this.logger);
     try {
       requireOperationPrincipalScope(context);
       if (!context.businessRequest || context.businessRequest.id !== input.businessRequestId) throw new V2ApplicationError("VALIDATION_ERROR", "A business request identity is required.");
+      diagnostics.stage("quote_read");
       const quote = await this.quoteService.read(context, input.quoteId);
       if (!quote.ok) return quote;
+      diagnostics.stage("authorization");
       if (!new AuthorityPolicy().decide(context.principal, { capability: "quote.send", resource: { organizationId: context.organizationId, customerId: quote.value.quote.customerContact.customerId } }).allowed)
         throw new V2ApplicationError("FORBIDDEN", "Quote delivery is unavailable.");
-      const prepared = await this.prepare(context, input);
+      diagnostics.stage("prepare_connection");
+      const prepared = await this.prepare(context, input, diagnostics);
       if ("replay" in prepared) return success(prepared.replay);
-      if (prepared.suppression) return await this.publishSuppressed(context, input, prepared);
+      if (prepared.suppression) return await this.publishSuppressed(context, input, prepared, diagnostics);
 
       let providerMessageId: string;
       try {
+        diagnostics.stage("provider_delivery");
         // A configuration change between preparation and transport cannot redirect QA to Gmail.
         if (quoteDeliverySuppression(context.organizationId, prepared.recipient) || !prepared.integration)
           throw new V2ApplicationError("CONFLICT", "Quote transport changed after preparation.");
         providerMessageId = await this.deliver(prepared.integration, prepared.recipient, prepared.document, prepared.pdf);
       }
       catch (cause) {
+        diagnostics.failure(cause);
+        diagnostics.stage("delivery_reconciliation");
         if (cause instanceof V2ApplicationError && cause.code === "CONFLICT") {
           await this.failed(context.organizationId, prepared.requestId, prepared.attemptId, "Quote transport guard rejected delivery before a provider call.");
           throw cause;
@@ -212,54 +221,65 @@ export class PostgresQuoteDeliveryService {
         preparedSnapshot: prepared.preparedEvidence,
         frozenTaxComposition: prepared.frozenTaxComposition,
       };
+      diagnostics.stage("sales_checkpoint");
       const transitioned = await this.quoteService.recordDelivered(context, committed);
       if (!transitioned.ok) {
+        diagnostics.stage("delivery_reconciliation");
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery but the Quote lifecycle transition requires reconciliation; automatic retry is disabled.", providerMessageId);
         return failure(new V2ApplicationError("CONFLICT", "The provider accepted delivery; Quote state needs reconciliation."));
       }
       if (!transitioned.value.checkpointId) {
+        diagnostics.stage("delivery_reconciliation");
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery but immutable Quote evidence was not confirmed; automatic retry is disabled.", providerMessageId);
         throw new V2ApplicationError("CONFLICT", "Quote delivery requires reconciliation before it can be retried.");
       }
       try {
+        diagnostics.stage("receipt_finalization");
         await this.succeeded(context, prepared.requestId, prepared.attemptId, input.quoteId, transitioned.value.checkpointId, providerMessageId, prepared.recipient, prepared.preparedEvidence.documentSha256, serializePreparedQuoteDeliveryEvidence(prepared.preparedEvidence), transitioned.value);
-      } catch {
+      } catch (cause) {
+        diagnostics.failure(cause);
+        diagnostics.stage("delivery_reconciliation");
         await this.uncertain(context.organizationId, prepared.requestId, prepared.attemptId, "The provider accepted delivery and Quote state changed, but delivery evidence could not be finalized; automatic retry is disabled.", providerMessageId);
         throw new V2ApplicationError("CONFLICT", "Quote delivery evidence requires reconciliation before it can be retried.");
       }
       return success({ ...transitioned.value, quote: { ...transitioned.value.quote,
         publishedCheckpointId: transitioned.value.checkpointId, publishedEvidenceStatus: "modern" } });
     } catch (cause) {
+      diagnostics.failure(cause);
       return failure(cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Quote delivery could not be completed."));
     }
   }
 
-  private async publishSuppressed(context: OperationContext, input: QuoteLifecycleInput, prepared: Exclude<PreparedDelivery, { replay: QuoteOperationResult }>): Promise<ApplicationResult<QuoteOperationResult>> {
+  private async publishSuppressed(context: OperationContext, input: QuoteLifecycleInput, prepared: Exclude<PreparedDelivery, { replay: QuoteOperationResult }>, diagnostics?: QuotePublicationDiagnostics): Promise<ApplicationResult<QuoteOperationResult>> {
     try {
+      diagnostics?.stage("sales_checkpoint");
       requireAllowedQuoteSuppression(context.organizationId, prepared.recipient, prepared.suppression);
       const transitioned = await this.quoteService.recordDelivered(context, {
         ...input, deliveryAttemptId: prepared.attemptId, suppression: prepared.suppression!,
         preparedSnapshot: prepared.preparedEvidence, frozenTaxComposition: prepared.frozenTaxComposition,
       });
       if (!transitioned.ok || !transitioned.value.checkpointId) throw new Error("Suppressed publication checkpoint was not committed.");
+      diagnostics?.stage("receipt_finalization");
       await this.succeeded(context, prepared.requestId, prepared.attemptId, input.quoteId, transitioned.value.checkpointId,
         undefined, prepared.recipient, prepared.preparedEvidence.documentSha256, serializePreparedQuoteDeliveryEvidence(prepared.preparedEvidence), transitioned.value, prepared.suppression);
       return success({ ...transitioned.value, quote: { ...transitioned.value.quote,
         publishedCheckpointId: transitioned.value.checkpointId, publishedEvidenceStatus: "modern", publicationDeliveryMode: "suppressed" } });
-    } catch {
+    } catch (cause) {
+      diagnostics?.failure(cause);
       // Three commits are intentional: preparation, Sales checkpoint, publication receipt.
       // Any interrupted finalization is a durable reconciliation blocker, not a provider-unknown
       // delivery or an automatic retry. Even a crash before this write leaves a pinned pending
       // attempt that blocks sending; no recovery path may switch its transport to Gmail.
       let client: PoolClient | undefined;
       try {
+        diagnostics?.stage("qa_reconciliation");
         client = await this.pool.connect();
         await client.query("BEGIN");
         const blocked = await client.query("UPDATE v2_sales_quote_delivery_attempts SET delivery_state='failed',failure_message='DEV QA publication requires reconciliation; provider was not attempted.',completed_at=now() WHERE organization_id=$1 AND id=$2 AND transport=$3 AND delivery_state='pending'", [context.organizationId, prepared.attemptId, QUOTE_SUPPRESSED_TRANSPORT]);
         // A lost COMMIT acknowledgement may already have finalized both records.
         if (blocked.rowCount === 1) await this.requests.markPermanentFailure(client, context.organizationId, prepared.requestId);
         await client.query("COMMIT");
-      } catch { if (client) await client.query("ROLLBACK").catch(() => {}); } finally { client?.release(); }
+      } catch (cause) { diagnostics?.failure(cause); if (client) await client.query("ROLLBACK").catch(() => {}); } finally { client?.release(); }
       return failure(new V2ApplicationError("CONFLICT", "DEV QA publication requires reconciliation. Email was suppressed; no provider call was attempted."));
     }
   }
@@ -271,19 +291,23 @@ export class PostgresQuoteDeliveryService {
    * the pending provider attempt.  Nothing has left the platform if this
    * transaction rolls back.
    */
-  private async prepare(context: OperationContext, input: QuoteLifecycleInput): Promise<PreparedDelivery> {
+  private async prepare(context: OperationContext, input: QuoteLifecycleInput, diagnostics?: QuotePublicationDiagnostics): Promise<PreparedDelivery> {
     const client = await this.pool.connect();
     try {
+      diagnostics?.stage("prepare_begin");
       await client.query("BEGIN");
       const transaction = new PostgresQuoteTransaction(client);
+      diagnostics?.stage("prepare_quote_read");
       const current = await transaction.read(brandedId<"OrganizationId">(context.organizationId), input.quoteId, true);
       if (!current) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
       if (!new AuthorityPolicy().decide(context.principal, { capability: "quote.send", resource: { organizationId: context.organizationId, customerId: current.quote.customerContact.customerId } }).allowed)
         throw new V2ApplicationError("FORBIDDEN", "Quote delivery is unavailable.");
       const isolated = await client.query<{ recipient_email: string; suppression_context: unknown }>("SELECT recipient_email,suppression_context FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND transport='dev_qa_suppressed' ORDER BY attempted_at DESC LIMIT 1", [context.organizationId, input.quoteId]);
       if (isolated.rows[0]) requireAllowedQuoteSuppression(context.organizationId, isolated.rows[0].recipient_email, isolated.rows[0].suppression_context);
+      diagnostics?.stage("prepare_request");
       const reservation = await this.requests.reserve(client, { organizationId: context.organizationId, operation: "sales.quote.delivery.v1", businessRequestId: input.businessRequestId, payloadFingerprint: fingerprint({ quoteId: input.quoteId, expectedRevision: input.expectedRevision }), principalKind: context.principal.kind, principalSubject: principalSubject(context.principal), ...(staffActorId(context.principal) ? { staffActorUserId: staffActorId(context.principal) } : {}) });
       if (reservation.kind === "replay") {
+        diagnostics?.stage("prepare_replay");
         if (reservation.request.status === "succeeded") {
           const saved = reservation.request.resultJson as QuoteOperationResult;
           if (saved?.quote?.quote?.quoteId !== input.quoteId || saved.quote.quote.organizationId !== context.organizationId)
@@ -301,6 +325,7 @@ export class PostgresQuoteDeliveryService {
           if (delivered.suppression) requireAllowedQuoteSuppression(context.organizationId, delivered.recipientEmail, delivered.suppression);
           const link = await client.query<{ id: string }>(`SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND operation_request_id=$3 AND quote_checkpoint_id=$4 AND id=$5 AND recipient_email=$6 AND document_sha256=$7 AND ${delivered.suppression ? "provider_message_id IS NULL AND delivery_state='suppressed' AND transport='dev_qa_suppressed' AND suppression_context=$8::jsonb" : "provider_message_id=$8 AND delivery_state='succeeded' AND transport='gmail' AND suppression_context IS NULL"}`, [context.organizationId, input.quoteId, reservation.request.id, checkpoint.checkpointId, delivered.deliveryAttemptId, delivered.recipientEmail, delivered.documentSha256, delivered.suppression ? JSON.stringify(delivered.suppression) : delivered.providerMessageId]);
           if (!link.rows[0]) throw new V2ApplicationError("CONFLICT", "Quote delivery receipt has no exact committed request and publication link.");
+          diagnostics?.stage("prepare_commit");
           await client.query("COMMIT");
           return { requestId: reservation.request.id, replay: { ...saved, quote: { ...saved.quote,
             publishedCheckpointId: checkpoint.checkpointId, publishedEvidenceStatus: evidenceStatus,
@@ -308,13 +333,16 @@ export class PostgresQuoteDeliveryService {
         }
         throw new V2ApplicationError("CONFLICT", "This Quote delivery request is already in progress.");
       }
+      diagnostics?.stage("prepare_state");
       const prior = await client.query<{ exists: boolean }>("SELECT EXISTS(SELECT 1 FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND delivery_state IN ('succeeded','suppressed')) AS exists", [context.organizationId, input.quoteId]);
       if (current.publishedCheckpointId || prior.rows[0]?.exists || current.quote.deliveryState === "sent") await assertQuoteResendSchema(client);
       if (current.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before sending.");
       if (current.quote.acceptanceState !== "not_accepted" || current.quote.lifecycleState !== "open" || current.quote.convertedOrderId)
         throw new V2ApplicationError("CONFLICT", "This Quote cannot be sent.");
+      diagnostics?.stage("prepare_recipient");
       const plannedRecipient = await this.documents.quoteRecipientInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId) ?? "";
       const suppression = quoteDeliverySuppression(context.organizationId, plannedRecipient);
+      diagnostics?.stage("prepare_suppression_schema");
       if (suppression) await assertQuoteSuppressionSchema(client);
       const existing = await client.query<AttemptRow>("SELECT id,organization_id,quote_document_id,operation_request_id,recipient_email,document_sha256,prepared_evidence_json,delivery_state,transport,suppression_context FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND operation_request_id=$2 FOR UPDATE", [context.organizationId, reservation.request.id]);
       if (existing.rows[0]?.transport === QUOTE_SUPPRESSED_TRANSPORT) {
@@ -322,18 +350,22 @@ export class PostgresQuoteDeliveryService {
         throw new V2ApplicationError("CONFLICT", "Interrupted DEV QA publication requires reconciliation; email remains suppressed.");
       }
       if (existing.rows[0] && suppression) throw new V2ApplicationError("CONFLICT", "The prepared Quote transport cannot change.");
+      diagnostics?.stage("prepare_routing");
       await this.requireRoutability(context.organizationId, current.quote.lines, new PostgresProductsCompatibilityReader(client));
+      diagnostics?.stage("prepare_tax");
       const frozen = await transaction.freezeTaxComposition({ organizationId: brandedId<"OrganizationId">(context.organizationId), quoteId: input.quoteId, expectedRevision: input.expectedRevision });
       if (!frozen) throw new V2ApplicationError("NOT_FOUND", "Quote was not found.");
       if (frozen.revision !== input.expectedRevision) throw new V2ApplicationError("STALE_STATE", "Quote has changed; reload before sending.");
       if (frozen.quote.acceptanceState !== "not_accepted" || frozen.quote.lifecycleState !== "open" || frozen.quote.convertedOrderId) throw new V2ApplicationError("CONFLICT", "This Quote cannot be sent.");
       const frozenTaxComposition = frozen.quote.taxComposition;
       if (!frozenTaxComposition || frozenTaxComposition.status !== "resolved") throw new V2ApplicationError("CONFLICT", "A customer document requires resolved authoritative tax.");
+      diagnostics?.stage("prepare_document");
       const preparedDocument = await this.documents.quoteDeliveryInTransaction(client, brandedId<"OrganizationId">(context.organizationId), input.quoteId);
       const document = preparedDocument.document;
       const recipient = email(preparedDocument.recipientEmail);
       if (!recipient) throw new V2ApplicationError("VALIDATION_ERROR", "The selected Quote contact needs a valid email address before sending.");
       if (recipient !== plannedRecipient) throw new V2ApplicationError("STALE_STATE", "The Quote recipient changed during preparation.");
+      diagnostics?.stage("prepare_pdf");
       let pdf = await renderCustomerSalesPdf(document);
       const sha = `sha256:${createHash("sha256").update(pdf).digest("hex")}`;
       const customerPresentation: PreparedQuoteDeliveryEvidence["customerPresentation"] = {
@@ -356,11 +388,13 @@ export class PostgresQuoteDeliveryService {
         documentNumber: document.number,
         documentDate: document.issuedAt,
       };
+      diagnostics?.stage("prepare_evidence");
       serializePreparedQuoteDeliveryEvidence(preparedEvidence);
       const uncertain = await client.query<{ id: string }>("SELECT id FROM v2_sales_quote_delivery_attempts WHERE organization_id=$1 AND quote_document_id=$2 AND (delivery_state IN ('pending','uncertain') OR (transport='dev_qa_suppressed' AND delivery_state='failed')) LIMIT 1 FOR UPDATE", [context.organizationId, input.quoteId]);
       if (uncertain.rows[0]) throw new V2ApplicationError("CONFLICT", "A previous Quote delivery is still unresolved. Reconcile it before sending again.");
       if (suppression) requireAllowedQuoteSuppression(context.organizationId, recipient, suppression);
       const integration = suppression ? undefined : await this.integrations.requireReady(context.organizationId);
+      diagnostics?.stage("prepare_attempt");
       let attemptId = existing.rows[0]?.id;
       let persistedEvidence = preparedEvidence;
       if (attemptId) {
@@ -391,8 +425,9 @@ export class PostgresQuoteDeliveryService {
         attemptId = inserted.id;
         persistedEvidence = loadPreparedQuoteDeliveryEvidenceFromAttempt(inserted)!;
       }
+      diagnostics?.stage("prepare_commit");
       await client.query("COMMIT"); return { requestId: reservation.request.id, attemptId: attemptId!, recipient, document, pdf, preparedEvidence: persistedEvidence, frozenTaxComposition, integration, suppression };
-    } catch (cause) { await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
+    } catch (cause) { diagnostics?.failure(cause); diagnostics?.stage("prepare_rollback"); await client.query("ROLLBACK"); throw cause; } finally { client.release(); }
   }
   private async routability(organizationId: string, lines: readonly Readonly<{ productId: string; resolvedConfiguration: Readonly<{ pricingConfigurationId: string }> }>[], products: ProductsReadPort = this.products): Promise<QuoteSendReadiness["routability"]> {
     const resolved = await Promise.all(lines.map((line) => products.resolveOrderRoutability(

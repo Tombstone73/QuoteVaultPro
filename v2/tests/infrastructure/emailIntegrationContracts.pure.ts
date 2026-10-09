@@ -64,7 +64,7 @@ assert.equal(finishes.length, 1, "an authenticated session and communications.co
 assert.deepEqual(redirects.slice(1), Array.from({ length: 2 }, () => ({ status: 302, location: "https://workspace.example/settings?email=error" })));
 const delivery = source("v2/infrastructure/sales/postgresQuoteDelivery.ts");
 assert.match(delivery, /this\.integrations\.requireReady\(context\.organizationId\)/u);
-assert.match(delivery, /const prepared = await this\.prepare\(context, input\)/u);
+assert.match(delivery, /const prepared = await this\.prepare\(context, input, diagnostics\)/u);
 assert.match(delivery, /this\.deliver\(prepared\.integration/u);
 const preparation = delivery.slice(delivery.indexOf("private async prepare("), delivery.indexOf("private async routability("));
 const readiness = preparation.indexOf("const integration = suppression ? undefined : await this.integrations.requireReady(context.organizationId)");

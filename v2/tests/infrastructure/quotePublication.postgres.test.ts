@@ -20,6 +20,11 @@ import { canonicalJson } from "../../src/modules/shared/commercialValues.js";
 import { composePostgresSalesTax } from "../../infrastructure/sales/postgresSalesTaxComposition.js";
 import { QuoteApplicationService } from "../../src/modules/sales/quoteApplication.js";
 import { quoteCommercialSnapshot } from "../../src/modules/sales/contracts.js";
+import { createQuotePublicationDiagnostics } from "../../infrastructure/sales/quotePublicationDiagnostics.js";
+import { V2ApplicationError } from "../../src/errors/applicationError.js";
+import express from "express";
+import httpRequest from "supertest";
+import { createQuoteRouter } from "../../src/interfaces/http/quoteRoutes.js";
 
 assert.equal(process.env.V2_VALIDATION_MODE, "deterministic");
 const db = new PGlite();
@@ -87,6 +92,88 @@ const finalize = async (id: string, attemptId: string, prepared: ReturnType<type
     { checkpointId: `cp-${id}`, quote: { quote: { quoteId: "quote-a", organizationId: "org-a", customerContact: prepared.customerContact }, number: { core: 1n, display: "QT-1" }, revision: id, checkpoints: [] } });
 };
 try {
+  // Diagnostics retain structure, never driver/provider text or document contents.
+  {
+    const logs: any[] = [];
+    const context: any = { organizationId: "b6f969b2-dda3-4133-9d75-c417dabb8f3a" };
+    const quoteId = "781faaa6-4036-43e0-bfb5-66e502404f37";
+    const businessRequestId = "M7QA:059355e8-c883-4a63-826d-779e9f1cc45b";
+    const logger = { log: (level: string, event: string, value: unknown) => logs.push({ level, event, value }) };
+    const trace = createQuotePublicationDiagnostics(context, { quoteId, businessRequestId }, logger as any);
+    trace.stage("prepare_tax");
+    const cause = Object.assign(new Error('SQL parameters: password=private-password; Authorization: Bearer private-token; customer@example.com; private-document'), { code: "23502", detail: "Failing row contains private-row-values", query: "SELECT private-sql", parameters: ["private-parameter"] });
+    cause.stack = `Error: ${cause.message}\n    at privateDocumentFunction (/private/home/v2/infrastructure/sales/postgresQuoteDelivery.ts:326:7)\n    at leaked (/private/home/customer-private-file.js:1:2)\n    at secret (https://example.invalid/?token=private-token)`;
+    trace.failure(cause);
+    equal(logs.length, 1); equal(logs[0].level, "error"); equal(logs[0].event, "v2.quote.publication.unexpected_failure");
+    equal(logs[0].value.organizationId, context.organizationId); equal(logs[0].value.resourceId, quoteId);
+    equal(logs[0].value.businessRequestIdHash, createHash("sha256").update(businessRequestId).digest("hex"));
+    equal(logs[0].value.stage, "prepare_tax"); equal(logs[0].value.exceptionClass, "Error"); equal(logs[0].value.sqlstate, "23502");
+    equal(logs[0].value.errorMessage, "PostgreSQL error 23502; original message redacted");
+    equal(logs[0].value.stackLocations, ["v2/infrastructure/sales/postgresQuoteDelivery.ts:326:7"]);
+    assert.doesNotMatch(JSON.stringify(logs), /private-|privateDocumentFunction|customer@example|M7QA:|Authorization|password=|Bearer/); checks++;
+    trace.failure(cause); equal(logs.length, 1);
+    trace.stage("qa_reconciliation"); trace.failure(new TypeError("private-token is not a function"));
+    equal(logs.length, 2); equal(logs[1].value.operationId, logs[0].value.operationId);
+    equal(logs[1].value.errorMessage, "Method is not callable; expression redacted");
+    trace.failure(new V2ApplicationError("CONFLICT", "Expected safe reconciliation")); equal(logs.length, 2);
+    const hostile = new Proxy({}, { get: () => { throw Error("private-getter-secret"); } });
+    trace.failure(hostile); equal(logs[2].value.exceptionClass, "UnknownException");
+    const unsafe = createQuotePublicationDiagnostics({ organizationId: "password=private-password" } as any, { quoteId: "private-document", businessRequestId: "private-business-key" }, logger as any);
+    unsafe.failure({ name: "private-customer-name", message: "private-document", code: "private-token", stack: "private-document" });
+    equal(logs.at(-1).value.organizationId, "redacted_non_uuid"); equal(logs.at(-1).value.resourceId, "redacted_non_uuid");
+    equal(logs.at(-1).value.exceptionClass, "UnknownException"); equal(logs.at(-1).value.sqlstate, undefined);
+    assert.doesNotMatch(JSON.stringify(logs), /private-/); checks++;
+    createQuotePublicationDiagnostics(context, { quoteId, businessRequestId }, { log: () => { throw Error("sink failed"); } }).failure(cause);
+    checks++;
+
+    // Unexpected errors still return the original safe boundary result, even if logging fails.
+    const staff: any = { kind: "staff", organizationId: context.organizationId, userId: "staff-a", authority: { membershipId: "fixture-member", capabilities: ["quote.send"] } };
+    const operation: any = { ...context, principal: staff, operationId: "fixture-http", businessRequest: { id: businessRequestId, payloadFingerprint: "inert" } };
+    const input: any = { quoteId, businessRequestId, expectedRevision: "1" };
+    const failedRead: any = new PostgresQuoteDeliveryService({} as any, { read: async () => { throw cause; } } as any, {} as any, logger as any);
+    const result = await failedRead.send(operation, input);
+    equal(result.ok, false); if (!result.ok) { equal(result.error.code, "INTERNAL_ERROR"); equal(result.error.publicMessage, "Quote delivery could not be completed."); }
+    equal(logs.at(-1).value.stage, "quote_read");
+    const app = express().use(express.json()).use(`/v2/organizations/:organizationId/quotes`, createQuoteRouter({
+      principals: { principal: async () => staff }, service: {} as any, formReads: {} as any, delivery: failedRead,
+    }));
+    const response = await httpRequest(app).post(`/v2/organizations/${context.organizationId}/quotes/${quoteId}/send`).send({ businessRequestId, expectedRevision: "1" }).expect(500);
+    equal(response.body, { ok: false, error: { code: "INTERNAL_ERROR", message: "Quote delivery could not be completed." } });
+    assert.doesNotMatch(JSON.stringify(response.body), /private-|23502|stack|prepare_/); checks++;
+    const sinkFailure = new PostgresQuoteDeliveryService({} as any, { read: async () => { throw cause; } } as any, {} as any, { log: () => { throw Error("sink failure"); } });
+    const sinkResult = await sinkFailure.send(operation, input);
+    equal(sinkResult.ok, false); if (!sinkResult.ok) equal(sinkResult.error.publicMessage, "Quote delivery could not be completed.");
+    const preparation: any = new PostgresQuoteDeliveryService({ connect: async () => ({ query: async () => { throw cause; }, release: () => {} }) } as any, { read: async () => ({ ok: true, value: { quote: { customerContact: { customerId: "customer-a" } } } }) } as any, {} as any, logger as any);
+    const connection: any = new PostgresQuoteDeliveryService({ connect: async () => { throw cause; } } as any, { read: async () => ({ ok: true, value: { quote: { customerContact: { customerId: "customer-a" } } } }) } as any, {} as any, logger as any);
+    const connectionResult = await connection.send(operation, input);
+    equal(connectionResult.ok, false); if (!connectionResult.ok) equal(connectionResult.error.code, "INTERNAL_ERROR");
+    equal(logs.at(-1).value.stage, "prepare_connection");
+    const preparationResult = await preparation.send(operation, input);
+    equal(preparationResult.ok, false); if (!preparationResult.ok) equal(preparationResult.error.code, "INTERNAL_ERROR");
+    equal(logs.at(-1).value.stage, "prepare_begin");
+    const rollbackCause = Object.assign(new Error("private-rollback-values"), { code: "40P01" });
+    const rollbackLogs = logs.length;
+    const failedRollback = new PostgresQuoteDeliveryService({ connect: async () => ({ query: async (sql: string) => { throw sql === "ROLLBACK" ? rollbackCause : cause; }, release: () => {} }) } as any, { read: async () => ({ ok: true, value: { quote: { customerContact: { customerId: "customer-a" } } } }) } as any, {} as any, logger as any);
+    equal((await failedRollback.send(operation, input)).ok, false);
+    equal(logs.slice(rollbackLogs).map(entry => entry.value.stage), ["prepare_begin", "prepare_rollback"]);
+    equal(logs.at(-1).value.sqlstate, "40P01"); equal(logs.at(-1).value.operationId, logs.at(-2).value.operationId);
+    const recoveryCause = Object.assign(new Error("private-recovery-sql-values"), { code: "42501" });
+    const providerCause = Object.assign(new Error("private-provider-token"), { response: { status: 401, data: { error: "invalid_grant", token: "private-token" } } });
+    const provider: any = new PostgresQuoteDeliveryService({} as any, { read: async () => ({ ok: true, value: { quote: { customerContact: { customerId: "customer-a" } } } }) } as any, { markReauth: async () => { throw recoveryCause; } } as any, logger as any);
+    provider.prepare = async () => ({ requestId: "request-a", attemptId: "attempt-a", recipient: "provider-fixture@example.invalid", integration: {} });
+    provider.deliver = async () => { throw providerCause; };
+    const recoveryLogs = logs.length;
+    const providerOrganization = "11111111-1111-4111-8111-111111111111";
+    const recoveredResult = await provider.send({ ...operation, organizationId: providerOrganization, principal: { ...staff, organizationId: providerOrganization } }, input);
+    equal(recoveredResult.ok, false); if (!recoveredResult.ok) equal(recoveredResult.error.publicMessage, "Quote delivery could not be completed.");
+    equal(logs.slice(recoveryLogs).map(entry => entry.value.stage), ["provider_delivery", "delivery_reconciliation"]);
+    equal(logs.at(-1).value.sqlstate, "42501"); equal(logs.at(-1).value.operationId, logs.at(-2).value.operationId);
+    assert.doesNotMatch(JSON.stringify(logs), /private-/); checks++;
+    const beforeExpected = logs.length;
+    const expected = new PostgresQuoteDeliveryService({} as any, { read: async () => { throw new V2ApplicationError("CONFLICT", "Expected safe reconciliation"); } } as any, {} as any, logger as any);
+    const expectedResult = await expected.send(operation, input);
+    equal(expectedResult.ok, false); if (!expectedResult.ok) equal(expectedResult.error.code, "CONFLICT"); equal(logs.length, beforeExpected);
+  }
   await db.exec(`CREATE TABLE organizations(id varchar PRIMARY KEY); CREATE TABLE users(id varchar PRIMARY KEY);
     CREATE TABLE v2_sales_documents(id varchar,organization_id varchar,revision bigint DEFAULT 1,updated_at timestamptz DEFAULT now());
     INSERT INTO v2_sales_documents(id,organization_id) VALUES('quote-a','org-a');
@@ -593,13 +680,14 @@ try {
       catch (cause) { await db.exec("ROLLBACK"); throw cause; }
     } });
     let emailCalls = 0;
+    const qaDiagnostics: any[] = [];
     let publicationFailure = "";
     const recordQa = qaApplication.recordDelivered.bind(qaApplication);
     qaApplication.recordDelivered = async (...args) => { const result = await recordQa(...args); if (!result.ok) publicationFailure = `${result.error.code}: ${result.error.publicMessage}`; return result; };
     const sender: any = new PostgresQuoteDeliveryService(lostPool, qaApplication, {
       readiness: async () => { emailCalls++; throw Error("QA must not read Gmail readiness"); },
       requireReady: async () => { emailCalls++; throw Error("QA must not load credentials"); },
-    } as any);
+    } as any, { log: (_level, _event, detail) => { qaDiagnostics.push(detail); } });
     sender.deliver = async () => { emailCalls++; throw Error("QA must never call the provider"); };
     sender.products = { resolveOrderRoutability: async () => ({ kind: "routable" }) };
     sender.requireRoutability = async () => {};
@@ -658,6 +746,18 @@ try {
     equal(`sha256:${createHash("sha256").update(originalPdf).digest("hex")}`, rows[0].document_sha256);
     const effects = async () => (await db.query("SELECT * FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1", [qaInput.quoteId])).rows;
     const beforeReplay = await effects();
+    const connectBeforeReplay = lostPool.connect;
+    const replayDiagnosticsBefore = qaDiagnostics.length;
+    lostPool.connect = async () => ({ ...lostClient, query: async (sql: string, values?: unknown[]) => {
+      if (sql === "COMMIT") throw Object.assign(Error("inert replay commit failure"), { code: "08006" });
+      return lostClient.query(sql, values);
+    } });
+    try {
+      const failedReplayCommit = await sender.send(qaContext(qaInput.businessRequestId), qaInput);
+      equal(failedReplayCommit.ok, false); equal(failedReplayCommit.error.code, "INTERNAL_ERROR");
+      equal(qaDiagnostics.length, replayDiagnosticsBefore + 1); equal(qaDiagnostics.at(-1).stage, "prepare_commit");
+      equal(qaDiagnostics.at(-1).sqlstate, "08006"); equal(await effects(), beforeReplay);
+    } finally { lostPool.connect = connectBeforeReplay; }
     const replay = await sender.send(qaContext(qaInput.businessRequestId), qaInput);
     assert.ok(replay.ok, replay.error?.publicMessage); checks++;
     equal(replay.value, sent.value); equal(await effects(), beforeReplay); equal(emailCalls, 0);
@@ -730,6 +830,7 @@ try {
     equal((await sender.send(qaContext(pendingInput.businessRequestId), pendingInput)).ok, false);
     equal((await sender.send(qaContext("qa-pending-new"), { ...pendingInput, businessRequestId: "qa-pending-new" })).ok, false);
     for (const failurePoint of ["checkpoint", "receipt", "guard-drift"]) {
+      const diagnosticsBefore = qaDiagnostics.length;
       const input = await createQa(`qa-fail-${failurePoint}`);
       const actualRecord = qaApplication.recordDelivered.bind(qaApplication);
       if (failurePoint === "checkpoint") qaApplication.recordDelivered = async () => { throw Error("inert checkpoint failure"); };
@@ -739,6 +840,7 @@ try {
       };
       const failed = await sender.send(qaContext(input.businessRequestId), input);
       equal(failed.ok, false); equal(failed.error.code, "CONFLICT");
+      if (failurePoint !== "guard-drift") { equal(qaDiagnostics.length, diagnosticsBefore + 1); equal(qaDiagnostics.at(-1).stage, failurePoint === "checkpoint" ? "sales_checkpoint" : "receipt_finalization"); }
       assert.match(failed.error.publicMessage, /no provider call was attempted/); checks++;
       Object.assign(process.env, dev); qaApplication.recordDelivered = actualRecord; sender.succeeded = actualFinalize;
       const attempt = (await db.query<any>("SELECT * FROM v2_sales_quote_delivery_attempts WHERE quote_document_id=$1", [input.quoteId])).rows[0];
@@ -748,6 +850,14 @@ try {
       equal((await sender.send(qaContext(`${input.businessRequestId}-new`), { ...input, businessRequestId: `${input.businessRequestId}-new`, expectedRevision: failurePoint === "checkpoint" ? "1" : "2" })).ok, false);
     }
     equal(emailCalls, 0);
+    const loggerBeforeSuccess = sender.logger;
+    let loggerCalls = 0;
+    sender.logger = { log: () => { loggerCalls++; throw Error("inert unavailable logger"); } };
+    try {
+      const successInput = await createQa("qa-unavailable-diagnostic-sink");
+      const successResult = await sender.send(qaContext(successInput.businessRequestId), successInput);
+      equal(successResult.ok, true); equal(loggerCalls, 0); equal(emailCalls, 0);
+    } finally { sender.logger = loggerBeforeSuccess; }
   } finally {
     for (const [key, value] of Object.entries(originalEnvironment)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   }
