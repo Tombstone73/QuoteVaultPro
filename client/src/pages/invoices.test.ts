@@ -122,8 +122,22 @@ describe("Invoices List payment entry point", () => {
 
   it("routes every visible data header through the canonical server-sort state", () => {
     ["customer", "contact", "jobName", "purchaseOrderNumber", "orderNumber", "invoiceNumber", "issueDate", "dueDate", "status", "approval", "jobStatus", "lastSentAt", "total", "paid", "balance"].forEach((key) => {
-      expect(invoicesPageSource).toContain(`renderSortableHead(\"${key}\"`);
+      expect(invoicesPageSource).toContain(`id: "${key}"`);
     });
+    expect(invoicesPageSource).toContain("default: return renderSortableHead(column)");
+    expect(invoicesPageSource).toContain("handleSort(column.id as InvoiceSortKey)");
+    expect(invoicesPageSource).toContain('aria-sort={sortKey === column.id');
+  });
+
+  it("places a direct Columns button in the toolbar and uses configured widths for the active table", () => {
+    const toolbar = invoicesPageSource.slice(invoicesPageSource.indexOf('data-testid="invoice-toolbar"'), invoicesPageSource.indexOf('        {/* Invoices Table */}'));
+    expect(toolbar).toContain('data-testid="invoice-columns-open"');
+    expect(toolbar).toContain('onClick={() => setColumnsOpen(true)}');
+    expect(toolbar).toContain('>Columns');
+    expect(invoicesPageSource).toContain('style={{ width: tableWidth, tableLayout: "fixed" }}');
+    expect(invoicesPageSource).toContain('<colgroup>{visibleColumns.map((column) => <col key={column.id} style={{ width: column.width ?? 120 }} />)}</colgroup>');
+    expect(invoicesPageSource).toContain('<InvoiceColumnResizeHandle');
+    expect(invoicesPageSource).not.toContain('{false && <>');
   });
 
   it("keeps user-scoped sticky sorting and structured filters while allowing explicit URL state to win", () => {
@@ -247,7 +261,7 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("CloseJobOverrideDialog");
     expect(invoicesPageSource).toContain("CloseJobOverrideAction");
     expect(invoicesPageSource).toContain('label="Close Job"');
-    expect(invoicesPageSource).toContain('min-w-[220px]');
+    expect(invoicesPageSource).toContain('minWidth: 220');
     expect(invoicesPageSource).not.toContain('min-w-[310px]');
     expect(invoicesPageSource).not.toContain('flex min-w-max flex-wrap items-center justify-start gap-1');
     expect(invoicesPageSource).toContain(">$</Button>");
@@ -257,19 +271,20 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("uses the canonical accounting-approval mutation for a compact inline approval control", () => {
-    expect(invoicesPageSource).toContain('<TitanTableHead className="w-[116px] min-w-[116px]">Approved</TitanTableHead>');
+    expect(invoicesPageSource).toContain('id: "approval", label: "Approval"');
+    expect(invoicesPageSource).toContain('case "approval": return <TitanTableCell');
     expect(invoicesPageSource).toContain("const handleApproveInvoice = async (invoice: InvoiceListItem)");
     expect(invoicesPageSource).toContain("await approveInvoices.mutateAsync([invoice.id])");
     expect(invoicesPageSource).toContain("if (approveInvoices.isPending) return");
     expect(invoicesPageSource).toContain("aria-label={`Approve invoice ${invoice.invoiceNumber} for accounting`}");
-    expect(invoicesPageSource).toContain("{approvingInvoiceId === invoice.id && approveInvoices.isPending ? 'Approving…' : 'Approve'}");
+    expect(invoicesPageSource).toContain('approvingInvoiceId === invoice.id && approveInvoices.isPending ? "Approving…" : "Approve"');
     expect(invoicesPageSource).toContain("<StatusPill variant=\"info\">Approved</StatusPill>");
-    expect(invoicesPageSource).toContain("isAdminOrOwner ? (");
+    expect(invoicesPageSource).toContain('isAdminOrOwner ? <Button');
     expect(invoicesPageSource).toMatch(/event\.stopPropagation\(\);\s+void handleApproveInvoice\(invoice\);/);
   });
 
   it("keeps Job Status and all primary backlog-cleanup actions directly visible per row", () => {
-    expect(invoicesPageSource).toContain('<TitanTableHead className="min-w-[145px]">Job Status</TitanTableHead>');
+    expect(invoicesPageSource).toContain('id: "jobStatus", label: "Job Status"');
     expect(invoicesPageSource).toContain('getOrderJobStatus(invoice)');
     expect(invoicesPageSource).toContain('CloseJobOverrideAction');
     expect(invoicesPageSource).toContain("renderInvoiceEmailButton(invoice)");

@@ -9,7 +9,17 @@ export type ColumnConfig = {
   locked?: boolean;
   /** Required columns may be reordered, but may never be hidden. */
   required?: boolean;
+  /** Persisted desktop table width in pixels. */
+  width?: number;
+  minWidth?: number;
+  maxWidth?: number;
 };
+
+export function clampTableColumnWidth(column: ColumnConfig, width: number): number {
+  const minimum = column.minWidth ?? 60;
+  const maximum = Math.max(minimum, column.maxWidth ?? 600);
+  return Math.min(maximum, Math.max(minimum, Math.round(width)));
+}
 
 function sortByOrder(a: ColumnConfig, b: ColumnConfig) {
   return a.order - b.order;
@@ -39,6 +49,9 @@ export function mergeTableColumnConfig(defaults: ColumnConfig[], saved: unknown)
     return {
       ...column,
       visible: column.locked || column.required ? true : typeof prior?.visible === "boolean" ? prior.visible : column.visible,
+      width: typeof prior?.width === "number" && Number.isFinite(prior.width)
+        ? clampTableColumnWidth(column, prior.width)
+        : column.width,
       order: index,
     };
   });
@@ -87,6 +100,15 @@ export function useTableColumnConfig(tableKey: string, defaults: ColumnConfig[])
     persist(next);
   }, [columns, persist]);
 
+  const setColumnWidth = React.useCallback((id: string, width: number, save = true) => {
+    if (!Number.isFinite(width)) return;
+    const next = columns.map((column) => column.id === id
+      ? { ...column, width: clampTableColumnWidth(column, width) }
+      : column);
+    if (save) persist(next);
+    else setColumns(next);
+  }, [columns, persist]);
+
   const reset = React.useCallback(() => {
     const next = mergeTableColumnConfig(defaults, null);
     persist(next);
@@ -96,6 +118,7 @@ export function useTableColumnConfig(tableKey: string, defaults: ColumnConfig[])
     columns: columns.sort(sortByOrder),
     setColumnVisibility,
     moveColumn,
+    setColumnWidth,
     reset,
     canMoveColumn: (id: string, direction: "up" | "down") => {
       const sorted = [...columns].sort(sortByOrder);
