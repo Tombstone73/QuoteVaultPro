@@ -114,6 +114,7 @@ import ReportsPage from "@/pages/reports";
 import DailyProductionListPage from "@/pages/daily-production-list";
 import AccountsReceivableReportPage from "@/pages/accounts-receivable-report";
 import ReportStudioRoute from "@/pages/report-studio";
+import InkMasterPage from "@/pages/ink-master";
 import SharedReportPage from "@/pages/shared-report";
 import FinancePage from "@/pages/finance";
 import InboundOrdersPage from "@/pages/inbound-orders";
@@ -265,6 +266,7 @@ function Router() {
       <Route element={<AppLayout />}>
         {/* Admin dashboard */}
         <Route path="/system/admin" element={<AdminDashboard />} />
+        <Route path={ROUTES.inkMaster} element={<InkMasterPage />} />
 
         {/* Dashboard route compatibility */}
         <Route path="/dashboard" element={<TitanDashboard />} />

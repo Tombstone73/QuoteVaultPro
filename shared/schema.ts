@@ -15,6 +15,7 @@ import {
   pgTable,
   primaryKey,
   check,
+  foreignKey,
   text,
   timestamp,
   varchar,
@@ -2416,6 +2417,39 @@ export const updatePrinterProfileSchema = insertPrinterProfileSchema.partial();
 export type PrinterProfile = typeof printerProfiles.$inferSelect;
 export type InsertPrinterProfile = z.infer<typeof insertPrinterProfileSchema>;
 export type UpdatePrinterProfile = z.infer<typeof updatePrinterProfileSchema>;
+
+// Ink Master is a calculation utility. These tables hold reusable printer
+// settings and sheet specifications only; manual inventory is never persisted.
+export const inkMasterPrinters = pgTable("ink_master_printers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 160 }).notNull(),
+  containerSizeLiters: numeric("container_size_liters", { precision: 14, scale: 6 }).notNull(),
+  containerPriceCents: integer("container_price_cents"),
+  restockTargetLiters: numeric("restock_target_liters", { precision: 14, scale: 6 }).notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("ink_master_printers_org_id_uidx").on(table.organizationId, table.id),
+  uniqueIndex("ink_master_printers_org_name_uidx").on(table.organizationId, table.name),
+  index("ink_master_printers_org_active_idx").on(table.organizationId, table.isActive),
+]);
+
+export const inkMasterSavedSpecs = pgTable("ink_master_saved_specs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 200 }).notNull(),
+  printerId: varchar("printer_id").notNull(),
+  printSides: varchar("print_sides", { length: 6 }).notNull().$type<"single" | "double">(),
+  usageMlPerSheetSide: jsonb("usage_ml_per_sheet_side").notNull().$type<import("./inkMaster").InkQuantities>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  foreignKey({ columns: [table.organizationId, table.printerId], foreignColumns: [inkMasterPrinters.organizationId, inkMasterPrinters.id], name: "ink_master_specs_org_printer_fk" }).onDelete("restrict"),
+  index("ink_master_saved_specs_org_idx").on(table.organizationId),
+  index("ink_master_saved_specs_org_printer_idx").on(table.organizationId, table.printerId),
+]);
 
 export type PortalFollowUpEventType =
   | "QUOTE_APPROVED"

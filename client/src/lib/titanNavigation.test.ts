@@ -11,6 +11,14 @@ function itemIds(sectionKey: string, role: string, isPlatformAdmin = false, isPl
 }
 
 describe("Titan navigation platform placement", () => {
+  test("places Ink Master under Mini Apps at the bottom of System for staff", () => {
+    for (const role of ["owner", "admin", "manager", "member"]) {
+      const items = visibleSection("system", role)?.items ?? [];
+      expect(items.at(-1)).toEqual(expect.objectContaining({
+        id: "ink-master", name: "Ink Master", path: "/mini-apps/ink-master", groupLabel: "Mini Apps",
+      }));
+    }
+  });
   test("shows QuickBooks under Accounting for organization Admin and Owner only", () => {
     const adminAccounting = visibleSection("accounting", "admin");
     const ownerAccounting = visibleSection("accounting", "owner");

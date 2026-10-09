@@ -164,12 +164,18 @@ function NavSection({ section, isCollapsed, isExpanded, onToggle, badgeCounts }:
       {isExpanded && (
         <div id={sectionId} className="space-y-0.5 px-2 mt-1">
           {section.items.map((item) => (
-            <NavItem
-              key={item.id}
-              item={item}
-              isCollapsed={isCollapsed}
-              badgeCount={item.badge ? badgeCounts[item.id] : undefined}
-            />
+            <React.Fragment key={item.id}>
+              {item.groupLabel && !isCollapsed && (
+                <div className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-titan-text-muted">
+                  {item.groupLabel}
+                </div>
+              )}
+              <NavItem
+                item={item}
+                isCollapsed={isCollapsed}
+                badgeCount={item.badge ? badgeCounts[item.id] : undefined}
+              />
+            </React.Fragment>
           ))}
         </div>
       )}

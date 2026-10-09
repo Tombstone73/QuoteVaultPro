@@ -229,6 +229,7 @@ export const ROUTES = {
   system: {
     adminDashboard: "/system/admin",
   },
+  inkMaster: "/mini-apps/ink-master",
   
   users: {
     list: "/users",

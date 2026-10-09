@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   KeyRound,
   Bug,
+  Droplets,
   type LucideIcon,
 } from "lucide-react";
 import { ROUTES } from "@/config/routes";
@@ -38,6 +39,7 @@ export type NavItemConfig = {
   platformAdminOnly?: boolean;
   platformOnly?: boolean;
   developerOrAdminOnly?: boolean;
+  groupLabel?: string;
   conditional?: {
     requireApproval?: boolean;
     approverOnly?: boolean;
@@ -132,6 +134,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
       { id: "customer-portal", name: "Customer Portal", icon: KeyRound, path: ROUTES.settings.customerPortal, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
+      { id: "ink-master", name: "Ink Master", icon: Droplets, path: ROUTES.inkMaster, groupLabel: "Mini Apps" },
     ],
   },
   {
