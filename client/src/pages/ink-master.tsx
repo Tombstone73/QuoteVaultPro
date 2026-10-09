@@ -17,11 +17,10 @@ import {
   INK_COLORS,
   calculateInkJob,
   inkMasterPrinterInputSchema,
-  loadSpecIntoDraft,
-  selectPrinterInDraft,
+  parseInkMasterForm,
   specFromDraft,
+  validateInkMasterPrinterSettings,
   type InkColor,
-  type InkMasterDraft,
   type InkMasterPrinter,
   type InkMasterPrinterInput,
   type InkMasterSavedSpec,
@@ -44,11 +43,7 @@ const numericInputs = (values: InkQuantities): Record<InkColor, string> => ({
   cyan: String(values.cyan), magenta: String(values.magenta), yellow: String(values.yellow),
   black: String(values.black), white: String(values.white),
 });
-const readInputs = (values: Record<InkColor, string>): InkQuantities => ({
-  cyan: Number(values.cyan || 0), magenta: Number(values.magenta || 0), yellow: Number(values.yellow || 0),
-  black: Number(values.black || 0), white: Number(values.white || 0),
-});
-const canEnter = (value: string, integer = false) => integer ? /^\d*$/.test(value) : /^\d*(?:\.\d*)?$/.test(value);
+const blankInputs = (): Record<InkColor, string> => ({ cyan: "", magenta: "", yellow: "", black: "", white: "" });
 
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await apiFetch(`${apiBase}${path}`, {
@@ -71,8 +66,8 @@ const formFromPrinter = (printer: InkMasterPrinter): PrinterForm => ({
   target: String(printer.restockTargetLiters),
 });
 
-function ColorLabel({ color }: { color: InkColor }) {
-  return <span className="inline-flex items-center gap-2"><span className={`h-3 w-3 shrink-0 rounded-full ${colors[color].swatch}`} />{colors[color].label}</span>;
+function ColorLabel({ color, compact = false }: { color: InkColor; compact?: boolean }) {
+  return <span className={`inline-flex items-center ${compact ? "gap-1" : "gap-2"}`}><span className={`${compact ? "h-2 w-2" : "h-3 w-3"} shrink-0 rounded-full ${colors[color].swatch}`} />{colors[color].label}</span>;
 }
 
 export default function InkMasterPage() {
@@ -83,9 +78,10 @@ export default function InkMasterPage() {
   const [printSides, setPrintSides] = useState<PrintSides>("single");
   const [sheetCountInput, setSheetCountInput] = useState("");
   const [usageInputs, setUsageInputs] = useState(zeroInputs);
-  const [inventoryInputs, setInventoryInputs] = useState(zeroInputs);
+  const [inventoryInputs, setInventoryInputs] = useState(blankInputs);
   const [specName, setSpecName] = useState("");
   const [loadedSpecId, setLoadedSpecId] = useState<string | null>(null);
+  const [selectedSpecId, setSelectedSpecId] = useState("");
   const [printerDialogOpen, setPrinterDialogOpen] = useState(false);
   const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null);
   const [printerForm, setPrinterForm] = useState<PrinterForm>(blankPrinterForm);
@@ -112,8 +108,9 @@ export default function InkMasterPage() {
     setPrintSides("single");
     setSheetCountInput("");
     setUsageInputs(zeroInputs());
-    setInventoryInputs(zeroInputs());
+    setInventoryInputs(blankInputs());
     setLoadedSpecId(null);
+    setSelectedSpecId("");
     setSpecName("");
   }, [activeOrgId]);
 
@@ -121,17 +118,16 @@ export default function InkMasterPage() {
     if (!printerId && activePrinters.length > 0) setPrinterId(activePrinters[0].id);
   }, [printerId, activePrinters]);
 
-  const draft: InkMasterDraft = useMemo(() => ({
-    printerId,
-    printSides,
-    sheetCount: Number(sheetCountInput || 0),
-    usageMlPerSheetSide: readInputs(usageInputs),
-    currentInventoryLiters: readInputs(inventoryInputs),
-  }), [printerId, printSides, sheetCountInput, usageInputs, inventoryInputs]);
-  const result = useMemo(() => {
-    if (!selectedPrinter) return null;
-    try { return calculateInkJob(draft, selectedPrinter); } catch { return null; }
-  }, [draft, selectedPrinter]);
+  const form = useMemo(() => parseInkMasterForm({ sheetCount: sheetCountInput, usage: usageInputs, inventory: inventoryInputs }, printerId, printSides), [sheetCountInput, usageInputs, inventoryInputs, printerId, printSides]);
+  const profileForm = useMemo(() => parseInkMasterForm({ sheetCount: "", usage: usageInputs, inventory: zeroInputs() }, printerId, printSides), [usageInputs, printerId, printSides]);
+  const printerError = selectedPrinter ? validateInkMasterPrinterSettings(selectedPrinter) : null;
+  const calculation = useMemo(() => {
+    if (!selectedPrinter || printerError || !form.draft) return { result: null, error: null };
+    try { return { result: calculateInkJob(form.draft, selectedPrinter), error: null }; }
+    catch (error) { return { result: null, error: error instanceof Error ? error.message : "Could not calculate this job." }; }
+  }, [form, selectedPrinter, printerError]);
+  const result = calculation.result;
+  const selectedSpec = specs.find((spec) => spec.id === selectedSpecId);
 
   const invalidatePrinters = () => queryClient.invalidateQueries({ queryKey: [apiBase, "printers", activeOrgId] });
   const invalidateSpecs = () => queryClient.invalidateQueries({ queryKey: [apiBase, "specs", activeOrgId] });
@@ -163,10 +159,11 @@ export default function InkMasterPage() {
   });
   const saveSpec = useMutation({
     mutationFn: ({ id, name }: { id: string | null; name: string }) =>
-      request<InkMasterSavedSpec>(id ? `/specs/${id}` : "/specs", id ? "PATCH" : "POST", specFromDraft(name, draft)),
+      request<InkMasterSavedSpec>(id ? `/specs/${id}` : "/specs", id ? "PATCH" : "POST", specFromDraft(name, profileForm.draft!)),
     onSuccess: (spec) => {
       invalidateSpecs();
       setLoadedSpecId(spec.id);
+      setSelectedSpecId(spec.id);
       setSpecName(spec.name);
       toast({ title: "Job spec saved" });
     },
@@ -177,6 +174,7 @@ export default function InkMasterPage() {
     onSuccess: (_, id) => {
       invalidateSpecs();
       if (loadedSpecId === id) setLoadedSpecId(null);
+      if (selectedSpecId === id) setSelectedSpecId("");
       setConfirmAction(null);
       toast({ title: "Job spec deleted" });
     },
@@ -210,17 +208,16 @@ export default function InkMasterPage() {
   }
 
   function loadSpec(spec: InkMasterSavedSpec) {
-    const next = loadSpecIntoDraft(draft, spec);
-    setPrinterId(next.printerId);
-    setPrintSides(next.printSides);
-    setUsageInputs(numericInputs(next.usageMlPerSheetSide));
+    setPrinterId(spec.printerId);
+    setPrintSides(spec.printSides);
+    setUsageInputs(numericInputs(spec.usageMlPerSheetSide));
     setSpecName(spec.name);
     setLoadedSpecId(spec.id);
+    setSelectedSpecId(spec.id);
     toast({ title: "Job spec loaded" });
   }
 
   function changeColorInput(kind: "usage" | "inventory", color: InkColor, value: string) {
-    if (!canEnter(value)) return;
     const setter = kind === "usage" ? setUsageInputs : setInventoryInputs;
     setter((current) => ({ ...current, [color]: value }));
   }
@@ -229,42 +226,44 @@ export default function InkMasterPage() {
   if (!activeOrgId) return <Page><PageHeader title="Ink Master" /><ContentLayout>Select an organization to use Ink Master.</ContentLayout></Page>;
 
   return <Page>
-    <PageHeader title="Ink Master" subtitle="Calculate ink requirements and restocking needs for print jobs." />
+    <PageHeader title="Ink Master" subtitle="Calculate ink requirements and restocking needs for print jobs." className="mb-3" />
     <ContentLayout className="space-y-4">
       <Tabs defaultValue="calculator">
-        <TabsList><TabsTrigger value="calculator">Calculator</TabsTrigger><TabsTrigger value="settings">Settings</TabsTrigger></TabsList>
-        <TabsContent value="calculator" className="mt-4">
+        <TabsList className="h-9"><TabsTrigger value="calculator">Calculator</TabsTrigger><TabsTrigger value="settings">Settings</TabsTrigger></TabsList>
+        <TabsContent value="calculator" className="mt-3">
           {(printersQuery.isLoading || specsQuery.isLoading) && <p className="text-sm text-muted-foreground">Loading Ink Master…</p>}
-          {(printersQuery.isError || specsQuery.isError) && <Card className="mb-4"><CardContent className="flex items-center justify-between gap-3 pt-6"><span className="text-sm text-destructive">{printersQuery.error?.message || specsQuery.error?.message || "Could not load Ink Master"}</span><Button size="sm" variant="outline" onClick={() => { printersQuery.refetch(); specsQuery.refetch(); }}>Retry</Button></CardContent></Card>}
-          {!printersQuery.isError && !specsQuery.isError && <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
-            <div className="space-y-4">
-              <Card><CardHeader className="pb-3"><CardTitle className="text-base">Job Configuration</CardTitle></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2">
-                <div className="sm:col-span-2"><Label htmlFor="ink-printer">Printer</Label><Select value={printerId || undefined} onValueChange={(id) => setPrinterId(selectPrinterInDraft(draft, id).printerId)}><SelectTrigger id="ink-printer"><SelectValue placeholder="Select printer" /></SelectTrigger><SelectContent>{printers.map((printer) => <SelectItem key={printer.id} value={printer.id}>{printer.name}{printer.isActive ? "" : " (inactive)"}</SelectItem>)}</SelectContent></Select></div>
-                <div><Label htmlFor="ink-sides">Print type</Label><Select value={printSides} onValueChange={(value: PrintSides) => setPrintSides(value)}><SelectTrigger id="ink-sides"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="single">Single Sided</SelectItem><SelectItem value="double">Double Sided</SelectItem></SelectContent></Select></div>
-                <div><Label htmlFor="ink-sheets">Number of sheets</Label><Input id="ink-sheets" inputMode="numeric" value={sheetCountInput} onChange={(event) => { if (canEnter(event.target.value, true)) setSheetCountInput(event.target.value); }} placeholder="0" /></div>
+          {(printersQuery.isError || specsQuery.isError) && <Card className="mb-3"><CardContent className="flex items-center justify-between gap-3 p-3"><span className="text-sm text-destructive">{printersQuery.error?.message || specsQuery.error?.message || "Could not load Ink Master"}</span><Button size="sm" variant="outline" onClick={() => { printersQuery.refetch(); specsQuery.refetch(); }}>Retry</Button></CardContent></Card>}
+          {!printersQuery.isError && !specsQuery.isError && <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-3">
+              <Card><CardHeader className="p-3 pb-2"><CardTitle className="text-sm">Job Configuration</CardTitle></CardHeader><CardContent className="grid gap-2 p-3 pt-0 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,0.7fr)]">
+                <div className="min-w-0"><Label htmlFor="ink-printer" className="text-xs">Printer</Label><Select value={printerId || undefined} onValueChange={setPrinterId}><SelectTrigger id="ink-printer" className="h-9"><SelectValue placeholder="Select printer" /></SelectTrigger><SelectContent>{printers.map((printer) => <SelectItem key={printer.id} value={printer.id}>{printer.name}{printer.isActive ? "" : " (inactive)"}</SelectItem>)}</SelectContent></Select></div>
+                <div className="min-w-0"><Label htmlFor="ink-sides" className="text-xs">Print type</Label><Select value={printSides} onValueChange={(value: PrintSides) => setPrintSides(value)}><SelectTrigger id="ink-sides" className="h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="single">Single Sided</SelectItem><SelectItem value="double">Double Sided</SelectItem></SelectContent></Select></div>
+                <div className="min-w-0"><Label htmlFor="ink-sheets" className="text-xs">Sheets</Label><Input id="ink-sheets" inputMode="numeric" value={sheetCountInput} onChange={(event) => setSheetCountInput(event.target.value)} placeholder="0" className="h-9" aria-invalid={Boolean(form.errors.sheetCount)} aria-describedby={form.errors.sheetCount ? "ink-sheets-error" : undefined} />{form.errors.sheetCount && <p id="ink-sheets-error" className="mt-1 text-[11px] text-destructive">{form.errors.sheetCount}</p>}</div>
               </CardContent></Card>
 
-              <Card><CardHeader className="pb-3"><CardTitle className="text-base">Ink Usage Per Sheet Side</CardTitle><CardDescription>Enter mL used by one sheet on one side. Double sided jobs use twice this amount.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {INK_COLORS.map((color) => <div key={color}><Label htmlFor={`ink-usage-${color}`}><ColorLabel color={color} /></Label><div className="relative"><Input id={`ink-usage-${color}`} inputMode="decimal" value={usageInputs[color]} onChange={(event) => changeColorInput("usage", color, event.target.value)} className="pr-10" /><span className="pointer-events-none absolute right-3 top-2.5 text-xs text-muted-foreground">mL</span></div></div>)}
+              <Card><CardHeader className="p-3 pb-2"><CardTitle className="text-sm">Ink Usage Per Sheet Side <span className="font-normal text-muted-foreground">(mL)</span></CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2 p-3 pt-0 sm:grid-cols-3 lg:grid-cols-5">
+                {INK_COLORS.map((color) => <div key={color} className="min-w-0"><Label htmlFor={`ink-usage-${color}`} className="text-xs"><ColorLabel color={color} /></Label><div className="relative"><Input id={`ink-usage-${color}`} inputMode="decimal" value={usageInputs[color]} onChange={(event) => changeColorInput("usage", color, event.target.value)} className="h-9 pr-8" aria-invalid={Boolean(form.errors.usage[color])} aria-describedby={form.errors.usage[color] ? `ink-usage-${color}-error` : undefined} /><span className="pointer-events-none absolute right-2 top-2.5 text-[11px] text-muted-foreground">mL</span></div>{form.errors.usage[color] && <p id={`ink-usage-${color}-error`} className="mt-1 text-[11px] text-destructive">{form.errors.usage[color]}</p>}</div>)}
               </CardContent></Card>
 
-              <Card><CardHeader className="pb-3"><CardTitle className="text-base">Saved Job Specs</CardTitle><CardDescription>Reuse a sheet's ink profile without changing sheet count or current inventory.</CardDescription></CardHeader><CardContent className="space-y-3">
-                <div className="flex flex-wrap gap-2"><Input aria-label="Job spec name" placeholder="Job spec name" value={specName} onChange={(event) => setSpecName(event.target.value)} className="min-w-[190px] flex-1" /><Button size="sm" disabled={!selectedPrinter?.isActive || saveSpec.isPending || !specName.trim()} onClick={() => saveSpec.mutate({ id: null, name: specName })}>Save New</Button>{loadedSpecId && <Button size="sm" variant="outline" disabled={!selectedPrinter?.isActive || saveSpec.isPending || !specName.trim()} onClick={() => saveSpec.mutate({ id: loadedSpecId, name: specName })}>Update Loaded</Button>}</div>
-                {specs.length === 0 ? <p className="text-sm text-muted-foreground">No saved job specs yet.</p> : <div className="max-h-56 space-y-1 overflow-y-auto">{specs.map((spec) => <div key={spec.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><div className="min-w-0 flex-1"><div className="truncate font-medium">{spec.name}</div><div className="truncate text-xs text-muted-foreground">{printers.find((printer) => printer.id === spec.printerId)?.name || "Unavailable printer"} · {spec.printSides === "double" ? "Double sided" : "Single sided"}</div></div><Button size="sm" variant="outline" onClick={() => loadSpec(spec)}>Load</Button><Button size="icon" variant="ghost" aria-label={`Delete ${spec.name}`} onClick={() => setConfirmAction({ kind: "spec", id: spec.id, name: spec.name })}><Trash2 className="h-4 w-4" /></Button></div>)}</div>}
+              <Card><CardHeader className="p-3 pb-2"><CardTitle className="text-sm">Saved Job Specs</CardTitle></CardHeader><CardContent className="space-y-2 p-3 pt-0">
+                <div className="flex min-w-0 flex-wrap gap-2"><Select value={selectedSpecId || undefined} onValueChange={setSelectedSpecId}><SelectTrigger aria-label="Saved job spec" className="h-9 min-w-[160px] flex-1"><SelectValue placeholder={specs.length ? "Select saved profile" : "No saved profiles"} /></SelectTrigger><SelectContent>{specs.map((spec) => <SelectItem key={spec.id} value={spec.id}>{spec.name}</SelectItem>)}</SelectContent></Select><Button size="sm" variant="outline" disabled={!selectedSpec} onClick={() => selectedSpec && loadSpec(selectedSpec)}>Load</Button><Button size="sm" variant="ghost" disabled={!selectedSpec} aria-label="Delete selected job spec" onClick={() => selectedSpec && setConfirmAction({ kind: "spec", id: selectedSpec.id, name: selectedSpec.name })}><Trash2 className="h-4 w-4" /></Button></div>
+                <div className="flex min-w-0 flex-wrap gap-2"><Input aria-label="Job spec name" placeholder="Profile name" value={specName} onChange={(event) => setSpecName(event.target.value)} className="h-9 min-w-[150px] flex-1" /><Button size="sm" disabled={!selectedPrinter?.isActive || !profileForm.draft || saveSpec.isPending || !specName.trim()} onClick={() => saveSpec.mutate({ id: null, name: specName })}>Save New</Button><Button size="sm" variant="outline" disabled={!loadedSpecId || !selectedPrinter?.isActive || !profileForm.draft || saveSpec.isPending || !specName.trim()} onClick={() => saveSpec.mutate({ id: loadedSpecId, name: specName })}>Update Loaded</Button></div>
+                {Object.keys(form.errors.usage).length > 0 && <p className="text-xs text-destructive">Correct ink usage before saving a profile.</p>}
               </CardContent></Card>
 
-              <Card><CardHeader className="pb-3"><CardTitle className="text-base">Current Inventory</CardTitle><CardDescription>Manual quantities for this calculation only. Nothing is deducted or saved to inventory.</CardDescription></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {INK_COLORS.map((color) => <div key={color}><Label htmlFor={`ink-on-hand-${color}`}><ColorLabel color={color} /></Label><div className="relative"><Input id={`ink-on-hand-${color}`} inputMode="decimal" value={inventoryInputs[color]} onChange={(event) => changeColorInput("inventory", color, event.target.value)} className="pr-7" /><span className="pointer-events-none absolute right-3 top-2.5 text-xs text-muted-foreground">L</span></div></div>)}
+              <Card><CardHeader className="p-3 pb-2"><CardTitle className="text-sm">Current Inventory <span className="font-normal text-muted-foreground">(L · manual for this calculation)</span></CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-2 p-3 pt-0 sm:grid-cols-3 lg:grid-cols-5">
+                {INK_COLORS.map((color) => <div key={color} className="min-w-0"><Label htmlFor={`ink-on-hand-${color}`} className="text-xs"><ColorLabel color={color} /></Label><div className="relative"><Input id={`ink-on-hand-${color}`} inputMode="decimal" placeholder="Required" value={inventoryInputs[color]} onChange={(event) => changeColorInput("inventory", color, event.target.value)} className="h-9 pr-6" aria-invalid={Boolean(form.errors.inventory[color])} aria-describedby={form.errors.inventory[color] ? `ink-on-hand-${color}-error` : undefined} /><span className="pointer-events-none absolute right-2 top-2.5 text-[11px] text-muted-foreground">L</span></div>{form.errors.inventory[color] && <p id={`ink-on-hand-${color}-error`} className="mt-1 text-[11px] text-destructive">{form.errors.inventory[color]}</p>}</div>)}
               </CardContent></Card>
             </div>
 
-            <Card className="lg:sticky lg:top-4"><CardHeader className="pb-3"><CardTitle className="flex items-center gap-2 text-base"><Droplets className="h-4 w-4" />Job Summary</CardTitle><CardDescription>{selectedPrinter ? `${selectedPrinter.name} · ${decimal.format(draft.sheetCount)} sheets · ${printSides === "double" ? "Double Sided" : "Single Sided"}` : "Select a printer to calculate"}</CardDescription></CardHeader><CardContent className="space-y-4">
-              {selectedPrinter && !result && <p className="text-sm text-destructive">Enter valid nonnegative quantities to calculate.</p>}
+            <Card className="min-w-0 lg:sticky lg:top-4"><CardHeader className="p-3 pb-2"><CardTitle className="flex items-center gap-2 text-sm"><Droplets className="h-4 w-4" />Job Summary</CardTitle><CardDescription className="text-xs">{selectedPrinter ? `${selectedPrinter.name} · ${sheetCountInput || "0"} sheets · ${printSides === "double" ? "Double Sided" : "Single Sided"}` : "Select a printer to calculate"}</CardDescription></CardHeader><CardContent className="p-3 pt-0">
+              {printerError && <p className="text-sm text-destructive" role="alert">{printerError}</p>}
+              {calculation.error && <p className="text-sm text-destructive" role="alert">{calculation.error}</p>}
+              {!printerError && !calculation.error && !result && <p className="text-xs text-muted-foreground">Enter current inventory for each color and correct any marked job fields to calculate purchasing.</p>}
               {result && <>
-                <div className="overflow-x-auto"><table className="w-full min-w-[520px] text-left text-xs"><thead><tr className="border-b text-muted-foreground"><th className="pb-2 font-medium">Ink</th><th className="pb-2 font-medium">Job Usage</th><th className="pb-2 font-medium">On Hand</th><th className="pb-2 font-medium">After Job</th><th className="pb-2 font-medium">Order</th><th className="pb-2 text-right font-medium">Cost</th></tr></thead><tbody>{result.colors.map((row) => <tr key={row.color} className="border-b last:border-0"><td className="py-2 font-medium"><ColorLabel color={row.color} /></td><td className="py-2 tabular-nums">{decimal.format(row.usageMl)} mL<div className="text-muted-foreground">{decimal.format(row.usageLiters)} L</div></td><td className="py-2 tabular-nums">{decimal.format(row.currentInventoryLiters)} L</td><td className={`py-2 tabular-nums ${row.afterJobLiters < 0 ? "font-semibold text-destructive" : ""}`}>{decimal.format(row.afterJobLiters)} L{row.afterJobLiters < 0 && <div className="text-[10px]">Shortage</div>}</td><td className="py-2 tabular-nums">{row.containersToOrder} containers</td><td className="py-2 text-right tabular-nums">{row.estimatedCostCents === null ? "—" : money.format(row.estimatedCostCents / 100)}</td></tr>)}</tbody></table></div>
-                <div className="border-t pt-3"><h3 className="mb-2 text-sm font-semibold">Ink To Order</h3>{result.totalContainersToOrder === 0 ? <p className="text-sm text-muted-foreground">No ink needs to be ordered for this job.</p> : <div className="space-y-2">{result.colors.filter((row) => row.containersToOrder > 0).map((row) => <div key={row.color} className="flex items-start justify-between gap-3 text-sm"><ColorLabel color={row.color} /><div className="text-right tabular-nums">{row.containersToOrder} × {decimal.format(selectedPrinter!.containerSizeLiters)} L = {decimal.format(row.purchaseLiters)} L<div className="text-xs text-muted-foreground">Needed: {decimal.format(row.requiredLiters)} L · {row.estimatedCostCents === null ? "Cost not configured" : money.format(row.estimatedCostCents / 100)}</div></div></div>)}</div>}</div>
-                <div className="space-y-1 rounded-md bg-muted/50 p-3 text-sm"><div className="flex justify-between"><span>Total containers to order</span><strong className="tabular-nums">{result.totalContainersToOrder}</strong></div><div className="flex justify-between"><span>Total estimated purchase cost</span><strong className="tabular-nums">{result.totalEstimatedCostCents === null ? "Not configured" : money.format(result.totalEstimatedCostCents / 100)}</strong></div></div>
-                <p className="text-xs text-muted-foreground">Container size: {decimal.format(selectedPrinter!.containerSizeLiters)} L · Restock target: {decimal.format(selectedPrinter!.restockTargetLiters)} L per color after this job.</p>
+                <table className="w-full table-fixed break-words text-left text-[11px] leading-tight sm:text-xs"><thead><tr className="border-b text-muted-foreground"><th className="w-[22%] pb-2 font-medium">Ink</th><th className="w-[21%] pb-2 font-medium">Usage</th><th className="w-[19%] pb-2 font-medium">On Hand</th><th className="w-[21%] pb-2 font-medium">After Job</th><th className="w-[17%] pb-2 text-right font-medium">Order</th></tr></thead><tbody>{result.colors.map((row) => <tr key={row.color} className="border-b last:border-0"><td className="py-2 font-medium"><ColorLabel color={row.color} compact /></td><td className="py-2 tabular-nums">{decimal.format(row.usageMl)}<span className="text-muted-foreground"> mL</span><div className="text-muted-foreground">{decimal.format(row.usageLiters)} L</div></td><td className="py-2 tabular-nums">{decimal.format(row.currentInventoryLiters)} L</td><td className={`py-2 tabular-nums ${row.afterJobLiters < 0 ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>{decimal.format(row.afterJobLiters)} L</td><td className="py-2 text-right tabular-nums" title={`${decimal.format(row.purchaseLiters)} L to buy${row.estimatedCostCents === null ? "" : ` · ${money.format(row.estimatedCostCents / 100)}`}`}>{row.containersToOrder}</td></tr>)}</tbody></table>
+                <div className="mt-3 space-y-1 rounded-md bg-muted/50 p-2.5 text-xs"><div className="flex justify-between gap-2"><span>Containers to Order</span><strong className="tabular-nums">{result.totalContainersToOrder}</strong></div><div className="flex justify-between gap-2"><span>Estimated Purchase Cost</span><strong className="tabular-nums">{result.totalEstimatedCostCents === null ? "Not configured" : money.format(result.totalEstimatedCostCents / 100)}</strong></div></div>
+                <p className="mt-2 text-[11px] text-muted-foreground">{decimal.format(selectedPrinter!.containerSizeLiters)} L containers · {decimal.format(selectedPrinter!.restockTargetLiters)} L post-job target per color</p>
               </>}
             </CardContent></Card>
           </div>}

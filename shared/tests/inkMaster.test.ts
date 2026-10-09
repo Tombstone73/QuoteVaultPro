@@ -3,9 +3,12 @@ import {
   calculateInkJob,
   emptyInkQuantities,
   loadSpecIntoDraft,
+  parseInkMasterForm,
   selectPrinterInDraft,
   specFromDraft,
+  validateInkMasterPrinterSettings,
   type InkMasterDraft,
+  type InkMasterPrinter,
   type InkMasterPrinterInput,
 } from "../inkMaster";
 
@@ -28,6 +31,50 @@ function draft(overrides: Partial<InkMasterDraft> = {}): InkMasterDraft {
 }
 
 describe("Ink Master calculation", () => {
+  test("accepts an API printer record with identity and audit fields", () => {
+    const apiPrinter: InkMasterPrinter = {
+      ...printer, id: "printer-a", organizationId: "org-a", isActive: true,
+      createdAt: "2026-10-09T00:00:00Z", updatedAt: "2026-10-09T00:00:00Z",
+    };
+    const fields = {
+      sheetCount: "625",
+      usage: { cyan: "3", magenta: "3.66", yellow: "1.61", black: "2.5", white: "0" },
+      inventory: { cyan: "4", magenta: "4", yellow: "4", black: "4", white: "4" },
+    };
+    const parsed = parseInkMasterForm(fields, apiPrinter.id, "double");
+    expect(parsed.errors).toEqual({ usage: {}, inventory: {} });
+    expect(parsed.draft).not.toBeNull();
+    const result = calculateInkJob(parsed.draft!, apiPrinter);
+    [3750, 4575, 2012.5, 3125, 0].forEach((amount, index) => {
+      expect(result.colors[index].usageMl).toBeCloseTo(amount);
+    });
+    expect(result.colors.every((item) => Number.isFinite(item.afterJobLiters) && Number.isFinite(item.purchaseLiters))).toBe(true);
+    expect(Number.isFinite(result.totalContainersToOrder)).toBe(true);
+  });
+
+  test("blank usage is zero, while blank inventory is requested explicitly", () => {
+    const parsed = parseInkMasterForm({
+      sheetCount: "10", usage: { cyan: "", magenta: "0", yellow: ".5", black: "1.25", white: "" },
+      inventory: { cyan: "", magenta: "0", yellow: "1.5", black: "0", white: "0" },
+    }, "printer-a", "single");
+    expect(parsed.draft).toBeNull();
+    expect(parsed.errors.inventory.cyan).toBe("Enter cyan inventory.");
+    expect(parsed.errors.usage).toEqual({});
+  });
+
+  test("invalid job fields and printer settings have separate feedback", () => {
+    const parsed = parseInkMasterForm({
+      sheetCount: "2.5", usage: { cyan: ".", magenta: "-1", yellow: "0", black: "0", white: "0" },
+      inventory: { cyan: "1", magenta: "1", yellow: "1", black: "1", white: "1" },
+    }, "printer-a", "single");
+    expect(parsed.errors.sheetCount).toMatch(/whole number/);
+    expect(parsed.errors.usage.cyan).toMatch(/cyan usage/);
+    expect(parsed.errors.usage.magenta).toMatch(/magenta usage/);
+    expect(validateInkMasterPrinterSettings({ ...printer, containerSizeLiters: 0 })).toMatch(/container size/);
+    expect(validateInkMasterPrinterSettings({ ...printer, restockTargetLiters: -1 })).toMatch(/restock target/);
+    expect(validateInkMasterPrinterSettings(printer)).toBeNull();
+  });
+
   test("single and double sided consumption convert from mL to L", () => {
     const job = draft({ usageMlPerSheetSide: { ...emptyInkQuantities(), cyan: 2.5 } });
     expect(calculateInkJob(job, printer).colors[0].usageMl).toBe(250);
