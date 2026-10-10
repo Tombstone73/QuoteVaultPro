@@ -1,5 +1,294 @@
 # V1 to V2 Operational Parity: October 1, 2026
 
+**M7 L0 campaign: CLOSED for the four bounded acceptance intents.** SALE-08,
+SALE-09, ACCESS-12 and ACCESS-05 have accepted live DEV evidence; zero L0 findings
+remain in this campaign. `currentAccounting` and `closures` in the reconciliation
+ledger describe the current disposition. Older dated interim failures/counts below
+are retained historical evidence. The Owner authorized this documentation milestone;
+it is not an Owner signature, full-application acceptance or production-cutover approval.
+
+## October 10 ACCESS-05 Final Live Acceptance
+
+**ACCESS-05 PASS, F -> B/L0. Current remaining L0 count:0.** Preserved supported
+Owner authentication and M7 QA scope verified. Target
+`8fdaab8c-ca68-41a1-92c6-8a802cb04a58` matched the synthetic active/member identity,
+all three expected assignments,48 effective permissions and no structural admin
+authority. Owner and administrator-floor guardian remained the2 viable admins.
+
+Canonical Payments removal revoked **payment.record**,48->47; fresh target
+bootstrap lost at least1 permission flag and gained none. Individual bootstrap
+flag names were not retained, not invented. Source Team projection and native
+assignment readback establish the exact revoked capability. One canonical restore
+returned the three assignments and exact48 permissions/source projections.
+Supported exact replay of the completed removal request returned200 after restore,
+without re-removal or state/audit/revision changes. Changed payload under that same
+key returned409 IDEMPOTENCY_CONFLICT, also without changes.
+
+The first replay invocation used the helper's wrong method signature, so its local
+guard blocked beforeHTTP. Exact completed outcome was reconciled and target safely
+restored before continuing through supported replayExact. No second revocation,
+blind new-key retry, application fix or un-restored interval remains. Recovery and
+the original local stop are preserved in evidence.
+
+Canonical membership disable200 yielded zero effective permissions, retained
+assignments, activeStaff3->2 and two safe existing-session GET403 FORBIDDENs
+(tenant bootstrap and Quote detail). Canonical re-enable200 restored active/member,
+all assignments, exact48 permissions and activeStaff3. Normal supported Operations
+reauthentication restored the full original bootstrap matrix and safe detail200.
+Authority revisions: **63 ->64 ->65 ->66 ->67**. Four authorized target-only audit
+events and four succeeded request records remain; replay/conflict added none.
+
+Both administrators, non-target full membership/assignment rows, monitored
+identities, all role/capability definitions and Portal assignments are unchanged.
+17 monitored core business-table counts/non-secret row fingerprints match baseline.
+No business mutation endpoint was invoked. Audit/revision/timestamps and canonical
+manual-assignment provenance were preserved, not erased; restoration means business
+access, not byte-identical historic metadata.
+
+Administrator protection combines retained accepted **58/58 native PASS**,12 lock
+witnesses, verified archived receipt and23 matching current Auth/Team/0305 source
+pins, with accepted deployed physical adoption evidence and live floor-enforced
+adminCount2 throughout. No native rerun or live final-administrator removal was
+attempted. Real Owner and non-interactive guardian were never targeted.
+
+Exact results, identifiers and hashes are in `access05FinalAcceptance20261010` in
+the existing reconciliation ledger; ignored QA artifacts retain the complete
+baseline/mutations/recovery/replays/final readback. Only this finding was closed;
+SALE08/09/ACCESS12 were not reopened. No source/schema/directDB write, new identity,
+role creation, provider/payment/issuance/progression, commit or deployment occurred.
+No broad regression campaign or separate deployment verification was performed.
+Existing L1/L2 and release/cutover gaps remain. **Zero L0 is not overall V2 production
+readiness.**
+
+## October 9 ACCESS-12 Final Fixture Correction And Acceptance
+
+**ACCESS-12 PASS, C -> B/L0.** Through the canonical Customers PATCH, ordinary
+QA Operations corrected only the synthetic effective display name to
+`M7 QA Cross-Customer Test`. Full-row comparison confirms all other Customer
+facts preserved; only display_name plus expected crm_revision/updated_at metadata
+changed. Commercial/Contact facts and QT1002's revision/state were unchanged.
+The existing customer-document security guard was not weakened.
+
+After fresh original-key/no-partial-outcome/tax/recipient/routing/suppression checks,
+exactly one POST with original key `M7QA:059355e8-c883-4a63-826d-779e9f1cc45b` and
+expectedRevision1 returned200. Qualified checkpoint
+`2e066770-5ffe-4129-989e-75c4fbf5295e` links to suppressed delivery attempt
+`e4646489-5583-4be7-aa34-68b8cf3178c7`. Delivery request
+`44bddf6b-c86c-479f-90e2-d9c47a5304de` and Sales request
+`e2878435-c1c2-443a-9f06-672bf27f1c70` are the two successful owner-scoped records
+for one publication, not duplicates. Staff history and archivedPDF200 prove
+qualified immutable evidence, $1.00 subtotal/$0.07 tax/$1.07 total; the1430-byte
+PDF matches the prepared native sha256-prefixed fingerprint. Delivery is explicitly
+suppressed, provider_message_id null, not actual email.
+
+The existing legitimate QT1003 Portal customer passes all required isolation checks:
+own publishedB detail200 at $2.14; four other-customer default/explicit-checkpoint
+detail/PDF404s against **qualified** QT1002; every list page checked with own Quote
+present and QT1002 absent; four anonymous own/other protected detail/PDF401s.
+Unpublished-revision protection credits the retained accepted Oct8 live proof of
+internalB hidden while publishedA remained visible. No new revision was created
+and SALE08/09 were not reopened. The complete canonical publication snapshot hash
+is unchanged after read-only Portal checks.
+
+No new Order/Invoice/conversion, operational progression, payment, issuance,
+QuickBooks, tax, permission or Team change occurred. Two QA readback assumptions
+(one rather than two owner request records, and unprefixed rather than native
+sha256 fingerprint) were corrected in ignored orchestration; no extra POST or
+application repair followed. Existing failed-attempt evidence below stays historical.
+Exact results and hashes are in `access12FinalFixtureCorrection20261009` in the
+existing reconciliation ledger. Tracked evidence remains uncommitted. No source
+change, deployment wait/verification or new fixture occurred. Current remaining
+L0 is **ACCESS05 only**, unchanged/pending; this is not full V2 cutover readiness.
+
+## October 9 ACCESS-12 Controlled Publication Diagnostic
+
+**ACCESS-12 remains BLOCKED, C/L0.** Exact original request/body verified against
+the retained receipt; all required M7 QA preconditions passed. One canonical send
+using `M7QA:059355e8-c883-4a63-826d-779e9f1cc45b` and expectedRevision1 returned500
+at 20:34:55 UTC. No replacement key, second attempt, fix or cleanup followed.
+
+Railway request `EPylcvIbT9eAx7kwc9o55Q` correlates with structured event
+`v2.quote.publication.unexpected_failure`, operation
+`3fdc9f28-aa16-455c-9599-64603e66491b`, stage **prepare_pdf**, exception **Error**,
+no SQLSTATE, and the exact original business-request SHA256. The Owner-confirmed
+diagnostic source was not deployment-investigated again. A local build of that
+exact source maps deployed `dist-v2/server.js:30880` to
+`customerDocumentRenderer.ts:43`: **Customer document contains an internal identifier.**
+
+Read-only presentation-field probes through the existing exported PDF guard
+identify **customer.displayName**, backed by **customers.display_name**, for
+synthetic Customer `102436dd-c1fd-4303-ad26-3cc599fbc9b3`: the display name contains
+a UUID. No customer document contents were recorded. This is invalid fixture
+presentation data rejected by the existing customer-output security guard, not
+evidence of a tax, routing, authorization, provider or checkpoint-finalization
+failure. `canSend=true` does not test this PDF guard.
+
+Reconciliation: QT1002 remains revision1/open/not_sent/not_accepted/unconverted,
+with zero checkpoints, attempts, durable original request records and publication
+audit events. Only its existing quote_created audit event remains. Relevant
+Order/Invoice/Production/Fulfillment/payment counts match preflight. No partial
+publication mutation observed; tax freeze rolls back with the preparation failure.
+A QA readback timestamp serialization issue was corrected in the ignored
+orchestration only; it was not a DEV-state difference or an application fix.
+
+Smallest next action: separately authorize the canonical Customers operation to
+correct only the synthetic display name to a plain customer-facing QA name.
+Do not weaken the PDF guard or write directly toDB. After correction, recheck all
+original-key/no-partial-result prerequisites before a separately authorized attempt.
+Another blocker is not ruled out. Qualified other-customer detail/PDF/list isolation
+remains untested, and no unpublished-Quote denial is counted as cross-customer proof.
+
+Exact preflight, POST, structured event, guarded readback and evidence hashes are
+in `access12ControlledPublication20261009` in the existing reconciliation ledger;
+ignored raw QA artifacts are retained under `.cache/v2-validation`. SALE08/09 were
+not reopened, ACCESS05 was untouched, and current remaining L0s stay **ACCESS05 and
+ACCESS12**. No repair, customer/tax/permission mutation, external delivery, payment,
+issuance, progression, application commit or deployment occurred.
+
+## October 8 Bounded M7 QA Sales And Portal Acceptance
+
+Executed canonical DEV operations at `59a6321f7dc6d93cc5919799902006a95d55fe0d`
+in PrintersHero M7 QA only. Verified the supported Owner session and ordinary QA
+Operations Sales authority; used normal guarded synthetic Portal provisioning,
+initial password setup and separate customer authentication. No credential, token
+or setup URL is included in these artifacts. Prior sections below remain historical.
+
+| Finding | Live Result | Canonical Evidence | Remaining Acceptance |
+| --- | --- | --- | --- |
+| SALE-08 | PASS; C -> B/L0 | Published B -> accepted `4f40624f-6b32-41b1-a7eb-8a3b91c24a45` -> converted `fb1ebf5a-5b41-44ff-9cf8-1168d617b29b`; one Order ORD-1032 `e6314953-95f8-4860-bd82-90afa0b8b9f1`; one unissued Draft Invoice `a0b3d32a-c854-4062-b64b-b04302c35096`; matching $2.00 subtotal/$0.14 tax/$2.14 total; exact replay same IDs and conflicting original key rejected409 | None for bounded staff acceptance/conversion intent; no full UI/real-email claim |
+| SALE-09 | PASS; C -> B/L0 | A `9f948572-ab84-4c9d-96c9-c686cdd789ba` $1.07 remains visible during internal B $2.14; explicit B publication `e9dc2cec-0664-4335-bf27-a0c2b7e203ee` becomes visible; historical A/archived PDF unchanged; exact A/B replay leaves two publications | None for bounded revision/republication intent |
+| ACCESS-12 | BLOCKED; retains C/L0 | Customer-bound A/B/history/PDF reads and internal-B restriction pass; three anonymous reads denied401, Portal cannot use Staff detail. QT-1002 suppressed send returns500 INTERNAL_ERROR despite ready recipient/tax/routing and provider-none suppression | Qualified other-customer publication, then default/explicit-checkpoint detail/PDF denials and exclusion from all list pages |
+
+QT-1002's existing exclusively linked synthetic Contact was canonically corrected
+to the approved suppression recipient without provisioning a second Portal account.
+Its send request `M7QA:059355e8-c883-4a63-826d-779e9f1cc45b` returned
+`Quote delivery could not be completed`. Read-only reconciliation finds revision1,
+not_sent, no publication, no delivery attempt and no matching durable request.
+The local mutation remains PENDING; no retry, new key, alternate fixture or repair
+was attempted. Its subsequent404s are explicitly **not** cross-customer proof.
+Root cause is unknown; bounded application-log access was unavailable through the
+CLI's agent-tooling requirement, and no authentication/tooling workaround was added.
+
+Normal conversion created one pending route and one production requirement, not
+Production/Fulfillment progression. Invoice remains draft/unissued. Captured
+Production-work22/Fulfillment-handoff19/payment5 counts match baseline; those counts
+do not prove all pre-existing rows byte-identical. No Team, payment, issuance,
+QuickBooks, external-delivery or direct database write operation was invoked.
+
+Evidence: ignored QA-only `m7-sales-portal-positive.mjs`, its redacted receipt,
+`bulk-owner-sales-portal-positive.json` and `nine-l0-sales-portal-positive.json`
+under `.cache/v2-validation`. Exact identifiers/hashes and narrow independent
+evidence adjudication are in `m7SalesPortalAcceptance20261008` in the reconciliation
+ledger. QA orchestration pin/lifecycle-label errors were corrected; no application
+fix, source-suite rerun, code commit or deployment occurred. Overall run is partial,
+not all-green. Current L0 count is **2: ACCESS-05 and ACCESS-12**; ACCESS-05 unchanged
+and out of scope. L1/L2 and all historical closure evidence are unchanged.
+
+## October 7 Bulk DEV Fixture Cleanup And Adoption
+
+Starting fetched origin/dev and clean worktree:
+`59a6321f7dc6d93cc5919799902006a95d55fe0d`; running DEV initially servedcdc75fa.
+The new explicit user authorization covers one independently reviewed allowlist of
+eligible floorless DEV fixture/rehearsal tenants, not a production lifecycle feature.
+All earlier scope-limited cleanup reports below remain historical evidence.
+
+Fresh eligibility found116 operational organizations:113 floorless fixtures and
+three protected qualifying organizations. M7 QA
+`b6f969b2-dda3-4133-9d75-c417dabb8f3a`, Titan Graphics
+`56e0f644-bb25-43ef-8ee1-473831115849`, and Sandbox Titan Graphics
+`d51ff3e7-75aa-462f-b0ab-3751bd888306` were excluded. Current four-row fixtures,
+including QT-1003 and its Customer/Contact/Workspace, belong to protected M7.
+The initial109 candidate was expanded before any write after strong provenance
+review of four P7B Draft Invoices: historical synthetic Quote-to-Order creation
+automatically created the Draft through the same-transaction Billing participant.
+No issuance/payment/provider/communications occupancy was found. Eligibility
+review `ses_ee7f63909ffeBb5G41enS6cr7X` approved one exact113-ID set, fileSHA256
+`26fede9e76fe54fb2bc7bd889ffb70c958b3aeffe56bdc198fda8cebf19bc3c8`,
+sorted-ID hash255d75a8b16e47934d41e696ccf633cb1927d010e3503d3400f7fed75659a21f.
+Exact IDs/source/evidence pins are in
+`.cache/v2-validation/bulk-eligibility-proposed-expanded-1791404629109.json`.
+
+Independently reviewed maintenance used exact DEV identity/URL/TLS/session guards,
+migration/authority locks and sorted table locks, immutable scope CAS, parameterized
+owned-identity deletions, audited row-specific immutable-guard exceptions and active
+RI/deferred checks. No fake authority, archive, FK removal, replication-role bypass,
+function rewrite or tenant-ID product exception was used. All12 temporary named
+exceptions were restored;10 retained guards remained enabled. Snapshot evidence
+includes full business-row hashes across345 public tables and full structural
+definitions/object/component hashes. Only five documented pg_class statistics/
+vacuum-horizon fields are excluded, avoiding the earlier mutable-catalog failure.
+
+Actual full-set rollback rehearsal removed31,897 rows explicitly plus76 naturally
+cascaded Product versions:31,973 owned rows across47 tables, including all113 roots.
+Every outside table count/hash matched the fresh locked baseline; rollback and
+fresh read-only verification restored all full rows and15 schema components.
+Rehearsal receipt1791408082939 SHA256
+`d9dfc6bbbb3e56a3a63494f4f44b77370ababd986be45b23a4993cb8166a0a9a`
+was independently adjudicated before one committed transaction of the same set.
+
+Commit receipt1791408843477 SHA256
+`7dd7307841ec1b1dfae02f19373bd1e18f5743b335a227ab45a3ee1a1bd6da2b`
+records COMMITTED_VERIFIED, acknowledged commit and fresh postcommit read-only
+verification. All345 outside counts/hashes and all15 stable schema components/
+definitions matched; protected organizations/fixtures and global users, identities,
+sessions and catalog records remained untouched. Source/native implementation bytes
+are unchanged. Independent actual commit review
+`ses_ee7e402b6ffe5i7ucK545FbuQu` PASS. New read-only preflight1791409163794,
+SHA41d48f138944fff587e64f2d814b1f64d99d92a92aa53edfbb3f942500723307,
+confirms three remaining operational organizations, zero floorless tenants and
+all113 allowlisted IDs absent. Protected authority counts remain Titan3/M7QA2/Sandbox2.
+No additional cleanup set was needed.
+
+Normal Railway redeployment187127d6-23cd-41ad-8097-cd8ec2a12451 succeeded.
+At2026-10-07T21:46:56.385Z exact/version59a, healthok and readinessready passed
+with TLS verification. Canonical migration status now includes0304 at timestamp
+1791308659152/hash89977bf7e1b6665f5d590e97dcc51936d94da5bf61149f0f9f4c8392553cb9dd
+and0305 at1791308659153/hashf33c69874e30395d974e494a43767052a74d9f28fe96e3934a845dcd5745893b.
+Old ledger gaps/name-label behavior are not repaired or represented as a new defect.
+
+Live ordinary Operations readback confirms Quote suppression providernone/status
+suppressed with explicit no-provider copy, valid synthetic recipient/routing, but
+unresolved QA tax. Canonical negative Send and accept return409 and leave QT-1003
+and its empty publication history unchanged. Harness response-shape corrections
+are not product-source defects. No row closure is inferred from cleanup/deployment.
+Positive publication, Portal visibility and Owner Team acceptance were not executed:
+normal Dale handoff stayed available without an artificial15-minute timeout, but
+closed with PENDING_CANCELLED at21:36:02Z and produced no verified auth state.
+Correct worktree inspection and redacted configuration checks confirm only Operations
+credentials are configured. This does not prove broken login or missing membership.
+No credential reset, elevation, improper extraction or provider action occurred.
+
+Fresh post-adoption validation completed on unchanged59a source. Attempt1 passed
+10/11 gates but canonical Jest hit its unchanged600-second limit; that incomplete
+result and all four successful builds are preserved. Diagnosis found broad CPU
+slowdown, not a confirmed hanging-suite defect or orphaned owned process. One
+same-command retry completed naturally:11/11 gates,302 core/102 UI suites,100 Jest
+suites/1246 tests, zero failed/pending and no timeout. No limit, cache, source
+assertion or gate was weakened. Fresh retry reportSHA256
+6bcb0e8d2b79adf9a24160631e9845ed9b4d086c6229d32d4bf2a42d03847437;
+JestSHA256f7e7bfa8d4e734b247256627e9d967ee8c7a7b130061201e103a2d7047569137.
+Backend/V2 foundation/server/UI builds passed in the first post-adoption run,
+reportSHA2b186764dc8f63f43556f67e4446cf05e3af5636d8e0f02d6ffa0f6ca3b80f29;
+they are credited honestly, not reported rerun during retry. Journal/integrity301,
+architecture102, runner safety13, imports/SQL and diff-check passed.
+
+Read-only adoption evidence1791410416779 SHA256
+`3fd018007f8e6ecfda315dc795e133b8824a9ffe71637202fe81d108bd347729`
+verifies73 permission physical checks, two publication/suppression checks,13 installed
+function bodies byte-exact to0304/0305 source,72 inspected enabled triggers, protected
+enrollment/enforced floors and1545 source fingerprints matching retained native58.
+No native rerun or actual DEV authority mutation is inferred. Independent partial
+Sales review `ses_eede2b8beffeyuAVSUQrodvWP7` confirms negative Send/accept request
+identities/statuses and unchanged full Quote/history; readiness is not publication.
+
+**Final disposition: four L0s remain, zero new closures.** ACCESS-05 retains F/L0;
+SALE-08/SALE-09/ACCESS-12 retain C/L0. The data/deployment blocker is resolved.
+Remaining acceptance needs normal Dale/M7 authentication, canonical QA tax/Portal
+prerequisites and actual positive workflows. No fake Owner, lifecycle architecture
+or provider connection is justified. Previous closures, L1 and accounting/priority
+totals are unchanged. Verdict **C: TECHNICAL L0 REMAINS**, reflecting unmet acceptance,
+not an invented production requirement for disposable DEV data.
+
 ## October 7 Authorized Disposable DEV Cleanup
 
 Fresh `git fetch origin dev` establishes starting REQUIRED_COMMIT

@@ -1,5 +1,211 @@
 {
   "schemaVersion": 1,
+  "access05FinalAcceptance20261010": {
+    "finding": "ACCESS-05", "classification": "B", "priority": "L0", "result": "PASS",
+    "startingL0": 1, "endingL0": 0, "rowsClosed": ["ACCESS-05"],
+    "organizationId": "b6f969b2-dda3-4133-9d75-c417dabb8f3a",
+    "sourceCommit": "c092609fa3bd597e41b35c302b1e7f24d8abb9d7",
+    "ownerActorId": "f211a1ba-69e7-4427-bab0-98b01935a461",
+    "targetMemberId": "8fdaab8c-ca68-41a1-92c6-8a802cb04a58",
+    "baseline": { "syntheticVerified": true, "status": "active", "structuralRole": "member", "administratorCapable": false, "effectivePermissions": 48, "authorityRevision": "63", "permissionSetIds": ["7JkFa_8Mj7Hq6e14jr0GDR6E", "ea278320-d937-4776-b3c0-c95ca67b2170", "kkKXxwYVm75hVlHdxauEbo3k"], "viableAdministrators": 2 },
+    "permissions": {
+      "operation": "Canonical Owner PUT target Staff permission-sets",
+      "revocation": "Payments removed once: effective permissions48->47, payment.record absent; target structuralrole/member and status/active unchanged",
+      "originalRequestId": "BULK-OWNER:27572acc-ca86-453e-a638-563bdb9779e8",
+      "nativeRequestId": "94f63dc2-df93-4277-9112-924ec02bab63",
+      "revocationAuthorization": "Fresh target bootstrap lost at least1 true capability flag and gained none; assertions passed before local helper guard. Individual flag names not retained, not fabricated",
+      "restoration": "Original three IDs and exact48 effective permissions/source projections restored through canonical PUT; fresh bootstrap boolean matrix equals original",
+      "restorationRequestId": "M7QA:44236ed1-ca6a-4fac-8aea-8f6ef06c4f05",
+      "restorationNativeRequestId": "49381375-3a11-4860-9a68-e308155dbabe",
+      "exactReplay": "Supported replayExact with original immutable removal body, same key and stale originalCAS63 returns200 after restoration; full monitored authority snapshot unchanged, no role re-removal/audit/revision/request duplication",
+      "conflictingReuse": "Same original key with changed baseline-three-set payload returns409 IDEMPOTENCY_CONFLICT; full monitored authority snapshot unchanged",
+      "revisionSequence": ["63", "64", "65"],
+      "localHelperCorrection": "First caller incorrectly supplied replay flag to four-argument mutate; local guard blocked beforeHTTP. Prioritized exact-outcome readback and one canonical restoration completed before supported replay/conflict testing. No second revocation or blind retry"
+    },
+    "status": {
+      "disable": "Canonical Owner PATCH activefalse returns200; target disabled, effectivePermissions empty, assignments retained, activeStaff3->2, viableAdmins2",
+      "disableRequestId": "BULK-OWNER:f9418f81-f248-443e-a3cb-b8edef477d8e", "disableNativeRequestId": "8bdd6e0d-ed33-49df-8d27-74cc7d866fb8",
+      "disabledAuthorization": "Existing target session GET tenant ui-bootstrap403 FORBIDDEN and safe Quote detail403 FORBIDDEN; no business mutation attempt",
+      "reenable": "Canonical Owner PATCH activetrue returns200; member active, original assignments/effective48 restored, activeStaff2->3, viableAdmins2",
+      "reenableRequestId": "BULK-OWNER:dc3a931c-3f83-4513-a45a-94cf164f0a7b", "reenableNativeRequestId": "d4a46463-ce89-4c3a-85c5-2738a5de4671",
+      "restoredAuthorization": "Normal supported Operations reauthentication; complete bootstrap capability matrix equals baseline; same safe Quote detail200",
+      "revisionSequence": ["65", "66", "67"]
+    },
+    "administratorSafety": {
+      "protectedIds": ["f211a1ba-69e7-4427-bab0-98b01935a461", "95ebeedf-5977-43af-8e0e-510c50470feb"],
+      "live": "Exactly2 viable administrators and admin_floor_enforced=true throughout; Owner and guardian membership/identity facts/assignments unchanged; no live final-admin attempt",
+      "native": "Retained accepted58/58 PASS,12 lock witnesses,58 per-case cleanups; not rerun. Archived summary/receipt hash verified and23 relevant current Auth/Team/0305 source pins match native receipt; no Auth/Team/migration source delta from accepted59a adoption",
+      "nativeReceipt": ".cache/v2-validation/final-four-native-evidence/attempt4-native-proof-receipt.json",
+      "nativeReceiptSha256": "e977af6f47d75fb3140a5b6bb31118befbd8107090b660f6eca8e8a842141866",
+      "adoption": "Retained accepted deployed physical evidence:73 permission checks,13 exact functions,72 enabled triggers; receipt hash unchanged, no new deployment verification",
+      "adoptionReceipt": ".cache/v2-validation/bulk-adoption-schema-1791410416779.json",
+      "adoptionReceiptSha256": "3fd018007f8e6ecfda315dc795e133b8824a9ffe71637202fe81d108bd347729",
+      "limits": "Native proof is retained isolated concurrency/floor protection, not a fresh native/full-migration-chain run or a live attempt against protected administrators"
+    },
+    "finalReconciliation": { "status": "active", "structuralRole": "member", "permissionSetIdsRestored": true, "effectivePermissionsRestored": 48, "bootstrapRestored": true, "authorityRevision": "67", "newAuditEvents": 4, "newSucceededRequests": 4, "auditScope": "All4 events target only authorized member and actorOwner; no replay/conflict audit event", "otherMembers": "Non-target complete membership/assignment rows and monitored identities hash unchanged", "roleDefinitions": "Full definitions/capability definitions and Portal assignment hashes unchanged", "business": "17 monitored core CRM/Sales/Billing/Production/Fulfillment/Routing table counts and non-secret row fingerprints unchanged; no business mutation endpoint invoked", "history": "Audit/revisions/timestamps and canonical manual-assignment provenance retained rather than erased; restored business access does not claim byte-identical historical metadata", "unexpectedSideEffectsObserved": false },
+    "evidence": { "receipt": ".cache/v2-validation/access05-final-acceptance.receipt.json", "receiptSha256": "2098d2419cd4949393a2eb142913209495bb7f25fc151711a2c3098d6c5a100b", "orchestration": ".cache/v2-validation/access05-final-acceptance.mjs", "orchestrationSha256": "809dd21124d1071994d2d46caba80465b0fe9dd36a4eaedede5dfd6656c4ad07", "ownerLedger": ".cache/v2-validation/bulk-owner-access05-final.json", "ownerLedgerSha256": "f93fc2c0731c7be520669aab8e7a5e662b72809e27d5ae576a6fe6f01e4933bd", "targetLedgers": [".cache/v2-validation/nine-l0-access-team-acceptance.json", ".cache/v2-validation/nine-l0-access-team-restored.json"] },
+    "scope": "Only designated synthetic Staff assignments/status changed. No Owner/guardian change, identity/role creation, directDB write, source/migration/Quote/Order/Invoice/payment/tax/progression mutation, provider call, commit or deployment; supported Owner session retained and Operations normally reauthenticated",
+    "campaignDecision": "All four original remaining L0 intents closed by bounded accepted evidence; no remaining L0. SALE08/09/ACCESS12 not reopened. Existing L1/L2 and release/cutover gaps remain; not overall production readiness"
+  },
+  "access12FinalFixtureCorrection20261009": {
+    "finding": "ACCESS-12", "classification": "B", "priority": "L0", "result": "PASS",
+    "startingL0": 2, "endingL0": 1, "rowsClosed": ["ACCESS-12"],
+    "organizationId": "b6f969b2-dda3-4133-9d75-c417dabb8f3a",
+    "sourceCommit": "c092609fa3bd597e41b35c302b1e7f24d8abb9d7",
+    "customerCorrection": {
+      "customerId": "102436dd-c1fd-4303-ad26-3cc599fbc9b3",
+      "operation": "PATCH /v2/organizations/{M7QA}/customers/{customerId}",
+      "approvedEffectiveName": "M7 QA Cross-Customer Test",
+      "result": "200; existing ordinary Operations customer.edit authority; only display_name and canonical crm_revision/updated_at metadata changed",
+      "preservation": "All other full Customer-row facts hash-identical, commercial/contact data unchanged; original companyName/email/phone/addresses echoed through replacement-form contract, no tax/exemption/payment-term inputs changed",
+      "guard": "Effective customer-facing name passes existing document guard; published PDF renders200, matching prepared archive hash. No security weakening",
+      "requestId": "M7QA:QT1002:display-name-correction:2026-10-09",
+      "scope": "Exactly one separate Customer correction command, not a replacement publication key"
+    },
+    "qualifiedPublication": {
+      "quoteId": "781faaa6-4036-43e0-bfb5-66e502404f37",
+      "originalPayload": { "businessRequestId": "M7QA:059355e8-c883-4a63-826d-779e9f1cc45b", "expectedRevision": "1" },
+      "attemptsThisAssignment": 1, "httpStatus": 200,
+      "checkpointId": "2e066770-5ffe-4129-989e-75c4fbf5295e",
+      "deliveryAttemptId": "e4646489-5583-4be7-aa34-68b8cf3178c7",
+      "deliveryRequestId": "44bddf6b-c86c-479f-90e2-d9c47a5304de",
+      "salesRequestId": "e2878435-c1c2-443a-9f06-672bf27f1c70",
+      "requestRecords": "Exactly2 successful owner-scoped records: sales.quote.delivery.v1 and sales.quote.send.v1 using original key; exactly1 checkpoint and1 attempt, not duplicate publications",
+      "evidenceFingerprint": "sha256:c88d0b55f2de6d4528afff2508bba1bee944140ca5cbb62581a879eb1bcadbf5",
+      "pdfSha256": "sha256:55c803c083231c8a0f863715a38ca8eefcb6032da84fc909a419419c31944d9c",
+      "pdfBytes": 1430, "subtotalCents": 100, "taxCents": 7, "totalCents": 107,
+      "delivery": "suppressed, dev_qa_suppressed transport, provider_message_id null; no actual email",
+      "qualification": "Authorized Staff publishedCheckpoint/history and archivedPDF200; bytes match native sha256-prefixed delivery document fingerprint; exact request/attempt/checkpoint links reconciled",
+      "sideEffects": "Unaccepted/open/unconverted; no new Order or Invoice; protected operational/financial counts unchanged; read-only Portal checks leave complete canonical snapshot hash unchanged"
+    },
+    "portalAcceptance": {
+      "customerId": "6b38ce9b-1df5-41ce-961d-406b90f12459",
+      "identity": "Existing legitimate synthetic Portal session, separate from Staff and anonymous contexts; normal session200 confirms bound customer",
+      "authorizedOwnQuote": "PASS: QT1003 publishedB detail200, correct e9dc2cec-0664-4335-bf27-a0c2b7e203ee checkpoint and214c total",
+      "crossCustomerDetail": "PASS: qualified QT1002 default and explicit-publication-checkpoint detail404",
+      "crossCustomerPdf": "PASS: qualified QT1002 default and explicit-publication-checkpoint PDF404",
+      "listIsolation": "PASS: all1 list pages checked, ownQT1003 present, publishedQT1002 absent",
+      "anonymous": "PASS: own and other qualified Quote detail/PDF all401,4 denied requests",
+      "unpublishedRevisionProtection": "Retained accepted Oct8 live proof: internalB214c remained invisible while publishedA107c list/detail/archive visible; same Quote and unchanged Portal behavior. No new revision mutation or reopening SALE08/09",
+      "limits": "Unpublished protection credited from retained live evidence, not a newly created internal revision; denied other-customer reads now genuinely target a qualified publication"
+    },
+    "evidence": {
+      "receipt": ".cache/v2-validation/qt1002-final-correction.receipt.json",
+      "receiptSha256": "b8afdd40ccc05935bb74c1980d3cd59b675783385bd8d32213796c98303363fd",
+      "orchestration": ".cache/v2-validation/qt1002-final-correction.mjs",
+      "orchestrationSha256": "b0cf4de90b5ce751947d244d98a051aa8f732de0bf06f5f6e1f68aafacd9d21a",
+      "operationsLedger": ".cache/v2-validation/nine-l0-qt-final-correction.json",
+      "historicalUnpublishedRevisionReceipt": ".cache/v2-validation/m7-sales-portal-positive.receipt.json",
+      "orchestrationCorrections": "Read-only reconciliation corrected two QA assumptions: canonical send owns2 request records, and document fingerprints use sha256 prefix. No extra POST, application fix or relaxed domain assertion"
+    },
+    "safety": "Only authorized synthetic Customer correction and one original-key Quote send. No directDB writes, tax/permissions/Team changes, external email, payments, issuance, conversion, operational progression, QuickBooks, new fixtures, application modification/commit/deployment. All prior failed-attempt evidence preserved as historical",
+    "remaining": "ACCESS05 remains unchanged/pending; no other L0 opened or full-cutover claim"
+  },
+  "access12ControlledPublication20261009": {
+    "finding": "ACCESS-12",
+    "classification": "C",
+    "priority": "L0",
+    "result": "BLOCKED: original-key publication reproduced500; qualified cross-customer isolation not executed",
+    "authorizedAttemptsThisAssignment": 1,
+    "organizationId": "b6f969b2-dda3-4133-9d75-c417dabb8f3a",
+    "quoteId": "781faaa6-4036-43e0-bfb5-66e502404f37",
+    "ownerConfirmedDiagnosticCommit": "c092609fa3bd597e41b35c302b1e7f24d8abb9d7",
+    "deploymentInvestigation": "Not repeated; existing authentication helper safety pin used, and HTTP logging deployment identity obtained solely to correlate failed request",
+    "originalPayload": { "businessRequestId": "M7QA:059355e8-c883-4a63-826d-779e9f1cc45b", "expectedRevision": "1" },
+    "businessRequestIdHash": "ab85b03446e2b7090af7996cd9ea078f36fe034390bdfb25a2f1ec82de031e67",
+    "preflight": "PASS: exact retained POST/body and ordinary Operations authority; active M7QA; QT1002 revision1/open/not_sent/not_accepted/notconverted; zero checkpoints/attempts/durable original request/publication audit/conversions; canonical tax7c/total107c ready; recipient/routing ready; canSendtrue; provider none and QA suppression",
+    "http": { "startedAt": "2026-10-09T20:34:54.432Z", "responseAt": "2026-10-09T20:34:55.612Z", "status": 500, "code": "INTERNAL_ERROR", "message": "Quote delivery could not be completed.", "railwayRequestId": "EPylcvIbT9eAx7kwc9o55Q", "requestDeploymentId": "70af95c2-d8f6-4d99-bbc1-4bc08c70b02d", "durationMs": 1078 },
+    "diagnostic": {
+      "event": "v2.quote.publication.unexpected_failure",
+      "timestamp": "2026-10-09T20:34:55.893Z",
+      "operationId": "3fdc9f28-aa16-455c-9599-64603e66491b",
+      "stage": "prepare_pdf",
+      "exceptionClass": "Error",
+      "sqlstate": null,
+      "sanitizedMessage": "Unexpected Error; original message redacted",
+      "stackLocations": ["dist-v2/server.js:30880:65", "dist-v2/server.js:30884:20", "dist-v2/server.js:31574:23", "dist-v2/server.js:31373:25", "dist-v2/server.js:11805:29"],
+      "correlation": "Exact organization/Quote/businessRequestIdHash/time and HTTP request match; Railway parses event into attributes, so unfiltered exact-deployment15-second JSON log window captures it where free-text filtering returned empty"
+    },
+    "rootCause": {
+      "classification": "Invalid synthetic fixture presentation data rejected by existing customer-output security guard",
+      "exceptionFromSource": "Customer document contains an internal identifier.",
+      "source": "v2/infrastructure/sales/customerDocumentRenderer.ts:34-44",
+      "sourceMapping": "Exact current c092609f local backend build maps deployed30880 to guard throw and30884 to renderCustomerSalesPdf guard invocation",
+      "field": "customer.displayName",
+      "backingField": "customers.display_name",
+      "customerId": "102436dd-c1fd-4303-ad26-3cc599fbc9b3",
+      "proof": "Read-only QA-scoped projection metadata and existing exported guard tested populated presentation candidates: only customer.displayName rejected, with containsUuid=true. No customer document contents recorded",
+      "notCause": "No evidence of tax, authorization, routing, email/provider or checkpoint/finalization failure; tax freeze precedesPDF and rolls back with preparation",
+      "remainingUnknown": "After canonical correction the publication has not been attempted, so absence of a second blocker is unproven; readiness currently does not exercise this PDF guard"
+    },
+    "reconciliation": { "partialPublicationMutationObserved": false, "revision": "1", "deliveryState": "not_sent", "acceptanceState": "not_accepted", "lifecycleState": "open", "checkpoints": 0, "deliveryAttempts": 0, "durableOriginalRequestRecords": 0, "publicationAuditEvents": 0, "conversions": 0, "existingAuditOnly": "quote_created", "protectedCounts": "Orders/Invoices/Production/Fulfillment/payments equal preflight; no mutation invoked outside one send", "freshReadback": "Relevant Quote/publication/request/audit identifiers/types and protected counts unchanged; audit timestamps excluded from stored comparison because existing redactor serializes Date objects as empty objects, not because of DEV drift" },
+    "smallestNextAction": "Separately authorize canonical Customers-owned correction of only the UUID-bearing synthetic display_name to a plain customer-facing QA name. Do not weaken renderer guard, mutate tax, create fixture or write directly toDB. Then fresh preflight and explicit authorization for another original-key attempt; no automatic/new-key retry",
+    "acceptanceRemaining": "Qualified QT1002 publication required before QT1003 Portal customer cross-customer default/explicit-checkpoint detail/PDF denial and all-list-pages exclusion. No unpublished-Quote404 counted as independent proof; Portal checks not run after publication failure",
+    "evidence": { "receipt": ".cache/v2-validation/qt1002-controlled-publication.receipt.json", "receiptSha256": "cbd5c6632b814f3180367ab547be5d3d2d962701a05cf2f31a590d33ebbf4a64", "orchestration": ".cache/v2-validation/qt1002-controlled-publication.mjs", "orchestrationSha256": "bca7c8ac0cbbb2ef3eed3afe83c4fd0ded495af9471def7ca2a7f27bad91e5f1", "operationsLedger": ".cache/v2-validation/nine-l0-qt-controlled-publication.json" },
+    "safety": "One canonical original-key send only; all diagnosis SQL READ ONLY and guard probes pure/in-memory. No repair, fixture/customer/tax/Team change, reset, new key, external email, Order/Invoice/payment/issuance/operational progression/QuickBooks/directDB write/commit/deployment. Existing SALE08/09 proof unchanged; ACCESS05 untouched",
+    "accounting": "ACCESS12 remainsC/L0; remainingL0 remains2: ACCESS05 and ACCESS12. No full-cutover claim"
+  },
+  "m7SalesPortalAcceptance20261008": {
+    "scope": ["SALE-08", "SALE-09", "ACCESS-12"],
+    "liveCommit": "59a6321f7dc6d93cc5919799902006a95d55fe0d",
+    "organizationId": "b6f969b2-dda3-4133-9d75-c417dabb8f3a",
+    "startingL0": 4,
+    "endingL0": 2,
+    "rowsClosed": ["SALE-08", "SALE-09"],
+    "status": "PARTIAL_ACCEPTANCE_COMPLETE",
+    "evidence": {
+      "receipt": ".cache/v2-validation/m7-sales-portal-positive.receipt.json",
+      "receiptSha256": "7346ce9cd63f72626b092084f2ba22136343a8c31949bc8e50b51e2f2ef620dc",
+      "runner": ".cache/v2-validation/m7-sales-portal-positive.mjs",
+      "runnerSha256": "00430cab454bb7429bf218e97e01c91e170c09f25631b2b63648186dc56deace",
+      "ownerLedger": ".cache/v2-validation/bulk-owner-sales-portal-positive.json",
+      "ownerLedgerSha256": "0074a33428f739e9ec93093f1ec630b0491b68c1f7b6ef550881b47bf2470af4",
+      "operationsLedger": ".cache/v2-validation/nine-l0-sales-portal-positive.json",
+      "independentEvidenceCheck": "ses_ee2a24501ffegLm53uTJXl0b6K: bounded primary publication/conversion PASS; cross-customer acceptance BLOCKED; not an overall green runner"
+    },
+    "portal": {
+      "customerId": "6b38ce9b-1df5-41ce-961d-406b90f12459",
+      "contactId": "c92e36d5-8e48-432f-8a77-3a823936af18",
+      "portalAccessId": "-OETMU1PVJhqH-waRvB0kuVP",
+      "permissionSetId": "b855ca45-9913-4e7e-a51d-6ca1b74ef2b7",
+      "provisioning": "Owner-authorized guarded setup201, normal initial password setup200 and separate normal Portal login200; delivery suppressed; no reset or Gmail",
+      "credentials": "Generated only in memory, never printed or recorded; authenticated Staff and Portal state retained through supported ignored Playwright state files"
+    },
+    "rows": {
+      "SALE-08": { "classification": "B", "priority": "L0", "acceptance": "PASS: canonical combined accept/conversion consumes published B; exactly one new Order and one Billing Draft Invoice; frozen commercial/tax evidence matches; exact acceptance replay returns same IDs and conflicting expectedRevision under original key is409 IDEMPOTENCY_CONFLICT", "orderId": "e6314953-95f8-4860-bd82-90afa0b8b9f1", "draftInvoiceId": "a0b3d32a-c854-4062-b64b-b04302c35096", "acceptedCheckpointId": "4f40624f-6b32-41b1-a7eb-8a3b91c24a45", "conversionCheckpointId": "fb1ebf5a-5b41-44ff-9cf8-1168d617b29b", "subtotalCents": 200, "taxCents": 14, "totalCents": 214 },
+      "SALE-09": { "classification": "B", "priority": "L0", "acceptance": "PASS: publishA107c, canonically revise/edit internalB214c while Portal list/detail/archivedPDF retainA, explicitly publishB214c, retain historicalA and byte-identical archivedPDF; same Quote identity; exact send replays leave two publications", "publicationA": "9f948572-ab84-4c9d-96c9-c686cdd789ba", "publicationB": "e9dc2cec-0664-4335-bf27-a0c2b7e203ee", "archivedAPdfSha256": "c4593ec7af92dab36198627f9d933ffa968834bb56e303c616ac34011883a059" },
+      "ACCESS-12": { "classification": "C", "priority": "L0", "acceptance": "BLOCKED: legitimate customer publication/history/PDF and unpublishedB isolation passed; three anonymous reads denied401 and Portal session cannot use Staff detail401/403. Independently qualified other-customer isolation not established", "otherQuoteId": "781faaa6-4036-43e0-bfb5-66e502404f37", "otherCustomerId": "102436dd-c1fd-4303-ad26-3cc599fbc9b3", "otherContactId": "e085c11d-1b37-4dd8-be88-b8553b0856ce", "contactMutation": "Existing exclusively linked synthetic Contact canonically corrected to approved suppression recipient; no second Portal identity created", "failedBusinessRequestId": "M7QA:059355e8-c883-4a63-826d-779e9f1cc45b", "actualError": "HTTP500 INTERNAL_ERROR: Quote delivery could not be completed", "reconciliation": "QT1002 remains revision1/not_sent, no publication checkpoint, no matching durable operation request and no delivery attempt observed; local request retainedPENDING. No retry/new key/new fixture/reset/cleanup", "rootCause": "Unknown; bounded Railway log read unavailable due CLI agent-tooling requirement; no workaround or application fix attempted", "remainingRequirement": "Reconcile/diagnose exact failed request before separately authorized recovery. Establish qualified other-customer publication, then verify default and explicit-checkpoint detail/PDF404 plus exclusion from all Portal list pages" }
+    },
+    "safety": "DEV M7QA only; one canonical pending route and one production requirement created by normal Order conversion, no progression. Production-work22/Fulfillment-handoff19/payment5 aggregate counts equal baseline; invoice draft/unissued. No production/fulfillment/payment/QuickBooks/Team operations invoked; no directDB writes, reset, external delivery, code fix, commit or deployment",
+    "limits": "Bounded live canonical HTTP acceptance, not new UI/browser/source-suite acceptance or real email delivery. Frozen route/readback and aggregate counts do not prove every pre-existing operational row unchanged. Earlier preflight pin initialization and lifecycle-label assumptions were QA-only orchestration errors corrected without application changes. ACCESS-05 unchanged and out of scope. All earlier audit sections remain historical"
+  },
+  "bulkDevCleanupAndAcceptance20261007": {
+    "startingOriginDevSha": "59a6321f7dc6d93cc5919799902006a95d55fe0d",
+    "runningDevStartingSha": "cdc75fa735f40bc5474ecadb21ff49f5a97e7eeb",
+    "scope": ["ACCESS-05", "SALE-08", "SALE-09", "ACCESS-12"],
+    "startingL0": 4,
+    "endingL0": 4,
+    "rowsClosed": [],
+    "eligibility": { "operationalCandidates": 116, "floorlessCandidates": 113, "finalAllowlist": 113, "protectedOrganizations": 3, "activeFixtureOrganizations": 1, "fixtureProtectedOverlap": "M7 QA", "uncertaintyExclusions": 0, "initialCandidate": "109; four P7B Draft Invoices resolved before writes by historical same-transaction automatic Billing provenance", "allowlistFile": ".cache/v2-validation/bulk-eligibility-proposed-expanded-1791404629109.json", "allowlistFileSha256": "26fede9e76fe54fb2bc7bd889ffb70c958b3aeffe56bdc198fda8cebf19bc3c8", "sortedIdsSha256": "255d75a8b16e47934d41e696ccf633cb1927d010e3503d3400f7fed75659a21f", "independentReview": "ses_ee7f63909ffeBb5G41enS6cr7X APPROVE exact113 eligibility, not ID-name-only" },
+    "protectedIds": ["b6f969b2-dda3-4133-9d75-c417dabb8f3a", "56e0f644-bb25-43ef-8ee1-473831115849", "d51ff3e7-75aa-462f-b0ab-3751bd888306"],
+    "maintenance": { "manifest": ".cache/v2-validation/bulk-cleanup-review-1791406806908.json", "manifestSha256": "ba519ebb0d82b5dd0fba44821decc425a16f8dafa6afdd091ad95c86dfb7cb02", "moduleVectorSha256": "fa24ddfcc0529779dfd751fb06f7be3d299421eb1160c1e1dd30308b3fb6d2ab", "ownedRows": 31973, "ownedTables": 47, "explicitRows": 31897, "naturalProductVersionCascadeRows": 76, "explicitDeleteStatements": 50, "explicitTables": 46, "removedOrganizations": 113, "namedGuardExceptionsRestored": 12, "retainedGuardsNeverSuspended": 10, "outsideTableFullHashCoverage": 345, "stableSchemaComponents": 15, "stableSchemaSha256": "8f24003241e99220a1ea295579de1cc2164d91510f88b7fbb21977e976fcac52", "schemaEvidence": "Full before/after/fresh-restoration definitions and object/component hashes; only relpages,reltuples,relallvisible,relfrozenxid,relminmxid excluded", "safety": "Exact DEV environment/database/session guards, source/scope pins, locks, owned-row DAG/self-FK batches, deferred constraints and restored named guards; no fake Owner/archive/replica role/FK or function rewrite/source feature", "independentReview": "ses_ee7e402b6ffe5i7ucK545FbuQu separately approved script/profile, actual full rollback and one commit; actual committed evidence PASS" },
+    "rehearsal": { "status": "REHEARSAL_ROLLED_BACK_VERIFIED", "receipt": ".cache/v2-validation/bulk-cleanup-rehearsal-1791408082939.json", "sha256": "d9dfc6bbbb3e56a3a63494f4f44b77370ababd986be45b23a4993cb8166a0a9a", "freshBaselineSha256": "c1b4619e37db9ae6d2120c149d519758aef84ae50e93438c66828532ae7f21e1", "fullBusinessAndStableSchemaRestoration": true },
+    "cleanupCommit": { "status": "COMMITTED_VERIFIED", "receipt": ".cache/v2-validation/bulk-cleanup-commit-1791408843477.json", "sha256": "7dd7307841ec1b1dfae02f19373bd1e18f5743b335a227ab45a3ee1a1bd6da2b", "freshBaselineSha256": "faa22b742f65be29d526df500ee5c4a21beb310af13dff8f5855d19f23a82c53", "commitAcknowledged": true, "unknownOutcome": false, "allOutsideBusinessHashesAndStableSchemaEqual": true, "protectedFixtureAndGlobalIdentitySessionCatalogRecordsPreserved": true, "preLockOutsideDrift": [] },
+    "postCleanupPreflight": { "receipt": ".cache/v2-validation/bulk-authority-preflight-after-1791409163794.json", "sha256": "41d48f138944fff587e64f2d814b1f64d99d92a92aa53edfbb3f942500723307", "remainingOperational": 3, "remainingFloorless": 0, "allAllowlistedIdsAbsent": true, "protectedAuthorityCounts": "Titan3/M7QA2/Sandbox2 unchanged", "qt1003AndCustomerContactWorkspaceIntact": true, "followupCleanupNeeded": false },
+    "adoption": { "deploymentId": "187127d6-23cd-41ad-8097-cd8ec2a12451", "mechanism": "Normal explicit DEV Railway source redeployment and canonical predeploy migrations", "status": "SUCCESS", "deployedCommit": "59a6321f7dc6d93cc5919799902006a95d55fe0d", "exactGateAt": "2026-10-07T21:46:56.385Z", "health": "ok", "ready": "ready", "tlsVerified": true, "0304": { "timestamp": 1791308659152, "sha256": "89977bf7e1b6665f5d590e97dcc51936d94da5bf61149f0f9f4c8392553cb9dd" }, "0305": { "timestamp": 1791308659153, "sha256": "f33c69874e30395d974e494a43767052a74d9f28fe96e3934a845dcd5745893b" }, "ledgerRows": 300, "limits": "Historical ledger gaps/tag-label diagnostics retained, not repaired or treated as new product defects" },
+    "liveQuoteReadiness": { "actor": "Normal DEV QA Operations", "quoteId": "d8f05c1c-8de9-4d74-a2ff-4271b243575a", "suppressionProvider": "none", "suppressionStatus": "suppressed", "recipientAndRouting": "ready", "tax": "unresolved", "canSend": false, "negativeSendAndAcceptance": "Canonical409; Quote/full history unchanged, no publication/provider call", "teamReadiness": "ready; activeStaff3,viableAdmins2; Operations management false", "evidence": ".cache/v2-validation/nine-l0-final-four-live.json", "limits": "Positive publication/conversion/Portal visibility and Owner Team acceptance not inferred from readiness/denials" },
+    "qaOwnerAuthentication": { "result": "PENDING_CANCELLED, no verified automation state", "producerReceipt": ".cache/v2-validation/bulk-owner-login-result-2026-10-07T20-35-13-801Z-7491be05-272a-48ef-919b-1f8b8b7c72ab.json", "startedAt": "2026-10-07T20:35:13.807Z", "finishedAt": "2026-10-07T21:36:02.749Z", "manualWait": "No artificial15-minute deadline; closed browser/process while normal login remained pending", "configuration": "Current correct-worktree state absent; root.env.playwright still Operations only, no separate Owner credential keys", "safety": "No reset/guess/elevation/OS-profile or improper cookie extraction; not proof of broken login or missing Dale membership", "requiredManualAction": "Please log into dev.printershero.com as Dale and switch to PrintersHero M7 QA." },
+    "postAdoptionValidation": { "status": "PASS11/11 on one authorized same-command retry", "source": "59a6321f7dc6d93cc5919799902006a95d55fe0d, runtime unchanged", "coreSuites": 302, "uiSuites": 102, "jestSuites": 100, "jestTests": 1246, "pendingOrFailedTests": 0, "architectureChecks": 102, "runnerChecks": 13, "migrationIntegrity": "301 unchanged protected entries", "retryJestMs": 481846, "internalTimeoutMs": 600000, "retryReportSha256": "6bcb0e8d2b79adf9a24160631e9845ed9b4d086c6229d32d4bf2a42d03847437", "retryJestSha256": "f7e7bfa8d4e734b247256627e9d967ee8c7a7b130061201e103a2d7047569137", "evidence": ".cache/v2-validation/campaign-bulk-postadoption-validation/attempt2/2026-10-07T224901582Z/", "attempt1": "10/11 PASS; internalJest600740ms timeout,22PASS suite lines and absent completeJSON preserved, not counted as100/1246", "diagnosis": "Broad slowdown/CPU93percent, no confirmed hanging-suite defect or owned orphan process", "builds": "Allfour requested builds PASS in first post-adoption run; not rerun or mislabeled fresh on retry", "buildReportSha256": "2b186764dc8f63f43556f67e4446cf05e3af5636d8e0f02d6ffa0f6ca3b80f29", "gates": "No timeout/gate/assertion weakening, source fix, cache clearing or process kill; no native58/Production28 rerun" },
+    "adoptedPhysicalEvidence": { "receipt": ".cache/v2-validation/bulk-adoption-schema-1791410416779.json", "sha256": "3fd018007f8e6ecfda315dc795e133b8824a9ffe71637202fe81d108bd347729", "permissionChecks": 73, "publicationSuppressionChecks": 2, "sourceExactInstalledFunctions": 13, "inspectedEnabledTriggers": 72, "enforcedProtectedOrganizations": 3, "floorless": 0, "nativeProofCurrentSourcePinsMatch": 1545, "nativeCasesRetained": 58, "nativeCleanupsRetained": 58, "nativeWaitsRetained": 12, "limits": "Read-only physical adoption/proof fingerprint evidence, not new native or actual Owner DEV mutation acceptance" },
+    "rows": {
+      "ACCESS-05": { "classification": "F", "priority": "L0", "source": "Accepted unchanged", "native": "Retained58PASS/source1545 matched", "automated": "Fresh11/11 PASS", "review": "Source/native and actual bulk cleanup/adoption accepted", "dev": "Migrated/deployed; ordinary Team read ready3Staff/2viable, no Owner-authenticated disposable-Staff mutation window established", "provider": "Not contacted" },
+      "SALE-08": { "classification": "C", "priority": "L0", "source": "Accepted suppressed-publication source adopted", "automated": "Fresh11/11 PASS and previous publication/conversion regressions credited", "review": "ses_eede2b8beffeyuAVSUQrodvWP7 APPROVE actual partial negative live evidence only", "dev": "Truthfulsuppressionreadiness; unresolvedtax Send409 and missingqualifiedpublication accept409 unchangedQuote/history. Positive publication/conversion not run", "provider": "No provider attempted for source-supported prerequisite denials; no fabricated delivery or global provider-telemetry claim" },
+      "SALE-09": { "classification": "C", "priority": "L0", "source": "Accepted immutable revision/last-publication semantics unchanged", "automated": "Fresh canonical regressions PASS", "review": "Existing publication source review retained", "dev": "A/internalB/republishedB not run while canonical tax/Owner setup unavailable", "provider": "No email/provider action" },
+      "ACCESS-12": { "classification": "C", "priority": "L0", "source": "Accepted scoped last-publication read adopted", "automated": "Fresh publication/Portal regressions PASS", "review": "Existing source review retained", "dev": "No synthetic Owner-configured Portal binding or customer visibility test; normal authentication action still required", "provider": "No real customer communication or Portal-reset action" }
+    },
+    "finalVerdict": "C. TECHNICAL L0 REMAINS",
+    "safety": "Only reviewed allowlisted DEV fixture data removed. No MAIN/PROD/V1 source/L1/UI polish/Storefront/provider action, no previous L0 closures reopened or accounting changed. Cleanup evidenced as maintenance, not production source capability."
+  },
   "disposableDevCleanup20261007": {
     "startingOriginDevSha": "9ad4dc015e79234a3f00176bc6590c143e2ae516",
     "discovery": "Fresh git fetch origin dev and rev-parse origin/dev; correct clean campaign worktree matched",
@@ -1138,15 +1344,47 @@
   "currentAccounting": {
     "countedIntents": 277,
     "classesBeforePay22": { "A": 13, "B": 49, "C": 122, "D": 49, "E": 9, "F": 35 },
-    "classes": { "A": 13, "B": 55, "C": 116, "D": 49, "E": 9, "F": 35 },
+    "classes": { "A": 13, "B": 59, "C": 113, "D": 49, "E": 9, "F": 34 },
     "allPriorities": { "L0": 18, "L1": 186, "L2": 62, "L3": 2, "L4": 9 },
-    "remainingCDF": { "L0": 4, "L1": 135, "L2": 60, "L3": 1, "L4": 0 },
+    "remainingCDF": { "L0": 0, "L1": 135, "L2": 60, "L3": 1, "L4": 0 },
     "startingCampaignL0": 10,
-    "campaignClosures": ["PAY-22", "BILL-16", "FUL-11", "OPS-09", "OPS-12", "FUL-26"],
-    "remainingL0Rows": ["SALE-08", "SALE-09", "ACCESS-05", "ACCESS-12"],
-    "limits": "Current accounting overlays historical wave2Outcome and checkpoint counts. October 6 acceptance adds BILL-16, FUL-11, OPS-09, OPS-12 and FUL-26 C->B/L0; prior PAY-22 closure is unchanged. Immutable inventory and priority totals untouched."
+    "campaignClosures": ["PAY-22", "BILL-16", "FUL-11", "OPS-09", "OPS-12", "FUL-26", "SALE-08", "SALE-09", "ACCESS-12", "ACCESS-05"],
+    "remainingL0Rows": [],
+    "limits": "Current accounting overlays historical wave2Outcome and checkpoint counts. All October6/8/9 closures retained; October10 Owner-authenticated synthetic-member mutation/replay/conflict/restoration and retained58-case/adoption evidence add ACCESS05 F->B/L0. Prior failures and held/source-only objects remain historical. Immutable inventory/priority totals and L1/L2 counts untouched. Zero remainingL0 is not full V2 cutover/production readiness."
   },
   "closures": {
+    "ACCESS-05": {
+      "before": { "classification": "F", "priority": "L0" },
+      "classification": "B", "priority": "L0",
+      "behavior": "Owner canonically removes/restores one synthetic Staff permission set and disables/re-enables membership, with fresh authorization effects and final original business-access restoration",
+      "validation": "48->47->48 effective permissions, payment.record revoked then restored; supported exact replay200 and changed-key-intent409 with no state/audit/revision duplication; disabled protected reads403 then active safe read200 and exact bootstrap restoration; four targeted audit events, floor2 preserved, protected rows/17 business-table fingerprints unchanged",
+      "evidence": "access05FinalAcceptance20261010; ignored final receipt/Owner/target ledgers; accepted retained58-case native receipt with23 matching current Auth/Team/0305 pins and retained accepted deployed adoption hash",
+      "remainingGap": "None for bounded Team administration safety intent; real Owner/guardian/final-admin not mutated, native concurrency not rerun, overall cutover and all L1/L2 gaps not closed"
+    },
+    "ACCESS-12": {
+      "before": { "classification": "C", "priority": "L0" },
+      "classification": "B", "priority": "L0",
+      "behavior": "Legitimate QT1003 Portal customer sees own last-publishedB but cannot retrieve/list actual qualified other-customer QT1002 publication",
+      "validation": "Canonical corrected-name QT1002 publication200,1 immutable checkpoint/1 suppressed attempt/linked successful delivery and Sales requests; Staff archivePDF200 matches prepared hash. Customer default and explicit-checkpoint detail/PDF404; all list pages excludeQT1002;4 anonymous protected reads401; retained live unpublishedB isolation proof unchanged",
+      "evidence": "access12FinalFixtureCorrection20261009 and ignored final correction receipt/orchestration/Operations ledger",
+      "remainingGap": "None for bounded customer-visible publication/isolation intent; no fresh unpublished revision was created, actual email and full V2 cutover not claimed"
+    },
+    "SALE-08": {
+      "before": { "classification": "C", "priority": "L0" },
+      "classification": "B", "priority": "L0",
+      "behavior": "PublishedB accepted and canonically converted once into ORD-1032 and a Billing-owned unissued Draft Invoice with matching200c commercial subtotal,14c tax and214c total",
+      "validation": "Accepted/converted checkpoint commercial payloads equal publishedB; source checkpoint chain matchesB->accepted->converted; one new document and one new Invoice; exact replay same IDs; changed revision under same key409; no duplicate canonical/pending obligations in readback",
+      "evidence": "m7SalesPortalAcceptance20261008 and retained redacted receipt/Owner/Operations ledgers",
+      "remainingGap": "None for this bounded staff acceptance/conversion intent; customer isolation is separately accepted under ACCESS-12. Real email and full mounted UI acceptance not claimed"
+    },
+    "SALE-09": {
+      "before": { "classification": "C", "priority": "L0" },
+      "classification": "B", "priority": "L0",
+      "behavior": "Same Quote publishesA, revises internally toB without exposingB, explicitly republishesB and preserves historicalA",
+      "validation": "Portal A107c during Staff B214c; archivedA PDF byte-identical before/after internal edit and republication; latestPortal switches toB214c; exact A/B send replays retain exactly two qualified publications",
+      "evidence": "m7SalesPortalAcceptance20261008 and retained redacted receipt/Owner/Operations ledgers",
+      "remainingGap": "None for this bounded publication/revision intent; suppressed delivery is not actual email delivery"
+    },
     "FUL-26": {
       "before": { "classification": "C", "priority": "L0" },
       "classification": "B", "priority": "L0",
