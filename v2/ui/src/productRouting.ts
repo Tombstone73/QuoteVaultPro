@@ -165,7 +165,7 @@ export const readFulfillmentLocation = (pathname = window.location.pathname): Re
 };
 /** A work URL is selection context only. The tenant-scoped Production read
  * remains the authority for whether the work is available. */
-export const readProductionLocation = (pathname = window.location.pathname): Readonly<{ station?: "flatbed" | "roll"; productionWorkId?: string }> | null => {
+export const readProductionLocation = (pathname = window.location.pathname, search = typeof window === "undefined" ? "" : window.location.search): Readonly<{ station?: "flatbed" | "roll"; productionWorkId?: string }> | null => {
   const page = pathname.replace(/^\/+|\/+$/gu, "");
   if (page === "production") return {};
   if (page === "production/flatbed") return { station: "flatbed" };
@@ -173,7 +173,8 @@ export const readProductionLocation = (pathname = window.location.pathname): Rea
   const parts = page.split("/");
   if (parts.length === 3 && parts[0] === "production" && parts[1] === "works") {
     const productionWorkId = productId(parts[2]!);
-    return productionWorkId ? { productionWorkId } : null;
+    const station = searchParams(search).get("station");
+    return productionWorkId ? { productionWorkId, ...(station === "flatbed" || station === "roll" ? { station } : {}) } : null;
   }
   return null;
 };
@@ -214,7 +215,7 @@ export const readPrepressLocation = (pathname = window.location.pathname): Reado
   return null;
 };
 /** Extend the Product slice's one small history adapter; unrelated shell destinations stay state-driven. */
-export const readWorkspaceLocation = (pathname = window.location.pathname): WorkspaceLocation | null => {
+export const readWorkspaceLocation = (pathname = window.location.pathname, search = typeof window === "undefined" ? "" : window.location.search): WorkspaceLocation | null => {
   if (pathname === "/" || pathname === "") return { page: "home" };
   const productBuilder = readProductBuilderLocation(pathname);
   if (productBuilder) return { page: "productBuilder", ...productBuilder };
@@ -234,7 +235,7 @@ export const readWorkspaceLocation = (pathname = window.location.pathname): Work
   if (inboundOrders) return { page: "inboundOrders" };
   const fulfillment = readFulfillmentLocation(pathname);
   if (fulfillment) return { page: "fulfillment", ...fulfillment };
-  const production = readProductionLocation(pathname);
+  const production = readProductionLocation(pathname, search);
   if (production) return { page: "production", ...production };
   const artwork = readArtworkLocation(pathname);
   if (artwork) return { page: "artwork", ...artwork };
@@ -263,8 +264,9 @@ export const fulfillmentPath = (orderId?: string) => orderId ? `/fulfillment/ord
 export const pushFulfillmentLocation = (orderId?: string) => window.history.pushState({}, "", fulfillmentPath(orderId));
 export const productionPath = (station?: "flatbed" | "roll") => station ? `/production/${station}` : "/production";
 export const pushProductionLocation = (station?: "flatbed" | "roll") => window.history.pushState({}, "", productionPath(station));
-export const productionWorkPath = (productionWorkId: string) => `/production/works/${encodeURIComponent(productionWorkId)}`;
-export const pushProductionWorkLocation = (productionWorkId: string) => window.history.pushState({}, "", productionWorkPath(productionWorkId));
+export const productionWorkPath = (productionWorkId: string, station?: "flatbed" | "roll") => `/production/works/${encodeURIComponent(productionWorkId)}${station === "flatbed" || station === "roll" ? `?station=${station}` : ""}`;
+export const pushProductionWorkLocation = (productionWorkId: string, station?: "flatbed" | "roll") => window.history.pushState({}, "", productionWorkPath(productionWorkId, station));
+export const replaceProductionWorkLocation = (productionWorkId: string, station: "flatbed" | "roll") => window.history.replaceState(window.history.state, "", productionWorkPath(productionWorkId, station));
 export const artworkPath = (orderId?: string, lineId?: string) => orderId ? lineId ? `/artwork/orders/${encodeURIComponent(orderId)}/lines/${encodeURIComponent(lineId)}` : `/artwork/orders/${encodeURIComponent(orderId)}` : "/artwork";
 export const artworkFilePath = (artworkFileId: string) => `/artwork/files/${encodeURIComponent(artworkFileId)}`;
 export const pushArtworkLocation = (orderId?: string, lineId?: string) => window.history.pushState({}, "", artworkPath(orderId, lineId));

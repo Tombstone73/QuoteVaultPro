@@ -98,6 +98,15 @@ assert.deepEqual(readProductionLocation("/production/works/work-a"), { productio
 assert.deepEqual(readWorkspaceLocation("/production/works/work-a"), { page: "production", productionWorkId: "work-a" });
 assert.equal(readProductionLocation("/production/works/%2Fwrong"), null);
 assert.equal(productionWorkPath("work a"), "/production/works/work%20a");
+for (const station of ["flatbed", "roll"] as const) {
+  const url = new URL(productionWorkPath("work-a", station), "https://ui.invalid");
+  assert.deepEqual(readProductionLocation(url.pathname, url.search), { productionWorkId: "work-a", station });
+  assert.deepEqual(readWorkspaceLocation(url.pathname, url.search), { page: "production", productionWorkId: "work-a", station });
+}
+for (const hint of ["invalid", "Roll", "", "roll%2Fflatbed"]) {
+  assert.deepEqual(readProductionLocation("/production/works/work-a", `?station=${hint}`), { productionWorkId: "work-a" });
+}
+assert.deepEqual(readProductionLocation("/production/flatbed", "?station=roll"), { station: "flatbed" });
 assert.deepEqual(readWorkspaceLocation("/payments"), { page: "payments" });
 assert.equal(workspacePath("payments"), "/payments");
 assert.deepEqual(readWorkspaceLocation("/routing"), { page: "routing" });

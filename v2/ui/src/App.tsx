@@ -106,6 +106,7 @@ import {
   pushProductLocation,
   pushProductionLocation,
   pushProductionWorkLocation,
+  replaceProductionWorkLocation,
   pushProofingLocation,
   pushNewQuoteLocation,
   pushQuoteLocation,
@@ -792,7 +793,7 @@ export const App = ({
             const handoff = handoffs.find(item => item.productionWorkIds.length > 0);
             const workId = handoff?.productionWorkIds[0];
             if (!handoff || !workId) return;
-            pushProductionWorkLocation(workId);
+            pushProductionWorkLocation(workId, handoff.destination);
             setProductionWorkId(workId);
             setProductionStation(handoff.destination);
             setPage("production");
@@ -835,10 +836,17 @@ export const App = ({
             setProductionStation(station);
             setProductionWorkId("");
           }}
-          onSelectWork={(id) => {
-            if (id) pushProductionWorkLocation(id);
+          onSelectWork={(id, station) => {
+            if (id) pushProductionWorkLocation(id, station);
             else pushProductionLocation();
             setProductionWorkId(id ?? "");
+            setProductionStation(station);
+          }}
+          onResolveWorkStation={(id, station) => {
+            const location = readWorkspaceLocation();
+            if (location?.page !== "production" || location.productionWorkId !== id || productionWorkId !== id) return;
+            replaceProductionWorkLocation(id, station);
+            setProductionStation(station);
           }}
           openOrder={(id) => {
             pushOrderLocation(id);
@@ -1043,7 +1051,7 @@ export const App = ({
               }}
               openProduction={(id, station) => {
                 if (!trustedBootstrap || bootstrap.data?.organizationId !== organizationId || bootstrap.data.capabilities.productionView !== true) return;
-                pushProductionWorkLocation(id);
+                pushProductionWorkLocation(id, station);
                 setProductionWorkId(id);
                 setProductionStation(station);
                 setPage("production");

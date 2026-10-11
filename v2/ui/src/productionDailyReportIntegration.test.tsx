@@ -216,6 +216,8 @@ try {
   });
   await check("actual deep-linked Production work clears through existing callback and can be reopened after leaving report", async () => {
     await mountApp(`/production/works/${workId}`); await settle(() => text().includes("DEEP-LINK ORDER"));
+    assert.match(text(), /Station unavailable for this exact work/);
+    assert.equal(document.querySelector('[role="tab"][aria-selected="true"]'), null, "bare unstarted bookmark retains identity without a false Flatbed destination");
     assert.equal(button("Stations").getAttribute("aria-pressed"), "true"); await click("Daily Report"); await settle(() => text().includes("Daily Production Report"));
     assert.equal(window.location.pathname, "/production"); assert.equal(document.querySelector(".v2-production-station-panel"), null);
     await click("Overview"); assert.equal(button("Daily Report").getAttribute("aria-pressed"), "false"); assert.equal(document.querySelector(".production-daily-report"), null);

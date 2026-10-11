@@ -683,6 +683,7 @@ export const ProductionWorkspace = ({
   productionWorkId: routedProductionWorkId,
   onStationChange,
   onSelectWork,
+  onResolveWorkStation,
   openOrder,
   openCustomer,
   openArtwork,
@@ -696,12 +697,13 @@ export const ProductionWorkspace = ({
   station?: Station;
   productionWorkId?: string;
   onStationChange: (station?: Station) => void;
-  onSelectWork: (productionWorkId?: string) => void;
+  onSelectWork: (productionWorkId?: string, station?: Station) => void;
+  onResolveWorkStation?: (productionWorkId: string, station: Station) => void;
   openOrder: (orderId: string) => void;
   openCustomer: (customerId: string) => void;
   openArtwork: (artworkFileId: string) => void;
 }) => {
-  const [station, setStation] = useState<Station>("flatbed");
+  const [selectedStation, setStation] = useState<Station>(routedStation ?? "flatbed");
   const [stationSurface, setStationSurface] = useState<"queue"|"runs">("queue");
   const [view, setView] = useState<ProductionView>("overview");
   const [selectedWorkId, setSelectedWorkId] = useState("");
@@ -753,6 +755,16 @@ export const ProductionWorkspace = ({
     retry: false,
   });
   const eligible = useQuery({queryKey:eligibleKey(sessionScope,organizationId),queryFn:()=>prepressApi.list(organizationId,{page:1,pageSize:100}),enabled:canReadQueues,retry:false});
+  const exactWork = canRead && routedWork.data?.work.productionWorkId === routedProductionWorkId ? routedWork.data : undefined;
+  const exactAttempt = exactWork?.activeAttempt ?? exactWork?.attempts.reduce<ProductionWorkProjection["attempts"][number] | undefined>((latest, attempt) => !latest || attempt.sequence > latest.sequence ? attempt : latest, undefined);
+  const exactStation = exactAttempt?.stationKey ?? routedStation;
+  const stationUnavailable = Boolean(routedProductionWorkId && !exactStation);
+  const station = routedProductionWorkId ? exactStation ?? selectedStation : selectedStation;
+  // Immutable Production evidence repairs old bookmarks without losing the exact work.
+  useEffect(() => {
+    if (!canRead || !routedProductionWorkId || !exactWork || !exactAttempt || exactAttempt.stationKey === routedStation) return;
+    onResolveWorkStation?.(routedProductionWorkId, exactAttempt.stationKey);
+  }, [canRead, organizationId, sessionScope, routedProductionWorkId, exactWork, exactAttempt, routedStation, onResolveWorkStation]);
   const queue = station === "flatbed" ? flatbedQueue : rollQueue;
   const stationQueues = useMemo(
     () => ({ flatbed: flatbedQueue.data?.items ?? [], roll: rollQueue.data?.items ?? [] }),
@@ -782,7 +794,7 @@ export const ProductionWorkspace = ({
   }, [queue.data, queue.isSuccess, queue.isFetching, selectedWorkId, view, routedProductionWorkId, outputRecoveryScopeMatches, outputRecovery.status, canWork, durableOutput.isPending, durableOutput.isError, durableOutput.data]);
 
   const scopedWork = routedProductionWorkId
-    ? routedWork.data
+    ? exactWork
     : queue.data?.items.find((item) => item.work.productionWorkId === selectedWorkId);
   const latestReceipt=canView&&canWork&&!durableOutput.isError?durableOutput.data?.find(receipt=>receipt.productionWorkId===scopedWork?.work.productionWorkId&&Boolean(scopedWork?.attempts.some(attempt=>attempt.productionAttemptId===receipt.productionAttemptId))):undefined;
   const durableOutputBlocked=canWork&&(durableOutput.isPending||durableOutput.isError||Boolean(latestReceipt&&reviewedReceipt!==`${organizationId}:${sessionScope}:${latestReceipt.businessRequestId}`));
@@ -793,8 +805,8 @@ export const ProductionWorkspace = ({
   const work = outputFieldsHidden ? undefined : scopedWork;
   const specifications = stationSpecification(work, eligible.data?.items.find((item) => item.orderId === work?.work.orderId && item.orderLineId === work?.work.orderLineId));
   const activeAttempt = work?.activeAttempt ?? work?.attempts.find((attempt) => !attempt.completedAt);
-  const mostRecentAttempt = work?.attempts[work.attempts.length - 1];
-  const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? station;
+  const mostRecentAttempt = work?.attempts.reduce<ProductionWorkProjection["attempts"][number] | undefined>((latest, attempt) => !latest || attempt.sequence > latest.sequence ? attempt : latest, undefined);
+  const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? (stationUnavailable ? "Station unavailable" : station);
   const remainingGoodQuantity = work?.remainingGoodQuantity ?? 0;
 
   useEffect(() => {
@@ -830,14 +842,16 @@ export const ProductionWorkspace = ({
         : []),
     ]);
   const start = useMutation({
-    mutationFn: (kind: "initial" | "reprint" | "correction") =>
-      productionApi.start(
+    mutationFn: (kind: "initial" | "reprint" | "correction") => {
+      if (stationUnavailable) throw Error("Production station is unavailable for this exact work.");
+      return productionApi.start(
         organizationId,
         work!.work.productionWorkId,
         newBusinessRequestId(),
         station,
         kind,
-      ),
+      );
+    },
     onSuccess: refresh,
   });
   const output = useMutation({
@@ -995,10 +1009,13 @@ export const ProductionWorkspace = ({
   };
 
   const selectWork = (item: ProductionWorkProjection, stationKey?: Station) => {
-    if (stationKey) setStation(stationKey);
+    const latest = item.activeAttempt ?? item.attempts.reduce<ProductionWorkProjection["attempts"][number] | undefined>((latest, attempt) => !latest || attempt.sequence > latest.sequence ? attempt : latest, undefined);
+    const destinations = (["flatbed", "roll"] as const).filter(key => stationQueues[key].some(candidate => candidate.work.productionWorkId === item.work.productionWorkId));
+    const destination = latest?.stationKey ?? stationKey ?? (destinations.length === 1 ? destinations[0] : undefined);
+    if (destination) setStation(destination);
     setSelectedWorkId(item.work.productionWorkId);
     setView("stations");
-    onSelectWork(item.work.productionWorkId);
+    onSelectWork(item.work.productionWorkId, destination);
   };
   const activeQueueState = queueState[station];
   const updateQueueState = (next: Partial<{ page: number; pageSize: 25 | 50 | 100; search: string }>) => setQueueState((current) => ({ ...current, [station]: { ...current[station], ...next } }));
@@ -1218,7 +1235,7 @@ export const ProductionWorkspace = ({
                           <button
                             type="button"
                             onClick={() => {
-                              selectWork(item, item.attempts[0]?.stationKey ?? "flatbed");
+                              selectWork(item);
                             }}
                           >
                             {workState(item)}
@@ -1287,8 +1304,8 @@ export const ProductionWorkspace = ({
                 key={stationKey}
                 type="button"
                 role="tab"
-                aria-selected={station === stationKey}
-                className={station === stationKey ? "active" : ""}
+                aria-selected={!stationUnavailable && station === stationKey}
+                className={!stationUnavailable && station === stationKey ? "active" : ""}
                 onClick={() => selectStation(stationKey)}
               >
                 {stationKey[0]!.toUpperCase()}
@@ -1298,7 +1315,13 @@ export const ProductionWorkspace = ({
             ))}
             <small>{activeAttempt ? "In Progress" : "Next up"}</small>
           </div>
-          {hideStationOutputDetails ? <section className="v2-production-station" aria-label="Production output details hidden"><p>Production output details are hidden until the saved intent is reconciled.</p></section> : stationSurface === "runs" ? <ProductionRunWorkspace organizationId={organizationId} sessionScope={sessionScope} station={station} queue={queue.data?.items ?? []} canWork={canWork} onOpenArtwork={openArtwork} /> : station === "flatbed" && !routedProductionWorkId ? (
+          {stationUnavailable ? (
+            <section className="v2-production-station" aria-label="Production station unavailable">
+              <h2>{work ? productLabel(work) : "Selected production work"}</h2>
+              {work && <p>{orderLabel(work)}</p>}
+              <p>{routedWork.isPending ? "Resolving Production station..." : "Station unavailable for this exact work. Open it from its canonical Order or Prepress destination before starting production."}</p>
+            </section>
+          ) : hideStationOutputDetails ? <section className="v2-production-station" aria-label="Production output details hidden"><p>Production output details are hidden until the saved intent is reconciled.</p></section> : stationSurface === "runs" ? <ProductionRunWorkspace organizationId={organizationId} sessionScope={sessionScope} station={station} queue={queue.data?.items ?? []} canWork={canWork} onOpenArtwork={openArtwork} /> : station === "flatbed" && !routedProductionWorkId ? (
             <>
             <FlatbedStationPanel
               organizationId={organizationId}
@@ -1319,7 +1342,7 @@ export const ProductionWorkspace = ({
               wasteQuantity={outputFieldsHidden ? "" : wasteQuantity}
               busy={start.isPending || output.isPending || complete.isPending || outputRecoveryBlocked}
               outputLocked={outputRecoveryBlocked || output.isPending}
-              onSelect={setSelectedWorkId}
+              onSelect={(id) => { setSelectedWorkId(id); onSelectWork(id, station); }}
               onGoodQuantityChange={setGoodQuantity}
               onWasteQuantityChange={setWasteQuantity}
               onStart={(kind) => start.mutate(kind)}
@@ -1536,7 +1559,7 @@ export const ProductionWorkspace = ({
                       queue={queue.data?.items ?? []}
                       selectedWorkId={work.work.productionWorkId}
                       compact
-                      onSelectWork={(productionWorkId) => setSelectedWorkId(productionWorkId)}
+                      onSelectWork={(productionWorkId) => { setSelectedWorkId(productionWorkId); onSelectWork(productionWorkId, station); }}
                       onOpenArtworkWorkflow={() => openArtwork(work.work.artworkFileId)}
                     />
                   )}

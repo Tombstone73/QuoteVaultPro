@@ -235,6 +235,7 @@ try {
     await settle(() => window.location.pathname === `/production/works/${productionWorkId}`);
     assert.ok(calls.some(call => call.path.endsWith(`/production/works/${productionWorkId}`)));
     assert.match(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() ?? "", /^Flatbed\d*$/);
+    assert.equal(window.location.search, "?station=flatbed", "canonical Prepress handoff persists station in the exact-work URL");
     assert.deepEqual(commands().map(call => call.path), [`/v2/organizations/${org}/prepress/units/${prepressUnitId}/send-to-production`], "navigation uses only the canonical handoff, without direct Production or Routing mutations");
   });
   await check("Prepress handoff cannot open Production when view capability is absent", async () => {
@@ -253,6 +254,20 @@ try {
     const tab = document.querySelector(".v2-order-tab .v2-order-owner-summary-value"); assert.ok(tab);
     await click("Production unit · Front · 0/2 complete", tab); await settle(() => window.location.pathname === `/production/works/${productionWorkId}`);
     assert.match(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ?? "", /^Roll\d*$/);
+    assert.equal(window.location.search, "?station=roll", "canonical frozen Order destination persists before any attempt");
+    await act(async () => root.unmount()); cache.clear(); clearV2ApiSessionState();
+    cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } }); root = createRoot(document.getElementById("root")!);
+    await act(async () => root.render(<QueryClientProvider client={cache}><App appearance={defaultVisualAppearance} setAppearance={() => {}} /></QueryClientProvider>));
+    await settle(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Roll") === true);
+    assert.equal(window.location.pathname, `/production/works/${productionWorkId}`);
+    // Exercise the actual App popstate adapter in both directions without a mutation.
+    window.history.pushState({}, "", "/production/flatbed");
+    await act(async () => window.dispatchEvent(new dom.window.PopStateEvent("popstate")));
+    await settle(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Flatbed") === true);
+    await act(async () => window.history.back());
+    await settle(() => window.location.search === "?station=roll" && document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Roll") === true);
+    await act(async () => window.history.forward());
+    await settle(() => window.location.pathname === "/production/flatbed" && document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Flatbed") === true);
     assert.equal(commands().length, 0);
   });
   await check("Order Production summary recovers Roll active attempt even after its quantity is satisfied", async () => {
@@ -264,6 +279,21 @@ try {
     assert.match(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ?? "", /^Roll\d*$/);
     assert.ok(calls.some(call => call.path.endsWith(`/production/works/${productionWorkId}`)));
     assert.equal(commands().length, 0);
+  });
+  await check("Fresh bare Roll work reload repairs history without adding an entry and immutable evidence wins stale hint", async () => {
+    await act(async () => root.unmount()); cache.clear(); clearV2ApiSessionState();
+    window.history.replaceState({ retained: "history-state" }, "", `/production/works/${productionWorkId}`);
+    const historyLength = window.history.length;
+    cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } }); root = createRoot(document.getElementById("root")!);
+    await act(async () => root.render(<QueryClientProvider client={cache}><App appearance={defaultVisualAppearance} setAppearance={() => {}} /></QueryClientProvider>));
+    await settle(() => window.location.search === "?station=roll" && document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Roll") === true);
+    assert.equal(window.history.length, historyLength);
+    assert.deepEqual(window.history.state, { retained: "history-state" });
+    assert.equal(window.location.pathname, `/production/works/${productionWorkId}`);
+    window.history.replaceState({}, "", `/production/works/${productionWorkId}?station=flatbed`);
+    await act(async () => window.dispatchEvent(new dom.window.PopStateEvent("popstate")));
+    await settle(() => window.location.search === "?station=roll" && document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Roll") === true);
+    assert.equal(commands().length, 0, "reload and station correction are navigation-only");
   });
   await check("Mounted Order Production links omit station for missing or ambiguous frozen route evidence", async () => {
     for (const routes of [[], [rollRoute, { ...rollRoute, routeInstanceId: "duplicate" }], [{ ...rollRoute, steps: [rollStep, { ...rollStep, position: 2 }] }]] satisfies OrderRead["routes"][]) {

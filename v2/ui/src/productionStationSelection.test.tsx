@@ -53,10 +53,14 @@ const click = async (label: string) => {
   assert.equal(button.disabled, false);
   await act(async () => button.click());
 };
-const render = async (station: "flatbed" | "roll" = "flatbed", productionWorkId?: string, canHandoff = false) => {
+const resolutions: { id: string; station: string }[] = [];
+const selections: { id?: string; station?: string }[] = [];
+const selectedStation = () => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() ?? "";
+const render = async (station: "flatbed" | "roll" | null = "flatbed", productionWorkId?: string, canHandoff = false, organizationId = "org-a", sessionScope = "scope-a") => {
   await act(async () => root.render(React.createElement(QueryClientProvider, { client }, React.createElement(ProductionWorkspace, {
-    organizationId: "org-a", sessionScope: "scope-a", canView: true, canWork: true, canComplete: true, canHandoff, station, productionWorkId,
-    onStationChange: () => {}, onSelectWork: () => {}, openOrder: () => {}, openCustomer: () => {}, openArtwork: () => {},
+    organizationId, sessionScope, canView: true, canWork: true, canComplete: true, canHandoff, station: station ?? undefined, productionWorkId,
+    onStationChange: () => {}, onSelectWork: (id?: string, station?: "flatbed" | "roll") => selections.push({ id, station }), openOrder: () => {}, openCustomer: () => {}, openArtwork: () => {},
+    onResolveWorkStation: (id: string, station: "flatbed" | "roll") => resolutions.push({ id, station }),
   }))));
 };
 const reset = async () => {
@@ -65,9 +69,52 @@ const reset = async () => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { gcTime: Infinity } } });
   completed = false;
   specificationsAvailable = true;
+  resolutions.length = 0;
+  selections.length = 0;
 };
 try {
+  const originalGet = productionApi.get;
+  await reset();
+  productionApi.get = async () => roll;
+  await render(null, "roll");
+  await settle(() => selectedStation().startsWith("Roll") && text().includes("Canonical roll"));
+  assert.deepEqual(resolutions, [{ id: "roll", station: "roll" }], "bare Roll bookmark restores from immutable attempt");
+  await reset();
+  const completedRoll = { ...roll, state: "complete" as const, attempts: [{ ...roll.attempts[0]!, sequence: 3, completedAt: "2026-10-02T00:00:00Z" }, { ...roll.attempts[0]!, productionAttemptId: "old-flatbed", sequence: 1, stationKey: "flatbed" as const, completedAt: "2026-10-01T01:00:00Z" }] };
+  productionApi.get = async () => completedRoll;
+  await render("flatbed", "roll");
+  await settle(() => selectedStation().startsWith("Roll"));
+  assert.match(text(), /Canonical roll/);
+  assert.deepEqual(resolutions, [{ id: "roll", station: "roll" }], "highest sequence outside queues overrides contradictory URL hint");
+  await reset();
+  const unstarted = { ...roll, attempts: [], state: "ready" as const };
+  productionApi.get = async () => unstarted;
+  await render("roll", "roll");
+  await settle(() => text().includes("Canonical roll"));
+  assert.match(selectedStation(), /^Roll/);
+  assert.equal(resolutions.length, 0, "unstarted canonical navigation hint survives without attempt evidence");
+  await reset(); await render(null, "roll");
+  await settle(() => text().includes("Station unavailable for this exact work"));
+  assert.equal(selectedStation(), "", "missing destination must not select Flatbed");
+  assert.equal([...document.querySelectorAll("button")].some(button => /Start|Reprint/.test(button.textContent ?? "")), false);
+  await reset();
+  let resolveOld!: (value: ProductionWorkProjection) => void;
+  productionApi.get = async (org) => org === "org-a" ? new Promise(resolve => { resolveOld = resolve; }) : { ...routed, work: { ...routed.work, productionWorkId: "roll" } };
+  await render(null, "roll"); await settle(() => Boolean(resolveOld));
+  await render(null, "roll", false, "org-b", "scope-b");
+  await settle(() => selectedStation().startsWith("Flatbed") && text().includes("Canonical routed"));
+  await act(async () => resolveOld(roll));
+  await settle(() => selectedStation().startsWith("Flatbed"));
+  assert.deepEqual(resolutions, [{ id: "roll", station: "flatbed" }], "late prior org/session exact read cannot rewrite the current station even for the same requested ID");
+  productionApi.get = originalGet;
   const originalQueue = productionApi.queue, originalComplete = productionApi.complete;
+  await reset();
+  productionApi.queue = async (_org, station) => ({ items: station === "roll" ? [unstarted] : [], pagination: { page: 1, pageSize: 25, totalCount: station === "roll" ? 1 : 0, totalPages: 1 } });
+  await render(null);
+  await settle(() => text().includes("Canonical roll"));
+  await click("Ready for attempt");
+  assert.deepEqual(selections, [{ id: "roll", station: "roll" }], "overview selection persists the actual owner queue destination for unstarted Roll work");
+  productionApi.queue = originalQueue;
   for (const station of ["roll", "flatbed"] as const) {
     await reset();
     const front = work(`output-front-${station}`, station), back = work(`output-back-${station}`, station);
