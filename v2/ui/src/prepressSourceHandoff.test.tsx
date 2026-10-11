@@ -1,0 +1,180 @@
+import assert from "node:assert/strict";
+import React, { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { JSDOM } from "jsdom";
+import { artworkApi, prepressApi, type PrepressQueueItem } from "./api";
+import { PrepressWorkspace } from "./PrepressWorkspace";
+
+const dom=new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>",{url:"https://ui.invalid/prepress"});
+const globals={window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true};
+const previous=new Map(Object.keys(globals).map((key)=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+for(const [key,value] of Object.entries(globals))Object.defineProperty(globalThis,key,{configurable:true,writable:true,value});
+const {createRoot}=await import("react-dom/client");
+const {Simulate}=await import("react-dom/test-utils");
+const originals={assign:artworkApi.assign,upload:artworkApi.uploadProductionForPrepress,list:prepressApi.list,get:prepressApi.get,getLine:prepressApi.getLine,single:prepressApi.sendToProduction,bulk:prepressApi.sendManyToProduction,fetch:globalThis.fetch};
+const requirement={key:"front.page.layer",side:"front",sourcePageIndex:2,layerKey:"white",layerOrder:1} as const;
+const fixture=(ready=false,suffix="a"):PrepressQueueItem=>({orderId:"order-a",orderNumber:"ORD-1",customerDisplayName:"Customer",orderLineId:`line-${suffix}`,lineDescription:`Sign ${suffix}`,quantity:2,routingStepKind:"prepress",coverage:{state:"configured",productionArtworkComplete:ready,allRequiredPrepressUnitsComplete:ready,requirements:[{requirement,artworkAssignmentIds:ready?[`production-${suffix}`]:[],productionArtworkCovered:ready,prepressComplete:ready,prepressUnits:ready?[{prepressUnitId:`unit-${suffix}`,organizationId:"org-a",orderId:"order-a",orderLineId:`line-${suffix}`,artworkAssignmentId:`production-${suffix}`,artworkFileId:`file-${suffix}`,createdAt:"2026-10-01",startedAt:"2026-10-01",completedAt:"2026-10-01"}]:[]}]},operational:{materials:[],sourceArtwork:[{artworkAssignmentId:"source-a",artworkFileId:"source-file",filename:"customer.pdf",contentType:"application/pdf",purpose:"customer_supplied"}],productionArtwork:ready?[{artworkAssignmentId:`production-${suffix}`,artworkFileId:`file-${suffix}`,filename:"production.pdf",contentType:"application/pdf",purpose:"production",...requirement}]:[],proof:{required:false,state:"not_required"},productionDestination:"flatbed",readiness:{ready,blockers:ready?[]:["production_artwork_missing","prepress_units_incomplete"]}}} as unknown as PrepressQueueItem);
+let items=[fixture()];
+const page=()=>({items,pagination:{page:1,pageSize:25 as const,totalCount:items.length,totalPages:items.length?1:0}});
+prepressApi.list=async(_org,query)=>query?.requirementState==="unconfigured"?{...page(),items:[]}:page();
+let exactReads=0;
+let exactFixture=fixture();
+prepressApi.getLine=async(_org,id)=>{exactReads++;assert.equal(id,exactFixture.orderLineId);return exactFixture;};
+const assigned:Array<{file:string;usage:Record<string,unknown>;expectedEmptyProductionSlot?:Readonly<{requirementKey:string}>}>=[];
+artworkApi.assign=async(_org,file,_request,usage,expectedEmptyProductionSlot)=>{assigned.push({file,usage,expectedEmptyProductionSlot});return {artworkFile:{id:file},assignment:{id:"new-production",artworkFileId:file,...usage}} as Awaited<ReturnType<typeof artworkApi.assign>>;};
+let uploads=0;
+artworkApi.uploadProductionForPrepress=async()=>{uploads++;throw new Error("Unexpected upload");};
+let confirmed=true;dom.window.confirm=()=>confirmed;
+let root=createRoot(document.getElementById("root")!);
+let client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity},mutations:{retry:false}}});
+const callbacks:Array<readonly {destination:"flatbed"|"roll";productionWorkIds:readonly string[]}[]>=[];
+const props={organizationId:"org-a",sessionScope:"scope-a",canView:true,canWork:true,canArtworkAssign:true,canArtworkAdopt:true,canComplete:true,canRouteAdvance:true,canProductionWork:true,onProductionReady:(results:readonly {destination:"flatbed"|"roll";productionWorkIds:readonly string[]}[])=>{callbacks.push(results);}};
+const render=async(overrides:Partial<React.ComponentProps<typeof PrepressWorkspace>>={})=>{await act(async()=>root.render(<QueryClientProvider client={client}><PrepressWorkspace {...props} {...overrides}/></QueryClientProvider>));};
+const settle=async(predicate:()=>boolean)=>{for(let i=0;i<100&&!predicate();i++)await act(async()=>{await new Promise(resolve=>setTimeout(resolve,5));});assert.ok(predicate(),document.body.textContent??"");};
+const button=(text:string)=>{const value=[...document.querySelectorAll("button")].find(node=>node.textContent?.trim()===text);assert.ok(value,`Missing ${text}`);return value;};
+const click=async(text:string)=>{await act(async()=>button(text).click());};
+const remount=async(overrides:Partial<React.ComponentProps<typeof PrepressWorkspace>>={})=>{await act(async()=>root.unmount());client.clear();client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity},mutations:{retry:false}}});root=createRoot(document.getElementById("root")!);await render(overrides);};
+const sourceButton="Use customer.pdf for Front · Page 3 · white 2";
+const singleCalls:Array<{id:string;request:string}>=[];
+const bulkCalls:Array<{ids:readonly string[];request:string}>=[];
+const result=(id:string)=>({unit:fixture(true,id.slice(-1)).coverage.requirements[0]!.prepressUnits[0]!,destination:"flatbed" as const,productionWorkIds:[`work-${id}`]});
+try{
+  await render();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  assert.match(document.body.textContent??"",/Prepress owner: complete preparation/);
+  confirmed=false;await click(sourceButton);assert.equal(assigned.length,0,"Cancelled confirmation never writes");
+  confirmed=true;await click(sourceButton);await settle(()=>assigned.length===1);
+  assert.deepEqual(assigned[0],{file:"source-file",usage:{orderId:"order-a",orderLineId:"line-a",purpose:"production",side:"front",sourcePageIndex:2,layerKey:"white",layerOrder:1},expectedEmptyProductionSlot:{requirementKey:requirement.key}});
+  assert.match(document.body.textContent??"",/source assignment is retained/);
+
+  await render({canWork:false});assert.equal(button(sourceButton).disabled,true);
+  const fileInput=document.querySelector<HTMLInputElement>('input[type="file"]')!;assert.equal(fileInput.disabled,true);
+  Object.defineProperty(fileInput,"files",{configurable:true,value:[new dom.window.File(["pdf"],"art.pdf",{type:"application/pdf"})]});
+  await act(async()=>{Simulate.change(fileInput);});
+  await settle(()=>Boolean(document.querySelector(".v2-artwork-dropzone-error")));assert.equal(uploads,0,"Mutation guard denies even synthetic disabled input callbacks");
+  await render({canArtworkAssign:false});assert.equal(button(sourceButton).disabled,true);
+  await render({canArtworkAdopt:false});assert.equal(document.querySelector<HTMLInputElement>('input[type="file"]')!.disabled,true);
+
+  items=[fixture(true)];await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  assert.equal(button(sourceButton).disabled,true,"Existing production assignment cannot be replaced via assign");
+  assert.match(document.body.textContent??"",/preserve canonical replacement lineage/);
+  await render({canRouteAdvance:false});assert.equal(button("Send to flatbed").disabled,true);
+  await render();
+  prepressApi.sendToProduction=async(_org,id,request)=>{singleCalls.push({id,request});if(singleCalls.length===1)throw new Error("Lost response after owner commit");return result(id);};
+  await click("Send to flatbed");await settle(()=>Boolean(document.querySelector('[role="alert"]')));
+  assert.equal(singleCalls.length,1);assert.ok(dom.window.sessionStorage.length>0);assert.equal(callbacks.length,0,"Unconfirmed response never navigates");
+  items=[];await remount();await settle(()=>Boolean([...document.querySelectorAll("button")].find(node=>node.textContent==="Retry saved Production handoff")));
+  await render({canProductionWork:false});assert.equal(button("Retry saved Production handoff").disabled,true);await render();
+  await click("Retry saved Production handoff");await settle(()=>callbacks.length===1);
+  assert.deepEqual(singleCalls[1],singleCalls[0],"Remount retry preserves original exact unit and business request ID");
+  assert.deepEqual(callbacks[0],[result("unit-a")]);assert.equal(dom.window.sessionStorage.length,0);
+
+  items=[fixture(true),fixture(true,"b")];await remount();await settle(()=>Boolean(document.querySelector('input[aria-label="Select Sign b for bulk Production handoff"]')));
+  prepressApi.sendManyToProduction=async(_org,ids,request)=>{bulkCalls.push({ids:[...ids],request});if(bulkCalls.length===1)throw new Error("Bulk response lost");return {handoffs:ids.map(result)};};
+  await act(async()=>document.querySelector<HTMLInputElement>('input[aria-label="Select visible ready Prepress work"]')!.click());
+  await click("Send 2 to Production");await settle(()=>bulkCalls.length===1&&Boolean(document.querySelector('[role="alert"]')));
+  assert.equal(callbacks.length,1,"Unconfirmed bulk response never navigates");
+  items=[];await remount({sessionScope:"scope-other"});assert.doesNotMatch(document.body.textContent??"",/Retry the exact request/);
+  assert.equal(bulkCalls.length,1,"Other scope cannot discover or replay pending intent");
+  await remount();await click("Retry saved Production handoff");await settle(()=>callbacks.length===2);
+  assert.deepEqual(bulkCalls[1],bulkCalls[0]);assert.deepEqual(bulkCalls[0]!.ids,["unit-a","unit-b"]);
+  assert.equal(singleCalls.length,2,"Bulk stays the existing single atomic bulk command, not per-unit orchestration");
+
+  items=[];await remount({lineId:"line-a"});await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  assert.ok(exactReads>0);assert.match(document.body.textContent??"",/customer\.pdf/);assert.doesNotMatch(document.body.textContent??"",/selected Prepress work is unavailable/);
+  exactFixture=fixture(true);prepressApi.get=async(_org,id)=>{assert.equal(id,"unit-a");return exactFixture.coverage.requirements[0]!.prepressUnits[0]!;};
+  await remount({prepressUnitId:"unit-a"});await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  assert.match(document.body.textContent??"",/production\.pdf/);assert.doesNotMatch(document.body.textContent??"",/selected Prepress work is unavailable/);
+  const ambiguous=fixture();items=[{...ambiguous,coverage:{...ambiguous.coverage,requirements:[...ambiguous.coverage.requirements,{...ambiguous.coverage.requirements[0]!,requirement:{...requirement,key:"another-key-same-slot"}}]}} as PrepressQueueItem];
+  await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  assert.equal(button(sourceButton).disabled,true,"Distinct frozen keys with the same assignable tuple are ambiguous");
+  assert.equal(document.querySelector<HTMLInputElement>('input[type="file"]')!.disabled,true);
+
+  items=[fixture(true)];await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  const unconfirmed:Array<{id:string;request:string}>=[];
+  prepressApi.sendToProduction=async(_org,id,request)=>{unconfirmed.push({id,request});return unconfirmed.length===1?{...result(id),productionWorkIds:[]}:result(id);};
+  await click("Send to flatbed");await settle(()=>Boolean(document.querySelector('[role="alert"]')));
+  assert.equal(callbacks.length,2,"Malformed owner success is not committed handoff evidence");
+  await remount();await click("Retry saved Production handoff");await settle(()=>callbacks.length===3);
+  assert.deepEqual(unconfirmed[1],unconfirmed[0],"Unconfirmed response reuses exact intent, not a replacement request ID");
+  dom.window.sessionStorage.setItem("ph.v2.prepress-handoff:scope-a:org-a","corrupt-recovery-record");
+  await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  await click("Send to flatbed");await settle(()=>Boolean(document.querySelector('[role="alert"]')));
+  assert.equal(unconfirmed.length,2,"Malformed saved intent must not be replaced with a fresh business request");
+  assert.equal(dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a"),"corrupt-recovery-record");
+
+  dom.window.sessionStorage.clear();
+  const lateCalls:Array<{id:string;request:string}>=[];
+  let releaseOld!: (response:Awaited<ReturnType<typeof prepressApi.sendToProduction>>)=>void;
+  prepressApi.sendToProduction=async(_org,id,request)=>{
+    lateCalls.push({id,request});
+    if(lateCalls.length===1)return new Promise(resolve=>{releaseOld=resolve;});
+    if(id==="unit-b"&&lateCalls.filter(call=>call.id==="unit-b").length===1)throw new Error("Newer B response lost");
+    return result(id);
+  };
+  items=[fixture(true)];await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  await click("Send to flatbed");await settle(()=>lateCalls.length===1);
+  await remount();await click("Retry saved Production handoff");await settle(()=>callbacks.length===4);
+  items=[fixture(true,"b")];await remount();await settle(()=>document.querySelector(".v2-prepress-main h1")?.textContent==="Sign b");
+  await click("Send to flatbed");await settle(()=>Boolean(document.querySelector('[role="alert"]')));
+  const newerIntent=dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a");assert.ok(newerIntent);
+  await remount();await act(async()=>{releaseOld(result("unit-a"));await new Promise(resolve=>setTimeout(resolve,5));});
+  assert.equal(dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a"),newerIntent,"Late unmounted A response cannot delete newer B recovery intent");
+  assert.equal(callbacks.length,4,"An unmounted older response cannot navigate away from B");
+  await click("Retry saved Production handoff");await settle(()=>callbacks.length===5);
+  assert.deepEqual(lateCalls[3],lateCalls[2],"B remains recoverable using B's original exact request");
+
+  const releaseLabel="Release rejected handoff and refresh";
+  const hasRelease=()=>[...document.querySelectorAll("button")].some(node=>node.textContent===releaseLabel);
+  type Outcome={status:number;code:string;omitOk?:boolean}|{error:unknown}|{success:true};
+  let outcome:Outcome={status:409,code:"CONFLICT"};
+  const transportCalls:Array<{id:string;request:string}>=[];
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input),window.location.origin);
+    assert.equal(url.origin,window.location.origin,"Only synthetic transport responses are allowed");
+    assert.equal(init?.method,"POST");assert.match(url.pathname,/\/prepress\/units\/unit-[ab]\/send-to-production$/);
+    const id=url.pathname.split("/").at(-2)!;
+    const body=JSON.parse(String(init.body));transportCalls.push({id,request:body.businessRequestId});
+    if("error" in outcome)throw outcome.error;
+    const response="success" in outcome?{ok:true,data:result(id)}:{...(!outcome.omitOk?{ok:false}:{}),error:{code:outcome.code,message:"Frozen owner prerequisite changed; the atomic transaction rolled back."}};
+    return new Response(JSON.stringify(response),{status:"success" in outcome?200:outcome.status,headers:{"content-type":"application/json"}});
+  };
+  prepressApi.sendToProduction=originals.single;
+  items=[fixture(true)];await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  await click("Send to flatbed");await settle(hasRelease);
+  const rejectedIntent=dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a");assert.ok(rejectedIntent,"Known rollback still requires explicit local resolution");
+  assert.match(document.body.textContent??"",/no handoff changes committed for this request/);
+  await render({canRouteAdvance:false});assert.equal(button(releaseLabel).disabled,true);
+  await click(releaseLabel);assert.equal(dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a"),rejectedIntent,"Permission changes cannot bypass release guards");
+  await render();
+  outcome={error:new Error("Lost response after retry")};await click("Retry saved Production handoff");
+  await settle(()=>document.body.textContent?.includes("Lost response after retry")===true);
+  assert.equal(hasRelease(),false,"A prior rollback proof cannot release a later unknown attempt");
+  assert.equal(dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a"),rejectedIntent);
+  outcome={status:409,code:"CONFLICT"};await click("Retry saved Production handoff");await settle(hasRelease);
+  assert.deepEqual(transportCalls[2],transportCalls[0],"Confirmed noncommit retries still preserve exact intent until explicitly released");
+  await click(releaseLabel);await settle(()=>dom.window.sessionStorage.length===0);
+  assert.equal(transportCalls.length,3,"Release is local recovery resolution, never a backend business write");
+  items=[fixture(true,"b")];outcome={success:true};await remount();await settle(()=>document.querySelector(".v2-prepress-main h1")?.textContent==="Sign b");
+  await click("Send to flatbed");await settle(()=>callbacks.length===6);
+  assert.equal(transportCalls[3]!.id,"unit-b");assert.notEqual(transportCalls[3]!.request,transportCalls[0]!.request,"Explicit rollback release unlocks unrelated work with its own new intent");
+
+  items=[fixture(true)];outcome={status:500,code:"CONFLICT"};await remount();await settle(()=>Boolean(document.querySelector(".v2-prepress-source-designation")));
+  await click("Send to flatbed");await settle(()=>Boolean(document.querySelector('[role="alert"]')));
+  const unknownIntent=dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a");assert.ok(unknownIntent);assert.equal(hasRelease(),false,"A 5xx conflict envelope is ambiguous, never safe to release");
+  const unknownFirst=transportCalls.at(-1)!;
+  const ambiguousOutcomes:Outcome[]=[{status:503,code:"RETRYABLE_FAILURE"},{status:409,code:"IDEMPOTENCY_CONFLICT"},{status:403,code:"FORBIDDEN"},{status:409,code:"CONFLICT",omitOk:true},{error:{code:"CONFLICT",message:"Unverified local error"}}];
+  for(const next of ambiguousOutcomes){
+    outcome=next;await remount();await click("Retry saved Production handoff");await settle(()=>Boolean(document.querySelector('[role="alert"]')));
+    assert.equal(hasRelease(),false,"Unknown transport outcomes and pre-reservation denials must retain recovery");
+    assert.equal(dom.window.sessionStorage.getItem("ph.v2.prepress-handoff:scope-a:org-a"),unknownIntent);
+    assert.deepEqual(transportCalls.at(-1),unknownFirst,"Every ambiguous retry preserves the original request and unit IDs");
+  }
+  outcome={success:true};await click("Retry saved Production handoff");await settle(()=>callbacks.length===7);
+}finally{
+  await act(async()=>root.unmount());client.clear();
+  artworkApi.assign=originals.assign;artworkApi.uploadProductionForPrepress=originals.upload;prepressApi.list=originals.list;prepressApi.get=originals.get;prepressApi.getLine=originals.getLine;prepressApi.sendToProduction=originals.single;prepressApi.sendManyToProduction=originals.bulk;
+  globalThis.fetch=originals.fetch;
+  for(const [key,descriptor] of previous){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else Reflect.deleteProperty(globalThis,key);}
+  dom.window.close();
+}
+console.log("Prepress explicit exact source designation, authority guards, off-page read and scoped atomic handoff remount retries passed.");

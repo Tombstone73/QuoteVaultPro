@@ -4,6 +4,10 @@ import { configureFulfillmentOwnerTransport } from "./fulfillmentOwnerApi";
 import { configureProductionRecoveryTransport } from "./productionRecoveryApi";
 
 export type ApiError = Readonly<{ code: string; message: string }>;
+const apiResponseStatuses = new WeakMap<object, number>();
+/** Only a verified transport envelope can establish an authoritative rejection. */
+export const apiResponseStatus = (error: unknown): number | undefined =>
+  error !== null && typeof error === "object" ? apiResponseStatuses.get(error) : undefined;
 export type SalesTaxJurisdiction = Readonly<{ jurisdictionId: string; name: string; countryCode: string; regionCode: string; postalCode?: string; rateBasisPoints: number; active: boolean; homeBusiness: boolean; destinationMethods?: readonly ("shipping"|"local_delivery")[]; updatedAt: string }>;
 export type SalesTaxSettings = Readonly<{ homeBusiness?: SalesTaxJurisdiction; destinationJurisdictions: readonly SalesTaxJurisdiction[]; readiness: Readonly<{ status:"ready"|"needs_attention"; pickup: Readonly<{status:string; jurisdictionName?:string; rateBasisPoints?:number; reason?:string}>; shipping: Readonly<{status:string; jurisdictionName?:string; rateBasisPoints?:number; reason?:string}>; localDelivery: Readonly<{status:string; jurisdictionName?:string; rateBasisPoints?:number; reason?:string}> }>; revision:string }>;
 export type EmailIntegrationReadiness = Readonly<{ provider: "gmail"; status: "not_configured" | "ready" | "reauth_required" | "error"; sendingAddress?: string; displayName?: string; lastValidatedAt?: string; actionRequired?: string; legacyAvailable?: boolean }>;
@@ -1687,10 +1691,13 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
         detail: { organizationId: decodeURIComponent(financial![1]), sessionScope: requestSessionScope, kind, method: method === "GET" ? "GET" : "POST", url },
       }));
     }
-    throw (body.error ?? {
+    const error = body.error ?? {
       code: "INTERNAL_ERROR",
       message: "The Quote service is unavailable.",
-    }) as ApiError;
+    };
+    if (!response.ok && body.ok === false && error !== null && typeof error === "object" && typeof error.code === "string" && typeof error.message === "string")
+      apiResponseStatuses.set(error, response.status);
+    throw error as ApiError;
   }
   return body.data as T;
 };
@@ -2987,6 +2994,7 @@ export const artworkApi = {
     artworkFileId: string,
     businessRequestId: string,
     usage: Record<string, unknown>,
+    expectedEmptyProductionSlot?: Readonly<{ requirementKey: string }>,
   ) =>
     request<
       Readonly<{
@@ -3000,7 +3008,7 @@ export const artworkApi = {
         headers: {
           "x-v2-csrf-token": csrfTokens.get(csrfKey(organizationId)) ?? "",
         },
-        body: JSON.stringify({ businessRequestId, usage }),
+        body: JSON.stringify({ businessRequestId, usage, ...(expectedEmptyProductionSlot !== undefined ? { expectedEmptyProductionSlot } : {}) }),
       },
     ),
   upload: (
@@ -3195,6 +3203,10 @@ export const prepressApi = {
   get: (org: string, prepressUnitId: string) =>
     request<PrepressUnit>(
       prepressEndpoint(org, `/units/${encodeURIComponent(prepressUnitId)}`),
+    ),
+  getLine: (org: string, lineId: string) =>
+    request<PrepressQueueItem>(
+      prepressEndpoint(org, `/lines/${encodeURIComponent(lineId)}`),
     ),
   coverage: (org: string, lineId: string) =>
     request<OrderLinePrepressCoverage>(

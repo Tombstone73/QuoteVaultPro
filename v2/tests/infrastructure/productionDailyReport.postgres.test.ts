@@ -427,6 +427,51 @@ try {
   const wrongAttemptAllocation = await createRun("wrong-attempt-run", wrongAttemptWork, wrongAttempt, "active");
   await assert.rejects(() => runOwner.output(runValues("wrong-attempt-run", wrongAttemptAllocation)), /attempt.*work|work.*attempt/i);
   assert.equal(Number((await db.query("SELECT good_quantity FROM v2_production_attempts WHERE id=$1", [wrongAttempt])).rows[0]!.good_quantity), 0, "a run allocation cannot execute another work item's attempt");
+  for (const station of ["roll", "flatbed"] as const) {
+    const prefix = `queue-guard-${station}`;
+    for (let index = 0; index < 26; index++) {
+      const id = `${prefix}-${index}`;
+      await order(id, null); await line(id, id, station); await work(id, id, id, { quantity: 2 });
+      if (index === 0) {
+        await attempt(`${id}-accepted`, id, 2, true, station);
+        await attempt(`${id}-open`, id, 0, false, station, "org-a", 2);
+      } else if (index === 1) await attempt(`${id}-open`, id, 2, false, station);
+      else if (index === 2) {
+        await attempt(`${id}-accepted`, id, 2, true, station);
+        await db.query("INSERT INTO v2_production_output_dispositions(id,organization_id,production_work_id,production_attempt_id,rejected_quantity,reason,created_principal_kind,created_principal_subject) VALUES($1,'org-a',$2,$3,1,'Damaged','staff','staff-a')", [`${id}-rejected`, id, `${id}-accepted`]);
+      }
+    }
+    for (const excluded of ["satisfied", "archived", "cancelled", "completed", "foreign"]) {
+      const id = `${prefix}-${excluded}`, tenant = excluded === "foreign" ? "org-b" : "org-a";
+      await order(id, null, { org: tenant, archived: excluded === "archived", state: excluded === "cancelled" || excluded === "completed" ? excluded : "open" });
+      await line(id, id, station, tenant); await work(id, id, id, { org: tenant, quantity: 2 });
+      await attempt(`${id}-accepted`, id, 2, true, station, tenant);
+      if (excluded !== "satisfied") await attempt(`${id}-open`, id, 0, false, station, tenant, 2);
+    }
+    queries.length = 0;
+    const queue = await owner.listStationQueue(org, station, { page: 1, pageSize: 100, search: prefix });
+    assert.equal(queue.items.length, 26); assert.equal(queue.pagination.totalCount, 26);
+    const countSql = queries.find(sql => sql.startsWith("SELECT count(*) count"))!;
+    const pageSql = queries.find(sql => sql.startsWith("SELECT w.id "))!;
+    assert.equal(countSql.slice(countSql.indexOf(" WHERE ")), pageSql.slice(pageSql.indexOf(" WHERE "), pageSql.indexOf(" ORDER BY w.created_at")), "count and page use exactly the same outstanding/filter predicate");
+    const retained = queue.items.find(item => item.work.productionWorkId === `${prefix}-0`)!;
+    assert.equal(retained.unitQuantitySatisfied, true); assert.equal(retained.usableGoodQuantity, 2);
+    assert.equal(retained.activeAttempt?.productionAttemptId, `${prefix}-0-open`, "quantity-satisfied work remains available for attempt completion");
+    const recorded = queue.items.find(item => item.work.productionWorkId === `${prefix}-1`)!;
+    assert.equal(recorded.remainingGoodQuantity, 0); assert.equal(recorded.usableGoodQuantity, 0); assert.equal(recorded.unitQuantitySatisfied, false, "recording the target does not accept output before completion");
+    assert.equal(queue.items.find(item => item.work.productionWorkId === `${prefix}-2`)!.usableGoodQuantity, 1, "rejected accepted output still leaves outstanding work");
+    const pages = await Promise.all([1, 2, 3].map(page => owner.listStationQueue(org, station, { page, pageSize: 25, search: prefix })));
+    assert.deepEqual(pages.flatMap(page => page.items.map(item => item.work.productionWorkId)), queue.items.map(item => item.work.productionWorkId));
+    for (const page of pages) { assert.equal(page.pagination.totalCount, 26); assert.equal(page.pagination.totalPages, 2); }
+    assert.equal(pages[2]!.items.length, 0);
+    assert.equal((await owner.listStationQueue(org, station === "roll" ? "flatbed" : "roll", { search: prefix })).pagination.totalCount, 0, "open attempt does not bypass station filtering");
+    assert.equal((await owner.listStationQueue(org, station, { search: "no-such-queue-guard" })).pagination.totalCount, 0, "open attempt does not bypass search");
+    await owner.completeAttempt({ organizationId: org, productionAttemptId: brandedId<"ProductionAttemptId">(`${prefix}-0-open`), principalKind: "staff", principalSubject: "staff-a" });
+    await owner.completeAttempt({ organizationId: org, productionAttemptId: brandedId<"ProductionAttemptId">(`${prefix}-1-open`), principalKind: "staff", principalSubject: "staff-a" });
+    const after = await owner.listStationQueue(org, station, { pageSize: 100, search: prefix });
+    assert.equal(after.pagination.totalCount, 24); assert.equal(after.items.length, 24, "canonical completion removes satisfied work from both count and page");
+    assert.ok(!after.items.some(item => item.work.productionWorkId === `${prefix}-0` || item.work.productionWorkId === `${prefix}-1`));
+  }
   assert.equal(connections, releases, "every committed and rolled-back read releases its scoped client");
   console.log("productionDailyReport.postgres: report semantics, executable Run lock SQL, fail-closed creation, existing output/hold/destination/exact-attempt regressions PASS");
 } finally { await db.close(); }

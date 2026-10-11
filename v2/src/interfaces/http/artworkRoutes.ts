@@ -135,6 +135,11 @@ export const createArtworkRouter = (dependencies: ArtworkHttpDependencies): Rout
   router.post("/files/:artworkFileId/assign", async (request, response) => {
     try {
       const body = command(request.body);
+      if (body.expectedEmptyProductionSlot !== undefined) {
+        const slot = command(body.expectedEmptyProductionSlot);
+        if (typeof slot.requirementKey !== "string" || !slot.requirementKey.trim())
+          throw new V2ApplicationError("VALIDATION_ERROR", "A frozen production requirement key is required.");
+      }
       send(response, await dependencies.service.assign(await context(request, dependencies, true), { ...body, artworkFileId: request.params.artworkFileId as ArtworkFileId }));
     } catch (cause) { const error = cause instanceof V2ApplicationError ? cause : new V2ApplicationError("INTERNAL_ERROR", "Artwork assignment is unavailable."); response.status(status(error.code)).json({ ok: false, error: { code: error.code, message: error.publicMessage } }); }
   });

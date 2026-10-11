@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ArtworkWorkspace } from "./ArtworkWorkspace";
+import { artworkApi } from "./api";
 
 const client = new QueryClient();
 client.setQueryData(["v2", "scope-a", "org-a", "artwork", "file", "file-a"], {
@@ -48,4 +49,18 @@ const workspaceSource = await readFile(new URL("./ArtworkWorkspace.tsx", import.
 assert.doesNotMatch(workspaceSource, /currentOrderArtwork/, "additive uploads must not wait for a stale current-assignment read");
 assert.match(workspaceSource, /targetLine && canAdopt && <ArtworkUploadPanel/, "an authorized line context must remain ready for the next upload");
 
-console.log("Artwork workspace visual contract tests passed.");
+const originalFetch = globalThis.fetch;
+const assignmentCalls: { url: string; body: unknown }[] = [];
+globalThis.fetch = async (url, options) => {
+  assignmentCalls.push({ url: String(url), body: JSON.parse(String(options?.body)) });
+  return new Response(JSON.stringify({ ok: true, data: { artworkFile: { id: "file-a" }, assignment: { id: "production-a" } } }), { status: 200, headers: { "content-type": "application/json" } });
+};
+try {
+  const usage = { orderId: "order-a", orderLineId: "line-a", purpose: "production", side: "front", sourcePageIndex: 0, layerKey: "ink", layerOrder: 0 };
+  await artworkApi.assign("org-a", "file-a", "conditional", usage, { requirementKey: "front-ink" });
+  assert.deepEqual(assignmentCalls[0], { url: "/v2/organizations/org-a/artwork/files/file-a/assign", body: { businessRequestId: "conditional", usage, expectedEmptyProductionSlot: { requirementKey: "front-ink" } } });
+  await artworkApi.assign("org-a", "file-a", "generic", usage);
+  assert.deepEqual(assignmentCalls[1]?.body, { businessRequestId: "generic", usage });
+} finally { globalThis.fetch = originalFetch; }
+
+console.log("Artwork workspace visual and conditional assignment client contract tests passed.");

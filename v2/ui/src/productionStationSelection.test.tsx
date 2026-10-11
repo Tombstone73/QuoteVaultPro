@@ -67,6 +67,33 @@ const reset = async () => {
   specificationsAvailable = true;
 };
 try {
+  const originalQueue = productionApi.queue, originalComplete = productionApi.complete;
+  for (const station of ["roll", "flatbed"] as const) {
+    await reset();
+    const front = work(`output-front-${station}`, station), back = work(`output-back-${station}`, station);
+    let outputRecorded = false, attemptCompleted = false;
+    const completionAttempts: string[] = [];
+    productionApi.queue = async () => ({
+      items: attemptCompleted ? [back] : [{ ...front, attempts: front.attempts.map(attempt => ({ ...attempt, goodQuantity: outputRecorded ? 12 : 0 })), recordedGoodQuantity: outputRecorded ? 12 : 0, usableGoodQuantity: 0, remainingGoodQuantity: outputRecorded ? 0 : 12 }, back],
+      pagination: { page: 1, pageSize: 25, totalCount: attemptCompleted ? 1 : 2, totalPages: 1 },
+    });
+    productionApi.complete = async (_org, attemptId) => { completionAttempts.push(attemptId); attemptCompleted = true; return {} as never; };
+    await render(station);
+    await settle(() => text().includes(`Canonical output-front-${station}`));
+    // Model the owner queue refetch after recording the target, before completion.
+    await act(async () => {
+      outputRecorded = true;
+      await client.invalidateQueries({ queryKey: ["v2", "scope-a", "org-a", "production", station, "queue"] });
+    });
+    const completeButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Complete attempt");
+    assert.ok(completeButton && !completeButton.disabled, "target output keeps the selected front attempt completable");
+    await click("Complete attempt");
+    await settle(() => attemptCompleted && !text().includes(`Canonical output-front-${station}`));
+    assert.deepEqual(completionAttempts, [`attempt-output-front-${station}`], "completion uses the front attempt, not the back selected after completion");
+    assert.match(text(), new RegExp(`Canonical output-back-${station}`));
+  }
+  productionApi.queue = originalQueue; productionApi.complete = originalComplete;
+  await reset();
   await render();
   await settle(() => text().includes("Canonical first") && text().includes("24 x 36 in"));
   assert.match(text(), /SO-first/); assert.match(text(), /Canonical customer/); assert.match(text(), /2026-10-20/);

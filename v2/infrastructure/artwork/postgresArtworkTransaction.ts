@@ -111,6 +111,26 @@ export class PostgresArtworkTransaction implements ArtworkTransaction {
   }
   async createOrGetAssignment(input: Parameters<ArtworkTransaction["createOrGetAssignment"]>[0]): Promise<ArtworkAssignment> {
     await lockOrderArtworkCoordination(this.client, input.organizationId, input.usage.orderId);
+    if (input.expectedEmptyProductionSlot !== undefined) {
+      const u = input.usage;
+      if (u.purpose !== "production" || !input.expectedEmptyProductionSlot || typeof input.expectedEmptyProductionSlot.requirementKey !== "string" || !input.expectedEmptyProductionSlot.requirementKey.trim())
+        throw new V2ApplicationError("VALIDATION_ERROR", "An expected-empty production slot requires a frozen requirement key and production usage.");
+      const requirement = await this.client.query(`SELECT r.requirement_key FROM v2_sales_line_production_requirements r
+        JOIN v2_sales_document_lines l ON l.organization_id=r.organization_id AND l.id=r.order_line_id
+        WHERE r.organization_id=$1 AND l.document_id=$2 AND r.order_line_id=$3 AND r.requirement_key=$4
+        AND r.side IS NOT DISTINCT FROM $5::text AND r.source_page_index IS NOT DISTINCT FROM $6::integer
+        AND r.layer_key IS NOT DISTINCT FROM $7::text AND r.layer_order IS NOT DISTINCT FROM $8::integer`,
+      [input.organizationId,u.orderId,u.orderLineId,input.expectedEmptyProductionSlot.requirementKey,u.side ?? null,u.sourcePageIndex ?? null,u.layerKey ?? null,u.layerOrder ?? null]);
+      if (!requirement.rows.length) throw new V2ApplicationError("VALIDATION_ERROR", "Artwork usage must match the exact selected frozen production requirement.");
+      // The existing Order lock fences empty-set phantoms against every Artwork writer.
+      const occupied = await this.client.query(`SELECT a.id FROM v2_current_artwork_assignments a
+        WHERE a.organization_id=$1 AND a.order_document_id=$2 AND a.order_line_id=$3 AND a.purpose='production'
+        AND a.side IS NOT DISTINCT FROM $4::text AND a.source_page_index IS NOT DISTINCT FROM $5::integer
+        AND a.layer_key IS NOT DISTINCT FROM $6::text AND a.layer_order IS NOT DISTINCT FROM $7::integer
+        AND NOT EXISTS (SELECT 1 FROM v2_artwork_assignments successor WHERE successor.organization_id=a.organization_id AND successor.supersedes_artwork_assignment_id=a.id)`,
+      [input.organizationId,u.orderId,u.orderLineId,u.side ?? null,u.sourcePageIndex ?? null,u.layerKey ?? null,u.layerOrder ?? null]);
+      if (occupied.rows.length) throw new V2ApplicationError("CONFLICT", "The selected production Artwork slot is no longer empty. Refresh before assigning Artwork.");
+    }
     const u = input.usage; const semantic = JSON.stringify({ artworkFileId: input.artworkFileId, purpose: u.purpose, side: u.side ?? null, sourcePageIndex: u.sourcePageIndex ?? null, layerKey: u.layerKey ?? null, layerOrder: u.layerOrder ?? null });
     const fingerprint = `sha256:${createHash("sha256").update(semantic).digest("hex")}`;
     const r = await this.client.query<AssignmentRow>(`INSERT INTO v2_artwork_assignments(id,organization_id,artwork_file_id,order_document_id,order_line_id,purpose,side,source_page_index,layer_key,layer_order,identity_fingerprint)

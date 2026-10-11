@@ -14,7 +14,7 @@ export class PostgresOwnerTransitions implements OwnerTransitions {
       JOIN v2_sales_order_details o ON o.organization_id=ri.organization_id AND o.document_id=ri.order_document_id AND o.commercial_state='open' AND o.archived_at IS NULL
       WHERE ri.organization_id=$1 AND ri.order_document_id=$2 AND ri.order_line_id=$3 AND ri.route_state IN ('pending','active') FOR UPDATE OF ri,o`, [request.organizationId, request.orderId, request.orderLineId]);
     const route = routeRow.rows[0];
-    if (!route || !route.current_step_id || !route.step_kind) throw new Error("An active frozen Route is required before sending Prepress work to Production.");
+    if (!route || !route.current_step_id || !route.step_kind) throw new V2ApplicationError("CONFLICT", "An active frozen Route is required before sending Prepress work to Production. Refresh Prepress: the Order may be canceled, archived, or no longer at an eligible step.");
     const steps = await this.steps(request.organizationId, route.id);
     const current = steps.find(step => step.id === route.current_step_id);
     if (!current) throw new Error("The frozen Route has no valid current step.");

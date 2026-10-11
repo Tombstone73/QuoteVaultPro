@@ -17,7 +17,7 @@ const preparedUnit = { id: "unit-a", organization_id: "org-a", order_document_id
 const predecessor = { id: "work-a", organization_id: "org-a", order_document_id: "order-a", order_line_id: "line-a", requirement_key: "front-layer", artwork_assignment_id: "art-a", artwork_file_id: "file-a", side: "front", source_page_index: 2, layer_key: "white", layer_order: 3, ordered_quantity: 10, replacement_obligation_id: null };
 const preparationInput = { ...actor, ...scope, reworkCycleId: "cycle-a", predecessorProductionWorkId: "work-a", artworkAssignmentId: "art-a", artworkFileId: "file-a", side: "front" as const, sourcePageIndex: 2, layerKey: "white", layerOrder: 3 };
 type Call = { sql: string; values: readonly unknown[] };
-type Options = { current?: string; destination?: "flatbed" | "roll" | null; blocker?: string; rework?: boolean; fail?: string; stale?: boolean; ambiguousArtwork?: boolean; readiness?: "missing_unit" | "incomplete_unit" | "proof" | "artwork" };
+type Options = { current?: string; destination?: "flatbed" | "roll" | null; blocker?: string; rework?: boolean; fail?: string; stale?: boolean; unavailableOrder?: boolean; ambiguousArtwork?: boolean; readiness?: "missing_unit" | "incomplete_unit" | "proof" | "artwork" };
 function fixture(options: Options = {}) {
   const calls: Call[] = [];
   let durable: string[] = [];
@@ -36,7 +36,7 @@ function fixture(options: Options = {}) {
     if (/^(INSERT|UPDATE)/.test(sql)) durable.push(sql);
     if (sql.startsWith("UPDATE v2_route_instances")) return { rows: [], rowCount: options.stale ? 0 : 1 };
     if (sql.startsWith("SELECT * FROM v2_prepress_units")) return { rows: options.readiness === "missing_unit" ? [] : [{ ...preparedUnit, completed_at: options.readiness === "incomplete_unit" ? null : timestamp, rework_cycle_id: options.rework ? "cycle-a" : null }] };
-    if (sql.includes("FROM v2_route_instances ri LEFT JOIN") || sql.startsWith("SELECT id,current_step_id")) return { rows: values[0] === "org-a" && values.includes("order-a") && values.includes("line-a") ? [{ id: "route-a", current_step_id: options.current ?? "prepress", revision: "4", step_kind: options.current ?? "prepress" }] : [] };
+    if (sql.includes("FROM v2_route_instances ri LEFT JOIN") || sql.startsWith("SELECT id,current_step_id")) return { rows: !options.unavailableOrder && values[0] === "org-a" && values.includes("order-a") && values.includes("line-a") ? [{ id: "route-a", current_step_id: options.current ?? "prepress", revision: "4", step_kind: options.current ?? "prepress" }] : [] };
     if (sql.startsWith("SELECT id,position,step_kind")) return { rows: steps };
     if (sql.includes(") configured")) return { rows: [{ configured: values[3] === steps.find(step => step.id === "production")?.production_destination_station_key }] };
     if (sql.includes("workflow_intent")) return { rows: [{ id: "line-a", requires_production: true, requires_proof: true, workflow_intent: "standard_production" }] };
@@ -63,6 +63,20 @@ function fixture(options: Options = {}) {
 }
 
 afterEach(() => jest.restoreAllMocks());
+test("Stale Order eligibility is an explicit owner conflict before any preparation or Production write", async () => {
+  const f = fixture({ unavailableOrder: true });
+  const prepare = jest.fn<() => Promise<{ kind: "rework"; value: string }>>();
+  await expect(f.owner.handoffPreparedPrepress(scope, prepare)).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(prepare).not.toHaveBeenCalled();
+  expect(f.durable()).toHaveLength(0);
+});
+test("Rejected stale Order handoff rolls back and exposes conflict for safe saved-request resolution", async () => {
+  const f = fixture({ unavailableOrder: true });
+  await expect(new PostgresPrepressTransactionRunner(f.pool).transaction(tx => tx.handoffToProduction(handoffInput))).rejects.toMatchObject({ code: "CONFLICT" });
+  expect(f.calls.some(call => call.sql === "ROLLBACK")).toBe(true);
+  expect(f.calls.some(call => call.sql === "COMMIT")).toBe(false);
+  expect(f.durable()).toHaveLength(0);
+});
 
 test.each(["flatbed", "roll"] as const)("Routing accepts ordinary handoff to frozen %s and guards scope/revision", async destination => {
   const f = fixture({ destination });

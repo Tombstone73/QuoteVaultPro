@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { JSDOM } from "jsdom";
-import type { UiBootstrap } from "./api";
+import type { OrderRead, PrepressQueueItem, ProductionWorkProjection, ProofWorkProjection, UiBootstrap } from "./api";
 import type { WorkspaceHeader, WorkspacePromotionView, WorkspaceView } from "./salesWorkspaceApi";
 
 // The actual App imports CSS. Keep the fixture on one CommonJS React/query
@@ -17,6 +17,7 @@ Object.assign(globalThis, { React, window: dom.window, document: dom.window.docu
 const { createRoot }: typeof import("react-dom/client") = require("react-dom/client");
 const { Simulate }: typeof import("react-dom/test-utils") = require("react-dom/test-utils");
 const { App }: typeof import("./App") = require("./App");
+const { OrderWorkspace }: typeof import("./OrderWorkspace") = require("./OrderWorkspace");
 const { defaultVisualAppearance }: typeof import("./appearance") = require("./appearance");
 const { canNavigateFromSalesWorkspace, workspaceNavigationEvent }: typeof import("./workspaceNavigation") = require("./workspaceNavigation");
 const { clearV2ApiSessionState }: typeof import("./api") = require("./api");
@@ -29,6 +30,10 @@ const customerId = "55555555-5555-4555-8555-555555555555";
 const contactId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const productId = "44444444-4444-4444-8444-444444444444";
 const sourceLineId = "99999999-9999-4999-8999-999999999999";
+const secondLineId = "99999999-9999-4999-8999-999999999998";
+const proofWorkId = "77777777-7777-4777-8777-777777777777";
+const productionWorkId = "77777777-7777-4777-8777-777777777778";
+const prepressUnitId = "77777777-7777-4777-8777-777777777779";
 const tempLineId = "66666666-6666-4666-8666-666666666666";
 const now = "2026-10-01T00:00:00.000Z";
 const clone = <T,>(value: T): T => structuredClone(value);
@@ -42,7 +47,16 @@ const sourceLine: NonNullable<WorkspaceView["lines"][number]["sourceLineSnapshot
 };
 const header: WorkspaceHeader = { customerContact: { organizationId: org, customerId }, jobLabel: "Original Job", purchaseOrderNumber: "OLD-PO", requestedDueDate: "2026-10-20T00:00:00.000Z", terms: { termsCode: "net_30", commercialNotes: "Original Order commercial notes" }, requestedFulfillment: { method: "pickup", instructions: "Original pickup instructions" } };
 const fixture = (): WorkspaceView => ({ id: workspaceId, organizationId: org, creatorUserId: user, kind: "order_edit", state: "draft", sourceDocumentKind: "order", sourceDocumentId: orderId, baseRevision: "7", sourceHeader: { organizationId: org, orderId, orderNumber: "ORD-1001", customerContact: { organizationId: org, customerId }, jobLabel: "Original Job", purchaseOrderNumber: "OLD-PO", requestedDueDate: "2026-10-20T00:00:00.000Z", currency: "USD", commercialState: "open", terms: { termsCode: "net_30", commercialNotes: "Original Order commercial notes" }, requestedFulfillment: { method: "pickup", instructions: "Original pickup instructions" } }, header: clone(header), lines: [{ id: tempLineId, workspaceId, position: 0, sourcePosition: 0, sourceLineId, sourceLineSnapshot: clone(sourceLine), operationalNote: sourceLine.operationalNote, revision: 1, input: { productId, description: sourceLine.description, quantity: 2, selections: {}, selling: { kind: "calculated" } } }], removedLines: [], revision: 1, createdAt: now, updatedAt: now, expiresAt: "2099-10-31T00:00:00.000Z" });
-const bootstrap: UiBootstrap = { organizationId: org, userId: user, sessionScope: "shell-test-session", csrfToken: "test-csrf", capabilities: { quoteView: true, quoteCreate: true, quoteOverridePrice: false, orderView: true, orderCreate: true, orderEdit: true, orderCancel: true, artworkView: true, artworkAdopt: true, artworkAssign: true } };
+let bootstrap: UiBootstrap = { organizationId: org, userId: user, sessionScope: "shell-test-session", csrfToken: "test-csrf", capabilities: { quoteView: true, quoteCreate: true, quoteOverridePrice: false, orderView: true, orderCreate: true, orderEdit: true, orderCancel: true, artworkView: true, artworkAdopt: true, artworkAssign: true } };
+const approvedProof: ProofWorkProjection = { work: { proofWorkId, orderId, orderLineId: secondLineId, createdAt: now }, recipients: [], versions: [{ version: { proofWorkId, proofVersionId: proofWorkId, sequence: 1, artwork: [], createdAt: now, issuedAt: now }, response: { proofResponseId: proofWorkId, proofVersionId: proofWorkId, outcome: "approved", origin: "direct", respondedAt: now, responderPrincipalSubject: customerId } }] };
+let navigationFixture = false;
+let productionNavigationFixture = false;
+const readyPrepress: PrepressQueueItem = { orderId, orderNumber: "ORD-1001", customerDisplayName: "Original Customer", orderLineId: secondLineId, lineDescription: "Exact second line", quantity: 2, routingStepKind: "prepress", coverage: { state: "configured", productionArtworkComplete: true, allRequiredPrepressUnitsComplete: true, requirements: [{ requirement: { key: "front", side: "front" }, artworkAssignmentIds: [productId], productionArtworkCovered: true, prepressComplete: true, prepressUnits: [{ prepressUnitId, organizationId: org, orderId, orderLineId: secondLineId, artworkAssignmentId: productId, artworkFileId: productId, side: "front", createdAt: now, startedAt: now, completedAt: now }] }] }, operational: { materials: [], sourceArtwork: [], productionArtwork: [], proof: { required: true, state: "approved" }, productionDestination: "flatbed", readiness: { ready: true, blockers: [] } } };
+const readyProduction: ProductionWorkProjection = { work: { productionWorkId, orderId, orderLineId: secondLineId, requirement: { key: "front", side: "front" }, artworkAssignmentId: productId, artworkFileId: productId, prepressUnitId, orderedQuantity: 2 }, attempts: [], completedGoodQuantity: 0, recordedGoodQuantity: 0, rejectedGoodQuantity: 0, usableGoodQuantity: 0, remainingGoodQuantity: 2, unitQuantitySatisfied: false, state: "ready", exceptionEvents: [], outputDispositions: [] };
+let orderProductionWork: ProductionWorkProjection | undefined;
+let orderRoutes: OrderRead["routes"] = [];
+const rollStep = { routeInstanceStepId: "roll-step", position: 1, kind: "production", productionDestination: "roll" } as const;
+const rollRoute: OrderRead["routes"][number] = { routeInstanceId: "roll-route", revision: "1", work: { orderLineId: secondLineId }, state: "active", currentStepId: rollStep.routeInstanceStepId, steps: [rollStep] };
 type Call = { path: string; method: string; body: Record<string, unknown> };
 let workspace = fixture();
 let canonicalHeader = clone(header);
@@ -94,10 +108,19 @@ globalThis.fetch = async (input, init) => {
   else if (path.endsWith("/sales-workspaces")) data = [];
   else if (path === `/v2/organizations/${org}/orders/${orderId}`) {
     assert.equal(method, "GET", "App must not perform canonical commercial writes"); if (canonicalRevision === "8" && readGate) await readGate();
-    data = { order: { ...canonicalHeader, organizationId: org, orderId, customerContact: { organizationId: org, customerId }, currency: "USD", commercialState: "open", terms: canonicalHeader.terms ?? {}, lines: [sourceLine] }, number: { display: "ORD-1001", core: "1001" }, revision: canonicalRevision, totals: { calculated: amount, selling: amount }, routes: [], completionEligibility: { eligible: false, blockers: [{ orderLineId: sourceLineId, kind: "fulfillment_remaining", reason: "Two original items still await fulfillment." }], lines: [] } };
+    data = { order: { ...canonicalHeader, organizationId: org, orderId, customerContact: { organizationId: org, customerId }, currency: "USD", commercialState: "open", terms: canonicalHeader.terms ?? {}, lines: navigationFixture ? [sourceLine, { ...sourceLine, lineId: secondLineId, description: "Exact second line", position: 1 }] : [sourceLine] }, number: { display: "ORD-1001", core: "1001" }, revision: canonicalRevision, totals: { calculated: amount, selling: amount }, routes: orderRoutes, completionEligibility: { eligible: false, blockers: [{ orderLineId: sourceLineId, kind: "fulfillment_remaining", reason: "Two original items still await fulfillment." }], lines: [] } };
   } else if (path.endsWith("/orders")) data = { items: [], totalMatching: 0 };
   else if (path.includes("fulfillment")) data = { lines: [], handoffs: [] };
   else if (path.endsWith("/history") || path.endsWith("/workflow/actions") || path.includes("/artwork/orders/")) data = [];
+  else if (path.includes("/proofing/orders/")) data = [approvedProof];
+  else if (path.endsWith(`/proofing/works/${proofWorkId}`)) data = approvedProof;
+  else if (path.endsWith("/prepress/queue")) data = { items: productionNavigationFixture && url.searchParams.get("requirementState") !== "unconfigured" ? [readyPrepress] : [], pagination: { page: 1, pageSize: 25, totalCount: productionNavigationFixture ? 1 : 0, totalPages: productionNavigationFixture ? 1 : 0 } };
+  else if (path.endsWith(`/prepress/lines/${secondLineId}`)) data = readyPrepress;
+  else if (path.endsWith(`/prepress/units/${prepressUnitId}/send-to-production`)) data = { unit: readyPrepress.coverage.requirements[0]!.prepressUnits[0]!, destination: "flatbed", productionWorkIds: [productionWorkId] };
+  else if (path.includes("/production/orders/")) data = orderProductionWork ? [orderProductionWork] : [];
+  else if (path.endsWith(`/production/works/${productionWorkId}`)) data = orderProductionWork ?? readyProduction;
+  else if (path.endsWith("/proofing/works") || path.endsWith("/production/works") || path.includes("/production/runs") || path.includes("/production/daily")) data = { items: [], pagination: { page: 1, pageSize: 25, totalCount: 0, totalPages: 0 } };
+  else if (path.endsWith("/routing/workspace")) data = { templates: [], instances: [] };
   else if (path.endsWith("/customers") || path.endsWith("/customers/form-options")) data = [{ customerId, displayName: "Original Customer" }];
   else if (path.includes("contacts") || path.endsWith("/products") || path.endsWith("/form-products") || path.endsWith("/form-customers")) data = [];
   else throw new Error(`Unexpected actual App request ${method} ${url}`);
@@ -110,6 +133,7 @@ const button = (label: string, within: ParentNode = document) => { const node = 
 const field = (label: string) => { const parent = [...document.querySelectorAll("label")].find(node => node.textContent?.trim().startsWith(label)); const control = parent?.querySelector("input,select,textarea"); assert.ok(control, `${label} field exists`); return control as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement; };
 const settle = async (predicate: () => boolean = () => true) => { for (let index = 0; index < 150; index++) { await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); }); if (predicate()) return; } assert.ok(predicate(), `App transition settled: ${text()}\n${JSON.stringify(calls)}`); };
 const click = async (label: string, within?: ParentNode) => { await act(async () => button(label, within).click()); await settle(); };
+const selectSecondLine = async () => { const row = [...document.querySelectorAll(".v2-sales-items tbody tr")].find(node => node.textContent?.includes("Exact second line")); assert.ok(row); const control = row.querySelector("button"); assert.ok(control); await act(async () => control.click()); await settle(); };
 const change = async (label: string, value: string) => { await act(async () => { const node = field(label); node.value = value; Simulate.change(node); }); await settle(); };
 const storage = () => Object.fromEntries(Array.from({ length: sessionStorage.length }, (_, index) => { const key = sessionStorage.key(index)!; return [key, sessionStorage.getItem(key)]; }));
 const commands = () => calls.filter(call => call.method !== "GET");
@@ -173,6 +197,85 @@ try {
   await check("Trusted session teardown removes the listener without trapping expired authority", async () => {
     await mount(); await change("Job Label", "Private expired-session draft"); await act(async () => { assert.equal(canNavigateFromSalesWorkspace(), false); });
     await act(async () => window.dispatchEvent(new dom.window.Event("v2:session-context-changed"))); await settle(() => !text().includes("Private expired-session draft")); assert.equal(canNavigateFromSalesWorkspace(), true); assert.equal(document.querySelector('[aria-label="Transactional Sales workspace"]'), null); assert.equal(commands().length, 0);
+  });
+  await check("Order exact second-line navigation preserves canonical Proof work and approved next preparation context", async () => {
+    navigationFixture = true;
+    bootstrap = { ...bootstrap, capabilities: { ...bootstrap.capabilities, prepressView: true, proofView: true, routeView: true } };
+    await mount(false); await selectSecondLine();
+    const inspector = document.querySelector(".v2-sales-line-editor"); assert.ok(inspector);
+    await click("Open line Proofing", inspector);
+    await settle(() => text().includes("Proofing complete"));
+    assert.ok(window.location.pathname.includes(proofWorkId));
+    assert.ok(calls.some(call => call.path.endsWith(`/proofing/works/${proofWorkId}`)), "exact canonical work is fetched, not first queue work");
+    assert.match(text(), /Routing must evaluate and advance its own frozen prerequisite/);
+    assert.ok(button("Open Routing"));
+    await click("Open line Prepress");
+    assert.ok(window.location.pathname.includes(secondLineId));
+    assert.equal(commands().length, 0, "navigation never approves Proof or progresses frozen Routing");
+    await mount(false); await selectSecondLine(); await click("Open line Proofing", document.querySelector(".v2-sales-line-editor")!); await settle(() => text().includes("Proofing complete"));
+    await click("Open Routing"); assert.equal(window.location.pathname, "/routing"); assert.equal(commands().length, 0);
+    await mount(false); await selectSecondLine(); await click("Open line Prepress", document.querySelector(".v2-sales-line-editor")!);
+    assert.ok(window.location.pathname.includes(secondLineId)); assert.equal(commands().length, 0);
+    await mount(false); await click("Artwork", document.querySelector(".v2-sales-document-tabs")!);
+    const artworkLine = [...document.querySelectorAll(".v2-order-artwork > li")].find(node => node.textContent?.includes("Exact second line")); assert.ok(artworkLine);
+    await click("Open line Prepress", artworkLine); assert.ok(window.location.pathname.includes(secondLineId)); assert.equal(commands().length, 0);
+  });
+  await check("Order hides preparation navigation when Prepress permission is absent", async () => {
+    bootstrap = { ...bootstrap, capabilities: { ...bootstrap.capabilities, prepressView: false, proofView: false, routeView: false } };
+    await mount(false); await selectSecondLine();
+    const inspector = document.querySelector(".v2-sales-line-editor"); assert.ok(inspector);
+    assert.equal([...inspector.querySelectorAll("button")].some(node => node.textContent === "Open line Prepress" || node.textContent === "Open line Proofing" || node.textContent === "Open Routing"), false);
+    assert.equal(commands().length, 0);
+  });
+  await check("Canonical Prepress handoff opens its exact Production work and Flatbed station", async () => {
+    productionNavigationFixture = true;
+    bootstrap = { ...bootstrap, capabilities: { ...bootstrap.capabilities, prepressView: true, prepressComplete: true, routeAdvance: true, productionWork: true, productionView: true } };
+    await mount(false); await selectSecondLine(); await click("Open line Prepress", document.querySelector(".v2-sales-line-editor")!);
+    await settle(() => text().includes("Send to flatbed")); await click("Send to flatbed");
+    await settle(() => window.location.pathname === `/production/works/${productionWorkId}`);
+    assert.ok(calls.some(call => call.path.endsWith(`/production/works/${productionWorkId}`)));
+    assert.match(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() ?? "", /^Flatbed\d*$/);
+    assert.deepEqual(commands().map(call => call.path), [`/v2/organizations/${org}/prepress/units/${prepressUnitId}/send-to-production`], "navigation uses only the canonical handoff, without direct Production or Routing mutations");
+  });
+  await check("Prepress handoff cannot open Production when view capability is absent", async () => {
+    bootstrap = { ...bootstrap, capabilities: { ...bootstrap.capabilities, productionView: false } };
+    await mount(false); await selectSecondLine(); await click("Open line Prepress", document.querySelector(".v2-sales-line-editor")!);
+    await settle(() => text().includes("Send to flatbed")); await click("Send to flatbed");
+    assert.ok(window.location.pathname.includes(secondLineId));
+    assert.equal(calls.some(call => call.path.includes("/production/works")), false);
+    assert.equal(commands().length, 1);
+  });
+  await check("Order Production tab opens exact Roll work from its frozen current destination before any attempt", async () => {
+    bootstrap = { ...bootstrap, capabilities: { ...bootstrap.capabilities, productionView: true } };
+    orderProductionWork = readyProduction; orderRoutes = [rollRoute];
+    await mount(false); await click("Production", document.querySelector(".v2-sales-document-tabs")!);
+    await settle(() => text().includes("0/2 complete"));
+    const tab = document.querySelector(".v2-order-tab .v2-order-owner-summary-value"); assert.ok(tab);
+    await click("Production unit · Front · 0/2 complete", tab); await settle(() => window.location.pathname === `/production/works/${productionWorkId}`);
+    assert.match(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ?? "", /^Roll\d*$/);
+    assert.equal(commands().length, 0);
+  });
+  await check("Order Production summary recovers Roll active attempt even after its quantity is satisfied", async () => {
+    const activeAttempt: NonNullable<ProductionWorkProjection["activeAttempt"]> = { productionAttemptId: "active-roll", productionWorkId, sequence: 1, kind: "initial", stationKey: "roll", goodQuantity: 2, wasteQuantity: 0, startedAt: now };
+    orderProductionWork = { ...readyProduction, state: "active", attempts: [activeAttempt], activeAttempt, recordedGoodQuantity: 2, usableGoodQuantity: 2, completedGoodQuantity: 2, remainingGoodQuantity: 0, unitQuantitySatisfied: true };
+    await mount(false); await settle(() => text().includes("2/2 complete"));
+    const summary = document.querySelector(".v2-order-production-compact"); assert.ok(summary);
+    await click("Production unit · Front · 2/2 complete · Roll", summary); await settle(() => window.location.pathname === `/production/works/${productionWorkId}`);
+    assert.match(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ?? "", /^Roll\d*$/);
+    assert.ok(calls.some(call => call.path.endsWith(`/production/works/${productionWorkId}`)));
+    assert.equal(commands().length, 0);
+  });
+  await check("Mounted Order Production links omit station for missing or ambiguous frozen route evidence", async () => {
+    for (const routes of [[], [rollRoute, { ...rollRoute, routeInstanceId: "duplicate" }], [{ ...rollRoute, steps: [rollStep, { ...rollStep, position: 2 }] }]] satisfies OrderRead["routes"][]) {
+      orderRoutes = routes;
+      await mount(false);
+      const opened: { id: string; station?: "flatbed" | "roll" }[] = [];
+      await act(async () => root.render(<QueryClientProvider client={cache}><OrderWorkspace organizationId={org} sessionScope={bootstrap.sessionScope} orderId={orderId} canEdit={false} canCreate={false} canCancel={false} canOverridePrice={false} canViewInvoice={false} canViewArtwork={false} canViewProofing={false} canViewProduction csrfReady onBack={() => undefined} openProduction={(id, station) => opened.push({ id, station })} /></QueryClientProvider>));
+      await settle(() => text().includes("2/2 complete"));
+      await click("Production unit · Front · 2/2 complete · Roll", document.querySelector(".v2-order-production-compact")!);
+      assert.deepEqual(opened, [{ id: productionWorkId, station: undefined }], "existing attempt label must not override absent or ambiguous frozen destination");
+      assert.equal(commands().length, 0);
+    }
   });
 } finally {
   window.removeEventListener(workspaceNavigationEvent, observeNavigation); window.removeEventListener("beforeunload", observeUnload); await act(async () => root.unmount()); cache.clear(); clearV2ApiSessionState(); globalThis.fetch = originalFetch; dom.window.Storage.prototype.setItem = originalStorageSet; if (previousCss) require.extensions[".css"] = previousCss; else delete require.extensions[".css"]; assert.equal(canNavigateFromSalesWorkspace(), true, "All workspace navigation listeners are removed after unmount"); dom.window.close();

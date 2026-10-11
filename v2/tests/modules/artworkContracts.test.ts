@@ -35,6 +35,24 @@ class MemoryArtworkTransaction implements ArtworkTransaction {
 const memory=new MemoryArtworkTransaction(); const runner:ArtworkTransactionRunner={transaction:async(action)=>action(memory)}; const service=new ArtworkApplicationService(runner);
 
 describe("M2.0 Artwork contracts", () => {
+  test("conditional assignment forwards the explicit precondition, preserves source usage and replays without another insertion", async () => {
+    const tx = new MemoryArtworkTransaction();
+    const app = new ArtworkApplicationService({ transaction: async action => action(tx) });
+    const source = await app.adopt(context("conditional-source"), input("conditional-source", { usage: usage({ purpose: "customer_supplied" }) }));
+    if (!source.ok) throw Error("setup");
+    const insert = jest.spyOn(tx, "createOrGetAssignment");
+    const command = { businessRequestId: "conditional", artworkFileId: source.value.artworkFile.id, usage: usage(), expectedEmptyProductionSlot: { requirementKey: "front" } };
+    const first = await app.assign(context("conditional"), command);
+    expect(first.ok).toBe(true);
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ expectedEmptyProductionSlot: { requirementKey: "front" } }));
+    expect(await app.assign(context("conditional"), command)).toEqual(first);
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(tx.assignments.get(source.value.assignment.id)).toEqual(source.value.assignment);
+    expect(tx.removals.size).toBe(0);
+    expect(await app.assign(context("conditional-invalid"), { ...command, businessRequestId: "conditional-invalid", usage: usage({ purpose: "customer_supplied" }) })).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+    expect(await app.assign(context("conditional-missing"), { ...command, businessRequestId: "conditional-missing", artworkFileId: brandedId<"ArtworkFileId">("foreign-file") })).toMatchObject({ ok: false, error: { code: "NOT_FOUND" } });
+    expect(insert).toHaveBeenCalledTimes(1);
+  });
   test("adoption preflight is side-effect-free and does not reserve a request", () => {
     const tx = new MemoryArtworkTransaction();
     const isolatedRunner: ArtworkTransactionRunner = { transaction: async action => action(tx) };

@@ -5,11 +5,12 @@ import type { Principal } from "../../authorization/principals.js";
 import { type ApplicationResult, V2ApplicationError } from "../../errors/applicationError.js";
 import type { PrepressMutationResult } from "../../modules/prepress/prepressApplication.js";
 import type { OrderLineId, PrepressUnitId } from "../../modules/shared/commercialValues.js";
-import type { PrepressQueuePageRequest } from "../../modules/prepress/contracts.js";
+import type { PrepressQueueItem, PrepressQueuePageRequest } from "../../modules/prepress/contracts.js";
 
 export interface PrepressHttpService {
   getUnit(context: OperationContext, prepressUnitId: PrepressUnitId): Promise<ApplicationResult<unknown>>;
   listQueue(context: OperationContext, request?: PrepressQueuePageRequest): Promise<ApplicationResult<unknown>>;
+  getLine(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<PrepressQueueItem>>;
   getOrderLineCoverage(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   listOrderLineUnits(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<unknown>>;
   open(context: OperationContext, input: Readonly<Record<string, unknown>>): Promise<ApplicationResult<PrepressMutationResult>>;
@@ -39,6 +40,7 @@ const pageRequest=(request:Request):PrepressQueuePageRequest=>{
 /** Authenticated transport for bounded queue reads and unit-scoped Prepress work. */
 export const createPrepressRouter=(deps:PrepressHttpDependencies):Router=>{const router=expressRouter({mergeParams:true});
   router.get("/queue",(request,response)=>void run(response,async()=>deps.service.listQueue(await context(request,deps),pageRequest(request))));
+  router.get("/lines/:orderLineId",(request,response)=>void run(response,async()=>deps.service.getLine(await context(request,deps),request.params.orderLineId as OrderLineId)));
   router.get("/units/:prepressUnitId",(request,response)=>void run(response,async()=>deps.service.getUnit(await context(request,deps),request.params.prepressUnitId as PrepressUnitId)));
   router.get("/lines/:orderLineId/coverage",(request,response)=>void run(response,async()=>deps.service.getOrderLineCoverage(await context(request,deps),request.params.orderLineId as OrderLineId)));
   router.get("/lines/:orderLineId/units",(request,response)=>void run(response,async()=>deps.service.listOrderLineUnits(await context(request,deps),request.params.orderLineId as OrderLineId)));

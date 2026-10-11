@@ -77,6 +77,8 @@ add('v2/', 'tsx', ['tests/interfaces/quoteContactSelection.test.ts', 'ui/src/quo
   'safe-deterministic', 'Canonical Quote authorization and selected Contact hydration use actual Sales application and Customers reads with in-memory Quote persistence, PGlite and local HTTP; mounted App uses JSDOM and intercepted transport, without credentials, V1 initialization or provider execution.');
 add('v2/ui/src/', 'tsx', ['sessionResponseGeneration.test.tsx', 'prepressSessionRecovery.test.tsx'],
   'safe-deterministic', 'Actual API generation and AuthGate/App recovery execute with JSDOM, intercepted fetch, scoped in-memory receipts and CSS-only loading seams; no external transport, credentials, provider or live database.');
+add('v2/ui/src/', 'tsx', ['prepressSourceHandoff.test.tsx'],
+  'safe-deterministic', 'Mounted Prepress exact source designation and atomic handoff retry regressions use JSDOM session storage and injected owner API doubles; no live database, credentials, provider or external network.');
 add('v2/ui/src/', 'tsx', ['productionDailyReport.test.tsx', 'productionDailyReportIntegration.test.tsx'],
   'safe-deterministic', 'Mounted report and actual App/authenticated transport execute in JSDOM with intercepted reads and CSS-only loading seams; no external transport or physical printer.');
 add('v2/tests/modules/', 'tsx', ['productionDailyReport.test.ts'],

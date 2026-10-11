@@ -7,7 +7,7 @@ import { PrepressApplicationService, type PrepressTransaction, type PrepressTran
 import type { PrepressQueuePageRequest } from "../../src/modules/prepress/contracts.js";
 import { createPrepressRouter, type PrepressHttpDependencies } from "../../src/interfaces/http/prepressRoutes.js";
 import type { StaffPrincipal } from "../../src/authorization/principals.js";
-import { brandedId } from "../../src/modules/shared/commercialValues.js";
+import { brandedId, type OrganizationId, type OrderLineId } from "../../src/modules/shared/commercialValues.js";
 
 // Capture actual repository SQL: both count and page must apply the identical
 // tenant/search/requirement predicate before LIMIT; coverage loads only this page.
@@ -52,10 +52,10 @@ for (const requirementState of [undefined, "all", "configured", "unconfigured"] 
 }
 
 const calls: Array<{ organizationId: string; query: PrepressQueuePageRequest }> = [];
-const runner: PrepressTransactionRunner = { transaction: async action => action({ listQueue: async (organizationId, query) => {
+const runner: PrepressTransactionRunner = { transaction: async action => action({ listQueue: async (organizationId: OrganizationId, query: PrepressQueuePageRequest) => {
   calls.push({ organizationId, query });
   return { items: [], pagination: { page: query.page!, pageSize: query.pageSize as 25 | 50 | 100, totalCount: 0, totalPages: 0 } };
-} } as PrepressTransaction) };
+} } as unknown as PrepressTransaction) };
 const service = new PrepressApplicationService(runner);
 let principal: StaffPrincipal = { kind: "staff", organizationId: "org-a", userId: "staff-a", authority: { membershipId: "membership-a", capabilities: ["prepress.view"] } };
 const server = express().use("/v2/organizations/:organizationId/prepress", createPrepressRouter({
@@ -87,4 +87,21 @@ principal = { ...principal, authority: { ...principal.authority, capabilities: [
 const invalidDirect = await service.listQueue({ organizationId: "org-a", operationId: "test", principal }, { requirementState: "unknown" as "all" });
 assert.equal(invalidDirect.ok, false);
 assert.equal(calls.length, authorizedCalls);
+
+const exactCalls: Array<{ organizationId: string; lineId: string }> = [];
+const exactItem = { orderId: "order-a", orderLineId: "line-1001", operational: { sourceArtwork: [{ artworkFileId: "source-a" }] } };
+const exactService = new PrepressApplicationService({ transaction: async action => action({ getLine: async (organizationId: OrganizationId, lineId: OrderLineId) => {
+  exactCalls.push({ organizationId, lineId });
+  return lineId === "line-1001" ? exactItem : null;
+} } as unknown as PrepressTransaction) });
+const exactServer = express().use("/v2/organizations/:organizationId/prepress", createPrepressRouter({
+  principals: { principal: async () => principal }, service: exactService as unknown as PrepressHttpDependencies["service"],
+}));
+await request(exactServer).get("/v2/organizations/org-a/prepress/lines/line-1001?page=99&pageSize=25&q=other&readiness=ready").expect(200, { ok: true, data: exactItem });
+assert.deepEqual(exactCalls, [{ organizationId: "org-a", lineId: "line-1001" }], "exact deep link is independent of list filters and paging");
+await request(exactServer).get("/v2/organizations/org-a/prepress/lines/missing").expect(404, { ok: false, error: { code: "NOT_FOUND", message: "Prepress order line was not found." } });
+await request(exactServer).get("/v2/organizations/org-b/prepress/lines/line-1001").expect(404);
+principal = { ...principal, authority: { ...principal.authority, capabilities: [] } };
+await request(exactServer).get("/v2/organizations/org-a/prepress/lines/line-1001").expect(403);
+assert.equal(exactCalls.length, 2, "foreign organization and unauthorized principal never reach exact persistence");
 console.log("Prepress queue hygiene SQL, pagination, default compatibility, HTTP validation, tenant and RBAC regressions passed.");

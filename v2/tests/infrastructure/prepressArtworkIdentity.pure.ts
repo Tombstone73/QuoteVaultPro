@@ -21,6 +21,7 @@ const evidence = [
   { coverage_order_line_id: orderLineId, requirement_key: "front-varnish", artwork_assignment_id: varnishAssignmentId },
 ];
 const currentArtwork = [
+  { order_line_id: orderLineId, assignment_id: "source-assignment", artwork_file_id: "source-file", display_filename: "customer.pdf", content_type: "application/pdf", purpose: "customer_supplied", side: "front", source_page_index: 0, layer_key: null, layer_order: null, detected_width_microns: 25400, detected_height_microns: 50800 },
   { order_line_id: orderLineId, assignment_id: inkAssignmentId, artwork_file_id: "file-ink", display_filename: "ink-current.pdf", content_type: "application/pdf", purpose: "production", side: "front", source_page_index: 0, layer_key: "ink", layer_order: 0, detected_width_microns: null, detected_height_microns: null },
   { order_line_id: orderLineId, assignment_id: varnishAssignmentId, artwork_file_id: "file-varnish", display_filename: "varnish-current.pdf", content_type: "application/pdf", purpose: "production", side: "front", source_page_index: 0, layer_key: "varnish", layer_order: 1, detected_width_microns: null, detected_height_microns: null },
 ];
@@ -28,10 +29,12 @@ const client = {
   query: async (sql: string, values?: readonly unknown[]) => {
     queries.push({ sql, values });
     if (sql.startsWith("SELECT count(*) count")) return { rows: [{ count: "1" }] };
-    if (sql.startsWith("SELECT d.id order_id")) return { rows: [{ order_id: "order-a", order_number: "ORD-1", customer_id: null, customer_display_name: "Customer", line_id: orderLineId, line_description: "Layered print", quantity: 1, requested_due_date: null, step_kind: "prepress", production_requirement_state: "configured", resolved_configuration: null, requires_proof: false, production_destination: "flatbed" }] };
+     if (sql.startsWith("SELECT d.id order_id")) return { rows: values?.[1] === "missing" ? [] : [{ order_id: "order-a", order_number: "ORD-1", customer_id: null, customer_display_name: "Customer", line_id: orderLineId, line_description: "Layered print", quantity: 1, requested_due_date: "2026-10-20", step_kind: "prepress", production_requirement_state: "configured", resolved_configuration: { dimensions: { width: "1", height: "2", unit: "in" } }, requires_proof: true, production_destination: "flatbed" }] };
     if (sql.startsWith("SELECT order_line_id,requirement_key")) return { rows: requirements };
     if (sql.startsWith("SELECT r.order_line_id coverage_order_line_id")) return { rows: evidence };
     if (sql.includes("FROM v2_current_artwork_assignments a JOIN v2_artwork_files")) return { rows: currentArtwork };
+    if (sql.startsWith("SELECT l.id order_line_id,CASE")) return { rows: [{ order_line_id: orderLineId, state: "approved" }] };
+    if (sql.startsWith("SELECT order_line_id,material_name_snapshot")) return { rows: [{ order_line_id: orderLineId, material_name_snapshot: "Vinyl", material_sku_snapshot: "V-1" }] };
     return { rows: [] };
   },
 } as unknown as PoolClient;
@@ -53,6 +56,30 @@ assert.match(artworkQuery.sql, /a\.layer_key,a\.layer_order/u, "the projection r
 assert.match(coverageQuery.sql, /a\.layer_key IS NOT DISTINCT FROM r\.layer_key AND a\.layer_order IS NOT DISTINCT FROM r\.layer_order/u, "coverage joins exact layer assignments");
 assert.match(artworkQuery.sql, /FROM v2_current_artwork_assignments a/u, "historical or replaced assignments are not projected as current");
 assert.match(artworkQuery.sql, /NOT EXISTS\(SELECT 1 FROM v2_artwork_assignments successor/u, "the explicit predecessor exclusion stays in place");
+
+queries.length = 0;
+const exact = await new PostgresPrepressTransaction(client).getLine(organizationId, orderLineId);
+assert.deepEqual(exact, item, "exact lookup uses the entire canonical queue context composer");
+assert.equal(exact!.operational.sourceArtwork[0]!.artworkFileId, "source-file");
+assert.deepEqual(exact!.operational.proof, { required: true, state: "approved" });
+assert.deepEqual(exact!.operational.materials, ["Vinyl · V-1"]);
+assert.deepEqual(exact!.operational.expectedDimensions, { width: "1", height: "2", unit: "in" });
+assert.equal(exact!.operational.productionDestination, "flatbed");
+assert.equal(exact!.requestedDueDate, "2026-10-20");
+const exactQuery = queries[0]!;
+assert.deepEqual(exactQuery.values, [organizationId, orderLineId]);
+assert.match(exactQuery.sql, /l.organization_id=\$1 AND l.id=\$2/u);
+assert.match(exactQuery.sql, /o.commercial_state='open' AND o.archived_at IS NULL/u);
+assert.match(exactQuery.sql, /ri.route_state IN \('pending','active'\)/u);
+assert.match(exactQuery.sql, /step.step_kind IN \('proofing','prepress'\)/u);
+assert.match(exactQuery.sql, /bypass.prepress_requirement='not_required'/u);
+assert.doesNotMatch(exactQuery.sql, /LIMIT \$6|OFFSET|ILIKE|\$3/u, "deep links are not queue-page or search constrained");
+assert.equal(queries.length, 6, "exact lookup does not count or scan queue pages");
+for (const query of queries.slice(1)) assert.deepEqual(query.values, [organizationId, [orderLineId]]);
+assert.ok(queries.every(query => query.sql.startsWith("SELECT")), "exact recovery never writes");
+queries.length = 0;
+assert.equal(await new PostgresPrepressTransaction(client).getLine(organizationId, brandedId<"OrderLineId">("missing")), null);
+assert.equal(queries.length, 1, "missing/ineligible lines do not load operational context");
 
 const proofQueries: string[] = [];
 const proofing = new PostgresProofingTransaction({ query: async (sql: string) => { proofQueries.push(sql); return { rows: [] }; } } as unknown as PoolClient);

@@ -739,6 +739,16 @@ export const App = ({
           proofWorkId={proofWorkId || undefined}
           orderId={proofOrderId || undefined}
           lineId={proofLineId || undefined}
+          openRouting={trustedBootstrap && bootstrap.data?.organizationId === organizationId && bootstrap.data.capabilities.routeView === true ? () => {
+            pushWorkspaceLocation("routing");
+            setPage("routing");
+          } : undefined}
+          onViewPrepress={trustedBootstrap && bootstrap.data?.organizationId === organizationId && bootstrap.data.capabilities.prepressView === true ? (lineId) => {
+            pushPrepressLocation(lineId);
+            setPrepressLineId(lineId);
+            setPrepressUnitId("");
+            setPage("prepress");
+          } : undefined}
           openOrder={(id) => {
             pushOrderLocation(id);
             setOrderId(id);
@@ -777,6 +787,16 @@ export const App = ({
           canProductionWork={bootstrap.data?.capabilities.productionWork === true}
           lineId={prepressLineId || undefined}
           prepressUnitId={prepressUnitId || undefined}
+          onProductionReady={(handoffs: readonly Readonly<{ destination: "flatbed" | "roll"; productionWorkIds: readonly string[] }>[]) => {
+            if (!trustedBootstrap || bootstrap.data?.organizationId !== organizationId || bootstrap.data.capabilities.productionView !== true) return;
+            const handoff = handoffs.find(item => item.productionWorkIds.length > 0);
+            const workId = handoff?.productionWorkIds[0];
+            if (!handoff || !workId) return;
+            pushProductionWorkLocation(workId);
+            setProductionWorkId(workId);
+            setProductionStation(handoff.destination);
+            setPage("production");
+          }}
           onSelectLine={(lineId) => {
             pushPrepressLocation(lineId);
             setPrepressLineId(lineId);
@@ -1008,16 +1028,24 @@ export const App = ({
                 setArtworkLineId(lineId ?? "");
                 setPage("artwork");
               }}
-              openProofing={(orderId, lineId) => {
-                pushProofingLocation(undefined, orderId, lineId);
-                setProofWorkId("");
+              openProofing={(orderId, lineId, workId) => {
+                pushProofingLocation(workId, orderId, lineId);
+                setProofWorkId(workId ?? "");
                 setProofOrderId(orderId);
                 setProofLineId(lineId);
                 setPage("proofing");
               }}
-              openProduction={(id) => {
+              onViewPrepress={(lineId) => {
+                pushPrepressLocation(lineId);
+                setPrepressLineId(lineId);
+                setPrepressUnitId("");
+                setPage("prepress");
+              }}
+              openProduction={(id, station) => {
+                if (!trustedBootstrap || bootstrap.data?.organizationId !== organizationId || bootstrap.data.capabilities.productionView !== true) return;
                 pushProductionWorkLocation(id);
                 setProductionWorkId(id);
+                setProductionStation(station);
                 setPage("production");
               }}
               openRouting={() => {
@@ -1657,6 +1685,7 @@ const OrdersPage = ({
   openInvoice,
   openArtwork,
   openProofing,
+  onViewPrepress,
   openProduction,
   openRouting,
   openQuote,
@@ -1671,8 +1700,9 @@ const OrdersPage = ({
   openFulfillment: (orderId: string) => void;
   openInvoice: (invoiceId: string) => void;
   openArtwork: (orderId: string, lineId: string) => void;
-  openProofing: (orderId: string, lineId: string) => void;
-  openProduction: (productionWorkId: string) => void;
+  openProofing: (orderId: string, lineId: string, proofWorkId?: string) => void;
+  onViewPrepress: (orderLineId: string) => void;
+  openProduction: (productionWorkId: string, station?: "flatbed" | "roll") => void;
   openRouting: () => void;
   openQuote: (quoteId: string) => void;
 }>) => {
@@ -1704,6 +1734,7 @@ const OrdersPage = ({
         openInvoice={openInvoice}
         openArtwork={openArtwork}
         openProofing={openProofing}
+        onViewPrepress={bootstrap?.sessionScope === sessionScope && bootstrap.organizationId === organizationId && bootstrap.capabilities.prepressView === true ? onViewPrepress : undefined}
         openProduction={openProduction}
         openRouting={bootstrap?.capabilities.routeView === true ? openRouting : undefined}
         openQuote={openQuote}

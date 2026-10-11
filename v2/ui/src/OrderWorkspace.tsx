@@ -95,12 +95,26 @@ export type OrderWorkspaceProps = Readonly<{
       lineId: string,
       proofWorkId?: string,
     ) => void;
-    openProduction?: (productionWorkId: string) => void;
+    openProduction?: (productionWorkId: string, station?: "flatbed" | "roll") => void;
+    onViewPrepress?: (orderLineId: string) => void;
     openRouting?: () => void;
     openQuote?: (quoteId: string) => void;
   }>;
 
 const urlEditWorkspaceId = () => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("workspaceId") ?? "";
+
+export const orderProductionStation = (order: OrderRead, work: ProductionWorkProjection): "flatbed" | "roll" | undefined => {
+  if (work.work.orderId !== order.order.orderId) return undefined;
+  const routes = order.routes.filter(route => route.work.orderLineId === work.work.orderLineId);
+  if (routes.length !== 1) return undefined;
+  const route = routes[0]!;
+  const current = route.steps.filter(step => step.routeInstanceStepId === route.currentStepId);
+  if (current.length !== 1 || current[0]!.kind !== "production") return undefined;
+  const step = current[0]!;
+  // The canonical Order read preserves the frozen Routing step destination.
+  if (!("productionDestination" in step)) return undefined;
+  return step.productionDestination === "roll" || step.productionDestination === "flatbed" ? step.productionDestination : undefined;
+};
 
 export const OrderWorkspace = (props: OrderWorkspaceProps) =>
   <OrderWorkspaceSession key={JSON.stringify([props.organizationId, props.sessionScope, props.userId, props.orderId])} {...props} />;
@@ -563,7 +577,7 @@ const CanonicalOrderWorkspace = (props: OrderWorkspaceProps & Readonly<{ canEnte
           works={production.data}
           loading={production.isLoading}
           compact
-          onOpen={(work) => props.openProduction?.(work.work.productionWorkId)}
+          onOpen={(work) => props.openProduction?.(work.work.productionWorkId, orderProductionStation(current, work))}
         />
         <OrderBillingSummary
           invoice={billing.data}
@@ -689,6 +703,9 @@ const CanonicalOrderWorkspace = (props: OrderWorkspaceProps & Readonly<{ canEnte
               props.openArtwork?.(current.order.orderId, selectedLine.lineId)
             }
             products={products.data ?? []}
+            onViewPrepress={props.onViewPrepress}
+            onOpenProofing={props.canViewProofing && props.openProofing ? () => props.openProofing?.(current.order.orderId, selectedLine.lineId, proofs.data?.find(work => work.work.orderLineId === selectedLine.lineId)?.work.proofWorkId) : undefined}
+            onOpenRouting={props.openRouting}
           />
         ) : null
       }
@@ -768,7 +785,7 @@ const CanonicalOrderWorkspace = (props: OrderWorkspaceProps & Readonly<{ canEnte
                   props.openProofing?.(
                     current.order.orderId,
                     current.order.lines[0]!.lineId,
-                    proofs.data?.[0]?.work.proofWorkId,
+                    proofs.data?.find(work => work.work.orderLineId === current.order.lines[0]!.lineId)?.work.proofWorkId,
                   )
                 }
               >
@@ -814,6 +831,8 @@ const CanonicalOrderWorkspace = (props: OrderWorkspaceProps & Readonly<{ canEnte
               onOpen={(lineId) =>
                 props.openArtwork?.(current.order.orderId, lineId)
               }
+              onViewPrepress={props.onViewPrepress}
+              onViewProofing={props.canViewProofing && props.openProofing ? (lineId) => props.openProofing?.(current.order.orderId, lineId, proofs.data?.find(work => work.work.orderLineId === lineId)?.work.proofWorkId) : undefined}
             />
           ),
           Notes: (
@@ -924,7 +943,7 @@ const CanonicalOrderWorkspace = (props: OrderWorkspaceProps & Readonly<{ canEnte
               works={production.data}
               loading={production.isLoading}
               onOpen={(work) =>
-                props.openProduction?.(work.work.productionWorkId)
+                props.openProduction?.(work.work.productionWorkId, orderProductionStation(current, work))
               }
             />
           ),
@@ -1160,6 +1179,9 @@ const OrderLineEditor = ({
   artworkLoading,
   onOpenArtwork,
   products,
+  onViewPrepress,
+  onOpenProofing,
+  onOpenRouting,
 }: Readonly<{
   line: SalesLine;
   route?: OrderRead["routes"][number];
@@ -1171,6 +1193,9 @@ const OrderLineEditor = ({
   artworkLoading: boolean;
   onOpenArtwork: () => void;
   products: readonly { productId?: string; displayName: string }[];
+  onViewPrepress?: (orderLineId: string) => void;
+  onOpenProofing?: () => void;
+  onOpenRouting?: () => void;
 }>) => {
   const routing = route ? orderRoutePresentation(route) : undefined;
   const productName =
@@ -1234,6 +1259,11 @@ const OrderLineEditor = ({
         uploadTarget={lineArtworkUploadTarget(orderId, orderNumber, line)}
         onOpen={onOpenArtwork}
       />
+      <div className="v2-order-context-actions" aria-label="Line preparation navigation">
+        {onViewPrepress && <button className="button secondary" type="button" onClick={() => onViewPrepress(line.lineId)}>Open line Prepress</button>}
+        {onOpenProofing && <button className="button secondary" type="button" onClick={onOpenProofing}>Open line Proofing</button>}
+        {onOpenRouting && <button className="button secondary" type="button" onClick={onOpenRouting}>Open Routing</button>}
+      </div>
     </section>
   );
 };
@@ -1652,6 +1682,7 @@ export const OrderProduction = ({
             type="button"
             onClick={() => onOpen(work)}
           >
+            {work.operatorContext?.product?.displayName ?? "Production unit"} · {work.work.requirement.side ? stateLabel(work.work.requirement.side) : work.work.requirement.key}{" · "}
             {work.completedGoodQuantity}/{work.work.orderedQuantity} complete
             {work.attempts.at(-1)
               ? ` · ${stateLabel(work.attempts.at(-1)!.stationKey)}`
@@ -1729,6 +1760,8 @@ export const OrderArtworkPanel = ({
   onOpen,
   onUploaded,
   removal,
+  onViewPrepress,
+  onViewProofing,
 }: Readonly<{
   organizationId: string;
   orderId: string;
@@ -1741,6 +1774,8 @@ export const OrderArtworkPanel = ({
   onOpen: (lineId: string) => void;
   onUploaded?: React.ComponentProps<typeof ArtworkUploadPanel>["onUploaded"];
   removal?: ArtworkRemovalAction;
+  onViewPrepress?: (orderLineId: string) => void;
+  onViewProofing?: (orderLineId: string) => void;
 }>) => {
   const [uploadLineId, setUploadLineId] = useState<string | undefined>();
   const uploadLine = lines.find((line) => line.lineId === uploadLineId);
@@ -1780,6 +1815,8 @@ export const OrderArtworkPanel = ({
                   ))
                 ) : <span>No artwork attached</span>)}
                 <div className="v2-order-artwork-actions">
+                  {onViewPrepress && <button className="button secondary" type="button" onClick={() => onViewPrepress(line.lineId)}>Open line Prepress</button>}
+                  {onViewProofing && <button className="button secondary" type="button" onClick={() => onViewProofing(line.lineId)}>Open line Proofing</button>}
                   {canView && (
                     <button className="button secondary" type="button" onClick={() => onOpen(line.lineId)}>
                       Artwork workspace

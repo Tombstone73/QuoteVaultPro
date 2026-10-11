@@ -22,6 +22,7 @@ export interface PrepressTransaction {
   lockUnit(organizationId: OrganizationId, prepressUnitId: PrepressUnitId): Promise<PrepressUnit | null>;
   listUnits(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<readonly PrepressUnit[]>;
   listQueue(organizationId: OrganizationId, request: PrepressQueuePageRequest): Promise<OperationalQueuePage<PrepressQueueItem>>;
+  getLine(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<PrepressQueueItem | null>;
   coverage(organizationId: OrganizationId, orderLineId: OrderLineId): Promise<OrderLinePrepressCoverage>;
   /** Routing remains owner of this current-step eligibility projection. */
   eligibleProductionAssignment(organizationId: OrganizationId, artworkAssignmentId: ArtworkAssignmentId): Promise<boolean>;
@@ -57,6 +58,14 @@ export class PrepressApplicationService {
       if (!["all", "ready", "blocked"].includes(readiness)) throw new V2ApplicationError("VALIDATION_ERROR", "readiness must be ready, blocked, or all.");
       const page = { ...normalizeOperationalQueuePage(request), requirementState, destination, readiness };
       return success(await this.runner.transaction((tx) => tx.listQueue(brandedId<"OrganizationId">(context.organizationId), page)));
+    } catch (error) { return failure(this.error(error)); }
+  }
+  async getLine(context: OperationContext, orderLineId: OrderLineId): Promise<ApplicationResult<PrepressQueueItem>> {
+    try {
+      requireOperationPrincipalScope(context); this.require(context, "prepress.view");
+      const item = await this.runner.transaction((tx) => tx.getLine(brandedId<"OrganizationId">(context.organizationId), orderLineId));
+      if (!item) throw new V2ApplicationError("NOT_FOUND", "Prepress order line was not found.");
+      return success(item);
     } catch (error) { return failure(this.error(error)); }
   }
   async open(context: OperationContext, input: OpenPrepressUnitInput): Promise<ApplicationResult<PrepressMutationResult>> {

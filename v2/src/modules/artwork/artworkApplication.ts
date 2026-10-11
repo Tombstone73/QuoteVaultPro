@@ -25,7 +25,7 @@ export interface ArtworkTransaction {
   findOrderLineArtwork(organizationId: OrganizationId, orderLineId: string): Promise<readonly OrderLineArtworkProjection[]>;
   findOrderArtwork(organizationId: OrganizationId, orderId: string): Promise<readonly OrderLineArtworkProjection[]>;
   createOrGetFile(input: Readonly<{ id: ArtworkFileId; organizationId: OrganizationId; file: ArtworkFileInput; usage: AdoptArtworkInput["usage"]; derivedFromArtworkFileId?: ArtworkFileId }>): Promise<ArtworkFile>;
-  createOrGetAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: AdoptArtworkInput["usage"] }>): Promise<ArtworkAssignment>;
+  createOrGetAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: AdoptArtworkInput["usage"]; expectedEmptyProductionSlot?: AssignArtworkInput["expectedEmptyProductionSlot"] }>): Promise<ArtworkAssignment>;
   createOrGetReplacementAssignment(input: Readonly<{ id: ArtworkAssignmentId; organizationId: OrganizationId; artworkFileId: ArtworkFileId; usage: ReplaceArtworkInput["usage"]; supersedesArtworkAssignmentId: ArtworkAssignmentId }>): Promise<ArtworkAssignment>;
   removeAssignment(input: RemoveArtworkInput & Readonly<{ organizationId: string; removedByUserId: string }>): Promise<ArtworkMutationResult>;
 }
@@ -108,9 +108,11 @@ export class ArtworkApplicationService {
   async assign(context: OperationContext, input: AssignArtworkInput): Promise<ApplicationResult<ArtworkMutationResult>> {
     return this.mutate(context, "artwork.assign.v1", input, "artwork.assign", async (tx) => {
       validateArtworkUsage(input.usage);
+      if (input.expectedEmptyProductionSlot !== undefined && (input.usage.purpose !== "production" || !input.expectedEmptyProductionSlot || typeof input.expectedEmptyProductionSlot.requirementKey !== "string" || !input.expectedEmptyProductionSlot.requirementKey.trim()))
+        throw new V2ApplicationError("VALIDATION_ERROR", "An expected-empty production slot requires a frozen requirement key and production usage.");
       const file = await tx.findFile(brandedId<"OrganizationId">(context.organizationId), input.artworkFileId);
       if (!file) throw new V2ApplicationError("NOT_FOUND", "Artwork file was not found.");
-      const assignment = await tx.createOrGetAssignment({ id: brandedId<"ArtworkAssignmentId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), artworkFileId: file.id, usage: input.usage });
+      const assignment = await tx.createOrGetAssignment({ id: brandedId<"ArtworkAssignmentId">(randomUUID()), organizationId: brandedId<"OrganizationId">(context.organizationId), artworkFileId: file.id, usage: input.usage, ...(input.expectedEmptyProductionSlot !== undefined ? { expectedEmptyProductionSlot: input.expectedEmptyProductionSlot } : {}) });
       return { artworkFile: file, assignment };
     }, "artwork_assignment_added", "Artwork file assigned to OrderLine work.");
   }

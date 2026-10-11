@@ -94,6 +94,8 @@ export type AssignArtworkInput = Readonly<{
   businessRequestId: string;
   artworkFileId: ArtworkFileId;
   usage: ArtworkUsageInput;
+  /** Opt-in compare-and-add for one exact frozen production requirement. */
+  expectedEmptyProductionSlot?: Readonly<{ requirementKey: string }>;
 }>;
 
 export type DeriveArtworkInput = ArtworkFileInput & Readonly<{

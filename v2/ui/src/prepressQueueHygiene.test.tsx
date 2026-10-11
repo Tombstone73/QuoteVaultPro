@@ -25,6 +25,8 @@ globalThis.fetch = async (input, init) => {
     data = { items, pagination: { page: 1, pageSize: 25, totalCount: items.length, totalPages: items.length ? 1 : 0 } };
   } else if (url.pathname.endsWith("/units/unit-history")) {
     data = { prepressUnitId: "unit-history", organizationId: "org-a", orderId: historical.orderId, orderLineId: historical.orderLineId, artworkAssignmentId: "assignment-history", artworkFileId: "file-history", createdAt: "2026-01-01", createdPrincipalKind: "staff", createdPrincipalSubject: "staff-a" };
+  } else if (url.pathname.includes("/prepress/lines/")) {
+    data = historical;
   }
   return new Response(JSON.stringify({ ok: true, data }), { status: 200, headers: { "content-type": "application/json" } });
 };
@@ -125,6 +127,9 @@ try {
   assert.equal(reads.at(-1)?.searchParams.get("q"), "QA");
   assert.equal(reads.at(-1)?.searchParams.get("page"), "2");
   assert.equal(reads.at(-1)?.searchParams.get("pageSize"), "50");
+  assert.deepEqual(await prepressApi.getLine("org/a", "line/1001"), historical, "exact client returns the canonical QueueItem response unchanged");
+  assert.equal(reads.at(-1)?.pathname, "/v2/organizations/org%2Fa/prepress/lines/line%2F1001");
+  assert.equal(reads.at(-1)?.search, "", "exact lookup never adds page, search, or queue filters");
   assert.ok(methods.every(method => method === "GET"), "reviewing recovery never writes or fabricates requirements");
 } finally {
   globalThis.fetch = originalFetch;
