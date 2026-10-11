@@ -3,18 +3,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   newBusinessRequestId,
+  orderApi,
+  routingApi,
   prepressApi,
   productionApi,
   productionDailyReportApi,
   type ProductionAttempt,
   type ProductionMaterialProjection,
   type ProductionWorkProjection,
+  type PrepressQueueItem,
 } from "./api";
 import { RollStationPanel } from "./RollStationPanel";
 import { FlatbedStationPanel } from "./FlatbedStationPanel";
 import { ProductionRunWorkspace } from "./ProductionRunWorkspace";
 import { ProductionDailyReport } from "./ProductionDailyReport";
 import { discoverProductionOutput, prepareProductionOutput, executeProductionOutput } from "./productionRecoveryApi";
+import { completeProductionAndHandoff, readProductionCompletion, persistProductionCompletion, clearProductionCompletion, type ProductionCompletionIntent } from "./productionCompletionHandoff";
 
 type Station = "flatbed" | "roll";
 type ProductionView = "overview" | "board" | "calendar" | "stations" | "daily-report";
@@ -235,6 +239,16 @@ export const productLabel = (work: ProductionWorkProjection) =>
 
 export const customerLabel = (work: ProductionWorkProjection) =>
   work.operatorContext?.customer?.displayName ?? "Customer unavailable";
+
+export const stationSpecification = (work?: ProductionWorkProjection, fallback?: PrepressQueueItem) => ({
+  requestedDueDate: work?.operatorContext?.requestedDueDate ?? fallback?.requestedDueDate,
+  operational: { expectedDimensions: work?.operatorContext?.dimensions ?? fallback?.operational?.expectedDimensions },
+});
+
+export const productionDimensionsLabel = (specifications?: Readonly<{ operational?: Pick<NonNullable<PrepressQueueItem["operational"]>, "expectedDimensions"> }>) => {
+  const dimensions = specifications?.operational?.expectedDimensions;
+  return dimensions ? `${dimensions.width} x ${dimensions.height} ${dimensions.unit}` : "Dimensions unavailable";
+};
 
 const materialKeys = {
   detail: (scope: string, organizationId: string, workId: string) =>
@@ -664,6 +678,7 @@ export const ProductionWorkspace = ({
   canView,
   canWork,
   canComplete,
+  canHandoff = false,
   station: routedStation,
   productionWorkId: routedProductionWorkId,
   onStationChange,
@@ -677,6 +692,7 @@ export const ProductionWorkspace = ({
   canView: boolean;
   canWork: boolean;
   canComplete: boolean;
+  canHandoff?: boolean;
   station?: Station;
   productionWorkId?: string;
   onStationChange: (station?: Station) => void;
@@ -693,6 +709,15 @@ export const ProductionWorkspace = ({
   const [wasteQuantity, setWasteQuantity] = useState("0");
   const [outputRecovery, setOutputRecovery] = useState<OutputRecovery>(() => readPendingProductionOutput(organizationId, sessionScope));
   const [outputRecoveryBusy, setOutputRecoveryBusy] = useState(false);
+  const [completionRecovery, setCompletionRecovery] = useState(() => readProductionCompletion(organizationId, sessionScope));
+  const completionRunning = useRef(false);
+  useEffect(() => { completionRunning.current = false; setCompletionRecovery(readProductionCompletion(organizationId, sessionScope)); }, [organizationId, sessionScope]);
+  useEffect(() => {
+    if (completionRecovery.status === "clear") return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [completionRecovery.status]);
   const [queueState, setQueueState] = useState<Record<Station, { page: number; pageSize: 25 | 50 | 100; search: string }>>({ flatbed: { page: 1, pageSize: 25, search: "" }, roll: { page: 1, pageSize: 25, search: "" } });
   const queryClient = useQueryClient();
   const currentScope=useRef(`${organizationId}:${sessionScope}`);currentScope.current=`${organizationId}:${sessionScope}`;
@@ -747,9 +772,14 @@ export const ProductionWorkspace = ({
   }, [routedProductionWorkId]);
 
   useEffect(() => {
-    if (view !== "daily-report" && !selectedWorkId && queue.data?.items[0])
-      setSelectedWorkId(queue.data.items[0].work.productionWorkId);
-  }, [queue.data, selectedWorkId, view]);
+    if (view === "daily-report" || routedProductionWorkId || !queue.isSuccess || queue.isFetching) return;
+    // Initial selection enables durable receipt discovery after tab-storage loss.
+    // Never replace an existing selection while its output needs recovery.
+    if (selectedWorkId && (!outputRecoveryScopeMatches || outputRecovery.status !== "ready" || (canWork && (durableOutput.isPending || durableOutput.isError)) ||
+      durableOutput.data?.some((receipt) => receipt.status === "pending"))) return;
+    if (!queue.data.items.some((item) => item.work.productionWorkId === selectedWorkId))
+      setSelectedWorkId(queue.data.items[0]?.work.productionWorkId ?? "");
+  }, [queue.data, queue.isSuccess, queue.isFetching, selectedWorkId, view, routedProductionWorkId, outputRecoveryScopeMatches, outputRecovery.status, canWork, durableOutput.isPending, durableOutput.isError, durableOutput.data]);
 
   const scopedWork = routedProductionWorkId
     ? routedWork.data
@@ -761,6 +791,7 @@ export const ProductionWorkspace = ({
   const showRunRecovery = outputRecoveryScopeMatches && outputRecovery.status === "blocked" && outputRecovery.reason === "other-handler" && stationSurface === "runs";
   const hideStationOutputDetails = outputFieldsHidden && !showRunRecovery;
   const work = outputFieldsHidden ? undefined : scopedWork;
+  const specifications = stationSpecification(work, eligible.data?.items.find((item) => item.orderId === work?.work.orderId && item.orderLineId === work?.work.orderLineId));
   const activeAttempt = work?.activeAttempt ?? work?.attempts.find((attempt) => !attempt.completedAt);
   const mostRecentAttempt = work?.attempts[work.attempts.length - 1];
   const workStation = activeAttempt?.stationKey ?? mostRecentAttempt?.stationKey ?? station;
@@ -905,10 +936,39 @@ export const ProductionWorkspace = ({
     finally{setOutputRecoveryBusy(false);}
   };
   const complete = useMutation({
-    mutationFn: (attemptId: string) =>
-      productionApi.complete(organizationId, attemptId, newBusinessRequestId()),
-    onSuccess: refresh,
+    mutationFn: async (input: ProductionCompletionIntent) => {
+      if (currentScope.current !== `${input.organizationId}:${input.sessionScope}`) throw new Error("Completion belongs to another staff session.");
+      if (!canHandoff) {
+        await productionApi.complete(input.organizationId, input.attemptId, `production-complete:${input.attemptId}`);
+        return "Production attempt completed. Order view and Routing advance permissions are required for automatic handoff.";
+      }
+      return completeProductionAndHandoff({ complete: productionApi.complete, readWork: productionApi.get,
+        readOrder: orderApi.get, advance: routingApi.completeCurrent }, { ...input, canAdvanceRouting: canHandoff });
+    },
+    onSuccess: (_result, input) => {
+      if (currentScope.current !== `${input.organizationId}:${input.sessionScope}`) return;
+      clearProductionCompletion(input);
+      setCompletionRecovery(readProductionCompletion(organizationId, sessionScope));
+    },
+    onSettled: async (_result, _error, input) => {
+      if (currentScope.current !== `${input.organizationId}:${input.sessionScope}`) return;
+      completionRunning.current = false;
+      await Promise.all([refresh(),
+        queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "order"] }),
+        queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "sales", "orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "routing"] }),
+        queryClient.invalidateQueries({ queryKey: ["v2", sessionScope, organizationId, "fulfillment"] }),
+      ]);
+    },
   });
+  const submitCompletion = (input: ProductionCompletionIntent) => {
+    if (completionRunning.current || !canComplete || outputRecoveryBlocked) return;
+    if (!persistProductionCompletion(input)) { setCompletionRecovery({ status: "blocked" }); return; }
+    completionRunning.current = true;
+    setCompletionRecovery({ status: "pending", intent: input });
+    complete.mutate(input);
+  };
+  const completeAttempt = (attemptId: string) => { if (work && completionRecovery.status === "clear") submitCompletion({ organizationId, sessionScope, attemptId, workId: work.work.productionWorkId }); };
   const rejectOutput = useMutation({
     mutationFn: (input: { attemptId: string; rejectedQuantity: number; reason: string; category?: string }) =>
       productionApi.rejectOutput(organizationId, work!.work.productionWorkId, input.attemptId, newBusinessRequestId(), input),
@@ -1010,6 +1070,13 @@ export const ProductionWorkspace = ({
         </div>
       </header>
 
+      {completionRecovery.status === "pending" && completionRecovery.intent.organizationId === organizationId && completionRecovery.intent.sessionScope === sessionScope && <section aria-label="Pending Production completion">
+        <p role={complete.isError ? "alert" : "status"}>{complete.isError ? `Completion or handoff response was not confirmed: ${productionErrorMessage(complete.error)}.` : "A saved completion and handoff request requires reconciliation."} No new physical output is required. Retry reconciles the exact original completion.</p>
+        <button type="button" disabled={!canComplete || complete.isPending || outputRecoveryBlocked} onClick={() => submitCompletion(completionRecovery.intent)}>Retry completion and handoff</button>
+      </section>}
+      {complete.variables?.organizationId === organizationId && complete.variables.sessionScope === sessionScope && <section aria-label="Production completion result">
+        {complete.isSuccess && <p role="status">{complete.data}</p>}
+      </section>}
       {canWork&&durableOutput.isError&&<p role="alert">Durable Production recovery is unavailable. No new physical output can be submitted.</p>}
       {latestReceipt&&<p>Owner receipt binding: Work {latestReceipt.productionWorkId??"not retained"}; Attempt {latestReceipt.productionAttemptId??"not retained"}.</p>}
       {latestReceipt&&<section aria-label="Durable Production output receipt"><p>Original request {latestReceipt.businessRequestId}: {latestReceipt.intent?`${latestReceipt.intent.goodQuantityDelta} good / ${latestReceipt.intent.wasteQuantityDelta??0} waste.`:latestReceipt.intentRedacted?"Submitted input is private to its initiating actor. Only protected status is shown; pending status is not a commitment.":latestReceipt.historicalIntentUnavailable?"Historical committed result recovered; exact submitted quantities were not retained and cannot be replayed.":"Exact input is unavailable; no commitment is inferred."} Owner recorded {latestReceipt.submittedAt}. Result: {latestReceipt.status}. {latestReceipt.rejection?.message}</p>{latestReceipt.intent&&<button type="button" disabled={outputRecoveryBusy} onClick={()=>void recoverOwnerReceipt()}>Recover this owner request</button>}{latestReceipt.status!=="pending"&&<button type="button" onClick={()=>setReviewedReceipt(`${organizationId}:${sessionScope}:${latestReceipt.businessRequestId}`)}>I reviewed the owner output result</button>}</section>}
@@ -1029,6 +1096,7 @@ export const ProductionWorkspace = ({
         <button type="button" disabled={outputRecoveryBusy} onClick={() => void reconcileOutputRecovery()}>Look up original output result</button>
         <button type="button" disabled={output.isPending} onClick={() => output.mutate(pendingOutput)}>Retry original output</button>
       </section>}
+      {completionRecovery.status === "blocked" && <p role="alert">Saved completion recovery is unavailable. New completion is blocked; reconcile the Order through canonical Routing before continuing.</p>}
 
       {view !== "daily-report" && !!openable.length && <section className="v2-production-open-work"><h2>Ready to open</h2>{openable.map(({item,requirement,artworkAssignmentId})=><article key={artworkAssignmentId}><div><b>{item.orderNumber} · {item.lineDescription}</b><small>{item.quantity} ordered · {requirementLabel({work:{requirement:requirement.requirement} as ProductionWorkProjection["work"]} as ProductionWorkProjection)} · Prepress complete</small></div><button type="button" disabled={!canWork||open.isPending} onClick={()=>open.mutate(artworkAssignmentId)}>{open.isPending?"Opening…":"Open Production Work"}</button></article>)}{open.isError&&<p className="v2-product-version-message">{(open.error as Error).message}</p>}</section>}
 
@@ -1236,9 +1304,16 @@ export const ProductionWorkspace = ({
               sessionScope={sessionScope}
               queue={queue.data?.items ?? []}
               selectedWorkId={selectedWorkId}
+              specifications={specifications}
+              queueSpecifications={eligible.data?.items}
+              pagination={queue.data?.pagination}
+              search={activeQueueState.search}
+              onSearch={(search) => updateQueueState({ search, page: 1 })}
+              onPage={(page) => updateQueueState({ page })}
+              onPageSize={(pageSize) => updateQueueState({ pageSize, page: 1 })}
               activeAttempt={activeAttempt}
               canWork={canWork}
-              canComplete={canComplete}
+              canComplete={canComplete && completionRecovery.status === "clear"}
               goodQuantity={outputFieldsHidden ? "" : goodQuantity}
               wasteQuantity={outputFieldsHidden ? "" : wasteQuantity}
               busy={start.isPending || output.isPending || complete.isPending || outputRecoveryBlocked}
@@ -1248,7 +1323,7 @@ export const ProductionWorkspace = ({
               onWasteQuantityChange={setWasteQuantity}
               onStart={(kind) => start.mutate(kind)}
               onRecordOutput={submitOutput}
-              onCompleteAttempt={(attemptId) => complete.mutate(attemptId)}
+              onCompleteAttempt={completeAttempt}
               onOpenArtwork={(item) => openArtwork(item.work.artworkFileId)}
               onOpenTraveler={(item) => window.open(`/v2/organizations/${encodeURIComponent(organizationId)}/production/works/${encodeURIComponent(item.work.productionWorkId)}/traveler.pdf`, "_blank", "noopener,noreferrer")}
             />
@@ -1271,6 +1346,8 @@ export const ProductionWorkspace = ({
                         <dt>Target</dt>
                         <dd>{work.work.orderedQuantity}</dd>
                       </div>
+                      <div><dt>Dimensions</dt><dd>{productionDimensionsLabel(specifications)}</dd></div>
+                      <div><dt>Due</dt><dd>{specifications?.requestedDueDate ?? "Due date unavailable"}</dd></div>
                       <div>
                         <dt>Good output</dt>
                         <dd>{work.completedGoodQuantity}</dd>
@@ -1364,9 +1441,9 @@ export const ProductionWorkspace = ({
                         </button>
                         <button
                           className="v2-production-rail-button neutral"
-                          disabled={!canComplete || complete.isPending || outputRecoveryBlocked || work.state === "held" || work.state === "rework_requested"}
+                          disabled={!canComplete || complete.isPending || completionRecovery.status !== "clear" || outputRecoveryBlocked || work.state === "held" || work.state === "rework_requested"}
                           onClick={() =>
-                            complete.mutate(activeAttempt.productionAttemptId)
+                            completeAttempt(activeAttempt.productionAttemptId)
                           }
                         >
                           Complete attempt

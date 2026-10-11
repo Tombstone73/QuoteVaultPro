@@ -190,12 +190,19 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
   const promotionReceipt = receipt ?? workspace.promotion;
   const orderEdit = workspace.kind === "order_edit";
   const editable = workspace.state === "draft" && matchesSource(workspace, props) && !receipt;
+  const totals = useQuery({
+    queryKey: [...queryKey, "order-totals", workspace.revision],
+    queryFn: () => client.orderTotals!(organizationId, workspace.id, workspace.revision),
+    enabled: Boolean(client.orderTotals) && !orderEdit && editable && !dirty && !editor && !busy && !promotionAttempt && workspace.lines.length > 0 && capabilities.orderCreate === true,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
   const disabled = !editable || !csrfReady || Boolean(busy) || conflict || Boolean(promotionAttempt);
   const hasOverride = workspace.lines.some((line) => line.input.selling && line.input.selling.kind !== "calculated" && (!orderEdit || !line.sourceLineSnapshot || line.previews?.order));
   useEffect(() => {
-    if (!orderEdit || !editable) return;
+    if (!editable) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-    if (!dirty && !editor && !upload && !promotionAttempt && !busy && draftAcknowledged) return;
+    if (!dirty && !editor && !upload && !promotionAttempt && !busy && (!orderEdit || draftAcknowledged)) return;
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [orderEdit, editable, dirty, editor, upload, promotionAttempt, busy, draftAcknowledged]);
@@ -373,6 +380,18 @@ const WorkspaceEditor = (props: TransactionalSalesWorkspaceProps & Readonly<{ in
       </fieldset>}
       {hasOverride && <p className="notice">Each final target requires its own price-override permission. Preview amounts are server evidence, not a guarantee if pricing changes before promotion.</p>}
     </section>
+    {!orderEdit && capabilities.orderCreate === true && client.orderTotals && <section className="v2-sales-entry-items" aria-label="Order totals review">
+      <h2>Order Totals</h2>
+      <p>Canonical Order pricing and Sales tax evidence for the saved draft. Save revalidates current pricing.</p>
+      {dirty || editor || busy || promotionAttempt ? <p className="notice">Store the open item and save the current header or refresh server previews to review Order totals.</p>
+        : totals.isError ? <p className="notice error" role="alert">{workspaceError(totals.error).message} Refresh server previews to reconcile pricing.<button className="button secondary" onClick={() => void totals.refetch()}>Retry totals review</button></p>
+        : totals.isFetching ? <p role="status">Loading Order totals...</p>
+        : totals.data && totals.data.workspaceId === workspace.id && totals.data.workspaceRevision === workspace.revision ? <dl>
+          <dt>Subtotal</dt><dd>{money({ cents: totals.data.subtotalCents, currency: totals.data.currency })}</dd>
+          <dt>Tax</dt><dd>{totals.data.tax.status === "resolved" ? money({ cents: totals.data.tax.taxCents, currency: totals.data.currency }) : `Unresolved: ${totals.data.tax.reason.replaceAll("_", " ")}`}</dd>
+          <dt>Order total</dt><dd>{totals.data.tax.status === "resolved" ? money({ cents: totals.data.tax.totalCents, currency: totals.data.currency }) : "Unavailable until tax is resolved. No zero-tax total is assumed."}</dd>
+        </dl> : <p>Add and store an item to review totals.</p>}
+    </section>}
     {orderEdit && <section className="v2-sales-entry-items" aria-label="Existing Artwork edit references">
       <h2>Existing Artwork</h2>
       <p>Keep or remove is a TEMP intent only. Save applies Artwork-owner guards; files, assignments and history remain unchanged before Save.</p>

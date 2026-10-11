@@ -15,6 +15,7 @@ import type { SalesWorkspace, SalesWorkspaceHeader } from "../../modules/sales/w
 import type { SalesWorkspaceLineService } from "../../modules/sales/workspaceLines.js";
 import type { QuoteLinePricingPreview, QuoteLinePricingPreviewInput } from "../../modules/sales/quoteApplication.js";
 import type { WorkspacePromotion } from "../../modules/sales/workspacePromotion.js";
+import type { WorkspaceOrderTotals } from "../../modules/sales/workspaceTotals.js";
 import type { SalesContactSelectionReadPort } from "../../modules/customers/salesContactSelection.js";
 import { brandedId } from "../../modules/shared/commercialValues.js";
 import type { QuoteFormReadPort, VerifiedV2PrincipalProvider } from "./quoteRoutes.js";
@@ -29,6 +30,7 @@ export type SalesWorkspaceHttpDependencies = Readonly<{
   promotion: WorkspacePromotion;
   orderEdits?: Pick<OrderEditWorkspaceApplicationService, "start">;
   orderEditArtwork?: OrderEditArtwork;
+  orderTotals?: (context: OperationContext, workspaceId: string, expectedRevision: number) => Promise<WorkspaceOrderTotals>;
   principals: VerifiedV2PrincipalProvider;
   formReads: QuoteFormReadPort;
   contactSelection: SalesContactSelectionReadPort;
@@ -181,6 +183,11 @@ export const createSalesWorkspaceRouter = (dependencies: SalesWorkspaceHttpDepen
   router.get("/:workspaceId", (request, response) => handle(request, response, async (context) => {
     parse(emptyQuery, request.query);
     return dependencies.service.get(context, workspaceId(request));
+  }));
+  router.get("/:workspaceId/order-totals", (request, response) => handle(request, response, async (context) => {
+    const query = parse(z.object({ expectedRevision: z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(revision) }).strict(), request.query);
+    if (!dependencies.orderTotals) throw new V2ApplicationError("RETRYABLE_FAILURE", "Order totals review is unavailable.");
+    return dependencies.orderTotals(context, workspaceId(request), query.expectedRevision);
   }));
   router.patch("/:workspaceId", (request, response) => handle(request, response, async (context) => {
     parse(emptyQuery, request.query);

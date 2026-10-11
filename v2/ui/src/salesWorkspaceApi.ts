@@ -13,6 +13,7 @@ import type {
   WorkspacePromotionResult,
 } from "../../src/modules/sales/workspacePromotion";
 import type { SalesWorkspaceLineService } from "../../src/modules/sales/workspaceLines";
+import type { WorkspaceOrderTotals } from "../../src/modules/sales/workspaceTotals";
 import type {
   WorkspaceArtworkClaim,
   WorkspaceArtworkMutation,
@@ -31,6 +32,7 @@ export type WorkspaceJson<T> = T extends { readonly __brand: string }
   : T;
 
 export type WorkspaceView = WorkspaceJson<SalesWorkspace>;
+export type WorkspaceOrderTotalsView = WorkspaceJson<WorkspaceOrderTotals>;
 export type WorkspaceHeader = WorkspaceJson<SalesWorkspaceHeader>;
 export type WorkspaceLineView = WorkspaceJson<WorkspaceLine>;
 export type WorkspaceLineInput = WorkspaceJson<SalesWorkspaceLineInput>;
@@ -45,6 +47,7 @@ export interface SalesWorkspaceClient {
   create(organizationId: string, input: WorkspaceJson<CreateSalesWorkspaceInput>): Promise<WorkspaceView>;
   startOrderEdit?(organizationId: string, input: WorkspaceStartOrderEditInput): Promise<WorkspaceView>;
   read(organizationId: string, workspaceId: string): Promise<WorkspaceView>;
+  orderTotals?(organizationId: string, workspaceId: string, expectedRevision: number): Promise<WorkspaceOrderTotalsView>;
   list(organizationId: string): Promise<readonly WorkspaceView[]>;
   saveDraft(organizationId: string, workspaceId: string, input: WorkspaceJson<SaveSalesWorkspaceInput>): Promise<WorkspaceView>;
   addLine(organizationId: string, workspaceId: string, input: WorkspaceJson<Parameters<SalesWorkspaceLineService["add"]>[2]>): Promise<WorkspaceView>;
@@ -81,6 +84,7 @@ export const createSalesWorkspaceClient = (transport: SalesWorkspaceTransport): 
     create: (org, input) => command(org, endpoint(org), "POST", input),
     startOrderEdit: (org, input) => command(org, `${endpoint(org)}/order-edits`, "POST", input),
     read: (org, id) => transport.request(endpoint(org, id)),
+    orderTotals: (org, id, expectedRevision) => transport.request(`${endpoint(org, id)}/order-totals?expectedRevision=${encodeURIComponent(expectedRevision)}`),
     list: (org) => transport.request(endpoint(org)),
     saveDraft: (org, id, input) => command(org, endpoint(org, id), "PATCH", input),
     addLine: (org, id, input) => command(org, `${endpoint(org, id)}/lines`, "POST", input),

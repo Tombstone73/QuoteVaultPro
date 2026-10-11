@@ -1052,6 +1052,7 @@ export type OrderRead = Readonly<{
   };
   routes: readonly Readonly<{
     routeInstanceId?: string;
+    revision?: string;
     work: { orderLineId: string };
     state: string;
     currentStepId?: string;
@@ -1481,6 +1482,8 @@ export type ProductionWorkProjection = Readonly<{
     orderNumber?: string;
     product?: Readonly<{ productId: string; displayName: string }>;
     customer?: Readonly<{ customerId: string; displayName: string }>;
+    requestedDueDate?: string;
+    dimensions?: Readonly<{ width: string; height: string; unit: "in" | "ft" | "mm" }>;
   }>;
 }>;
 export type ProductionRun = Readonly<{

@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { productionApi, type ProductionAttempt, type ProductionWorkProjection } from "./api";
+import { productionApi, type ProductionAttempt, type ProductionWorkProjection, type PrepressQueueItem } from "./api";
+import { OperationalQueuePager } from "./OperationalQueuePager";
+import { orderLabel, productLabel, customerLabel, productionDimensionsLabel, stationSpecification } from "./ProductionWorkspace";
 
 /**
  * Presentation facts are deliberately optional because they are an extension
@@ -48,18 +50,6 @@ export const flatbedState = (item: ProductionWorkProjection) =>
 const remaining = (item: ProductionWorkProjection) =>
   item.remainingGoodQuantity;
 
-const displayDate = (value?: string) => {
-  if (!value) return "No due date";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "No due date" : date.toLocaleDateString();
-};
-
-const queueSort = (left: FlatbedStationItem, right: FlatbedStationItem) => {
-  const leftDue = left.presentation?.requestedDueDate ?? "9999-12-31";
-  const rightDue = right.presentation?.requestedDueDate ?? "9999-12-31";
-  return leftDue.localeCompare(rightDue) || left.work.productionWorkId.localeCompare(right.work.productionWorkId);
-};
-
 /**
  * A port of the V1 Flatbed operator composition: dense queue first, then the
  * selected job with artwork and large, touch-friendly canonical actions.
@@ -71,6 +61,13 @@ export const FlatbedStationPanel = ({
   organizationId,
   sessionScope,
   selectedWorkId,
+  specifications,
+  queueSpecifications = [],
+  pagination,
+  search = "",
+  onSearch,
+  onPage,
+  onPageSize,
   activeAttempt,
   canWork,
   canComplete,
@@ -91,6 +88,13 @@ export const FlatbedStationPanel = ({
   organizationId: string;
   sessionScope: string;
   selectedWorkId: string;
+  specifications?: ReturnType<typeof stationSpecification>;
+  queueSpecifications?: readonly PrepressQueueItem[];
+  pagination?: Readonly<{ page: number; pageSize: number; totalCount: number; totalPages: number }>;
+  search?: string;
+  onSearch?: (search: string) => void;
+  onPage?: (page: number) => void;
+  onPageSize?: (pageSize: 25 | 50 | 100) => void;
   activeAttempt?: ProductionAttempt;
   canWork: boolean;
   canComplete: boolean;
@@ -116,8 +120,7 @@ export const FlatbedStationPanel = ({
   const visible = useMemo(
     () => queue
       .filter((item) => materialFilter === "all" || item.presentation?.materialName === materialFilter)
-      .slice()
-      .sort(queueSort),
+      .slice(),
     [queue, materialFilter],
   );
   const selectedRemaining = selected ? remaining(selected) : 0;
@@ -136,7 +139,8 @@ export const FlatbedStationPanel = ({
   return <section className="v2-flatbed-station" aria-label="Flatbed station">
     <aside className="v2-flatbed-queue">
       <header>
-        <div><small>Production station</small><h2>Flatbed Queue</h2><span>{queue.length} job{queue.length === 1 ? "" : "s"}</span></div>
+        <div><small>Production station</small><h2>Flatbed Queue</h2><span>{pagination?.totalCount ?? queue.length} jobs</span></div>
+        {onSearch && <input aria-label="Search flatbed queue" placeholder="Search order, customer, item…" value={search} onChange={(event) => onSearch(event.target.value)} />}
         <label>Material
           <select aria-label="Filter Flatbed queue by material" value={materialFilter} onChange={(event) => setMaterialFilter(event.target.value)}>
             <option value="all">All materials</option>
@@ -144,19 +148,21 @@ export const FlatbedStationPanel = ({
           </select>
         </label>
       </header>
+      {pagination && onPage && onPageSize && <OperationalQueuePager page={pagination.page} pageSize={pagination.pageSize as 25 | 50 | 100} total={pagination.totalCount} totalPages={pagination.totalPages} onPage={onPage} onPageSize={onPageSize} />}
       <div className="v2-flatbed-queue-list">
         {visible.map((item) => {
           const presentation = item.presentation;
+          const itemSpecifications = stationSpecification(item, queueSpecifications.find((candidate) => candidate.orderId === item.work.orderId && candidate.orderLineId === item.work.orderLineId));
           const isSelected = item.work.productionWorkId === selectedWorkId;
           return <button key={item.work.productionWorkId} type="button" className={isSelected ? "active" : ""} onClick={() => onSelect(item.work.productionWorkId)}>
             <span className="v2-flatbed-thumb" aria-hidden="true">{presentation?.artworkPreviewUrl ? <img src={presentation.artworkPreviewUrl} alt="" /> : <b>ART</b>}</span>
             <span className="v2-flatbed-queue-copy">
-              <strong>{presentation?.orderNumber ? `#${presentation.orderNumber}` : "Production work"}</strong>
-              <b>{presentation?.lineDescription ?? requirementLabel(item)}</b>
-              <small>{presentation?.customerDisplayName ?? "Order details load with the selected job"}</small>
-              <small>{presentation?.materialName ?? "Material not projected"} · {presentation?.dimensions ?? "Dimensions not projected"}</small>
+              <strong>{orderLabel(item)}</strong>
+              <b>{productLabel(item)}</b>
+              <small>{customerLabel(item)}</small>
+              <small>{presentation?.materialName ?? "Material not projected"} · {productionDimensionsLabel(itemSpecifications)}</small>
             </span>
-            <span className="v2-flatbed-queue-meta"><em className={flatbedState(item).toLowerCase().replace(" ", "-")}>{flatbedState(item)}</em><small>{remaining(item)} remaining</small><small>{displayDate(presentation?.requestedDueDate)}</small></span>
+            <span className="v2-flatbed-queue-meta"><em className={flatbedState(item).toLowerCase().replace(" ", "-")}>{flatbedState(item)}</em><small>{remaining(item)} remaining</small><small>{itemSpecifications?.requestedDueDate ?? "Due date unavailable"}</small></span>
           </button>;
         })}
         {!visible.length && <p className="v2-proof-empty">No Flatbed work matches this material filter.</p>}
@@ -166,7 +172,7 @@ export const FlatbedStationPanel = ({
     <main className="v2-flatbed-detail">
       {selected ? <>
         <header className="v2-flatbed-detail-heading">
-          <div><small>Flatbed production</small><h1>{selected.presentation?.lineDescription ?? requirementLabel(selected)}</h1><p>{selected.presentation?.orderNumber ? `Order #${selected.presentation.orderNumber}` : "Canonical production work"}{selected.presentation?.customerDisplayName ? ` · ${selected.presentation.customerDisplayName}` : ""}{selected.presentation?.purchaseOrderNumber ? ` · PO ${selected.presentation.purchaseOrderNumber}` : ""}</p></div>
+          <div><small>Flatbed production</small><h1>{productLabel(selected)}</h1><p>{orderLabel(selected)} · {customerLabel(selected)}</p></div>
           <div><b>{selected.completedGoodQuantity} / {selected.work.orderedQuantity}</b><small>good output · {selectedRemaining} remaining</small></div>
         </header>
         <section className="v2-flatbed-artwork">
@@ -176,9 +182,9 @@ export const FlatbedStationPanel = ({
         </section>
         <section className="v2-flatbed-facts">
           <article><small>Material</small><b>{materialContext.isLoading ? "Loading frozen material…" : selectedMaterial}</b></article>
-          <article><small>Dimensions</small><b>{selected.presentation?.dimensions ?? "Not projected"}</b></article>
+          <article><small>Dimensions</small><b>{productionDimensionsLabel(specifications)}</b></article>
           <article><small>Route</small><b>{selected.presentation?.routeLabel ?? "Flatbed destination"}</b></article>
-          <article><small>Due</small><b>{displayDate(selected.presentation?.requestedDueDate)}</b></article>
+          <article><small>Due</small><b>{specifications?.requestedDueDate ?? "Due date unavailable"}</b></article>
           {selected.presentation?.notes && <article className="notes"><small>Notes</small><b>{selected.presentation.notes}</b></article>}
         </section>
       </> : <div className="v2-proof-empty">Select a Flatbed production job.</div>}

@@ -89,6 +89,10 @@ function server(initial?: WorkspaceView, capabilities: UiBootstrap["capabilities
       return ok(state.saved);
     }
     if (segments[1] === "customers" && method === "GET") return ok([{ customerId, displayName: "Customer" }]);
+    if (segments[1] === "order-totals" && method === "GET") {
+      assert.equal(Number(url.searchParams.get("expectedRevision")), state.saved.revision);
+      return ok({ workspaceId, workspaceRevision: state.saved.revision, target: "order", currency: "USD", subtotalCents: 300, tax: { status: "resolved", taxCents: 30, totalCents: 330 } });
+    }
     if (segments[1] === "contacts" && method === "GET") {
       const rows = [{ organizationId, linkedCustomerId: customerId, id: contactId, label: "Saved Customer contact" }];
       const eligible = rows.filter(row => row.organizationId === state.saved!.organizationId && (!url.searchParams.has("customerId") || row.linkedCustomerId === url.searchParams.get("customerId")));

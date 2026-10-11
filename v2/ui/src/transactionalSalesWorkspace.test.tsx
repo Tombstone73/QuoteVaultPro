@@ -118,6 +118,49 @@ let cases = 0;
 const check = async (name: string, work: () => Promise<void>) => { await work(); cases++; console.log(`PASS ${name}`); };
 
 try {
+  await check("Order totals display server evidence and hide it while local header changes are unsaved", async () => {
+    const server = mockServer(cannedWorkspace([cannedLine(), { ...cannedLine(otherLineId), position: 1 }]));
+    const revisions: number[] = [];
+    server.client.orderTotals = async (_organization, id, revision) => {
+      revisions.push(revision);
+      return { workspaceId: id, workspaceRevision: revision, target: "order", currency: "USD", subtotalCents: 24690, tax: { status: "resolved", taxCents: 1728, totalCents: 26418 } };
+    };
+    await mount(server); await settle(() => text().includes("$264.18"));
+    const review = document.querySelector('[aria-label="Order totals review"]')!;
+    assert.match(review.textContent!, /\$246\.90/); assert.match(review.textContent!, /\$17\.28/);
+    await change("Fulfillment", "shipping"); assert.doesNotMatch(review.textContent!, /\$264\.18/);
+    await click("Save Draft"); await settle(() => text().includes("$264.18"));
+    assert.deepEqual(revisions, [4, 5]);
+  });
+  await check("Unresolved tax is not presented as a zero-tax Order total", async () => {
+    const server = mockServer(cannedWorkspace([cannedLine()]));
+    server.client.orderTotals = async (_organization, id, revision) => ({ workspaceId: id, workspaceRevision: revision, target: "order", currency: "USD", subtotalCents: 12345, tax: { status: "unresolved", reason: "tax_jurisdiction_not_configured", taxCents: null, totalCents: null } });
+    await mount(server); await settle(() => text().includes("No zero-tax total is assumed"));
+    const review = document.querySelector('[aria-label="Order totals review"]')!;
+    assert.match(review.textContent!, /Unresolved: tax jurisdiction not configured/);
+    assert.doesNotMatch(review.textContent!, /\$0\.00/);
+  });
+  await check("New entry protects local edits from unload without warning for a durable clean draft", async () => {
+    const server = mockServer(); await mount(server);
+    const unloadBlocked = () => !window.dispatchEvent(new dom.window.Event("beforeunload", { cancelable: true }));
+    assert.equal(unloadBlocked(), false);
+    await change("Job Label", "Unsaved order"); assert.equal(unloadBlocked(), true);
+    await click("Save Draft"); assert.equal(unloadBlocked(), false);
+    await click("Add Item"); assert.equal(unloadBlocked(), true);
+    await click("Cancel"); assert.equal(unloadBlocked(), false);
+    await act(async () => { const node = field("PDF file") as HTMLInputElement; Object.defineProperty(node, "files", { configurable: true, value: [new dom.window.File(["%PDF-canned"], "local.pdf", { type: "application/pdf" })] }); Simulate.change(node); });
+    await settle(); assert.equal(unloadBlocked(), true);
+    await click("Cancel selected file"); assert.equal(unloadBlocked(), false);
+  });
+  await check("Uncertain Order save protects unload until its exact request is reconciled", async () => {
+    const server = mockServer(cannedWorkspace([cannedLine()])); const original = server.client.promote;
+    let failed = false;
+    server.client.promote = async (organization, body) => { if (!failed) { failed = true; throw { code: "RETRYABLE_FAILURE", message: "Lost response" }; } return original(organization, body); };
+    await mount(server); await click("Save Order");
+    assert.equal(window.dispatchEvent(new dom.window.Event("beforeunload", { cancelable: true })), false);
+    await click("Save Order");
+    assert.equal(window.dispatchEvent(new dom.window.Event("beforeunload", { cancelable: true })), true);
+  });
   await check("StrictMode render never creates and explicit creation is neutral and serialized", async () => {
     const server = mockServer(); await mount(server, false);
     assert.equal(server.calls.filter((call) => call.method === "create").length, 0);

@@ -7,7 +7,7 @@ import { PostgresProductsCompatibilityReader } from "./postgresProductsRead.js";
 /** Bounded read-only compatibility seam for an already-authorized Sales draft. */
 export function createSalesWorkspaceReadPorts(client: PoolClient): Readonly<{
   customers: Pick<CustomersReadPort, "validateContactReference" | "getContact">;
-  products: Pick<ProductPricingCompatibilityPort, "resolveActivePricingInput">;
+  products: Pick<ProductPricingCompatibilityPort, "resolveActivePricingInput" | "resolveCurrentTaxability">;
 }> {
   return { customers: new PostgresCustomersCompatibilityReader(client), products: new PostgresProductsCompatibilityReader(client) };
 }

@@ -5,6 +5,9 @@ import type { ArtworkBinaryStorage } from "../artwork/artworkBinaryStorage.js";
 import type { SalesWorkspaceTransaction } from "../../src/modules/sales/workspaceContracts.js";
 import { SalesWorkspaceApplicationService } from "../../src/modules/sales/workspaceApplication.js";
 import { SalesWorkspaceLineService } from "../../src/modules/sales/workspaceLines.js";
+import { readWorkspaceOrderTotals } from "../../src/modules/sales/workspaceTotals.js";
+import { composePostgresSalesTax } from "./postgresSalesTaxComposition.js";
+import { createSalesWorkspaceReadPorts } from "../compatibility/workspaceCommercialReads.js";
 import { V2ApplicationError } from "../../src/errors/applicationError.js";
 import { PostgresSalesContactSelection } from "../customers/postgresSalesContactSelection.js";
 import { explainPricingResult } from "../../src/modules/pricing/operatorPricingExplanation.js";
@@ -79,6 +82,27 @@ export function createSalesWorkspaceDependencies(input: Readonly<{
   });
   return {
     service,
+    orderTotals: (context, workspaceId, expectedRevision) => readWorkspaceOrderTotals(context, workspaceId, expectedRevision, store, tx => {
+      const client = clientOf(tx);
+      const readers = createSalesWorkspaceReadPorts(client);
+      return {
+        pricing: new PostgresWorkspaceLinePricing(client),
+        taxability: async productId => {
+          const policy = await readers.products.resolveCurrentTaxability(
+            brandedId<"OrganizationId">(context.organizationId), brandedId<"ProductId">(productId));
+          if (!policy) throw new V2ApplicationError("NOT_FOUND", "The Product taxability policy is unavailable.");
+          return policy.taxable;
+        },
+        composeTax: async (workspace, lines) => {
+          const reference = workspace.header.customerContact!;
+          const customerId = reference.customerId ?? (reference.contactId
+            ? (await readers.customers.getContact(brandedId<"OrganizationId">(context.organizationId), reference.contactId))?.customerId : undefined);
+          return composePostgresSalesTax({ client, organizationId: context.organizationId, lines,
+            ...(customerId ? { customerId } : {}),
+            ...(workspace.header.requestedFulfillment ? { fulfillment: workspace.header.requestedFulfillment } : {}) });
+        },
+      };
+    }),
     orderEdits,
     orderEditArtwork: new PostgresOrderEditArtwork(input.pool),
     principals: input.principals,

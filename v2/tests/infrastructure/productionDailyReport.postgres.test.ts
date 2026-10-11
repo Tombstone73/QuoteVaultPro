@@ -60,7 +60,7 @@ try {
     CREATE TABLE customers(id varchar PRIMARY KEY,organization_id varchar,display_name text,company_name text);
     CREATE TABLE v2_sales_documents(id varchar PRIMARY KEY,organization_id varchar,document_kind text,display_number text,customer_id varchar,requested_due_date date,purchase_order_number text,notes text,UNIQUE(id,organization_id));
     CREATE TABLE v2_sales_order_details(document_id varchar,organization_id varchar,commercial_state text,archived_at timestamptz,requested_fulfillment_method text,UNIQUE(document_id,organization_id));
-    CREATE TABLE v2_sales_document_lines(id varchar PRIMARY KEY,organization_id varchar,document_id varchar,product_id varchar,description text,quantity integer,UNIQUE(id,organization_id,document_id));
+    CREATE TABLE v2_sales_document_lines(id varchar PRIMARY KEY,organization_id varchar,document_id varchar,product_id varchar,description text,quantity integer,resolved_configuration jsonb NOT NULL DEFAULT '{}',UNIQUE(id,organization_id,document_id));
     CREATE TABLE v2_sales_line_production_requirements(organization_id varchar,order_line_id varchar,requirement_key varchar,PRIMARY KEY(organization_id,order_line_id,requirement_key));
     CREATE TABLE v2_artwork_assignments(id varchar PRIMARY KEY,organization_id varchar,artwork_file_id varchar,UNIQUE(id,organization_id),UNIQUE(id,organization_id,artwork_file_id));
     CREATE TABLE v2_prepress_units(id varchar PRIMARY KEY,organization_id varchar,artwork_assignment_id varchar,completed_at timestamptz,UNIQUE(id,organization_id));
@@ -103,7 +103,7 @@ try {
     await db.query("INSERT INTO report_owner_attention_fixture VALUES($1,$2,'original',$3)", [tenant, id, options.attention ?? "requires_attention"]);
   };
   const line = async (id: string, orderId: string, destination: string | null, tenant = "org-a") => {
-    await db.query("INSERT INTO v2_sales_document_lines VALUES($1,$2,$3,'product-a','Frozen line description',10)", [id, tenant, orderId]);
+    await db.query("INSERT INTO v2_sales_document_lines(id,organization_id,document_id,product_id,description,quantity) VALUES($1,$2,$3,'product-a','Frozen line description',10)", [id, tenant, orderId]);
     await db.query("INSERT INTO v2_sales_line_production_requirements VALUES($1,$2,'unit')", [tenant, id]);
     if (destination) {
       await db.query("INSERT INTO v2_route_instances VALUES($1,$2,$3,$4,$5,'active')", [`route-${id}`, tenant, orderId, id, `step-${id}`]);

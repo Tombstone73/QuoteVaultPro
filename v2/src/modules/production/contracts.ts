@@ -53,6 +53,9 @@ export type ProductionOperatorContext = Readonly<{
   orderNumber?: string;
   product?: Readonly<{ productId: ProductId; displayName: string }>;
   customer?: Readonly<{ customerId: CustomerId; displayName: string }>;
+  requestedDueDate?: string;
+  /** Entered dimensions from the frozen Sales line configuration, not detected artwork geometry. */
+  dimensions?: Readonly<{ width: string; height: string; unit: "in" | "ft" | "mm" }>;
 }>;
 
 export type ProductionWorkProjection = Readonly<{

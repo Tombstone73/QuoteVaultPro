@@ -117,6 +117,7 @@ const server = (session: V2AuthSession | null = authSession()) => {
         return state.holdPromotion ? hold(promotions, response) : response;
       }
       assert.equal(method, "GET", "Forced auth teardown must not save/discard/promote the dirty workspace");
+      if (url.pathname.endsWith("/order-totals")) return wire({ workspaceId: state.workspace.id, workspaceRevision: state.workspace.revision, target: "order", currency: "USD", subtotalCents: 300, tax: { status: "resolved", taxCents: 30, totalCents: 330 } }, scope);
       if (url.pathname.endsWith(`/${state.workspace.id}`)) return wire(state.workspace, scope);
       if (url.pathname.endsWith("/contacts")) return wire({ items: [], selectedContact: null }, scope);
       if (/\/(customers|products|artwork)$/.test(url.pathname)) return wire([], scope);

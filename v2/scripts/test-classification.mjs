@@ -22,6 +22,8 @@ add('v2/tests/', 'jest', [
   'infrastructure/workspacePromotion.test.ts',
   'interfaces/salesWorkspaceRoutes.test.ts',
 ], 'safe-deterministic', 'Sales TEMP owner and HTTP contracts use scoped in-memory ports and mocked storage; no live database, provider, or root setup.');
+add('v2/tests/interfaces/', 'tsx', ['workspaceOrderTotals.test.ts'],
+  'safe-deterministic', 'Read-only Sales totals owner, actual canonical workspace Pricing and PostgreSQL tax composer execute with fail-closed in-memory workspace/product/customer/query ports and loopback HTTP; no database URL, V1 initialization, provider, or shared database.');
 add('v2/tests/', 'jest', [
   'infrastructure/orderEditProjection.postgres.test.ts',
   'persistence/orderEditWorkspace.postgres.test.ts',
@@ -276,6 +278,7 @@ add('v2/tests/modules/', 'tsx', [
   'productInitialDraftCreate.pure.ts',
   'productOptionConfigurationResolver.pure.ts',
   'productionContracts.test.ts',
+  'mixedStationLifecycle.pure.ts',
   'productionCutoverExecutorContract.pure.ts',
   'productionExceptionFoundation.pure.ts',
   'productionOutputDisposition.pure.ts',
@@ -411,6 +414,8 @@ add('v2/ui/src/', 'tsx', [
   'emailIntegrationCallbackNotice.test.ts',
   'financeWorkspace.test.tsx',
   'flatbedStationPanel.test.tsx',
+  'productionStationSelection.test.tsx',
+  'productionCompletionHandoff.test.ts',
   'formulaTester.test.ts',
   'fulfillmentWorkspace.test.tsx',
   'inboundOrdersWorkspace.test.tsx',

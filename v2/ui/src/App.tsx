@@ -807,6 +807,7 @@ export const App = ({
           canView={bootstrap.data?.capabilities.productionView === true}
           canWork={bootstrap.data?.capabilities.productionWork === true}
           canComplete={bootstrap.data?.capabilities.productionComplete === true}
+          canHandoff={bootstrap.data?.capabilities.orderView === true && bootstrap.data?.capabilities.routeAdvance === true}
           station={productionStation}
           productionWorkId={productionWorkId || undefined}
           onStationChange={(station) => {
