@@ -43,17 +43,19 @@ function ReportTable({ rows, title, showProduction = true, emptyLabel = "No qual
   return <section className={title ? "daily-production-section mt-6" : "daily-production-section"}>
     {title ? <h2 className="mb-3 text-lg font-semibold">{title}</h2> : null}
     <div className="overflow-x-auto rounded-lg border">
-      <table className="w-full min-w-[760px] text-left text-sm">
+      <table className="w-full min-w-[900px] text-left text-sm">
         <thead className="bg-muted/60 text-xs uppercase tracking-wide text-muted-foreground"><tr>
-          <th scope="col" aria-label="Check off" className="w-10 px-3 py-3 font-semibold" /><th className="px-3 py-3 font-semibold">Due</th><th className="px-3 py-3 font-semibold">Order</th><th className="px-3 py-3 font-semibold">Customer</th><th className="px-3 py-3 font-semibold">PO / Job</th><th className="px-3 py-3 text-right font-semibold">Qty</th>{showProduction ? <th className="px-3 py-3 font-semibold">Roll / Flatbed</th> : null}<th className="px-3 py-3 font-semibold">Fulfillment</th>
+          <th scope="col" aria-label="Check off" className="w-10 px-3 py-3 font-semibold" /><th className="px-3 py-3 font-semibold">Due</th><th className="px-3 py-3 font-semibold">Order</th><th className="px-3 py-3 font-semibold">Status</th><th className="px-3 py-3 font-semibold">Customer</th><th className="px-3 py-3 font-semibold">PO / Job</th><th className="px-3 py-3 text-right font-semibold">Qty</th>{showProduction ? <th className="px-3 py-3 font-semibold">Roll / Flatbed</th> : null}<th className="px-3 py-3 font-semibold">Fulfillment</th>
         </tr></thead>
         <tbody>{rows.length ? rows.map((row) => <tr key={`${title ?? "overview"}-${row.orderId}`} data-due-state={row.dueState} className={`daily-production-report-row break-inside-avoid border-t align-top ${urgencyClass[row.dueState]}`}>
           <td className="w-10 px-3 py-3 text-center align-middle"><span aria-hidden="true" className="daily-production-checkoff inline-block h-4 w-4 border border-solid border-black print:[-webkit-print-color-adjust:exact] print:[print-color-adjust:exact]" /></td>
           <td className="px-3 py-3"><div className="font-medium">{formatDueDate(row.dueDate)}</div><div className="mt-1 text-[11px] font-bold tracking-wide">{dueLabel[row.dueState]}</div></td>
-          <td className="px-3 py-3 font-medium tabular-nums"><Link className="text-primary hover:underline" to={ROUTES.orders.detail(row.orderId)}>{row.orderNumber}</Link></td><td className="px-3 py-3">{row.customerId ? <Link className="text-primary hover:underline" to={ROUTES.customers.detail(row.customerId)}>{row.customerName}</Link> : row.customerName}</td>
+          <td className="px-3 py-3 font-medium tabular-nums"><Link className="text-primary hover:underline" to={ROUTES.orders.detail(row.orderId)}>{row.orderNumber}</Link></td>
+          <td className="px-3 py-3"><span className="inline-flex max-w-[180px] items-center gap-2 rounded-full border bg-background px-2 py-1 text-xs font-medium text-foreground"><span aria-hidden="true" className="h-3 w-3 shrink-0 rounded-full border border-black/20 print:[print-color-adjust:exact]" style={{ backgroundColor: row.orderStatus.color }} />{row.orderStatus.label}</span></td>
+          <td className="px-3 py-3">{row.customerId ? <Link className="text-primary hover:underline" to={ROUTES.customers.detail(row.customerId)}>{row.customerName}</Link> : row.customerName}</td>
           <td className="px-3 py-3 text-muted-foreground">{[row.jobLabel, row.poNumber].filter(Boolean).join(" · ") || "—"}</td><td className="px-3 py-3 text-right font-medium tabular-nums">{row.quantity}</td>
           {showProduction ? <td className="px-3 py-3">{destinationLabel[row.destination]}</td> : null}<td className="px-3 py-3">{row.fulfillment}</td>
-        </tr>) : <tr><td colSpan={showProduction ? 8 : 7} className="px-3 py-8 text-center text-muted-foreground">{emptyLabel}</td></tr>}</tbody>
+        </tr>) : <tr><td colSpan={showProduction ? 9 : 8} className="px-3 py-8 text-center text-muted-foreground">{emptyLabel}</td></tr>}</tbody>
       </table>
     </div>
   </section>;

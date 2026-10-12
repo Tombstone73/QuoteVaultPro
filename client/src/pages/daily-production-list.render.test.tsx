@@ -21,10 +21,10 @@ const report = {
   organizationName: "Titan Graphics", asOf: "2026-09-14", timezone: "America/Indiana/Indianapolis",
   summary: { open: 2, dueToday: 1, dueTomorrow: 0, overdue: 1, noDueDate: 0 },
   diagnostics: { unclassifiedProductionLines: 1, mixedOrders: 0, nonstandardFulfillmentOrders: 0, activeOrdersOutsideReportStatus: 0 },
-  overview: [{ orderId: "1", customerId: "customer-1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship" }],
-  roll: [{ orderId: "1", customerId: "customer-1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship" }],
+   overview: [{ orderId: "1", customerId: "customer-1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship", orderStatus: { label: "Press Running", color: "#aabbcc" } }],
+   roll: [{ orderId: "1", customerId: "customer-1", orderNumber: "1001", customerName: "Acme", jobLabel: "Lobby", poNumber: "PO-1", dueDate: "2026-09-14", dueState: "today", quantity: 2, destination: "roll", fulfillment: "Ship", orderStatus: { label: "Press Running", color: "#aabbcc" } }],
   flatbed: [],
-  fulfillment: [{ orderId: "2", customerId: "customer-2", orderNumber: "1002", customerName: "Beta", jobLabel: null, poNumber: null, dueDate: "2026-09-15", dueState: "tomorrow", quantity: 4, destination: "none", fulfillment: "Delivery" }],
+   fulfillment: [{ orderId: "2", customerId: "customer-2", orderNumber: "1002", customerName: "Beta", jobLabel: null, poNumber: null, dueDate: "2026-09-15", dueState: "tomorrow", quantity: 4, destination: "none", fulfillment: "Delivery", orderStatus: { label: "Ready for Delivery", color: "#123456" } }],
 };
 
 describe("Daily Production List renderer", () => {
@@ -81,9 +81,26 @@ describe("Daily Production List renderer", () => {
     for (const [label, view] of [["Overview", "overview"], ["Roll Printing", "roll"], ["Flatbed Printing", "flatbed"], ["Fulfillment", "fulfillment"]] as const) {
       const tab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === label);
       await act(async () => { tab?.click(); });
+      expect(container.querySelector("thead")?.textContent).toContain("Status");
+      if (view === "overview" || view === "roll") {
+        expect(container.querySelector("tbody")?.textContent).toContain("Press Running");
+        expect(container.querySelector('span[style]')?.getAttribute("style")).toContain("rgb(170, 187, 204)");
+      }
+      if (view === "flatbed") expect(container.querySelector("tbody td")?.getAttribute("colspan")).toBe("8");
+      if (view === "fulfillment") expect(container.querySelector("tbody")?.textContent).toContain("Ready for Delivery");
       await act(async () => { print()?.click(); });
       expect(apiFetchBlob).toHaveBeenLastCalledWith(`/api/reports/daily-production/pdf?view=${view}`, { method: "GET" });
       if (view !== "overview") expect(container.textContent).not.toContain("Open Jobs");
     }
+  });
+
+  test("renders a configured status pill on a populated Flatbed view", async () => {
+    apiRequest.mockResolvedValue({ json: async () => ({ data: { ...report, flatbed: report.roll } }) });
+    await act(async () => { root.render(<MemoryRouter><DailyProductionListPage /></MemoryRouter>); });
+    const tab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Flatbed Printing");
+    await act(async () => { tab?.click(); });
+    expect(container.querySelector("tbody")?.textContent).toContain("Press Running");
+    expect(container.querySelector('span[style]')?.getAttribute("style")).toContain("rgb(170, 187, 204)");
+    expect(container.querySelectorAll(".daily-production-checkoff")).toHaveLength(1);
   });
 });

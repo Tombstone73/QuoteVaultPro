@@ -18,6 +18,7 @@ export type DailyProductionReportRow = {
   quantity: number;
   destination: DailyProductionDestination;
   fulfillment: DailyProductionFulfillment;
+  orderStatus: { label: string; color: string };
 };
 
 export type DailyProductionReport = {

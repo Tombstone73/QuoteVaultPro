@@ -8,7 +8,29 @@ import type {
   DailyProductionReportRow,
 } from "./dailyProductionReport";
 
-export type DailyProductionReportSourceRow = {
+type OrderStatusSource = {
+  statusPillId?: string | null;
+  statusPillName?: string | null;
+  statusPillColor?: string | null;
+  statusPillValue?: string | null;
+  status?: string | null;
+};
+
+export function projectDailyProductionOrderStatus(row: OrderStatusSource): DailyProductionReportRow["orderStatus"] {
+  // An assigned pill is authoritative, including inactive pills. Never guess New.
+  const value = row.statusPillId
+    ? row.statusPillName || row.statusPillValue
+    : row.statusPillValue?.trim() || row.status;
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  const label = row.statusPillId && row.statusPillName
+    ? row.statusPillName
+    : normalized === "in production" ? "In Production"
+    : normalized === "new" ? "New"
+    : String(value ?? "").trim() || "Unknown";
+  return { label, color: row.statusPillId ? row.statusPillColor || "#3b82f6" : "#3b82f6" };
+}
+
+export type DailyProductionReportSourceRow = OrderStatusSource & {
   orderId: string;
   customerId?: string | null;
   orderNumber: string;
@@ -29,7 +51,7 @@ export type DailyProductionReportSourceRow = {
 };
 
 /** Canonical, already-aggregated outstanding physical fulfillment work. */
-export type DailyProductionFulfillmentSourceRow = {
+export type DailyProductionFulfillmentSourceRow = OrderStatusSource & {
   orderId: string;
   customerId: string | null;
   orderNumber: string;
@@ -135,6 +157,7 @@ export function buildDailyProductionReport(input: {
         poNumber: row.poNumber?.trim() || null,
         dueDate: orderBusinessDatePart(row.dueDate),
         fulfillment: normalizeFulfillment(row.shippingMethod),
+        orderStatus: projectDailyProductionOrderStatus(row),
         lines: new Map(),
       };
       ordersById.set(row.orderId, order);
@@ -210,6 +233,7 @@ export function buildDailyProductionReport(input: {
       quantity,
       destination: destinationFor(orderStations, hasUnclassified),
       fulfillment: order.fulfillment,
+      orderStatus: order.orderStatus,
     };
 
     if (base.fulfillment === "Unknown") nonstandardFulfillmentOrders += 1;
@@ -235,6 +259,7 @@ export function buildDailyProductionReport(input: {
       quantity,
       destination: "none",
       fulfillment: normalizeFulfillment(row.shippingMethod),
+      orderStatus: projectDailyProductionOrderStatus(row),
     });
   }
   return {

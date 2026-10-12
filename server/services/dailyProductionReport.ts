@@ -48,6 +48,11 @@ export async function getDailyProductionReport(organizationId: string): Promise<
         customerName: customers.companyName,
         dueDate: orders.dueDate,
         shippingMethod: orders.shippingMethod,
+        status: orders.status,
+        statusPillId: orders.statusPillId,
+        statusPillValue: orders.statusPillValue,
+        statusPillName: orderStatusPills.name,
+        statusPillColor: orderStatusPills.color,
         lineItemId: orderLineItems.id,
         quantity: orderLineItems.quantity,
         productionBypassed: orderLineItems.productionBypassed,
@@ -86,8 +91,17 @@ export async function getDailyProductionReport(organizationId: string): Promise<
         customerName: customers.companyName,
         dueDate: orders.dueDate,
         shippingMethod: orders.shippingMethod,
+        status: orders.status,
+        statusPillId: orders.statusPillId,
+        statusPillValue: orders.statusPillValue,
+        statusPillName: orderStatusPills.name,
+        statusPillColor: orderStatusPills.color,
       })
       .from(orders)
+      .leftJoin(orderStatusPills, and(
+        eq(orderStatusPills.id, orders.statusPillId),
+        eq(orderStatusPills.organizationId, orders.organizationId),
+      ))
       .leftJoin(customers, eq(customers.id, orders.customerId))
       .where(and(eq(orders.organizationId, organizationId), isNull(orders.canceledAt))),
   ]);

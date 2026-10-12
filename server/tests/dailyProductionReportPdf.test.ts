@@ -1,5 +1,6 @@
 import { PDFDocument } from "pdf-lib";
 import { inflateSync } from "node:zlib";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { DailyProductionReport, DailyProductionReportRow } from "@shared/dailyProductionReport";
 import {
   buildDailyProductionReportPdfFilename,
@@ -19,6 +20,7 @@ function row(index: number, overrides: Partial<DailyProductionReportRow> = {}): 
     quantity: index + 1,
     destination: index % 2 ? "roll" : "flatbed",
     fulfillment: index % 2 ? "Ship" : "Pickup",
+    orderStatus: { label: "In Production", color: "#0369a1" },
     ...overrides,
   };
 }
@@ -55,6 +57,31 @@ function extractText(bytes: Uint8Array): string {
 }
 
 describe("Daily Production List PDF", () => {
+  test.each(["overview", "roll", "flatbed", "fulfillment"] as const)("independently parses actual %s PDF text and Letter bounds with PDF.js", async (view) => {
+    const rows = Array.from({ length: 72 }, (_, index) => row(index + 1));
+    rows[0] = row(1, { orderStatus: { label: "Custom Production Status With A Long Configured Name", color: "#abcdef" } });
+    const fixture = { ...report(rows), overview: rows, roll: rows, flatbed: rows, fulfillment: rows };
+    const bytes = await generateDailyProductionReportPdfBytes(fixture, view);
+    const document = await getDocument({ data: bytes, useSystemFonts: true }).promise;
+    let text = "";
+    for (let index = 1; index <= document.numPages; index++) {
+      const page = await document.getPage(index);
+      expect(page.view).toEqual([0, 0, 612, 792]);
+      const content = await page.getTextContent();
+      for (const item of content.items) {
+        if (!("str" in item) || !item.str.trim()) continue;
+        text += `${item.str} `;
+        expect(item.transform[4]).toBeGreaterThanOrEqual(30);
+        expect(item.transform[4] + item.width).toBeLessThanOrEqual(582);
+        expect(item.transform[5]).toBeGreaterThanOrEqual(24);
+      }
+    }
+    expect(document.numPages).toBeGreaterThan(1);
+    expect(text).toContain("Status");
+    expect(text).toContain("In Production");
+    expect(text).toContain("ORD-072");
+    await document.destroy();
+  });
   test("generates a valid US Letter overview PDF with the selected report and summary", async () => {
     const bytes = await generateDailyProductionReportPdfBytes(report([row(1), row(2, { destination: "unclassified", dueState: "none", dueDate: null })]), "overview");
     expect(Buffer.from(bytes).subarray(0, 5).toString("ascii")).toBe("%PDF-");
@@ -88,7 +115,7 @@ describe("Daily Production List PDF", () => {
       expect(text).toContain(value);
     }
     expect(text).toContain("(CONTINUED)");
-    expect(text).toContain("PO-THIS-IS-AN-EXTRA-");
+    expect(text.replace(/\s/g, "")).toContain("PO-THIS-IS-AN-EXTRA-");
   });
 
   test("draws one black outlined checkoff square for each printed job row", async () => {
@@ -131,6 +158,8 @@ describe("Daily Production List PDF", () => {
     expect(text).toContain(section);
     expect(text).toContain(heading);
     expect(text).toContain(includedOrder);
+    expect(text).toContain("Status");
+    expect(text).toContain("In Production");
     for (const otherOrder of ["OVR1", "ROL2", "FLB3", "FUL4"].filter((order) => order !== includedOrder)) expect(text).not.toContain(otherOrder);
     if (view !== "overview") expect(text).not.toContain("OPEN JOBS");
   });
@@ -140,6 +169,14 @@ describe("Daily Production List PDF", () => {
     const text = extractText(await generateDailyProductionReportPdfBytes(emptyReport, "fulfillment"));
     expect(text).toContain("No outstanding fulfillment items.");
     expect(text).not.toContain("No qualifying production items.");
+  });
+
+  test("wraps configured status labels and retains their color with readable black text", async () => {
+    const label = "Custom Production Status With A Long Configured Name";
+    const bytes = await generateDailyProductionReportPdfBytes(report([row(1, { orderStatus: { label, color: "#ff0000" } })]));
+    expect(extractText(bytes).replace(/\s/g, "")).toContain(label.replace(/\s/g, ""));
+    expect(extractContentStreams(bytes)).toContain("1 0 0 rg");
+    expect(extractContentStreams(bytes)).toContain("0.08 0.12 0.18 rg");
   });
 
   test("uses a safe, useful generated filename", () => {

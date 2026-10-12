@@ -2,6 +2,7 @@ import {
   buildDailyProductionReport,
   getDailyProductionDueState,
   sortDailyProductionRows,
+  projectDailyProductionOrderStatus,
 } from "@shared/dailyProductionReportProjection";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -17,6 +18,21 @@ function report(rows: any[], asOf = "2026-09-14") {
 }
 
 describe("Daily Production List projection", () => {
+  test("preserves the authoritative configured pill despite stale legacy New", () => {
+    const status = { statusPillId: "production", statusPillName: "Press Running", statusPillColor: "#aabbcc", statusPillValue: "New", status: "new" };
+    const result = report([{ ...base, ...status, jobStationKey: "roll" }, { ...base, ...status, lineItemId: "line-2", jobStationKey: "flatbed" }]);
+    for (const rows of [result.overview, result.roll, result.flatbed]) expect(rows[0].orderStatus).toEqual({ label: "Press Running", color: "#aabbcc" });
+  });
+  test("uses legacy pill value before legacy status without guessing New", () => {
+    expect(projectDailyProductionOrderStatus({ statusPillValue: "in_production", status: "new" }).label).toBe("In Production");
+    expect(projectDailyProductionOrderStatus({ status: "in_production" }).label).toBe("In Production");
+    expect(projectDailyProductionOrderStatus({ statusPillId: "missing", status: "new" }).label).toBe("Unknown");
+    expect(projectDailyProductionOrderStatus({}).label).toBe("Unknown");
+  });
+  test("projects fulfillment status independently without changing remaining quantity", () => {
+    const result = buildDailyProductionReport({ organizationName: "Titan", asOf: "2026-09-14", timezone: "UTC", rows: [], fulfillmentRows: [{ ...base, customerId: null, remainingQuantity: 4, statusPillId: "ready", statusPillName: "Ready for Pickup", statusPillColor: "#123456" }] });
+    expect(result.fulfillment[0]).toEqual(expect.objectContaining({ quantity: 4, orderStatus: { label: "Ready for Pickup", color: "#123456" } }));
+  });
   test("includes a New canonical order once", () => expect(report([base, { ...base, lineItemId: "line-2" }]).summary.open).toBe(1));
   test("supports In Production source rows", () => expect(report([base]).overview).toHaveLength(1));
   test("complete orders are excluded by the tenant query contract", () => expect(report([]).overview).toHaveLength(0));
@@ -48,7 +64,7 @@ describe("Daily Production List projection", () => {
     const source = readFileSync(path.join(process.cwd(), "server/services/dailyProductionReport.ts"), "utf8");
     expect(source).toContain("eq(orderStatusPills.id, orders.statusPillId)");
     expect(source).toContain("eq(orderStatusPills.organizationId, orders.organizationId)");
-    expect(source).toContain("inArray(orderStatusPills.key, reportStatusKeys)");
+    expect(source).toContain("currentProductionStatusPillPredicate()");
     expect(source).not.toContain('eq(orders.state, "open")');
     expect(source).toContain("FulfillmentDashboardRepo(db).listLineEligibility");
     expect(source).toContain("line.projection.remainingQuantity <= 0");
