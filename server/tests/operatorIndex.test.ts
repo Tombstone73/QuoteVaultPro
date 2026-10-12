@@ -16,6 +16,7 @@ describe("Operator Index and skill manifests", () => {
   });
 
   it("keeps the checked-in Operator Index report generated", async () => {
-    await expect(readFile(path.resolve(process.cwd(), "docs/architecture/ai-operator-index.md"), "utf8")).resolves.toBe(renderOperatorIndexMarkdown());
+    const report = await readFile(path.resolve(process.cwd(), "docs/architecture/ai-operator-index.md"), "utf8");
+    expect(report.replace(/\r\n/g, "\n")).toBe(renderOperatorIndexMarkdown());
   });
 });

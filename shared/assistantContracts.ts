@@ -1,5 +1,7 @@
 import { z } from "zod";
 export {
+  analyticsCustomerBalanceInputSchema,
+  analyticsCustomerBalanceResultSchema,
   analyticsCustomerProductSalesInputSchema,
   analyticsCustomerProductSalesResultSchema,
   analyticsCustomerUninvoicedOrdersInputSchema,
@@ -75,6 +77,7 @@ export const assistantToolNameValues = [
   "analytics.customer_product_sales",
   "analytics.customer_uninvoiced_orders",
   "analytics.invoice_activity",
+  "analytics.customer_balance",
 ] as const;
 export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "analytical_reporting", "navigation", "unsupported_write", "clarification"] as const;
 /** Reporting scope is independent from tool selection. Keeping it typed avoids
@@ -484,6 +487,7 @@ export const assistantOperationalOrderLineSchema = z.object({
 export const assistantOperationalOrderSummarySchema = z.object({
   priority: z.string().trim().min(1).max(120),
   statusPill: z.string().trim().min(1).max(160).nullable(),
+  legacyStatus: z.string().trim().min(1).max(120).optional(),
   poNumber: z.string().trim().min(1).max(120).nullable(),
   jobLabel: z.string().trim().min(1).max(500).nullable(),
   lineItems: z.array(assistantOperationalOrderLineSchema).max(25),

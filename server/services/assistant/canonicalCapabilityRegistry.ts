@@ -174,6 +174,7 @@ const ineligibleCapabilities: readonly CanonicalCapabilityDescriptor[] = [
 ];
 
 const hardDeniedCapabilities: readonly CanonicalCapabilityDescriptor[] = [
+  ["organization.change_user_role", "Change user roles, including promoting a user to Owner.", "Role changes are deliberately AI-ineligible; use normally authorized user administration, never an AI mutation."],
   ["organization.delete", "Delete an organization and its owned data.", "Owner-only destructive organization action."],
   ["organization.destroy_tenant", "Destroy or tear down a tenant.", "Tenant destruction is never an AI capability."],
   ["organization.transfer_ownership", "Irreversibly transfer or destroy organization ownership.", "Owner-only irreversible organization control."],

@@ -6,6 +6,7 @@ import {
   materialProductLinks,
   materials,
   orderLineItems,
+  orderStatusPills,
   orders,
   pbv2TreeVersions,
   productOptions,
@@ -32,7 +33,7 @@ export class AssistantOrderProductRepository {
         displayNumber: orders.displayNumber,
         status: orders.status,
         state: orders.state,
-        statusPillValue: orders.statusPillValue,
+        statusPillValue: sql<string | null>`coalesce(${orderStatusPills.name}, ${orders.statusPillValue})`,
         priority: orders.priority,
         poNumber: orders.poNumber,
         label: orders.label,
@@ -46,6 +47,7 @@ export class AssistantOrderProductRepository {
       })
       .from(orders)
       .innerJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
+      .leftJoin(orderStatusPills, and(eq(orderStatusPills.id, orders.statusPillId), eq(orderStatusPills.organizationId, organizationId)))
       .where(and(eq(orders.organizationId, organizationId), orderPredicate))
       .limit(1);
 

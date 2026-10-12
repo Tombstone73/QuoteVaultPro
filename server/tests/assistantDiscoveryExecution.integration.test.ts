@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 import { AssistantOrchestrationService } from "../services/assistant/orchestration";
 import { deepSeekFunctionParameters } from "../services/ai/providers/configuredProvider";
 import { getCanonicalCapabilityForCommand } from "../services/assistant/canonicalCapabilityRegistry";

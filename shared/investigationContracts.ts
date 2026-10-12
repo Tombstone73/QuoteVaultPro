@@ -79,7 +79,7 @@ const currentSchema = z.object({
 }).strict();
 
 export const investigationSnapshotSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("order"), resource: investigationResourceReferenceSchema, current: currentSchema, orderNumber: shortText, customer: investigationResourceReferenceSchema.optional(), state: shortText, fulfillmentStatus: shortText, dueDate: isoDateTime.optional() }).strict(),
+  z.object({ type: z.literal("order"), resource: investigationResourceReferenceSchema, current: currentSchema, orderNumber: shortText, customer: investigationResourceReferenceSchema.optional(), state: shortText, legacyStatus: shortText.optional(), fulfillmentStatus: shortText, dueDate: isoDateTime.optional() }).strict(),
   z.object({ type: z.literal("customer"), resource: investigationResourceReferenceSchema, current: currentSchema, companyName: shortText, active: z.boolean().nullable() }).strict(),
   z.object({ type: z.literal("order_line"), resource: investigationResourceReferenceSchema, current: currentSchema, description: shortText, quantity: z.number().int().nonnegative(), order: investigationResourceReferenceSchema, workflowState: shortText }).strict(),
   z.object({ type: z.literal("production_job"), resource: investigationResourceReferenceSchema, current: currentSchema, order: investigationResourceReferenceSchema, line: investigationResourceReferenceSchema.nullable(), station: shortText, step: shortText, status: shortText }).strict(),

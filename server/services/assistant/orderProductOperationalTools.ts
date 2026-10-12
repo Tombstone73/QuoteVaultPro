@@ -719,10 +719,6 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
           order: {
             id: record.order.id, number, customerId: record.order.customerId, customer: record.order.customerName,
             status: record.order.status,
-            // The legacy status is the core, tenant-scoped value available in
-            // every supported schema revision. Workflow/pill/fulfillment
-            // enrichments remain intentionally unavailable rather than making
-            // a valid order lookup depend on optional schema columns.
             state: safeOptionalStatus(record.order.state ?? record.order.status),
             statusPill: trimmed(record.order.statusPillValue) ?? null,
             dueDate: toIso(record.order.dueDate),
@@ -973,18 +969,19 @@ export function createStage2OrderProductToolAdapters(
         const sourceLink = result.sourceLinks[0]!;
         const invoice = result.data.invoices?.[0];
         const data = assistantOrderSummaryResultSchema.parse({
-          order: entitySummary("order", order.id, `Order ${order.number}`, order.status, sourceLink, freshness, order.state),
+          order: entitySummary("order", order.id, `Order ${order.number}`, order.state === "closed" || order.status === "operationally_complete" ? order.status : order.statusPill ?? order.status, sourceLink, freshness, order.state),
           customer: entitySummary("customer", order.customerId, order.customer, undefined, {
             label: order.customer, href: `/customers/${order.customerId}`, entityType: "customer", entityId: order.customerId, capturedAt: freshness,
           }, freshness),
           ...(order.dueDate ? { dueDate: order.dueDate } : {}),
           lineItemSummary: `${result.data.lineItems.length} line item${result.data.lineItems.length === 1 ? "" : "s"}.`,
           artworkState: `${result.data.artwork.awaitingDesign} awaiting design of ${result.data.artwork.required} requiring design.`,
-          productionState: `${result.data.productionJobs.length} production job${result.data.productionJobs.length === 1 ? "" : "s"}; ${result.data.prepress.pending} pending prepress.`,
+          productionState: `${result.data.productionJobs.length} returned production job${result.data.productionJobs.length === 1 ? "" : "s"}. Line-item readiness is separate; job counts do not establish activity or completed quantities.`,
           fulfillmentState: order.fulfillmentStatus,
           operational: {
             priority: order.priority,
             statusPill: order.statusPill,
+            legacyStatus: order.status,
             poNumber: order.poNumber,
             jobLabel: order.jobLabel,
             lineItems: result.data.lineItems.map((line) => ({

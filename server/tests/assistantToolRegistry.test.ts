@@ -36,6 +36,31 @@ const successfulSearch = {
 };
 
 describe("assistant tool registry", () => {
+  test("financial schemas reject speculative live argument shapes before adapter execution", async () => {
+    const execute = jest.fn(async () => successfulSearch);
+    const service = new AssistantOrchestrationService({ "analytics.invoice_activity": { execute }, "analytics.customer_uninvoiced_orders": { execute }, "analytics.customer_balance": { execute } });
+    const financeContext = { ...trustedContext, permissions: ["assistant.internal_staff", "finance.read"] };
+    for (const toolName of ["analytics.invoice_activity", "analytics.customer_uninvoiced_orders"]) {
+      const result = await service.executeTool(toolName, { customer: { name: "Brainstorm Print" } }, financeContext);
+      expect(result.status).toBe("rejected");
+    }
+    expect(execute).not.toHaveBeenCalled();
+    const registry = createAssistantToolRegistry();
+    expect(registry.get("analytics.invoice_activity")?.providerInputSchema).toMatchObject({ required: ["dateRange"], additionalProperties: false });
+    expect(registry.get("analytics.customer_uninvoiced_orders")?.providerInputSchema).toMatchObject({ required: ["customer", "dateRange"] });
+    expect(registry.get("analytics.customer_balance")?.inputSchema.safeParse({ customer: { name: "Brainstorm Print" }, dateRange: { start: "2026-01-01", end: "2026-12-31" } }).success).toBe(false);
+    expect(service.catalog(trustedContext).map((tool) => tool.name)).not.toContain("analytics.customer_balance");
+    expect((await service.executeTool("analytics.customer_balance", { customer: { name: "Brainstorm Print" } }, trustedContext)).status).toBe("permission_denied");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("unavailable customer A/R produces specific missing evidence rather than a zero balance", async () => {
+    const service = new AssistantOrchestrationService({ "analytics.customer_balance": { execute: async () => { throw new Error("synthetic AR failure"); } } });
+    const result = await service.executeTool("analytics.customer_balance", { customer: { name: "Brainstorm Print" } }, { ...trustedContext, permissions: ["assistant.internal_staff", "finance.read"] });
+    expect(result).toMatchObject({ status: "failed", warning: expect.stringContaining("authoritative customer Accounts Receivable read") });
+    expect(result.result).toBeUndefined();
+    expect(result.warning).toContain("No balance amount is established");
+  });
   test("contains only the registered read-only tools", () => {
     const registry = createAssistantToolRegistry();
     expect([...registry.keys()]).toEqual([
@@ -61,6 +86,7 @@ describe("assistant tool registry", () => {
       "analytics.customer_product_sales",
       "analytics.customer_uninvoiced_orders",
       "analytics.invoice_activity",
+      "analytics.customer_balance",
     ]);
     for (const tool of registry.values()) {
       expect(tool.readOnly).toBe(true);

@@ -4,12 +4,12 @@
 
 ## Counts
 
-- Registered: 76
-- Read: 22
+- Registered: 78
+- Read: 23
 - Mutation: 44
-- Eligible: 65
+- Eligible: 66
 - Ineligible: 4
-- Hard denied: 7
+- Hard denied: 8
 
 ## Registry
 
@@ -37,6 +37,7 @@
 | capability.read.analytics.customer_product_sales | customers_contacts | read | read_tool | analytics.customer_product_sales | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.analytics.customer_uninvoiced_orders | customers_contacts | read | read_tool | analytics.customer_uninvoiced_orders | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.analytics.invoice_activity | customers_contacts | read | read_tool | analytics.invoice_activity | finance.read | eligible | — | customers.contacts | wrapped_existing |
+| capability.read.analytics.customer_balance | customers_contacts | read | read_tool | analytics.customer_balance | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.command.quotes.add_internal_note | quotes | mutation | command | quotes.add_internal_note | assistant.quotes.add_internal_note | eligible | — | quotes.operations | wrapped_existing |
 | capability.command.products.create_inactive_draft | products | mutation | command | products.create_inactive_draft | assistant.products.create_inactive_draft | eligible | — | products.pbv2 | wrapped_existing |
 | capability.command.products.create_inactive_draft_batch | products | mutation | command | products.create_inactive_draft_batch | assistant.products.create_inactive_draft_batch | eligible | — | products.pbv2 | wrapped_existing |
@@ -84,6 +85,7 @@
 | capability.ui.products.pricing_formula_profile | products | mutation | ui_compatibility | products.pricing_formula_profile | assistant.products.update_existing_product | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.products.delete | products | administrative | ui_compatibility | products.delete | product.delete | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.products.advanced_pbv2_override | products | administrative | ui_compatibility | products.advanced_pbv2_override | product.update | ineligible | — | products.pbv2 | compatibility_only |
+| capability.hard_deny.organization.change_user_role | security | administrative | security_policy | organization.change_user_role | — | hard_denied | Role changes are deliberately AI-ineligible; use normally authorized user administration, never an AI mutation. | — | security_policy |
 | capability.hard_deny.organization.delete | security | administrative | security_policy | organization.delete | — | hard_denied | Owner-only destructive organization action. | — | security_policy |
 | capability.hard_deny.organization.destroy_tenant | security | administrative | security_policy | organization.destroy_tenant | — | hard_denied | Tenant destruction is never an AI capability. | — | security_policy |
 | capability.hard_deny.organization.transfer_ownership | security | administrative | security_policy | organization.transfer_ownership | — | hard_denied | Owner-only irreversible organization control. | — | security_policy |

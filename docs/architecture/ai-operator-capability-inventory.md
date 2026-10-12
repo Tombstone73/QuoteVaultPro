@@ -163,6 +163,7 @@ None.
 | ai.read.analytics.customer_product_sales | read | unknown | read_tool | analytics.customer_product_sales | finance_read | partial_or_indirect |
 | ai.read.analytics.customer_uninvoiced_orders | read | unknown | read_tool | analytics.customer_uninvoiced_orders | finance_read | partial_or_indirect |
 | ai.read.analytics.invoice_activity | read | unknown | read_tool | analytics.invoice_activity | finance_read | partial_or_indirect |
+| ai.read.analytics.customer_balance | read | unknown | read_tool | analytics.customer_balance | finance_read | partial_or_indirect |
 | ai.command.customers.create | mutation | unknown | command_plan_only | customers.create | assistant.customers.create | shared_canonical_today |
 | ai.command.customers.update_profile | mutation | unknown | command_plan_only | customers.update_profile | assistant.customers.update_profile | shared_canonical_today |
 | ai.command.customers.update_commercial_terms | mutation | unknown | command_plan_only | customers.update_commercial_terms | assistant.customers.update_commercial_terms | shared_canonical_today |

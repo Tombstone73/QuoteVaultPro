@@ -12,6 +12,7 @@ import {
   orderAuditLog,
   orderAttachments,
   orderLineItems,
+  orderStatusPills,
   orders,
   pickupHandoffs,
   productionEvents,
@@ -185,10 +186,11 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
       rows.push({ resource, summary, match: values.some((value) => String(value ?? "").trim().toLowerCase() === normalized) ? "exact" : "partial" });
     };
     if (requested.has("order")) {
-      const records = await db.select({ id: orders.id, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, status: orders.status, customerName: customers.companyName })
+      const records = await db.select({ id: orders.id, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, status: orders.status, state: orders.state, statusPillValue: sql<string | null>`coalesce(${orderStatusPills.name}, ${orders.statusPillValue})`, customerName: customers.companyName })
         .from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
+        .leftJoin(orderStatusPills, and(eq(orderStatusPills.id, orders.statusPillId), eq(orderStatusPills.organizationId, organizationId)))
         .where(and(eq(orders.organizationId, organizationId), or(ilike(orders.orderNumber, pattern), ilike(orders.displayNumber, pattern), ilike(customers.companyName, pattern), ...(canonicalOrder ? [eq(orders.orderNumber, canonicalOrder.databaseValue)] : [])))).orderBy(desc(orders.updatedAt)).limit(limit);
-      records.forEach((record) => add(orderRef(record.id, record.displayNumber, record.orderNumber), `${record.customerName ?? "Unassigned customer"} · ${record.status}`, [record.orderNumber, record.displayNumber, record.customerName]));
+      records.forEach((record) => add(orderRef(record.id, record.displayNumber, record.orderNumber), `${record.customerName ?? "Unassigned customer"} · ${record.state === "closed" || record.status === "operationally_complete" ? record.status : record.statusPillValue?.trim() || record.status}`, [record.orderNumber, record.displayNumber, record.customerName]));
     }
     if (requested.has("customer") && rows.length < limit) {
       const records = await db.select({ id: customers.id, companyName: customers.companyName, status: customers.status }).from(customers)
@@ -241,8 +243,8 @@ export class DrizzleInvestigationRepository implements InvestigationRepository {
 
   async get(organizationId: string, resource: InvestigationResourceInput): Promise<InvestigationSnapshot | null> {
     if (resource.type === "order") {
-      const [record] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, status: orders.status, state: orders.state, fulfillmentStatus: orders.fulfillmentStatus, dueDate: orders.dueDate, updatedAt: orders.updatedAt, customerId: customers.id, customerName: customers.companyName }).from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId))).where(and(eq(orders.organizationId, organizationId), eq(orders.id, resource.id))).limit(1);
-      return record ? { type: "order", resource: orderRef(record.id, record.displayNumber, record.orderNumber), current: { status: record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, orderNumber: String(record.displayNumber ?? record.orderNumber), ...(record.customerId && record.customerName ? { customer: customerRef(record.customerId, record.customerName) } : {}), state: record.state, fulfillmentStatus: record.fulfillmentStatus, ...(iso(record.dueDate) ? { dueDate: iso(record.dueDate)! } : {}) } : null;
+      const [record] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, status: orders.status, statusPillValue: sql<string | null>`coalesce(${orderStatusPills.name}, ${orders.statusPillValue})`, state: orders.state, fulfillmentStatus: orders.fulfillmentStatus, dueDate: orders.dueDate, updatedAt: orders.updatedAt, customerId: customers.id, customerName: customers.companyName }).from(orders).leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId))).leftJoin(orderStatusPills, and(eq(orderStatusPills.id, orders.statusPillId), eq(orderStatusPills.organizationId, organizationId))).where(and(eq(orders.organizationId, organizationId), eq(orders.id, resource.id))).limit(1);
+      return record ? { type: "order", resource: orderRef(record.id, record.displayNumber, record.orderNumber), current: { status: record.state === "closed" || record.status === "operationally_complete" ? record.status : record.statusPillValue?.trim() || record.status, ...(iso(record.updatedAt) ? { updatedAt: iso(record.updatedAt)! } : {}) }, orderNumber: String(record.displayNumber ?? record.orderNumber), ...(record.customerId && record.customerName ? { customer: customerRef(record.customerId, record.customerName) } : {}), state: record.state, legacyStatus: record.status, fulfillmentStatus: record.fulfillmentStatus, ...(iso(record.dueDate) ? { dueDate: iso(record.dueDate)! } : {}) } : null;
     }
     if (resource.type === "customer") {
       const [record] = await db.select({ id: customers.id, companyName: customers.companyName, isActive: customers.isActive, status: customers.status, updatedAt: customers.updatedAt }).from(customers).where(and(eq(customers.organizationId, organizationId), eq(customers.id, resource.id))).limit(1);

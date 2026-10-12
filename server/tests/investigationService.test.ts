@@ -50,6 +50,22 @@ function repository(): InvestigationRepository {
 const authorized = { organizationId: "org_1", permissions: ["assistant.internal_staff"] };
 
 describe("resource-oriented investigation service", () => {
+  test("canonical order investigation presents the pill and retains the separate legacy marker", async () => {
+    const { db } = await import("../db");
+    const { DrizzleInvestigationRepository } = await import("../services/investigation/investigationService");
+    const query: any = { from: jest.fn(() => query), leftJoin: jest.fn(() => query), where: jest.fn(() => query), limit: jest.fn(async () => [{ id: "order_20665", orderNumber: "20665", displayNumber: null, status: "new", statusPillValue: "In Production", state: "open", fulfillmentStatus: "pending", dueDate: null, updatedAt: null, customerId: null, customerName: null }]) };
+    (db as any).select = jest.fn(() => query);
+    try {
+      const result = await new DrizzleInvestigationRepository().get("org_1", { type: "order", id: "order_20665" });
+      expect(result).toMatchObject({ current: { status: "In Production" }, legacyStatus: "new", state: "open" });
+      expect(() => investigationSnapshotSchema.parse(result)).not.toThrow();
+      const source = await readFile(path.resolve(process.cwd(), "server/services/investigation/investigationService.ts"), "utf8");
+      expect(source).toContain("eq(orderStatusPills.organizationId, organizationId)");
+      expect(source).toContain("coalesce(${orderStatusPills.name}, ${orders.statusPillValue})");
+    } finally {
+      delete (db as any).select;
+    }
+  });
   test("defines the approved investigation graph without a generic resource type", () => {
     expect(Object.keys(investigationResourceDescriptors)).toEqual(["order", "customer", "order_line", "production_job", "fulfillment", "pickup_activity", "shipment", "invoice", "contact", "quote", "artwork"]);
     expect(investigationResourceDescriptors.order.relations).toEqual(expect.arrayContaining(["belongs_to_customer", "contains_line", "has_production_job", "has_fulfillment_workspace", "fulfills_order", "invoices_order", "originated_from_quote", "has_artwork"]));

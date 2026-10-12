@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  analyticsCustomerBalanceInputSchema,
+  analyticsCustomerBalanceResultSchema,
   analyticsCustomerProductSalesInputSchema,
   analyticsCustomerProductSalesResultSchema,
   analyticsCustomerUninvoicedOrdersInputSchema,
@@ -27,6 +29,7 @@ export interface AssistantAnalyticsReportingToolDependencies {
   now?: () => Date;
   /** Test-only fallback when organization settings have no valid IANA zone. */
   timezone?: string;
+  getAccountsReceivableReport?: typeof import("../accountsReceivableReport").getAccountsReceivableReport;
 }
 
 function validTimezone(value: string | null | undefined): string {
@@ -128,6 +131,10 @@ export function createAssistantAnalyticsReportingToolAdapters(
 ): AssistantToolAdapters {
   const repository = deps.repository ?? new AssistantAnalyticsReportingRepository();
   const now = deps.now ?? (() => new Date());
+  const getAccountsReceivableReport = deps.getAccountsReceivableReport ?? (async (input) => {
+    const service = await import("../accountsReceivableReport");
+    return service.getAccountsReceivableReport(input);
+  });
   const timezoneFor = async (organizationId: string) => validTimezone(
     ("getOrganizationTimezone" in repository ? await repository.getOrganizationTimezone(organizationId) : null) ?? deps.timezone,
   );
@@ -241,7 +248,7 @@ export function createAssistantAnalyticsReportingToolAdapters(
         orderDate: iso(order.orderDate),
         sourceLink: { label: order.orderNumber, href: `/orders/${order.orderId}` },
       })),
-      warnings: ["Uninvoiced order value is operational context only and is not included in posted revenue."],
+      warnings: ["Uninvoiced order value covers only the bounded returned orders, not a complete customer total or invoice balance, and is not included in posted revenue."],
       timezone,
     });
     return {
@@ -258,6 +265,25 @@ export function createAssistantAnalyticsReportingToolAdapters(
   };
 
   return {
+    "analytics.customer_balance": {
+      async execute(rawInput, context) {
+        const input = analyticsCustomerBalanceInputSchema.parse(rawInput);
+        const query = input.customer.id ?? input.customer.name!;
+        const resolution = await repository.resolveCustomer(context.scope.organizationId, query);
+        const customer = resolution.confidence === "exact" ? resolution.customer : null;
+        if (!customer) return { status: "not_found", data: null, warning: alternativesWarning(query, resolution.alternatives) };
+        const capturedAt = now().toISOString();
+        const ar = await getAccountsReceivableReport({ organizationId: context.scope.organizationId, filters: { customerId: customer.id }, now: new Date(capturedAt) });
+        // The canonical summary covers all qualifying rows before pagination.
+        // Never sum pageRows or invoice_activity to establish customer A/R.
+        const data = analyticsCustomerBalanceResultSchema.parse({
+          customer: resolvedCustomerData(customer), asOf: ar.asOf,
+          invoiceOutstandingCents: ar.summary.totalOutstandingCents, openInvoiceCount: ar.totalCount,
+          warnings: ["Current invoice outstanding includes qualifying reconciled historical A/R. Uninvoiced work is excluded. Unapplied account credits are not deducted; this is not the net customer statement amount due."],
+        });
+        return { status: "succeeded", data, provenance: { sourceLinks: [customerSource(customer, capturedAt), { label: "Accounts Receivable", href: "/reports/accounts-receivable", capturedAt }], freshness: { capturedAt } } };
+      },
+    },
     "analytics.resolve_customer": { execute: resolve },
     "analytics.customer_product_sales": { execute: customerProductSales },
     // The allowlist entry is owned by the central registry; this adapter cannot

@@ -45,6 +45,44 @@ function bannerPricingConfiguration(overrides: Record<string, unknown> = {}) {
 }
 
 describe("assistant order/product/operational tools", () => {
+  test("20665 uses its canonical In Production pill while retaining four ready items and zero jobs", async () => {
+    const repository = {
+      ...repo(),
+      getOrder: jest.fn(async () => ({ order: { id: "order-20665", orderNumber: "20665", displayNumber: null, status: "new", state: "open", statusPillValue: "In Production", dueDate: null, updatedAt: capturedAt, customerId: "customer-1", customerName: "Synthetic Print" }, lineItems: [], production: [], invoices: [] })),
+      getOrderLineItems: jest.fn(async () => Array.from({ length: 4 }, (_, i) => ({ id: `line-${i}`, description: `Synthetic item ${i + 1}`, productName: "Coroplast", quantity: i + 1, status: "new", workflowState: "ready_for_production" }))),
+      getOrderProduction: jest.fn(async () => []),
+      getOrderInvoices: jest.fn(async () => []),
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+    const result = await tools.ordersGetSummary.execute(invocation, { orderNumber: "20665" });
+    expect(result.data.order).toMatchObject({ status: "new", statusPill: "In Production", state: "open" });
+    expect(result.data.lineItems).toHaveLength(4);
+    expect(result.data.lineItems.map((item) => item.workflowState)).toEqual(Array(4).fill("ready_for_production"));
+    expect(result.data.productionOverview).toMatchObject({ totalJobs: 0, printProgressAvailable: false });
+    const adapters = createAssistantOrderProductToolAdapters({ repository, now: fixedNow });
+    const adapted = await adapters["orders.get_summary"]!.execute({ orderNumber: "20665" }, { scope: { organizationId: "org-a", userId: "user-a" }, actor: { userId: "user-a", email: null }, permissions: ["assistant.internal_staff"], context, correlationId: "synthetic", signal: new AbortController().signal });
+    expect(adapted.data).toMatchObject({ order: { status: "In Production" }, operational: { legacyStatus: "new" }, productionState: expect.stringContaining("Line-item readiness is separate") });
+  });
+
+  test("Coroplast configuration preserves base rate, matrix, options and minimum without calculating or editing prices", async () => {
+    const repository = repo();
+    const record = (await repository.getProduct("org-a"))!;
+    record.product.name = "Coroplast";
+    repository.getProduct.mockResolvedValue(record);
+    const configuration = bannerPricingConfiguration({
+      pricingStrategy: "matrix", baseRates: { perSquareFootCents: 100, perPieceCents: null, minimumChargeCents: 2500 },
+      matrix: { dimensions: ["Thickness"], rowCount: 1, pricingUnit: "per_square_foot", cells: [{ selections: [{ axis: "Thickness", value: "4mm" }], rateCents: 175 }] },
+    });
+    const getProductPricingConfiguration = jest.fn(async () => configuration);
+    const projectProductPrice = jest.fn();
+    const tools = createOrderProductOperationalTools({ repository, getProductPricingConfiguration: getProductPricingConfiguration as any, projectProductPrice: projectProductPrice as any, now: fixedNow });
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Coroplast" });
+    expect(result.data.pricing).toMatchObject({ status: "configuration", totalCents: null, configuration: { baseRates: configuration.baseRates, matrix: configuration.matrix, options: [expect.objectContaining({ label: "Finishing", defaultSelection: "Hemmed" })] } });
+    expect(result.data.product?.name).toBe("Coroplast");
+    expect(repository.getProduct).toHaveBeenLastCalledWith("org-a", { query: "Coroplast" });
+    expect(getProductPricingConfiguration).toHaveBeenCalledWith({ organizationId: "org-a", productId: "product-1" });
+    expect(projectProductPrice).not.toHaveBeenCalled();
+  });
   test("order summary reduces canonical records and omits invoices without finance permission", async () => {
     const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
     const result = await tools.ordersGetSummary.execute(invocation, { orderNumber: "16309" });

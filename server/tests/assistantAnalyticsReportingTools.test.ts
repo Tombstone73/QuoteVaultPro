@@ -39,6 +39,28 @@ function repository(overrides: Record<string, unknown> = {}) {
 }
 
 describe("assistant analytics reporting tools", () => {
+  test("Brainstorm balance uses the complete canonical A/R summary, not a bounded invoice page or orders", async () => {
+    const repo = repository();
+    const getAccountsReceivableReport = jest.fn(async () => ({ asOf: "2026-07-21", summary: { totalOutstandingCents: 987654 }, totalCount: 201, pageRows: [{ remainingCents: 1 }] })) as any;
+    const tools = createAssistantAnalyticsReportingToolAdapters({ repository: repo as any, now: () => new Date(capturedAt), getAccountsReceivableReport });
+    const result = await tools["analytics.customer_balance"]!.execute({ customer: { name: "Brainstorm Print" } }, context);
+    expect(result).toMatchObject({ status: "succeeded", data: { invoiceOutstandingCents: 987654, openInvoiceCount: 201, asOf: "2026-07-21" } });
+    expect(getAccountsReceivableReport).toHaveBeenCalledWith({ organizationId: "org-a", filters: { customerId: "customer-a" }, now: new Date(capturedAt) });
+    expect(repo.customerUninvoicedOrders).not.toHaveBeenCalled();
+    expect(repo.customerProductSales).not.toHaveBeenCalled();
+    expect(result.provenance?.sourceLinks).toEqual(expect.arrayContaining([expect.objectContaining({ href: "/reports/accounts-receivable" })]));
+    expect((result.data as any).warnings[0]).toContain("Unapplied account credits are not deducted");
+  });
+
+  test("balance resolution fails closed for ambiguous, missing, and unavailable A/R evidence", async () => {
+    const getAccountsReceivableReport = jest.fn(async () => { throw new Error("synthetic unavailable AR"); }) as any;
+    const tools = createAssistantAnalyticsReportingToolAdapters({ repository: repository() as any, getAccountsReceivableReport });
+    for (const name of ["Brainstorm", "unknown"]) {
+      expect(await tools["analytics.customer_balance"]!.execute({ customer: { name } }, context)).toMatchObject({ status: "not_found", data: null });
+    }
+    expect(getAccountsReceivableReport).not.toHaveBeenCalled();
+    await expect(tools["analytics.customer_balance"]!.execute({ customer: { name: "Brainstorm Print" } }, context)).rejects.toThrow("synthetic unavailable AR");
+  });
   test("normalizes a company and several matching contacts into one purchasing entity", () => {
     const candidates = normalizeCustomerResolutionCandidates([
       { id: "customer-bright", displayName: "Bright Signs Marketing", updatedAt: capturedAt, resolutionType: "company", contactId: null, contactName: null, explanation: "company" },

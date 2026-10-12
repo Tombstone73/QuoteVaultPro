@@ -52,6 +52,7 @@ describe("Operator runtime skills", () => {
 
   it("rejects malformed manifests and keeps the generated runtime inventory checked in", async () => {
     expect(() => validateOperatorSkillManifests([{ ...operatorSkillManifests[0], approvedSources: [{ slug: "bad path", sourcePath: "docs/knowledge/not-real.md" }] } as any])).toThrow("Malformed approved skill source");
-    await expect(readFile(path.resolve(process.cwd(), "docs/architecture/ai-operator-runtime-skill-inventory.md"), "utf8")).resolves.toBe(renderOperatorSkillInventoryMarkdown());
+    const report = await readFile(path.resolve(process.cwd(), "docs/architecture/ai-operator-runtime-skill-inventory.md"), "utf8");
+    expect(report.replace(/\r\n/g, "\n")).toBe(renderOperatorSkillInventoryMarkdown());
   });
 });

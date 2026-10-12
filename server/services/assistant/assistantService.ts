@@ -1643,11 +1643,17 @@ function displayToolTitle(toolName: string): string {
     "analytics.resolve_customer": "Customer resolution",
     "analytics.customer_product_sales": "Customer product sales",
     "analytics.customer_uninvoiced_orders": "Uninvoiced orders",
+    "analytics.customer_balance": "Current invoice outstanding",
+    "analytics.invoice_activity": "Invoice activity",
   };
   return titles[toolName] ?? "Assistant result";
 }
 
 function summaryForTool(toolName: string, data: any): string {
+  if (toolName === "analytics.customer_balance") {
+    const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(data.invoiceOutstandingCents / 100);
+    return `${data.customer.displayName}'s current invoice outstanding is ${amount} as of ${data.asOf}, across ${data.openInvoiceCount} open invoices, from canonical Accounts Receivable. This includes qualifying reconciled historical A/R, excludes uninvoiced work, and does not deduct unapplied account credits.`;
+  }
   if (toolName === "search.global") {
     const count = data.matches?.length ?? 0;
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
@@ -1707,7 +1713,7 @@ function summaryForTool(toolName: string, data: any): string {
       ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(data.totalOrderValueCents / 100)
       : null;
     const first = orders[0] as { orderNumber?: string; fulfillmentState?: string } | undefined;
-    return `${customer} has ${orders.length} uninvoiced ${orders.length === 1 ? "order" : "orders"}${total ? ` worth ${total}` : ""}${first?.fulfillmentState ? `; the first is ${first.orderNumber ?? "an order"} and is ${formatAssistantDisplayValue(first.fulfillmentState)}` : ""}. This operational order value is not posted revenue.`;
+    return `${customer} has ${orders.length} returned uninvoiced ${orders.length === 1 ? "order" : "orders"}${total ? ` worth ${total}` : ""}${first?.fulfillmentState ? `; the first is ${first.orderNumber ?? "an order"} and is ${formatAssistantDisplayValue(first.fulfillmentState)}` : ""}. This bounded operational order value is not a complete customer total, invoice balance, or posted revenue.`;
   }
   if (toolName === "production.get_queue_summary") {
     const stations = Array.isArray(data.stations) ? data.stations : [];
@@ -1789,7 +1795,7 @@ function summarizeOperationalOrder(data: any): string | null {
   const unknownSidedness = lines.length - classified.length;
   const production = operational.production;
   const productionText = production
-    ? `${production.totalJobs ?? 0} production ${production.totalJobs === 1 ? "job" : "jobs"}, with ${production.queuedJobs ?? 0} queued, ${production.inProductionJobs ?? 0} in production, and ${production.completedJobs ?? 0} completed.`
+    ? `${production.totalJobs ?? 0} returned production ${production.totalJobs === 1 ? "job" : "jobs"}, with ${production.queuedJobs ?? 0} queued, ${production.inProductionJobs ?? 0} in production, and ${production.completedJobs ?? 0} completed. Line-item readiness is separate from job counts.`
     : null;
   const sidednessText = lines.length
     ? unknownSidedness === 0

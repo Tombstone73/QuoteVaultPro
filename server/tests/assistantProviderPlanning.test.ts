@@ -38,6 +38,17 @@ afterEach(() => {
 });
 
 describe("assistant provider planning", () => {
+  test("plans current Brainstorm balance without dates and documents both financial read contracts", async () => {
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify({ intent: "analytical_reporting", selectedSkill: null, clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise", toolCalls: [{ toolName: "analytics.customer_balance", arguments: { customer: { name: "Brainstorm Print" } } }] }), provider: "openai", model: "test", requestMetadata: {} })) } as any;
+    const result = await new ConfiguredAssistantPlanner(provider, resolver()).plan({ organizationId: "org_1", message: "Find Brainstorm Print and tell me their balance", context });
+    expect(result.plan.clarificationRequired).toBe(false);
+    expect(result.plan.toolCalls).toEqual([{ toolName: "analytics.customer_balance", arguments: { customer: { name: "Brainstorm Print" } } }]);
+    const system = provider.generateJson.mock.calls[0][0].system;
+    expect(system).toContain("analytics.invoice_activity {dateRange:{start,end},statuses?,customerId?,limit?}");
+    expect(system).toContain("analytics.customer_balance {customer:{id?,name?}}");
+    expect(system).toContain("without asking for dates");
+    expect(system).toContain("Role changes and promotion to Owner are deliberately AI-ineligible");
+  });
   test("resolves a bounded assistant-planning timeout from the environment", () => {
     expect(resolveAssistantPlanningTimeoutMs({} as NodeJS.ProcessEnv)).toBe(20_000);
     expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "not-a-number" } as NodeJS.ProcessEnv)).toBe(20_000);

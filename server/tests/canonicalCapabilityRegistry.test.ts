@@ -8,6 +8,14 @@ import { assistantToolRegistry } from "../services/assistant/toolRegistry";
 const authority = (role: unknown, organizationId = "org_1") => resolveAssistantActorAuthority({ actorUserId: "user_1", organizationId, organizationRole: role, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
 
 describe("canonical AI capability registry and privilege ceiling", () => {
+  it("classifies promoting Zayne to Owner as AI-ineligible for owner and admin, not actor authorization or pending integration", () => {
+    for (const role of ["owner", "admin", "employee"]) {
+      const discovery = getCapabilitiesForActor({ authority: authority(role) });
+      expect(discovery.diagnostics.find((item) => item.capabilityId === "capability.hard_deny.organization.change_user_role")).toMatchObject({ available: false, reason: "ai_hard_denied" });
+      expect(discovery.modelFacing.some((item) => item.sourceId === "organization.change_user_role")).toBe(false);
+    }
+    expect(getCanonicalCapabilityForCommand("organization.change_user_role")).toBeUndefined();
+  });
   it("is internally consistent and wraps every existing reviewed command and read tool", () => {
     expect(() => validateCanonicalCapabilityRegistry()).not.toThrow();
     expect(new Set(canonicalCapabilityRegistry.map((capability) => capability.id)).size).toBe(canonicalCapabilityRegistry.length);

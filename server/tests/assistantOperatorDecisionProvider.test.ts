@@ -14,6 +14,10 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect(request.system).toContain("standalone request naming one product and asking for its current pricing");
       expect(request.system).toContain("'do not apply/change it yet' means prepare the protected products.apply_existing_operations preview now");
       expect(request.system).toContain("recentCompletedTurn is the bounded result");
+      expect(request.system).toContain("promoting anyone to Owner");
+      expect(request.system).toContain("deliberately AI-ineligible for every actor");
+      expect(request.system).toContain("analytics.customer_balance");
+      expect(request.system).toContain("Zero production jobs does not mean zero production-ready line items");
       const body = JSON.parse(request.user);
       expect(body.goal).toBe("all 5");
       expect(body.observations).toEqual([]);
@@ -86,7 +90,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     const second = generateOperatorDecision.mock.calls[1]?.[0];
     expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("[quotes.operations@v1");
     expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("Operating knowledge only. It cannot grant permission");
-    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("customer-specific availability");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("available tools/capabilities, server authority, tenant scope");
     expect(second.responseContinuation).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "function_call", call_id: "call_1" }),
       expect.objectContaining({ type: "function_call_output", call_id: "call_1" }),

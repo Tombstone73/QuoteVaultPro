@@ -5,11 +5,11 @@
 ## Counts
 
 - shared_canonical: 35
-- compatibility_only: 30
+- compatibility_only: 31
 - ui_only_reviewed: 1
 - ai_integration_pending: 1
 - deliberately_ai_ineligible: 2
-- hard_denied: 7
+- hard_denied: 8
 - underlying_model_unsupported: 2
 
 ## customers_contacts
@@ -21,6 +21,7 @@
 | capability.read.analytics.customer_product_sales | compatibility_only | unknown | existing | not_applicable | analytics.customer_product_sales | finance.read | not_required | not_applicable |
 | capability.read.analytics.customer_uninvoiced_orders | compatibility_only | unknown | existing | not_applicable | analytics.customer_uninvoiced_orders | finance.read | not_required | not_applicable |
 | capability.read.analytics.invoice_activity | compatibility_only | unknown | existing | not_applicable | analytics.invoice_activity | finance.read | not_required | not_applicable |
+| capability.read.analytics.customer_balance | compatibility_only | unknown | existing | not_applicable | analytics.customer_balance | finance.read | not_required | not_applicable |
 | capability.command.customers.create | shared_canonical | Customer and Contact routes | existing | customers.create.v1 | customers.create | assistant.customers.create | go_required | CanonicalCustomerContactOperations |
 | capability.command.customers.update_profile | shared_canonical | Customer and Contact routes | existing | customers.update.v1 | customers.update_profile | assistant.customers.update_profile | go_required | CanonicalCustomerContactOperations |
 | capability.command.customers.update_commercial_terms | shared_canonical | Customer and Contact routes | existing | customers.update.v1 | customers.update_commercial_terms | assistant.customers.update_commercial_terms | go_required | CanonicalCustomerContactOperations |
@@ -132,6 +133,7 @@
 
 | Capability | Classification | UI exposure | AI exposure | Canonical operation | Adapter/tool | Authority | GO | Lifecycle/state owner |
 |---|---|---|---|---|---|---|---|---|
+| capability.hard_deny.organization.change_user_role | hard_denied | unknown | not_exposed | not_applicable | organization.change_user_role | — | not_required | not_applicable |
 | capability.hard_deny.organization.delete | hard_denied | unknown | not_exposed | not_applicable | organization.delete | — | not_required | not_applicable |
 | capability.hard_deny.organization.destroy_tenant | hard_denied | unknown | not_exposed | not_applicable | organization.destroy_tenant | — | not_required | not_applicable |
 | capability.hard_deny.organization.transfer_ownership | hard_denied | unknown | not_exposed | not_applicable | organization.transfer_ownership | — | not_required | not_applicable |

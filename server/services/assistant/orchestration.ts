@@ -352,7 +352,9 @@ export class AssistantOrchestrationService {
     return {
       toolName: tool.name,
       status: timedOut ? "timed_out" : "failed",
-      warning: timedOut ? "The business lookup timed out. Please try again." : "The business lookup could not be completed.",
+      warning: tool.name === "analytics.customer_balance"
+        ? "Current invoice outstanding is unavailable because the authoritative customer Accounts Receivable read could not be completed. No balance amount is established."
+        : timedOut ? "The business lookup timed out. Please try again." : "The business lookup could not be completed.",
       failureCategory: failure.category,
       failureCode: failure.code,
       failingStep: failure.step,

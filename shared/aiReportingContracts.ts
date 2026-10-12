@@ -102,6 +102,15 @@ export const analyticsCustomerUninvoicedOrdersResultSchema = z.object({
   timezone: z.string().trim().min(1).max(80),
 }).strict();
 
+export const analyticsCustomerBalanceInputSchema = z.object({ customer: analyticsCustomerReferenceSchema }).strict();
+export const analyticsCustomerBalanceResultSchema = z.object({
+  customer: analyticsResolvedCustomerSchema,
+  asOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  invoiceOutstandingCents: z.number().int().nonnegative(),
+  openInvoiceCount: z.number().int().nonnegative(),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10),
+}).strict();
+
 /** Generic released invoice facts for AI-authored analysis. This is not a
  * report: it contains no server-selected KPIs, rankings, or conclusions. */
 export const analyticsInvoiceActivityInputSchema = z.object({
