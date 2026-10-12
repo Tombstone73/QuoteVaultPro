@@ -134,7 +134,7 @@ export type AssistantOperatorBusinessContext = {
 };
 
 export interface AssistantOperatorToolExecutor {
-  catalog(): ReadonlyArray<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
+  catalog(context?: AssistantOperatorTrustedContext): ReadonlyArray<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
   execute(input: { toolName: string; arguments: Record<string, unknown>; context: AssistantOperatorTrustedContext }): Promise<Omit<AssistantOperatorObservation, "step">>;
 }
 
@@ -323,7 +323,7 @@ export class AssistantOperatorRuntime {
         const productEvidence = currentTurnProductResolution(observations);
         const received = await this.provider.decide({
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
-          toolCatalog: this.tools.catalog(), observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations),
+          toolCatalog: this.tools.catalog(input.trustedContext), observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations),
         });
         const parsed = assistantOperatorDecisionSchema.safeParse(received);
         const shape = decisionDiagnosticShape(received);

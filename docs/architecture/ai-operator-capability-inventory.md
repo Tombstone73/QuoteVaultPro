@@ -132,6 +132,7 @@ None.
 | ai.command.fulfillment.update_shipment_details | mutation | unknown | command_plan_only | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | shared_canonical_today |
 | ai.command.fulfillment.mark_shipped | mutation | unknown | command_plan_only | fulfillment.mark_shipped | assistant.fulfillment.mark_shipped | shared_canonical_today |
 | ai.command.fulfillment.create_pickup_ticket | mutation | unknown | command_plan_only | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | shared_canonical_today |
+| ai.command.fulfillment.record_pickup | mutation | unknown | command_plan_only | fulfillment.record_pickup | assistant.fulfillment.record_pickup | shared_canonical_today |
 | ai.command.fulfillment.add_note | mutation | unknown | command_plan_only | fulfillment.add_note | assistant.fulfillment.add_note | shared_canonical_today |
 | ui.fulfillment.manage_orders_shipments_pickups | mutation | page_and_route | command_plan_only | — | authenticated_tenant_user (UI); reviewed GO command subset (AI) | partial_or_indirect |
 
@@ -179,6 +180,10 @@ None.
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
+| ai.command.materials.create | mutation | unknown | command_plan_only | materials.create | assistant.materials.create | partial_or_indirect |
+| ai.command.materials.create_family | mutation | unknown | command_plan_only | materials.create_family | assistant.materials.create_family | partial_or_indirect |
+| ai.command.materials.create_variant | mutation | unknown | command_plan_only | materials.create_variant | assistant.materials.create_variant | partial_or_indirect |
+| ai.command.materials.assign_family | mutation | unknown | command_plan_only | materials.assign_family | assistant.materials.assign_family | partial_or_indirect |
 | ui.materials.manage_inventory | mutation | page_and_route | none | — | owner_or_admin | ui_supported_ai_adapter_missing |
 
 ### settings_permissions

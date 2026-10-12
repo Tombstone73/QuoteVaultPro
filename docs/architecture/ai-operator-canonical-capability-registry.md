@@ -4,10 +4,10 @@
 
 ## Counts
 
-- Registered: 71
+- Registered: 76
 - Read: 22
-- Mutation: 39
-- Eligible: 60
+- Mutation: 44
+- Eligible: 65
 - Ineligible: 4
 - Hard denied: 7
 
@@ -68,6 +68,7 @@
 | capability.command.fulfillment.update_shipment_details | fulfillment | mutation | command | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.mark_shipped | fulfillment | mutation | command | fulfillment.mark_shipped | assistant.fulfillment.mark_shipped | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.create_pickup_ticket | fulfillment | mutation | command | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | eligible | — | fulfillment.operations | shared_canonical |
+| capability.command.fulfillment.record_pickup | fulfillment | mutation | command | fulfillment.record_pickup | assistant.fulfillment.record_pickup | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.add_note | fulfillment | mutation | command | fulfillment.add_note | assistant.fulfillment.add_note | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.billing.create_invoice | invoicing | mutation | command | billing.create_invoice | assistant.billing.create_invoice | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.billing.update_invoice_draft | invoicing | mutation | command | billing.update_invoice_draft | assistant.billing.update_invoice_draft | eligible | — | invoicing.operations | shared_canonical |
@@ -75,6 +76,10 @@
 | capability.command.billing.add_invoice_note | invoicing | mutation | command | billing.add_invoice_note | assistant.billing.add_invoice_note | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.payments.record_manual_payment | payments | mutation | command | payments.record_manual_payment | assistant.payments.record_manual_payment | eligible | — | payments.operations | shared_canonical |
 | capability.command.payments.add_payment_note | payments | mutation | command | payments.add_payment_note | assistant.payments.add_payment_note | eligible | — | payments.operations | shared_canonical |
+| capability.command.materials.create | materials | mutation | command | materials.create | assistant.materials.create | eligible | — | materials.operations | shared_canonical |
+| capability.command.materials.create_family | materials | mutation | command | materials.create_family | assistant.materials.create_family | eligible | — | materials.operations | shared_canonical |
+| capability.command.materials.create_variant | materials | mutation | command | materials.create_variant | assistant.materials.create_variant | eligible | — | materials.operations | shared_canonical |
+| capability.command.materials.assign_family | materials | mutation | command | materials.assign_family | assistant.materials.assign_family | eligible | — | materials.operations | shared_canonical |
 | capability.ui.settings.organization_preferences | settings_permissions | administrative | ui_compatibility | organization.preferences.update | organization.settings.update | ineligible | — | settings.permissions | compatibility_only |
 | capability.ui.products.pricing_formula_profile | products | mutation | ui_compatibility | products.pricing_formula_profile | assistant.products.update_existing_product | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.products.delete | products | administrative | ui_compatibility | products.delete | product.delete | ineligible | — | products.pbv2 | compatibility_only |

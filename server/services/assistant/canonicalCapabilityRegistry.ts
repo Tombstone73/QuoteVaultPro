@@ -81,6 +81,7 @@ function sharedOperationalUiSurface(command: string): string {
   if (command.startsWith("customers.") || command.startsWith("contacts.")) return "Customer and Contact routes";
   if (command.startsWith("billing.")) return "Invoice detail and Order billing routes";
   if (command.startsWith("payments.")) return "Invoice manual-payment routes";
+  if (command.startsWith("materials.")) return "Materials and Material Family routes in server/routes/orders.routes.ts";
   return "unknown";
 }
 

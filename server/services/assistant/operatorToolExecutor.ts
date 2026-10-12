@@ -23,7 +23,7 @@ export function createAssistantOperatorToolExecutor(
   const orchestration = new AssistantOrchestrationService(createStage2AssistantToolAdapters(), writeAudit);
   const semantic = new Map(semanticTools.map((tool) => [tool.name, tool]));
   return {
-    catalog: () => [...orchestration.catalog(), ...semanticTools.map((tool) => ({ name: tool.name, description: tool.description, ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}) }))],
+    catalog: (context) => [...orchestration.catalog(context), ...semanticTools.map((tool) => ({ name: tool.name, description: tool.description, ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}) }))],
     async execute({ toolName, arguments: args, context }) {
       const semanticTool = semantic.get(toolName);
       if (semanticTool) return { toolName, ...(await semanticTool.execute({ arguments: args, context })) };

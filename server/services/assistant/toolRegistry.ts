@@ -169,10 +169,11 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "customers.get_summary": {
-    description: "Return a reduced customer summary with bounded related records.",
+    description: "Return a reduced customer summary with bounded related records. Supply customerId returned by search.global with entityType customer or by investigation.search; never guess an ID from a customer name.",
     requiredPermission: "internal_staff",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantCustomerSummaryInputSchema,
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["customerId"], properties: { customerId: { type: "string", minLength: 1, maxLength: 128 } } },
     resultSchema: assistantCustomerSummaryResultSchema,
     maxResults: 10,
     timeoutMs: 3_000,
@@ -182,10 +183,11 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "orders.get_summary": {
-    description: "Return a reduced read-only operational summary for one tenant-scoped order.",
+    description: "Return a reduced read-only operational summary for one tenant-scoped order. Supply either orderId from a trusted lookup or orderNumber as the business document number, not an invented record ID.",
     requiredPermission: "internal_staff",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantOrderSummaryInputSchema,
+    providerInputSchema: { type: "object", additionalProperties: false, anyOf: [{ required: ["orderId"] }, { required: ["orderNumber"] }], properties: { orderId: { type: "string", minLength: 1, maxLength: 128 }, orderNumber: { type: "string", minLength: 1, maxLength: 64 } } },
     resultSchema: assistantOrderSummaryResultSchema,
     maxResults: 1,
     // The order summary has a tenant-scoped core lookup plus bounded optional

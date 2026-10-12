@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx jest --runInBand --runTestsByPath server/tests/canonicalCapabilityRegistry.test.ts server/tests/assistantCapabilityInventory.test.ts server/tests/finalMigrationInventory.test.ts server/tests/assistantCommandRegistry.test.ts server/tests/operatorIndex.test.ts server/tests/operatorSkillLoader.test.ts server/tests/assistantActorAuthorityResolver.test.ts server/tests/canonicalOperationalChain.contract.test.ts server/tests/canonicalFinancialCrmOperations.contract.test.ts
+      - run: npx jest --runInBand --runTestsByPath server/tests/assistantDiscoveryExecution.integration.test.ts server/tests/assistantOperatorRuntime.test.ts server/tests/assistantOperatorToolExecutor.test.ts
       - run: npm run knowledge:validate
       - run: npx tsx scripts/generate-ai-operator-canonical-capability-registry.ts
       - run: npx tsx scripts/generate-ai-operator-capability-inventory.ts

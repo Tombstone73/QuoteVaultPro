@@ -11,10 +11,10 @@ Generated from the Phase 1 inventory, authoritative command metadata, and retain
 
 ## Known grant divergence
 
-- Member chat grants: 3; member execution synthetic grants: 28; execution-only: 25.
-- Admin chat grants: 8; admin execution synthetic grants: 37; execution-only: 31.
-- Commands with known permission metadata outside member chat grants: 37.
-- Commands with known permission metadata outside admin chat grants: 32.
+- Member chat grants: 3; member execution synthetic grants: 29; execution-only: 26.
+- Admin chat grants: 8; admin execution synthetic grants: 38; execution-only: 32.
+- Commands with known permission metadata outside member chat grants: 42.
+- Commands with known permission metadata outside admin chat grants: 37.
 
 ## Execution-only permissions for a member
 
@@ -36,6 +36,7 @@ Generated from the Phase 1 inventory, authoritative command metadata, and retain
 - `assistant.fulfillment.update_shipment_details`
 - `assistant.fulfillment.mark_shipped`
 - `assistant.fulfillment.create_pickup_ticket`
+- `assistant.fulfillment.record_pickup`
 - `assistant.fulfillment.add_note`
 - `assistant.billing.create_invoice`
 - `assistant.billing.update_invoice_draft`

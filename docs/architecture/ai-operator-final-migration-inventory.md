@@ -4,7 +4,7 @@
 
 ## Counts
 
-- shared_canonical: 26
+- shared_canonical: 35
 - compatibility_only: 30
 - ui_only_reviewed: 1
 - ai_integration_pending: 1
@@ -35,6 +35,7 @@
 | capability.command.fulfillment.update_shipment_details | shared_canonical | Fulfillment routes | existing | fulfillment.update_shipment.v1 | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | go_required | CanonicalFulfillmentOperations / FulfillmentService |
 | capability.command.fulfillment.mark_shipped | shared_canonical | Fulfillment routes | existing | fulfillment.update_shipment.v1 | fulfillment.mark_shipped | assistant.fulfillment.mark_shipped | go_required | CanonicalFulfillmentOperations / FulfillmentService |
 | capability.command.fulfillment.create_pickup_ticket | shared_canonical | Fulfillment routes | existing | fulfillment.update_shipment.v1 | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | go_required | CanonicalFulfillmentOperations / FulfillmentService |
+| capability.command.fulfillment.record_pickup | shared_canonical | Fulfillment routes | existing | fulfillment.update_shipment.v1 | fulfillment.record_pickup | assistant.fulfillment.record_pickup | go_required | CanonicalFulfillmentOperations / FulfillmentService |
 | capability.command.fulfillment.add_note | shared_canonical | Fulfillment routes | existing | fulfillment.update_shipment.v1 | fulfillment.add_note | assistant.fulfillment.add_note | go_required | CanonicalFulfillmentOperations / FulfillmentService |
 
 ## invoicing
@@ -46,10 +47,23 @@
 | capability.command.billing.send_invoice | shared_canonical | Invoice detail and Order billing routes | existing | invoice.mark_sent.v1 | billing.send_invoice | assistant.billing.send_invoice | go_required | CanonicalInvoiceOperations |
 | capability.command.billing.add_invoice_note | shared_canonical | Invoice detail and Order billing routes | existing | invoice.add_internal_note.v1 | billing.add_invoice_note | assistant.billing.add_invoice_note | go_required | CanonicalInvoiceOperations |
 
+## materials
+
+| Capability | Classification | UI exposure | AI exposure | Canonical operation | Adapter/tool | Authority | GO | Lifecycle/state owner |
+|---|---|---|---|---|---|---|---|---|
+| capability.command.materials.create | shared_canonical | Materials and Material Family routes in server/routes/orders.routes.ts | existing | MaterialMutationService; MaterialFamilyCreationService; MaterialFamilyAssignmentService | materials.create | assistant.materials.create | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
+| capability.command.materials.create_family | shared_canonical | Materials and Material Family routes in server/routes/orders.routes.ts | existing | MaterialMutationService; MaterialFamilyCreationService; MaterialFamilyAssignmentService | materials.create_family | assistant.materials.create_family | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
+| capability.command.materials.create_variant | shared_canonical | Materials and Material Family routes in server/routes/orders.routes.ts | existing | MaterialMutationService; MaterialFamilyCreationService; MaterialFamilyAssignmentService | materials.create_variant | assistant.materials.create_variant | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
+| capability.command.materials.assign_family | shared_canonical | Materials and Material Family routes in server/routes/orders.routes.ts | existing | MaterialMutationService; MaterialFamilyCreationService; MaterialFamilyAssignmentService | materials.assign_family | assistant.materials.assign_family | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
+
 ## orders
 
 | Capability | Classification | UI exposure | AI exposure | Canonical operation | Adapter/tool | Authority | GO | Lifecycle/state owner |
 |---|---|---|---|---|---|---|---|---|
+| capability.read.investigation.search | shared_canonical | Order, Customer, Production, Fulfillment, and Invoice detail surfaces | existing | InvestigationService / explicit tenant-scoped resource descriptors | investigation.search | assistant.internal_staff | not_required | not_applicable |
+| capability.read.investigation.get | shared_canonical | Order, Customer, Production, Fulfillment, and Invoice detail surfaces | existing | InvestigationService / explicit tenant-scoped resource descriptors | investigation.get | assistant.internal_staff | not_required | not_applicable |
+| capability.read.investigation.related | shared_canonical | Order, Customer, Production, Fulfillment, and Invoice detail surfaces | existing | InvestigationService / explicit tenant-scoped resource descriptors | investigation.related | assistant.internal_staff | not_required | not_applicable |
+| capability.read.investigation.history | shared_canonical | Order, Customer, Production, Fulfillment, and Invoice detail surfaces | existing | InvestigationService / explicit tenant-scoped resource descriptors | investigation.history | assistant.internal_staff | not_required | not_applicable |
 | capability.read.orders.search | shared_canonical | Orders list; GET /api/orders | existing | OrdersRepository.getAllOrdersPaginated | orders.search | assistant.internal_staff | not_required | not_applicable |
 | capability.read.orders.get_summary | compatibility_only | unknown | existing | not_applicable | orders.get_summary | assistant.internal_staff | not_required | not_applicable |
 | capability.read.orders.get_due_summary | compatibility_only | unknown | existing | not_applicable | orders.get_due_summary | assistant.internal_staff | not_required | not_applicable |

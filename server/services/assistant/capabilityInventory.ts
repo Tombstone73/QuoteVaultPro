@@ -105,6 +105,7 @@ function commandDomain(command: (typeof assistantProductionCommandAllowlist)[num
   if (command.startsWith("production.")) return "production";
   if (command.startsWith("fulfillment.")) return "fulfillment";
   if (command.startsWith("billing.")) return "invoicing";
+  if (command.startsWith("materials.")) return "materials";
   return "payments";
 }
 
