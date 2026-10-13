@@ -26,6 +26,7 @@ import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import { normalizeTreePricingImpacts } from "@/lib/pbv2/pricing/pricingImpact";
+import { planPbv2Hydration, type HydrationRepair } from "@/lib/pbv2/hydrationRepairs";
 import { ROUTES } from "@/config/routes";
 import { hasEnabledRuntimeOptionNodesV2 } from "@shared/optionTreeV2";
 
@@ -72,7 +73,8 @@ function validateForEdit(tree: any): ValidationResult {
 
 /**
  * SINGLE POINT OF TREE UPDATE - ensures all mutations go through normalization.
- * This function enforces the invariant that localTreeJson is always normalized.
+ * User mutations pass through normalization. Persisted trees awaiting repair
+ * remain untouched until the user explicitly applies the proposed changes.
  * 
  * @param nextTree - Raw tree after mutation
  * @param reason - Description of why update is happening (for dev logging)
@@ -343,7 +345,7 @@ export default function PBV2ProductBuilderSectionV2({
     weightPreview: { totalOz: number; breakdown: Array<{ label: string; oz: number }> } | null;
     findings: any[];
   }) => void;
-  onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void }) => void;
+  onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null; getPendingRepairs: () => HydrationRepair[]; hasAppliedRepairs: () => boolean; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
   onTreeMetaChange?: (meta: {
     shippingConfig?: any;
@@ -364,6 +366,9 @@ export default function PBV2ProductBuilderSectionV2({
   // Core state
   const [localTreeJson, setLocalTreeJson] = useState<unknown>(null);
   const [hasLocalChanges, setHasLocalChanges] = useState(false);
+  const [pendingRepairs, setPendingRepairs] = useState<HydrationRepair[]>([]);
+  const pendingRepairsRef = useRef<HydrationRepair[]>([]);
+  const appliedRepairsRef = useRef(false);
   
   // Ref mirror for localTreeJson to avoid stale closure in getCurrentPBV2Tree
   const localTreeJsonRef = useRef<unknown>(null);
@@ -434,6 +439,7 @@ export default function PBV2ProductBuilderSectionV2({
   // CRITICAL: Reads from ref, not state, to avoid stale closure
   const getCurrentPBV2Tree = () => {
     if (!localTreeJsonRef.current) return null;
+    if (pendingRepairsRef.current.length) return localTreeJsonRef.current;
     const matrixSanitizedTree = sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJsonRef.current), { allowIncompleteMatrix: true }).tree;
     return normalizeTreePricingImpacts(matrixSanitizedTree).tree;
   };
@@ -461,7 +467,7 @@ export default function PBV2ProductBuilderSectionV2({
   // This ensures the provider is available when parent calls getCurrentTree during save
   const providerRegistered = useRef(false);
   if (!providerRegistered.current && onTreeProviderReady) {
-    onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree, updateTreeMeta });
+    onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree, getPendingRepairs: () => pendingRepairsRef.current, hasAppliedRepairs: () => appliedRepairsRef.current, updateTreeMeta });
     providerRegistered.current = true;
     if (import.meta.env.DEV) {
       console.log('[PBV2] Tree provider registered (sync)');
@@ -544,6 +550,9 @@ export default function PBV2ProductBuilderSectionV2({
     
     // New product mode: Initialize with seed tree containing runtime entry node
     if (!productId) {
+      pendingRepairsRef.current = [];
+      setPendingRepairs([]);
+      appliedRepairsRef.current = false;
       
       // CRITICAL: Seed tree must have at least one ENABLED runtime node for rootNodeIds
       // We create a base computed node as the entry point for the evaluator
@@ -589,6 +598,9 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
     if (requestedDraftLoadError) {
+      pendingRepairsRef.current = [];
+      setPendingRepairs([]);
+      appliedRepairsRef.current = false;
       setLocalTreeJson(null);
       setHasLocalChanges(false);
       setIsLocalDirty(false);
@@ -598,6 +610,9 @@ export default function PBV2ProductBuilderSectionV2({
     // Existing product mode: Load from server draft or active tree
     // If draft not found (e.g., auto_on_save activated it), load from active
     if (!draft && !active) {
+      pendingRepairsRef.current = [];
+      setPendingRepairs([]);
+      appliedRepairsRef.current = false;
       
       // No draft AND no active - create seed tree with runtime node
       const baseNodeId = 'node_base_entry';
@@ -687,20 +702,25 @@ export default function PBV2ProductBuilderSectionV2({
       }
     }
     
-    setLocalTreeJson(normalizedTree);
-    if (matrixSanitizer.changed) {
+    const hydration = planPbv2Hydration(
+      sourceTree.treeJson,
+      normalizedTree,
+      sourceChoice.repairedFromActive,
+    );
+    const repairs = hydration.repairs;
+    pendingRepairsRef.current = repairs;
+    setPendingRepairs(repairs);
+    appliedRepairsRef.current = false;
+    // Keep the persisted tree intact until a user explicitly applies the repairs.
+    // A user edit may normalize it in memory, but both save paths remain blocked
+    // while these unreviewed repairs are pending.
+    setLocalTreeJson(hydration.tree);
+    if (repairs.length) {
       toast({
-        title: "Removed invalid matrix references",
-        description: "Deleted options were cleaned from the pricing matrix. Save to persist the repair.",
+        title: "Product configuration needs review",
+        description: `${repairs.length} automatic compatibility change(s) proposed. Review them before saving.`,
       });
     }
-    if (pricingImpactNormalizer.changed) {
-      toast({
-        title: "Normalized pricing setup",
-        description: "Legacy or incomplete pricing impacts were cleaned in the draft. Save to persist the repair.",
-      });
-    }
-    // CRITICAL: Clear dirty flag after hydration unless we repaired stale matrix state
       console.log('[PBV2_STATE_RESET] setLocalTreeJson called (hydration from server)', {
         source: treeSource,
         productId,
@@ -709,9 +729,8 @@ export default function PBV2ProductBuilderSectionV2({
         sourceReason: sourceChoice.reason,
         stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
       });
-    const hydrationRepairedDraft = matrixSanitizer.changed || pricingImpactNormalizer.changed || sourceChoice.repairedFromActive;
-    setHasLocalChanges(hydrationRepairedDraft);
-    setIsLocalDirty(hydrationRepairedDraft);
+    setHasLocalChanges(false);
+    setIsLocalDirty(false);
     
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
@@ -803,7 +822,9 @@ export default function PBV2ProductBuilderSectionV2({
   useEffect(() => {
     if (onPbv2StateChange) {
       // CRITICAL: Normalize + ensure rootNodeIds before sending to parent
-      const normalizedTree = localTreeJson ? normalizeTreeJson(localTreeJson) : null;
+      const normalizedTree = localTreeJson
+        ? pendingRepairs.length ? localTreeJson : normalizeTreeJson(localTreeJson)
+        : null;
       onPbv2StateChange({
         treeJson: normalizedTree,
         hasChanges: hasLocalChanges,
@@ -811,7 +832,7 @@ export default function PBV2ProductBuilderSectionV2({
         isSaving: isSavingRef.current, // Pass saving state to parent for nav guard bypass
       });
     }
-  }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange, isSaving]);
+  }, [localTreeJson, hasLocalChanges, pendingRepairs, draft?.id, onPbv2StateChange, isSaving]);
 
   // Notify parent of tree meta changes (shippingConfig, productImages, pricingV2, geometry)
   useEffect(() => {
@@ -1242,6 +1263,10 @@ export default function PBV2ProductBuilderSectionV2({
       toast({ title: "No tree data to save", variant: "destructive" });
       return;
     }
+    if (pendingRepairsRef.current.length) {
+      toast({ title: "Review automatic repairs before saving", variant: "destructive" });
+      return;
+    }
 
     // Local-only mode: No productId yet (new product not saved)
     if (!productId) {
@@ -1349,7 +1374,7 @@ export default function PBV2ProductBuilderSectionV2({
     }
 
     try {
-      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: normalizedTree });
+      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: normalizedTree, skipAutoActivation: appliedRepairsRef.current });
 
       if (!result.ok || result.json.success !== true) {
         throw new Error(envelopeMessage(result.status, result.json, "Failed to save draft"));
@@ -1428,6 +1453,7 @@ export default function PBV2ProductBuilderSectionV2({
 
       setHasLocalChanges(false);
       setIsLocalDirty(false); // Clear dirty flag only after cache matches the persisted tree
+      appliedRepairsRef.current = false;
       setIsSaving(false); // Release saving lock
       isSavingRef.current = false;
 
@@ -1466,6 +1492,10 @@ export default function PBV2ProductBuilderSectionV2({
   };
 
   const handlePublish = async () => {
+    if (pendingRepairsRef.current.length) {
+      toast({ title: "Review automatic repairs before publishing", variant: "destructive" });
+      return;
+    }
     if (!draft) {
       toast({ title: "No draft to publish", variant: "destructive" });
       return;
@@ -1611,10 +1641,32 @@ export default function PBV2ProductBuilderSectionV2({
   // Render UI once localTreeJson is initialized (seed tree or draft)
   // Never get stuck in "Initializing" - the useEffect above seeds the tree
 
-  const canPublish = validationResult.errors.length === 0 && hasLocalChanges === false;
+  const canPublish = validationResult.errors.length === 0 && hasLocalChanges === false && pendingRepairs.length === 0;
 
   return (
     <>
+      {pendingRepairs.length > 0 && (
+        <div className="m-4 rounded-md border border-amber-500/60 bg-amber-500/10 p-4 text-sm text-amber-100" role="status">
+          <strong>Automatic compatibility repairs proposed</strong>
+          <p className="mt-1">These changes have not been saved. Review each change before applying them to this draft.</p>
+          <ul className="mt-2 max-h-56 list-disc overflow-auto pl-5">
+            {pendingRepairs.map((repair, index) => (
+              <li key={`${repair.path}-${index}`} className="break-all">
+                {repair.path}: {JSON.stringify(repair.before) ?? "missing"} → {JSON.stringify(repair.after) ?? "missing"}
+              </li>
+            ))}
+          </ul>
+          <Button className="mt-3" type="button" onClick={() => {
+            const repaired = normalizeTreePricingImpacts(
+              sanitizePbv2PricingMatrix(normalizeTreeJson(localTreeJson), { allowIncompleteMatrix: true }).tree,
+            ).tree;
+            pendingRepairsRef.current = [];
+            setPendingRepairs([]);
+            appliedRepairsRef.current = true;
+            applyTreeUpdate(repaired, 'applyHydrationRepairs', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+          }}>Apply reviewed repairs to draft</Button>
+        </div>
+      )}
       <ProductIntakeDraftContextPanel treeJson={localTreeJson} />
 
       {/* Product Images — full-width section above options builder */}

@@ -895,6 +895,9 @@ export function registerProductRoutes(
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
 
       const treeJson = (req.body as any)?.treeJson;
+      // A reviewed compatibility repair must remain a DRAFT even for tenants
+      // whose ordinary Product Editor saves activate automatically.
+      const skipAutoActivation = (req.body as any)?.skipAutoActivation === true;
 
       if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
         console.log('[PBV2_DRAFT_PUT] validation failed: treeJson invalid');
@@ -999,7 +1002,7 @@ export function registerProductRoutes(
           sessionId: linkedProductIntakeDraft.sessionId,
           createdPbv2TreeVersionId: linkedProductIntakeDraft.createdPbv2TreeVersionId,
         });
-      } else if (org?.pbv2ActivationMode === 'auto_on_save') {
+      } else if (org?.pbv2ActivationMode === 'auto_on_save' && !skipAutoActivation) {
         activationAttempted = true;
         console.log('[PBV2_AUTO_ACTIVATE] attempting auto-activation', { draftId: draft.id, productId, orgId: organizationId });
 

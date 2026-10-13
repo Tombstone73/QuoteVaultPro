@@ -186,7 +186,7 @@ const ProductEditorPage = () => {
   
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean } | null>(null);
-  const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
+  const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; getPendingRepairs: () => Array<{ path: string }>; hasAppliedRepairs: () => boolean; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
   
   // Track pricing engine dirty state
@@ -736,7 +736,7 @@ const ProductEditorPage = () => {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ treeJson: normalizedTree }),
+            body: JSON.stringify({ treeJson: normalizedTree, skipAutoActivation: pbv2TreeProviderRef.current?.hasAppliedRepairs() === true }),
           });
           
           if (!draftRes.ok) {
@@ -906,6 +906,24 @@ const ProductEditorPage = () => {
   });
 
   const handleSave = (data: ProductFormData) => {
+    const pendingRepairs = pbv2TreeProviderRef.current?.getPendingRepairs() ?? [];
+    if (pendingRepairs.length) {
+      toast({
+        title: "Review automatic repairs before saving",
+        description: `${pendingRepairs.length} proposed change(s) are listed in the Options Builder. Apply them explicitly before saving.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (pbv2TreeProviderRef.current?.hasAppliedRepairs() &&
+        product && data.isActive !== product.isActive) {
+      toast({
+        title: "Save repairs as a draft first",
+        description: "Review the saved draft before changing product availability.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (import.meta.env.DEV) {
       console.log('[SAVE_PIPELINE] handleSave called', {
         productId: productId || 'new',
