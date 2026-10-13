@@ -122,6 +122,12 @@ export function getSessionCookieConfig(sessionTtl: number): CookieOptions {
   };
 }
 
+// A parent-domain cookie can also be sent to the DEV API host. Keep the
+// existing MAIN name for compatibility, but give DEV its own cookie identity.
+export function getSessionCookieName(): string {
+  return getAppEnv() === "development" ? "connect.sid.dev" : "connect.sid";
+}
+
 export function getRuntimeConfigLogLine(): string {
   const appEnv = getAppEnv();
   const publicWebOrigin = getPublicWebOrigin() ?? "(unset)";

@@ -7,7 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, Eye, EyeOff } from "lucide-react";
 import { getApiUrl } from "@/lib/apiConfig";
 import { useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, verifyLoginSession } from "@/hooks/useAuth";
 import { apiFetch } from "@/lib/queryClient";
 import { HERO_LOGO_SRC, SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
 import { sanitizePortalReturnTarget } from "@shared/portalReturnTarget";
@@ -21,7 +21,7 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const { isAuthenticated, isLoading: authLoading, user, isPortalCustomer } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, isPortalCustomer } = useAuth();
   const returnTo = sanitizePortalReturnTarget(new URLSearchParams(location.search).get("returnTo"));
 
   // Redirect if already authenticated
@@ -50,20 +50,12 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
-        if (process.env.NODE_ENV !== "production") {
-          const sessionCheck = await apiFetch(getApiUrl("/api/auth/session"), {
-            credentials: "include",
-          });
-          console.log(`[AuthDiag] post-login /api/auth/session status=${sessionCheck.status}`);
-        }
+        const sessionData = await verifyLoginSession(queryClient);
 
         // Debug logging (non-production only)
         if (process.env.NODE_ENV !== "production") {
-          console.log("[Login] Success, invalidating auth query and redirecting");
+          console.log("[Login] Session verified; updating auth query and redirecting");
         }
-        
-        // Invalidate auth query to trigger refetch with new session
-        await queryClient.invalidateQueries({ queryKey: [getApiUrl("/api/auth/session")], exact: true });
         
         toast({
           title: "Logged in",
@@ -72,7 +64,7 @@ export default function Login() {
         
         // Use window.location.assign for absolute certainty of navigation
         // This bypasses React Router and guarantees we enter the app
-        const loginUser = data.user || user;
+        const loginUser = sessionData.user;
         const portalLogin = loginUser?.accountType === "PORTAL_CUSTOMER" || loginUser?.role === "customer";
         window.location.assign(portalLogin ? returnTo : "/dashboard");
       } else {

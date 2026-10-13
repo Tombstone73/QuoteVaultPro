@@ -12,7 +12,7 @@ import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-o
 import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import { auditLogs, authIdentities, customerPortalAccess, users } from "@shared/schema";
-import { getPublicWebOrigin, getSessionCookieConfig } from "./lib/appRuntimeConfig";
+import { getPublicWebOrigin, getSessionCookieConfig, getSessionCookieName } from "./lib/appRuntimeConfig";
 import {
   getPortalAccessForLogin,
   isPortalCustomerIdentity,
@@ -79,6 +79,7 @@ export function getSession() {
   });
   
   return session({
+    name: getSessionCookieName(),
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: false,
@@ -304,10 +305,11 @@ export async function setupAuth(app: Express) {
       req.session.destroy((destroyErr) => {
         if (destroyErr) {
           console.error("Session destroy error:", destroyErr);
+          return res.status(503).json({ success: false, message: "Logout failed" });
         }
         // Clear the session cookie
         const sessionCookieConfig = getSessionCookieConfig(7 * 24 * 60 * 60 * 1000);
-        res.clearCookie("connect.sid", {
+        res.clearCookie(getSessionCookieName(), {
           path: "/",
           httpOnly: true,
           secure: sessionCookieConfig.secure === true,

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
@@ -10,6 +10,24 @@ type SessionResponse = {
 };
 
 let authSessionSoftFailUntil = 0;
+
+export async function verifyLoginSession(queryClient: QueryClient): Promise<SessionResponse> {
+  const sessionUrl = getApiUrl("/api/auth/session");
+  const response = await apiFetch(sessionUrl, { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("Login succeeded, but the session could not be established. Please try again.");
+  }
+  const sessionData = await response.json() as SessionResponse;
+  if (!sessionData.authenticated || !sessionData.user) {
+    throw new Error("Login succeeded, but the session could not be established. Please try again.");
+  }
+
+  authSessionSoftFailUntil = 0;
+  const sessionKey = [sessionUrl];
+  await queryClient.cancelQueries({ queryKey: sessionKey, exact: true });
+  queryClient.setQueryData(sessionKey, sessionData);
+  return sessionData;
+}
 
 export function useAuth() {
   const { data: sessionData, isLoading, error } = useQuery<SessionResponse>({
