@@ -1,4 +1,4 @@
-import { and, eq, exists, ilike, or } from 'drizzle-orm';
+import { and, arrayContains, eq, exists, ilike, or } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import type { OptionNodeV2, OptionTreeV2 } from '@shared/optionTreeV2';
@@ -251,6 +251,21 @@ async function loadVisibleProduct(req: Request, productId: string) {
   )).limit(1);
   if (!row || !mayShowStorefrontProduct(row)) return null;
   return row;
+}
+
+/** Allow portal customers to read only images assigned to products visible to them. */
+export async function canPortalAccessStorefrontImage(req: Request, objectUrl: string): Promise<boolean> {
+  const scope = getPortalScope(req);
+  if (!scope.userId || !objectUrl.startsWith('/objects/')) return false;
+  const linkedOnly = scope.customer.productVisibilityMode === 'linked-only';
+  const [row] = await db.select({ id: products.id }).from(products).where(and(
+    eq(products.organizationId, scope.organizationId), eq(products.isActive, true),
+    eq(products.storefrontVisible, true), arrayContains(products.thumbnailUrls, [objectUrl]),
+    ...(linkedOnly ? [exists(db.select({ id: customerVisibleProducts.productId }).from(customerVisibleProducts).where(and(
+      eq(customerVisibleProducts.customerId, scope.customerId), eq(customerVisibleProducts.productId, products.id),
+    )))] : []),
+  )).limit(1);
+  return Boolean(row);
 }
 
 export async function listPortalStorefrontProducts(req: Request) {

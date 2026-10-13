@@ -42,7 +42,7 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
-import { ObjectStorageService } from "../objectStorage";
+import { ProductImageAssignmentError, saveProductImages } from "../services/products/productImages";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { hasEnabledRuntimeOptionNodesV2 } from "@shared/optionTreeV2";
 import type { Finding } from "@shared/pbv2/findings";
@@ -2280,34 +2280,10 @@ export function registerProductRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { thumbnailUrls } = req.body;
-      if (!Array.isArray(thumbnailUrls)) {
-        return res.status(400).json({ message: "thumbnailUrls must be an array" });
-      }
-
-      const userId = getUserId(req.user);
-      const objectStorageService = new ObjectStorageService();
-      const normalizedPaths: string[] = [];
-
-      for (const rawPath of thumbnailUrls) {
-        if (typeof rawPath !== 'string' || !rawPath) continue;
-
-        const normalizedPath = await objectStorageService.trySetObjectEntityAclPolicy(
-          rawPath,
-          {
-            owner: userId || 'system',
-            visibility: "public",
-          }
-        );
-        normalizedPaths.push(normalizedPath);
-      }
-
-      const product = await storage.updateProduct(organizationId, req.params.id, {
-        thumbnailUrls: normalizedPaths
-      } as UpdateProduct);
-
+      const product = await saveProductImages(storage, organizationId, String(req.params.id), req.body?.thumbnailUrls);
       res.json(product);
     } catch (error) {
+      if (error instanceof ProductImageAssignmentError) return res.status(error.statusCode).json({ message: error.message });
       console.error("Error updating product thumbnails:", error);
       res.status(500).json({ message: "Failed to update product thumbnails" });
     }

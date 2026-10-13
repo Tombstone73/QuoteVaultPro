@@ -55,7 +55,7 @@ jest.unstable_mockModule('../services/portal.service', () => ({
   PortalAccessError,
   getPortalScope: () => ({ userId: portalUserId, organizationId: 'org-a', customerId: 'customer-a', customer }),
 }));
-const { mayShowStorefrontProduct, hasStorefrontPricing, projectStorefrontOptions, listPortalStorefrontProducts, getPortalStorefrontProduct, previewPortalStorefrontPrice } = await import('../services/portalStorefront.service');
+const { mayShowStorefrontProduct, hasStorefrontPricing, projectStorefrontOptions, listPortalStorefrontProducts, getPortalStorefrontProduct, previewPortalStorefrontPrice, canPortalAccessStorefrontImage } = await import('../services/portalStorefront.service');
 
 const tree: OptionTreeV2 = {
   schemaVersion: 2, rootNodeIds: ['root'],
@@ -116,6 +116,20 @@ test('catalog thumbnails accept only safe same-origin objects or HTTPS URLs', as
   expect((await listPortalStorefrontProducts({ query: {} } as any)).items[0].imageUrl).toBe('/objects/uploads/sign.png');
   rows = [product({ thumbnailUrls: ['/objects/../api/admin', 'javascript:alert(1)'] })];
   expect((await listPortalStorefrontProducts({ query: {} } as any)).items[0].imageUrl).toBeNull();
+});
+
+test('portal image access requires an assigned image on a visible product in the customer tenant', async () => {
+  expect(await canPortalAccessStorefrontImage({} as any, '/objects/uploads/sign.png')).toBe(true);
+  expect(reads[0].params).toContain('org-a');
+  expect(reads[0].sql).toMatch(/thumbnail_urls.*@>/);
+  expect(reads[0].sql).toContain('storefront_visible');
+  customer.productVisibilityMode = 'linked-only';
+  reads.length = 0;
+  expect(await canPortalAccessStorefrontImage({} as any, '/objects/uploads/sign.png')).toBe(true);
+  expect(reads.some((read) => read.params.includes('customer-a'))).toBe(true);
+  rows = [];
+  expect(await canPortalAccessStorefrontImage({} as any, '/objects/uploads/sign.png')).toBe(false);
+  expect(await canPortalAccessStorefrontImage({} as any, 'https://other.example/image.png')).toBe(false);
 });
 
 test('catalog and detail reads are organization-scoped and return only projected fields', async () => {

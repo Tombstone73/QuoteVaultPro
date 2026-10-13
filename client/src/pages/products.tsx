@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Edit, FileJson, Plus, Trash2, Search, Package, Info, Layers, Settings2, X, Calculator, Grid3X3, ChevronUp, ChevronDown, Zap, Scissors, Sparkles, Circle } from "lucide-react";
+import { Copy, Edit, FileJson, Plus, Trash2, Search, Package, Info, Layers, Settings2, X, Calculator, Grid3X3, ChevronUp, ChevronDown, Zap, Scissors, Sparkles, Circle, Images } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -32,6 +32,7 @@ import React from "react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import { MediaLibraryTab } from "@/components/admin-settings";
 import { AiProductBuilderEntryButton } from "@/components/products/AiProductBuilderEntryButton";
+import { ProductImageManagerDialog } from "@/components/products/ProductImageManagerDialog";
 import { useAuth } from "@/hooks/useAuth";
 import { canUseProductPlanning } from "@/lib/productPlanningAccess";
 import { ROUTES } from "@/config/routes";
@@ -180,6 +181,8 @@ export default function ProductsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
+  const [missingImagesOnly, setMissingImagesOnly] = useState(false);
+  const [imageProduct, setImageProduct] = useState<Product | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<Product | null>(null);
@@ -425,8 +428,10 @@ export default function ProductsPage() {
 
   const filteredProducts = products?.filter(
     (product) =>
-      product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      product.category?.toLowerCase().includes(searchTerm.toLowerCase())
+      (!missingImagesOnly || !product.thumbnailUrls?.length) && (
+        product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        product.category?.toLowerCase().includes(searchTerm.toLowerCase())
+      )
   ) || [];
 
   const handleEditProduct = (product: Product) => {
@@ -452,7 +457,7 @@ export default function ProductsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {canEnableStorefront ? <Button variant="outline" onClick={() => setStorefrontEnablementOpen(true)}>Enable All Active Products in Storefront</Button> : null}
+          {canEnableStorefront ? <Button variant="outline" onClick={() => setStorefrontEnablementOpen(true)}>Enable All Active Products in Product Calculator</Button> : null}
           <AiProductBuilderEntryButton
             canAccess={canUseProductPlanning(user)}
             onOpen={() => navigate(ROUTES.admin.aiProductBuilder)}
@@ -470,7 +475,7 @@ export default function ProductsPage() {
 
       <Dialog open={storefrontEnablementOpen} onOpenChange={setStorefrontEnablementOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Enable All Active Products in Storefront</DialogTitle><DialogDescription>Review the current product counts before enabling storefront visibility. Pricing and product status will not change.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Enable All Active Products in Product Calculator</DialogTitle><DialogDescription>Review the current product counts before enabling customer catalog visibility. Pricing and product status will not change.</DialogDescription></DialogHeader>
           {storefrontEnablementPreview.isFetching ? <p>Loading preview…</p> : storefrontEnablementPreview.isError ? <p role="alert">Unable to load preview. Close and try again.</p> : storefrontEnablementPreview.data ? (
             <dl className="grid grid-cols-2 gap-2 text-sm">
               <dt>Total active products</dt><dd>{storefrontEnablementPreview.data.totalActive}</dd>
@@ -484,6 +489,11 @@ export default function ProductsPage() {
         </DialogContent>
       </Dialog>
 
+      <ProductImageManagerDialog product={imageProduct} onClose={() => setImageProduct(null)} onSaved={() => {
+        void queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+        setImageProduct(null);
+      }} />
+
       {/* Search */}
       <TitanCard className="p-4">
         <div className="relative">
@@ -495,6 +505,7 @@ export default function ProductsPage() {
             className="pl-10"
           />
         </div>
+        <Button type="button" variant={missingImagesOnly ? "default" : "outline"} size="sm" className="mt-3" aria-pressed={missingImagesOnly} onClick={() => setMissingImagesOnly((current) => !current)}>Missing images only</Button>
       </TitanCard>
 
       {/* Products Table */}
@@ -538,6 +549,7 @@ export default function ProductsPage() {
                   <TableRow key={product.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
+                        {product.thumbnailUrls?.[0] ? <img src={product.thumbnailUrls[0]} alt="" className="h-10 w-10 rounded border object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded border text-muted-foreground"><Images className="h-4 w-4" /></span>}
                         {product.name}
                         {product.isService && (
                           <Badge variant="secondary" className="text-xs">Service</Badge>
@@ -554,6 +566,7 @@ export default function ProductsPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <Button variant="ghost" size="sm" aria-label={`Manage images for ${product.name}`} onClick={() => setImageProduct(product)}><Images className="h-4 w-4" /></Button>
                         <Button variant="ghost" size="sm" onClick={() => handleEditProduct(product)}>
                           <Edit className="h-4 w-4" />
                         </Button>
@@ -597,7 +610,7 @@ export default function ProductsPage() {
         )}
       </TitanCard>
 
-      <MediaLibraryTab />
+      <div id="product-media-library"><MediaLibraryTab /></div>
 
       {/* Add Product Dialog */}
       <Dialog open={isAddDialogOpen} onOpenChange={(open) => {

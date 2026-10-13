@@ -163,47 +163,8 @@ export function MediaLibraryTab() {
     },
   });
 
-  const handleUploadChange = async (urls: string[]) => {
-    const existingUrls = mediaAssets?.map(a => a.url) || [];
-    const newUrls = urls.filter(url => !existingUrls.includes(url));
-    
-    console.log('handleUploadChange called', { allUrls: urls, existingUrls, newUrls });
-    
-    for (const url of newUrls) {
-      const filename = url.split('/').pop() || 'unknown.jpg';
-      const extension = filename.split('.').pop()?.toLowerCase() || 'jpg';
-      
-      const mimeTypes: Record<string, string> = {
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'gif': 'image/gif',
-        'webp': 'image/webp',
-        'svg': 'image/svg+xml',
-      };
-      
-      const mimeType = mimeTypes[extension] || 'image/jpeg';
-      
-      console.log('Attempting to save asset:', { filename, url, mimeType });
-      
-      try {
-        const result = await saveAssetMutation.mutateAsync({
-          filename,
-          url,
-          fileSize: 0,
-          mimeType,
-        });
-        console.log('Asset saved successfully:', result);
-      } catch (error: any) {
-        console.error('Failed to save asset - full error:', error);
-        const errorMessage = error?.message || error?.toString() || 'Unknown error';
-        toast({
-          title: "Upload failed",
-          description: `Failed to save ${filename}: ${errorMessage}`,
-          variant: "destructive",
-        });
-      }
-    }
+  const handleUploadedImages = async (files: Array<{ url: string; filename: string; fileSize: number; mimeType: string }>) => {
+    for (const file of files) await saveAssetMutation.mutateAsync(file);
   };
 
   const formatFileSize = (bytes: number) => {
@@ -225,15 +186,16 @@ export function MediaLibraryTab() {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Store Item Image Cache</CardTitle>
+          <CardTitle>Product Image Library</CardTitle>
           <CardDescription>
-            Upload store item images so product thumbnails are available before customers browse the store.
+            Upload product images for the customer Product Calculator.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <ObjectUploader
             value={mediaAssets?.map(a => a.url) || []}
-            onChange={handleUploadChange}
+            onChange={() => {}}
+            onUploaded={handleUploadedImages}
             maxFiles={10}
             allowedFileTypes={["image/*"]}
           />
@@ -242,9 +204,9 @@ export function MediaLibraryTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Cached Store Images</CardTitle>
+          <CardTitle>Product Images</CardTitle>
           <CardDescription>
-            {mediaAssets?.length || 0} images cached for product thumbnails
+            {mediaAssets?.length || 0} images available for product thumbnails
           </CardDescription>
         </CardHeader>
         <CardContent>

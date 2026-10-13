@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { X } from "lucide-react";
 import { useState, useEffect } from "react";
@@ -16,6 +16,7 @@ interface MediaPickerProps {
 
 export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPickerProps) {
   const [selectedUrls, setSelectedUrls] = useState<string[]>(value);
+  const [search, setSearch] = useState("");
 
   const { data: mediaAssets = [], isLoading } = useQuery<MediaAsset[]>({
     queryKey: ["/api/media"],
@@ -25,6 +26,7 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
   useEffect(() => {
     if (open) {
       setSelectedUrls(value);
+      setSearch("");
     }
   }, [open, value]);
 
@@ -43,6 +45,7 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
     e.stopPropagation();
     setSelectedUrls(prev => prev.filter(u => u !== url));
   };
+  const filteredAssets = mediaAssets.filter((asset) => asset.mimeType.startsWith("image/") && asset.filename.toLowerCase().includes(search.trim().toLowerCase()));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -55,6 +58,7 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
         </DialogHeader>
 
         <div className="space-y-4">
+          <Input aria-label="Search media library images" placeholder="Search images by filename" value={search} onChange={(event) => setSearch(event.target.value)} />
           {selectedUrls.length > 0 && (
             <div className="border rounded-lg p-4 bg-muted/30">
               <div className="text-sm font-medium mb-3">Selected Images ({selectedUrls.length})</div>
@@ -72,7 +76,8 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
                     />
                     <button
                       onClick={(e) => handleRemoveSelected(url, e)}
-                      className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1"
+                      aria-label={`Remove selected image ${url}`}
                       data-testid={`button-remove-selected-${url}`}
                     >
                       <X className="w-3 h-3" />
@@ -88,17 +93,20 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
               <div className="text-center py-12 text-muted-foreground">
                 Loading media library...
               </div>
-            ) : mediaAssets.length === 0 ? (
+            ) : filteredAssets.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
-                No images in library. Upload images in the Media Library tab first.
+                {search ? "No matching images in the library." : "No images in library. Upload images in the Media Library section first."}
               </div>
             ) : (
               <div className="grid grid-cols-4 gap-4">
-                {mediaAssets.map((asset) => (
-                  <div
+                {filteredAssets.map((asset) => (
+                  <button
+                    type="button"
                     key={asset.id}
-                    className="relative group cursor-pointer"
+                    className="relative group text-left"
                     onClick={() => toggleSelection(asset.url)}
+                    aria-pressed={selectedUrls.includes(asset.url)}
+                    aria-label={`${selectedUrls.includes(asset.url) ? "Remove" : "Select"} ${asset.filename}`}
                     data-testid={`media-asset-${asset.id}`}
                   >
                     <div className={`border-2 rounded-lg overflow-hidden transition-all ${
@@ -111,19 +119,12 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
                         alt={asset.filename}
                         className="w-full aspect-square object-cover"
                       />
-                      <div className="absolute top-2 left-2">
-                        <Checkbox
-                          checked={selectedUrls.includes(asset.url)}
-                          onCheckedChange={() => toggleSelection(asset.url)}
-                          className="bg-background"
-                          data-testid={`checkbox-asset-${asset.id}`}
-                        />
-                      </div>
+                      {selectedUrls.includes(asset.url) ? <span className="absolute top-2 left-2 rounded bg-primary px-1.5 py-0.5 text-xs text-primary-foreground">Selected</span> : null}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground truncate">
                       {asset.filename}
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}

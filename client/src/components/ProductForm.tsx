@@ -275,12 +275,12 @@ export const ProductForm = ({
           render={({ field }) => (
             <FormItem className="flex items-center justify-between gap-4 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2">
               <div>
-                <FormLabel className="text-sm text-slate-100">Show in Customer Portal Storefront Beta</FormLabel>
+                <FormLabel className="text-sm text-slate-100">Show in Customer Portal Product Calculator</FormLabel>
                 <FormDescription className="text-xs text-slate-400">
-                  Active products appear in the storefront. Pricing preview is available when published pricing is ready.
+                  Active products appear in the Product Calculator. Pricing preview is available when published pricing is ready.
                 </FormDescription>
               </div>
-              <FormControl><Switch checked={field.value === true} onCheckedChange={field.onChange} aria-label="Show in Customer Portal Storefront Beta" /></FormControl>
+              <FormControl><Switch checked={field.value === true} onCheckedChange={field.onChange} aria-label="Show in Customer Portal Product Calculator" /></FormControl>
             </FormItem>
           )}
         />

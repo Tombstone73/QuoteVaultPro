@@ -6,6 +6,7 @@ import { useToast } from "@/hooks/use-toast";
 interface ObjectUploaderProps {
   value: string[];
   onChange: (urls: string[]) => void;
+  onUploaded?: (files: Array<{ url: string; filename: string; fileSize: number; mimeType: string }>) => Promise<void> | void;
   maxFiles?: number;
   allowedFileTypes?: string[];
 }
@@ -13,6 +14,7 @@ interface ObjectUploaderProps {
 export function ObjectUploader({
   value = [],
   onChange,
+  onUploaded,
   maxFiles = 5,
   allowedFileTypes = ["image/*"],
 }: ObjectUploaderProps) {
@@ -41,19 +43,22 @@ export function ObjectUploader({
     }
 
     setUploading(true);
-    const newUrls: string[] = [];
+    const uploadedFiles: Array<{ url: string; filename: string; fileSize: number; mimeType: string }> = [];
 
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+          throw new Error('Choose a JPEG, PNG, WebP, or GIF image.');
+        }
 
         const presignedResponse = await fetch("/api/objects/upload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            filename: file.name,
-            contentType: file.type,
+            fileName: file.name,
+            fileSizeBytes: file.size,
           }),
         });
 
@@ -61,7 +66,12 @@ export function ObjectUploader({
           throw new Error("Failed to get upload URL");
         }
 
-        const { method, url } = await presignedResponse.json();
+        const { storageTarget, method, url, path } = await presignedResponse.json();
+        // /objects serves Supabase images to authenticated portal customers.
+        // Other direct-upload providers do not yet have a customer image proxy.
+        if (storageTarget !== 'supabase' || method !== 'PUT' || typeof url !== 'string' || typeof path !== 'string' || !/^[a-zA-Z0-9/_.-]+$/.test(path) || path.includes('..') || path.startsWith('/')) {
+          throw new Error('Customer image upload is not available for this storage provider.');
+        }
 
         const uploadResponse = await fetch(url, {
           method,
@@ -75,33 +85,20 @@ export function ObjectUploader({
           throw new Error("Failed to upload file");
         }
 
-        const uploadedPath = url.split("?")[0];
-
-        const aclResponse = await fetch("/api/objects/acl", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ objectPath: uploadedPath }),
-        });
-
-        if (!aclResponse.ok) {
-          throw new Error("Failed to set object permissions");
-        }
-
-        const { path: normalizedPath } = await aclResponse.json();
-        newUrls.push(normalizedPath);
+        uploadedFiles.push({ url: `/objects/${path}`, filename: file.name, fileSize: file.size, mimeType: file.type });
       }
 
-      onChange([...value, ...newUrls]);
+      await onUploaded?.(uploadedFiles);
+      onChange([...value, ...uploadedFiles.map((file) => file.url)]);
       toast({
         title: "Upload successful",
-        description: `${newUrls.length} file(s) uploaded`,
+        description: `${uploadedFiles.length} file(s) uploaded`,
       });
     } catch (error) {
       console.error("Upload error:", error);
       toast({
         title: "Upload failed",
-        description: "Failed to upload one or more files",
+        description: error instanceof Error ? error.message : "Failed to upload one or more files",
         variant: "destructive",
       });
     } finally {
@@ -199,7 +196,7 @@ export function ObjectUploader({
             multiple
             accept={allowedFileTypes.join(",")}
             onChange={(e) => handleFileSelect(e.target.files)}
-            onClick={stopBubbling}
+            onClick={(event) => event.stopPropagation()}
             className="hidden"
             data-testid="file-input"
           />

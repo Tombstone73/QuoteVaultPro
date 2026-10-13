@@ -12,7 +12,7 @@
  * Extracted from monolithic routes.ts for better maintainability.
  */
 
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import path from "path";
 import { Readable } from "stream";
 import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork } from '@shared/artworkPreview';
@@ -36,8 +36,11 @@ import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/porta
 import { storage } from "../storage";
 import {
   getRequestOrganizationId,
+  portalContext,
   tenantContext
 } from "../tenantContext";
+import { isPortalCustomerIdentity } from "../services/customerPortalAccessService";
+import { canPortalAccessStorefrontImage } from "../services/portalStorefront.service";
 import {
   getEffectiveWorkflowState,
   isQuoteLocked,
@@ -71,6 +74,9 @@ import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeT
 import type { DownloadIntent } from "@shared/schema";
 
 let hasLoggedPdfObjectsResponse = false;
+
+const objectReadContext: RequestHandler = (req, res, next) =>
+  isPortalCustomerIdentity(req.user) ? portalContext(req, res, next) : tenantContext(req, res, next);
 
 function isThumbDiagnosticsPath(keyOrPath: string | null | undefined): boolean {
   const raw = (keyOrPath ?? "").trim().toLowerCase();
@@ -897,7 +903,7 @@ export async function registerAttachmentRoutes(
    * Proxy endpoint for serving files from Supabase/local/GCS storage
    * Handles automatic fallback: Supabase → local → GCS
    */
-  app.get("/objects/:objectPath(*)", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get("/objects/:objectPath(*)", isAuthenticated, objectReadContext, async (req: any, res) => {
     const userId = getUserId(req.user);
     const isDev = process.env.NODE_ENV === "development";
 
@@ -932,6 +938,15 @@ export async function registerAttachmentRoutes(
     if (!requestedKeyRaw) {
       logThumb4xx(req, 400, "error", objectPath);
       return res.status(400).json({ error: "Invalid object path" });
+    }
+
+    if (isPortalCustomerIdentity(req.user)) {
+      try {
+        const allowed = await canPortalAccessStorefrontImage(req, `/objects/${requestedKeyRaw}`);
+        if (!allowed) return res.status(403).json({ error: "Access denied" });
+      } catch {
+        return res.status(503).json({ error: "Image temporarily unavailable" });
+      }
     }
 
     // Tenant safety (compatible with legacy keys):
