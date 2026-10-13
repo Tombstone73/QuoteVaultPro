@@ -50,12 +50,15 @@ import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { isStaffPortalPreviewReadMethod } from "../services/staffPortalPreviewService";
 import { authorizeStaffPreviewPayment } from "../middleware/authorizeStaffPreviewPayment";
-import { getPortalStorefrontProduct, listPortalStorefrontProducts, previewPortalStorefrontPrice } from "../services/portalStorefront.service";
+import { getPortalStorefrontProduct, listPortalStorefrontProducts, PortalProductPriceError, previewPortalStorefrontPrice } from "../services/portalStorefront.service";
 
 type PortalHandler<T> = (req: Request) => Promise<T>;
 
 function sendPortalError(res: Response, error: unknown) {
   const { statusCode, message } = toPortalErrorResponse(error);
+  if (error instanceof PortalProductPriceError) {
+    return res.status(statusCode).json({ success: false, code: error.code, message: error.message, ...(error.referenceId ? { referenceId: error.referenceId } : {}) });
+  }
   const safeMessage = statusCode >= 500 ? "Portal request failed" : message;
   return res.status(statusCode).json({ success: false, message: safeMessage });
 }

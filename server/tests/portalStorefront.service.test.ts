@@ -47,7 +47,10 @@ class PortalAccessError extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
 }
 jest.unstable_mockModule('../db', () => ({ db }));
-jest.unstable_mockModule('../services/pricing/PricingService', () => ({ priceLineItem }));
+class ProductPricingReadError extends Error {
+  code = 'PBV2_PRICING_UNAVAILABLE';
+}
+jest.unstable_mockModule('../services/pricing/PricingService', () => ({ priceLineItem, ProductPricingReadError }));
 jest.unstable_mockModule('../services/portal.service', () => ({
   PortalAccessError,
   getPortalScope: () => ({ userId: portalUserId, organizationId: 'org-a', customerId: 'customer-a', customer }),
@@ -177,6 +180,26 @@ test('price preview delegates to the same server priceLineItem input as Quote/Or
   expect(result).not.toHaveProperty('pbv2SnapshotJson');
 });
 
+test('fixed dimensions use the published tree and custom dimensions require valid input', async () => {
+  rows = [product({ treeJson: { ...tree, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } })];
+  const detail = await getPortalStorefrontProduct({} as any, 'product-a');
+  expect(detail).toMatchObject({ dimensionsRequired: false, fixedDimensions: { widthIn: 24, heightIn: 18 } });
+  await previewPortalStorefrontPrice({ body: { quantity: 1, widthIn: 999, heightIn: 999, selections: {} } } as any, 'product-a');
+  expect(priceLineItem).toHaveBeenCalledWith(expect.objectContaining({ widthIn: 24, heightIn: 18, pbv2TreeVersionIdOverride: 'tree-a' }));
+
+  rows = [product()];
+  priceLineItem.mockClear();
+  await expect(previewPortalStorefrontPrice({ body: { quantity: 1, widthIn: 0, heightIn: 18 } } as any, 'product-a'))
+    .rejects.toMatchObject({ statusCode: 400 });
+  expect(priceLineItem).not.toHaveBeenCalled();
+});
+
+test('invalid product option fails before canonical pricing', async () => {
+  await expect(previewPortalStorefrontPrice({ body: { quantity: 1, widthIn: 24, heightIn: 18, selections: { option_1: 'unknown' } } } as any, 'product-a'))
+    .rejects.toMatchObject({ statusCode: 400, message: 'Invalid product option' });
+  expect(priceLineItem).not.toHaveBeenCalled();
+});
+
 test('hidden stale child selections are stripped before canonical pricing', async () => {
   await previewPortalStorefrontPrice({ body: { quantity: 1, widthIn: 24, heightIn: 18, selections: { option_1: 'single', option_2: 'top' } } } as any, 'product-a');
   expect(priceLineItem).toHaveBeenCalledWith(expect.objectContaining({ pbv2ExplicitSelections: { sides: 'single' } }));
@@ -202,6 +225,33 @@ test('newly revealed required options are returned without calculating a prematu
 
 test('customer modifiers fail closed until canonical Quote/Order PBV2 pricing supports them', async () => {
   customer.defaultDiscountPercent = '10';
-  await expect(previewPortalStorefrontPrice({ body: { quantity: 1 } } as any, 'product-a')).rejects.toMatchObject({ statusCode: 422 });
+  await expect(previewPortalStorefrontPrice({ body: { quantity: 1 } } as any, 'product-a')).rejects.toMatchObject({ statusCode: 422, code: 'ACCOUNT_PRICING_UNAVAILABLE' });
   expect(priceLineItem).not.toHaveBeenCalled();
+});
+
+test('missing published pricing is a permanent safe state', async () => {
+  rows = [product({ pbv2ActiveTreeVersionId: null, activeTreeStatus: null, treeJson: null })];
+  await expect(previewPortalStorefrontPrice({ body: { quantity: 1 } } as any, 'product-a')).rejects.toMatchObject({ statusCode: 422, code: 'PRODUCT_PRICING_NOT_CONFIGURED' });
+  expect(priceLineItem).not.toHaveBeenCalled();
+});
+
+test('canonical pricing configuration failure is classified without exposing rules', async () => {
+  priceLineItem.mockImplementationOnce(async () => { throw new Error('PBV2 tree base pricing (meta.pricingV2.base) not configured. Internal rule.'); });
+  const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await expect(previewPortalStorefrontPrice({ body: { quantity: 1, widthIn: 24, heightIn: 24, selections: {} } } as any, 'product-a'))
+      .rejects.toMatchObject({ statusCode: 422, code: 'PRODUCT_PRICING_NOT_CONFIGURED', message: 'Product pricing is not configured.' });
+    expect(JSON.stringify(spy.mock.calls)).not.toContain('Internal rule');
+  } finally { spy.mockRestore(); }
+});
+
+test('unknown canonical failure is temporary and has a traceable safe reference', async () => {
+  priceLineItem.mockImplementationOnce(async () => { throw Object.assign(new Error('Sensitive database detail'), { code: '08006' }); });
+  const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await expect(previewPortalStorefrontPrice({ body: { quantity: 1, widthIn: 24, heightIn: 24, selections: {} } } as any, 'product-a'))
+      .rejects.toMatchObject({ statusCode: 503, code: 'TEMPORARY_PRICING_FAILURE', message: 'Pricing is temporarily unavailable.', referenceId: expect.any(String) });
+    expect(JSON.stringify(spy.mock.calls)).toContain('08006');
+    expect(JSON.stringify(spy.mock.calls)).not.toContain('Sensitive database detail');
+  } finally { spy.mockRestore(); }
 });

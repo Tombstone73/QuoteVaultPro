@@ -2,9 +2,10 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TextDecoder, TextEncoder } from "node:util";
 
-import { usePortalStorePrice, usePortalStoreProduct, usePortalStoreProducts } from "@/hooks/usePortal";
+import { PortalApiError, usePortalStorePrice, usePortalStoreProduct, usePortalStoreProducts } from "@/hooks/usePortal";
 
 jest.mock("@/hooks/usePortal", () => ({
+  PortalApiError: jest.requireActual<typeof import("@/hooks/usePortal")>("@/hooks/usePortal").PortalApiError,
   usePortalStoreProducts: jest.fn(),
   usePortalStoreProduct: jest.fn(),
   usePortalStorePrice: jest.fn(),
@@ -68,6 +69,15 @@ test("catalog renders a read-only product browse path", () => {
   expect(host.querySelector('a[href="/portal/store/product-1"]')).not.toBeNull();
   expect(host.textContent).toContain("Online ordering is not yet enabled");
   expect(host.textContent).not.toMatch(/add to cart|checkout|place order/i);
+});
+
+test("assigned primary image uses the authenticated same-origin object path", () => {
+  catalogHook.mockReturnValue({
+    data: { items: [{ id: 'product-1', name: 'ACM', description: null, category: 'Signs', imageUrl: '/objects/uploads/acm-image', pricingAvailable: true }], categories: ['Signs'], hasMore: false, page: 0 },
+    isPending: false, isError: false,
+  });
+  render('/portal/store');
+  expect(host.querySelector<HTMLImageElement>('img[src="/objects/uploads/acm-image"]')).not.toBeNull();
 });
 
 test("catalog sends page and filters to the API without implying a full-catalog count", () => {
@@ -136,9 +146,31 @@ test("product without published pricing remains browsable without requesting a p
   });
   render("/portal/store/product-1");
   expect(host.textContent).toContain("Custom Signs");
-  expect(host.textContent).toContain("Pricing not available");
+  expect(host.textContent).toContain("Product pricing is not configured");
   expect(priceHook).not.toHaveBeenCalled();
   expect(host.textContent).not.toContain("$0.00");
+});
+
+test.each([
+  ['ACCOUNT_PRICING_UNAVAILABLE', 422, 'Pricing is unavailable for this account.', false],
+  ['PRODUCT_PRICING_NOT_CONFIGURED', 422, 'Product pricing is not configured.', false],
+  ['CONFIGURATION_CANNOT_BE_PRICED', 422, 'This configuration cannot be priced.', false],
+  ['TEMPORARY_PRICING_FAILURE', 503, 'Pricing is temporarily unavailable.', true],
+] as const)('price errors identify %s without retrying permanent failures', (code, status, expected, retryable) => {
+  jest.useFakeTimers();
+  productHook.mockReturnValue({
+    data: {
+      id: 'product-1', name: 'Custom Signs', description: null, category: 'Signs', imageUrl: null,
+      pricingAvailable: true, measurementMode: 'quantity_only', dimensionsRequired: false, fixedDimensions: null,
+      defaults: { quantity: 1, widthIn: null, heightIn: null, selections: {} }, options: [],
+    },
+    isPending: false, isError: false,
+  });
+  priceHook.mockReturnValue({ isSuccess: false, isPending: false, isFetching: false, isError: true, error: new PortalApiError(expected, status, code) });
+  render('/portal/store/product-1');
+  act(() => jest.advanceTimersByTime(400));
+  expect(host.textContent).toContain(expected);
+  expect(Boolean(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Try again'))).toBe(retryable);
 });
 
 test("changing a parent option hides stale pricing and reveals current conditional controls", () => {

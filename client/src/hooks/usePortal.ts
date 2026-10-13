@@ -6,7 +6,15 @@ type PortalEnvelope<T> = {
   data?: T;
   message?: string;
   error?: string;
+  code?: string;
+  referenceId?: string;
 };
+
+export class PortalApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string, readonly referenceId?: string) {
+    super(message);
+  }
+}
 
 export type PortalSessionDto = {
   userId: string;
@@ -486,7 +494,7 @@ async function portalFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   const payload = (await response.json().catch(() => ({}))) as PortalEnvelope<T>;
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || payload.error || "Portal request failed");
+    throw new PortalApiError(payload.message || payload.error || "Portal request failed", response.status, payload.code, payload.referenceId);
   }
   return (payload.data ?? ([] as T)) as T;
 }

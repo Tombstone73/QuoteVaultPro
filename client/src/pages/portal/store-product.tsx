@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
+  PortalApiError,
   usePortalStorePrice,
   usePortalStoreProduct,
   type PortalStoreOptionDto,
@@ -22,6 +23,15 @@ import {
 
 function currency(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+}
+
+function pricingErrorPresentation(error: unknown): { message: string; retryable: boolean } {
+  if (error instanceof PortalApiError) {
+    if (error.code === 'PRODUCT_PRICING_NOT_CONFIGURED') return { message: 'Product pricing is not configured.', retryable: false };
+    if (error.code === 'ACCOUNT_PRICING_UNAVAILABLE') return { message: 'Pricing is unavailable for this account.', retryable: false };
+    if (error.code === 'CONFIGURATION_CANNOT_BE_PRICED' || error.status === 400) return { message: 'This configuration cannot be priced.', retryable: false };
+  }
+  return { message: 'Pricing is temporarily unavailable. Please try again.', retryable: true };
 }
 
 function positiveNumber(value: string) {
@@ -151,6 +161,7 @@ function Configuration({ product }: { product: PortalStoreProductDto }) {
     return () => window.clearTimeout(timer);
   }, [configurationKey]);
   const priceQuery = usePortalStorePrice(product.id, debouncedConfiguration);
+  const priceError = priceQuery.isError ? pricingErrorPresentation(priceQuery.error) : null;
   const isCurrent = configuration !== null && configurationKey === JSON.stringify(debouncedConfiguration);
   const price = isCurrent && priceQuery.isSuccess ? priceQuery.data : null;
   const appliedPriceKey = useRef<string | null>(null);
@@ -205,8 +216,8 @@ function Configuration({ product }: { product: PortalStoreProductDto }) {
             <p className="text-sm text-muted-foreground">Enter a valid quantity and dimensions to see an estimate.</p>
           ) : !isCurrent || priceQuery.isPending || priceQuery.isFetching ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Calculating preview…</p>
-          ) : priceQuery.isError ? (
-            <div className="space-y-2"><p className="text-sm font-medium text-destructive">Pricing is unavailable right now.</p><Button size="sm" variant="outline" onClick={() => void priceQuery.refetch()}>Try again</Button></div>
+          ) : priceError ? (
+            <div className="space-y-2"><p className="text-sm font-medium text-destructive">{priceError.message}</p>{priceError.retryable ? <Button size="sm" variant="outline" onClick={() => void priceQuery.refetch()}>Try again</Button> : null}</div>
           ) : price && price.priceAvailable && price.unitPriceCents !== null && price.totalCents !== null ? (
             <div className="space-y-4">
               <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Unit price</p><p className="mt-1 text-xl font-semibold tabular-nums">{currency(price.unitPriceCents)}</p></div>
@@ -253,7 +264,7 @@ export default function PortalStoreProductPage() {
         </div>
       </header>
       {product.pricingAvailable ? <Configuration key={product.id} product={product} /> : (
-        <Card><CardContent className="py-8"><p className="font-medium">Pricing not available</p><p className="mt-1 text-sm text-muted-foreground">This product is available to browse. Contact us for a quote.</p></CardContent></Card>
+        <Card><CardContent className="py-8"><p className="font-medium">Product pricing is not configured</p><p className="mt-1 text-sm text-muted-foreground">This product is available to browse. Contact us for a quote.</p></CardContent></Card>
       )}
     </div>
   );

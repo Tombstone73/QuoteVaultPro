@@ -1,4 +1,5 @@
 import { and, eq, exists, ilike, or } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import type { OptionNodeV2, OptionTreeV2 } from '@shared/optionTreeV2';
 import { customerVisibleProducts, pbv2TreeVersions, products } from '@shared/schema';
@@ -6,10 +7,44 @@ import { filterPbv2ChoicesForRuntime, getRenderablePbv2QuestionNodeIds, sortPbv2
 import { resolveRuntimeVisibility } from '@shared/optionTreeV2Runtime';
 import { getPbv2FixedDimensions } from '@shared/pbv2/fixedDimensions';
 import { db } from '../db';
-import { priceLineItem } from './pricing/PricingService';
+import { priceLineItem, ProductPricingReadError } from './pricing/PricingService';
 import { getPortalScope, PortalAccessError } from './portal.service';
 
 type StorefrontChoice = { value: string; label: string; description: string | null };
+export type PortalProductPriceErrorCode = 'PRODUCT_PRICING_NOT_CONFIGURED' | 'ACCOUNT_PRICING_UNAVAILABLE' | 'CONFIGURATION_CANNOT_BE_PRICED' | 'TEMPORARY_PRICING_FAILURE';
+
+export class PortalProductPriceError extends PortalAccessError {
+  constructor(statusCode: number, readonly code: PortalProductPriceErrorCode, message: string, readonly referenceId?: string) {
+    super(statusCode, message);
+  }
+}
+
+export function classifyCanonicalPortalPricingError(error: unknown): Pick<PortalProductPriceError, 'statusCode' | 'code' | 'message'> {
+  const code = typeof (error as { code?: unknown } | null)?.code === 'string' ? (error as { code: string }).code : '';
+  const message = error instanceof Error ? error.message : '';
+  if (error instanceof ProductPricingReadError || /PBV2 tree (?:metadata missing|base pricing .*not configured)|This product needs base pricing configured/.test(message)) {
+    return { statusCode: 422, code: 'PRODUCT_PRICING_NOT_CONFIGURED', message: 'Product pricing is not configured.' };
+  }
+  if (code === 'PBV2_PRICING_MATRIX_ERROR' || code === 'PBV2_FORMULA_ERROR' || code.startsWith('PBV2_E_')
+    || /^(?:width|height|quantity) must be a positive number$|^Invalid pricing output$/.test(message)) {
+    return { statusCode: 422, code: 'CONFIGURATION_CANNOT_BE_PRICED', message: 'This configuration cannot be priced.' };
+  }
+  return { statusCode: 503, code: 'TEMPORARY_PRICING_FAILURE', message: 'Pricing is temporarily unavailable.' };
+}
+
+function logPortalPricingFailure(error: unknown, referenceId: string) {
+  const exception = error as { name?: unknown; code?: unknown; cause?: { code?: unknown }; stack?: unknown } | null;
+  const safeCode = (value: unknown) => typeof value === 'string' && /^[A-Z0-9_]{1,64}$/.test(value) ? value : undefined;
+  const stackLine = typeof exception?.stack === 'string' ? exception.stack.split('\n').slice(1).find((line) => line.includes(' at ')) : undefined;
+  console.error('[Portal Product Calculator pricing] calculation failed', {
+    referenceId,
+    stage: 'canonical_pricing',
+    errorName: typeof exception?.name === 'string' ? exception.name.slice(0, 64) : 'unknown',
+    errorCode: safeCode(exception?.code),
+    causeCode: safeCode(exception?.cause?.code),
+    source: stackLine?.trim().slice(0, 240),
+  });
+}
 export type StorefrontOption = {
   key: string;
   label: string;
@@ -162,7 +197,8 @@ function decodeSelections(tree: OptionTreeV2, raw: unknown): Record<string, unkn
         (['select', 'radio'].includes(option.type) && !option.choices.some((choice) => choice.value === value))
         || (option.type === 'multiselect' && (!Array.isArray(value) || !value.every((item) => option.choices.some((choice) => choice.value === item))))
       );
-      if (!option || invalidChoice) { delete decoded[key]; removed = true; }
+      if (invalidChoice) throw new PortalAccessError(400, 'Invalid product option');
+      if (!option) { delete decoded[key]; removed = true; }
     }
     if (!removed) break;
   }
@@ -283,7 +319,7 @@ export async function previewPortalStorefrontPrice(req: Request, productId: stri
   const scope = getPortalScope(req);
   const product = await loadVisibleProduct(req, productId);
   if (!product) return null;
-  if (!hasStorefrontPricing(product)) throw new PortalAccessError(422, 'Pricing not available for this product.');
+  if (!hasStorefrontPricing(product)) throw new PortalProductPriceError(422, 'PRODUCT_PRICING_NOT_CONFIGURED', 'Product pricing is not configured.');
   // Staff PBV2 Quote/Order pricing does not currently apply these customer
   // commercial fields. Fail closed instead of displaying a misleading price.
   const customer = scope.customer;
@@ -291,7 +327,7 @@ export async function previewPortalStorefrontPrice(req: Request, productId: stri
     || Number(customer.defaultDiscountPercent || 0) !== 0
     || Number(customer.defaultMarkupPercent || 0) !== 0
     || Number(customer.defaultMarginPercent || 0) !== 0) {
-    throw new PortalAccessError(422, 'Pricing is temporarily unavailable for this customer.');
+    throw new PortalProductPriceError(422, 'ACCOUNT_PRICING_UNAVAILABLE', 'Pricing is unavailable for this account.');
   }
   const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
   const quantity = Number(body.quantity);
@@ -336,7 +372,10 @@ export async function previewPortalStorefrontPrice(req: Request, productId: stri
       options: projected.options,
       effectiveSelections: projected.effectiveSelections,
     };
-  } catch {
-    throw new PortalAccessError(422, 'Pricing is temporarily unavailable for this configuration.');
+  } catch (error) {
+    const referenceId = randomUUID();
+    logPortalPricingFailure(error, referenceId);
+    const classified = classifyCanonicalPortalPricingError(error);
+    throw new PortalProductPriceError(classified.statusCode, classified.code, classified.message, referenceId);
   }
 }
