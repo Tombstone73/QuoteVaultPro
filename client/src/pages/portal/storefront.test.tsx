@@ -102,7 +102,7 @@ test("detail previews cents from the pricing API and keeps its read-only boundar
   productHook.mockReturnValue({
     data: {
       id: "product-1", name: "Custom Signs", description: "Printed for your space", category: "Signs", imageUrl: null,
-      measurementMode: "each", dimensionsRequired: false, fixedDimensions: { widthIn: 12, heightIn: 18 },
+      pricingAvailable: true, measurementMode: "each", dimensionsRequired: false, fixedDimensions: { widthIn: 12, heightIn: 18 },
       defaults: { quantity: 20, widthIn: null, heightIn: null, selections: {} }, options: [],
     },
     isPending: false,
@@ -124,6 +124,22 @@ test("detail previews cents from the pricing API and keeps its read-only boundar
   expect(host.querySelector("button[type=submit]")).toBeNull();
 });
 
+test("product without published pricing remains browsable without requesting a price", () => {
+  productHook.mockReturnValue({
+    data: {
+      id: "product-1", name: "Custom Signs", description: "Printed for your space", category: "Signs", imageUrl: null,
+      pricingAvailable: false, measurementMode: "each", dimensionsRequired: false, fixedDimensions: null,
+      defaults: { quantity: 1, widthIn: null, heightIn: null, selections: {} }, options: [],
+    },
+    isPending: false, isError: false,
+  });
+  render("/portal/store/product-1");
+  expect(host.textContent).toContain("Custom Signs");
+  expect(host.textContent).toContain("Pricing not available");
+  expect(priceHook).not.toHaveBeenCalled();
+  expect(host.textContent).not.toContain("$0.00");
+});
+
 test("changing a parent option hides stale pricing and reveals current conditional controls", () => {
   jest.useFakeTimers();
   const finish = { key: "option_1", label: "Finish", type: "radio", required: true, helpText: null, choices: [
@@ -136,7 +152,7 @@ test("changing a parent option hides stale pricing and reveals current condition
   productHook.mockReturnValue({
     data: {
       id: "product-2", name: "Posters", description: null, category: "Print", imageUrl: null,
-      measurementMode: "each", dimensionsRequired: false, fixedDimensions: null,
+      pricingAvailable: true, measurementMode: "each", dimensionsRequired: false, fixedDimensions: null,
       defaults: { quantity: 2, widthIn: null, heightIn: null, selections: { option_1: "matte" } }, options: [finish],
     },
     isPending: false, isError: false,

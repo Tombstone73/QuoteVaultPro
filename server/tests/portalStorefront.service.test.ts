@@ -15,6 +15,7 @@ const db: any = {
     const query: any = {
       from: (source: any) => { table = getTableName(source); return query; },
       innerJoin: () => query,
+      leftJoin: () => query,
       where: (predicate: any) => {
         const compiled = dialect.sqlToQuery(predicate);
         reads.push({ table, params: compiled.params, sql: compiled.sql });
@@ -31,6 +32,7 @@ const db: any = {
     const query: any = {
       from: (source: any) => { table = getTableName(source); return query; },
       innerJoin: () => query,
+      leftJoin: () => query,
       where: (predicate: any) => {
         const compiled = dialect.sqlToQuery(predicate);
         reads.push({ table, params: compiled.params, sql: compiled.sql });
@@ -50,7 +52,7 @@ jest.unstable_mockModule('../services/portal.service', () => ({
   PortalAccessError,
   getPortalScope: () => ({ userId: portalUserId, organizationId: 'org-a', customerId: 'customer-a', customer }),
 }));
-const { mayShowStorefrontProduct, projectStorefrontOptions, listPortalStorefrontProducts, getPortalStorefrontProduct, previewPortalStorefrontPrice } = await import('../services/portalStorefront.service');
+const { mayShowStorefrontProduct, hasStorefrontPricing, projectStorefrontOptions, listPortalStorefrontProducts, getPortalStorefrontProduct, previewPortalStorefrontPrice } = await import('../services/portalStorefront.service');
 
 const tree: OptionTreeV2 = {
   schemaVersion: 2, rootNodeIds: ['root'],
@@ -84,12 +86,16 @@ beforeEach(() => {
   priceLineItem.mockClear();
 });
 
-test('catalog visibility is explicit, active, published, and excludes editor overrides', () => {
+test('catalog visibility is active and explicit while pricing readiness is independent', () => {
   expect(mayShowStorefrontProduct(product())).toBe(true);
+  for (const patch of [{ storefrontVisible: false }, { isActive: false }]) expect(mayShowStorefrontProduct(product(patch))).toBe(false);
   for (const patch of [
-    { storefrontVisible: false }, { isActive: false }, { activeTreeStatus: 'DRAFT' },
-    { pbv2ActiveTreeVersionId: null }, { pricingProfileConfig: { pbv2Override: { enabled: true, versionId: 'draft-tree' } } },
-  ]) expect(mayShowStorefrontProduct(product(patch))).toBe(false);
+    { activeTreeStatus: 'DRAFT' }, { pbv2ActiveTreeVersionId: null, treeJson: null },
+    { pricingProfileConfig: { pbv2Override: { enabled: true, versionId: 'draft-tree' } } },
+  ]) {
+    expect(mayShowStorefrontProduct(product(patch))).toBe(true);
+    expect(hasStorefrontPricing(product(patch))).toBe(false);
+  }
 });
 
 test('customer-safe DTO omits PBV2 rules, price impacts, and internal nodes', () => {
@@ -111,7 +117,7 @@ test('catalog thumbnails accept only safe same-origin objects or HTTPS URLs', as
 
 test('catalog and detail reads are organization-scoped and return only projected fields', async () => {
   const catalog = await listPortalStorefrontProducts({ query: {} } as any);
-  expect(catalog.items).toEqual([{ id: 'product-a', name: 'Yard Sign', description: 'A printed sign', category: 'Signs', imageUrl: 'https://example.com/sign.png' }]);
+  expect(catalog.items).toEqual([{ id: 'product-a', name: 'Yard Sign', description: 'A printed sign', category: 'Signs', imageUrl: 'https://example.com/sign.png', pricingAvailable: true }]);
   expect(catalog).toMatchObject({ categories: ['Signs'], hasMore: false, page: 0 });
   expect(reads[0].params).toContain('org-a');
   expect(reads[0].sql).toContain('storefront_visible');
@@ -127,6 +133,23 @@ test('portal scope is required before catalog reads', async () => {
   portalUserId = null;
   await expect(listPortalStorefrontProducts({ query: {} } as any)).rejects.toMatchObject({ statusCode: 403 });
   expect(reads).toHaveLength(0);
+});
+
+test('unpublished and overridden products remain browsable without pricing data or preview calls', async () => {
+  for (const patch of [
+    { pbv2ActiveTreeVersionId: null, activeTreeStatus: null, treeJson: null },
+    { activeTreeStatus: 'DRAFT' },
+    { pricingProfileConfig: { pbv2Override: { enabled: true } } },
+  ]) {
+    rows = [product(patch)];
+    const catalog = await listPortalStorefrontProducts({ query: {} } as any);
+    expect(catalog.items[0].pricingAvailable).toBe(false);
+    const detail = await getPortalStorefrontProduct({} as any, 'product-a');
+    expect(detail).toMatchObject({ pricingAvailable: false, options: [], defaults: { selections: {} } });
+    expect(JSON.stringify(detail)).not.toMatch(/treeJson|pricingProfileConfig|pbv2Override/);
+    await expect(previewPortalStorefrontPrice({ body: { quantity: 1 } } as any, 'product-a')).rejects.toMatchObject({ statusCode: 422 });
+    expect(priceLineItem).not.toHaveBeenCalled();
+  }
 });
 
 test('catalog search and category are tenant-scoped before page limits', async () => {

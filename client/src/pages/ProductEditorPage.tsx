@@ -260,7 +260,7 @@ const ProductEditorPage = () => {
       optionTreeJson: null,
       storeUrl: "",
       showStoreLink: true,
-      storefrontVisible: false,
+      storefrontVisible: true,
       thumbnailUrls: [],
       priceBreaks: { enabled: false, type: "quantity", tiers: [] },
       useNestingCalculator: false,

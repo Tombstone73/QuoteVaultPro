@@ -59,9 +59,9 @@ export default function PortalStorePage() {
             <Badge variant="secondary" className="text-[11px]">Beta</Badge>
           </div>
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Storefront</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Explore products and preview pricing for your next project.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Explore products and preview pricing where available.</p>
         </div>
-        <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">Pricing preview is available. Online ordering is not yet enabled.</p>
+        <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">Online ordering is not yet enabled.</p>
       </header>
 
       <section aria-label="Find products" className="grid gap-3 rounded-lg border border-border/80 bg-card p-4 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-end">
@@ -117,7 +117,8 @@ export default function PortalStorePage() {
                 <div className="flex min-h-40 flex-col p-4">
                   {product.category ? <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{product.category}</p> : null}
                   <h2 className="font-semibold leading-snug group-hover:text-primary">{product.name}</h2>
-                  <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-muted-foreground">{product.description || "Explore options and preview pricing."}</p>
+                  <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-muted-foreground">{product.description || "Explore this product."}</p>
+                  {!product.pricingAvailable ? <p className="mt-2 text-xs text-muted-foreground">Pricing not available</p> : null}
                   <span className="mt-auto flex items-center gap-1 pt-4 text-sm font-medium text-primary">View product <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" /></span>
                 </div>
               </Link>

@@ -277,7 +277,7 @@ export const ProductForm = ({
               <div>
                 <FormLabel className="text-sm text-slate-100">Show in Customer Portal Storefront Beta</FormLabel>
                 <FormDescription className="text-xs text-slate-400">
-                  Customers can preview pricing only after this product is active and its PBV2 tree is published.
+                  Active products appear in the storefront. Pricing preview is available when published pricing is ready.
                 </FormDescription>
               </div>
               <FormControl><Switch checked={field.value === true} onCheckedChange={field.onChange} aria-label="Show in Customer Portal Storefront Beta" /></FormControl>

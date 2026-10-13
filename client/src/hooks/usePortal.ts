@@ -36,6 +36,7 @@ export type PortalStoreProductSummaryDto = {
   description: string | null;
   category: string | null;
   imageUrl: string | null;
+  pricingAvailable: boolean;
 };
 
 export type PortalStoreCatalogDto = {

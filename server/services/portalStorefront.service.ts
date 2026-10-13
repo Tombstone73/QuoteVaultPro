@@ -1,4 +1,4 @@
-import { and, eq, exists, ilike, or, sql } from 'drizzle-orm';
+import { and, eq, exists, ilike, or } from 'drizzle-orm';
 import type { Request } from 'express';
 import type { OptionNodeV2, OptionTreeV2 } from '@shared/optionTreeV2';
 import { customerVisibleProducts, pbv2TreeVersions, products } from '@shared/schema';
@@ -31,7 +31,8 @@ type StorefrontProduct = {
   measurementMode: string;
   pricingProfileConfig: unknown;
   pbv2ActiveTreeVersionId: string | null;
-  treeJson: Record<string, unknown>;
+  activeTreeStatus: string | null;
+  treeJson: Record<string, unknown> | null;
 };
 
 function safeImageUrl(urls: string[]): string | null {
@@ -56,12 +57,12 @@ function hasEditorPricingOverride(product: Pick<StorefrontProduct, 'pricingProfi
 export function mayShowStorefrontProduct(product: {
   isActive: boolean;
   storefrontVisible: boolean;
-  pbv2ActiveTreeVersionId: string | null;
-  activeTreeStatus: string | null;
-  pricingProfileConfig: unknown;
 }): boolean {
-  return product.isActive === true && product.storefrontVisible === true
-    && Boolean(product.pbv2ActiveTreeVersionId) && product.activeTreeStatus === 'ACTIVE'
+  return product.isActive === true && product.storefrontVisible === true;
+}
+
+export function hasStorefrontPricing(product: Pick<StorefrontProduct, 'pbv2ActiveTreeVersionId' | 'activeTreeStatus' | 'pricingProfileConfig'>): boolean {
+  return Boolean(product.pbv2ActiveTreeVersionId && product.activeTreeStatus === 'ACTIVE')
     && !hasEditorPricingOverride(product);
 }
 
@@ -187,8 +188,8 @@ function decodeSelections(tree: OptionTreeV2, raw: unknown): Record<string, unkn
   return decoded;
 }
 
-function card(product: Pick<StorefrontProduct, 'id' | 'name' | 'description' | 'category' | 'thumbnailUrls'>) {
-  return { id: product.id, name: product.name, description: product.description.slice(0, 300), category: product.category, imageUrl: safeImageUrl(product.thumbnailUrls) };
+function card(product: Pick<StorefrontProduct, 'id' | 'name' | 'description' | 'category' | 'thumbnailUrls' | 'pricingProfileConfig' | 'pbv2ActiveTreeVersionId' | 'activeTreeStatus'>) {
+  return { id: product.id, name: product.name, description: product.description.slice(0, 300), category: product.category, imageUrl: safeImageUrl(product.thumbnailUrls), pricingAvailable: hasStorefrontPricing(product) };
 }
 
 async function loadVisibleProduct(req: Request, productId: string) {
@@ -201,13 +202,13 @@ async function loadVisibleProduct(req: Request, productId: string) {
     pricingProfileConfig: products.pricingProfileConfig, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
     isActive: products.isActive, storefrontVisible: products.storefrontVisible,
     activeTreeStatus: pbv2TreeVersions.status, treeJson: pbv2TreeVersions.treeJson,
-  }).from(products).innerJoin(pbv2TreeVersions, and(
+  }).from(products).leftJoin(pbv2TreeVersions, and(
     eq(pbv2TreeVersions.id, products.pbv2ActiveTreeVersionId),
     eq(pbv2TreeVersions.organizationId, scope.organizationId),
     eq(pbv2TreeVersions.productId, products.id),
   )).where(and(
     eq(products.id, productId), eq(products.organizationId, scope.organizationId),
-    eq(products.isActive, true), eq(products.storefrontVisible, true), eq(pbv2TreeVersions.status, 'ACTIVE'),
+    eq(products.isActive, true), eq(products.storefrontVisible, true),
     ...(linkedOnly ? [exists(db.select({ id: customerVisibleProducts.productId }).from(customerVisibleProducts).where(and(
       eq(customerVisibleProducts.customerId, scope.customerId), eq(customerVisibleProducts.productId, products.id),
     )))] : []),
@@ -227,8 +228,7 @@ export async function listPortalStorefrontProducts(req: Request) {
   const linkedOnly = scope.customer.productVisibilityMode === 'linked-only';
   const eligible = and(
     eq(products.organizationId, scope.organizationId), eq(products.isActive, true),
-    eq(products.storefrontVisible, true), eq(pbv2TreeVersions.status, 'ACTIVE'),
-    sql`coalesce(${products.pricingProfileConfig} #>> '{pbv2Override,enabled}', 'false') <> 'true'`,
+    eq(products.storefrontVisible, true),
     ...(linkedOnly ? [exists(db.select({ id: customerVisibleProducts.productId }).from(customerVisibleProducts).where(and(
       eq(customerVisibleProducts.customerId, scope.customerId), eq(customerVisibleProducts.productId, products.id),
     )))] : []),
@@ -243,13 +243,13 @@ export async function listPortalStorefrontProducts(req: Request) {
     thumbnailUrls: products.thumbnailUrls, pricingProfileConfig: products.pricingProfileConfig,
     pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, isActive: products.isActive,
     storefrontVisible: products.storefrontVisible, activeTreeStatus: pbv2TreeVersions.status,
-  }).from(products).innerJoin(pbv2TreeVersions, treeJoin).where(and(
+  }).from(products).leftJoin(pbv2TreeVersions, treeJoin).where(and(
     eligible,
     ...(search ? [or(ilike(products.name, `%${search}%`), ilike(products.description, `%${search}%`), ilike(products.category, `%${search}%`))] : []),
     ...(category ? [eq(products.category, category)] : []),
   )).orderBy(products.name, products.id).limit(pageSize + 1).offset(page * pageSize);
   const categoryRows = await db.selectDistinct({ category: products.category })
-    .from(products).innerJoin(pbv2TreeVersions, treeJoin).where(eligible).orderBy(products.category);
+    .from(products).where(eligible).orderBy(products.category);
   return {
     items: rows.slice(0, pageSize).filter(mayShowStorefrontProduct).map(card),
     categories: categoryRows.map((row) => row.category).filter((value): value is string => Boolean(value)),
@@ -261,6 +261,10 @@ export async function listPortalStorefrontProducts(req: Request) {
 export async function getPortalStorefrontProduct(req: Request, productId: string) {
   const product = await loadVisibleProduct(req, productId);
   if (!product) return null;
+  if (!hasStorefrontPricing(product)) return {
+    ...card(product), measurementMode: null, dimensionsRequired: false,
+    fixedDimensions: null, defaults: { quantity: 1, widthIn: null, heightIn: null, selections: {} }, options: [],
+  };
   const tree = product.treeJson as OptionTreeV2;
   const fixedDimensions = getPbv2FixedDimensions(tree);
   const projected = projectStorefrontOptions(tree);
@@ -279,6 +283,7 @@ export async function previewPortalStorefrontPrice(req: Request, productId: stri
   const scope = getPortalScope(req);
   const product = await loadVisibleProduct(req, productId);
   if (!product) return null;
+  if (!hasStorefrontPricing(product)) throw new PortalAccessError(422, 'Pricing not available for this product.');
   // Staff PBV2 Quote/Order pricing does not currently apply these customer
   // commercial fields. Fail closed instead of displaying a misleading price.
   const customer = scope.customer;

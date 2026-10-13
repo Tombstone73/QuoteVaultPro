@@ -167,6 +167,14 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingFormulaId: string | null;
 }
 
+type StorefrontEnablementPreview = {
+  totalActive: number;
+  alreadyEnabled: number;
+  needingEnablement: number;
+  withoutPublishedPricing: number;
+  usingPricingOverrides: number;
+};
+
 export default function ProductsPage() {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -175,6 +183,24 @@ export default function ProductsPage() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<Product | null>(null);
+  const [storefrontEnablementOpen, setStorefrontEnablementOpen] = useState(false);
+  const canEnableStorefront = ["owner", "admin"].includes(String(user?.role ?? "").toLowerCase());
+  const storefrontEnablementPreview = useQuery<StorefrontEnablementPreview>({
+    queryKey: ["/api/admin/products/storefront-enable-preview"],
+    queryFn: async () => (await apiRequest("GET", "/api/admin/products/storefront-enable-preview")).json(),
+    enabled: storefrontEnablementOpen && canEnableStorefront,
+    staleTime: 0,
+  });
+  const storefrontEnablementMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/admin/products/storefront-enable-all", { confirm: true })).json() as Promise<StorefrontEnablementPreview & { updated: number; skipped: number }>,
+    onSuccess: (result) => {
+      toast({ title: "Storefront products enabled", description: `${result.updated} updated; ${result.skipped} already enabled.` });
+      void queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/admin/products/storefront-enable-preview"] });
+      setStorefrontEnablementOpen(false);
+    },
+    onError: (error: Error) => toast({ title: "Storefront enablement failed", description: error.message, variant: "destructive" }),
+  });
 
   // Refs for scrolling to first error
   const addFormRef = useRef<HTMLFormElement>(null);
@@ -210,7 +236,7 @@ export default function ProductsPage() {
       optionsJson: [],
       storeUrl: "",
       showStoreLink: true,
-      storefrontVisible: false,
+      storefrontVisible: true,
       thumbnailUrls: [],
       priceBreaks: { enabled: false, type: "quantity", tiers: [] },
       useNestingCalculator: false,
@@ -426,6 +452,7 @@ export default function ProductsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {canEnableStorefront ? <Button variant="outline" onClick={() => setStorefrontEnablementOpen(true)}>Enable All Active Products in Storefront</Button> : null}
           <AiProductBuilderEntryButton
             canAccess={canUseProductPlanning(user)}
             onOpen={() => navigate(ROUTES.admin.aiProductBuilder)}
@@ -440,6 +467,22 @@ export default function ProductsPage() {
           </Button>
         </div>
       </div>
+
+      <Dialog open={storefrontEnablementOpen} onOpenChange={setStorefrontEnablementOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Enable All Active Products in Storefront</DialogTitle><DialogDescription>Review the current product counts before enabling storefront visibility. Pricing and product status will not change.</DialogDescription></DialogHeader>
+          {storefrontEnablementPreview.isFetching ? <p>Loading preview…</p> : storefrontEnablementPreview.isError ? <p role="alert">Unable to load preview. Close and try again.</p> : storefrontEnablementPreview.data ? (
+            <dl className="grid grid-cols-2 gap-2 text-sm">
+              <dt>Total active products</dt><dd>{storefrontEnablementPreview.data.totalActive}</dd>
+              <dt>Already enabled</dt><dd>{storefrontEnablementPreview.data.alreadyEnabled}</dd>
+              <dt>Will be enabled</dt><dd>{storefrontEnablementPreview.data.needingEnablement}</dd>
+              <dt>Without published pricing</dt><dd>{storefrontEnablementPreview.data.withoutPublishedPricing}</dd>
+              <dt>Using pricing overrides</dt><dd>{storefrontEnablementPreview.data.usingPricingOverrides}</dd>
+            </dl>
+          ) : null}
+          <DialogFooter><Button variant="outline" onClick={() => setStorefrontEnablementOpen(false)}>Cancel</Button><Button disabled={!storefrontEnablementPreview.data || storefrontEnablementPreview.isFetching || storefrontEnablementPreview.isError || storefrontEnablementMutation.isPending} onClick={() => storefrontEnablementMutation.mutate()}>Confirm enablement</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Search */}
       <TitanCard className="p-4">

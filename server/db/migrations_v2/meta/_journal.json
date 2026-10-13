@@ -1541,6 +1541,13 @@
       "when": 1788048000071,
       "tag": "0226_ink_master",
       "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "7",
+      "when": 1788048000072,
+      "tag": "0227_product_storefront_default",
+      "breakpoints": true
     }
   ]
 }

@@ -252,7 +252,9 @@ export default function PortalStoreProductPage() {
           </div>
         </div>
       </header>
-      <Configuration key={product.id} product={product} />
+      {product.pricingAvailable ? <Configuration key={product.id} product={product} /> : (
+        <Card><CardContent className="py-8"><p className="font-medium">Pricing not available</p><p className="mt-1 text-sm text-muted-foreground">This product is available to browse. Contact us for a quote.</p></CardContent></Card>
+      )}
     </div>
   );
 }

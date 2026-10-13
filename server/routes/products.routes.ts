@@ -29,6 +29,7 @@ import {
 } from "@shared/schema";
 import { eq, desc, and, asc, inArray, isNull, sql } from "drizzle-orm";
 import { getRequestOrganizationId } from "../tenantContext";
+import { enableAllActiveStorefrontProducts, previewStorefrontEnablement, withNewProductStorefrontDefault } from "../services/products/storefrontEnablement";
 import {
   insertProductSchema,
   updateProductSchema,
@@ -557,6 +558,30 @@ export function registerProductRoutes(
   // ============================================================================
   // PBV2-Aware Product Import/Export (v2)
   // ============================================================================
+
+  app.get("/api/admin/products/storefront-enable-preview", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      return res.json(await previewStorefrontEnablement(organizationId));
+    } catch (error) {
+      console.error("[Storefront enablement preview] Failed:", error);
+      return res.status(500).json({ message: "Unable to preview storefront enablement" });
+    }
+  });
+
+  app.post("/api/admin/products/storefront-enable-all", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    if (req.body?.confirm !== true) return res.status(400).json({ message: "Explicit confirmation is required" });
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(403).json({ message: "Organization and user context required" });
+      return res.json(await enableAllActiveStorefrontProducts(organizationId, userId));
+    } catch (error) {
+      console.error("[Storefront enablement] Failed:", error);
+      return res.status(500).json({ message: "Unable to enable storefront products" });
+    }
+  });
 
   /**
    * GET /api/admin/products/export
@@ -1953,7 +1978,8 @@ export function registerProductRoutes(
       const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(
         applyProductWorkflowIntentDefaults(normalizeProductRotationForWrite(productData)),
       );
-      const product = await storage.createProduct(organizationId, sanitizedProductData as InsertProduct);
+      const newProductData = withNewProductStorefrontDefault(sanitizedProductData, Object.prototype.hasOwnProperty.call(req.body, 'storefrontVisible'));
+      const product = await storage.createProduct(organizationId, newProductData as InsertProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof CanonicalProductMaterialError) {
