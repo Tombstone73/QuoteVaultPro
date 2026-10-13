@@ -6,6 +6,24 @@ const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", rou
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
+  test("preserves both conversational roles through every decision and final synthesis", async () => {
+    const conversationMessages = [
+      { role: "user" as const, content: "Promote user Zayne to owner permissions." },
+      { role: "assistant" as const, content: "I cannot change staff roles; this is deliberate AI eligibility policy." },
+    ];
+    const decide = jest.fn(async (input: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]) => {
+      expect(input.conversationMessages).toEqual(conversationMessages);
+      return input.finalSynthesis ? { kind: "complete", response: "The staff-role restriction is intentional." } : { kind: "continue" };
+    });
+    const execute = jest.fn(async () => { throw new Error("No read or preview requested"); });
+    const result = await new AssistantOperatorRuntime({ decide }, { catalog: () => [], execute }, 2).run({
+      goal: "Are you not promoting him because of a rule or because you don't have the ability?", taskId: "task_reopened", trustedContext, conversationMessages,
+    });
+    expect(result).toMatchObject({ status: "completed", diagnostics: { finalSynthesisUsed: true } });
+    expect(decide).toHaveBeenCalledTimes(3);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   test("uses a configurable bounded investigation budget with a sixteen-step default", () => {
     expect(resolveAiOperatorMaxSteps({} as NodeJS.ProcessEnv)).toBe(16);
     expect(resolveAiOperatorMaxSteps({ AI_OPERATOR_MAX_STEPS: "20" } as NodeJS.ProcessEnv)).toBe(20);

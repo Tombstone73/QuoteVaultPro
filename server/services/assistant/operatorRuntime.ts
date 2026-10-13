@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AiConversationMessage } from "../ai/providers/AiProviderAdapter";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, type AssistantContextEnvelope, type AssistantStructuredCard, type AssistantToolResultEnvelope } from "@shared/assistantContracts";
 import type { ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { currentTurnProductResolution, isProductResolutionObservation, taskForCurrentProductEvidence } from "./trustedProductState";
@@ -184,6 +185,7 @@ export interface AssistantOperatorTrustedContext {
 export interface AssistantOperatorDecisionProvider {
   decide(input: {
     goal: string;
+    conversationMessages?: readonly AiConversationMessage[];
     taskId: string;
     step: number;
     remainingSteps: number;
@@ -300,7 +302,7 @@ export class AssistantOperatorRuntime {
     private readonly maxSteps = resolveAiOperatorMaxSteps(),
   ) {}
 
-  async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null }): Promise<AssistantOperatorRunResult> {
+  async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null; conversationMessages?: readonly AiConversationMessage[] }): Promise<AssistantOperatorRunResult> {
     const observations: AssistantOperatorObservation[] = [];
     let safeWorkingSummary = input.initialWorkingSummary ?? null;
     const boundedSteps = Math.max(1, Math.min(ASSISTANT_OPERATOR_MAX_STEPS, this.maxSteps));
@@ -323,6 +325,7 @@ export class AssistantOperatorRuntime {
         const productEvidence = currentTurnProductResolution(observations);
         const received = await this.provider.decide({
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
+          conversationMessages: input.conversationMessages,
           toolCatalog: this.tools.catalog(input.trustedContext), observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations),
         });
         const parsed = assistantOperatorDecisionSchema.safeParse(received);
@@ -457,6 +460,7 @@ export class AssistantOperatorRuntime {
       const productEvidence = currentTurnProductResolution(observations);
       const synthesis = assistantOperatorDecisionSchema.parse(await this.provider.decide({
         goal: input.goal, taskId: input.taskId, step: boundedSteps + 1, remainingSteps: 0,
+        conversationMessages: input.conversationMessages,
         toolCatalog: [], observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations), finalSynthesis: true,
       }));
       safeWorkingSummary = synthesis.kind === "fail" ? synthesis.recoverySummary ?? safeWorkingSummary : synthesis.workingSummary ?? safeWorkingSummary;

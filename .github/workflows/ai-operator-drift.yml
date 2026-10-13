@@ -19,6 +19,11 @@ jobs:
       - run: npm run build
       - run: npx jest --runInBand --runTestsByPath server/tests/canonicalCapabilityRegistry.test.ts server/tests/assistantCapabilityInventory.test.ts server/tests/finalMigrationInventory.test.ts server/tests/assistantCommandRegistry.test.ts server/tests/operatorIndex.test.ts server/tests/operatorSkillLoader.test.ts server/tests/assistantActorAuthorityResolver.test.ts server/tests/canonicalOperationalChain.contract.test.ts server/tests/canonicalFinancialCrmOperations.contract.test.ts
       - run: npx jest --runInBand --runTestsByPath server/tests/assistantDiscoveryExecution.integration.test.ts server/tests/assistantOperatorRuntime.test.ts server/tests/assistantOperatorToolExecutor.test.ts
+      - name: Conversation continuity regressions
+        run: npx jest --runInBand --runTestsByPath server/tests/assistantConversationHistoryRepository.test.ts server/tests/assistantOperatorService.integration.test.ts server/tests/assistantOperatorDecisionProvider.test.ts server/tests/aiConfiguredProvider.test.ts
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192 --experimental-vm-modules
+          DATABASE_URL: postgresql://readonly:readonly@127.0.0.1:1/quotevault_test
       - run: npm run knowledge:validate
       - run: npx tsx scripts/generate-ai-operator-canonical-capability-registry.ts
       - run: npx tsx scripts/generate-ai-operator-capability-inventory.ts

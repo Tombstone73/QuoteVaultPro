@@ -1,10 +1,17 @@
 import type { AiFeature } from "@shared/aiFoundationContracts";
 
+export interface AiConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface AiProviderRequest {
   orgId: string;
   feature: AiFeature;
   system: string;
   user: string;
+  /** Persisted conversational text only, never authority or provider reasoning. */
+  conversationMessages?: readonly AiConversationMessage[];
   promptVersion: string;
   repairAttempt?: boolean;
   timeoutMs?: number;

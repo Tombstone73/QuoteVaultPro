@@ -105,10 +105,10 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       .select()
       .from(aiMessages)
       .where(and(eq(aiMessages.orgId, scope.organizationId), eq(aiMessages.conversationId, conversation.id)))
-      .orderBy(asc(aiMessages.sequence))
+      .orderBy(desc(aiMessages.sequence))
       .limit(500);
 
-    return { ...toConversation(conversation), messages: messages.map(toMessage) };
+    return { ...toConversation(conversation), messages: messages.reverse().map(toMessage) };
   }
 
   async getLatestAssistantMessage(scope: AssistantScope & { conversationId: string }): Promise<AssistantMessageRecord | null> {

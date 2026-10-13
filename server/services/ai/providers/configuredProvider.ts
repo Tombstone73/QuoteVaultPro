@@ -249,6 +249,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         temperature: 0.1,
         messages: [
           { role: "system", content: request.system },
+          ...(request.conversationMessages ?? []),
           { role: "user", content: request.user },
         ],
         response_format: { type: "json_object" },
@@ -454,6 +455,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           model: config.model,
           input: [
             { role: "system", content: request.system },
+            ...(request.conversationMessages ?? []),
             { role: "user", content: request.user },
             ...(request.responseContinuation ?? []),
           ],

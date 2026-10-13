@@ -4,6 +4,30 @@ import { AiProviderResponseError } from "../services/ai/providers/AiProviderAdap
 process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
 
 describe("ConfiguredAssistantOperatorDecisionProvider", () => {
+  test.each([false, true])("transports latest persisted role refusal across provider recreation (Responses=%s)", async (responses) => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const conversationMessages = [
+      { role: "user" as const, content: "Show Coroplast pricing configuration." },
+      { role: "assistant" as const, content: "Coroplast has configured pricing. No changes have been made." },
+      { role: "user" as const, content: "Promote user Zayne to owner permissions." },
+      { role: "assistant" as const, content: "I cannot change staff roles. This is intentionally AI-ineligible, not a Product GO restriction." },
+    ];
+    const generate = jest.fn(async (request: any) => {
+      expect(request.conversationMessages).toEqual(conversationMessages);
+      expect(request.system).toContain("latest explicit topic and immediate follow-up");
+      expect(JSON.parse(request.user).goal).toBe("Are you not promoting him because of a rule or because you don't have the ability?");
+      return { rawText: JSON.stringify({ kind: "complete", response: "An intentional AI eligibility restriction excludes staff role changes." }), requestMetadata: {} };
+    });
+    // A newly constructed provider represents reopening the persisted conversation;
+    // continuity must not depend on a previous in-memory provider instance.
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: generate, generateOperatorDecision: generate } as any,
+      { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: responses ? "https://api.deepseek.com/chat/completions" : "https://provider.test", apiKey: "test", model: responses ? "deepseek-v4-flash" : "test" })) } as any);
+    expect(await provider.decide({ goal: "Are you not promoting him because of a rule or because you don't have the ability?", taskId: "task_old_product", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: "Retained Coroplast task", conversationMessages,
+      task: { id: "task_old_product", domain: "products", canonicalProductIntentProposalId: null, entityReferences: [{ type: "product", id: "coroplast" }] },
+    })).toMatchObject({ kind: "complete", response: expect.stringContaining("staff role changes") });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
   test("passes retained trusted observations to the provider for a direct follow-up answer", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const generateJson = jest.fn(async (request: any) => {

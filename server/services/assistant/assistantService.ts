@@ -28,6 +28,7 @@ import { assistantMaterialActionService, AssistantMaterialActionError } from "./
 import { MATERIAL_REVIEW_KEY, handleMaterialReply, isAffirmativeMaterialReply, materialConfirmationQuestion, materialSkuQuestion, readMaterialPendingReview, startMaterialPendingReview } from "./materialPendingReview";
 import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
+import type { AiConversationMessage } from "../ai/providers/AiProviderAdapter";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
@@ -213,6 +214,34 @@ function newProductRequestRequiresInitialOperations(message: string): boolean {
   const hasExplicitName = /\b(?:named|called)\s+(?:["“][^"”]{1,160}["”]|[^.!?]{1,160})/i.test(message);
   const hasProductDetail = /\b(?:requires?\s+dimensions|per[-\s]?square[-\s]?foot|per[-\s]?piece|option|default|pricing|price|category)\b/i.test(message);
   return hasExplicitName && hasProductDetail;
+}
+
+function operatorConversationHistory(messages: AssistantMessageRecord[]): AiConversationMessage[] {
+  const history: AiConversationMessage[] = [];
+  let characters = 0;
+  // Keep a recent chronological suffix without rewriting persisted messages.
+  // No age cutoff: reopening or pausing a conversation does not change its topic.
+  for (let index = messages.length - 1; index >= 0 && history.length < 40; index--) {
+    const { role, content } = messages[index]!;
+    if (role !== "user" && role !== "assistant") continue;
+    if (characters + content.length > 64_000) break;
+    history.push({ role, content });
+    characters += content.length;
+  }
+  return history.reverse();
+}
+
+function isStaffRoleDiscussion(message: string, messages: readonly AiConversationMessage[]): boolean {
+  const roleRequest = (text: string) => /\b(?:promot\w*|demot\w*|role|permissions?)\b/i.test(text)
+    && /\b(?:user|staff|owner|admin|employee|manager)\b/i.test(text);
+  if (roleRequest(message)) return true;
+  const priorUser = [...messages].reverse().find((item) => item.role === "user");
+  const priorAssistant = [...messages].reverse().find((item) => item.role === "assistant");
+  // Bind explanatory pronouns to the immediate exchange, not a retained task.
+  return Boolean((priorUser && roleRequest(priorUser.content) || priorAssistant && roleRequest(priorAssistant.content))
+    && (/\b(?:him|her|them|this|that|it|promoting)\b/i.test(message) || /^(?:why\??|(?:please\s+)?explain(?:\s+why)?[?.]?)$/i.test(message.trim()))
+    && /\b(?:why|because|rule|ability|can(?:not|'t)?|policy|restriction|explain)\b/i.test(message)
+    && !/\b(?:product|coroplast|order|invoice|quote|material)\b/i.test(message));
 }
 
 export function toIso(value: Date | string): string {
@@ -854,6 +883,8 @@ export class AssistantService {
     }
     const conversation = await this.repo.getConversation({ ...scope, conversationId });
     if (!conversation) throw this.notFound();
+    const conversationMessages = operatorConversationHistory(conversation.messages);
+    const staffRoleDiscussion = isStaffRoleDiscussion(request.message, conversationMessages);
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
     const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
@@ -861,7 +892,7 @@ export class AssistantService {
       && /^(?:please\s+)?(?:continue|resume|update|edit)\s+(?:(?:the|this|my|our|current|existing)\s+){0,2}(?:product\s+draft|draft\s+product)\b/i.test(request.message.trim());
     const explicitProductIntent = explicitCreationEntity === "product" || resumesProductDraft;
     const activeResourceContext = persistedActiveResourceContext(task.semanticChanges);
-    const pendingAction = explicitCreationEntity || resumesProductDraft ? null : derivePendingOperatorActionContext({
+    const pendingAction = staffRoleDiscussion || explicitCreationEntity || resumesProductDraft ? null : derivePendingOperatorActionContext({
       message: request.message,
       resources: activeResourceContext,
       prior: pendingActionForCurrentResources(persistedPendingActionContext(task.semanticChanges), activeResourceContext),
@@ -869,7 +900,7 @@ export class AssistantService {
     const verifiedMaterialReview = readMaterialPendingReview(task.semanticChanges, conversation.id, task.id);
     // A follow-up may only contain the requested Material details. Retain the
     // initial explicit entity unless the user explicitly switches to Product.
-    const materialCreationRequest = explicitProductIntent ? false
+    const materialCreationRequest = staffRoleDiscussion || explicitProductIntent ? false
       : explicitCreationEntity === "material" || (!pendingAction && (
         task.domain === "materials"
         || (task.domain === null && !task.canonicalProductIntentProposalId
@@ -889,16 +920,16 @@ export class AssistantService {
     const fallbackWebTools = !providerCapabilities.nativeWebSearch && isPublicWebResearchConfigured()
       ? createPublicWebResearchTools()
       : [];
-    const mayBeginProductDraft = !materialCreationRequest && hasPermission(actor, "assistant.products.create_inactive_draft");
-    const mayApplyProductOperations = !materialCreationRequest && (mayBeginProductDraft
+    const mayBeginProductDraft = !staffRoleDiscussion && !materialCreationRequest && hasPermission(actor, "assistant.products.create_inactive_draft");
+    const mayApplyProductOperations = !staffRoleDiscussion && !materialCreationRequest && (mayBeginProductDraft
       || hasPermission(actor, "assistant.products.update_inactive_draft")
       || hasPermission(actor, "assistant.products.update_inactive_draft_batch"));
-    const existingProductId = existingProductIdForMutation({ context: request.context, task });
-    const mayEditExistingProduct = !materialCreationRequest && hasPermission(actor, "assistant.products.update_existing_product");
+    const existingProductId = staffRoleDiscussion ? null : existingProductIdForMutation({ context: request.context, task });
+    const mayEditExistingProduct = !staffRoleDiscussion && !materialCreationRequest && hasPermission(actor, "assistant.products.update_existing_product");
     const existingProduct = existingProductId && mayEditExistingProduct
       ? await existingProductEditService.trustedContext({ organizationId: scope.organizationId, productId: existingProductId }).catch(() => null)
       : null;
-    const activeProductProposalIdForContext = task.canonicalProductIntentProposalId;
+    const activeProductProposalIdForContext = staffRoleDiscussion ? null : task.canonicalProductIntentProposalId;
     const activeSemanticProductDraft = activeProductProposalIdForContext
       ? await (async () => {
         try {
@@ -1037,6 +1068,7 @@ export class AssistantService {
       description: "Prepare a protected edit to one trusted existing persisted product. Lifecycle activation may transparently propose publishing its current valid PBV2 DRAFT first; publish warnings are displayed in the protected plan and acknowledged by GO. Pricing Engine rotation is separate from customer options. Nothing changes before GO, and the server revalidates state at GO.",
       inputSchema: existingProductEditProviderInputSchema,
       execute: async ({ arguments: args, context }) => {
+        if (isStaffRoleDiscussion(context.goal, conversationMessages)) return { status: "rejected" as const, warning: "A staff-role discussion cannot prepare a Product edit.", failureCategory: "intent_mismatch", failureCode: "unrelated_product_preview", failingStep: "existing_product_intent" };
         const parsed = existingProductEditOperationsSchema.safeParse({ operations: args.operations });
         if (!parsed.success) {
           const validation = existingProductEditValidationDetails(parsed.error);
@@ -1204,12 +1236,27 @@ export class AssistantService {
           : { kind: "fail", response: "The Material review could not be prepared. No Material was created. Please start a new review before attempting it again." }
         : { kind: "call_tools", calls: [{ toolName: "materials.prepare_action", arguments: materialReply.action }] } }
       : this.operatorDecisionProvider(scope.organizationId);
-    const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
+    // A role request or its explanatory follow-up cannot prepare an unrelated
+    // Product, Material, Fulfillment, or note preview, regardless of model output.
+    const turnSemanticTools = staffRoleDiscussion
+      ? semanticTools.filter((tool) => ["materials.lookup", "analysis.run", "web.search", "web.open"].includes(tool.name))
+      : semanticTools;
+    const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, turnSemanticTools));
     const run = await runtime.run({
       goal: request.message,
+      conversationMessages,
       taskId: task.id,
-      initialWorkingSummary: existingProduct ? null : task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: materialCreationRequest ? "materials" : task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: materialCreationRequest ? "materials" : task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, activeResourceContext, pendingAction, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+      initialWorkingSummary: staffRoleDiscussion || existingProduct ? null : task.workingSummary,
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: {
+        id: task.id, domain: staffRoleDiscussion ? "staff_roles" : materialCreationRequest ? "materials" : task.domain,
+        canonicalProductIntentProposalId: staffRoleDiscussion ? null : task.canonicalProductIntentProposalId,
+        activeSemanticProductDraft: staffRoleDiscussion ? null : activeSemanticProductDraft,
+        businessContext: operatorBusinessContext({ domain: staffRoleDiscussion ? "staff_roles" : materialCreationRequest ? "materials" : task.domain, workingSummary: staffRoleDiscussion ? null : task.workingSummary, missingInformation: staffRoleDiscussion ? [] : task.missingInformation, semanticChanges: staffRoleDiscussion ? {} : task.semanticChanges, activeSemanticProductDraft: staffRoleDiscussion ? null : activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }),
+        entityReferences: staffRoleDiscussion ? [] : task.entityReferences,
+        activeResourceContext: staffRoleDiscussion ? null : activeResourceContext,
+        pendingAction, trustedObservations: staffRoleDiscussion ? [] : persistedTrustedObservations(task.semanticChanges),
+        missingInformation: staffRoleDiscussion ? [] : task.missingInformation,
+      } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;

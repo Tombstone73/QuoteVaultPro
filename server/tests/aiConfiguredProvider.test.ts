@@ -63,6 +63,34 @@ function baseRequest(overrides: Partial<Parameters<OpenAiCompatibleBugReviewProv
 }
 
 describe("configured AI provider", () => {
+  test.each(["chat", "responses"] as const)("%s sends persisted conversation as ordered user and assistant messages", async (surface) => {
+    const history = [
+      { role: "user" as const, content: "What is Brainstorm's balance?" },
+      { role: "assistant" as const, content: "The current outstanding balance is $120." },
+      { role: "user" as const, content: "Tell me about Order20665." },
+      { role: "assistant" as const, content: "Order20665 has production-ready items." },
+      { role: "user" as const, content: "Show the Coroplast configuration." },
+      { role: "assistant" as const, content: "Coroplast uses its configured rate and minimum." },
+      { role: "user" as const, content: "Promote user Zayne to owner permissions." },
+      { role: "assistant" as const, content: "Role changes are deliberately AI-ineligible. I cannot promote Zayne." },
+    ];
+    const answer = JSON.stringify({ kind: "complete", response: "That restriction is intentional AI eligibility policy, not your authorization or Product GO." });
+    const fetchMock = jest.fn(async () => jsonResponse(surface === "chat"
+      ? { choices: [{ message: { content: answer }, finish_reason: "stop" }] }
+      : { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: answer }] }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    const request = baseRequest({ conversationMessages: history, user: "Are you not promoting him because of a rule or because you don't have the ability?" });
+    if (surface === "responses") await provider.generateOperatorDecision({ ...request, toolCatalog: [] });
+    else await provider.generateJson(request);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(surface === "chat" ? body.messages : body.input).toEqual([
+      { role: "system", content: request.system }, ...history, { role: "user", content: request.user },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("structuredCards");
+    expect(JSON.stringify(body)).not.toContain("confirmationToken");
+  });
+
   test("keeps existing default timeout for non-overridden provider calls", () => {
     const previousProviderTimeout = process.env.AI_PROVIDER_TIMEOUT_MS;
     const previousBugReviewTimeout = process.env.AI_BUG_REVIEW_TIMEOUT_MS;

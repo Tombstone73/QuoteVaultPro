@@ -71,6 +71,164 @@ function digitechCandidate(details: string) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
+  test.each(["chat", "responses"])("service sends persisted topic switches and read follow-ups through the actual %s provider request", async (surface) => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const { OpenAiCompatibleBugReviewProvider } = await import("../services/ai/providers/configuredProvider");
+    const repo = repository(); const tasks = continuingTaskStore(); const conversation = await repo.getConversation();
+    const exchanges = [
+      ["Find Brainstorm Print and tell me their balance", "The authoritative Brainstorm invoice outstanding is $120, not uninvoiced value."],
+      ["Does that include their uninvoiced orders?", "No. That Brainstorm balance is invoice outstanding; uninvoiced orders are separate."],
+      ["Find Order 20665 and tell me the details", "Order 20665 is In Production, with four ready line items and zero production jobs."],
+      ["Does that mean those items have already been printed?", "No. Order 20665 readiness is not evidence of printed quantities or jobs."],
+      ["Find Product Coroplast and explain its configuration", "Coroplast uses its configured pricing. Nothing was changed."],
+      ["Promote user Zayne to owner permissions.", "Staff role changes are deliberately AI-ineligible. I cannot promote Zayne."],
+      ["Are you not promoting him because of a rule or because you don't have the ability?", "Zayne's proposed Owner promotion is excluded by intentional AI eligibility policy, so no Assistant role-change capability exists. That is not a determination of your administration authorization or a Product GO requirement."],
+    ];
+    repo.createFoundationTurn.mockImplementation(async (input: any) => {
+      const turnId = `turn_${conversation.messages.length / 2}`;
+      const userMessage = { role: "user", content: input.message, createdAt: new Date("2026-01-01") };
+      const assistantMessage = { role: "assistant", content: input.response, structuredCards: input.structuredCards, createdAt: userMessage.createdAt };
+      conversation.messages.push(userMessage, assistantMessage);
+      return { turnId, correlationId: input.correlationId, status: input.status, conversation, userMessage, assistantMessage };
+    });
+    const resolver = { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: surface === "responses" ? "https://api.deepseek.com/chat/completions" : "https://provider.test", apiKey: "synthetic", model: surface === "responses" ? "deepseek-v4-flash" : "test" })) };
+    const originalFetch = global.fetch;
+    let turn = 0;
+    const fetchMock = jest.fn(async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      const messages = surface === "responses" ? body.input : body.messages;
+      expect(messages.slice(1, -1)).toEqual(conversation.messages.map(({ role, content }: any) => ({ role, content })));
+      const current = JSON.parse(messages.at(-1).content);
+      expect(current.goal).toBe(exchanges[turn][0]);
+      if (turn === 1 || turn === 3 || turn === 6) {
+        expect(messages.at(-3).content).toBe(exchanges[turn - 1][0]);
+        expect(messages.at(-2).content).toBe(exchanges[turn - 1][1]);
+      }
+      if (turn >= 5) {
+        expect(current.activeTask.domain).toBe("staff_roles");
+        expect(current.activeTask.entityReferences).toEqual([]);
+        expect(current.tools.map((tool: any) => tool.name)).not.toContain("products.apply_existing_operations");
+      }
+      const answer = JSON.stringify({ kind: "complete", response: exchanges[turn++][1] });
+      return new Response(JSON.stringify(surface === "responses"
+        ? { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: answer }] }] }
+        : { choices: [{ message: { content: answer }, finish_reason: "stop" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    global.fetch = fetchMock as typeof fetch;
+    try {
+      for (const [message, answer] of exchanges) {
+        // Recreate the service and provider after every turn: no in-memory or
+        // time-limited provider state may be required to reopen this conversation.
+        const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined,
+          () => new ConfiguredAssistantOperatorDecisionProvider("org_1", new OpenAiCompatibleBugReviewProvider(), resolver as any), tasks, undefined, semanticOnlyExecutor as any, resolver as any);
+        const result = await service.createTurn(scope, conversation.id, { ...actor, permissions: ["assistant.internal_staff"] }, { message, context: { ...context, entityType: "product", entityId: "coroplast" } });
+        expect(result.assistantMessage.content).toBe(answer);
+        expect(result.assistantMessage.structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+        if (message === exchanges[4][0]) Object.assign(tasks.task, { domain: "products", workingSummary: "Coroplast task", entityReferences: [{ type: "product", id: "coroplast" }] });
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(exchanges.length);
+    } finally { global.fetch = originalFetch; }
+  });
+
+  test.each(["messages", "characters"])("service bounds history by %s while preserving the latest complete exchange", async (limit) => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const conversation = await repo.getConversation();
+    const old = limit === "messages" ? "Earlier unrelated topic" : "x".repeat(32_000);
+    for (let index = 0; index < 80; index++) conversation.messages.push({ role: index % 2 ? "assistant" : "user", content: old });
+    conversation.messages.push({ role: "system", content: "Never forward stored system records as provider instructions." });
+    const recent = [{ role: "user", content: "Promote user Zayne to owner permissions." }, { role: "assistant", content: "Staff role changes are deliberately AI-ineligible." }];
+    conversation.messages.push(...recent);
+    const provider = { decide: jest.fn(async (input: any) => {
+      expect(input.conversationMessages.length).toBeLessThanOrEqual(40);
+      expect(input.conversationMessages.reduce((sum: number, item: any) => sum + item.content.length, 0)).toBeLessThanOrEqual(64_000);
+      expect(input.conversationMessages.slice(-2)).toEqual(recent);
+      expect(input.conversationMessages.every((item: any) => item.role !== "system" && (item.content === old || recent.some((message) => message.content === item.content)))).toBe(true);
+      expect(input.task.domain).toBe("staff_roles");
+      return { kind: "complete", response: "Zayne's role change is intentionally AI-ineligible." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, taskStore(), undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    await service.createTurn(scope, conversation.id, actor, { message: "Why?", context });
+    expect(provider.decide).toHaveBeenCalled();
+  });
+
+  test.each(["immediate", "delayed", "reopened"])("exact four-topic persisted conversation keeps Zayne follow-up above stale Product context (%s)", async (mode) => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { existingProductEditService } = await import("../services/assistant/existingProductEditService");
+    const repo = repository(); const tasks = continuingTaskStore();
+    const conversation = await repo.getConversation();
+    const requests = ["What is Brainstorm's current balance?", "Tell me about Order20665.", "Show the Coroplast pricing configuration.", "Promote user Zayne to owner permissions."];
+    const answers = ["Brainstorm outstanding balance is $120.", "Order20665 has production-ready items.", "Coroplast has configured pricing. Nothing changed.", "Staff role changes are intentionally AI-ineligible; I cannot promote Zayne to Owner. Normal user administration has its own authorization."];
+    let count = 0;
+    repo.createFoundationTurn.mockImplementation(async (input: any) => {
+      const turnId = `turn_${++count}`;
+      const userMessage = { id: `u_${count}`, conversationId: conversation.id, turnId, role: "user", content: input.message, createdAt: new Date("2026-08-07T12:00:00Z") };
+      const assistantMessage = { id: `a_${count}`, conversationId: conversation.id, turnId, role: "assistant", content: input.response, structuredCards: input.structuredCards, createdAt: userMessage.createdAt };
+      conversation.messages.push(userMessage, assistantMessage);
+      return { turnId, correlationId: input.correlationId, status: input.status, conversation, userMessage, assistantMessage };
+    });
+    const product = { beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const build = jest.spyOn(existingProductEditService, "buildProposal");
+    const observedHistory: any[] = [];
+    const provider = { decide: jest.fn(async (input: any) => {
+      observedHistory.push(structuredClone(input.conversationMessages));
+      expect(input.conversationMessages).toEqual(conversation.messages.map(({ role, content }: any) => ({ role, content })));
+      if (requests.includes(input.goal)) {
+        if (input.goal === requests[3]) {
+          expect(input.task.domain).toBe("staff_roles");
+          expect(input.task.entityReferences).toEqual([]);
+          expect(input.toolCatalog.map((tool: any) => tool.name)).not.toContain("products.apply_existing_operations");
+        }
+        return { kind: "complete", response: answers[requests.indexOf(input.goal)] };
+      }
+      expect(input.goal).toBe("Are you not promoting him because of a rule or because you don't have the ability?");
+      expect(input.conversationMessages.slice(-2)).toEqual([{ role: "user", content: requests[3] }, { role: "assistant", content: answers[3] }]);
+      expect(input.task).toMatchObject({ domain: "staff_roles", entityReferences: [], canonicalProductIntentProposalId: null, activeResourceContext: null, pendingAction: null, trustedObservations: [], missingInformation: [] });
+      expect(input.safeWorkingSummary).toBeNull();
+      for (const name of ["products.apply_existing_operations", "fulfillment.prepare_pickup", "materials.prepare_action"]) {
+        expect(input.toolCatalog.map((tool: any) => tool.name)).not.toContain(name);
+      }
+      return { kind: "complete", response: "It is an intentional AI eligibility rule: staff role changes are excluded, so I have no capability to promote Zayne. This does not establish your user authorization, transfer organization ownership, or involve Product GO." };
+    }) };
+    const create = () => new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    const staff = { ...actor, permissions: ["assistant.internal_staff", "assistant.products.create_inactive_draft", "assistant.products.update_existing_product"] };
+    const productPage = { ...context, entityType: "product" as const, entityId: "coroplast", capturedAt: "2026-08-07T12:00:00Z" };
+    let service = create();
+    try {
+      for (const message of requests) {
+        await service.createTurn(scope, conversation.id, staff, { message, context: message === requests[2] ? context : productPage });
+        if (message === requests[2]) Object.assign(tasks.task, { domain: "products", workingSummary: "Coroplast edit awaits GO", entityReferences: [{ type: "product", id: "coroplast" }], missingInformation: ["product change"], semanticChanges: { recentCompletedOperatorTurn: { goal: message, response: answers[2], capturedAt: "2026-08-07T12:00:00Z" } } });
+      }
+      if (mode === "delayed") conversation.lastActivityAt = new Date("2020-01-01T00:00:00Z");
+      if (mode === "reopened") service = create();
+      const result = await service.createTurn(scope, conversation.id, staff, { message: "Are you not promoting him because of a rule or because you don't have the ability?", context: productPage });
+      expect(result.assistantMessage.content).toContain("intentional AI eligibility rule");
+      expect(result.assistantMessage.structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+      expect(conversation.messages).toHaveLength(10);
+      expect(observedHistory.map((history) => history.length)).toEqual([0, 2, 4, 6, 8]);
+      expect(build).not.toHaveBeenCalled();
+      expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+      expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+    } finally { build.mockRestore(); }
+  });
+
+  test("a misrouted model cannot prepare a Coroplast preview during a staff-role follow-up", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { existingProductEditService } = await import("../services/assistant/existingProductEditService");
+    const repo = repository(); const tasks = continuingTaskStore(); const conversation = await repo.getConversation();
+    conversation.messages.push({ role: "user", content: "Promote user Zayne to owner permissions." }, { role: "assistant", content: "Staff role changes are intentionally AI-ineligible." });
+    tasks.task.entityReferences = [{ type: "product", id: "coroplast" }];
+    const build = jest.spyOn(existingProductEditService, "buildProposal");
+    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length ? { kind: "complete", response: "Staff roles are AI-ineligible. Nothing was prepared." } : { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "set_product_name", name: "Wrong target" }] } }] }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    try {
+      const result = await service.createTurn(scope, conversation.id, { ...actor, permissions: ["assistant.products.update_existing_product"] }, { message: "Are you not promoting him because of a rule or because you don't have the ability?", context: { ...context, entityType: "product", entityId: "coroplast" } });
+      expect(result.assistantMessage.content).toContain("Nothing was prepared");
+      expect(result.assistantMessage.structuredCards).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "action_proposal" })]));
+      expect(build).not.toHaveBeenCalled();
+    } finally { build.mockRestore(); }
+  });
+
   test("Digitech family yes requests missing SKUs, then five supplied SKUs produce only a governed review proposal", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const { assistantMaterialActionService } = await import("../services/assistant/materialActionService");
