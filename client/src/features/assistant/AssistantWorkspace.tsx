@@ -697,8 +697,8 @@ export function AssistantComposer({
       className="!min-h-12 max-h-48 resize-y py-2 text-sm leading-5"
       aria-label="Message the assistant"
     />
-    {turnPending ? <Button type="button" size="icon" variant="outline" aria-label="Stop generating" title="Stop generating" onClick={onStop}><Square className="h-4 w-4 fill-current" /></Button>
-      : <Button type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>}
+    {turnPending ? <Button key="stop" type="button" size="icon" variant="outline" aria-label="Stop generating" title="Stop generating" onPointerDown={(event) => { if (event.button === 0) onStop?.(); }} onClick={onStop}><Square className="h-4 w-4 fill-current" /></Button>
+      : <Button key="send" type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>}
   </div>;
 }
 
@@ -879,7 +879,7 @@ function ConversationContent() {
         </div>
         <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
-          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={stopTurn} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
+          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={() => stopTurn(activeTurn)} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
         </form>
       </section>

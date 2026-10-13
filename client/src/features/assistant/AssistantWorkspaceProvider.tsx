@@ -56,7 +56,7 @@ type WorkspaceContextValue = {
   optimisticConversationId: string | null;
   turnNotice: { conversationId: string | null; message: string } | null;
   sendOrdinaryTurn: (message: string, clearDraftOnSuccess: boolean) => Promise<void>;
-  stopTurn: () => void;
+  stopTurn: (visibleTurn?: ActiveAssistantTurn | null) => void;
   clearOptimisticMessage: () => void;
   executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
   saveExecutionPlan: (entry: { turnId: string; plan: unknown; confirmationToken: string | null }) => void;
@@ -145,9 +145,14 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     }
   };
 
-  const stopTurn = () => {
-    const turn = activeTurnRef.current;
-    if (!turn) return;
+  const stopTurn = (visibleTurn?: ActiveAssistantTurn | null) => {
+    // The rendered Stop control is driven by activeTurn. Use that same turn
+    // if the mutable request ref has already been cleared while the UI still
+    // shows it, so a visible Stop control can never become a no-op.
+    const currentTurn = activeTurnRef.current;
+    if (visibleTurn && currentTurn && visibleTurn.id !== currentTurn.id) return;
+    const turn = currentTurn ?? visibleTurn ?? activeTurn;
+    if (!turn || turn.controller.signal.aborted) return;
     activeTurnRef.current = null;
     startingTurnRef.current = false;
     setActiveTurn(null);
