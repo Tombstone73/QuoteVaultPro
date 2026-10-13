@@ -2,6 +2,13 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { apiUrl, resolveCanonicalApiRequestUrl } from "./apiConfig";
 import { notifySessionExpired } from "./authUtils";
 
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number, public readonly code: string | null, public readonly correlationId: string | null) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -19,7 +26,12 @@ async function throwIfResNotOk(res: Response) {
     if (res.status === 401) {
       notifySessionExpired("api-request");
     }
-    throw new Error(`${res.status}: ${text}`);
+    let code: string | null = null;
+    try {
+      const parsed = JSON.parse(text);
+      code = typeof parsed?.error?.code === "string" ? parsed.error.code : typeof parsed?.code === "string" ? parsed.code : null;
+    } catch { /* The response may not be JSON. */ }
+    throw new ApiRequestError(`${res.status}: ${text}`, res.status, code, res.headers.get("x-assistant-correlation-id"));
   }
 }
 

@@ -6,6 +6,8 @@ export interface AiConversationMessage {
 }
 
 export interface AiProviderRequest {
+  /** Cancels an ordinary assistant turn when its client disconnects. */
+  signal?: AbortSignal;
   orgId: string;
   feature: AiFeature;
   system: string;

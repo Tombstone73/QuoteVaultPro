@@ -853,7 +853,9 @@ export class AssistantService {
     conversationId: string,
     actor: AssistantActor,
     data: AssistantTurnRequest,
+    options?: { signal?: AbortSignal; correlationId?: string },
   ) {
+    options?.signal?.throwIfAborted();
     // Routes validate this too; retain a service boundary so future callers
     // cannot persist arbitrary context, form data, or identity fields.
     const request = assistantTurnRequestSchema.parse(data);
@@ -866,17 +868,18 @@ export class AssistantService {
       );
     }
 
-    const correlationId = crypto.randomUUID();
-    return this.createOperatorTurn({ scope, conversationId, actor, request, correlationId });
+    const correlationId = options?.correlationId ?? crypto.randomUUID();
+    return this.createOperatorTurn({ scope, conversationId, actor, request, correlationId, signal: options?.signal });
   }
 
   /** Primary ordinary free-text path. Exact structured routes never call
    * createTurn and remain deterministic server actions. The former planner /
    * specialist path remains below solely as an isolated compatibility path. */
   private async createOperatorTurn(input: {
-    scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
+    scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string; signal?: AbortSignal;
   }): Promise<AssistantTurnResult> {
     const { scope, conversationId, actor, request, correlationId } = input;
+    input.signal?.throwIfAborted();
     const capability = await this.getCapabilities(scope, actor);
     if (!capability.toolsEnabled) {
       return this.persistOperatorResponse(input, { response: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, status: "failed", cards: [{ kind: "provider_unavailable", title: "AI Operator unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }], errorCode: "operator_unavailable", audits: [] });
@@ -1243,6 +1246,7 @@ export class AssistantService {
       : semanticTools;
     const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, turnSemanticTools));
     const run = await runtime.run({
+      signal: input.signal,
       goal: request.message,
       conversationMessages,
       taskId: task.id,
@@ -1258,6 +1262,7 @@ export class AssistantService {
         missingInformation: staffRoleDiscussion ? [] : task.missingInformation,
       } },
     });
+    input.signal?.throwIfAborted();
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
     const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
@@ -1350,7 +1355,9 @@ export class AssistantService {
       ? { taskId: task.id, expectedQuestion: verifiedMaterialReview
         ? { questionId: verifiedMaterialReview.questionId, version: verifiedMaterialReview.version, content: verifiedMaterialReview.question, correlationId: verifiedMaterialReview.correlationId } : null, patch: taskPatch }
       : undefined;
+    input.signal?.throwIfAborted();
     if (!materialTaskTransition) await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: taskPatch });
+    input.signal?.throwIfAborted();
     return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
   }
 
@@ -1521,10 +1528,11 @@ export class AssistantService {
   }
 
   private async persistOperatorResponse(
-    input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string },
+    input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string; signal?: AbortSignal },
     result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; audits: AssistantToolExecutionAudit[] },
     materialTaskTransition?: MaterialTaskTransition,
   ): Promise<AssistantTurnResult> {
+    input.signal?.throwIfAborted();
     // Defense in depth: a known raw control decision is never a presentable
     // assistant message. Do not broadly suppress JSON, because users may
     // legitimately ask for JSON; this catches only exact schema-valid
@@ -1616,6 +1624,16 @@ export class AssistantService {
       if (input.materialTaskTransition && error instanceof Error && "code" in error && error.code === "MATERIAL_TASK_TRANSITION_STALE") {
         throw new AssistantServiceError("MATERIAL_TASK_TRANSITION_STALE", "The Material question changed. Reload the conversation before replying again.", 409);
       }
+      // Keep database detail out of the client response and business content
+      // out of logs, while preserving enough to diagnose a failed write.
+      const failure = error && typeof error === "object" ? error as { code?: unknown; constraint?: unknown; table?: unknown; assistantPersistenceStage?: unknown } : null;
+      console.error("[Assistant] Turn persistence failed", {
+        correlationId: input.correlationId,
+        stage: typeof failure?.assistantPersistenceStage === "string" ? failure.assistantPersistenceStage : "reload_conversation_or_unknown",
+        databaseCode: typeof failure?.code === "string" ? failure.code : null,
+        constraint: typeof failure?.constraint === "string" ? failure.constraint : null,
+        table: typeof failure?.table === "string" ? failure.table : null,
+      });
       throw new AssistantServiceError(
         "ASSISTANT_MESSAGE_PERSISTENCE_FAILED",
         "The lookup completed, but the assistant response could not be saved. Please retry.",

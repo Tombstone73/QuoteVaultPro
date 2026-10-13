@@ -2,7 +2,8 @@ import * as React from "react";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useAssistantCapabilities } from "@/hooks/useAssistantApi";
+import { assistantTurnFailureMessage, useAssistantCapabilities, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
+import type { AssistantMessage } from "@shared/assistantContracts";
 import type { AssistantCapabilities, AssistantContextEnvelope, AssistantLayoutPreferences, AssistantPresentation } from "./types";
 import { buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, resolveAssistantPresentation, shouldEnableAssistantForRoute } from "./assistantWorkspaceCore";
 
@@ -28,6 +29,8 @@ function clampBounds(bounds: AssistantLayoutPreferences["floatingBounds"]) {
   };
 }
 
+type ActiveAssistantTurn = { id: string; controller: AbortController; conversationId: string };
+
 type WorkspaceContextValue = {
   capabilities?: AssistantCapabilities;
   capabilityError?: string;
@@ -48,6 +51,13 @@ type WorkspaceContextValue = {
   setActiveConversationId: React.Dispatch<React.SetStateAction<string | null>>;
   draft: string;
   setDraft: React.Dispatch<React.SetStateAction<string>>;
+  activeTurn: ActiveAssistantTurn | null;
+  optimisticUserMessage: AssistantMessage | null;
+  optimisticConversationId: string | null;
+  turnNotice: { conversationId: string | null; message: string } | null;
+  sendOrdinaryTurn: (message: string, clearDraftOnSuccess: boolean) => Promise<void>;
+  stopTurn: () => void;
+  clearOptimisticMessage: () => void;
   executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
   saveExecutionPlan: (entry: { turnId: string; plan: unknown; confirmationToken: string | null }) => void;
   updateExecutionPlan: (planId: string, plan: unknown) => void;
@@ -77,6 +87,74 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   // remain part of the single workspace engine.
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState("");
+  const sendTurn = useSendAssistantTurn();
+  const createConversationForTurn = useCreateAssistantConversation();
+  const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
+  const [optimisticConversationId, setOptimisticConversationId] = React.useState<string | null>(null);
+  const activeTurnRef = React.useRef<ActiveAssistantTurn | null>(null);
+  const startingTurnRef = React.useRef(false);
+  const [activeTurn, setActiveTurn] = React.useState<ActiveAssistantTurn | null>(null);
+  const [turnNotice, setTurnNotice] = React.useState<{ conversationId: string | null; message: string } | null>(null);
+  React.useEffect(() => () => { activeTurnRef.current?.controller.abort(); }, []);
+
+  const clearOptimisticMessage = React.useCallback(() => {
+    setOptimisticUserMessage(null);
+    setOptimisticConversationId(null);
+  }, []);
+
+  const sendOrdinaryTurn = async (message: string, clearDraftOnSuccess: boolean) => {
+    if (activeTurnRef.current || startingTurnRef.current) return;
+    startingTurnRef.current = true;
+    let conversationId = activeConversationId;
+    let turnId: string | null = null;
+    let completed = false;
+    try {
+      if (!conversationId) {
+        const conversation = await createConversationForTurn.mutateAsync();
+        conversationId = conversation.id;
+        setActiveConversationId(conversationId);
+      }
+      const id = crypto.randomUUID();
+      turnId = id;
+      const controller = new AbortController();
+      const turn = { id, controller, conversationId };
+      activeTurnRef.current = turn;
+      setActiveTurn(turn);
+      setTurnNotice(null);
+      setOptimisticConversationId(conversationId);
+      setOptimisticUserMessage({ id: `pending-${id}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
+      const response = await sendTurn.mutateAsync({ conversationId, message, context, signal: controller.signal, clientRequestId: id });
+      completed = true;
+      const persistedCorrelationId = typeof response?.data?.correlationId === "string" ? response.data.correlationId : null;
+      if (persistedCorrelationId) setOptimisticUserMessage((current) => current?.id === `pending-${id}` ? { ...current, correlationId: persistedCorrelationId } : current);
+      if (activeTurnRef.current?.id === id) {
+        if (clearDraftOnSuccess) setDraft("");
+        setTurnNotice(null);
+      }
+    } catch (error) {
+      if (!turnId || (activeTurnRef.current?.id === turnId && !activeTurnRef.current.controller.signal.aborted)) {
+        setTurnNotice({ conversationId, message: assistantTurnFailureMessage(error) });
+      }
+    } finally {
+      startingTurnRef.current = false;
+      if (activeTurnRef.current?.id === turnId) {
+        activeTurnRef.current = null;
+        setActiveTurn(null);
+        if (!completed) clearOptimisticMessage();
+      }
+    }
+  };
+
+  const stopTurn = () => {
+    const turn = activeTurnRef.current;
+    if (!turn) return;
+    activeTurnRef.current = null;
+    startingTurnRef.current = false;
+    setActiveTurn(null);
+    clearOptimisticMessage();
+    setTurnNotice({ conversationId: turn.conversationId, message: "Generation stopped. Check the conversation before retrying if the turn had nearly completed." });
+    turn.controller.abort();
+  };
   // Plan state is intentionally owned above floating/docked/fullscreen
   // renderers. Confirmation tokens are ephemeral and never persisted to local
   // storage or the assistant message history.
@@ -168,10 +246,17 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     setActiveConversationId,
     draft,
     setDraft,
+    activeTurn,
+    optimisticUserMessage,
+    optimisticConversationId,
+    turnNotice,
+    sendOrdinaryTurn,
+    stopTurn,
+    clearOptimisticMessage,
     executionPlans,
     saveExecutionPlan,
     updateExecutionPlan,
-  }), [activeConversationId, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, context, draft, executionPlans, isMobile, layout, minimize, persistLayout, presentation, priorPresentation, saveExecutionPlan, setPresentation, toggle, updateExecutionPlan, location.pathname]);
+  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
 
   return <AssistantWorkspaceContext.Provider value={value}>{children}</AssistantWorkspaceContext.Provider>;
 }

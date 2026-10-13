@@ -199,6 +199,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     }>;
     materialTaskTransition?: MaterialTaskTransition;
   }): Promise<AssistantTurnResult | null> {
+    let persistenceStage = "load_conversation";
     const created = await db.transaction(async (tx) => {
       const [conversation] = await tx
         .select()
@@ -210,9 +211,11 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       // Sequences are conversation-local and protected by a transaction-scoped
       // advisory lock, preventing two concurrent turns from claiming the same
       // (conversation_id, sequence) unique key.
+      persistenceStage = "lock_conversation_sequence";
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${conversation.id}))`);
 
       if (input.materialTaskTransition) {
+        persistenceStage = "material_task_transition";
         const { taskId, expectedQuestion, patch } = input.materialTaskTransition;
         if (expectedQuestion) {
           const [latest] = await tx.select({ content: aiMessages.content, correlationId: aiMessages.correlationId })
@@ -242,6 +245,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       }
 
       const now = new Date();
+      persistenceStage = "insert_turn";
       const [turn] = await tx
         .insert(aiTurns)
         .values({
@@ -263,11 +267,13 @@ export class DrizzleAssistantRepository implements AssistantRepository {
         .returning();
       if (!turn) throw new Error("Failed to create assistant turn.");
 
+      persistenceStage = "read_message_sequence";
       const [sequenceRow] = await tx
         .select({ sequence: sql<number>`coalesce(max(${aiMessages.sequence}), 0)` })
         .from(aiMessages)
         .where(and(eq(aiMessages.orgId, input.organizationId), eq(aiMessages.conversationId, conversation.id)));
       const nextSequence = Number(sequenceRow?.sequence ?? 0) + 1;
+      persistenceStage = "insert_user_message";
       const [userMessage] = await tx
         .insert(aiMessages)
         .values({
@@ -281,6 +287,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
           correlationId: input.correlationId,
         })
         .returning();
+      persistenceStage = "insert_assistant_message";
       const [assistantMessage] = await tx
         .insert(aiMessages)
         .values({
@@ -300,6 +307,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       if (!userMessage || !assistantMessage) throw new Error("Failed to create assistant messages.");
 
       const contextJson = JSON.stringify(input.context);
+      persistenceStage = "insert_context_snapshot";
       await tx.insert(aiContextSnapshots).values({
         orgId: input.organizationId,
         conversationId: conversation.id,
@@ -311,6 +319,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
         capturedAt: new Date(input.context.capturedAt),
       });
 
+      persistenceStage = "update_conversation";
       await tx
         .update(aiConversations)
         .set({
@@ -327,6 +336,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
         .where(conversationPredicate(input, conversation.id));
 
       for (const execution of input.toolExecutions ?? []) {
+        persistenceStage = "insert_tool_execution";
         const [toolExecution] = await tx.insert(aiToolExecutions).values({
           orgId: input.organizationId,
           conversationId: conversation.id,
@@ -341,6 +351,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
           errorCode: execution.errorCode ?? null,
           completedAt: now,
         }).returning();
+        persistenceStage = "insert_tool_audit";
         await tx.insert(aiAuditEvents).values({
           orgId: input.organizationId,
           conversationId: conversation.id,
@@ -365,6 +376,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
 
       // The audit row is part of the same transaction as the turn and snapshot,
       // so no successful turn can exist without correlation metadata.
+      persistenceStage = "insert_turn_audit";
       await tx.insert(aiAuditEvents).values({
         orgId: input.organizationId,
         conversationId: conversation.id,
@@ -382,6 +394,11 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       });
 
       return { turnId: turn.id, correlationId: turn.correlationId, status: turn.status === "failed" ? "failed" as const : "responded" as const, userMessage, assistantMessage };
+    }).catch((error: unknown) => {
+      if (error && typeof error === "object") {
+        try { Object.defineProperty(error, "assistantPersistenceStage", { value: persistenceStage }); } catch { /* Preserve the original database error. */ }
+      }
+      throw error;
     });
     if (!created) return null;
 

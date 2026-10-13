@@ -184,6 +184,7 @@ export interface AssistantOperatorTrustedContext {
 
 export interface AssistantOperatorDecisionProvider {
   decide(input: {
+    signal?: AbortSignal;
     goal: string;
     conversationMessages?: readonly AiConversationMessage[];
     taskId: string;
@@ -302,7 +303,8 @@ export class AssistantOperatorRuntime {
     private readonly maxSteps = resolveAiOperatorMaxSteps(),
   ) {}
 
-  async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null; conversationMessages?: readonly AiConversationMessage[] }): Promise<AssistantOperatorRunResult> {
+  async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null; conversationMessages?: readonly AiConversationMessage[]; signal?: AbortSignal }): Promise<AssistantOperatorRunResult> {
+    input.signal?.throwIfAborted();
     const observations: AssistantOperatorObservation[] = [];
     let safeWorkingSummary = input.initialWorkingSummary ?? null;
     const boundedSteps = Math.max(1, Math.min(ASSISTANT_OPERATOR_MAX_STEPS, this.maxSteps));
@@ -318,16 +320,19 @@ export class AssistantOperatorRuntime {
     let forcedProductReplanForObservationStep = -1;
 
     for (let step = 1; step <= boundedSteps; step += 1) {
+      input.signal?.throwIfAborted();
       let decision: AssistantOperatorDecision;
       try {
         providerDecisionCount += 1;
         if (observations.length) console.info("[AI_OPERATOR_TRACE]", { stage: "provider_continuation_started", taskId: input.taskId, step, observationCount: observations.length });
         const productEvidence = currentTurnProductResolution(observations);
         const received = await this.provider.decide({
+          signal: input.signal,
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
           conversationMessages: input.conversationMessages,
           toolCatalog: this.tools.catalog(input.trustedContext), observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations),
         });
+        input.signal?.throwIfAborted();
         const parsed = assistantOperatorDecisionSchema.safeParse(received);
         const shape = decisionDiagnosticShape(received);
         console.info("[AI_OPERATOR_TRACE]", { stage: "runtime_schema_validation", taskId: input.taskId, step, succeeded: parsed.success, ...shape });
@@ -337,6 +342,7 @@ export class AssistantOperatorRuntime {
         }
         decision = parsed.data;
       } catch {
+        input.signal?.throwIfAborted();
         console.warn("[AI_OPERATOR_TRACE]", { stage: "runtime_schema_validation", taskId: input.taskId, step, succeeded: false, reason: "provider_decision_unavailable" });
         return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
@@ -422,6 +428,7 @@ export class AssistantOperatorRuntime {
 
       printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {
+        input.signal?.throwIfAborted();
         const callKey = equivalentToolCallKey(call.toolName, call.arguments, productResolutionEpoch);
         if (deterministicFailureKeys.has(callKey)) {
           const prior = [...observations].reverse().find((observation) => observation.toolName === call.toolName && isDeterministicToolFailure(observation));
@@ -440,11 +447,13 @@ export class AssistantOperatorRuntime {
         try {
           console.info("[AI_OPERATOR_TRACE]", { stage: "handler_entered", taskId: input.taskId, step, toolName: call.toolName });
           const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
+          input.signal?.throwIfAborted();
           observations.push({ step, ...execution });
           if (isProductResolutionObservation(execution as AssistantOperatorObservation) && execution.status === "succeeded") productResolutionEpoch += 1;
           if (isDeterministicToolFailure(execution)) deterministicFailureKeys.add(callKey);
           console.info("[AI_OPERATOR_TRACE]", { stage: "observation_returned", taskId: input.taskId, step, toolName: call.toolName, status: execution.status });
         } catch {
+          input.signal?.throwIfAborted();
           // Provider/model execution faults are still bounded observations.
           // Returning them to the model lets it choose a safe alternative or
           // a truthful partial answer without exposing implementation detail.
@@ -456,17 +465,21 @@ export class AssistantOperatorRuntime {
     // This is intentionally not another investigation step: it has existing
     // evidence only and an empty catalog, so it cannot create more work.
     try {
+      input.signal?.throwIfAborted();
       providerDecisionCount += 1;
       const productEvidence = currentTurnProductResolution(observations);
       const synthesis = assistantOperatorDecisionSchema.parse(await this.provider.decide({
+        signal: input.signal,
         goal: input.goal, taskId: input.taskId, step: boundedSteps + 1, remainingSteps: 0,
         conversationMessages: input.conversationMessages,
         toolCatalog: [], observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations), finalSynthesis: true,
       }));
+      input.signal?.throwIfAborted();
       safeWorkingSummary = synthesis.kind === "fail" ? synthesis.recoverySummary ?? safeWorkingSummary : synthesis.workingSummary ?? safeWorkingSummary;
       if (synthesis.kind === "complete") return { status: "completed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
       if (synthesis.kind === "fail") return { status: "failed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
     } catch {
+      input.signal?.throwIfAborted();
       // The completed observations remain persisted and available in cards.
     }
     return { status: "step_limit", response: observations.length

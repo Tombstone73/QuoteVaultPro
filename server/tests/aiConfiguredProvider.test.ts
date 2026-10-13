@@ -767,6 +767,18 @@ describe("configured AI provider", () => {
     }
   });
 
+  test("external Stop aborts the DeepSeek request without reporting a timeout", async () => {
+    const controller = new AbortController();
+    const fetchMock = jest.fn((_endpoint: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted", "AbortError")));
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const pending = new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest({ signal: controller.signal }), toolCatalog: [] });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
+  });
+
   test("provider HTTP errors include safe diagnostics without API key", async () => {
     const fetchMock = jest.fn(async () => ({
       ok: false,

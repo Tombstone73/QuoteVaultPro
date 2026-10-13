@@ -1,11 +1,11 @@
 import * as React from "react";
-import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send } from "lucide-react";
+import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { useArchiveAssistantConversations, useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
+import { useArchiveAssistantConversations, useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -20,7 +20,7 @@ import { assistantComposerHelper, assistantConversationLabel, visibleAssistantCo
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
 import { AssistantWorkingIndicator, resolveAssistantWorkingState } from "./AssistantWorkingIndicator";
-import type { AssistantMessage, AssistantResponseState } from "@shared/assistantContracts";
+import type { AssistantResponseState } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
 
@@ -657,12 +657,16 @@ export function AssistantComposer({
   value,
   onChange,
   onRequestSend,
+  onStop,
+  turnPending = false,
   disabled,
   placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
   onRequestSend: () => void;
+  onStop?: () => void;
+  turnPending?: boolean;
   disabled: boolean;
   placeholder: string;
 }) {
@@ -693,7 +697,8 @@ export function AssistantComposer({
       className="!min-h-12 max-h-48 resize-y py-2 text-sm leading-5"
       aria-label="Message the assistant"
     />
-    <Button type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>
+    {turnPending ? <Button type="button" size="icon" variant="outline" aria-label="Stop generating" title="Stop generating" onClick={onStop}><Square className="h-4 w-4 fill-current" /></Button>
+      : <Button type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>}
   </div>;
 }
 
@@ -705,7 +710,7 @@ export function AssistantMessageContent({ content }: { content: string }) {
 }
 
 function ConversationContent() {
-  const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan } = useAssistantWorkspace();
+  const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan, activeTurn, optimisticUserMessage, optimisticConversationId, turnNotice, sendOrdinaryTurn, stopTurn, clearOptimisticMessage } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
   const toolsEnabled = Boolean(capabilities?.toolsEnabled);
   const conversations = useAssistantConversations(enabled);
@@ -714,12 +719,10 @@ function ConversationContent() {
   const updateConversation = useUpdateAssistantConversation();
   const archiveConversations = useArchiveAssistantConversations();
   const detail = useAssistantConversation(activeConversationId, enabled);
-  const sendTurn = useSendAssistantTurn();
   const cancelPlan = useCancelAssistantPlan();
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
   const canonicalInteraction = useCanonicalProductIntentInteraction();
-  const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
   }, [activeConversationId, conversations.data]);
@@ -732,7 +735,7 @@ function ConversationContent() {
 
   const submitCurrentDraft = async () => {
     const message = draft.trim();
-    if (!message || sendTurn.isPending || !toolsEnabled) return;
+    if (!message || activeTurn || !toolsEnabled) return;
     const pickupConfirmation = pendingPickupConfirmationForReply(message, executionPlans);
     if (pickupConfirmation) {
       try {
@@ -744,19 +747,7 @@ function ConversationContent() {
       }
       return;
     }
-    setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
-    let conversationId = activeConversationId;
-    if (!conversationId) {
-      const conversation = await createConversation.mutateAsync();
-      conversationId = conversation.id;
-      setActiveConversationId(conversationId);
-    }
-    try {
-      await sendTurn.mutateAsync({ conversationId, message, context });
-      setDraft("");
-    } catch {
-      setOptimisticUserMessage(null);
-    }
+    await sendOrdinaryTurn(message, true);
   };
 
   const submit = (event: React.FormEvent) => {
@@ -766,23 +757,11 @@ function ConversationContent() {
 
   const submitSuggestedPrompt = async (prompt: string) => {
     const message = prompt.trim();
-    if (!message || sendTurn.isPending || !toolsEnabled) return;
+    if (!message || activeTurn || !toolsEnabled) return;
     // Suggestions intentionally travel through the same normal-message path
     // as typed text. They cannot call a tool, confirm a plan, or bypass the
     // server's tenant, authorization, and planning checks.
-    setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
-    let conversationId = activeConversationId;
-    if (!conversationId) {
-      const conversation = await createConversation.mutateAsync();
-      conversationId = conversation.id;
-      setActiveConversationId(conversationId);
-    }
-    try {
-      await sendTurn.mutateAsync({ conversationId, message, context });
-      setDraft("");
-    } catch {
-      setOptimisticUserMessage(null);
-    }
+    await sendOrdinaryTurn(message, false);
   };
 
   const createPlanFromProposal = async (turnId: string) => {
@@ -805,29 +784,36 @@ function ConversationContent() {
   };
 
   const retry = async (message: string) => {
-    if (!activeConversationId || sendTurn.isPending) return;
-    await sendTurn.mutateAsync({ conversationId: activeConversationId, message, context });
+    if (!activeConversationId || activeTurn) return;
+    await sendOrdinaryTurn(message, false);
   };
   const persistedMessages = detail.data?.messages ?? [];
-  const optimisticMessagePersisted = Boolean(optimisticUserMessage && persistedMessages.some((message) => message.role === "user" && message.content === optimisticUserMessage.content));
-  const messages = optimisticUserMessage && !optimisticMessagePersisted ? [...persistedMessages, optimisticUserMessage] : persistedMessages;
+  const visibleTurnNotice = turnNotice?.conversationId === activeConversationId ? turnNotice?.message : null;
+  const visibleOptimisticMessage = optimisticConversationId === activeConversationId ? optimisticUserMessage : null;
+  const optimisticMessagePersisted = Boolean(visibleOptimisticMessage && persistedMessages.some((message) => message.role === "user"
+    && (visibleOptimisticMessage.correlationId
+      ? message.correlationId === visibleOptimisticMessage.correlationId
+      : message.content === visibleOptimisticMessage.content && new Date(message.createdAt).getTime() >= new Date(visibleOptimisticMessage.createdAt).getTime() - 5_000)));
+  const messages = visibleOptimisticMessage && !optimisticMessagePersisted ? [...persistedMessages, visibleOptimisticMessage] : persistedMessages;
   React.useEffect(() => {
-    if (optimisticMessagePersisted) setOptimisticUserMessage(null);
-  }, [optimisticMessagePersisted]);
+    if (optimisticMessagePersisted) {
+      clearOptimisticMessage();
+    }
+  }, [optimisticMessagePersisted, clearOptimisticMessage]);
   const latestMessage = messages.at(-1) ?? null;
   const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant") ?? null;
   const conversationScroll = useAssistantConversationScroll({
     conversationId: activeConversationId,
     latestMessageId: latestMessage?.id ?? null,
     latestAssistantMessageId: latestAssistantMessage?.id ?? null,
-    pendingUserMessageId: optimisticUserMessage?.id ?? null,
-    completionKey: sendTurn.isError ? "send-error" : sendTurn.isPending ? "sending" : latestMessage?.id ?? "",
+    pendingUserMessageId: visibleOptimisticMessage?.id ?? null,
+    completionKey: visibleTurnNotice ? "send-notice" : activeTurn ? "sending" : latestMessage?.id ?? "",
   });
   const conversationItems = visibleAssistantConversations(conversations.data, activeConversationId);
   // These are real client request lifecycles. The server does not publish
   // safe per-tool progress, so ordinary Operator turns remain truthfully
   // generic rather than inventing stages or exposing reasoning.
-  const assistantWorking = resolveAssistantWorkingState({ turnPending: sendTurn.isPending, planPreparationPending: createExecutionPlan.isPending, planExecutionPending: confirmPlan.isPending });
+  const assistantWorking = resolveAssistantWorkingState({ turnPending: Boolean(activeTurn), planPreparationPending: createExecutionPlan.isPending, planExecutionPending: confirmPlan.isPending });
   const fullComposerHelper = capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete.";
   const composerHelper = assistantComposerHelper(fullComposerHelper, presentation);
 
@@ -887,13 +873,13 @@ function ConversationContent() {
             return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           <AssistantWorkingIndicator active={assistantWorking.active} label={assistantWorking.label} />
-          {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
+          {visibleTurnNotice ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{visibleTurnNotice}</p> : null}
           </div>
           {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
         </div>
         <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
-          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} disabled={sendTurn.isPending || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
+          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={stopTurn} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
         </form>
       </section>

@@ -308,13 +308,23 @@ describe("assistant routes", () => {
       .send({ ...turnBody({ organizationId: "org_attacker" }), organizationId: "org_attacker" })
       .expect(201);
 
-    expect(response.headers["x-assistant-correlation-id"]).toBe("correlation_1");
+    expect(response.headers["x-assistant-correlation-id"]).toMatch(/^[0-9a-f-]{36}$/);
     expect(service.createTurn).toHaveBeenCalledWith(
       { organizationId: "org_1", userId: "user_1" },
       "conversation_1",
       expect.objectContaining({ userId: "user_1" }),
       expect.objectContaining({ context: expect.not.objectContaining({ organizationId: expect.anything() }) }),
+      expect.objectContaining({ correlationId: response.headers["x-assistant-correlation-id"], signal: expect.any(AbortSignal) }),
     );
+  });
+
+  test("returns a correlation header when saving an ordinary turn fails", async () => {
+    const service = buildService();
+    service.createTurn.mockRejectedValue(new AssistantServiceError("ASSISTANT_MESSAGE_PERSISTENCE_FAILED", "The lookup completed, but the assistant response could not be saved. Please retry.", 503));
+    const { app } = buildApp(service);
+    const response = await request(app).post("/api/assistant/conversations/conversation_1/turns").send(turnBody()).expect(503);
+    expect(response.body.error.code).toBe("message_persistence_failed");
+    expect(response.headers["x-assistant-correlation-id"]).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test("serializes a multiline operator response without flattening its content", async () => {

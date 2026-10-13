@@ -8,7 +8,8 @@ jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
 
 import { AssistantComposer } from "./AssistantWorkspace";
-import { assistantTurnRequestBody } from "@/hooks/useAssistantApi";
+import { assistantTurnFailureMessage, assistantTurnRequestBody } from "@/hooks/useAssistantApi";
+import { ApiRequestError } from "@/lib/queryClient";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -85,5 +86,32 @@ describe("Assistant composer", () => {
     act(() => Simulate.keyDown(singleTextarea, { key: "Enter", shiftKey: false } as any));
     expect(single.onRequestSend).toHaveBeenCalledWith("Are any production jobs overdue?");
     act(() => single.root.unmount());
+  });
+
+  test("offers an immediate Stop control during an active turn without submitting", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onStop = jest.fn();
+    const onSend = jest.fn();
+    act(() => root.render(<form onSubmit={(event) => { event.preventDefault(); onSend(); }}>
+      <AssistantComposer value="yes" onChange={jest.fn()} onRequestSend={onSend} onStop={onStop} turnPending disabled placeholder="Ask" />
+    </form>));
+    const stop = container.querySelector('button[aria-label="Stop generating"]') as HTMLButtonElement;
+    expect(stop).not.toBeNull();
+    expect(stop.disabled).toBe(false);
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
+    act(() => Simulate.click(stop));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  test("shows the persistence failure boundary and correlation reference without raw server text", () => {
+    const error = new ApiRequestError("503: sensitive response", 503, "message_persistence_failed", "corr_123");
+    const message = assistantTurnFailureMessage(error);
+    expect(message).toContain("could not save this turn");
+    expect(message).toContain("corr_123");
+    expect(message).not.toContain("sensitive response");
   });
 });

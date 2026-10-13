@@ -6,6 +6,31 @@ const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", rou
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
+  test("aborts a provider decision without running tools or returning a failed reply", async () => {
+    const controller = new AbortController();
+    const execute = jest.fn(async () => ({ toolName: "pricing.snapshot", status: "succeeded" as const }));
+    const decide = jest.fn(async () => {
+      controller.abort();
+      return { kind: "call_tools", calls: [{ toolName: "pricing.snapshot", arguments: {} }] };
+    });
+    await expect(new AssistantOperatorRuntime({ decide }, { catalog: () => [], execute }).run({ goal: "price", taskId: "task_stop", trustedContext, signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("aborts after an in-flight tool before another tool or provider step", async () => {
+    const controller = new AbortController();
+    const execute = jest.fn(async () => {
+      controller.abort();
+      return { toolName: "pricing.snapshot", status: "succeeded" as const };
+    });
+    const decide = jest.fn(async () => ({ kind: "call_tools", calls: [
+      { toolName: "pricing.snapshot", arguments: {} }, { toolName: "products.get_summary", arguments: {} },
+    ] }));
+    await expect(new AssistantOperatorRuntime({ decide }, { catalog: () => [], execute }).run({ goal: "price", taskId: "task_stop_tool", trustedContext, signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(decide).toHaveBeenCalledTimes(1);
+  });
+
   test("preserves both conversational roles through every decision and final synthesis", async () => {
     const conversationMessages = [
       { role: "user" as const, content: "Promote user Zayne to owner permissions." },

@@ -238,6 +238,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
     const endpoint = composeOpenAiChatCompletionsEndpoint(config.endpoint, config.provider);
     const requestPolicy = resolveOpenAiCompatibleRequestPolicy(endpoint);
     const controller = new AbortController();
+    const onExternalAbort = () => controller.abort();
+    request.signal?.addEventListener("abort", onExternalAbort, { once: true });
+    if (request.signal?.aborted) controller.abort();
     const timeoutMs = resolveAiProviderTimeoutMs(request.timeoutMs);
     const maxTokens = resolveAiJsonMaxTokens(request.maxTokens);
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -398,6 +401,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         },
       };
     } catch (error) {
+      request.signal?.throwIfAborted();
       if (controller.signal.aborted) {
         const elapsedMs = Date.now() - started;
         logProviderFailure({
@@ -422,6 +426,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       throw error;
     } finally {
       clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", onExternalAbort);
     }
   }
 
@@ -442,6 +447,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
     }
     const timeoutMs = resolveAiProviderTimeoutMs(request.timeoutMs);
     const controller = new AbortController();
+    const onExternalAbort = () => controller.abort();
+    request.signal?.addEventListener("abort", onExternalAbort, { once: true });
+    if (request.signal?.aborted) controller.abort();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const started = Date.now();
     try {
@@ -617,6 +625,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         },
       };
     } catch (error) {
+      request.signal?.throwIfAborted();
       if (controller.signal.aborted) {
         const elapsedMs = Date.now() - started;
         logProviderFailure({
@@ -633,7 +642,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         throw new AiProviderTimeoutError({ timeoutMs, elapsedMs, provider: config.provider, model: config.model, useCase: request.timeoutUseCase ?? request.feature });
       }
       throw error;
-    } finally { clearTimeout(timeout); }
+    } finally { clearTimeout(timeout); request.signal?.removeEventListener("abort", onExternalAbort); }
   }
 }
 

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiRequestError } from "@/lib/queryClient";
 import type {
   AssistantCapabilities,
   AssistantContextEnvelope,
@@ -10,6 +10,18 @@ import type {
 
 const capabilitiesKey = ["/api/assistant/capabilities"] as const;
 const conversationsKey = ["/api/assistant/conversations"] as const;
+
+export function assistantTurnFailureMessage(error: unknown): string {
+  if (error instanceof ApiRequestError) {
+    const reference = error.correlationId ? ` Reference: ${error.correlationId}.` : "";
+    if (error.code === "message_persistence_failed") return `The assistant could not save this turn. Refresh the conversation before retrying.${reference}`;
+    if (error.code === "context_invalid") return `The page context was rejected. Refresh the page and try again.${reference}`;
+    if (error.status === 401 || error.status === 403) return `Your session cannot send this turn. Sign in again or check access.${reference}`;
+    if (error.status >= 500) return `The assistant request failed on the server. Retry after checking the conversation.${reference}`;
+    return `The assistant rejected this request (HTTP ${error.status}).${reference}`;
+  }
+  return "The assistant request did not complete. Check the conversation before retrying.";
+}
 
 export type AssistantConversationUpdate = {
   title?: string;
@@ -137,15 +149,17 @@ export function useArchiveAssistantConversations() {
 export function useSendAssistantTurn() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ conversationId, message, context }: {
+    mutationFn: async ({ conversationId, message, context, signal, clientRequestId }: {
       conversationId: string;
       message: string;
       context: AssistantContextEnvelope;
+      signal?: AbortSignal;
+      clientRequestId?: string;
     }) => {
-      const response = await apiRequest("POST", `/api/assistant/conversations/${conversationId}/turns`, assistantTurnRequestBody(message, context));
+      const response = await apiRequest("POST", `/api/assistant/conversations/${conversationId}/turns`, assistantTurnRequestBody(message, context, clientRequestId), { signal });
       return response.json();
     },
-    onSuccess: (_result, variables) => {
+    onSettled: (_result, _error, variables) => {
       queryClient.invalidateQueries({ queryKey: conversationsKey });
       queryClient.invalidateQueries({ queryKey: [...conversationsKey, variables.conversationId] });
     },
@@ -177,8 +191,8 @@ export function useSubmitAssistantOrderOptionSelections() {
 
 /** The assistant turn body deliberately keeps all internal whitespace intact;
  * Markdown tables and CSV-style messages depend on their original newlines. */
-export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope) {
-  return { message, context };
+export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope, clientRequestId?: string) {
+  return { message, context, ...(clientRequestId ? { clientRequestId } : {}) };
 }
 
 /** Selects an opaque candidate from a server-persisted report-resolution set.

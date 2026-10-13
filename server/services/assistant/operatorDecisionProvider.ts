@@ -29,6 +29,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
   ) {}
 
   async decide(input: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]): Promise<unknown> {
+    input.signal?.throwIfAborted();
     const contextTrace = trustedContextTrace(input);
     console.info("[AI_OPERATOR_TRACE]", { stage: "authoritative_context_available", taskId: input.taskId, ...contextTrace });
     const skillSelection = selectOperatorSkills({
@@ -128,6 +129,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       this.appendFunctionOutputs(input.observations);
       let response: AiProviderResponse;
       const generateDecision = () => this.provider.generateOperatorDecision!({
+        signal: input.signal,
         orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: operatorTimeoutMs,
         providerConfig: config, system, user, conversationMessages: input.conversationMessages, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
         operatorRequestSequence: ++this.responseRequestSequence,
@@ -135,6 +137,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       try {
         response = await generateDecision();
       } catch (error) {
+        input.signal?.throwIfAborted();
         // DeepSeek can intermittently emit a DSML transport fragment as a
         // terminal message after otherwise successful tool observations. The
         // adapter rejects it before any text can reach the user. Retry this
@@ -152,6 +155,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         try {
           response = await generateDecision();
         } catch (retryError) {
+          input.signal?.throwIfAborted();
           return providerFailureDecision(retryError, { taskId: input.taskId, ...contextTrace });
         }
       }
@@ -194,6 +198,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }
     const response = await this.provider.generateJson({
+      signal: input.signal,
       orgId: this.organizationId,
       feature: "assistant",
       promptVersion: "ai-operator-runtime-v1",

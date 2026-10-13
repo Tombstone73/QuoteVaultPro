@@ -349,6 +349,11 @@ export function registerAssistantRoutes(
   });
 
   app.post("/api/assistant/conversations/:conversationId/turns", ...guarded, async (req, res) => {
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableEnded) controller.abort(); };
+    res.on("close", onClose);
+    const correlationId = crypto.randomUUID();
+    res.setHeader("x-assistant-correlation-id", correlationId);
     try {
       const data = assistantTurnRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
       const scope = resolveScope(req);
@@ -357,8 +362,8 @@ export function registerAssistantRoutes(
         req.params.conversationId,
         buildActor(req, scope.userId),
         data,
+        { signal: controller.signal, correlationId },
       );
-      res.setHeader("x-assistant-correlation-id", result.correlationId);
       return res.status(201).json({
         success: true,
         data: {
@@ -376,7 +381,10 @@ export function registerAssistantRoutes(
         },
       });
     } catch (error) {
+      if (controller.signal.aborted) return;
       return sendError(res, error);
+    } finally {
+      res.off("close", onClose);
     }
   });
 
