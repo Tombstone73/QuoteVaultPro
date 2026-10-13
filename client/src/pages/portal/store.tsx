@@ -58,8 +58,8 @@ export default function PortalStorePage() {
             <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Customer Portal</span>
             <Badge variant="secondary" className="text-[11px]">Beta</Badge>
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Storefront</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Explore products and preview pricing where available.</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Product Calculator</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Configure products and preview pricing where available.</p>
         </div>
         <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">Online ordering is not yet enabled.</p>
       </header>
@@ -98,7 +98,7 @@ export default function PortalStorePage() {
         <Card><CardContent className="flex flex-col items-center py-14 text-center">
           <ShoppingBag className="mb-3 h-8 w-8 text-muted-foreground" aria-hidden="true" />
           <p className="font-medium">No products available yet</p>
-          <p className="mt-1 text-sm text-muted-foreground">Check back as more products are added to the storefront.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Check back as more products are added to the Product Calculator.</p>
         </CardContent></Card>
       ) : products.length === 0 ? (
         <Card><CardContent className="flex flex-col items-center py-12 text-center">

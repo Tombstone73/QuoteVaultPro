@@ -64,6 +64,7 @@ test("catalog renders a read-only product browse path", () => {
   render("/portal/store");
 
   expect(host.textContent).toContain("Custom Signs");
+  expect(host.textContent).toContain("Product Calculator");
   expect(host.querySelector('a[href="/portal/store/product-1"]')).not.toBeNull();
   expect(host.textContent).toContain("Online ordering is not yet enabled");
   expect(host.textContent).not.toMatch(/add to cart|checkout|place order/i);

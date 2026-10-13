@@ -234,13 +234,13 @@ export default function PortalStoreProductPage() {
   if (productQuery.isPending) return <div className="flex min-h-64 items-center justify-center" role="status" aria-label="Loading product"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
 
   if (productQuery.isError || !product) {
-    return <div className="mx-auto max-w-5xl space-y-4"><Button asChild variant="ghost" className="px-0"><Link to="/portal/store"><ArrowLeft className="mr-2 h-4 w-4" />Back to storefront</Link></Button><Card><CardContent className="py-12 text-center"><ShoppingBag className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /><p className="font-medium">Product unavailable</p><p className="mt-1 text-sm text-muted-foreground">This product may no longer be available to preview.</p></CardContent></Card></div>;
+    return <div className="mx-auto max-w-5xl space-y-4"><Button asChild variant="ghost" className="px-0"><Link to="/portal/store"><ArrowLeft className="mr-2 h-4 w-4" />Back to Product Calculator</Link></Button><Card><CardContent className="py-12 text-center"><ShoppingBag className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /><p className="font-medium">Product unavailable</p><p className="mt-1 text-sm text-muted-foreground">This product may no longer be available to preview.</p></CardContent></Card></div>;
   }
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
       <header>
-        <Button asChild variant="ghost" className="mb-3 px-0"><Link to="/portal/store"><ArrowLeft className="mr-2 h-4 w-4" />Back to storefront</Link></Button>
+        <Button asChild variant="ghost" className="mb-3 px-0"><Link to="/portal/store"><ArrowLeft className="mr-2 h-4 w-4" />Back to Product Calculator</Link></Button>
         <div className="grid gap-5 border-b border-border/80 pb-6 sm:grid-cols-[180px_minmax(0,1fr)] sm:items-center">
           <div className="flex h-36 items-center justify-center overflow-hidden rounded-md border border-border/70 bg-gradient-to-br from-muted/80 via-background to-muted/50">
             {product.imageUrl && !imageFailed ? <img src={product.imageUrl} alt="" onError={() => setImageFailed(true)} className="h-full w-full object-cover" /> : <ImageOff className="h-8 w-8 text-muted-foreground" aria-hidden="true" />}
