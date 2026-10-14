@@ -331,6 +331,7 @@ function envelopeMessage(status: number, json: any, fallback: string) {
 export default function PBV2ProductBuilderSectionV2({
   productId,
   requestedDraftTreeVersionId,
+  preferExistingDraft,
   onPbv2StateChange,
   onPbv2PricingDataChange,
   onTreeProviderReady,
@@ -339,6 +340,7 @@ export default function PBV2ProductBuilderSectionV2({
 }: {
   productId?: string | null;
   requestedDraftTreeVersionId?: string | null;
+  preferExistingDraft?: boolean;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean }) => void;
   onPbv2PricingDataChange?: (data: {
     pricingPreview: { addOnCents: number; breakdown: Array<{ label: string; cents: number }> } | null;
@@ -663,6 +665,7 @@ export default function PBV2ProductBuilderSectionV2({
       draft,
       active,
       preferDraft: Boolean(requestedDraftTreeVersionId),
+      preferExistingDraft,
     });
     const sourceTree = sourceChoice.source;
     if (!sourceTree) {
@@ -735,7 +738,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
     }
-  }, [productId, requestedDraftTreeVersionId, requestedDraftLoadError, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, treeLoadIdentity, treeQuery.isLoading, toast]);
+  }, [productId, requestedDraftTreeVersionId, requestedDraftLoadError, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, treeLoadIdentity, treeQuery.isLoading, toast, preferExistingDraft]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {

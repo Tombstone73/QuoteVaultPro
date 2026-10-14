@@ -35,7 +35,7 @@ describe("PBV2 requested draft hydration", () => {
     expect(choosePbv2BuilderTreeSource({ draft: emptyDraft, active })).toMatchObject({
       source: active,
       sourceKind: "ACTIVE",
-      repairedFromActive: true,
+      repairedFromActive: false,
     });
     const first = normalizePbv2TreeLoadIdentity({ productId: "product", requestedDraftTreeVersionId: "draft-a" });
     const second = normalizePbv2TreeLoadIdentity({ productId: "product", requestedDraftTreeVersionId: "draft-b" });

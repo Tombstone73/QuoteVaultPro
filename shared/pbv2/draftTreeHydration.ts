@@ -92,16 +92,22 @@ export function choosePbv2BuilderTreeSource(input: {
   active?: Pbv2TreeVersionLike;
   /** An explicit draft ID is an ownership-scoped request, never a fallback request. */
   preferDraft?: boolean;
+  /** Inactive Product and Intake editing may use an available draft. */
+  preferExistingDraft?: boolean;
 }): {
   source: Pbv2TreeVersionLike | null;
   sourceKind: "DRAFT" | "ACTIVE" | null;
   repairedFromActive: boolean;
-  reason: "draft" | "active_fallback_missing_draft" | "active_fallback_empty_draft" | "empty_draft" | "empty_active" | "none";
+  reason: "draft" | "active" | "active_fallback_missing_draft" | "active_fallback_empty_draft" | "empty_draft" | "empty_active" | "none";
 } {
   const draft = input.draft ?? null;
   const active = input.active ?? null;
   const draftUsable = hasUsablePbv2BuilderTree(draft?.treeJson);
   const activeUsable = hasUsablePbv2BuilderTree(active?.treeJson);
+
+  if (!input.preferDraft && !input.preferExistingDraft && active) {
+    return { source: active, sourceKind: "ACTIVE", repairedFromActive: false, reason: "active" };
+  }
 
   if (draft && draftUsable) {
     return { source: draft, sourceKind: "DRAFT", repairedFromActive: false, reason: "draft" };

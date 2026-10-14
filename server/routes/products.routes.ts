@@ -73,6 +73,7 @@ import { CanonicalProductMaterialError, canonicalProductMaterialOperations, cano
 import { CanonicalProductLifecycleError, canonicalProductLifecycleOperations, takeCanonicalProductLifecycleChange } from "../services/products/canonicalProductLifecycleOperations";
 import { CanonicalProductPublishError, canonicalProductPublishOperations } from "../services/products/canonicalProductPublishOperations";
 import { CanonicalProductPricingEngineConfigurationError, canonicalProductPricingEngineConfigurationOperations, takeCanonicalProductPricingEngineConfigurationChange } from "../services/products/canonicalProductPricingEngineConfigurationOperations";
+import { CanonicalProductEditorSaveError, saveActiveProductEditorConfiguration } from "../services/products/canonicalProductEditorSaveOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -1999,6 +2000,34 @@ export function registerProductRoutes(
         message: "Failed to create product",
         error: (error as Error).message
       });
+    }
+  });
+
+  // Normal Save for a live Product: metadata and an immutable ACTIVE PBV2
+  // replacement commit together. Existing unpublished DRAFTs are untouched.
+  app.post("/api/products/:id/save-live-configuration", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+      if (!actorUserId) return res.status(401).json({ success: false, message: "An authenticated actor is required." });
+      const result = await saveActiveProductEditorConfiguration({
+        organizationId, actorUserId, productId: String(req.params.id), request: req.body,
+      });
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof CanonicalProductEditorSaveError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_SAVE_STALE" || error.code === "PRODUCT_SAVE_WARNINGS_CONFIRM_REQUIRED" ? 409 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings });
+      }
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, code: "PRODUCT_SAVE_INVALID", message: fromZodError(error).message, errors: error.errors });
+      }
+      if (error instanceof CanonicalProductPricingError) {
+        return res.status(400).json({ success: false, code: error.code, message: error.message, findings: error.findings });
+      }
+      console.error("[PRODUCT_EDITOR_SAVE] Transaction failed", error);
+      return res.status(500).json({ success: false, message: "Product Save failed; no changes were committed. Retry or contact support." });
     }
   });
 

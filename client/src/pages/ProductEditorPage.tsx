@@ -48,6 +48,7 @@ import {
 } from "@/lib/productAiParsingDescription";
 import { ProductActiveStatusHeaderControl } from "@/components/products/ProductActiveStatusHeaderControl";
 import { completeDeferredProductLifecycle, isolateProductEditorLifecycleChange } from "@/lib/productEditorLifecycleSave";
+import { submitLiveProductSave } from "@/lib/productEditorLiveSave";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
@@ -58,6 +59,7 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
 type ProductEditorSaveResult = {
   product: Product;
   deferredLifecycle: { desiredIsActive: boolean } | null;
+  atomicLive?: boolean;
 };
 
 const PRODUCT_TYPE_LEGACY_ALIASES: Record<string, string> = {
@@ -186,6 +188,7 @@ const ProductEditorPage = () => {
   
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean } | null>(null);
+  const [pbv2ResetKey, setPbv2ResetKey] = useState(0);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; getPendingRepairs: () => Array<{ path: string }>; hasAppliedRepairs: () => boolean; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
   
@@ -600,6 +603,41 @@ const ProductEditorPage = () => {
           primaryMaterialId: data.primaryMaterialId || null,
           pricingEngine: pricingEngine, // Include pricing engine selection
         };
+        // A live Product's normal Save is one server transaction. Its PBV2
+        // input comes from ACTIVE; an older unpublished DRAFT stays untouched.
+        if (!effectiveIsNewProduct && product?.isActive) {
+          if (!effectiveProductId || !product.pbv2ActiveTreeVersionId) {
+            throw new Error("The live Product version is unavailable. Reload before saving.");
+          }
+          const freshTree = pbv2TreeProviderRef.current?.getCurrentTree();
+          if (!freshTree) throw new Error("PBV2 options have not loaded. Wait for them before saving.");
+          const pricingFieldsChanged = Boolean(
+            form.formState.dirtyFields.pricingProfileKey ||
+            form.formState.dirtyFields.pricingFormula ||
+            form.formState.dirtyFields.pricingProfileConfig,
+          );
+          const liveTree = pricingFieldsChanged
+            ? mergeProductPricingMetaIntoPbv2Tree(freshTree, form.getValues())
+            : freshTree;
+          if (requestedDraftTreeVersionId && !window.confirm(
+            "Apply the configuration currently shown from this unpublished DRAFT to the live Product? The saved DRAFT itself will be preserved."
+          )) {
+            throw new Error("Save canceled. Your edits remain in the editor.");
+          }
+          const { optionTreeJson: _tree, optionsJson: _options, priceBreaks: _breaks, thumbnailUrls: _images, ...liveProduct } = payload;
+          const dirtyFields = form.formState.dirtyFields as Record<string, unknown>;
+          const changedProduct = Object.fromEntries(Object.entries(liveProduct).filter(([key]) =>
+            Boolean(dirtyFields[key]) || (key === "pricingEngine" && engineDirty)
+          ));
+          const liveRequest = {
+            expectedProductUpdatedAt: new Date(product.updatedAt).toISOString(),
+            expectedActiveTreeVersionId: product.pbv2ActiveTreeVersionId,
+            product: changedProduct,
+            treeJson: liveTree,
+          };
+          const savedProduct = await submitLiveProductSave(effectiveProductId, liveRequest);
+          return { product: savedProduct, deferredLifecycle: null, atomicLive: true } satisfies ProductEditorSaveResult;
+        }
         // Availability is a separate lifecycle command.  Keep it out of the
         // ordinary save payload—even when unchanged—so an Active Product can
         // create or repair its PBV2 DRAFT without revalidating the published
@@ -641,6 +679,44 @@ const ProductEditorPage = () => {
     onSuccess: async (saveResult) => {
       try {
         const { product: updatedProduct, deferredLifecycle } = saveResult as ProductEditorSaveResult;
+        if (saveResult.atomicLive) {
+          // Confirm the new authoritative Product and ACTIVE tree before
+          // reporting success or leaving the editor.
+          const targetId = updatedProduct.id;
+          try {
+            const [productResponse, treeResponse] = await Promise.all([
+              apiRequest("GET", `/api/products/${targetId}`),
+              apiRequest("GET", `/api/products/${targetId}/pbv2/tree`),
+            ]);
+            const [authoritativeProduct, authoritativeTree] = await Promise.all([
+              productResponse.json(), treeResponse.json(),
+            ]);
+            if (authoritativeProduct.pbv2ActiveTreeVersionId !== updatedProduct.pbv2ActiveTreeVersionId ||
+                authoritativeTree?.data?.active?.id !== updatedProduct.pbv2ActiveTreeVersionId) {
+              throw new Error("ACTIVE readback did not match the saved version.");
+            }
+            queryClient.setQueryData(["/api/products", targetId], authoritativeProduct);
+            queryClient.setQueryData(["/api/products", targetId, "pbv2", "tree", null], authoritativeTree);
+          } catch {
+            toast({
+              title: "Saved; reload needed",
+              description: "The Product Save committed, but the new live version could not be read back. Reload before editing again.",
+              variant: "destructive",
+            });
+            allowNextNavRef.current = true;
+            guardedNavigate("/products");
+            return;
+          }
+          setLastSavedAt(new Date());
+          form.reset(form.getValues(), { keepValues: true });
+          pbv2ClearDirtyRef.current?.();
+          setEngineDirty(false);
+          toast({ title: "Product Updated", description: "The live Product configuration was saved and published." });
+          allowNextNavRef.current = true;
+          guardedNavigate("/products");
+          void queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          return;
+        }
         
         // IDEMPOTENCY: Store created product ID to prevent duplicate creates
         const targetProductId = isNewProduct ? updatedProduct.id : productId;
@@ -881,7 +957,9 @@ const ProductEditorPage = () => {
       if (import.meta.env.DEV) {
         console.error('[SAVE_PIPELINE] phase=mutation-error guard-released', error.message);
       }
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      if (!error.message.startsWith("Save canceled.")) {
+        toast({ title: "Save failed", description: error.message, variant: "destructive" });
+      }
     },
   });
 
@@ -962,11 +1040,13 @@ const ProductEditorPage = () => {
     } else {
       form.reset();
     }
-
-    // Clear PBV2 dirty flag
-    if (pbv2ClearDirtyRef.current) {
-      pbv2ClearDirtyRef.current();
-    }
+    // Remount the PBV2 editor from its authoritative server source. Clearing
+    // only its dirty flag leaves modified options visible after Discard.
+    pbv2TreeProviderRef.current = null;
+    pbv2ClearDirtyRef.current = null;
+    setPbv2State(null);
+    setPbv2ResetKey((key) => key + 1);
+    setPricingEngine((product as any)?.pricingEngine || "pricingProfile");
 
     // Clear pricing engine dirty flag
     setEngineDirty(false);
@@ -975,7 +1055,7 @@ const ProductEditorPage = () => {
       console.log('[DISCARD] After reset:', {
         formDirty: form.formState.isDirty,
         engineDirty: false,
-        note: 'PBV2 dirty flag cleared via pbv2ClearDirtyRef.current()'
+        note: 'PBV2 editor remounted from authoritative tree'
       });
     }
 
@@ -1063,7 +1143,12 @@ const ProductEditorPage = () => {
           <Button
             type="button"
             variant="outline"
-            onClick={() => guardedNavigate("/products")}
+            onClick={() => {
+              handleDiscard();
+              hasUnsavedChangesRef.current = false;
+              allowNextNavRef.current = true;
+              guardedNavigate("/products");
+            }}
             disabled={saveMutation.isPending}
           >
             Cancel
@@ -1102,7 +1187,7 @@ const ProductEditorPage = () => {
             type="button"
             variant="outline"
             onClick={handleDiscard}
-            disabled={!form.formState.isDirty}
+            disabled={!hasUnsavedChanges || saveMutation.isPending}
           >
             <RotateCcw className="h-4 w-4 mr-2" />
             Discard
@@ -1161,6 +1246,17 @@ const ProductEditorPage = () => {
           <div className="space-y-0">
             {productIntakeDraftLink && !productIntakeDraftLink.productIsActive ? (
               <ProductIntakeDraftBanner link={productIntakeDraftLink} />
+            ) : null}
+            {product?.isActive && !requestedDraftTreeVersionId && pbv2State?.draftId ? (
+              <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                An unpublished PBV2 draft exists. Normal editing uses the live ACTIVE configuration and preserves that draft.
+                {" "}<a className="underline" href={`/products/${productId}/edit?draftTreeVersionId=${encodeURIComponent(pbv2State.draftId)}`}>Open the existing draft</a>
+              </div>
+            ) : null}
+            {product?.isActive && requestedDraftTreeVersionId ? (
+              <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                Reviewing unpublished DRAFT {requestedDraftTreeVersionId}. Save Changes will explicitly publish the configuration shown here as a new live version. The saved DRAFT remains unchanged.
+              </div>
             ) : null}
             {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
             <ProductForm
@@ -1260,8 +1356,10 @@ const ProductEditorPage = () => {
             </AlertDialog>
             {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
             <PBV2ProductBuilderSectionV2
+              key={`${productId ?? "new"}:${requestedDraftTreeVersionId ?? "active"}:${pbv2ResetKey}`}
               productId={productId || null}
               requestedDraftTreeVersionId={requestedDraftTreeVersionId}
+              preferExistingDraft={product?.isActive === false}
               onPbv2StateChange={setPbv2State}
               onPbv2PricingDataChange={setPbv2PricingData}
               onTreeProviderReady={(provider) => {

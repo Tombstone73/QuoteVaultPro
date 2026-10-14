@@ -54,7 +54,7 @@ describe("PBV2 draft tree hydration guard", () => {
     expect(countPbv2RuntimeInputs(tree)).toBe(1);
   });
 
-  test("hydrates builder state from active tree when draft is empty", () => {
+  test("normal editing hydrates ACTIVE even when an empty draft exists", () => {
     const emptyDraft = {
       id: "draft_empty",
       treeJson: {
@@ -76,12 +76,12 @@ describe("PBV2 draft tree hydration guard", () => {
     expect(choosePbv2BuilderTreeSource({ draft: emptyDraft, active })).toEqual({
       source: active,
       sourceKind: "ACTIVE",
-      repairedFromActive: true,
-      reason: "active_fallback_empty_draft",
+      repairedFromActive: false,
+      reason: "active",
     });
   });
 
-  test("keeps usable draft ahead of active tree", () => {
+  test("normal editing keeps a usable draft separate from ACTIVE", () => {
     const draft = {
       id: "draft_banner",
       treeJson: {
@@ -101,10 +101,32 @@ describe("PBV2 draft tree hydration guard", () => {
     };
 
     expect(choosePbv2BuilderTreeSource({ draft, active })).toEqual({
-      source: draft,
-      sourceKind: "DRAFT",
+      source: active,
+      sourceKind: "ACTIVE",
       repairedFromActive: false,
-      reason: "draft",
+      reason: "active",
     });
+    expect(choosePbv2BuilderTreeSource({ draft, active, preferDraft: true }).source).toBe(draft);
+    expect(choosePbv2BuilderTreeSource({ draft, active, preferExistingDraft: true }).source).toBe(draft);
+  });
+
+  test("Stickers normal edit retains the ACTIVE $1 Weed impact instead of the unpublished percent", () => {
+    const weedNode = "opt_dfa265fa-f1fc-4fdd-afde-a12274db2aec";
+    const active = { id: "9868ce72-ad9a-4353-80de-e0d02e75f064", treeJson: {
+      nodes: { [weedNode]: { id: weedNode, type: "INPUT", choices: [
+        { value: "choice_1", label: "No" },
+        { value: "choice_2", label: "Yes", pricingImpact: [{ mode: "addCents", cents: 100 }] },
+      ] } },
+    } };
+    const draft = { id: "af0a4d57-83ca-4819-92f5-d7bedde04010", treeJson: {
+      nodes: { [weedNode]: { id: weedNode, type: "INPUT", choices: [
+        { value: "choice_1", label: "No" },
+        { value: "choice_2", label: "Yes", pricingImpact: [{ mode: "addPercent", percent: 25.01, cents: 100 }] },
+      ] } },
+    } };
+    const normal = choosePbv2BuilderTreeSource({ active, draft });
+    expect(normal.source?.id).toBe(active.id);
+    expect((normal.source?.treeJson as any).nodes[weedNode].choices[1].pricingImpact[0]).toEqual({ mode: "addCents", cents: 100 });
+    expect(choosePbv2BuilderTreeSource({ active, draft, preferDraft: true }).source?.id).toBe(draft.id);
   });
 });
