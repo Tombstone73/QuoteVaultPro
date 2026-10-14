@@ -108,4 +108,12 @@ describe("sales tax configuration and calculation", () => {
     expect(exempt).toMatchObject({ taxableSubtotal: 90, taxAmount: 0, total: 90 });
     expect(override).toMatchObject({ taxableSubtotal: 90, taxAmount: 4.5, total: 94.5 });
   });
+
+  test("customer exemption still removes tax after an Order discount", async () => {
+    const result = await calculateQuoteOrderTotals([taxableLine], organization, {
+      isTaxExempt: true,
+      taxRateOverride: null,
+    } as any, null, null, { mode: "auto" }, 10);
+    expect(result).toMatchObject({ subtotal: 100, taxableSubtotal: 90, taxRate: 0, taxAmount: 0, total: 90 });
+  });
 });
