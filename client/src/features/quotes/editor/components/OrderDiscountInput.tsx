@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 
-export function OrderDiscountInput({ mode, percent, amount, maxAmount, onModeChange, onPercentChange, onAmountChange }: {
+export function OrderDiscountInput({ mode, percent, amount, maxAmount, disabled = false, onModeChange, onPercentChange, onAmountChange }: {
     mode: "amount" | "percent";
     percent: number;
     amount: number;
     maxAmount: number;
+    disabled?: boolean;
     onModeChange: (next: "amount" | "percent") => void;
     onPercentChange: (next: number) => void;
     onAmountChange: (next: number) => void;
@@ -17,6 +18,7 @@ export function OrderDiscountInput({ mode, percent, amount, maxAmount, onModeCha
         <select
             aria-label="Discount mode"
             value={mode}
+            disabled={disabled}
             onChange={(event) => onModeChange(event.target.value as "amount" | "percent")}
             className="h-8 rounded-md border border-input bg-background px-2 text-sm"
         >
@@ -26,6 +28,7 @@ export function OrderDiscountInput({ mode, percent, amount, maxAmount, onModeCha
         <Input
             aria-label="Order discount"
             type="text"
+            disabled={disabled}
             value={draft ?? displayedValue}
             onChange={(event) => {
                 const raw = event.target.value;

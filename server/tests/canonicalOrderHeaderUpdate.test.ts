@@ -29,6 +29,17 @@ describe('Order entry remains available without granting production credit', () 
     await operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', orderId: 'order', changes: { total: '700.00' } as any });
     expect(recalculate).toHaveBeenCalledWith(tx, expect.objectContaining({ orderId: 'order' }));
   });
+  test('saved discount requires an Admin or Owner and strict Invoice parity', async () => {
+    await expect(operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', actorOrgRole: 'member', orderId: 'order', changes: { discount: '50.00' } as any })).rejects.toMatchObject({ code: 'ORDER_DISCOUNT_FORBIDDEN', statusCode: 403 });
+    expect(updateOrder).not.toHaveBeenCalled();
+    await operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'owner', actorOrgRole: 'owner', orderId: 'order', changes: { discount: '50.00' } as any });
+    expect(recalculate).toHaveBeenCalledWith(tx, expect.objectContaining({ orderId: 'order', requireDiscountParity: true }));
+  });
+  test('does not report a saved discount when Invoice parity rejects the transaction', async () => {
+    recalculate.mockRejectedValue(Object.assign(new Error('This Invoice has payment history.'), { code: 'ORDER_DISCOUNT_INVOICE_BLOCKED', statusCode: 409 }));
+    await expect(operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'owner', actorOrgRole: 'owner', orderId: 'order', changes: { discount: '50.00' } as any })).rejects.toMatchObject({ code: 'ORDER_DISCOUNT_INVOICE_BLOCKED', statusCode: 409 });
+    expect(audit).not.toHaveBeenCalled();
+  });
   test('keeps metadata edits outside financial recalculation', async () => {
     await operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', orderId: 'order', changes: { poNumber: 'PO-1' } as any });
     expect(recalculate).not.toHaveBeenCalled();

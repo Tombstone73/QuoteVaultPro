@@ -1,6 +1,6 @@
-import { retireInvoicePaymentSessions } from './services/invoicePaymentSession.service';
+import { lockInvoicePaymentContext, retireInvoicePaymentSessions } from './services/invoicePaymentSession.service';
 import { db } from './db';
-import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems } from '../shared/schema';
+import { auditLogs, customerAccountCreditApplications, customerAccountCredits, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems, stripeRefundRequests } from '../shared/schema';
 import { asc, count, desc, eq, and, ilike, inArray, isNull, notInArray, or, sql, ne } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from '../shared/rollups/invoicePaymentRollup';
@@ -27,6 +27,8 @@ import {
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState } from './lib/invoiceAccountingApproval';
 import { canonicalInvoiceCustomerId, getCanonicalInvoiceCustomerContext } from './services/invoiceCustomerProjection';
 import { deriveInvoiceCustomerSendStatus, type InvoiceCustomerSendStatus } from '../shared/invoiceCustomerSendStatus';
+import { hasAppliedInvoicePayment } from './lib/invoicePaymentEvidence';
+import { orderDiscountInvoiceBlocker } from './services/orders/orderDiscountInvoicePolicy';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -1315,7 +1317,7 @@ function invoiceSnapshotComparable(row: any) {
  */
 export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   tx: any,
-  input: { organizationId: string; orderId: string; actorUserId?: string | null },
+  input: { organizationId: string; orderId: string; actorUserId?: string | null; requireDiscountParity?: boolean },
 ) {
   await lockInvoiceOrderCreation(tx, input.organizationId, input.orderId);
   const [order] = await tx.select().from(orders).where(and(
@@ -1330,12 +1332,20 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     ne(invoices.status, "void"),
   )).orderBy(asc(invoices.createdAt), asc(invoices.id));
   if (linkedInvoices.length !== 1) {
-    return { status: "not_editable" as const, invoiceId: linkedInvoices[0]?.id ?? null };
+    return { status: "not_editable" as const, invoiceId: linkedInvoices[0]?.id ?? null,
+      reason: input.requireDiscountParity ? orderDiscountInvoiceBlocker({ liveInvoiceCount: linkedInvoices.length }) : undefined };
   }
 
-  const invoice = linkedInvoices[0]!;
+  let invoice = linkedInvoices[0]!;
+  if (input.requireDiscountParity) {
+    await lockInvoicePaymentContext(tx, input.organizationId, [invoice.id]);
+    await tx.execute(sql`select id from ${invoices} where ${invoices.id} = ${invoice.id} and ${invoices.organizationId} = ${input.organizationId} for update`);
+    [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).limit(1);
+    if (!invoice) return { status: "not_editable" as const, reason: "Invoice changed while saving. Reload and try again." };
+  }
   if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
-    return { status: "not_editable" as const, invoiceId: invoice.id };
+    return { status: "not_editable" as const, invoiceId: invoice.id,
+      reason: input.requireDiscountParity ? orderDiscountInvoiceBlocker({ liveInvoiceCount: 1, invoice }) : undefined };
   }
   const lineItems = await tx.select().from(orderLineItems).where(scopedOrderLine(order.id, input.organizationId));
   const snapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
@@ -1345,6 +1355,21 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   const desiredRows = buildInvoiceLineItemSnapshots(invoice.id, snapshot.billablePricedLineItems);
   const existingRows = await tx.select().from(invoiceLineItems).where(scopedInvoiceLine(invoice.id, input.organizationId)).orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.id));
   const lineSnapshotsChanged = JSON.stringify(existingRows.map(invoiceSnapshotComparable)) !== JSON.stringify(desiredRows.map(invoiceSnapshotComparable));
+  if (input.requireDiscountParity) {
+    const [paymentRows, creditApplications, sourceCredits, refunds] = await Promise.all([
+      tx.select().from(payments).where(and(eq(payments.invoiceId, invoice.id), eq(payments.organizationId, input.organizationId))),
+      tx.select({ id: customerAccountCreditApplications.id }).from(customerAccountCreditApplications).where(and(eq(customerAccountCreditApplications.invoiceId, invoice.id), eq(customerAccountCreditApplications.organizationId, input.organizationId))).limit(1),
+      tx.select({ id: customerAccountCredits.id }).from(customerAccountCredits).where(and(eq(customerAccountCredits.sourceInvoiceId, invoice.id), eq(customerAccountCredits.organizationId, input.organizationId))).limit(1),
+      tx.select({ id: stripeRefundRequests.id }).from(stripeRefundRequests).where(and(eq(stripeRefundRequests.invoiceId, invoice.id), eq(stripeRefundRequests.organizationId, input.organizationId))).limit(1),
+    ]);
+    const reason = orderDiscountInvoiceBlocker({ liveInvoiceCount: 1, invoice,
+      hasAppliedPayment: paymentRows.some((row: any) => hasAppliedInvoicePayment(row)),
+      hasCreditHistory: creditApplications.length > 0 || sourceCredits.length > 0,
+      hasRefundHistory: refunds.length > 0,
+      lineSnapshotsChanged,
+    });
+    if (reason) return { status: "not_editable" as const, invoiceId: invoice.id, reason };
+  }
   const financialChanged =
     Number((invoice as any).subtotalCents ?? 0) !== snapshot.subtotalCents ||
     Number((invoice as any).taxCents ?? 0) !== snapshot.taxCents ||

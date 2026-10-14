@@ -19,7 +19,7 @@ type UpdateOrderPayload = Parameters<typeof storage.updateOrder>[2];
 export type CanonicalQuoteConversionOptions = Parameters<typeof storage.convertQuoteToOrder>[3];
 
 export class CanonicalOrderOperationError extends Error {
-  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_NOT_EDITABLE" | "ORDER_STALE" | "ORDER_IDENTITY_REQUIRED" | "ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED", message: string, readonly details?: { billingOwnershipOverride: BillingOwnershipOverrideContext }) { super(message); }
+  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_NOT_EDITABLE" | "ORDER_STALE" | "ORDER_IDENTITY_REQUIRED" | "ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED" | "ORDER_DISCOUNT_FORBIDDEN", message: string, readonly details?: { billingOwnershipOverride: BillingOwnershipOverrideContext }, readonly statusCode = 400) { super(message); }
 }
 
 /** Shared boundary for Order header/create/conversion writes. */
@@ -34,6 +34,9 @@ class CanonicalOrderOperations {
   }
 
   async updateEditableHeader(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; orderId: string; changes: UpdateOrderPayload; expectedUpdatedAt?: Date | string | null; billingOwnershipOverride?: BillingOwnershipOverrideContext & { reason: string; confirmed: boolean }; allowNonNew?: boolean; auditDescription?: string }) {
+    if (input.changes.discount !== undefined && !hasAdminOrOwnerOperationalRole(input.actorOrgRole)) {
+      throw new CanonicalOrderOperationError("ORDER_DISCOUNT_FORBIDDEN", "Only an Admin or Owner can change a saved Order discount.", undefined, 403);
+    }
     const override = input.billingOwnershipOverride;
     if (override) {
       requireBillingOwnershipReviewer(input.actorOrgRole);
@@ -153,6 +156,7 @@ class CanonicalOrderOperations {
           organizationId: input.organizationId,
           orderId: order.id,
           actorUserId: input.actorUserId,
+          requireDiscountParity: input.changes.discount !== undefined,
         }) ?? order;
       }
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.`,

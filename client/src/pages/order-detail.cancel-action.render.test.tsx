@@ -20,6 +20,7 @@ const OrderDetail = require("./order-detail").default as typeof import("./order-
 
 let mockUser: any = { role: "admin", isAdmin: true };
 let mockOrder: any;
+let mockInvoices: any[] = [];
 let mockOrgMemberships: any = {
   success: true,
   data: {
@@ -113,7 +114,7 @@ jest.mock("@/hooks/useOrders", () => ({
 }));
 
 jest.mock("@/hooks/useInvoices", () => ({
-  useInvoices: () => ({ data: [], isLoading: false }),
+  useInvoices: () => ({ data: mockInvoices, isLoading: false, isError: false }),
   useCreateOrderInvoice: () => ({ mutateAsync: jest.fn(async () => ({ data: { id: "invoice-1" } })), isPending: false }),
   useBillInvoice: () => ({ mutateAsync: jest.fn(async () => ({})), isPending: false }),
 }));
@@ -610,6 +611,9 @@ afterEach(() => {
   document.body.innerHTML = "";
   jest.clearAllMocks();
   mockSaveOwner.mockReset();
+  mockInvoices = [];
+  (require("@/lib/queryClient").apiFetch as jest.Mock).mockReset();
+  (require("@/lib/queryClient").apiFetch as jest.Mock).mockImplementation(async () => ({ ok: true, json: async () => ({ data: [] }) }));
   mockExecutePickerRequests = false;
   mockRequestUrls.length = 0;
   globalThis.fetch = originalFetch;
@@ -624,6 +628,55 @@ afterEach(() => {
   latestLineItemsProps = null;
   mockPickerQueries.length = 0;
   mockEligibility = { canCancel: true, code: null, message: null, details: null };
+});
+
+describe("saved Order discount in Totals", () => {
+  function eligibleOrder(discount = "0.00") {
+    mockOrder = baseOrder({ subtotal: "500.00", discount, tax: "35.00", total: (535 - Number(discount)).toFixed(2) });
+    mockInvoices = [{ id: "invoice-1", status: "billed", amountPaid: "0.00", importSource: null }];
+    (require("@/lib/queryClient").apiFetch as jest.Mock).mockImplementation(async () => ({ ok: true, json: async () => mockOrder }));
+    mockSaveOwner.mockResolvedValue(mockOrder);
+  }
+
+  test("stages a monetary discount until Save Order and supports clearing it", async () => {
+    eligibleOrder("25.00");
+    const { container, root } = renderOrderDetail();
+    const mode = container.querySelector('[aria-label="Discount mode"]') as HTMLSelectElement;
+    const input = container.querySelector('[aria-label="Order discount"]') as HTMLInputElement;
+    expect(mode.value).toBe("amount");
+    expect(input.value).toBe("25");
+    act(() => Simulate.change(input, { target: { value: "0" } } as any));
+    expect(mockSaveOwner).not.toHaveBeenCalled();
+    expect(saveButton(container).disabled).toBe(false);
+    await act(async () => saveButton(container).click());
+    expect(mockSaveOwner).toHaveBeenCalledWith(expect.objectContaining({ discount: 0 }));
+    expect(mockRefetchQueries).toHaveBeenCalledWith({ queryKey: ["invoices"], type: "active" });
+    act(() => root.unmount());
+  });
+
+  test("converts 10 percent using the authoritative subtotal at Save Order", async () => {
+    eligibleOrder();
+    const { container, root } = renderOrderDetail();
+    const mode = container.querySelector('[aria-label="Discount mode"]') as HTMLSelectElement;
+    const input = container.querySelector('[aria-label="Order discount"]') as HTMLInputElement;
+    act(() => Simulate.change(mode, { target: { value: "percent" } } as any));
+    act(() => Simulate.change(input, { target: { value: "10" } } as any));
+    expect(container.textContent).toContain("Effective discount: $50.00");
+    // A saved line item can change the subtotal before the header PATCH.
+    (require("@/lib/queryClient").apiFetch as jest.Mock).mockImplementation(async () => ({ ok: true, json: async () => ({ ...mockOrder, subtotal: "600.00" }) }));
+    await act(async () => saveButton(container).click());
+    expect(mockSaveOwner).toHaveBeenCalledWith(expect.objectContaining({ discount: 60 }));
+    act(() => root.unmount());
+  });
+
+  test("explains an immutable paid Invoice instead of exposing a working discount input", () => {
+    eligibleOrder();
+    mockInvoices = [{ id: "invoice-1", status: "paid", amountPaid: "535.00" }];
+    const { container, root } = renderOrderDetail();
+    expect(container.querySelector('[aria-label="Order discount"]')).toBeNull();
+    expect(container.textContent).toContain("payment history");
+    act(() => root.unmount());
+  });
 });
 
 describe("OrderDetail cancellation action rendering", () => {

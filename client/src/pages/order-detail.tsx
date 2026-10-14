@@ -103,6 +103,8 @@ import { apiFetch } from "@/lib/queryClient";
 import { hasEnteredShipToAddress, resolveCustomerShipTo } from "@/lib/customerShipTo";
 import { isClearlyGeneratedInboundProvenance } from "@/lib/inboundInternalNotes";
 import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
+import { OrderDiscountInput } from "@/features/quotes/editor/components/OrderDiscountInput";
+import { percentForMonetaryDiscount, resolveOrderDiscountCents } from "@/features/quotes/editor/editorCommercialTotals";
 import {
   resolveAttachOrderPdfDefault,
   resolveSelectedOrderContactEmail,
@@ -315,7 +317,14 @@ export default function OrderDetail() {
   const [jobLabelDraft, setJobLabelDraft] = useState("");
   const [poNumberDraft, setPoNumberDraft] = useState("");
   const [isSavingOrder, setIsSavingOrder] = useState(false);
+  const savingOrderRef = useRef(false);
   const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
+  const [orderDiscountMode, setOrderDiscountMode] = useState<"amount" | "percent">("amount");
+  const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
+  useEffect(() => {
+    setOrderDiscountMode("amount");
+    setOrderDiscountPercent(0);
+  }, [orderId]);
   // True when the line items section has an expanded line item with unsaved edits.
   const [hasDirtyLineItem, setHasDirtyLineItem] = useState(false);
   const newlyRequiredProofLineIdsRef = useRef<string[]>([]);
@@ -538,16 +547,20 @@ export default function OrderDetail() {
       return { subtotal: 0, discount: 0, tax: 0, shipping: 0, total: 0 };
     }
 
-    const discount = parseFloat(order.discount) || 0;
+    const savedDiscount = parseFloat(order.discount) || 0;
     const tax = parseFloat(order.tax) || 0;
     const shipping = (Number((order as any).shippingCents) || 0) / 100;
     if (Object.keys(draftLineItemTotalsCents).length === 0) {
+      const subtotal = parseFloat(order.subtotal) || 0;
+      const discount = orderDiscountMode === "percent" && Object.hasOwn(pendingOrderPatch, "discount")
+        ? resolveOrderDiscountCents(Math.round(subtotal * 100), 0, orderDiscountPercent) / 100
+        : savedDiscount;
       return {
-        subtotal: parseFloat(order.subtotal) || 0,
+        subtotal,
         discount,
         tax,
         shipping,
-        total: parseFloat(order.total) || 0,
+        total: pendingOrderPatch.discount !== undefined ? subtotal - discount + tax + shipping : parseFloat(order.total) || 0,
       };
     }
 
@@ -557,6 +570,9 @@ export default function OrderDetail() {
       if (Number.isFinite(draftCents)) return sum + draftCents / 100;
       return sum + (parseFloat(item?.totalPrice) || 0);
     }, 0);
+    const discount = orderDiscountMode === "percent" && Object.hasOwn(pendingOrderPatch, "discount")
+      ? resolveOrderDiscountCents(Math.round(subtotal * 100), 0, orderDiscountPercent) / 100
+      : savedDiscount;
     return {
       subtotal,
       discount,
@@ -564,7 +580,7 @@ export default function OrderDetail() {
       shipping,
       total: subtotal - discount + tax + shipping,
     };
-  }, [order, draftLineItemTotalsCents]);
+  }, [order, draftLineItemTotalsCents, orderDiscountMode, orderDiscountPercent, pendingOrderPatch]);
 
   const [taxSettingsOpen, setTaxSettingsOpen] = useState(false);
   const [taxTreatmentDraft, setTaxTreatmentDraft] = useState<"auto" | "exempt" | "rate">("auto");
@@ -788,7 +804,7 @@ export default function OrderDetail() {
   });
 
   // Billing / invoices
-  const { data: orderInvoices = [], isLoading: isInvoicesLoading } = useInvoices(orderId ? { orderId } : undefined);
+  const { data: orderInvoices = [], isLoading: isInvoicesLoading, isError: isInvoicesError } = useInvoices(orderId ? { orderId } : undefined);
   const createOrderInvoice = useCreateOrderInvoice();
   const closeOrder = useCloseOrder(orderId || '');
   const completeOrder = useCompleteOrder(orderId || '');
@@ -883,6 +899,25 @@ export default function OrderDetail() {
   const canEditSafeOrderMetadata = Boolean(order);
   const canAppendOrderInternalNote = Boolean(order);
   const canEditCommercialPricing = Boolean(order && isAdminOrOwner && isOrderCommerciallyEditable(order));
+  const liveDiscountInvoices = orderInvoices.filter((invoice: any) => !["void", "voided"].includes(String(invoice.status ?? "").toLowerCase()));
+  const discountInvoice = liveDiscountInvoices[0] as any;
+  const discountEditingBlocker = !isAdminOrOwner
+    ? "Only an Admin or Owner can change a saved Order discount."
+    : !isOrderCommerciallyEditable(order)
+      ? "Cancelled or voided Orders require the recovery workflow."
+      : isInvoicesLoading
+        ? "Checking linked Invoice eligibility..."
+        : isInvoicesError
+          ? "Linked Invoice eligibility could not be checked. Reload the Order."
+          : liveDiscountInvoices.length !== 1
+            ? liveDiscountInvoices.length === 0
+              ? "A single live native Invoice is required before changing the discount."
+              : "This Order has multiple live Invoices. Review billing before changing its discount."
+            : discountInvoice?.importSource || discountInvoice?.isHistorical
+              ? "Imported or historical Invoices cannot be changed from this Order."
+              : ["paid", "partially_paid"].includes(String(discountInvoice?.status ?? "").toLowerCase()) || Number(discountInvoice?.amountPaid ?? 0) > 0
+                ? "This Invoice has payment history. Use a reviewed adjustment."
+                : null;
   const canShowCancelOrder = Boolean(order && !orderIsCanceled);
   const canCancelOrder = Boolean(canShowCancelOrder && isAdminOrOwner && cancellationEligibilityQuery.data?.canCancel);
   const cancelOrderUnavailableReason = canShowCancelOrder
@@ -971,6 +1006,30 @@ export default function OrderDetail() {
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditSafeOrderMetadata) return;
     setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
+  };
+
+  const stageOrderDiscount = (amount: number, retainEquivalent = false) => {
+    const cents = Math.round(amount * 100);
+    if (!Number.isSafeInteger(cents) || cents < 0) return;
+    const savedCents = Math.round(Number((orderRaw as OrderDetailOrder | undefined)?.discount ?? 0) * 100);
+    setPendingOrderPatch((previous) => {
+      if (!retainEquivalent && cents === savedCents) {
+        const { discount: _ignored, ...rest } = previous;
+        return rest;
+      }
+      return { ...previous, discount: cents / 100 };
+    });
+  };
+
+  const changeSavedOrderDiscountMode = (next: "amount" | "percent") => {
+    if (next === orderDiscountMode) return;
+    if (next === "percent") {
+      setOrderDiscountPercent(percentForMonetaryDiscount(displayedOrderTotals.discount, displayedOrderTotals.subtotal));
+      stageOrderDiscount(displayedOrderTotals.discount, true);
+    } else {
+      stageOrderDiscount(displayedOrderTotals.discount);
+    }
+    setOrderDiscountMode(next);
   };
 
   // beforeunload (tab close / refresh): attached only while dirty, re-bound on
@@ -1545,11 +1604,12 @@ export default function OrderDetail() {
   // the pure `orchestrateOrderSave` helper; the step closures below perform the
   // actual mutations.
   const handleSaveOrder = async (routeEligible = false) => {
-    if (!orderId || !order) return;
+    if (!orderId || !order || savingOrderRef.current) return;
     if (!order.customerId && !order.contactId) {
       toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
       return;
     }
+    savingOrderRef.current = true;
     setIsSavingOrder(true);
     try {
       logOrderDirtyAudit("before-save");
@@ -1579,10 +1639,26 @@ export default function OrderDetail() {
         hasOrderLevelChanges,
         saveOrderLevelChanges: async () => {
           try {
+            if (nextPatch.discount !== undefined) {
+              const response = await apiFetch(`/api/orders/${orderId}`, { credentials: "include" });
+              if (!response.ok) throw new Error("Could not reload the Order subtotal before saving its discount.");
+              const currentOrder = await response.json() as OrderDetailOrder;
+              const subtotalCents = Math.round(Number(currentOrder.subtotal) * 100);
+              const discountCents = orderDiscountMode === "percent"
+                ? resolveOrderDiscountCents(subtotalCents, 0, orderDiscountPercent)
+                : Math.round(Number(nextPatch.discount) * 100);
+              if (!Number.isSafeInteger(subtotalCents) || subtotalCents < 0 || !Number.isSafeInteger(discountCents)
+                || discountCents < 0 || discountCents > subtotalCents) {
+                throw new Error("Order discount must be between zero and the final saved subtotal.");
+              }
+              nextPatch.discount = discountCents / 100;
+            }
             await updateOrder.mutateAsync({ ...nextPatch });
             setPendingOrderPatch({});
             await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
             await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
+            await queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            await queryClient.refetchQueries({ queryKey: ["invoices"], type: "active" });
             return { ok: true };
           } catch (error: any) {
             setOwnershipOverrideContext(error?.details?.billingOwnershipOverride ?? null);
@@ -1659,6 +1735,8 @@ export default function OrderDetail() {
       setHasDirtyLineItem(false);
       setDraftLineItemTotalsCents({});
       setPendingOrderPatch({});
+      setOrderDiscountMode("amount");
+      setOrderDiscountPercent(0);
       logOrderDirtyAudit("after-clear-before-navigate");
       const postSavePath = isOrderEditRoute ? orderDetailPath : ROUTES.orders.list;
       navigate(postSavePath, {
@@ -1677,6 +1755,7 @@ export default function OrderDetail() {
           `${routeLocationRef.current.pathname}${routeLocationRef.current.search}${routeLocationRef.current.hash}`,
       });
     } finally {
+      savingOrderRef.current = false;
       setIsSavingOrder(false);
     }
   };
@@ -1706,6 +1785,8 @@ export default function OrderDetail() {
   const handleCancelOrderEdits = async () => {
     setOwnershipOverrideContext(null);
     setPendingOrderPatch({});
+    setOrderDiscountMode("amount");
+    setOrderDiscountPercent(0);
     setDraftLineItemTotalsCents({});
     setHasDirtyLineItem(false);
     setLineItemsEditorResetKey((value) => value + 1);
@@ -3564,7 +3645,31 @@ export default function OrderDetail() {
                 <CardContent className="px-4 pb-4 pt-0">
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(displayedOrderTotals.subtotal)}</span></div>
-                    {displayedOrderTotals.discount > 0 && <div className="flex justify-between text-sm text-red-500"><span>Discount</span><span>-{formatCurrency(displayedOrderTotals.discount)}</span></div>}
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground">Discount</span>
+                      {discountEditingBlocker ? (
+                        <span className="text-right" title={discountEditingBlocker}>{displayedOrderTotals.discount > 0 ? "-" : ""}{formatCurrency(displayedOrderTotals.discount)}</span>
+                      ) : (
+                        <OrderDiscountInput
+                          mode={orderDiscountMode} percent={orderDiscountPercent}
+                          amount={displayedOrderTotals.discount} maxAmount={displayedOrderTotals.subtotal}
+                          disabled={isSavingOrder || updateOrder.isPending}
+                          onModeChange={changeSavedOrderDiscountMode}
+                          onPercentChange={(percent) => {
+                            setOrderDiscountPercent(percent);
+                            stageOrderDiscount(resolveOrderDiscountCents(Math.round(displayedOrderTotals.subtotal * 100), 0, percent) / 100, true);
+                          }}
+                          onAmountChange={(amount) => stageOrderDiscount(amount)}
+                        />
+                      )}
+                    </div>
+                    {!discountEditingBlocker && (orderDiscountMode === "percent" || pendingOrderPatch.discount !== undefined) ? (
+                      <div className="text-right text-xs text-muted-foreground">Effective discount: {formatCurrency(displayedOrderTotals.discount)}</div>
+                    ) : null}
+                    {discountEditingBlocker ? <p className="text-xs text-muted-foreground">{discountEditingBlocker}</p> : null}
+                    {(pendingOrderPatch.discount !== undefined || hasDirtyLineItem) && !discountEditingBlocker ? (
+                      <p className="text-xs text-muted-foreground">Tax and total shown here are estimates until Save Order recalculates the authoritative Order and Invoice.</p>
+                    ) : null}
                     {currentFulfillmentMethod !== "pickup" && (order as any).shippingCents > 0 && <div className="flex justify-between text-sm"><span className="text-muted-foreground">{currentFulfillmentMethod === "deliver" ? "Delivery" : "Shipping"}</span><span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span></div>}
                     <div className="flex justify-between gap-3 text-sm"><span className="text-muted-foreground">Tax · {taxTreatmentLabel}</span><span className="flex items-center gap-2">{formatCurrency(displayedOrderTotals.tax)}{isAdminOrOwner && canEditOrder ? <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={openTaxSettings} aria-label="Edit tax settings">Edit</Button> : null}</span></div>
                     <Separator />
