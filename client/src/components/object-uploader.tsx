@@ -73,12 +73,15 @@ export function ObjectUploader({
           throw new Error('Customer image upload is not available for this storage provider.');
         }
 
+        // Match Supabase Storage's uploadToSignedUrl request shape. A Blob is
+        // sent as multipart form data; the browser supplies the boundary.
+        const body = new FormData();
+        body.append("cacheControl", "3600");
+        body.append("", file);
         const uploadResponse = await fetch(url, {
           method,
-          headers: {
-            "Content-Type": file.type || "application/octet-stream",
-          },
-          body: file,
+          headers: { "x-upsert": "false" },
+          body,
         });
 
         if (!uploadResponse.ok) {

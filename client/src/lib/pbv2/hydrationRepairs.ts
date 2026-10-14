@@ -23,6 +23,9 @@ export function describeHydrationRepairs(before: unknown, after: unknown): Hydra
     // Writing that default explicitly is formatting, not a pricing repair.
     if (path.includes("pricingImpact[") && path.endsWith(".basis") &&
         (left === undefined || left === null || left === "") && right === "base") return;
+    // An ACTIVE published tree is copied into a DRAFT editing view. This is
+    // lifecycle presentation, not a repair to the persisted product.
+    if (path === "tree.status" && left === "ACTIVE" && right === "DRAFT") return;
     if (Array.isArray(left) && Array.isArray(right)) {
       for (let index = 0; index < Math.max(left.length, right.length); index++) {
         visit(left[index], right[index], `${path}[${index}]`);

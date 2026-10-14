@@ -24,16 +24,19 @@ test('uses the authorized upload response path and keeps object access behind th
   const onUploaded = jest.fn(async () => {});
   await act(async () => root.render(<ObjectUploader value={[]} onChange={onChange} onUploaded={onUploaded} />));
   const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
-  const file = new File(['image'], 'yard-sign.png', { type: 'image/png' });
+  const file = new File(['image'], 'yard-sign.webp', { type: 'image/webp' });
   Object.defineProperty(input, 'files', { configurable: true, value: [file] });
   await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
-  expect(onUploaded).toHaveBeenCalledWith([{ url: '/objects/uploads/image-uuid', filename: 'yard-sign.png', fileSize: file.size, mimeType: 'image/png' }]);
+  expect(onUploaded).toHaveBeenCalledWith([{ url: '/objects/uploads/image-uuid', filename: 'yard-sign.webp', fileSize: file.size, mimeType: 'image/webp' }]);
   expect(onChange).toHaveBeenCalledWith(['/objects/uploads/image-uuid']);
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(fetchMock.mock.calls[0][0]).toBe('/api/objects/upload');
   expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST', credentials: 'include' });
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT', headers: { 'x-upsert': 'false' } });
+  const body = fetchMock.mock.calls[1][1]?.body as FormData;
+  expect(body.get('cacheControl')).toBe('3600');
+  expect((body.get('') as File).type).toBe('image/webp');
 });
-
 test('does not assign an upload when its provider lacks the customer image proxy', async () => {
   const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ storageTarget: 's3', method: 'PUT', url: 'https://storage.example.com/upload', path: 'org-a/image' }) } as Response));
   global.fetch = fetchMock as any;
