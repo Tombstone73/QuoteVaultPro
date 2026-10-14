@@ -1672,8 +1672,8 @@ export default function PBV2ProductBuilderSectionV2({
       {/* Product Images — full-width section above options builder */}
       <div>
         <ProductImagesSection
-          productImages={(localTreeJson as any)?.meta?.productImages ?? []}
-          onUpdateImages={(images) => updateTreeMeta({ productImages: images })}
+          productId={productId ?? null}
+          legacyImages={(localTreeJson as any)?.meta?.productImages ?? []}
         />
       </div>
 

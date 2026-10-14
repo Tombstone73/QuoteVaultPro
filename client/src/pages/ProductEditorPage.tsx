@@ -590,7 +590,9 @@ const ProductEditorPage = () => {
         }
         
         // NO SHADOW COPY: PBV2ProductBuilderSectionV2 uses pbv2_tree_versions as ONLY source of truth
-        const { optionTreeJson: _unused, optionsJson: _discardedOptionsJson, priceBreaks: _discardedPriceBreaks, ...cleanData } = data as any;
+        // Images have their own endpoint. Never replay a form snapshot over a
+        // newer image-only save when saving pricing or product details.
+        const { optionTreeJson: _unused, optionsJson: _discardedOptionsJson, priceBreaks: _discardedPriceBreaks, thumbnailUrls: _imageOnly, ...cleanData } = data as any;
         const payload = {
           ...cleanData,
           optionsJson: null,
