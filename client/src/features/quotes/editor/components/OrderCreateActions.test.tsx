@@ -39,3 +39,17 @@ test("retains configured labels and optional discard visibility", () => {
   expect(host.querySelectorAll("button")).toHaveLength(1);
   expect(host.textContent).toBe("Submit order");
 });
+
+test("create label follows the selected routing mode", () => {
+  const onSave = jest.fn();
+  const onDiscard = jest.fn();
+  const render = (routeAfterSave: "save_only" | "route_eligible") => act(() => root.render(
+    <OrderCreateActions inline canSaveQuote isSaving={false} onSave={onSave} onDiscard={onDiscard}
+      primaryActionLabel={routeAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order"} />,
+  ));
+  render("save_only");
+  expect(host.querySelector("button")?.textContent).toContain("Create Order");
+  render("route_eligible");
+  expect(host.querySelector("button")?.textContent).toContain("Create & Route Eligible Items");
+  expect(host.querySelectorAll("button")).toHaveLength(2);
+});

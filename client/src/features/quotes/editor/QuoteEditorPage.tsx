@@ -1518,14 +1518,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                         lineItems={lineItemsPanel}
                         fulfillment={fulfillmentPanel}
                         actions={
-                            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-                                <div className="flex min-w-0 flex-1 items-center gap-4">
-                                    <div className="shrink-0">
-                                        <div className="text-xs font-medium text-muted-foreground">Order Total</div>
-                                        <div className="text-xl font-semibold tabular-nums">${state.grandTotal.toFixed(2)}</div>
-                                    </div>
-                                    {orderRoutingPanel}
-                                </div>
+                            <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                                {orderRoutingPanel}
                                 <OrderCreateActions
                                     inline
                                     canSaveQuote={state.canSaveQuote}
