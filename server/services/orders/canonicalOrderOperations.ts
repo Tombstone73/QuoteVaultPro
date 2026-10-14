@@ -164,6 +164,9 @@ class CanonicalOrderOperations {
       return order;
     }).catch((error: unknown) => {
       if (error instanceof InvoicePaymentContextError) {
+        if (input.changes.discount !== undefined) {
+          throw new CanonicalOrderOperationError('ORDER_DISCOUNT_INVOICE_BLOCKED', error.message, undefined, 409);
+        }
         throw new CanonicalOrderOperationError('ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED', error.message);
       }
       throw error;

@@ -40,6 +40,11 @@ describe('Order entry remains available without granting production credit', () 
     await expect(operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'owner', actorOrgRole: 'owner', orderId: 'order', changes: { discount: '50.00' } as any })).rejects.toMatchObject({ code: 'ORDER_DISCOUNT_INVOICE_BLOCKED', statusCode: 409 });
     expect(audit).not.toHaveBeenCalled();
   });
+  test('labels a payment-session blocker as discount parity rather than customer review', async () => {
+    const { InvoicePaymentContextError } = await import('../services/invoicePaymentSession.service');
+    recalculate.mockRejectedValue(new InvoicePaymentContextError('Stripe payment is processing.'));
+    await expect(operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'owner', actorOrgRole: 'owner', orderId: 'order', changes: { discount: '50.00' } as any })).rejects.toMatchObject({ code: 'ORDER_DISCOUNT_INVOICE_BLOCKED', statusCode: 409, message: 'Stripe payment is processing.' });
+  });
   test('keeps metadata edits outside financial recalculation', async () => {
     await operations.updateEditableHeader({ organizationId: 'org', actorUserId: 'staff', orderId: 'order', changes: { poNumber: 'PO-1' } as any });
     expect(recalculate).not.toHaveBeenCalled();
