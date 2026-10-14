@@ -6,6 +6,7 @@
  */
 
 import type { Customer, Product, ProductVariant } from "@shared/schema";
+import { calculateDiscountedOrderTax } from "@shared/orderDiscountTax";
 import {
   resolveTaxRate,
   calculateLineTax,
@@ -87,6 +88,7 @@ export function calculateLineItemTax(
  * @param customer - Customer record (optional, for tax exemptions/overrides)
  * @param shipFrom - Ship-from address (optional, for SaaS tax zones)
  * @param shipTo - Ship-to address (optional, for SaaS tax zones)
+ * @param orderDiscount - Order-only monetary discount; omitted for saved Quote pricing
  * @returns Aggregated totals with tax
  */
 export async function calculateQuoteOrderTotals(
@@ -96,6 +98,7 @@ export async function calculateQuoteOrderTotals(
   shipFrom?: TaxAddress | null,
   shipTo?: TaxAddress | null,
   taxPolicy?: OrderTaxPolicy,
+  orderDiscount?: number,
 ): Promise<QuoteOrderTotals & { lineItemsWithTax: LineItemWithTax[] }> {
   // For now, we'll resolve a single tax rate for the entire quote/order
   // Future enhancement: per-line-item tax resolution for mixed categories
@@ -137,17 +140,28 @@ export async function calculateQuoteOrderTotals(
         : automaticTaxRate;
 
   // Step 2: Calculate tax for each line item
-  const lineItemsWithTax = lineItems.map((item) => 
-    calculateLineItemTax(item.linePrice, item.isTaxable, taxRate)
-  );
+  const discountedTax = orderDiscount !== undefined
+    ? calculateDiscountedOrderTax({
+        lines: lineItems.map((item) => ({ totalCents: Math.round(item.linePrice * 100), isTaxable: item.isTaxable })),
+        discountCents: Math.round(orderDiscount * 100),
+        taxRate,
+      })
+    : null;
+  const lineItemsWithTax = lineItems.map((item, index) => discountedTax
+    ? { lineTotal: item.linePrice, taxAmount: discountedTax.lineTaxCents[index]! / 100, isTaxableSnapshot: item.isTaxable }
+    : calculateLineItemTax(item.linePrice, item.isTaxable, taxRate));
 
   // Step 3: Aggregate totals
-  const subtotal = lineItemsWithTax.reduce((sum, item) => sum + item.lineTotal, 0);
-  const taxableSubtotal = lineItemsWithTax
+  const subtotal = discountedTax ? discountedTax.subtotalCents / 100
+    : lineItemsWithTax.reduce((sum, item) => sum + item.lineTotal, 0);
+  const taxableSubtotal = discountedTax ? discountedTax.taxableSubtotalCents / 100 : lineItemsWithTax
     .filter((item) => item.isTaxableSnapshot)
     .reduce((sum, item) => sum + item.lineTotal, 0);
-  const taxAmount = lineItemsWithTax.reduce((sum, item) => sum + item.taxAmount, 0);
-  const total = subtotal + taxAmount;
+  const taxAmount = discountedTax ? discountedTax.taxCents / 100
+    : lineItemsWithTax.reduce((sum, item) => sum + item.taxAmount, 0);
+  const total = discountedTax
+    ? (discountedTax.subtotalCents - discountedTax.discountCents + discountedTax.taxCents) / 100
+    : subtotal + taxAmount;
 
   return {
     subtotal,

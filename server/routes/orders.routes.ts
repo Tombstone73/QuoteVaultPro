@@ -2581,15 +2581,20 @@ export async function registerOrderRoutes(
                 }
                 : null;
 
+            orderFields.discount = validateDirectOrderDiscount(
+                orderFields.discount,
+                lineItemsForTaxCalc.reduce((sum, item) => sum + item.linePrice, 0),
+            );
             // Calculate totals with tax (async for SaaS tax zone lookup)
             const totalsResult = await calculateQuoteOrderTotals(
                 lineItemsForTaxCalc,
                 orgTaxSettings,
                 customer,
                 null, // shipFrom - use org address if needed later
-                shipTo
+                shipTo,
+                undefined,
+                orderFields.discount,
             );
-            orderFields.discount = validateDirectOrderDiscount(orderFields.discount, totalsResult.subtotal);
 
             // Merge tax data into line items
             const proofApprovalManualOverrideIndexes: number[] = [];

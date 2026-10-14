@@ -6,6 +6,7 @@ import { db } from "../../db";
 import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../../invoicesService";
 import { scopedOrderLine, scopedOrderLineId } from "../../lib/financialRepairTenantScope";
 import { getBillableBundleRoots } from "../lineItemBundles";
+import { validateDirectOrderDiscount } from "./directOrderDiscount";
 
 type TaxableOrderLine = {
   id?: string;
@@ -43,6 +44,7 @@ async function calculateTaxForLines(executor: any, input: {
   lines: TaxableOrderLine[];
   taxOverrideMode?: "auto" | "exempt" | "rate" | string | null;
   taxRateOverride?: string | number | null;
+  discount?: number;
 }) {
   const [organization] = await executor.select().from(organizations)
     .where(eq(organizations.id, input.organizationId)).limit(1);
@@ -80,7 +82,7 @@ async function calculateTaxForLines(executor: any, input: {
     postalCode: customer.postalCode,
   } : null;
   const taxPolicy = resolveOrderTaxPolicy(input.taxOverrideMode, input.taxRateOverride);
-  const totals = await calculateQuoteOrderTotals(taxLines, getOrganizationTaxSettings(organization), customer, null, shipTo, taxPolicy);
+  const totals = await calculateQuoteOrderTotals(taxLines, getOrganizationTaxSettings(organization), customer, null, shipTo, taxPolicy, input.discount);
   return { billableLines, totals };
 }
 
@@ -114,8 +116,11 @@ export async function calculateEditableOrderFinancialSnapshot(executor: any, inp
     lines,
     taxOverrideMode: (order as any).taxOverrideMode,
     taxRateOverride: (order as any).taxRateOverride,
+    discount: Number(order.discount) || 0,
   });
-  const discount = Number(order.discount) || 0;
+  // A later price edit may shrink the selling amount below a saved fixed
+  // discount. Abort its transaction rather than persist mismatched tax/total.
+  const discount = validateDirectOrderDiscount(order.discount, totals.subtotal);
   const shipping = Math.max(0, Number(order.shippingCents) || 0) / 100;
   return {
     order,

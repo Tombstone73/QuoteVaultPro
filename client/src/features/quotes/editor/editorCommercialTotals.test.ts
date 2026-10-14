@@ -49,18 +49,27 @@ describe("New Order discount and commercial preview", () => {
         const input = { lines: [{ totalCents: 10_000, isTaxable: true }, { totalCents: 10_000, isTaxable: false }],
             discountAmount: 20, taxRate: 0.1, shippingCents: 500 };
         expect(calculateEditorCommercialTotals({ ...input, directOrder: true }))
-            .toEqual({ subtotal: 200, discount: 20, tax: 10, grandTotal: 195 });
+            .toEqual({ subtotal: 200, discount: 20, tax: 9, grandTotal: 194 });
         // Existing Quote preview discounts the taxable base; its non-taxable
         // line must still be included in the grand total.
         expect(calculateEditorCommercialTotals({ ...input, directOrder: false }))
             .toEqual({ subtotal: 200, discount: 20, tax: 8, grandTotal: 193 });
     });
 
-    test("direct Order tax rounds at each taxable line before the discount", () => {
+    test("direct Order tax rounds at each taxable line after the discount", () => {
         const totals = calculateEditorCommercialTotals({
             lines: [{ totalCents: 5, isTaxable: true }, { totalCents: 5, isTaxable: true }],
             discountAmount: 0.02, taxRate: 0.1, shippingCents: 0, directOrder: true,
         });
-        expect(totals).toEqual({ subtotal: 0.1, discount: 0.02, tax: 0.02, grandTotal: 0.1 });
+        expect(totals).toEqual({ subtotal: 0.1, discount: 0.02, tax: 0, grandTotal: 0.08 });
+    });
+
+    test("the $500 Order example agrees for fixed and percentage discounts", () => {
+        const input = { lines: [{ totalCents: 50_000, isTaxable: true }], taxRate: 0.07,
+            shippingCents: 0, directOrder: true };
+        expect(calculateEditorCommercialTotals({ ...input, discountAmount: 50 }))
+            .toMatchObject({ discount: 50, tax: 31.5, grandTotal: 481.5 });
+        expect(calculateEditorCommercialTotals({ ...input, discountAmount: 0, discountPercent: 10 }))
+            .toMatchObject({ discount: 50, tax: 31.5, grandTotal: 481.5 });
     });
 });

@@ -1,3 +1,5 @@
+import { calculateDiscountedOrderTax } from "@shared/orderDiscountTax";
+
 /** One currency calculation for the editor preview and its saved discount. */
 export function calculateEditorCommercialTotals(input: {
     lines: Array<{ totalCents: number; isTaxable: boolean }>;
@@ -14,10 +16,9 @@ export function calculateEditorCommercialTotals(input: {
         : Math.round(subtotalCents * percent / 100));
     const rate = Number.isFinite(input.taxRate) ? Math.max(0, input.taxRate) : 0;
     const taxableCents = input.lines.reduce((sum, line) => line.isTaxable ? sum + Math.max(0, Math.round(line.totalCents)) : sum, 0);
-    // Direct Order creation rounds tax per taxable line before applying the
-    // Order discount. Keep that preview aligned with the persisted Order.
+    // Use the same cent allocation as the authoritative Order calculation.
     const taxCents = input.directOrder
-        ? input.lines.reduce((sum, line) => sum + (line.isTaxable ? Math.round(Math.max(0, Math.round(line.totalCents)) * rate) : 0), 0)
+        ? calculateDiscountedOrderTax({ lines: input.lines, discountCents, taxRate: rate }).taxCents
         : Math.round(Math.max(0, taxableCents - Math.min(discountCents, taxableCents)) * rate);
     const shippingCents = Math.max(0, Math.round(input.shippingCents ?? 0));
     return {

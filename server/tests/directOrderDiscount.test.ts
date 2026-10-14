@@ -14,4 +14,11 @@ describe("direct Order monetary discount boundary", () => {
             expect(() => validateDirectOrderDiscount(value, 500)).toThrow("Order discount must be between zero and the priced subtotal.");
         }
     });
+
+    test("a fixed discount cannot exceed a reduced editable Order subtotal", () => {
+        expect(validateDirectOrderDiscount("50.00", 100)).toBe(50);
+        expect(() => validateDirectOrderDiscount("50.00", 49.99)).toThrow(
+            "Order discount must be between zero and the priced subtotal.",
+        );
+    });
 });

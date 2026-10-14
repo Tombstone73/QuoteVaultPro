@@ -82,4 +82,30 @@ describe("sales tax configuration and calculation", () => {
     expect(result).toMatchObject({ subtotal: 150, taxableSubtotal: 100, taxRate: 0.07, taxAmount: 7, total: 157 });
     expect(result.lineItemsWithTax.map((line) => line.taxAmount)).toEqual([7, 0]);
   });
+
+  test("Order discount reduces taxable selling amount before tax", async () => {
+    const result = await calculateQuoteOrderTotals([
+      { productId: "sign", linePrice: 500, isTaxable: true },
+    ], organization, null, null, null, { mode: "auto" }, 50);
+    expect(result).toMatchObject({ subtotal: 500, taxableSubtotal: 450, taxAmount: 31.5, total: 481.5 });
+    expect(result.lineItemsWithTax.map((line) => line.taxAmount)).toEqual([31.5]);
+  });
+
+  test("mixed Order discount is allocated across taxable and exempt lines", async () => {
+    const result = await calculateQuoteOrderTotals([
+      { productId: "taxable", linePrice: 100, isTaxable: true },
+      { productId: "exempt", linePrice: 100, isTaxable: false },
+    ], organization, null, null, null, { mode: "rate", rate: 0.1 }, 20);
+    expect(result).toMatchObject({ subtotal: 200, taxableSubtotal: 90, taxAmount: 9, total: 189 });
+    expect(result.lineItemsWithTax.map((line) => line.taxAmount)).toEqual([9, 0]);
+  });
+
+  test("Order discount retains exemptions and authorized rate overrides", async () => {
+    const exempt = await calculateQuoteOrderTotals([taxableLine], organization, null, null, null,
+      { mode: "exempt" }, 10);
+    const override = await calculateQuoteOrderTotals([taxableLine], organization, null, null, null,
+      { mode: "rate", rate: 0.05 }, 10);
+    expect(exempt).toMatchObject({ taxableSubtotal: 90, taxAmount: 0, total: 90 });
+    expect(override).toMatchObject({ taxableSubtotal: 90, taxAmount: 4.5, total: 94.5 });
+  });
 });
