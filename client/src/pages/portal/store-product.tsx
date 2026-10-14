@@ -236,11 +236,27 @@ function Configuration({ product }: { product: PortalStoreProductDto }) {
   );
 }
 
+function ProductGallery({ product }: { product: PortalStoreProductDto }) {
+  const images = product.imageUrls?.length ? product.imageUrls : product.imageUrl ? [product.imageUrl] : [];
+  const [selected, setSelected] = useState(0);
+  const [failed, setFailed] = useState<string[]>([]);
+  const url = images[selected];
+  return <div className="space-y-2">
+    <div className="flex aspect-square max-h-80 items-center justify-center overflow-hidden rounded-md border border-border/70 bg-gradient-to-br from-muted/80 via-background to-muted/50">
+      {url && !failed.includes(url) ? <img src={url} alt={`${product.name}, image ${selected + 1}`} onError={() => setFailed((current) => [...current, url])} className="h-full w-full object-contain" /> : <ImageOff className="h-8 w-8 text-muted-foreground" aria-label="Image unavailable" />}
+    </div>
+    {images.length > 1 ? <div className="flex gap-2 overflow-x-auto pb-1" aria-label="Product image gallery">
+      {images.map((image, index) => <button key={`${image}-${index}`} type="button" onClick={() => setSelected(index)} aria-label={`View image ${index + 1}`} aria-pressed={selected === index} className={`h-16 w-16 shrink-0 overflow-hidden rounded border-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected === index ? "border-primary" : "border-border"}`}>
+        {failed.includes(image) ? <ImageOff className="mx-auto h-5 w-5 text-muted-foreground" /> : <img src={image} alt="" onError={() => setFailed((current) => [...current, image])} className="h-full w-full object-cover" />}
+      </button>)}
+    </div> : null}
+  </div>;
+}
+
 export default function PortalStoreProductPage() {
   const { id } = useParams<{ id: string }>();
   const productQuery = usePortalStoreProduct(id);
   const product = productQuery.data;
-  const [imageFailed, setImageFailed] = useState(false);
 
   if (productQuery.isPending) return <div className="flex min-h-64 items-center justify-center" role="status" aria-label="Loading product"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
 
@@ -252,10 +268,8 @@ export default function PortalStoreProductPage() {
     <div className="mx-auto w-full max-w-6xl space-y-6">
       <header>
         <Button asChild variant="ghost" className="mb-3 px-0"><Link to="/portal/store"><ArrowLeft className="mr-2 h-4 w-4" />Back to Product Calculator</Link></Button>
-        <div className="grid gap-5 border-b border-border/80 pb-6 sm:grid-cols-[180px_minmax(0,1fr)] sm:items-center">
-          <div className="flex h-36 items-center justify-center overflow-hidden rounded-md border border-border/70 bg-gradient-to-br from-muted/80 via-background to-muted/50">
-            {product.imageUrl && !imageFailed ? <img src={product.imageUrl} alt="" onError={() => setImageFailed(true)} className="h-full w-full object-cover" /> : <ImageOff className="h-8 w-8 text-muted-foreground" aria-hidden="true" />}
-          </div>
+        <div className="grid gap-5 border-b border-border/80 pb-6 sm:grid-cols-[minmax(180px,300px)_minmax(0,1fr)] sm:items-center">
+          <ProductGallery key={product.id} product={product} />
           <div>
             <div className="mb-2 flex items-center gap-2">{product.category ? <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{product.category}</span> : null}<Badge variant="secondary" className="text-[11px]">Beta</Badge></div>
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{product.name}</h1>

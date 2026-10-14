@@ -71,6 +71,7 @@ export type PortalStoreOptionDto = {
 };
 
 export type PortalStoreProductDto = PortalStoreProductSummaryDto & {
+  imageUrls: string[];
   measurementMode: string | null;
   dimensionsRequired: boolean;
   fixedDimensions: { widthIn: number; heightIn: number } | null;

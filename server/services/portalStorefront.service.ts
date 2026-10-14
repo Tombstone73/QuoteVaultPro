@@ -84,6 +84,13 @@ function safeImageUrl(urls: string[]): string | null {
   return null;
 }
 
+function safeImageUrls(urls: string[]): string[] {
+  return urls.flatMap((url) => {
+    const safe = safeImageUrl([url]);
+    return safe ? [safe] : [];
+  });
+}
+
 function hasEditorPricingOverride(product: Pick<StorefrontProduct, 'pricingProfileConfig'>): boolean {
   const config = product.pricingProfileConfig as { pbv2Override?: { enabled?: boolean } } | null;
   return config?.pbv2Override?.enabled === true;
@@ -313,7 +320,7 @@ export async function getPortalStorefrontProduct(req: Request, productId: string
   const product = await loadVisibleProduct(req, productId);
   if (!product) return null;
   if (!hasStorefrontPricing(product)) return {
-    ...card(product), measurementMode: null, dimensionsRequired: false,
+    ...card(product), imageUrls: safeImageUrls(product.thumbnailUrls), measurementMode: null, dimensionsRequired: false,
     fixedDimensions: null, defaults: { quantity: 1, widthIn: null, heightIn: null, selections: {} }, options: [],
   };
   const tree = product.treeJson as OptionTreeV2;
@@ -322,6 +329,7 @@ export async function getPortalStorefrontProduct(req: Request, productId: string
   const dimensionsRequired = product.measurementMode !== 'quantity_only' && !fixedDimensions;
   return {
     ...card(product),
+    imageUrls: safeImageUrls(product.thumbnailUrls),
     measurementMode: product.measurementMode,
     dimensionsRequired,
     fixedDimensions: fixedDimensions ? { widthIn: fixedDimensions.widthIn, heightIn: fixedDimensions.heightIn } : null,

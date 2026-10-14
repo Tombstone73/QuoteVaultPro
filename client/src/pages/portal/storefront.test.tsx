@@ -80,6 +80,22 @@ test("assigned primary image uses the authenticated same-origin object path", ()
   expect(host.querySelector<HTMLImageElement>('img[src="/objects/uploads/acm-image"]')).not.toBeNull();
 });
 
+test("detail gallery starts with the primary image and selects a secondary image", () => {
+  productHook.mockReturnValue({
+    data: {
+      id: 'product-1', name: 'ACM', description: '', category: 'Signs', imageUrl: '/objects/uploads/primary.webp',
+      imageUrls: ['/objects/uploads/primary.webp', '/objects/uploads/secondary.png'], pricingAvailable: false,
+      measurementMode: null, dimensionsRequired: false, fixedDimensions: null,
+      defaults: { quantity: 1, widthIn: null, heightIn: null, selections: {} }, options: [],
+    }, isPending: false, isError: false,
+  });
+  render('/portal/store/product-1');
+  expect(host.querySelector<HTMLImageElement>('img[alt="ACM, image 1"]')?.getAttribute('src')).toBe('/objects/uploads/primary.webp');
+  act(() => host.querySelector<HTMLButtonElement>('[aria-label="View image 2"]')!.click());
+  expect(host.querySelector<HTMLImageElement>('img[alt="ACM, image 2"]')?.getAttribute('src')).toBe('/objects/uploads/secondary.png');
+  expect(host.querySelector<HTMLButtonElement>('[aria-label="View image 2"]')?.getAttribute('aria-pressed')).toBe('true');
+});
+
 test("catalog sends page and filters to the API without implying a full-catalog count", () => {
   jest.useFakeTimers();
   const first = { data: { items: [{ id: "product-1", name: "Custom Signs", description: null, category: "Signs", imageUrl: null }], categories: ["Signs", "Posters"], hasMore: true, page: 0 }, isPending: false, isError: false };

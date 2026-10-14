@@ -118,6 +118,13 @@ test('catalog thumbnails accept only safe same-origin objects or HTTPS URLs', as
   expect((await listPortalStorefrontProducts({ query: {} } as any)).items[0].imageUrl).toBeNull();
 });
 
+test('detail gallery returns all customer-safe images in saved primary order', async () => {
+  rows = [product({ thumbnailUrls: ['/objects/uploads/first.webp', 'javascript:alert(1)', 'https://example.com/second.png'] })];
+  const detail = await getPortalStorefrontProduct({} as any, 'product-a');
+  expect(detail?.imageUrl).toBe('/objects/uploads/first.webp');
+  expect(detail?.imageUrls).toEqual(['/objects/uploads/first.webp', 'https://example.com/second.png']);
+});
+
 test('portal image access requires an assigned image on a visible product in the customer tenant', async () => {
   expect(await canPortalAccessStorefrontImage({} as any, '/objects/uploads/sign.png')).toBe(true);
   expect(reads[0].params).toContain('org-a');
