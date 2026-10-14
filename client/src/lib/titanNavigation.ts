@@ -22,6 +22,7 @@ import {
   KeyRound,
   Bug,
   Droplets,
+  Files,
   type LucideIcon,
 } from "lucide-react";
 import { ROUTES } from "@/config/routes";
@@ -44,6 +45,7 @@ export type NavItemConfig = {
     requireApproval?: boolean;
     approverOnly?: boolean;
     requireInboundEmailIntake?: boolean;
+    requireFilePrefixTools?: boolean;
   };
 };
 
@@ -127,6 +129,13 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     ],
   },
   {
+    section: "TOOLS",
+    sectionKey: "tools",
+    items: [
+      { id: "bulk-file-renamer", name: "Bulk File Renamer", icon: Files, path: "/tools/bulk-file-renamer", conditional: { requireFilePrefixTools: true } },
+    ],
+  },
+  {
     section: "SYSTEM",
     sectionKey: "system",
     items: [
@@ -152,7 +161,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
 export function filterNavByRole(
   sections: NavSectionConfig[],
   role?: string | null,
-  orgPreferences?: { quotes?: { requireApproval?: boolean }; inboundEmail?: { inboundEmailIntakeEnabled?: boolean } },
+  orgPreferences?: { quotes?: { requireApproval?: boolean }; inboundEmail?: { inboundEmailIntakeEnabled?: boolean }; filePrefixToolsEnabled?: boolean },
   isPlatformAdmin?: boolean,
   isPlatformDeveloper?: boolean,
 ): NavSectionConfig[] {
@@ -178,6 +187,7 @@ export function filterNavByRole(
         }
 
         if (item.conditional) {
+          if (item.conditional.requireFilePrefixTools && !orgPreferences?.filePrefixToolsEnabled) return false;
           if (item.conditional.requireApproval && !requireApproval) return false;
           if (item.conditional.approverOnly && !isApprover) return false;
           if (item.conditional.requireInboundEmailIntake && orgPreferences?.inboundEmail?.inboundEmailIntakeEnabled === false) return false;

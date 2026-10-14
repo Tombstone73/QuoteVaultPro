@@ -78,6 +78,21 @@ export function buildOrderOriginalArtworkDisplayFilename(params: {
   });
 }
 
+/** New Order line-item presentation; null policy means the tenant tool is off. */
+export function buildOrderLineItemArtworkDisplayFilename(params: {
+  originalFilename: string;
+  orderNumber?: string | null;
+  namingPolicy: FileUploadNamingPolicy | null;
+}): string {
+  return params.namingPolicy
+    ? buildOrderOriginalArtworkDisplayFilename({
+        originalFilename: params.originalFilename,
+        orderNumber: params.orderNumber,
+        namingPolicy: params.namingPolicy,
+      })
+    : params.originalFilename;
+}
+
 export function withOrderOriginalArtworkDisplayFilename<T extends Record<string, any>>(
   file: T,
   params: {

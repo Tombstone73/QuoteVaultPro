@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useInboundEmailIntakeSettings } from "@/hooks/useInboundEmailIntakeSettings";
+import { useFilePrefixToolsStatus } from "@/hooks/useFilePrefixToolsStatus";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useQuery } from "@tanstack/react-query";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -203,11 +204,13 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse, mobile 
   const { activeOrgId, role, isApprover } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { preferences } = useOrgPreferences();
   const inboundEmailSettingsQuery = useInboundEmailIntakeSettings();
+  const filePrefixToolsStatus = useFilePrefixToolsStatus(activeOrgId);
   const location = useLocation();
   const { guardedNavigate } = useNavigationGuard();
   const navPreferences = {
     ...preferences,
     inboundEmail: inboundEmailSettingsQuery.data,
+    filePrefixToolsEnabled: filePrefixToolsStatus.data?.enabled === true,
   };
   const filteredSections = filterNavByRole(NAV_CONFIG, role, navPreferences, user?.isPlatformAdmin ?? false, user?.isPlatformDeveloper ?? false);
 

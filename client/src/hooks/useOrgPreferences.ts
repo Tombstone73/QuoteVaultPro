@@ -13,6 +13,7 @@ import type { InvoiceSendAutomationPreferences } from "@shared/invoiceSendAutoma
 
 export interface OrgPreferences {
   prepressDefaultEnabled?: boolean;
+  enableFilePrefixTools?: boolean;
 
   basic?: {
     attachQuotePdfByDefault?: boolean;
@@ -128,6 +129,7 @@ export function useOrgPreferences() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/organization/preferences"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tools/bulk-file-renamer/status"] });
       toast({
         title: "Preferences updated",
         description: "Your changes have been saved",
@@ -179,6 +181,28 @@ export function useOrgPreferences() {
     },
   });
 
+  const filePrefixToolsMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const response = await fetch("/api/organization/preferences/file-prefix-tools", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || "Failed to update File Prefix Tools");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/organization/preferences"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tools/bulk-file-renamer/status"] });
+      toast({ title: "File Prefix Tools updated" });
+    },
+    onError: (error: Error) => toast({ title: "Failed to update File Prefix Tools", description: error.message, variant: "destructive" }),
+  });
+
   return {
     preferences: preferences || {},
     isLoading,
@@ -186,5 +210,7 @@ export function useOrgPreferences() {
     isUpdating: mutation.isPending,
     updateInventoryPolicy: inventoryPolicyMutation.mutateAsync,
     isUpdatingInventoryPolicy: inventoryPolicyMutation.isPending,
+    updateFilePrefixTools: filePrefixToolsMutation.mutateAsync,
+    isUpdatingFilePrefixTools: filePrefixToolsMutation.isPending,
   };
 }

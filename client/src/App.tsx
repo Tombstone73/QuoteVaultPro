@@ -115,6 +115,7 @@ import DailyProductionListPage from "@/pages/daily-production-list";
 import AccountsReceivableReportPage from "@/pages/accounts-receivable-report";
 import ReportStudioRoute from "@/pages/report-studio";
 import InkMasterPage from "@/pages/ink-master";
+import BulkFileRenamerPage from "@/pages/tools/BulkFileRenamerPage";
 import SharedReportPage from "@/pages/shared-report";
 import FinancePage from "@/pages/finance";
 import InboundOrdersPage from "@/pages/inbound-orders";
@@ -364,6 +365,7 @@ function Router() {
         <Route path={ROUTES.accountsReceivableReport} element={<AccountsReceivableReportPage />} />
         <Route path="/reports/:reportId" element={<ReportStudioRoute />} />
         <Route path={ROUTES.finance} element={<FinancePage />} />
+        <Route path="/tools/bulk-file-renamer" element={<BulkFileRenamerPage />} />
 
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />

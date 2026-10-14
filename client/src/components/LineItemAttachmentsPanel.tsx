@@ -64,6 +64,7 @@ type LineItemAttachment = {
   mimeType?: string | null;
   createdAt: string;
   originalFilename?: string | null;
+  displayFilename?: string | null;
   storageProvider?: string | null;
   // Thumbnail scaffolding fields (migration 0034)
   thumbStatus?: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
@@ -306,7 +307,7 @@ export function LineItemAttachmentsPanel({
   }))), [pendingOrderAttachments]);
   const displayedArtworkSets = parentType === "order" && orderId ? artworkSets : stagedArtworkSets;
   const displayedArtworkMembers: Array<{ id: string; fileName: string; productionGroupId?: string | null }> = parentType === "order" && orderId
-    ? productionRows.map((file) => ({ id: file.id, fileName: getAttachmentDisplayName(file), productionGroupId: file.productionGroupId ?? null }))
+    ? productionRows.map((file) => ({ id: file.id, fileName: file.displayFilename || getAttachmentDisplayName(file), productionGroupId: file.productionGroupId ?? null }))
     : pendingOrderAttachments
       .filter((file) => file.role !== "reference")
       .map((file) => ({ id: file.uploadId, fileName: file.fileName, productionGroupId: file.productionGroupId ?? null }));
@@ -315,7 +316,7 @@ export function LineItemAttachmentsPanel({
   const primaryProductionAttachment = productionRows[0] ?? null;
   const primaryAttachment = primaryProductionAttachment ?? attachments[0] ?? null;
   const primaryArtworkName = primaryAttachment
-    ? getAttachmentDisplayName(primaryAttachment)
+    ? (parentType === "order" && primaryAttachment.displayFilename) || getAttachmentDisplayName(primaryAttachment)
     : pendingOrderAttachments[0]?.fileName ?? null;
   const primaryArtworkThumbnailUrl = primaryAttachment && !isEpsArtwork(primaryAttachment.fileName, primaryAttachment.mimeType)
     ? getThumbSrc(primaryAttachment)
@@ -483,7 +484,11 @@ export function LineItemAttachmentsPanel({
       if (!success) automaticBothSideAssignmentRef.current = null;
     });
   }, [doubleSided, useSameArtworkBothSides, artworkAttachments.length, artworkAttachments[0]?.id, artworkAttachments[0]?.side, lineItemId]);
-  const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments as any[]), [attachments]);
+  const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments.map((file) =>
+    parentType === "order" && file.displayFilename
+      ? { ...file, fileName: file.displayFilename, originalFilename: file.displayFilename }
+      : file,
+  ) as any[]), [attachments, parentType]);
 
   // Format file size for display
   const formatFileSize = (bytes: number | null | undefined): string => {
@@ -810,7 +815,7 @@ export function LineItemAttachmentsPanel({
   const handleDownloadFile = async (file: LineItemAttachment) => {
     if (!filesApiPath) return;
 
-    const fileName = file.originalFilename || file.fileName;
+    const fileName = (parentType === "order" && file.displayFilename) || file.originalFilename || file.fileName;
 
     try {
       if (parentType === "order") {
@@ -829,7 +834,8 @@ export function LineItemAttachmentsPanel({
         }
 
         const proxyUrl = `/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/download/proxy`;
-        await downloadAuthenticatedFile(proxyUrl, fileName);
+        if (file.displayFilename) await downloadAuthenticatedFile(proxyUrl, fileName, true);
+        else await downloadAuthenticatedFile(proxyUrl, fileName);
         return;
       }
 
@@ -1270,7 +1276,7 @@ export function LineItemAttachmentsPanel({
                     data-testid="order-front-artwork-select"
                   >
                     <option value="">Front artwork not assigned</option>
-                    {artworkAttachments.map((file) => <option key={file.id} value={file.id}>{getAttachmentDisplayName(file)}</option>)}
+                    {artworkAttachments.map((file) => <option key={file.id} value={file.id}>{(parentType === "order" && file.displayFilename) || getAttachmentDisplayName(file)}</option>)}
                   </select>
                 </label>
                 {!useSameArtworkBothSides && (
@@ -1283,7 +1289,7 @@ export function LineItemAttachmentsPanel({
                       data-testid="order-back-artwork-select"
                     >
                       <option value="">Back artwork not assigned</option>
-                      {artworkAttachments.map((file) => <option key={file.id} value={file.id}>{getAttachmentDisplayName(file)}</option>)}
+                      {artworkAttachments.map((file) => <option key={file.id} value={file.id}>{(parentType === "order" && file.displayFilename) || getAttachmentDisplayName(file)}</option>)}
                     </select>
                   </label>
                 )}
@@ -1403,7 +1409,7 @@ export function LineItemAttachmentsPanel({
           ) : attachments.length > 0 ? (
             <div className="grid max-h-[22rem] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 2xl:grid-cols-3">
               {attachments.map((file, fileIndex) => {
-                const fileName = getAttachmentDisplayName(file);
+                const fileName = (parentType === "order" && file.displayFilename) || getAttachmentDisplayName(file);
                 const FileIcon = isEpsArtwork(file.fileName, file.mimeType) ? FileText : getFileIcon(file.mimeType);
                 const isPdf = isPdfAttachment(file);
                 const isImage = file.mimeType?.startsWith("image/") ?? false;

@@ -51,6 +51,7 @@ import {
 import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntakeSettingsService";
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
+import { withFilePrefixToolsSetting } from "@shared/filePrefixTools";
 import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
 import { resolveInvoiceSendAutomationPreferences } from "@shared/invoiceSendAutomation";
 
@@ -285,6 +286,7 @@ export function registerOrganizationRoutes(
         billingInvoiceTriggerPolicy,
         invoiceSendAutomation,
         fileUploadNaming,
+        enableFilePrefixTools: (preferences as any)?.enableFilePrefixTools === true,
         prepressDefaultEnabled: org.prepressDefaultEnabled,
         production: {
           ...(((preferences as any)?.production && typeof (preferences as any).production === "object") ? (preferences as any).production : {}),
@@ -318,7 +320,9 @@ export function registerOrganizationRoutes(
       const newPreferences = req.body;
 
       // Extract emailTemplates if present (will be stored at settings.emailTemplates)
-      const { emailTemplates, prepressDefaultEnabled, ...otherPreferences } = newPreferences;
+      // This setting has a narrow PATCH boundary; general preference saves may
+      // carry its read value but must not alter it or erase it.
+      const { emailTemplates, prepressDefaultEnabled, enableFilePrefixTools: _filePrefixTools, ...otherPreferences } = newPreferences;
 
       // Get current settings
       const [org] = await db
@@ -339,7 +343,14 @@ export function registerOrganizationRoutes(
       const currentPreferences = (currentSettings.preferences && typeof currentSettings.preferences === "object")
         ? currentSettings.preferences
         : {};
-      const nextPreferences = Object.keys(otherPreferences).length > 0 ? otherPreferences : currentPreferences;
+      const nextPreferences = Object.keys(otherPreferences).length > 0
+        ? {
+            ...otherPreferences,
+            ...(Object.prototype.hasOwnProperty.call(currentPreferences, "enableFilePrefixTools")
+              ? { enableFilePrefixTools: currentPreferences.enableFilePrefixTools }
+              : {}),
+          }
+        : currentPreferences;
       const updatedSettings = {
         ...currentSettings,
         preferences: nextPreferences,
@@ -368,6 +379,31 @@ export function registerOrganizationRoutes(
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
+    }
+  });
+
+  app.patch('/api/organization/preferences/file-prefix-tools', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const role = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
+    if (!['owner', 'admin'].includes(role)) return res.status(403).json({ message: "Only owners and admins can change File Prefix Tools" });
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Enabled must be a boolean" });
+    try {
+      const enabled = await db.transaction(async (tx) => {
+        const [org] = await tx.select({ settings: organizations.settings }).from(organizations)
+          .where(eq(organizations.id, organizationId)).for("update").limit(1);
+        if (!org) return null;
+        await tx.update(organizations).set({
+          settings: withFilePrefixToolsSetting(org.settings, parsed.data.enabled) as any,
+          updatedAt: new Date(),
+        }).where(eq(organizations.id, organizationId));
+        return parsed.data.enabled;
+      });
+      if (enabled === null) return res.status(404).json({ message: "Organization not found" });
+      return res.json({ enabled });
+    } catch (error) {
+      console.error("Error updating File Prefix Tools preference:", error);
+      return res.status(500).json({ message: "Failed to update File Prefix Tools" });
     }
   });
 

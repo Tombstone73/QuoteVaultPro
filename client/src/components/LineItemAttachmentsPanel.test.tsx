@@ -215,6 +215,7 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       source: "canonical",
       fileName: "saved-art.pdf",
       originalFilename: "saved-art.pdf",
+      displayFilename: "20685_saved-art.pdf",
       mimeType: "application/pdf",
       createdAt: "2026-07-20T00:00:00.000Z",
       side: "na",
@@ -233,7 +234,7 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
         </QueryClientProvider>,
       ));
       const downloadButton = (orderWorkspace ? Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Download") : host.querySelector("button[title='Download original file']")) as HTMLButtonElement;
-      const previewButton = host.querySelector("button[aria-label='Preview saved-art.pdf']") as HTMLButtonElement;
+      const previewButton = host.querySelector("button[aria-label='Preview 20685_saved-art.pdf']") as HTMLButtonElement;
       await act(async () => previewButton.click());
       expect(host.querySelector("[data-testid='order-artwork-viewer']")?.getAttribute("data-open")).toBe("true");
       expect(host.querySelector("[data-testid='order-artwork-viewer']")?.getAttribute("data-file-record-id")).toBe("record-1");
@@ -248,7 +249,7 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       );
       expect(downloadFileFromUrl).toHaveBeenCalledWith(
         "/api/artwork/file-records/record-1/content?variant=original",
-        "saved-art.pdf",
+        "20685_saved-art.pdf",
       );
       expect(downloadAuthenticatedFile).not.toHaveBeenCalled();
     } finally {
@@ -748,6 +749,16 @@ describe("Order workspace artwork presentation", () => {
     expect(html).not.toContain("Assigned 1 of 1");
     expect(html).not.toContain("Artwork Set 1");
     expect(html).not.toContain("Production quantity");
+  });
+  test("uses the server-computed Order name in the line-item list without changing stored original metadata", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/orders/order-1/line-items/line-1/files"], [{
+      ...file, originalFilename: "Banner.pdf", displayFilename: "20685_Banner.pdf",
+    }]);
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}>
+      <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+    </QueryClientProvider>);
+    expect(html).toContain("20685_Banner.pdf");
   });
   test("keeps every original and its allocation controls accessible in a bounded large collection", () => {
     const html = renderWorkspace(27, true);

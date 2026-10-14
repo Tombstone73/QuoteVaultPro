@@ -35,6 +35,7 @@ import { registerAiKnowledgeRoutes } from "./routes/aiKnowledge.routes";
 import { registerProofingRoutes } from "./routes/proofing.routes";
 import { registerArtworkAccessRoutes } from "./routes/artworkAccess.routes";
 import { registerLocalBridgeRoutes } from "./routes/localBridge.routes";
+import { registerBulkFileRenamerRoutes } from "./routes/bulkFileRenamer.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
 import { registerGuestInvoicePaymentRoutes } from "./routes/guestInvoicePayment.routes";
 import { registerProductionConfigRoutes } from "./routes/productionConfig.routes";
@@ -449,6 +450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerProofingRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, assertInternalUser });
   registerArtworkAccessRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   registerLocalBridgeRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
+  registerBulkFileRenamerRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   // Portal proof routes extracted to ./routes/portalProof.routes.ts (do NOT re-add here)
   registerPortalProofRoutes(app);
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)

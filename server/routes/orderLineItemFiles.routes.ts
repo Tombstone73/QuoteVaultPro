@@ -54,6 +54,9 @@ import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelati
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
 import { sendScopedFileArchive } from "../services/storage/scopedFileArchive";
+import { buildOrderLineItemArtworkDisplayFilename } from "../services/originalArtworkFiles";
+import { getFileUploadNamingPolicy } from "../prepressFileService";
+import { isFilePrefixToolsEnabled } from "../services/filePrefixTools";
 import {
   ArtworkSetOperationError,
   createArtworkSet,
@@ -177,6 +180,11 @@ export function registerOrderLineItemFileRoutes(
         .innerJoin(orders, and(eq(orders.id, orderLineItems.orderId), eq(orders.organizationId, organizationId)))
         .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId))).limit(1);
       if (!line) return res.status(404).json({ error: "Order line item not found" });
+      const prefixEnabled = await isFilePrefixToolsEnabled(organizationId);
+      const namingPolicy = prefixEnabled ? await getFileUploadNamingPolicy(organizationId) : null;
+      const artworkName = (originalFilename: string) => buildOrderLineItemArtworkDisplayFilename({
+        originalFilename, orderNumber: line.orderNumber, namingPolicy,
+      });
       const resolution = await lineItemArtworkReadResolver.resolveForLineItem({ organizationId, lineItemId, purpose: "order" });
       const { assetRepository } = await import("../services/assets/AssetRepository");
       const references = (await assetRepository.listAssetsForParent(organizationId, "order_line_item", lineItemId))
@@ -187,7 +195,7 @@ export function registerOrderLineItemFileRoutes(
       }
       const files = [
         ...resolution.artwork.filter((artwork) => artwork.orderId === orderId)
-          .map((artwork) => ({ fileRecordId: artwork.fileRecordId, filename: artwork.file.originalFilename || "artwork" })),
+          .map((artwork) => ({ fileRecordId: artwork.fileRecordId, filename: artworkName(artwork.file.originalFilename || "artwork") })),
         ...references.map((asset: any) => ({ fileRecordId: String(asset.fileRecordId), filename: String(asset.fileName || "reference") })),
       ];
       await sendScopedFileArchive({ organizationId, files, downloadName: `${line.orderNumber}-line-${line.sortOrder + 1}-artwork.zip`, res });
@@ -237,6 +245,8 @@ export function registerOrderLineItemFileRoutes(
         console.log(`[OrderLineItemFiles:GET] Order not found or doesn't belong to organization`);
         return res.status(404).json({ error: "Order not found" });
       }
+      const prefixEnabled = await isFilePrefixToolsEnabled(organizationId);
+      const namingPolicy = prefixEnabled ? await getFileUploadNamingPolicy(organizationId) : null;
 
       // Validate the line item exists and belongs to this order
       const [lineItem] = await db.select().from(orderLineItems)
@@ -280,6 +290,11 @@ export function registerOrderLineItemFileRoutes(
         fileRecordId: artwork.fileRecordId,
         fileName: artwork.file.originalFilename ?? "Artwork",
         originalFilename: artwork.file.originalFilename,
+        ...(namingPolicy ? { displayFilename: buildOrderLineItemArtworkDisplayFilename({
+          originalFilename: artwork.file.originalFilename ?? "Artwork",
+          orderNumber: order.orderNumber,
+          namingPolicy,
+        }) } : {}),
         fileUrl: artwork.file.contentPath,
         originalUrl: artwork.file.contentPath,
         downloadUrl: `${artwork.file.contentPath}?download=1`,

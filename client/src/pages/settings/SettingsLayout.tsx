@@ -2010,6 +2010,8 @@ export function PreferencesSettings() {
     isUpdating,
     updateInventoryPolicy,
     isUpdatingInventoryPolicy,
+    updateFilePrefixTools,
+    isUpdatingFilePrefixTools,
   } = useOrgPreferences();
 
   type InventoryUiMode = "off" | "advisory" | "enforced";
@@ -2467,6 +2469,16 @@ export function PreferencesSettings() {
             <p className="text-titan-sm text-titan-text-muted mt-1">
               Control job-number prefixes and prepress labels on operator-facing upload filenames.
             </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="enable-file-prefix-tools" className="cursor-pointer text-titan-sm font-medium text-titan-text-primary">Enable File Prefix Tools</Label>
+              <p className="text-titan-xs text-titan-text-muted">Enable automatic Order line-item filename prefixes and the Bulk File Renamer utility for this organization.</p>
+            </div>
+            <Switch id="enable-file-prefix-tools" checked={preferences.enableFilePrefixTools === true}
+              onCheckedChange={(checked) => updateFilePrefixTools(checked)}
+              disabled={isUpdatingFilePrefixTools} />
           </div>
 
           <div className="space-y-4">

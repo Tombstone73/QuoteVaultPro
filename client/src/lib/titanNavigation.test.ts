@@ -11,6 +11,14 @@ function itemIds(sectionKey: string, role: string, isPlatformAdmin = false, isPl
 }
 
 describe("Titan navigation platform placement", () => {
+  test("shows Bulk File Renamer in Tools only while the tenant flag is enabled", () => {
+    expect(visibleSection("tools", "member")).toBeUndefined();
+    expect(filterNavByRole(NAV_CONFIG, "member", { filePrefixToolsEnabled: true })
+      .find((section) => section.sectionKey === "tools")?.items.map((item) => item.id))
+      .toEqual(["bulk-file-renamer"]);
+    expect(filterNavByRole(NAV_CONFIG, "member", { filePrefixToolsEnabled: false })
+      .some((section) => section.sectionKey === "tools")).toBe(false);
+  });
   test("places Ink Master under Mini Apps at the bottom of System for staff", () => {
     for (const role of ["owner", "admin", "manager", "member"]) {
       const items = visibleSection("system", role)?.items ?? [];

@@ -83,6 +83,71 @@ function startsWithJobPrefix(filename: string, fullJobNumber: string, numericJob
   });
 }
 
+function applyFilenamePrefix(filename: string, prefix: string, separator: string, alreadyPrefixed: boolean): string {
+  return !prefix || alreadyPrefixed ? filename : `${prefix}${separator}${filename}`;
+}
+
+/** A local rename preserves every character of the original filename. */
+export function buildLocalPrefixedFilename(originalFilename: string, prefix: string): string {
+  return applyFilenamePrefix(originalFilename, prefix, "  ", originalFilename.startsWith(`${prefix}  `));
+}
+
+const WINDOWS_INVALID_FILENAME_CHARACTERS = /[<>:"/\\|?*\u0000-\u001f]/;
+const WINDOWS_RESERVED_BASENAME = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+
+export function validateLocalRenamePrefix(prefix: string): string | null {
+  if (!prefix) return "Enter a prefix.";
+  if (WINDOWS_INVALID_FILENAME_CHARACTERS.test(prefix)) return "The prefix contains a character Windows does not allow in filenames.";
+  return null;
+}
+
+export function validateWindowsFilename(filename: string): string | null {
+  if (!filename || filename === "." || filename === ".." || filename.length > 255) return "Invalid filename length or name.";
+  if (WINDOWS_INVALID_FILENAME_CHARACTERS.test(filename) || /[. ]$/.test(filename)) return "The filename is not valid on Windows.";
+  if (WINDOWS_RESERVED_BASENAME.test(filename.split(".")[0])) return "The filename is reserved on Windows.";
+  return null;
+}
+
+export type LocalRenamePlanEntry = {
+  originalName: string;
+  proposedName: string;
+  status: "ready" | "already_prefixed" | "invalid" | "collision";
+  reason?: string;
+};
+
+/** The server owns the proposal; the local helper only checks and executes it. */
+export function buildLocalRenamePlan(prefix: string, filenames: string[]): LocalRenamePlanEntry[] {
+  const prefixError = validateLocalRenamePrefix(prefix);
+  const entries = filenames.map((originalName): LocalRenamePlanEntry => {
+    const proposedName = prefixError ? originalName : buildLocalPrefixedFilename(originalName, prefix);
+    const reason = prefixError || validateWindowsFilename(originalName) || validateWindowsFilename(proposedName);
+    if (reason) return { originalName, proposedName, status: "invalid", reason };
+    return { originalName, proposedName, status: proposedName === originalName ? "already_prefixed" : "ready" };
+  });
+  const originalNames = new Set(filenames.map((name) => name.toLocaleLowerCase("en-US")));
+  const originalCounts = new Map<string, number>();
+  filenames.forEach((name) => {
+    const key = name.toLocaleLowerCase("en-US");
+    originalCounts.set(key, (originalCounts.get(key) ?? 0) + 1);
+  });
+  const targets = new Map<string, number>();
+  entries.forEach((entry) => {
+    if (entry.status !== "ready") return;
+    const key = entry.proposedName.toLocaleLowerCase("en-US");
+    targets.set(key, (targets.get(key) ?? 0) + 1);
+  });
+  return entries.map((entry) => {
+    if ((originalCounts.get(entry.originalName.toLocaleLowerCase("en-US")) ?? 0) > 1) {
+      return { ...entry, status: "collision", reason: "Selected files must have distinct names in one plan." };
+    }
+    if (entry.status !== "ready") return entry;
+    const key = entry.proposedName.toLocaleLowerCase("en-US");
+    return originalNames.has(key) || (targets.get(key) ?? 0) > 1
+      ? { ...entry, status: "collision", reason: "A selected file already uses this destination name." }
+      : entry;
+  });
+}
+
 function baseEndsWithLabel(base: string, label: Exclude<PrepressFileLabel, "none">): boolean {
   return labelDetectionPatterns[label].test(base);
 }
@@ -121,10 +186,10 @@ export function buildFileUploadDisplayFilename(params: {
       ? `${base}_${labelSuffix}${ext}`
       : originalFilename;
 
-  if (prefixMode === "none" || startsWithJobPrefix(labeledFilename, fullJobNumber, numericJobNumber)) {
-    return labeledFilename;
-  }
-
-  if (!prefix) return labeledFilename;
-  return `${prefix}_${labeledFilename}`;
+  return applyFilenamePrefix(
+    labeledFilename,
+    prefixMode === "none" ? "" : prefix,
+    "_",
+    startsWithJobPrefix(labeledFilename, fullJobNumber, numericJobNumber),
+  );
 }

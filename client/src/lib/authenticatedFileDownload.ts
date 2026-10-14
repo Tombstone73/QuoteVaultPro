@@ -35,7 +35,7 @@ export function filenameFromContentDisposition(header: string | null, fallbackFi
  * fetch path. This avoids opening an API URL in a new tab, where a separate
  * navigation can lose the authenticated application session.
  */
-export async function downloadAuthenticatedFile(url: string, fallbackFilename: string): Promise<void> {
+export async function downloadAuthenticatedFile(url: string, fallbackFilename: string, preferFallbackFilename = false): Promise<void> {
   const response = await apiFetch(url, { method: "GET" });
   if (!response.ok) {
     if (response.status === 401) notifySessionExpired("file-download");
@@ -46,7 +46,7 @@ export async function downloadAuthenticatedFile(url: string, fallbackFilename: s
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
-  link.download = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallbackFilename);
+  link.download = preferFallbackFilename ? fallbackFilename : filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallbackFilename);
   link.style.display = "none";
   document.body.appendChild(link);
   link.click();
