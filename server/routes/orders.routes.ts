@@ -201,6 +201,7 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
+import { validateDirectOrderDiscount } from "../services/orders/directOrderDiscount";
 import { normalizeOrderPatchFulfillmentMethod, normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
 import { classifyTerminalOrderPatch } from "@shared/terminalOrderEditPolicy";
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
@@ -2588,6 +2589,7 @@ export async function registerOrderRoutes(
                 null, // shipFrom - use org address if needed later
                 shipTo
             );
+            orderFields.discount = validateDirectOrderDiscount(orderFields.discount, totalsResult.subtotal);
 
             // Merge tax data into line items
             const proofApprovalManualOverrideIndexes: number[] = [];

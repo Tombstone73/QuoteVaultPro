@@ -28,6 +28,7 @@ import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode
 import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
 import { applyQuoteLineSequence } from "./quoteLineSequence";
+import { calculateEditorCommercialTotals, percentForMonetaryDiscount } from "./editorCommercialTotals";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -186,6 +187,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     const [orderInternalNotes, setOrderInternalNotes] = useState<string>("");
     // Stored as absolute currency amount (not %).
     const [discountAmount, setDiscountAmount] = useState<number>(0);
+    const [orderDiscountMode, setOrderDiscountMode] = useState<"amount" | "percent">("amount");
+    const [orderDiscountPercent, setOrderDiscountPercent] = useState<number>(0);
     // Tags for quote/order (client-side only for now - backend doesn't support yet)
     const [tags, setTags] = useState<string[]>([]);
     // Quote-level tax override (overrides customer tax settings)
@@ -564,51 +567,41 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 : Number(organization?.defaultTaxRate || 0);
     }, [quoteTaxExempt, quoteTaxRateOverride, selectedCustomer, organization]);
 
-    const effectiveDiscount = useMemo(
-        () => (Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0),
-        [discountAmount]
-    );
-
-    // Single source of truth: computedTotals derived from current editor state
-    const computedTotals = useMemo(() => {
-        // Subtotal is always the effective persisted/editor line total. PBV2 snapshots
-        // describe the calculated base; explicit unit/total overrides must win.
-        const subtotalCents = activeLineItems.reduce((sum, item) => {
+    const commercialLines = useMemo(() => (contactOnlyOrder
+        ? activeLineItems.filter((item) => !!item.productId)
+        : activeLineItems).map((item) => {
+            // Explicit unit/total overrides win over the calculated base.
             const itemCents = hydrateLineItemEditPricingState(item).effectiveTotalCents;
             if (!Number.isFinite(itemCents)) {
                 console.warn("[QuoteEditor] Invalid price for item:", item.id, item);
-                return sum;
+                return { totalCents: 0, isTaxable: false };
             }
-            return sum + itemCents;
-        }, 0);
+            const isTaxable = contactOnlyOrder
+                ? productTaxabilityById.get(item.productId) ?? true
+                : item.isTaxableSnapshot ?? productTaxabilityById.get(item.productId) ?? true;
+            return { totalCents: itemCents, isTaxable };
+        }), [activeLineItems, productTaxabilityById, contactOnlyOrder]);
 
-        // Discount in cents (clamped to not exceed subtotal)
-        const discountCents = Math.min(
-            Math.round((effectiveDiscount ?? 0) * 100),
-            subtotalCents
-        );
+    // Single preview calculation; the server still recalculates saved Orders.
+    const computedTotals = useMemo(() => calculateEditorCommercialTotals({
+        lines: commercialLines,
+        discountAmount,
+        discountPercent: contactOnlyOrder && orderDiscountMode === "percent" ? orderDiscountPercent : null,
+        taxRate: effectiveTaxRate,
+        shippingCents,
+        directOrder: contactOnlyOrder,
+    }), [commercialLines, discountAmount, orderDiscountMode, orderDiscountPercent, effectiveTaxRate, shippingCents, contactOnlyOrder]);
+    const effectiveDiscount = computedTotals.discount;
 
-        // Tax applies only to product-taxable lines. Discounts are allocated to
-        // the taxable portion first, matching the server aggregate calculation.
-        const taxableLineSubtotalCents = activeLineItems.reduce((sum, item) => {
-            const isTaxable = item.isTaxableSnapshot ?? productTaxabilityById.get(item.productId) ?? true;
-            return isTaxable ? sum + hydrateLineItemEditPricingState(item).effectiveTotalCents : sum;
-        }, 0);
-        const taxableBaseCents = Math.max(0, taxableLineSubtotalCents - Math.min(discountCents, taxableLineSubtotalCents));
-        const taxCents = Math.round(taxableBaseCents * effectiveTaxRate);
-
-        // Grand Total = taxableBase + tax + shipping
-        const shippingAmountCents = shippingCents ?? 0;
-        const grandTotalCents = taxableBaseCents + taxCents + shippingAmountCents;
-
-        // Convert to dollars for backward compatibility
-        return {
-            subtotal: subtotalCents / 100,
-            discount: discountCents / 100,
-            tax: taxCents / 100,
-            grandTotal: grandTotalCents / 100,
-        };
-    }, [activeLineItems, effectiveDiscount, effectiveTaxRate, productTaxabilityById, shippingCents]);
+    const changeOrderDiscountMode = (next: "amount" | "percent") => {
+        if (!contactOnlyOrder || next === orderDiscountMode) return;
+        if (next === "percent") {
+            setOrderDiscountPercent(percentForMonetaryDiscount(effectiveDiscount, computedTotals.subtotal));
+        } else {
+            setDiscountAmount(effectiveDiscount);
+        }
+        setOrderDiscountMode(next);
+    };
 
     // Extract individual values for backward compatibility
     const subtotal = computedTotals.subtotal;
@@ -2763,7 +2756,9 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         orderPromisedDate,
         orderPriority,
         orderInternalNotes,
-        discountAmount,
+        discountAmount: contactOnlyOrder ? effectiveDiscount : discountAmount,
+        orderDiscountMode,
+        orderDiscountPercent,
         tags,
         quoteTaxExempt,
         quoteTaxRateOverride,
@@ -2878,6 +2873,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             setOrderPriority,
             setOrderInternalNotes,
             setDiscountAmount,
+            setOrderDiscountMode: changeOrderDiscountMode,
+            setOrderDiscountPercent: (value: number) => setOrderDiscountPercent(Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0),
             addTag: (tag: string) => {
                 const trimmed = tag.trim();
                 if (!trimmed) return; // Ignore empty tags

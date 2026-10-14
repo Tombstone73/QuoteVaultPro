@@ -1321,6 +1321,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             grandTotal={state.grandTotal}
             effectiveTaxRate={state.effectiveTaxRate}
             discountAmount={state.discountAmount}
+            orderDiscountMode={createTarget === "order" ? state.orderDiscountMode : undefined}
+            orderDiscountPercent={createTarget === "order" ? state.orderDiscountPercent : undefined}
             shippingCents={state.shippingCents}
             deliveryMethod={state.deliveryMethod}
             selectedCustomer={state.selectedCustomer}
@@ -1346,6 +1348,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             quoteNumber={(state.quote as any)?.quoteNumber ?? null}
             quoteStatus={(state.quote as any)?.status ?? null}
             onDiscountAmountChange={state.handlers.setDiscountAmount}
+            onOrderDiscountModeChange={createTarget === "order" ? state.handlers.setOrderDiscountMode : undefined}
+            onOrderDiscountPercentChange={createTarget === "order" ? state.handlers.setOrderDiscountPercent : undefined}
             quoteTaxExempt={state.quoteTaxExempt}
             quoteTaxRateOverride={state.quoteTaxRateOverride}
             onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}

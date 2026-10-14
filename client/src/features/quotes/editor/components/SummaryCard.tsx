@@ -22,6 +22,7 @@ import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
 import { getQuotePreviewEligibility, getQuoteSendEligibility } from "../quoteActionEligibility";
 import { OrderCreateActions } from "./OrderCreateActions";
 import { DetailTotalsCard } from "@/components/orders/DetailSurface";
+import { OrderDiscountInput } from "./OrderDiscountInput";
 
 type SummaryCardProps = {
     presentation?: "quote" | "order" | "detail";
@@ -36,6 +37,8 @@ type SummaryCardProps = {
     grandTotal: number;
     effectiveTaxRate: number;
     discountAmount: number;
+    orderDiscountMode?: "amount" | "percent";
+    orderDiscountPercent?: number;
     shippingCents?: number | null;
     deliveryMethod: string;
     selectedCustomer: CustomerWithContacts | undefined;
@@ -65,6 +68,8 @@ type SummaryCardProps = {
     onDiscard: () => void;
     onCancelQuote?: () => void;
     onDiscountAmountChange: (next: number) => void;
+    onOrderDiscountModeChange?: (next: "amount" | "percent") => void;
+    onOrderDiscountPercentChange?: (next: number) => void;
     quoteTaxExempt?: boolean | null;
     quoteTaxRateOverride?: number | null;
     onQuoteTaxExemptChange?: (exempt: boolean | null) => void;
@@ -99,6 +104,8 @@ export function SummaryCard({
     grandTotal,
     effectiveTaxRate,
     discountAmount,
+    orderDiscountMode = "amount",
+    orderDiscountPercent = 0,
     shippingCents,
     deliveryMethod,
     selectedCustomer,
@@ -128,6 +135,8 @@ export function SummaryCard({
     onDiscard,
     onCancelQuote,
     onDiscountAmountChange,
+    onOrderDiscountModeChange,
+    onOrderDiscountPercentChange,
     quoteTaxExempt,
     quoteTaxRateOverride,
     onQuoteTaxExemptChange,
@@ -224,10 +233,16 @@ export function SummaryCard({
                         <span className={safeDiscount > 0 ? (presentation === "detail" ? "tabular-nums text-green-600" : "font-mono text-green-600") : (presentation === "detail" ? "text-muted-foreground" : "font-mono text-muted-foreground")}>
                             {safeDiscount > 0 ? `-${safeDiscount.toFixed(2)}` : "—"}
                         </span>
+                    ) : presentation === "order" ? (
+                        <OrderDiscountInput
+                            mode={orderDiscountMode} percent={orderDiscountPercent} amount={safeDiscount} maxAmount={subtotal}
+                            onModeChange={(next) => onOrderDiscountModeChange?.(next)}
+                            onPercentChange={(next) => onOrderDiscountPercentChange?.(next)}
+                            onAmountChange={onDiscountAmountChange}
+                        />
                     ) : (
                         <div className="w-28">
                             <Input
-                                aria-label={presentation === "order" ? "Order discount" : undefined}
                                 value={safeDiscount === 0 ? "" : String(safeDiscount.toFixed(2))}
                                 onChange={(e) => {
                                     const raw = e.target.value.replace(/[$,]/g, "").trim();
@@ -264,7 +279,7 @@ export function SummaryCard({
                                 <Badge variant="outline" className="ml-2 text-xs">Exempt</Badge>
                             )}
                         </span>
-                        {!readOnly && (
+                        {!readOnly && presentation !== "order" && (
                             <button
                                 type="button"
                                 onClick={() => setShowTaxOverride(!showTaxOverride)}
@@ -276,7 +291,7 @@ export function SummaryCard({
                     </div>
                     <span className={presentation === "detail" ? "tabular-nums" : "font-mono"}>${taxAmount.toFixed(2)}</span>
                 </div>
-                {!readOnly && showTaxOverride && (
+                {!readOnly && presentation !== "order" && showTaxOverride && (
                     <div className="pl-4 space-y-2 border-l-2 border-border/50">
                         <div className="flex items-center gap-2">
                             <Checkbox
