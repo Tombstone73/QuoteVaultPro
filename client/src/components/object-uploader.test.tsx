@@ -32,7 +32,8 @@ test('uses the authorized upload response path and keeps object access behind th
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(fetchMock.mock.calls[0][0]).toBe('/api/objects/upload');
   expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST', credentials: 'include' });
-  expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT', headers: { 'x-upsert': 'false' } });
+  expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toMatchObject({ uploadPurpose: 'product-image' });
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT', credentials: 'omit', headers: { 'x-upsert': 'false' } });
   const body = fetchMock.mock.calls[1][1]?.body as FormData;
   expect(body.get('cacheControl')).toBe('3600');
   expect((body.get('') as File).type).toBe('image/webp');
@@ -47,6 +48,25 @@ test('does not assign an upload when its provider lacks the customer image proxy
   Object.defineProperty(input, 'files', { configurable: true, value: [new File(['image'], 'sign.png', { type: 'image/png' })] });
   await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
   expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(onUploaded).not.toHaveBeenCalled();
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+test('does not register image metadata when the signed upload cannot reach storage', async () => {
+  const uploadUrl = 'https://storage.example.com/upload?token=secret';
+  const fetchMock = jest.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    if (input === '/api/objects/upload') return { ok: true, json: async () => ({ storageTarget: 'supabase', method: 'PUT', url: uploadUrl, path: 'uploads/product-images/org_a/image-uuid' }) } as Response;
+    if (input === uploadUrl) throw new TypeError('Failed to fetch');
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  global.fetch = fetchMock as any;
+  const onChange = jest.fn();
+  const onUploaded = jest.fn();
+  await act(async () => root.render(<ObjectUploader value={[]} onChange={onChange} onUploaded={onUploaded} />));
+  const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+  Object.defineProperty(input, 'files', { configurable: true, value: [new File(['image'], 'sign.webp', { type: 'image/webp' })] });
+  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({ credentials: 'omit' });
   expect(onUploaded).not.toHaveBeenCalled();
   expect(onChange).not.toHaveBeenCalled();
 });

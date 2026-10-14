@@ -70,7 +70,7 @@ import { storageRegistry } from "../services/storage/StorageRegistry";
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { fileRecordRepository } from "../storage/fileRecord.repo";
-import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
+import { canReadProductImageKey, extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
 let hasLoggedPdfObjectsResponse = false;
@@ -951,8 +951,13 @@ export async function registerAttachmentRoutes(
 
     // Tenant safety (compatible with legacy keys):
     // - If the key contains an org segment anywhere, enforce it matches organizationId.
-    // - Otherwise allow (mirrors existing behavior while still avoiding obvious cross-tenant reads).
+    // - New product images also carry an explicit tenant segment, including UUID org IDs.
+    // - Other legacy keys without a tenant segment keep their existing behavior.
     const orgInKey = extractNormalizedOrgIdFromKey(requestedKeyRaw);
+    if (!canReadProductImageKey(requestedKeyRaw, organizationId)) {
+      logThumb4xx(req, 403, "unauthorized", requestedKeyRaw);
+      return res.status(403).json({ error: "Access denied" });
+    }
     if (orgInKey && orgInKey !== organizationId) {
       logThumb4xx(req, 403, "unauthorized", requestedKeyRaw);
       return res.status(403).json({ error: "Access denied" });
@@ -1542,6 +1547,7 @@ export async function registerAttachmentRoutes(
         fileName,
         fileSizeBytes: Number.isFinite(fileSizeBytes) ? fileSizeBytes : 0,
         requestedTarget: requestedStorageTarget,
+        uploadPurpose: body.uploadPurpose === "product-image" ? "product-image" : undefined,
       });
 
       res.json(initiated);

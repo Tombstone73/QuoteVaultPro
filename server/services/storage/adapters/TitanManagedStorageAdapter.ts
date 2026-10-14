@@ -27,6 +27,7 @@ import type {
   StorageResourceContext,
 } from "./StorageProviderAdapter";
 import { normalizeRequestedStorageTarget } from "./StorageProviderAdapter";
+import { signedUploadFolder } from "../productImageUploadPath";
 
 const TITAN_MANAGED_BUCKET = "titan-private";
 
@@ -75,6 +76,7 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     fileName?: string | null;
     fileSizeBytes: number;
     requestedTarget?: string | null;
+    uploadPurpose?: "product-image";
     providerConfig: StorageProviderConfig;
   }): Promise<{
     storageTarget: "supabase" | "local_dev";
@@ -104,7 +106,8 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
 
     if (storageTarget === "supabase" && isSupabaseConfigured()) {
       const supabase = new SupabaseStorageService();
-      const signed = await supabase.getSignedUploadUrl({ folder: "uploads" });
+      const folder = signedUploadFolder("uploads", input.organizationId, input.uploadPurpose);
+      const signed = await supabase.getSignedUploadUrl({ folder });
       return {
         storageTarget,
         maxCloudBytes,

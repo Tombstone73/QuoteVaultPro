@@ -59,6 +59,7 @@ export function ObjectUploader({
           body: JSON.stringify({
             fileName: file.name,
             fileSizeBytes: file.size,
+            uploadPurpose: "product-image",
           }),
         });
 
@@ -78,14 +79,22 @@ export function ObjectUploader({
         const body = new FormData();
         body.append("cacheControl", "3600");
         body.append("", file);
-        const uploadResponse = await fetch(url, {
-          method,
-          headers: { "x-upsert": "false" },
-          body,
-        });
+        let uploadResponse: Response;
+        try {
+          uploadResponse = await fetch(url, {
+            method,
+            // Signed Storage URLs use their token, not the app's session cookie.
+            // This also overrides the app-wide fetch wrapper's include default.
+            credentials: "omit",
+            headers: { "x-upsert": "false" },
+            body,
+          });
+        } catch {
+          throw new Error("Could not reach image storage. Please retry the upload.");
+        }
 
         if (!uploadResponse.ok) {
-          throw new Error("Failed to upload file");
+          throw new Error(`Image storage rejected the upload (HTTP ${uploadResponse.status}).`);
         }
 
         uploadedFiles.push({ url: `/objects/${path}`, filename: file.name, fileSize: file.size, mimeType: file.type });

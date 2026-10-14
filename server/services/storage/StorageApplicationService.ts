@@ -53,6 +53,7 @@ export class StorageApplicationService {
     fileName?: string | null;
     fileSizeBytes: number;
     requestedTarget?: string | null;
+    uploadPurpose?: "product-image";
   }) {
     const policy = await storagePolicyResolver.resolve(input.organizationId);
     const providerConfig = storagePolicyResolver.resolveIntakeStorageBehavior(policy);
@@ -62,6 +63,7 @@ export class StorageApplicationService {
       fileName: input.fileName,
       fileSizeBytes: input.fileSizeBytes,
       requestedTarget: input.requestedTarget,
+      uploadPurpose: input.uploadPurpose,
       providerConfig,
     });
   }

@@ -77,6 +77,16 @@ export function extractNormalizedOrgIdFromKey(inputKey: string): string | null {
   return normalized.startsWith("org_") ? normalized : null;
 }
 
+/** New product images have an explicit tenant segment even when IDs are UUIDs. */
+export function getProductImageTenantFromKey(inputKey: string): string | null {
+  return inputKey.match(/(?:^|\/)product-images\/([^/]+)\//)?.[1] ?? null;
+}
+
+export function canReadProductImageKey(inputKey: string, organizationId: string): boolean {
+  const imageTenant = getProductImageTenantFromKey(inputKey);
+  return imageTenant === null || imageTenant === organizationId;
+}
+
 /**
  * Normalizes an object key that is expected to start with an orgId segment.
  *

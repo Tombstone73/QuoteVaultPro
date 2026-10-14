@@ -40,6 +40,7 @@ export interface StorageProviderAdapter {
     fileName?: string | null;
     fileSizeBytes: number;
     requestedTarget?: string | null;
+    uploadPurpose?: "product-image";
     providerConfig: StorageProviderConfig;
   }): Promise<{
     storageTarget: TitanManagedStorageTarget;

@@ -18,6 +18,7 @@ import type {
   StoredObjectDescriptor,
 } from "./StorageProviderAdapter";
 import { normalizeRequestedStorageTarget } from "./StorageProviderAdapter";
+import { signedUploadFolder } from "../productImageUploadPath";
 
 function buildRelativePath(resource: StorageResourceContext, storedFilename: string, pathPrefix?: string | null): string {
   const base = generateRelativePath({
@@ -67,6 +68,7 @@ export class SupabaseStorageAdapter implements StorageProviderAdapter {
     fileName?: string | null;
     fileSizeBytes: number;
     requestedTarget?: string | null;
+    uploadPurpose?: "product-image";
     providerConfig: StorageProviderConfig;
   }): Promise<{
     storageTarget: "supabase" | "local_dev";
@@ -79,7 +81,10 @@ export class SupabaseStorageAdapter implements StorageProviderAdapter {
   }> {
     const normalized = normalizeSupabaseStorageProviderConfig(input.providerConfig.configJson);
     const service = new SupabaseStorageService(normalized.bucketName.trim());
-    const signed = await service.getSignedUploadUrl({ folder: normalized.pathPrefix || "uploads" });
+    const folder = signedUploadFolder(normalized.pathPrefix || "uploads", input.organizationId, input.uploadPurpose);
+    const signed = await service.getSignedUploadUrl({
+      folder,
+    });
     return {
       storageTarget: "supabase",
       maxCloudBytes: Number.MAX_SAFE_INTEGER,
