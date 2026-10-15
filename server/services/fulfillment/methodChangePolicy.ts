@@ -29,3 +29,18 @@ export function planFulfillmentMethodChange(input: {
   return { allowed: true, unchanged: false, draftIdsToVoid: input.draftShipments.map(shipment => shipment.id),
     shippingCents, shippingChargeChanged: shippingCents !== previousCharge };
 }
+
+/** Preserve known billing-review responses without exposing unexpected errors. */
+export function methodChangeAccountingBlock(error: unknown): { status: 409; code: string; message: string } | null {
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as { statusCode?: unknown; code?: unknown; message?: unknown };
+  if (candidate.statusCode !== 409 ||
+    (candidate.code !== "ORDER_INVOICE_SYNC_BLOCKED" && candidate.code !== "ORDER_NOT_EDITABLE")) return null;
+  return {
+    status: 409,
+    code: candidate.code,
+    message: typeof candidate.message === "string" && candidate.message.trim()
+      ? candidate.message
+      : "The linked Invoice needs billing review before changing fulfillment method.",
+  };
+}
