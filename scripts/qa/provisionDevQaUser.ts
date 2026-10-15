@@ -1,6 +1,6 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { getDevQaProvisioningConfig } from "../../server/lib/devQaProvisioningGuard";
 import { auditLogs, authIdentities, organizations, userOrganizations, users } from "../../shared/schema";
 
@@ -14,19 +14,44 @@ async function provision() {
   const { db } = databaseModule;
 
   return db.transaction(async (tx) => {
+    const identity = await tx.execute(sql`select current_database() as database_name, current_user as database_user`);
+    if (identity.rows.length !== 1 || identity.rows[0].database_name !== config.databaseName || identity.rows[0].database_user !== config.databaseUser) {
+      throw new Error('DEV QA database connection identity does not match the approved connection.');
+    }
+
     const [organization] = await tx
-      .select({ id: organizations.id, slug: organizations.slug, isArchived: organizations.isArchived, deleteState: organizations.deleteState })
+      .select({ id: organizations.id, slug: organizations.slug, type: organizations.type, status: organizations.status, isArchived: organizations.isArchived, deleteState: organizations.deleteState })
       .from(organizations)
       .where(eq(organizations.id, config.organizationId))
       .limit(1);
 
-    if (!organization || organization.slug.toLowerCase() !== config.organizationSlug || organization.isArchived || organization.deleteState !== "active") {
+    if (!organization || organization.slug.toLowerCase() !== config.organizationSlug || organization.type !== 'internal' || organization.status !== 'active' || organization.isArchived || organization.deleteState !== "active") {
       throw new Error("Configured DEV QA organization is missing, inactive, or does not match the expected slug.");
     }
 
-    const [existingUser] = await tx.select().from(users).where(eq(users.email, config.email)).limit(1);
+    const matchingUsers = await tx.select().from(users).where(sql`lower(${users.email}) = ${config.email}`).limit(2);
+    if (matchingUsers.length > 1) {
+      throw new Error('Configured DEV QA email matches multiple identities; refusing to modify them.');
+    }
+    const [existingUser] = matchingUsers;
     if (existingUser && existingUser.accountType !== "INTERNAL_USER") {
       throw new Error("Configured DEV QA email belongs to a non-internal identity; refusing to modify it.");
+    }
+
+    if (existingUser) {
+      const [provisioningRecord] = await tx.select({ id: auditLogs.id }).from(auditLogs).where(and(
+        eq(auditLogs.organizationId, config.organizationId),
+        eq(auditLogs.entityId, existingUser.id),
+        eq(auditLogs.entityType, 'user'),
+        eq(auditLogs.actionType, 'DEV_QA_USER_CREATED'),
+      )).limit(1);
+      if (!provisioningRecord || existingUser.firstName !== 'DEV QA' || existingUser.lastName !== 'Browser') {
+        throw new Error('Configured DEV QA email belongs to an identity without dedicated QA provenance; refusing to modify it.');
+      }
+      const identities = await tx.select({ provider: authIdentities.provider }).from(authIdentities).where(eq(authIdentities.userId, existingUser.id));
+      if (identities.some((identity) => identity.provider !== 'password')) {
+        throw new Error('Configured DEV QA identity has another authentication provider; refusing to modify it.');
+      }
     }
 
     if (existingUser) {
@@ -88,6 +113,12 @@ async function provision() {
         set: { role: ORG_ADMIN_ROLE, isDefault: true, updatedAt: now },
       });
 
+    const memberships = await tx.select({ organizationId: userOrganizations.organizationId, role: userOrganizations.role })
+      .from(userOrganizations).where(eq(userOrganizations.userId, user.id));
+    if (memberships.length !== 1 || memberships[0].organizationId !== config.organizationId || memberships[0].role !== ORG_ADMIN_ROLE || user.isPlatformAdmin || user.isPlatformDeveloper) {
+      throw new Error('DEV QA account verification failed; transaction rolled back.');
+    }
+
     await tx.insert(auditLogs).values({
       organizationId: config.organizationId,
       userId: user.id,
@@ -112,7 +143,9 @@ provision()
     console.log(JSON.stringify({ success: true, ...result }));
   })
   .catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : "DEV QA provisioning failed.";
+    // Database driver errors may contain connection details; only emit our known safe failures.
+    const message = error instanceof Error && /^(DEV QA|Configured DEV QA)/.test(error.message)
+      ? error.message : "DEV QA provisioning failed; inspect protected Railway diagnostics.";
     console.error(JSON.stringify({ success: false, message }));
     process.exitCode = 1;
   })

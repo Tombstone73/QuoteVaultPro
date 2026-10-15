@@ -6,21 +6,42 @@ bypass, or an application-only QA route.
 
 ## One-time DEV account provisioning
 
-Use the guarded Railway DEV command below to create the account with the same
+Use the guarded Railway DEV commands below to create the account with the same
 normal `users`, password `auth_identities`, and `user_organizations` records
 used by the application. It is idempotent for the dedicated QA email and never
 prints credentials or connection details:
 
-1. Set the named QA configuration in the Railway DEV environment only, including
-   `PRINTERSHERO_DEV_QA_PROVISION_ENABLED=true` for the one-time run.
-2. Run `npm run qa:provision-dev-user` in the Railway DEV service shell.
-3. Remove `PRINTERSHERO_DEV_QA_PROVISION_ENABLED` after the command succeeds.
+1. In the Railway dashboard, select the intended DEV project, environment, API
+   service, and PostgreSQL service. Review the service's `DATABASE_URL` reference
+   and DEV frontend origin. Do not copy or print the connection URL.
+2. Run `npm run qa:inspect-dev-target` in that Railway DEV service context. This
+   read-only command verifies the connected database user/name and reports only
+   an opaque database identity, Railway environment ID, active internal org
+   IDs/slugs, and whether the configured QA email already exists. Compare these
+   facts with the reviewed Railway DEV services before proceeding.
+3. Set `PRINTERSHERO_DEV_QA_APPROVED_RAILWAY_ENVIRONMENT_ID` to the reviewed DEV
+   environment ID and `PRINTERSHERO_DEV_QA_APPROVED_DATABASE_IDENTITY` to the
+   inspected `sha256:...` database identity. Set the dedicated QA email, a new
+   strong password of at least 16 characters, expected org ID/slug, and approved origin in the DEV service
+   secrets. Set `PRINTERSHERO_DEV_QA_PROVISION_ENABLED=true` only for the run.
+4. Run `npm run qa:provision-dev-user` in the Railway DEV service context.
+   Existing email collisions without this command's creation audit record fail
+   closed; inspect those manually rather than resetting an unrelated account.
+5. Remove `PRINTERSHERO_DEV_QA_PROVISION_ENABLED` after the command succeeds.
 
-The command requires `NODE_ENV=production`, `APP_ENV=development`, the reviewed
-`https://dev.printershero.com` public origin, and the known DEV-cloud database.
-It rejects local, unknown, and production environments. The account is a normal
+The command requires `NODE_ENV=production`, `APP_ENV=development`, the Railway
+DEV environment name and exact approved ID, the reviewed
+`https://dev.printershero.com` public origin, and the exact approved PostgreSQL
+connection identity. It verifies the actual connected database user/name before
+writing and rejects local, mismatched, and production configurations. The account is a normal
 DEV org-admin identity with exactly one organization membership; it is not a
 service account and has no platform-admin privileges.
+
+The database identity is a SHA-256 digest of the connection host, effective port,
+username, and database name. It omits the password and changes if any of those
+connection components change. Reinspect and explicitly reapprove after a DEV
+database move. The general runtime classifier retains its existing behavior;
+the provisioning command uses this narrower positive identity check.
 
 To retire the account, remove its DEV organization membership using the same
 normal user-management surface. Do not use this fixture against another target.
@@ -42,9 +63,8 @@ PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG
 ```
 
 For the standard deployment, both origin settings are `https://dev.printershero.com`.
-If DEV moves to another frontend origin, change both settings to that reviewed DEV
-origin. The fixture rejects `printershero.com`, `www.printershero.com`, and
-`api.printershero.com`, then requires `/api/health` to return the approved DEV
+The fixture accepts only this reviewed DEV origin. It rejects `printershero.com`,
+`www.printershero.com`, and `api.printershero.com`, then requires `/api/health` to return the approved DEV
 public origin and the authenticated runtime API to classify itself as
 `deployed-dev`. Railway DEV may correctly run with `NODE_ENV=production`.
 

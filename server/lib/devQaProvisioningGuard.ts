@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getRuntimeEnvironmentSummary } from "./runtimeEnvironment";
 
 export type DevQaProvisioningConfig = {
@@ -5,6 +6,8 @@ export type DevQaProvisioningConfig = {
   password: string;
   organizationId: string;
   organizationSlug: string;
+  databaseName: string;
+  databaseUser: string;
 };
 
 function required(env: Record<string, string | undefined>, name: string): string {
@@ -27,10 +30,24 @@ function normalizedOrigin(value: string, name: string): URL {
   }
 }
 
+/** Opaque identity of the PostgreSQL endpoint, user and database; never includes credentials. */
+export function databaseIdentityFingerprint(databaseUrl: string | undefined): string | null {
+  try {
+    const url = new URL(databaseUrl ?? "");
+    if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.username || url.pathname.length <= 1) {
+      return null;
+    }
+    const identity = [url.hostname.toLowerCase(), url.port || '5432', decodeURIComponent(url.username), decodeURIComponent(url.pathname.slice(1))].join('\n');
+    return `sha256:${createHash('sha256').update(identity).digest('hex')}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The QA user command is deliberately narrower than a general development
  * switch: it can run only from the deployed PrintersHero DEV environment and
- * its known DEV-cloud database. Local and production configurations fail closed.
+ * an independently reviewed database identity. Local and production configurations fail closed.
  */
 export function getDevQaProvisioningConfig(
   env: Record<string, string | undefined> = process.env,
@@ -47,6 +64,19 @@ export function getDevQaProvisioningConfig(
   // Requiring that combination prevents accidental use from a local shell.
   if (env.NODE_ENV?.trim().toLowerCase() !== "production") {
     throw new Error("DEV QA provisioning requires the deployed DEV server runtime (NODE_ENV=production).");
+  }
+
+  if (!['dev', 'development'].includes(env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() ?? '') ||
+      !env.RAILWAY_ENVIRONMENT_ID?.trim() ||
+      env.RAILWAY_ENVIRONMENT_ID.trim() !== required(env, 'PRINTERSHERO_DEV_QA_APPROVED_RAILWAY_ENVIRONMENT_ID')) {
+    throw new Error('DEV QA provisioning requires the explicitly approved Railway DEV environment.');
+  }
+
+  const approvedDatabaseIdentity = required(env, 'PRINTERSHERO_DEV_QA_APPROVED_DATABASE_IDENTITY');
+  const actualDatabaseIdentity = databaseIdentityFingerprint(env.DATABASE_URL);
+  if (!/^sha256:[a-f0-9]{64}$/.test(approvedDatabaseIdentity) ||
+      actualDatabaseIdentity === null || actualDatabaseIdentity !== approvedDatabaseIdentity) {
+    throw new Error('DEV QA provisioning requires the explicitly approved PostgreSQL database identity.');
   }
 
   const allowedOrigin = normalizedOrigin(
@@ -70,15 +100,23 @@ export function getDevQaProvisioningConfig(
   if (
     runtime.appRuntime !== "deployed-dev" ||
     runtime.apiRuntime !== "deployed-dev" ||
-    runtime.databaseRuntime !== "dev-cloud"
+    runtime.databaseRuntime === "local" ||
+    runtime.databaseRuntime === "production-cloud"
   ) {
-    throw new Error("DEV QA provisioning is unavailable outside the deployed DEV application and DEV cloud database.");
+    throw new Error("DEV QA provisioning is unavailable outside the deployed DEV application and approved cloud database.");
+  }
+
+  const password = required(env, 'PRINTERSHERO_DEV_QA_PASSWORD');
+  if (password.length < 16) {
+    throw new Error('DEV QA provisioning requires a password of at least 16 characters.');
   }
 
   return {
     email: required(env, "PRINTERSHERO_DEV_QA_EMAIL").toLowerCase(),
-    password: required(env, "PRINTERSHERO_DEV_QA_PASSWORD"),
+    password,
     organizationId: required(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID"),
     organizationSlug: required(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG").toLowerCase(),
+    databaseName: decodeURIComponent(new URL(env.DATABASE_URL!).pathname.slice(1)),
+    databaseUser: decodeURIComponent(new URL(env.DATABASE_URL!).username),
   };
 }

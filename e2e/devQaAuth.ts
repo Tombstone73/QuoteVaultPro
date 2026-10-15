@@ -18,9 +18,10 @@ const PRODUCTION_HOSTS = new Set([
   "www.printershero.com",
   "api.printershero.com",
 ]);
+const APPROVED_DEV_ORIGIN = 'https://dev.printershero.com';
 
-function requireEnv(name: string): string {
-  const value = process.env[name]?.trim();
+function requireEnv(env: Record<string, string | undefined>, name: string): string {
+  const value = env[name]?.trim();
   if (!value) {
     throw new Error(`[DEV QA auth] ${name} is required (value not logged).`);
   }
@@ -35,8 +36,8 @@ function parseOrigin(name: string, value: string): URL {
     throw new Error(`[DEV QA auth] ${name} must be an absolute http(s) origin.`);
   }
 
-  if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.pathname !== "/" || parsed.search || parsed.hash) {
-    throw new Error(`[DEV QA auth] ${name} must be an origin without a path, query, or fragment.`);
+  if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error(`[DEV QA auth] ${name} must be an HTTPS origin without a path, query, or fragment.`);
   }
 
   return parsed;
@@ -52,25 +53,29 @@ function assertSafeDevTarget(baseUrl: URL, allowedOrigin: URL): void {
     throw new Error("[DEV QA auth] PLAYWRIGHT_BASE_URL must exactly match PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN.");
   }
 
+  if (baseUrl.origin !== APPROVED_DEV_ORIGIN || allowedOrigin.origin !== APPROVED_DEV_ORIGIN) {
+    throw new Error('[DEV QA auth] Browser QA is restricted to the approved DEV origin.');
+  }
+
   if (PRODUCTION_HOSTS.has(allowedOrigin.hostname.toLowerCase())) {
     throw new Error(`[DEV QA auth] Refusing production allowed origin ${allowedOrigin.origin}.`);
   }
 }
 
-export function getDevQaConfig(): DevQaConfig {
-  const baseUrl = parseOrigin("PLAYWRIGHT_BASE_URL", requireEnv("PLAYWRIGHT_BASE_URL"));
+export function getDevQaConfig(env: Record<string, string | undefined> = process.env): DevQaConfig {
+  const baseUrl = parseOrigin("PLAYWRIGHT_BASE_URL", requireEnv(env, "PLAYWRIGHT_BASE_URL"));
   const allowedOrigin = parseOrigin(
     "PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN",
-    requireEnv("PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN"),
+    requireEnv(env, "PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN"),
   );
   assertSafeDevTarget(baseUrl, allowedOrigin);
 
   return {
     baseUrl,
-    email: requireEnv("PRINTERSHERO_DEV_QA_EMAIL").toLowerCase(),
-    password: requireEnv("PRINTERSHERO_DEV_QA_PASSWORD"),
-    expectedOrganizationId: requireEnv("PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID"),
-    expectedOrganizationSlug: requireEnv("PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG").toLowerCase(),
+    email: requireEnv(env, "PRINTERSHERO_DEV_QA_EMAIL").toLowerCase(),
+    password: requireEnv(env, "PRINTERSHERO_DEV_QA_PASSWORD"),
+    expectedOrganizationId: requireEnv(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID"),
+    expectedOrganizationSlug: requireEnv(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG").toLowerCase(),
   };
 }
 
