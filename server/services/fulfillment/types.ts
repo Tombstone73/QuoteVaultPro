@@ -121,6 +121,8 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       thumbnailStatus?: 'ready' | 'pending' | 'failed' | null;
       /** Canonical file identity for authenticated thumbnail/preview access. */
       fileRecordId: string | null;
+      productionQuantity?: number | null;
+      productionGroupId?: string | null;
       fileName: string;
       fileUrl: string | null;
       originalUrl: string | null;

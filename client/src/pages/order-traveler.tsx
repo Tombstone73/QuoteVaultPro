@@ -30,6 +30,10 @@ import {
 import { Printer, ArrowLeft } from "lucide-react";
 import { apiFetch } from "@/lib/queryClient";
 import { travelerFeedSpacerMm } from "@/lib/travelerTrailingFeed";
+import { useFulfillmentOrderDetailQuery } from "@/hooks/useFulfillment";
+import { useTicketArtworkThumbnails } from "@/hooks/useTicketArtworkThumbnails";
+import { buildArtworkOutputSets } from "@shared/artworkAllocation";
+import { parseItemTagRequest, validTagQuantity } from "@/lib/itemTagPrint";
 
 export function hasValidDirectPrintJobId(value: string | null): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
@@ -62,6 +66,7 @@ export default function OrderTravelerPage() {
   const directPrintJobId = searchParams.get("directPrintJobId");
   const printNote = searchParams.get("printNote")?.trim() || null;
   const feedMm = Number(searchParams.get("feedMm"));
+  const tagRequest = parseItemTagRequest(searchParams);
 
   // The direct shell is intentionally separate from the staff experience so
   // WebView2 does not start authenticated printer-profile queries or render
@@ -70,7 +75,104 @@ export default function OrderTravelerPage() {
     return <DirectPrintTravelerRenderer orderId={orderId} directPrintJobId={directPrintJobId} printNote={printNote} feedMm={feedMm} />;
   }
 
+  if (tagRequest) return <ItemTagRenderer orderId={orderId} request={tagRequest} />;
+
   return <InteractiveTravelerRenderer orderId={orderId} printNote={printNote} feedMm={feedMm} />;
+}
+
+function ItemTagRenderer({ orderId, request }: {
+  orderId: string | undefined;
+  request: NonNullable<ReturnType<typeof parseItemTagRequest>>;
+}) {
+  const source = useOrderTraveler(orderId, null);
+  const fulfillment = useFulfillmentOrderDetailQuery(orderId);
+  const printer = useStationPrinter();
+  const [withoutThumbnails, setWithoutThumbnails] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const includeThumbnails = request.includeThumbnails && !withoutThumbnails;
+  const line = source.data?.lineItems.find(item => item.orderLineItemId === request.lineItemId);
+  const detailLine = fulfillment.data?.lineItems.find(item => item.id === request.lineItemId);
+  const orderedQuantity = line?.quantity;
+  const quantityMismatch = detailLine?.quantity != null && detailLine.quantity !== orderedQuantity;
+  const invalidQuantity = request.quantity !== null && !validTagQuantity(request.quantity, orderedQuantity);
+  const artwork = detailLine?.artwork ?? [];
+  const thumbnailRecords = artwork.map(item => ({ id: item.id, fileRecordId: item.fileRecordId }));
+  const thumbnails = useTicketArtworkThumbnails(thumbnailRecords, includeThumbnails);
+  const template = useMemo(() => loadTicketTemplate(), []);
+
+  useEffect(() => {
+    if (!orderId || !line) return;
+    let active = true;
+    const url = `${window.location.origin}/orders/${encodeURIComponent(orderId)}`;
+    void QRCode.toDataURL(url, { margin: 1, width: 200, errorCorrectionLevel: "M" })
+      .then(value => { if (active) setQrDataUrl(value); })
+      .catch(() => { if (active) setQrDataUrl(null); });
+    return () => { active = false; };
+  }, [orderId, line?.orderLineItemId]);
+
+  if (source.isLoading || fulfillment.isLoading) return <CenteredMessage>Loading item tag…</CenteredMessage>;
+  if (source.error || fulfillment.error || !source.data || !fulfillment.data || source.data.orderId !== orderId || fulfillment.data.orderId !== orderId || !line || !detailLine || quantityMismatch || invalidQuantity || !validTagQuantity(orderedQuantity, orderedQuantity)) {
+    return <CenteredMessage>Item tag is unavailable for this Order line or quantity.</CenteredMessage>;
+  }
+
+  const traveler = buildOrderTravelerData({ ...source.data, lineItems: [line] }, template);
+  const lineIndex = source.data.lineItems.findIndex(item => item.orderLineItemId === request.lineItemId) + 1;
+  const tagQuantity = request.quantity ?? orderedQuantity;
+  const sets = buildArtworkOutputSets(artwork.map(item => ({
+    id: item.id, role: "final", side: item.side,
+    productionQuantity: item.productionQuantity ?? null,
+    productionGroupId: item.productionGroupId ?? null,
+  })));
+  const artworkById = new Map(artwork.map(item => [item.id, item]));
+  const fulfillmentLabel = fulfillment.data.fulfillmentMethod === "pickup" ? "Pickup" : fulfillment.data.fulfillmentMethod === "deliver" ? "Delivery" : "Shipping";
+
+  async function printTag() {
+    if (printer.profiles.length > 0 && !printer.selectedProfile) return;
+    if (thumbnails.loading || thumbnails.unavailable) return;
+    setPrintError(null);
+    try {
+      await document.fonts.ready;
+      await Promise.all(Array.from(document.querySelectorAll<HTMLImageElement>("#ticket-print-area img")).map(image => image.decode()));
+      if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
+      window.print();
+    } catch {
+      setPrintError("An image could not be rendered. Retry or print without thumbnails.");
+    }
+  }
+
+  return <div className="min-h-screen bg-muted/40 print:bg-white">
+    <style dangerouslySetInnerHTML={{ __html: THERMAL_PRINT_STYLES }} />
+    <div className="ticket-no-print sticky top-0 z-10 border-b bg-background"><div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 py-3">
+      <Button variant="ghost" size="sm" onClick={() => window.history.back()}><ArrowLeft className="mr-1 h-4 w-4" />Back</Button>
+      <span className="text-sm font-semibold">Item Tag · Line {lineIndex}</span>
+      <Button className="ml-auto" size="sm" disabled={thumbnails.loading || thumbnails.unavailable || (printer.profiles.length > 0 && !printer.selectedProfile)} onClick={() => void printTag()}><Printer className="mr-1 h-4 w-4" />Print Item Tag</Button>
+    </div><div className="mx-auto max-w-3xl px-4 pb-3"><PrinterPicker printer={printer} />
+      {thumbnails.loading && <p className="text-sm">Loading artwork thumbnails…</p>}
+      {(thumbnails.unavailable || printError) && <div role="alert" className="flex flex-wrap items-center gap-2 text-sm"><span>{printError || "An artwork thumbnail is unavailable."}</span><Button variant="outline" size="sm" onClick={() => { setPrintError(null); thumbnails.retry(); }}>Retry</Button><Button variant="outline" size="sm" onClick={() => { setPrintError(null); setWithoutThumbnails(true); }}>Print Without Thumbnails</Button></div>}
+    </div></div>
+    <div className="mx-auto max-w-md px-4 py-6"><ThermalPrintPage ready={!thumbnails.loading && !thumbnails.unavailable}>
+      <ThermalValue align="center" size="large">ITEM TAG</ThermalValue><ThermalDivider heavy />
+      {traveler.headerRows.map(row => <div key={row.key}><ThermalSection compact><ThermalLabel align={row.format.align}>{row.label}</ThermalLabel><div style={ticketRowStyle(row.format)}>{row.value}</div></ThermalSection></div>)}
+      <ThermalSection compact><ThermalLabel>Fulfillment</ThermalLabel><ThermalValue>{fulfillmentLabel}</ThermalValue></ThermalSection>
+      <ThermalDivider heavy />
+      <ThermalSection compact><ThermalLabel>Line {lineIndex} · {request.lineItemId}</ThermalLabel><ThermalValue size="large">{traveler.lineItems[0].description}</ThermalValue></ThermalSection>
+      <ThermalSection compact><ThermalLabel>Quantity on this tag</ThermalLabel><ThermalValue size="xlarge">QTY {tagQuantity} OF {orderedQuantity}</ThermalValue></ThermalSection>
+      <ThermalSection compact><ThermalLabel>Size</ThermalLabel><ThermalValue>{traveler.lineItems[0].size}</ThermalValue></ThermalSection>
+      <ThermalSection compact><ThermalLabel>Material</ThermalLabel><ThermalValue>{traveler.lineItems[0].material}</ThermalValue></ThermalSection>
+      {traveler.lineItems[0].selectedOptions.map((option, index) => <ThermalSection compact key={`${option.optionLabel}-${index}`}><ThermalLabel>{option.optionLabel}</ThermalLabel><ThermalValue>{option.selectedLabel}</ThermalValue></ThermalSection>)}
+      {artwork.length > 0 && <><ThermalDivider /><ThermalSection compact><ThermalLabel>Artwork</ThermalLabel>
+        {sets.map((set, index) => <div key={set.id} style={{ marginTop: "1.5mm" }}><strong>Set {index + 1} · {set.quantity == null ? "Allocation not specified" : `QTY ${set.quantity}`}</strong>
+          {set.memberIds.map(id => { const item = artworkById.get(id); if (!item) return null; const thumbnail = thumbnails.images[id]; return <div key={id} style={{ marginTop: "1mm", fontSize: "12px", overflowWrap: "anywhere" }}>
+            {item.fileName}{item.side ? ` · ${item.side.toUpperCase()}` : ""}
+            {includeThumbnails && thumbnail?.status === "ready" && <img src={thumbnail.src} alt={`${item.fileName} thumbnail`} style={{ width: "100%", maxHeight: "40mm", objectFit: "contain", filter: "grayscale(1) contrast(1.15)", border: "1.5px solid #000" }} />}
+            {includeThumbnails && thumbnail?.status === "unavailable" && <div>Thumbnail unavailable</div>}
+          </div>; })}
+        </div>)}
+      </ThermalSection></>}
+      <ThermalDivider heavy /><ThermalQrBlock qrDataUrl={qrDataUrl} alt="Order QR code" instruction="Scan to open this Order" timestamp={`Prepared ${new Date().toLocaleString()}`} />
+    </ThermalPrintPage></div>
+  </div>;
 }
 
 type TravelerRendererProps = {

@@ -78,6 +78,16 @@ function button(container: HTMLElement, label: string) { return Array.from(conta
 afterEach(() => { document.body.innerHTML = ""; jest.clearAllMocks(); });
 
 describe("FulfillmentWorkspacePage direct fulfillment route", () => {
+  test("offers a read-only item tag for a line without a production job", () => {
+    detail = makeDetail({ production: 0, ready: 0 });
+    const { container, root } = render();
+    expect(detail.lineItems[0].production.jobId).toBeNull();
+    expect(button(container, "Print Item Tag")).toBeTruthy();
+    expect(recordHandoff).not.toHaveBeenCalled();
+    expect(createShipment).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
   test("administrative completion displays separate quantities and requires reason/preview before reopening", async () => {
     detail = makeDetail({ production: 1000 });
     detail.remainingQuantity = 0;
@@ -241,6 +251,8 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     detail.shipments = [{ id: 'existing', status: 'DRAFT', scope: 'SINGLE_ORDER', orderCount: 1 }];
     const { container, root } = render();
     expect(container.querySelector('[data-testid="shipment-editor"]')?.getAttribute('data-shipment-id')).toBe('existing');
+    expect(container.querySelector('[data-testid="fulfillment-item-tags"]')).toBeTruthy();
+    expect(button(container, 'Print Item Tag')).toBeTruthy();
     expect(button(container, 'Start shipment')).toBeUndefined();
     expect(createShipment).not.toHaveBeenCalled();
     act(() => root.unmount());

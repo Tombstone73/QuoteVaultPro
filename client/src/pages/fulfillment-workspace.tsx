@@ -26,6 +26,7 @@ import {
   useReverseTerminalFulfillmentMutation,
 } from "@/hooks/useFulfillment";
 import { PickupTravelerPrintDialog } from "@/components/fulfillment/PickupTravelerPrintDialog";
+import { PrintItemTagButton } from "@/components/production/ItemTagPrintDialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 /** The order is the operator workspace. Shipment and pickup rows are execution evidence. */
@@ -190,6 +191,7 @@ export default function FulfillmentWorkspacePage() {
         const pickupQuantity = pickupQuantityByLine[item.id] ?? "";
         return <article key={item.id} data-testid={`fulfillment-line-${item.id}`} className="space-y-3 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{itemName}</h3><p className="mt-1 text-sm text-muted-foreground">Ordered {orderedQuantity} · Physically fulfilled {fulfilledQuantity} · Administratively resolved {item.production.administrativelyReconciledQuantity ?? 0} · Remaining {remainingQuantity}</p><p className="mt-1 text-xs text-muted-foreground">Production reports: {productionCompleteQuantity}</p></div><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{(item.production.administrativelyReconciledQuantity ?? 0) > 0 ? "Administratively Resolved" : detail.administrativeCorrection?.mode === "legacy" ? "Legacy Completion" : isComplete ? "Physically Fulfilled" : `${remainingQuantity} remaining`}</span></div>
+          <PrintItemTagButton orderId={orderId} lineItemId={item.id} orderedQuantity={item.quantity} />
           {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
@@ -198,6 +200,15 @@ export default function FulfillmentWorkspacePage() {
         <label className="grid gap-1 text-sm font-medium">Pickup note <span className="sr-only">(optional)</span><Textarea aria-label="Pickup note" value={pickupNote} maxLength={2000} className="min-h-10" placeholder="Optional note for this pickup" disabled={pickupPending} onChange={event => setPickupNote(event.target.value)} /></label>
       </div>}
       {isPickup && detail.remainingQuantity > 0 && <div className="flex flex-wrap justify-end gap-2 border-t px-4 py-3"><button type="button" disabled={pickupPending || !pickupTravelerLines.length} className="rounded border px-4 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => { setReprintTraveler(null); setPickupTravelerOpen(true); }}>Print Pickup Travelers</button><button type="button" disabled={pickupPending || !selectedPickupDate} className="rounded bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50" onClick={() => void completePickup()}>{pickupPending ? "Completing…" : "Complete Pickup"}</button></div>}
+    </section>}
+
+    {shipmentId && !isPickup && <section className="rounded-xl border bg-card p-4" data-testid="fulfillment-item-tags">
+      <h2 className="font-bold">Print Item Tags</h2>
+      <p className="mt-1 text-sm text-muted-foreground">Labels are print-only and do not change shipment quantities.</p>
+      <div className="mt-3 divide-y">{detail.lineItems.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+        <span className="text-sm font-semibold">{item.productName || item.description || "Line item"} · Ordered {item.quantity ?? "unknown"}</span>
+        <PrintItemTagButton orderId={orderId} lineItemId={item.id} orderedQuantity={item.quantity} />
+      </div>)}</div>
     </section>}
 
     <PickupTravelerPrintDialog orderId={orderId} lines={pickupTravelerLines} open={pickupTravelerOpen} onOpenChange={setPickupTravelerOpen} reprint={reprintTraveler} onQueued={(id) => { setSelectedTravelerIds(ids => [...ids, id]); void detailQuery.refetch(); }} />

@@ -12,6 +12,8 @@ export type FulfillmentArtworkProjection = {
   sizeBytes: number | null;
   side: ResolvedLineItemArtwork["side"];
   role: ResolvedLineItemArtwork["role"];
+  productionQuantity: number | null;
+  productionGroupId: string | null;
   source: "canonical";
   fileUrl: string;
   originalUrl: string;
@@ -79,6 +81,8 @@ export async function buildFulfillmentArtworkProjection(
       sizeBytes: item.file.sizeBytes,
       side: item.side,
       role: item.role,
+      productionQuantity: item.allocationQuantity,
+      productionGroupId: item.allocationGroupId,
       source: "canonical",
       fileUrl: originalUrl,
       originalUrl,

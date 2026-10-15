@@ -43,6 +43,7 @@ import { useGeneratePackingSlip } from "@/hooks/useShipments";
 import { PackingSlipModal } from "@/components/PackingSlipModal";
 import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
+import { PrintItemTagButton } from "@/components/production/ItemTagPrintDialog";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -425,6 +426,7 @@ function FulfillmentDetailPanel({
                         </div>
                         {item.checklist.notes ? <div className="mt-1 text-xs text-muted-foreground">Issue: {item.checklist.notes}</div> : null}
                         <div className="mt-2 flex flex-wrap gap-2">
+                          <PrintItemTagButton orderId={detail.orderId} lineItemId={item.id} orderedQuantity={item.quantity} />
                           <button
                             type="button"
                             className="rounded-md border border-border px-2 py-1 text-xs font-semibold hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"

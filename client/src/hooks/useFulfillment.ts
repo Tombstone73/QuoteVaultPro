@@ -114,6 +114,8 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     artwork: Array<{
       id: string;
       fileRecordId: string | null;
+      productionQuantity?: number | null;
+      productionGroupId?: string | null;
       fileName: string;
       fileUrl: string | null;
       originalUrl: string | null;

@@ -99,12 +99,13 @@ describe("fulfillment artwork metadata projection", () => {
 
   test("preserves identity, metadata and input ranking with authenticated URLs and null legacy keys", async () => {
     const { executor } = executorFor([derivative("file/1", { derivativeType: "thumbnail" })]);
-    const items = [canonical("file/1"), canonical("file_2", { role: "modified_production", side: "back", lineItemId: "line_2" })];
+    const items = [canonical("file/1", { allocationQuantity: 5, allocationGroupId: "set-1" }), canonical("file_2", { role: "modified_production", side: "back", lineItemId: "line_2" })];
     const result = await buildFulfillmentArtworkProjection("org_1", items, executor);
     expect(result.map((item) => item.role)).toEqual(["customer_source", "modified_production"]);
     expect(result[0]).toEqual({
       id: "rel_file/1", relationshipId: "rel_file/1", fileRecordId: "file/1", fileName: "logo.ai",
       mimeType: "application/postscript", sizeBytes: 4096, side: "front", role: "customer_source", source: "canonical",
+      productionQuantity: 5, productionGroupId: "set-1",
       fileUrl: "/api/artwork/file-records/file%2F1/content", originalUrl: "/api/artwork/file-records/file%2F1/content",
       downloadUrl: "/api/artwork/file-records/file%2F1/content?download=1",
       previewUrl: "/api/artwork/file-records/file%2F1/content?variant=preview",

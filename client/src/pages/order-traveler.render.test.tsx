@@ -9,6 +9,8 @@ type TravelerFetchResponse = { ok: boolean; json: () => Promise<unknown> };
 const mockUseQuery = jest.fn<(options: TravelerQueryOptions) => TravelerQueryResult>();
 const mockUseStationPrinter = jest.fn<() => { profiles: never[]; selectedProfile: null }>();
 const mockApiFetch = jest.fn<(url: string) => Promise<TravelerFetchResponse>>();
+const mockUseFulfillmentOrderDetailQuery = jest.fn();
+const mockUseTicketArtworkThumbnails = jest.fn();
 
 jest.mock("react-router-dom", () => ({
   useParams: () => ({ orderId: "order-xyz" }),
@@ -23,6 +25,8 @@ jest.mock("@/hooks/useProduction", () => ({ logTravelerPrint: jest.fn() }));
 jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: undefined }) }));
 jest.mock("@/components/production/PrinterPicker", () => ({ PrinterPicker: () => null }));
 jest.mock("@/lib/queryClient", () => ({ apiFetch: mockApiFetch }));
+jest.mock("@/hooks/useFulfillment", () => ({ useFulfillmentOrderDetailQuery: mockUseFulfillmentOrderDetailQuery }));
+jest.mock("@/hooks/useTicketArtworkThumbnails", () => ({ useTicketArtworkThumbnails: mockUseTicketArtworkThumbnails }));
 
 import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
 import type { OrderTravelerSource } from "@shared/productionTicket";
@@ -55,12 +59,84 @@ async function renderTraveler(params = new URLSearchParams()) {
 }
 
 beforeEach(() => {
+  mockSearchParams = new URLSearchParams();
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   useQueryMock.mockReset();
   mockUseStationPrinter.mockReturnValue({ profiles: [], selectedProfile: null });
+  mockUseFulfillmentOrderDetailQuery.mockReturnValue({ data: undefined, isLoading: false, error: null });
+  mockUseTicketArtworkThumbnails.mockReturnValue({ images: {}, loading: false, unavailable: false, retry: jest.fn() });
+});
+
+describe("OrderTravelerPage selected-line item tags", () => {
+  const lines = [
+    { orderLineItemId: "line-1", description: "Banner", quantity: 15, size: "7 × 3", material: "Vinyl", selectedOptions: [{ optionLabel: "Hem", selectedLabel: "Yes" }] },
+    { orderLineItemId: "line-2", description: "Yard Sign", quantity: 8, size: "24 × 18", material: "Coroplast" },
+  ];
+  const fulfillmentLine = { id: "line-1", artwork: [{ id: "art-1", fileRecordId: "file-1", fileName: "front.webp", side: "front", productionQuantity: null, productionGroupId: null }] };
+
+  test("5 of 15 shows only the selected line, no production job, and no thumbnail request when OFF", async () => {
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, lineItems: lines }, isLoading: false, error: null });
+    mockUseFulfillmentOrderDetailQuery.mockReturnValue({ data: { orderId: "order-xyz", fulfillmentMethod: "pickup", lineItems: [fulfillmentLine] }, isLoading: false, error: null });
+    mockSearchParams = new URLSearchParams({ lineItemId: "line-1", tagQty: "5" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.textContent).toContain("QTY 5 OF 15");
+    expect(container.textContent).toContain("Banner");
+    expect(container.textContent).toContain("Hem");
+    expect(container.textContent).toContain("front.webp");
+    expect(container.textContent).toContain("Allocation not specified");
+    expect(container.textContent).not.toContain("Yard Sign");
+    expect(container.querySelector('img[alt="front.webp thumbnail"]')).toBeNull();
+    expect(mockUseTicketArtworkThumbnails).toHaveBeenCalledWith([{ id: "art-1", fileRecordId: "file-1" }], false);
+  });
+
+  test("rejects a forged quantity above the authoritative line quantity", async () => {
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, lineItems: lines }, isLoading: false, error: null });
+    mockUseFulfillmentOrderDetailQuery.mockReturnValue({ data: { orderId: "order-xyz", fulfillmentMethod: "pickup", lineItems: [fulfillmentLine] }, isLoading: false, error: null });
+    mockSearchParams = new URLSearchParams({ lineItemId: "line-1", tagQty: "16" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.textContent).toContain("Item tag is unavailable");
+    expect(container.querySelector("#ticket-print-area")).toBeNull();
+  });
+
+  test("groups front/back artwork once and renders an enabled canonical thumbnail", async () => {
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, lineItems: lines }, isLoading: false, error: null });
+    mockUseFulfillmentOrderDetailQuery.mockReturnValue({ data: { orderId: "order-xyz", fulfillmentMethod: "ship", lineItems: [{
+      id: "line-1", artwork: [
+        { ...fulfillmentLine.artwork[0], productionQuantity: 15, productionGroupId: "set-a" },
+        { id: "art-2", fileRecordId: "file-2", fileName: "back.webp", side: "back", productionQuantity: 15, productionGroupId: "set-a" },
+      ],
+    }] }, isLoading: false, error: null });
+    mockUseTicketArtworkThumbnails.mockReturnValue({ images: {
+      "art-1": { status: "ready", src: "blob:front" },
+      "art-2": { status: "ready", src: "blob:back" },
+    }, loading: false, unavailable: false, retry: jest.fn() });
+    mockSearchParams = new URLSearchParams({ lineItemId: "line-1", artworkThumbs: "1" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.textContent?.match(/Set 1/g)).toHaveLength(1);
+    expect(container.textContent).toContain("QTY 15");
+    expect(container.textContent).not.toContain("Set 2");
+    expect(container.querySelectorAll('img[alt$="thumbnail"]')).toHaveLength(2);
+    expect(mockUseTicketArtworkThumbnails).toHaveBeenCalledWith([
+      { id: "art-1", fileRecordId: "file-1" }, { id: "art-2", fileRecordId: "file-2" },
+    ], true);
+  });
+
+  test("missing thumbnail blocks printing and offers retry or no-thumbnail fallback", async () => {
+    useQueryMock.mockReturnValue({ data: { ...travelerSource, lineItems: lines }, isLoading: false, error: null });
+    mockUseFulfillmentOrderDetailQuery.mockReturnValue({ data: { orderId: "order-xyz", fulfillmentMethod: "ship", lineItems: [fulfillmentLine] }, isLoading: false, error: null });
+    mockUseTicketArtworkThumbnails.mockReturnValue({ images: { "art-1": { status: "unavailable" } }, loading: false, unavailable: true, retry: jest.fn() });
+    mockSearchParams = new URLSearchParams({ lineItemId: "line-1", artworkThumbs: "1" });
+    await act(async () => root.render(<OrderTravelerPage />));
+    const print = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Print Item Tag"));
+    expect(print?.disabled).toBe(true);
+    expect(container.textContent).toContain("Thumbnail unavailable");
+    expect(container.textContent).toContain("Retry");
+    expect(container.textContent).toContain("Print Without Thumbnails");
+    expect(container.querySelector('img[alt$="thumbnail"]')).toBeNull();
+  });
 });
 
 afterEach(() => {

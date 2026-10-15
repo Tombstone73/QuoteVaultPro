@@ -47,6 +47,7 @@ import {
 import { Printer, RotateCcw, ArrowLeft } from "lucide-react";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
+import { useTicketArtworkThumbnails } from "@/hooks/useTicketArtworkThumbnails";
 
 /** Capitalize a station key for the Station / Route field (e.g. "flatbed" → "Flatbed"). */
 function titleCase(value: string | null | undefined): string {
@@ -56,7 +57,7 @@ function titleCase(value: string | null | undefined): string {
 
 function artworkQuantityLabel(value: unknown) {
   const quantity = Number(value);
-  return Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved";
+  return value != null && Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "Allocation not specified";
 }
 
 /**
@@ -100,6 +101,18 @@ export default function ProductionTicketPage() {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const printer = useStationPrinter();
   const template = useMemo(() => loadTicketTemplate(), []);
+  const [withoutThumbnails, setWithoutThumbnails] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const includeThumbnails = searchParams.get("thumbs") !== "0" && !withoutThumbnails;
+  const ticketArtwork = (data?.productionFiles?.length ? data.productionFiles : data?.artwork || []).map((art: any) => ({
+    id: art.id,
+    fileRecordId: art.fileRecordId ?? null,
+    fileName: art.fileName || art.originalFilename || "Artwork",
+    productionQuantity: art.productionQuantity ?? art.allocatedQuantity ?? null,
+    productionGroupId: art.productionGroupId ?? art.allocationGroupId ?? null,
+    side: art.side || art.sourceArtworkSide || null,
+  }));
+  const thumbnails = useTicketArtworkThumbnails(ticketArtwork.map(art => ({ id: art.id, fileRecordId: art.fileRecordId })), includeThumbnails);
 
   // Build the link the QR code points back to (job in TitanOS).
   const jobUrl = useMemo(() => {
@@ -183,11 +196,25 @@ export default function ProductionTicketPage() {
     };
   }
 
-  function handlePrint() {
+  async function printReady() {
+    if (thumbnails.loading || thumbnails.unavailable) return false;
+    try {
+      await document.fonts.ready;
+      await Promise.all(Array.from(document.querySelectorAll<HTMLImageElement>("#ticket-print-area img")).map(image => image.decode()));
+      setPrintError(null);
+      return true;
+    } catch {
+      setPrintError("An image could not be rendered. Retry or print without thumbnails.");
+      return false;
+    }
+  }
+
+  async function handlePrint() {
     if (printer.profiles.length > 0 && !printer.selectedProfile) {
       window.alert("Select a printer profile before printing.");
       return;
     }
+    if (!await printReady()) return;
     if (printer.selectedProfile) void markPrinterProfileUsed(printer.selectedProfile.id);
     window.print();
     // Best-effort print-history logging (skipped for the sample ticket).
@@ -198,12 +225,13 @@ export default function ProductionTicketPage() {
     }
   }
 
-  function handleReprint() {
-    if (reprint.isPending) return;
+  async function handleReprint() {
+    if (reprint.isPending || thumbnails.loading || thumbnails.unavailable) return;
     if (printer.profiles.length > 0 && !printer.selectedProfile) {
       window.alert("Select a printer profile before reprinting.");
       return;
     }
+    if (!await printReady()) return;
     reprint.mutate(undefined, {
       // Give the toast/query a tick to settle, then open the print dialog.
       onSuccess: () => {
@@ -221,14 +249,6 @@ export default function ProductionTicketPage() {
     return <CenteredMessage>Failed to load production job ticket.</CenteredMessage>;
   }
 
-  const ticketArtwork = (data?.productionFiles?.length ? data.productionFiles : data?.artwork || []).map((art: any) => ({
-    id: art.id,
-    fileName: art.fileName || art.originalFilename || "Artwork",
-    thumbnailUrl: art.thumbnailUrl || art.thumbUrl || null,
-    productionQuantity: art.productionQuantity ?? art.allocatedQuantity ?? null,
-    productionGroupId: art.productionGroupId ?? art.allocationGroupId ?? null,
-    side: art.side || art.sourceArtworkSide || null,
-  }));
   const ticketArtworkSets = buildArtworkOutputSets(ticketArtwork.map((art) => ({
     id: art.id,
     role: "final",
@@ -267,15 +287,15 @@ export default function ProductionTicketPage() {
           )}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <Button onClick={handlePrint} size="sm" className="gap-1.5" disabled={printer.profiles.length > 0 && !printer.selectedProfile}>
+            <Button onClick={() => void handlePrint()} size="sm" className="gap-1.5" disabled={thumbnails.loading || thumbnails.unavailable || (printer.profiles.length > 0 && !printer.selectedProfile)}>
               <Printer className="h-4 w-4" /> Print Ticket
             </Button>
             {!isSample && (
               <Button
-                onClick={handleReprint}
+                onClick={() => void handleReprint()}
                 size="sm"
                 variant="secondary"
-                disabled={reprint.isPending || (printer.profiles.length > 0 && !printer.selectedProfile)}
+                disabled={reprint.isPending || thumbnails.loading || thumbnails.unavailable || (printer.profiles.length > 0 && !printer.selectedProfile)}
                 className="gap-1.5"
               >
                 <RotateCcw className="h-4 w-4" /> Reprint
@@ -293,6 +313,8 @@ export default function ProductionTicketPage() {
               Print Options destination: <strong>{overrides.destination}</strong>
             </div>
           )}
+          {thumbnails.loading && <p className="text-sm">Loading artwork thumbnails…</p>}
+          {(thumbnails.unavailable || printError) && <div role="alert" className="flex flex-wrap items-center gap-2 text-sm"><span>{printError || "An artwork thumbnail is unavailable."}</span><Button variant="outline" size="sm" onClick={() => { setPrintError(null); thumbnails.retry(); }}>Retry</Button><Button variant="outline" size="sm" onClick={() => { setPrintError(null); setWithoutThumbnails(true); }}>Print Without Thumbnails</Button></div>}
         </div>
       </div>
 
@@ -329,14 +351,10 @@ export default function ProductionTicketPage() {
             </div>
           ))}
 
-          {/* ARTWORK THUMBNAIL — placeholder for future B&W thumbnail support.
-              MVP does not block on thumbnail generation; if a thumbnail exists
-              we show it desaturated, otherwise a labelled placeholder box. */}
-          <ThermalDivider />
+          {ticketArtworkSets.length > 0 && <><ThermalDivider />
           <ThermalSection compact>
             <ThermalLabel>Artwork</ThermalLabel>
-            {ticketArtworkSets.length > 0 ? (
-              ticketArtworkSets.map((set, setIndex) => (
+            {ticketArtworkSets.map((set, setIndex) => (
                 <div key={set.id} style={{ marginTop: "1.5mm" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: "2mm", fontSize: "13px", fontWeight: 900, lineHeight: 1.1 }}>
                     <span>Artwork Set {setIndex + 1}{set.artwork.length > 1 ? ` · ${set.artwork.length} required layers` : ""}</span>
@@ -350,9 +368,9 @@ export default function ProductionTicketPage() {
                           {String(art.side).toUpperCase()}
                         </div>
                       ) : null}
-                      {art.thumbnailUrl ? (
+                      {includeThumbnails && thumbnails.images[art.id]?.status === "ready" ? (
                         <img
-                          src={art.thumbnailUrl}
+                          src={thumbnails.images[art.id].src}
                           alt="Artwork preview"
                           style={{
                             width: "100%",
@@ -364,29 +382,12 @@ export default function ProductionTicketPage() {
                           }}
                         />
                       ) : null}
+                      {includeThumbnails && thumbnails.images[art.id]?.status === "unavailable" ? <div style={{ fontSize: "11px" }}>Thumbnail unavailable</div> : null}
                     </div>
                   ))}
                 </div>
-              ))
-            ) : (
-              <div
-                style={{
-                  border: "1.5px dashed #000",
-                  padding: "5mm 2mm",
-                  textAlign: "center",
-                  fontSize: "14px",
-                  fontWeight: 900,
-                  lineHeight: 1.1,
-                  color: "#000",
-                  marginTop: "1mm",
-                }}
-              >
-                B&amp;W artwork thumbnail
-                <br />
-                coming soon
-              </div>
-            )}
-          </ThermalSection>
+              ))}
+          </ThermalSection></>}
 
           {/* QR CODE — links back to the job in TitanOS */}
           <ThermalDivider />
