@@ -101,6 +101,7 @@ import { ROUTES } from "@/config/routes";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
 import { hasEnteredShipToAddress, resolveCustomerShipTo } from "@/lib/customerShipTo";
+import { ORDER_SHIP_TO_FIELDS, normalizedOrderShipTo, saveAndVerifyOrderShipTo, type OrderShipToField } from "@shared/orderShipTo";
 import { isClearlyGeneratedInboundProvenance } from "@/lib/inboundInternalNotes";
 import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
 import { OrderDiscountInput } from "@/features/quotes/editor/components/OrderDiscountInput";
@@ -318,6 +319,9 @@ export default function OrderDetail() {
   const [poNumberDraft, setPoNumberDraft] = useState("");
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const savingOrderRef = useRef(false);
+  const savingShippingRef = useRef(false);
+  const [shippingSaveStatus, setShippingSaveStatus] = useState<"idle" | "unsaved" | "saving" | "saved" | "failed">("idle");
+  useEffect(() => { setShippingSaveStatus("idle"); }, [orderId]);
   const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
   const [orderDiscountMode, setOrderDiscountMode] = useState<"amount" | "percent">("amount");
   const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
@@ -367,16 +371,7 @@ export default function OrderDetail() {
   const [shippingDraft, setShippingDraft] = useState<string>("");
   const [isEditingShippingDraft, setIsEditingShippingDraft] = useState(false);
 
-  const suppressShipToBlurRef = useRef(false);
   const shipToCompanyInputRef = useRef<HTMLInputElement>(null);
-  const shipToNameInputRef = useRef<HTMLInputElement>(null);
-  const shipToEmailInputRef = useRef<HTMLInputElement>(null);
-  const shipToPhoneInputRef = useRef<HTMLInputElement>(null);
-  const shipToAddress1InputRef = useRef<HTMLInputElement>(null);
-  const shipToAddress2InputRef = useRef<HTMLInputElement>(null);
-  const shipToCityInputRef = useRef<HTMLInputElement>(null);
-  const shipToStateInputRef = useRef<HTMLInputElement>(null);
-  const shipToPostalCodeInputRef = useRef<HTMLInputElement>(null);
 
   const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
   const requestedPanel = searchParams.get("panel");
@@ -648,7 +643,7 @@ export default function OrderDetail() {
     },
   });
   const cancellationEligibilityQuery = useOrderCancellationEligibility(orderId);
-  const updateOrder = useUpdateOrder(orderId!);
+  const updateOrder = useUpdateOrder(orderId!, { suppressSuccessToast: true, suppressErrorToast: true });
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const workflowQuery = useOrderWorkflow();
   const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
@@ -951,6 +946,7 @@ export default function OrderDetail() {
   // Single canonical dirty value: staged order-level edits OR an unsaved line
   // item. This same value drives the Save Order button.
   const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
+  const hasStagedShipToChanges = ORDER_SHIP_TO_FIELDS.some(field => Object.hasOwn(pendingOrderPatch, field));
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
   // Synchronized guard mirror of the same canonical dirty value. Save Order
   // releases this before navigating so a stale registered callback cannot keep
@@ -1006,6 +1002,23 @@ export default function OrderDetail() {
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditSafeOrderMetadata) return;
     setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
+  };
+
+  const stageShipToField = (field: OrderShipToField, value: string) => {
+    if (savingOrderRef.current || savingShippingRef.current) return;
+    setPendingOrderPatch(previous => ({ ...previous, [field]: value }));
+    setShippingSaveStatus("unsaved");
+  };
+
+  const readPersistedOrder = async (): Promise<OrderDetailOrder> => {
+    const response = await apiFetch('/api/orders/' + encodeURIComponent(orderId ?? ''), {
+      credentials: 'include', cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('Could not read back the saved Order. Your shipping details remain available for retry.');
+    const persisted = await response.json() as OrderDetailOrder;
+    if (!persisted || persisted.id !== orderId) throw new Error('Order readback did not match the saved Order. Your shipping details remain available for retry.');
+    queryClient.setQueryData(["orders", "detail", orderId], persisted);
+    return persisted;
   };
 
   const stageOrderDiscount = (amount: number, retainEquivalent = false) => {
@@ -1153,23 +1166,10 @@ export default function OrderDetail() {
     // Ensure manual entry UI is visible/enabled
     enterFulfillmentEdit();
 
-    // Clear fields client-side only (do NOT persist)
-    suppressShipToBlurRef.current = true;
-    if (shipToCompanyInputRef.current) shipToCompanyInputRef.current.value = "";
-    if (shipToNameInputRef.current) shipToNameInputRef.current.value = "";
-    if (shipToEmailInputRef.current) shipToEmailInputRef.current.value = "";
-    if (shipToPhoneInputRef.current) shipToPhoneInputRef.current.value = "";
-    if (shipToAddress1InputRef.current) shipToAddress1InputRef.current.value = "";
-    if (shipToAddress2InputRef.current) shipToAddress2InputRef.current.value = "";
-    if (shipToCityInputRef.current) shipToCityInputRef.current.value = "";
-    if (shipToStateInputRef.current) shipToStateInputRef.current.value = "";
-    if (shipToPostalCodeInputRef.current) shipToPostalCodeInputRef.current.value = "";
-
-    // Focus first field if possible (avoid refactor if not)
-    requestAnimationFrame(() => {
-      shipToCompanyInputRef.current?.focus();
-      suppressShipToBlurRef.current = false;
-    });
+    const cleared = normalizedOrderShipTo({});
+    setPendingOrderPatch(previous => ({ ...previous, ...cleared }));
+    setShippingSaveStatus("unsaved");
+    requestAnimationFrame(() => shipToCompanyInputRef.current?.focus());
   };
 
   const currentFulfillmentMethod: FulfillmentMethod = effectiveOrderFulfillmentMethod(order?.shippingMethod);
@@ -1604,7 +1604,7 @@ export default function OrderDetail() {
   // the pure `orchestrateOrderSave` helper; the step closures below perform the
   // actual mutations.
   const handleSaveOrder = async (routeEligible = false) => {
-    if (!orderId || !order || savingOrderRef.current) return;
+    if (!orderId || !order || savingOrderRef.current || savingShippingRef.current || updateOrder.isPending) return;
     if (!order.customerId && !order.contactId) {
       toast({ title: "Select a customer or contact for this order.", variant: "destructive" });
       return;
@@ -1623,6 +1623,9 @@ export default function OrderDetail() {
       if ((persistedOrder?.poNumber ?? null) !== normalizedPoNumber) {
         nextPatch.poNumber = normalizedPoNumber;
       }
+      const hasShipToChanges = ORDER_SHIP_TO_FIELDS.some(field => Object.hasOwn(nextPatch, field));
+      const intendedShipTo = hasShipToChanges ? normalizedOrderShipTo(order) : null;
+      if (intendedShipTo) Object.assign(nextPatch, intendedShipTo);
       const hasOrderLevelChanges = Object.keys(nextPatch).length > 0;
 
       const result = await orchestrateOrderSave({
@@ -1653,10 +1656,13 @@ export default function OrderDetail() {
               }
               nextPatch.discount = discountCents / 100;
             }
-            await updateOrder.mutateAsync({ ...nextPatch });
-            setPendingOrderPatch({});
+            if (intendedShipTo) {
+              await saveAndVerifyOrderShipTo(intendedShipTo, () => updateOrder.mutateAsync({ ...nextPatch }), readPersistedOrder);
+            } else {
+              await updateOrder.mutateAsync({ ...nextPatch });
+              await readPersistedOrder();
+            }
             await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
-            await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
             await queryClient.invalidateQueries({ queryKey: ["invoices"] });
             await queryClient.refetchQueries({ queryKey: ["invoices"], type: "active" });
             return { ok: true };
@@ -1722,11 +1728,8 @@ export default function OrderDetail() {
 
       logOrderDirtyAudit("after-save-success-before-clear");
 
-      // updateOrder's onSuccess already toasts when order-level fields were
-      // saved; only surface a toast for the line-item-only path.
-      if (!hasOrderLevelChanges) {
-        toast({ title: "Order saved" });
-      }
+      if (hasShipToChanges) setShippingSaveStatus("saved");
+      toast({ title: "Order saved" });
 
       // Commit-and-exit: clear all dirty state then leave the explicit edit route.
       // Direct navigate() is intentionally allowed after a successful save; the
@@ -1820,11 +1823,25 @@ export default function OrderDetail() {
     return trimmed.length ? trimmed : null;
   };
 
-  const saveShipTo = async (payload: ShipToUpdatePayload) => {
+  const saveShippingDetails = async () => {
+    if (!orderId || !order || !hasStagedShipToChanges || savingOrderRef.current || savingShippingRef.current || updateOrder.isPending) return;
+    const intended = normalizedOrderShipTo(order);
+    savingShippingRef.current = true;
+    setShippingSaveStatus("saving");
     try {
-      await applyOrderPatch(payload);
-    } catch (error) {
-      // Error toast handled by mutation
+      await saveAndVerifyOrderShipTo(intended, () => updateOrder.mutateAsync(intended), readPersistedOrder);
+      setPendingOrderPatch(previous => {
+        const remaining = { ...previous };
+        for (const field of ORDER_SHIP_TO_FIELDS) delete remaining[field];
+        return remaining;
+      });
+      setShippingSaveStatus("saved");
+      toast({ title: "Shipping details saved" });
+    } catch (error: any) {
+      setShippingSaveStatus("failed");
+      toast({ title: "Shipping details not saved", description: error?.message || "Could not verify the saved address.", variant: "destructive" });
+    } finally {
+      savingShippingRef.current = false;
     }
   };
 
@@ -1852,6 +1869,7 @@ export default function OrderDetail() {
 
     const next = resolved.data;
     const payload: ShipToUpdatePayload = {
+      shipToName: null,
       shipToCompany: next.company,
       shipToEmail: next.email,
       shipToPhone: next.phone,
@@ -1863,23 +1881,8 @@ export default function OrderDetail() {
       shipToCountry: next.country,
     };
 
-    suppressShipToBlurRef.current = true;
-    if (shipToCompanyInputRef.current) shipToCompanyInputRef.current.value = next.company ?? "";
-    if (shipToEmailInputRef.current) shipToEmailInputRef.current.value = next.email ?? "";
-    if (shipToPhoneInputRef.current) shipToPhoneInputRef.current.value = next.phone ?? "";
-    if (shipToAddress1InputRef.current) shipToAddress1InputRef.current.value = next.address1 ?? "";
-    if (shipToAddress2InputRef.current) shipToAddress2InputRef.current.value = next.address2 ?? "";
-    if (shipToCityInputRef.current) shipToCityInputRef.current.value = next.city ?? "";
-    if (shipToStateInputRef.current) shipToStateInputRef.current.value = next.state ?? "";
-    if (shipToPostalCodeInputRef.current) shipToPostalCodeInputRef.current.value = next.postalCode ?? "";
-
-    try {
-      await saveShipTo(payload);
-    } finally {
-      setTimeout(() => {
-        suppressShipToBlurRef.current = false;
-      }, 0);
-    }
+    setPendingOrderPatch(previous => ({ ...previous, ...payload }));
+    setShippingSaveStatus("unsaved");
   };
 
   /**
@@ -3376,126 +3379,106 @@ export default function OrderDetail() {
                               <label className="text-xs text-muted-foreground">Company</label>
                               <Input
                                 ref={shipToCompanyInputRef}
-                                defaultValue={order.shipToCompany ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToCompany ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToCompany: nextValue });
-                                }}
+                                aria-label="Ship To Company"
+                                value={order.shipToCompany ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToCompany", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1">
                               <label className="text-xs text-muted-foreground">Contact</label>
                               <Input
-                                ref={shipToNameInputRef}
-                                defaultValue={order.shipToName ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToName ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToName: nextValue });
-                                }}
+                                aria-label="Ship To Contact"
+                                value={order.shipToName ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToName", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1">
                               <label className="text-xs text-muted-foreground">Email</label>
                               <Input
-                                ref={shipToEmailInputRef}
-                                defaultValue={order.shipToEmail ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToEmail ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToEmail: nextValue });
-                                }}
+                                aria-label="Ship To Email"
+                                value={order.shipToEmail ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToEmail", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1">
                               <label className="text-xs text-muted-foreground">Phone</label>
                               <Input
-                                ref={shipToPhoneInputRef}
-                                defaultValue={order.shipToPhone ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToPhone ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToPhone: nextValue });
-                                }}
+                                aria-label="Ship To Phone"
+                                value={order.shipToPhone ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToPhone", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1 md:col-span-2">
                               <label className="text-xs text-muted-foreground">Address 1</label>
                               <Input
-                                ref={shipToAddress1InputRef}
-                                defaultValue={order.shipToAddress1 ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToAddress1 ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToAddress1: nextValue });
-                                }}
+                                aria-label="Ship To Address 1"
+                                value={order.shipToAddress1 ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToAddress1", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1 md:col-span-2">
                               <label className="text-xs text-muted-foreground">Address 2</label>
                               <Input
-                                ref={shipToAddress2InputRef}
-                                defaultValue={order.shipToAddress2 ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToAddress2 ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToAddress2: nextValue });
-                                }}
+                                aria-label="Ship To Address 2"
+                                value={order.shipToAddress2 ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToAddress2", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1">
                               <label className="text-xs text-muted-foreground">City</label>
                               <Input
-                                ref={shipToCityInputRef}
-                                defaultValue={order.shipToCity ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToCity ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToCity: nextValue });
-                                }}
+                                aria-label="Ship To City"
+                                value={order.shipToCity ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToCity", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1">
                               <label className="text-xs text-muted-foreground">State</label>
                               <Input
-                                ref={shipToStateInputRef}
-                                defaultValue={order.shipToState ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToState ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToState: nextValue });
-                                }}
+                                aria-label="Ship To State"
+                                value={order.shipToState ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToState", event.target.value)}
                               />
                             </div>
 
                             <div className="space-y-1">
                               <label className="text-xs text-muted-foreground">Postal Code</label>
                               <Input
-                                ref={shipToPostalCodeInputRef}
-                                defaultValue={order.shipToPostalCode ?? ""}
-                                onBlur={(e) => {
-                                  if (suppressShipToBlurRef.current) return;
-                                  const nextValue = normalizeNullableString(e.target.value);
-                                  if ((order.shipToPostalCode ?? null) === nextValue) return;
-                                  void saveShipTo({ shipToPostalCode: nextValue });
-                                }}
+                                aria-label="Ship To Postal Code"
+                                value={order.shipToPostalCode ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToPostalCode", event.target.value)}
                               />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">Country</label>
+                              <Input aria-label="Ship To Country" value={order.shipToCountry ?? ""}
+                                disabled={isSavingOrder || shippingSaveStatus === "saving"}
+                                onChange={(event) => stageShipToField("shipToCountry", event.target.value)} />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3 md:col-span-2">
+                              <Button type="button" onClick={() => void saveShippingDetails()}
+                                disabled={!hasStagedShipToChanges || isSavingOrder || shippingSaveStatus === "saving" || updateOrder.isPending}>
+                                {shippingSaveStatus === "saving" ? "Saving shipping details..." : "Save Shipping Details"}
+                              </Button>
+                              <span role="status" className="text-xs text-muted-foreground">
+                                {shippingSaveStatus === "saving" ? "Saving" : shippingSaveStatus === "failed" ? "Save failed — address kept for retry" : hasStagedShipToChanges ? "Unsaved changes" : shippingSaveStatus === "saved" ? "Saved and verified" : ""}
+                              </span>
                             </div>
                           </div>
                         )}

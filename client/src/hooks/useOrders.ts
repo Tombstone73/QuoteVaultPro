@@ -684,7 +684,7 @@ export function useCreateOrder() {
   });
 }
 
-export function useUpdateOrder(id: string) {
+export function useUpdateOrder(id: string, options: { suppressSuccessToast?: boolean; suppressErrorToast?: boolean } = {}) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -713,17 +713,21 @@ export function useUpdateOrder(id: string) {
         return { ...old, ...updatedOrder };
       });
       
-      toast({
-        title: "Success",
-        description: "Order updated successfully",
-      });
+      if (!options.suppressSuccessToast) {
+        toast({
+          title: "Success",
+          description: "Order updated successfully",
+        });
+      }
     },
     onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
+      if (!options.suppressErrorToast) {
+        toast({
+          title: "Error",
+          description: error.message,
+          variant: "destructive",
+        });
+      }
     },
   });
 }
