@@ -55,6 +55,7 @@ describe("Order tax controls contract", () => {
     expect(journal).toContain('"tag": "0207_order_tax_controls"');
     expect(page).toContain("Tax Settings");
     expect(page).toContain("Tax Exempt for This Order");
-    expect(lines).toContain("Use product default");
+    expect(lines).toContain("Reset taxability");
+    expect(lines).toContain("updateLineItemTaxability.mutateAsync({ id: String(item.id), taxabilityOverride: null })");
   });
 });

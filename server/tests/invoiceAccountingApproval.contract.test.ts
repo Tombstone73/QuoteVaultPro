@@ -58,7 +58,8 @@ test('invoice UI exposes approval list/detail controls and server-side filter', 
   expect(list).toContain('Approve Selected');
   expect(list).toContain('handleApproveInvoice');
   expect(list).toContain("await approveInvoices.mutateAsync([invoice.id])");
-  expect(list).toContain('>Approved</TitanTableHead>');
+  expect(list).toContain('{ id: "approval", label: "Approval"');
+  expect(list).toContain('case "approval": return <TitanTableCell');
   expect(list).toContain('Accounting Approval');
   expect(list).toContain('ACCOUNTING_APPROVAL_OPTIONS');
   expect(list).toContain('Approved + Unsent');
