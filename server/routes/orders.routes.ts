@@ -202,7 +202,7 @@ import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCusto
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
 import { validateDirectOrderDiscount } from "../services/orders/directOrderDiscount";
-import { normalizeOrderPatchFulfillmentMethod, normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
+import { mergeOrderHeaderWithCustomerSnapshot, normalizeOrderPatchFulfillmentMethod, normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
 import { classifyTerminalOrderPatch } from "@shared/terminalOrderEditPolicy";
 import { CustomerCreditPolicyError } from "../services/customerCreditPolicyService";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
@@ -3019,9 +3019,7 @@ export async function registerOrderRoutes(
             // Determine if we need to refresh snapshots
             const customerChanged = req.body.customerId !== undefined && req.body.customerId !== oldOrder?.customerId;
             const contactChanged = req.body.contactId !== undefined && req.body.contactId !== oldOrder?.contactId;
-            const shippingMethodChanged = req.body.shippingMethod && req.body.shippingMethod !== oldOrder?.shippingMethod;
-            const shippingModeChanged = req.body.shippingMode && req.body.shippingMode !== oldOrder?.shippingMode;
-            const shouldRefreshSnapshot = customerChanged || contactChanged || shippingMethodChanged || shippingModeChanged;
+            const shouldRefreshSnapshot = customerChanged || contactChanged;
 
             let snapshotData: Record<string, any> = {};
             if (shouldRefreshSnapshot && oldOrder) {
@@ -3063,8 +3061,7 @@ export async function registerOrderRoutes(
                 orderId: req.params.id,
                 allowNonNew: true, // route already enforces its terminal-edit policy
                 changes: {
-                ...updateDataWithCustomer,
-                ...snapshotData,
+                ...mergeOrderHeaderWithCustomerSnapshot(updateDataWithCustomer, snapshotData),
                 },
             });
 

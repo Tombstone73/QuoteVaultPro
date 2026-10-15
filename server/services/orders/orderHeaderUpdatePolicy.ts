@@ -69,3 +69,18 @@ export function normalizeOrderPatchShipping(
   if (!Number.isFinite(rawShippingCents)) return { error: "Invalid shippingCents" };
   return { shippingCents: Math.max(0, Math.floor(rawShippingCents)) };
 }
+
+/**
+ * Existing Orders own their Ship To destination. A customer identity refresh
+ * updates billing identity only; staff must explicitly request Ship To autofill.
+ * Explicit PATCH fields retain precedence, including null clears.
+ */
+export function mergeOrderHeaderWithCustomerSnapshot(
+  patch: Record<string, unknown>,
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
+  const billingSnapshot = Object.fromEntries(
+    Object.entries(snapshot).filter(([field]) => field.startsWith("billTo")),
+  );
+  return { ...billingSnapshot, ...patch };
+}
