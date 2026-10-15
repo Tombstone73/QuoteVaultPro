@@ -142,6 +142,7 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
   orderId: string;
   actorUserId?: string | null;
   requireDiscountParity?: boolean;
+  requireInvoiceParity?: boolean;
 }) {
     const snapshot = await calculateEditableOrderFinancialSnapshot(executor, input);
     if (!snapshot) return null;
@@ -161,10 +162,10 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
       updatedAt: new Date(),
     } as any).where(and(eq(orders.id, input.orderId), eq(orders.organizationId, input.organizationId))).returning();
     const invoiceSync = await synchronizeOrderBackedInvoiceFromOrderInTransaction(executor, input);
-    if (input.requireDiscountParity && invoiceSync.status !== "updated" && invoiceSync.status !== "unchanged") {
+    if ((input.requireDiscountParity || input.requireInvoiceParity) && invoiceSync.status !== "updated" && invoiceSync.status !== "unchanged") {
       throw Object.assign(new Error("reason" in invoiceSync && invoiceSync.reason
-        ? invoiceSync.reason : "The linked Invoice could not be synchronized. Review billing before changing the Order discount."), {
-        code: "ORDER_DISCOUNT_INVOICE_BLOCKED", statusCode: 409,
+        ? invoiceSync.reason : "The linked Invoice could not be synchronized. Review billing before changing the Order."), {
+        code: input.requireInvoiceParity ? "ORDER_INVOICE_SYNC_BLOCKED" : "ORDER_DISCOUNT_INVOICE_BLOCKED", statusCode: 409,
       });
     }
     return updated ?? null;

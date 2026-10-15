@@ -311,7 +311,16 @@ export class ShipmentRepo {
       // Serialize references for a primary order without making the UUID an
       // operator-facing identifier.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${orgId} || ':' || ${primaryOrderId || ''}))`);
-      const safeCreatedByUserId = await resolveExistingActorUserId(tx, payload.createdByUserId);
+      // Coordinate with method recovery: a Pickup Order cannot acquire a new
+      // active DRAFT after recovery has inspected and voided existing drafts.
+      const linkedOrders = await tx.select({ id: orders.id, shippingMethod: orders.shippingMethod,
+        state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
+        .from(orders).where(and(eq(orders.organizationId, orgId), inArray(orders.id, payload.orderIds)))
+        .orderBy(orders.id).for('no key update', { of: orders });
+      if (linkedOrders.length !== payload.orderIds.length) throw new FulfillmentHttpError(404, 'Order not found.', 'ORDER_NOT_FOUND');
+      if (linkedOrders.some(order => effectiveOrderFulfillmentMethod(order.shippingMethod) === 'pickup' || isCanceledOrder(order))) {
+        throw new FulfillmentHttpError(409, 'A Pickup or canceled Order cannot start a DRAFT shipment. Reload Fulfillment.', 'ORDER_NOT_SHIP_ELIGIBLE');
+      }      const safeCreatedByUserId = await resolveExistingActorUserId(tx, payload.createdByUserId);
       const [order] = primaryOrderId ? await tx.select({ orderNumber: orders.orderNumber })
         .from(orders).where(and(eq(orders.id, primaryOrderId), eq(orders.organizationId, orgId))).limit(1) : [];
       const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipments)
@@ -707,8 +716,8 @@ export class ShipmentRepo {
     }
   }
 
-  async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null) {
-    return this.dbInstance.transaction(async (tx) => {
+  async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null, executor?: DbExecutor) {
+    const voidDraft = async (tx: DbExecutor) => {
       const [shipment] = await tx
         .select()
         .from(shipments)
@@ -726,6 +735,7 @@ export class ShipmentRepo {
         .where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')))
         .returning();
 
+      if (!updated) return { ok: false as const, code: 'INVALID_STATE', message: 'Draft shipment changed while voiding; reload and retry.' };
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
@@ -737,7 +747,8 @@ export class ShipmentRepo {
       });
 
       return { ok: true as const, shipment: updated };
-    });
+    };
+    return executor ? voidDraft(executor) : this.dbInstance.transaction(tx => voidDraft(tx as unknown as DbExecutor));
   }
 
   /**

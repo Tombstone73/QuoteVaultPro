@@ -10,6 +10,7 @@ export class CanonicalFulfillmentOperations {
   listQueue(...args: Parameters<typeof fulfillmentServiceV2.listQueue>) { return fulfillmentServiceV2.listQueue(...args); }
   getOrderDetail(...args: Parameters<typeof fulfillmentServiceV2.getOrderDetail>) { return fulfillmentServiceV2.getOrderDetail(...args); }
   assertFulfillmentMethodChangeAllowed(...args: Parameters<typeof fulfillmentServiceV2.assertFulfillmentMethodChangeAllowed>) { return fulfillmentServiceV2.assertFulfillmentMethodChangeAllowed(...args); }
+  changeFulfillmentMethod(...args: Parameters<typeof fulfillmentServiceV2.changeFulfillmentMethod>) { return fulfillmentServiceV2.changeFulfillmentMethod(...args); }
   markOrderReady(...args: Parameters<typeof fulfillmentServiceV2.markOrderReady>) { return fulfillmentServiceV2.markOrderReady(...args); }
   markOrderReadyForPickup(...args: Parameters<typeof fulfillmentServiceV2.markOrderReadyForPickup>) { return fulfillmentServiceV2.markOrderReadyForPickup(...args); }
   unreadyOrder(...args: Parameters<typeof fulfillmentServiceV2.unreadyOrder>) { return fulfillmentServiceV2.unreadyOrder(...args); }

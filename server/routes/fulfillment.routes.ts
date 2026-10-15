@@ -97,6 +97,21 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  app.post('/api/fulfillment/orders/:orderId/change-method', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const orderId = fulfillmentOrderIdSchema.parse(req.params.orderId);
+      const { method } = z.object({ method: z.enum(['pickup', 'deliver', 'ship']) }).parse(req.body);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      const data = await canonicalFulfillmentOperations.changeFulfillmentMethod(getRequestOrganizationId(req), orderId, method, actorUserId);
+      return res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Choose Pickup, Delivery, or Shipping.' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] method change failed', error);
+      return res.status(500).json({ success: false, message: 'Could not change fulfillment method. Refresh and retry.' });
+    }
+  });
   // Fulfillment Queue Dashboard (backend-only; UI wiring follows separately)
   app.get('/api/fulfillment/queue', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
