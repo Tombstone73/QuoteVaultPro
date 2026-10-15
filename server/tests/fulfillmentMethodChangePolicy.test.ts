@@ -1,4 +1,4 @@
-import { planFulfillmentMethodChange } from "../services/fulfillment/methodChangePolicy";
+import { methodChangeAccountingBlock, planFulfillmentMethodChange } from "../services/fulfillment/methodChangePolicy";
 
 const base = {
   currentMethod: "ship", targetMethod: "pickup" as const, shippingCents: 1250,
@@ -7,6 +7,17 @@ const base = {
 };
 
 describe("Fulfillment method change policy", () => {
+  test("returns actionable billing conflicts but never exposes an unexpected exception", () => {
+    expect(methodChangeAccountingBlock(Object.assign(new Error("Paid Invoice requires review."), {
+      code: "ORDER_INVOICE_SYNC_BLOCKED", statusCode: 409,
+    }))).toEqual({ status: 409, code: "ORDER_INVOICE_SYNC_BLOCKED", message: "Paid Invoice requires review." });
+    expect(methodChangeAccountingBlock(Object.assign(new Error("Multiple live Invoices require review."), {
+      code: "ORDER_NOT_EDITABLE", statusCode: 409,
+    }))).toMatchObject({ status: 409, code: "ORDER_NOT_EDITABLE" });
+    expect(methodChangeAccountingBlock(Object.assign(new Error("internal detail"), {
+      code: "UNEXPECTED_FAILURE", statusCode: 409,
+    }))).toBeNull();
+  });
   test("voids single-order drafts and removes shipping charge for pickup", () => {
     expect(planFulfillmentMethodChange(base)).toEqual({
       allowed: true, unchanged: false, draftIdsToVoid: ["draft-one"],

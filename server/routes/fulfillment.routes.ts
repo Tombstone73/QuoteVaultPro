@@ -48,6 +48,7 @@ import {
 } from "../services/fulfillment/schemas";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
+import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -108,6 +109,8 @@ export function registerFulfillmentRoutes(
     } catch (error) {
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Choose Pickup, Delivery, or Shipping.' });
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      const accountingBlock = methodChangeAccountingBlock(error);
+      if (accountingBlock) return res.status(accountingBlock.status).json({ success: false, message: accountingBlock.message, code: accountingBlock.code });
       console.error('[fulfillment] method change failed', error);
       return res.status(500).json({ success: false, message: 'Could not change fulfillment method. Refresh and retry.' });
     }
