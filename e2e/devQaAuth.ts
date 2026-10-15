@@ -1,7 +1,9 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { DEVELOPMENT_API_ORIGIN } from "../client/src/lib/apiRouting";
 
 type DevQaConfig = {
   baseUrl: URL;
+  apiBaseUrl: URL;
   email: string;
   password: string;
   expectedOrganizationId: string;
@@ -72,6 +74,7 @@ export function getDevQaConfig(env: Record<string, string | undefined> = process
 
   return {
     baseUrl,
+    apiBaseUrl: new URL(DEVELOPMENT_API_ORIGIN),
     email: requireEnv(env, "PRINTERSHERO_DEV_QA_EMAIL").toLowerCase(),
     password: requireEnv(env, "PRINTERSHERO_DEV_QA_PASSWORD"),
     expectedOrganizationId: requireEnv(env, "PRINTERSHERO_DEV_QA_EXPECTED_ORG_ID"),
@@ -80,22 +83,14 @@ export function getDevQaConfig(env: Record<string, string | undefined> = process
 }
 
 async function jsonRequest(page: Page, baseUrl: URL, path: string, init?: { method?: string; data?: unknown }): Promise<JsonResponse> {
-  return page.evaluate(async ({ url, request }) => {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 15_000);
-    try {
-      const response = await fetch(url, {
-        method: request?.method ?? "GET",
-        credentials: "include",
-        headers: request?.data === undefined ? undefined : { "Content-Type": "application/json" },
-        body: request?.data === undefined ? undefined : JSON.stringify(request.data),
-        signal: controller.signal,
-      });
-      return { status: response.status, body: await response.json().catch(() => null) };
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }, { url: new URL(path, baseUrl).toString(), request: init });
+  // The request context shares the browser's cookies but survives the login
+  // redirect, which can replace the page execution context during verification.
+  const response = await page.request.fetch(new URL(path, baseUrl).toString(), {
+    method: init?.method ?? "GET",
+    data: init?.data,
+    timeout: 15_000,
+  });
+  return { status: response.status(), body: await response.json().catch(() => null) };
 }
 
 function describeLoginFailure(args: {
@@ -153,7 +148,7 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     authenticatedAppReached: false,
   };
 
-  const health = await page.request.get(new URL("/api/health", config.baseUrl).toString()).catch(() => null);
+  const health = await page.request.get(new URL("/api/health", config.apiBaseUrl).toString()).catch(() => null);
   diagnostics.healthStatus = health?.status() ?? null;
   if (!health?.ok()) {
     throw describeLoginFailure(diagnostics);
@@ -182,7 +177,7 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
   await emailControl.fill(config.email);
   await passwordControl.fill(config.password);
   const loginResponse = page.waitForResponse(
-    (response) => response.url() === new URL("/api/auth/login", config.baseUrl).toString(),
+    (response) => response.url() === new URL("/api/auth/login", config.apiBaseUrl).toString(),
     { timeout: 30_000 },
   ).catch(() => null);
   diagnostics.submitAttempted = true;
@@ -196,10 +191,10 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     throw describeLoginFailure(diagnostics);
   }
 
-  // Verify through a normal browser fetch after navigation. The login page's
+  // Verify with the fresh browser context's cookie jar. The login page's
   // initial unauthenticated session check is intentionally not used as a
   // signal: on production builds React Query may reuse it after login.
-  const session = await jsonRequest(page, config.baseUrl, "/api/auth/session");
+  const session = await jsonRequest(page, config.apiBaseUrl, "/api/auth/session");
   const sessionBody = session.body as { authenticated?: unknown; mustChangePassword?: unknown; user?: { email?: unknown } } | null;
   if (session.status !== 200 || sessionBody?.authenticated !== true) {
     throw new Error(`[DEV QA auth] Session verification failed after login (status=${session.status}).`);
@@ -211,7 +206,7 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     throw new Error("[DEV QA auth] Dedicated QA user is still in invite/password-change state.");
   }
 
-  const orgs = await jsonRequest(page, config.baseUrl, "/api/me/orgs");
+  const orgs = await jsonRequest(page, config.apiBaseUrl, "/api/me/orgs");
   const orgBody = orgs.body as {
     success?: unknown;
     data?: { lastActiveOrgId?: unknown; orgs?: Array<{ id?: unknown; slug?: unknown }> };
@@ -225,7 +220,7 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
   }
 
   if (orgBody.data?.lastActiveOrgId !== config.expectedOrganizationId) {
-    const setActive = await jsonRequest(page, config.baseUrl, "/api/me/active-org", {
+    const setActive = await jsonRequest(page, config.apiBaseUrl, "/api/me/active-org", {
       method: "POST",
       data: { orgId: config.expectedOrganizationId },
     });
@@ -234,7 +229,7 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     }
   }
 
-  const environment = await jsonRequest(page, config.baseUrl, "/api/system/environment");
+  const environment = await jsonRequest(page, config.apiBaseUrl, "/api/system/environment");
   const environmentBody = environment.body as { success?: unknown; data?: { appRuntime?: unknown; apiRuntime?: unknown } } | null;
   if (
     environment.status !== 200 ||

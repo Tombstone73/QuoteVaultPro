@@ -13,6 +13,7 @@ const env = {
 describe('DEV browser QA target', () => {
   test('accepts the reviewed DEV origin', () => {
     expect(getDevQaConfig(env).baseUrl.origin).toBe('https://dev.printershero.com');
+    expect(getDevQaConfig(env).apiBaseUrl.origin).toBe('https://api-dev.printershero.com');
   });
 
   test.each([
