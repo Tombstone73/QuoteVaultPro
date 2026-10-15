@@ -397,6 +397,17 @@ export function useFulfillmentOrderDetailQuery(orderId: string | undefined) {
   });
 }
 
+export function useChangeFulfillmentMethodMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (method: "pickup" | "deliver" | "ship") =>
+      apiCall<{ orderId: string; fulfillmentMethod: string; voidedDraftIds: string[]; shippingCents: number }>(
+        `/api/fulfillment/orders/${orderId}/change-method`,
+        { method: "POST", body: JSON.stringify({ method }) },
+      ),
+    onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
 export function useMarkFulfillmentReadyMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({

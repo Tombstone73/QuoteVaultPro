@@ -20,6 +20,7 @@ import {
   useUpdatePickupDetailsMutation,
   useCreatePickupTicketMutation,
   useCreateShipmentMutation,
+  useChangeFulfillmentMethodMutation,
   useFulfillmentOrderDetailQuery,
   useMarkOrderReadyForPickupMutation,
   useRecordPickupHandoffMutation,
@@ -37,12 +38,15 @@ export default function FulfillmentWorkspacePage() {
   const detailQuery = useFulfillmentOrderDetailQuery(orderId);
   const updatePickupDetails = useUpdatePickupDetailsMutation(orderId || "");
   const createShipment = useCreateShipmentMutation();
+  const changeMethod = useChangeFulfillmentMethodMutation(orderId || "");
   const createPickupTicket = useCreatePickupTicketMutation();
   const markOrderReadyForPickup = useMarkOrderReadyForPickupMutation(orderId || "");
   const addNote = useAddFulfillmentNoteMutation(orderId || "");
   const recordPickupHandoff = useRecordPickupHandoffMutation(orderId);
   const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation(orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
+  const [methodChangeOpen, setMethodChangeOpen] = useState(false);
+  const [nextMethod, setNextMethod] = useState<"pickup" | "deliver" | "ship">("ship");
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
   const [pickupDate, setPickupDate] = useState("");
   const [pickupNote, setPickupNote] = useState("");
@@ -102,6 +106,24 @@ export default function FulfillmentWorkspacePage() {
     } catch (error) { showError("Could not start shipment", error); }
   };
 
+  const submitMethodChange = async () => {
+    if (changeMethod.isPending || nextMethod === detail.fulfillmentMethod) return;
+    try {
+      const result = await changeMethod.mutateAsync(nextMethod);
+      const refreshed = await detailQuery.refetch();
+      if (!refreshed.data || refreshed.data.fulfillmentMethod !== nextMethod ||
+        refreshed.data.shipments.some(shipment => result.voidedDraftIds.includes(shipment.id) && shipment.status === "DRAFT")) {
+        throw new Error("The method change could not be confirmed after reload. Refresh the workspace before continuing.");
+      }
+      setCreatedShipmentId(null);
+      setMethodChangeOpen(false);
+      toast({ title: "Fulfillment method changed", description: result.voidedDraftIds.length
+        ? `${result.voidedDraftIds.length} DRAFT shipment(s) voided with history preserved.`
+        : "The Order now uses the selected method." });
+    } catch (error) {
+      showError("Could not change fulfillment method", error);
+    }
+  };
   const completePickup = async () => {
     const items = detail.lineItems.flatMap((item) => {
       const quantity = Math.floor(Number(pickupQuantityByLine[item.id] || 0));
@@ -174,7 +196,7 @@ export default function FulfillmentWorkspacePage() {
         <h1 className="text-2xl font-bold">Order #{detail.orderNumber}</h1>
         <p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{methodLabel}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>
-      <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>
+      <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => { setNextMethod(detail.fulfillmentMethod || "ship"); setMethodChangeOpen(true); }}>Change Fulfillment Method</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>
         {isPickup && detail.pickupTicket?.status !== "READY_FOR_PICKUP" && detail.remainingQuantity > 0 && <button disabled={markOrderReadyForPickup.isPending} className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void markOrderReady()}>{markOrderReadyForPickup.isPending ? "Marking…" : "Mark Order Ready for Pickup"}</button>}
         {!isPickup && !singleDrafts.length && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
       </div>
@@ -221,6 +243,36 @@ export default function FulfillmentWorkspacePage() {
 
     {detail.administrativeCorrection && <details className="rounded-xl border bg-card p-4"><summary className="cursor-pointer text-sm font-semibold text-muted-foreground">Exceptional actions</summary><div className="mt-3"><AdministrativeCorrection key={orderId} detail={detail} /></div></details>}
 
+    <AlertDialog open={methodChangeOpen} onOpenChange={open => !changeMethod.isPending && setMethodChangeOpen(open)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Change Fulfillment Method</AlertDialogTitle>
+          <AlertDialogDescription>
+            Select how this Order will be fulfilled. Any single-order DRAFT shipment will be voided and kept in history.
+            Combined DRAFT shipments and completed fulfillment require their supported correction workflows.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="space-y-2">
+          {([["pickup", "Pickup"], ["deliver", "Delivery"], ["ship", "Shipping"]] as const).map(([value, label]) =>
+            <label key={value} className="flex items-center gap-2 rounded border p-3 text-sm">
+              <input type="radio" name="fulfillment-method" value={value} checked={nextMethod === value}
+                disabled={changeMethod.isPending} onChange={() => setNextMethod(value)} />
+              {label}
+            </label>)}
+          {detail.shipments.some(shipment => shipment.status === "DRAFT") &&
+            <p className="text-sm">Active DRAFT shipment(s) will be voided before this method changes.</p>}
+          {nextMethod === "pickup" && detail.fulfillmentMethod !== "pickup" &&
+            <p className="text-sm">Pickup removes the Order shipping charge. Any linked editable Invoice must reconcile in the same transaction; protected billing history blocks the change.</p>}
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={changeMethod.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction disabled={changeMethod.isPending || nextMethod === detail.fulfillmentMethod}
+            onClick={event => { event.preventDefault(); void submitMethodChange(); }}>
+            {changeMethod.isPending ? "Changing…" : "Confirm Method Change"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     <AlertDialog open={!!pickupReversal} onOpenChange={(open) => !open && setPickupReversal(null)}>
       <AlertDialogContent>
         <AlertDialogHeader><AlertDialogTitle>Reverse Pickup</AlertDialogTitle><AlertDialogDescription>Original pickup history will be retained. The selected quantity will reopen for fulfillment. Invoice and payment records are not changed.</AlertDialogDescription></AlertDialogHeader>

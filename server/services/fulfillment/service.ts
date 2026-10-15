@@ -11,7 +11,9 @@ import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
 import { reconcileOrderAutoCloseFailSoft } from '../orderAutoCloseService';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, shipmentDateValue, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
-import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
+import { effectiveOrderFulfillmentMethod, type CanonicalOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
+import { planFulfillmentMethodChange } from './methodChangePolicy';
+import { canonicalOrderOperations } from '../orders/canonicalOrderOperations';
 import { projectCanonicalProductionObligations } from '../orderProductionCompletionPolicy';
 import { listProductionExecutionConflicts } from '../productionBypassConflictService';
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
@@ -711,6 +713,13 @@ export class FulfillmentService {
     const currentMethod = effectiveOrderFulfillmentMethod(order.shippingMethod);
     const targetMethod = effectiveOrderFulfillmentMethod(nextShippingMethod);
     if (currentMethod === targetMethod) return;
+    const [activeDraft] = await this.dbInstance.select({ id: shipments.id }).from(shipmentOrders)
+      .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+      .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId),
+        eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'))).limit(1);
+    if (activeDraft) throw new FulfillmentHttpError(409,
+      'An active DRAFT shipment exists. Use Change Fulfillment Method in Fulfillment to void it safely.',
+      'ACTIVE_DRAFT_SHIPMENT');
 
     // Raw shipment and handoff rows are immutable audit evidence. Their
     // *net* terminal quantity, not their mere existence, determines whether
@@ -722,6 +731,47 @@ export class FulfillmentService {
     }
   }
 
+  /** Void single-order drafts and update the Order in one committed transaction. */
+  async changeFulfillmentMethod(orgId: string, orderId: string, targetMethod: CanonicalOrderFulfillmentMethod, actorUserId: string) {
+    return this.dbInstance.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${orders} where ${orders.organizationId} = ${orgId} and ${orders.id} = ${orderId} for update`);
+      const [order] = await tx.select().from(orders)
+        .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
+      if (!order) throw new FulfillmentHttpError(404, 'Order not found.', 'NOT_FOUND');
+      const draftRows = await tx.select({ id: shipments.id }).from(shipmentOrders)
+        .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+        .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId),
+          eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')));
+      const draftShipments = [];
+      for (const draft of draftRows) {
+        await tx.execute(sql`select id from ${shipments} where ${shipments.organizationId} = ${orgId} and ${shipments.id} = ${draft.id} for update`);
+        const links = await tx.select({ id: shipmentOrders.id }).from(shipmentOrders)
+          .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, draft.id)));
+        draftShipments.push({ id: draft.id, orderCount: links.length });
+      }
+      const lines = await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { orderIds: [orderId] });
+      const [ticket] = await tx.select({ status: pickupTickets.status }).from(pickupTickets)
+        .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId))).limit(1);
+      const plan = planFulfillmentMethodChange({
+        currentMethod: order.shippingMethod, targetMethod, shippingCents: order.shippingCents,
+        draftShipments, hasNetTerminalQuantity: lines.some(line => line.projection.requiresFulfillment && line.projection.fulfilledQuantity > 0),
+        fulfillmentStatus: order.fulfillmentStatus, canceled: isCanceledOrder(order),
+        pickupReady: ticket?.status === 'READY_FOR_PICKUP',
+      });
+      if (!plan.allowed) throw new FulfillmentHttpError(409, plan.message, plan.code);
+      if (plan.unchanged) return { orderId, fulfillmentMethod: targetMethod, voidedDraftIds: [] as string[], shippingCents: plan.shippingCents };
+      for (const draftId of plan.draftIdsToVoid) {
+        const result = await new ShipmentRepo(tx as any).voidShipment(orgId, draftId, actorUserId, tx as any);
+        if (!result.ok) throw new FulfillmentHttpError(409, result.message, result.code);
+      }
+      const updated = await canonicalOrderOperations.updateFulfillmentMethodInTransaction(tx, {
+        organizationId: orgId, orderId, actorUserId, method: targetMethod,
+        ...(plan.shippingChargeChanged ? { shippingCents: plan.shippingCents } : {}),
+      });
+      return { orderId, fulfillmentMethod: effectiveOrderFulfillmentMethod(updated.shippingMethod),
+        voidedDraftIds: plan.draftIdsToVoid, shippingCents: updated.shippingCents };
+    });
+  }
   private async getVerificationPolicy(orgId: string): Promise<FulfillmentVerificationPolicy> {
     const [organization] = await this.dbInstance.select({ settings: organizations.settings })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1);

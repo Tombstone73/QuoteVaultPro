@@ -19,7 +19,7 @@ type UpdateOrderPayload = Parameters<typeof storage.updateOrder>[2];
 export type CanonicalQuoteConversionOptions = Parameters<typeof storage.convertQuoteToOrder>[3];
 
 export class CanonicalOrderOperationError extends Error {
-  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_NOT_EDITABLE" | "ORDER_STALE" | "ORDER_IDENTITY_REQUIRED" | "ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED" | "ORDER_DISCOUNT_FORBIDDEN", message: string, readonly details?: { billingOwnershipOverride: BillingOwnershipOverrideContext }, readonly statusCode = 400) { super(message); }
+  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_NOT_EDITABLE" | "ORDER_STALE" | "ORDER_IDENTITY_REQUIRED" | "ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED" | "ORDER_DISCOUNT_FORBIDDEN" | "ORDER_DISCOUNT_INVOICE_BLOCKED", message: string, readonly details?: { billingOwnershipOverride: BillingOwnershipOverrideContext }, readonly statusCode = 400) { super(message); }
 }
 
 /** Shared boundary for Order header/create/conversion writes. */
@@ -173,6 +173,40 @@ class CanonicalOrderOperations {
     });
   }
 
+  /** Used only inside a Fulfillment-owned transaction after its locks and eligibility checks. */
+  async updateFulfillmentMethodInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: {
+    organizationId: string; orderId: string; actorUserId: string; method: "pickup" | "ship" | "deliver";
+    shippingCents?: number;
+  }) {
+    const [existing] = await tx.select().from(orders).where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, input.orderId))).limit(1);
+    if (!existing) throw new CanonicalOrderOperationError("ORDER_NOT_FOUND", "Order not found.", undefined, 404);
+    const previousShippingCents = Number(existing.shippingCents || 0);
+    const shippingChargeChanged = input.shippingCents !== undefined && previousShippingCents !== input.shippingCents;
+    const linkedInvoices = shippingChargeChanged
+      ? await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.orderId, input.orderId), ne(invoices.status, "void")))
+      : [];
+    if (linkedInvoices.length > 1) throw new CanonicalOrderOperationError("ORDER_NOT_EDITABLE", "Multiple live Invoices require billing review before changing the shipping charge.", undefined, 409);
+    let updated = await new OrdersRepository(tx).updateOrder(input.organizationId, input.orderId, {
+      shippingMethod: input.method,
+      ...(shippingChargeChanged ? { shippingCents: input.shippingCents } : {}),
+    });
+    if (shippingChargeChanged) {
+      const { recalculateEditableOrderFinancialsInTransaction } = await import("./orderTaxCalculationService");
+      updated = await recalculateEditableOrderFinancialsInTransaction(tx, {
+        organizationId: input.organizationId, orderId: input.orderId, actorUserId: input.actorUserId,
+        requireInvoiceParity: linkedInvoices.length === 1,
+      }) ?? updated;
+    }
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId, userId: input.actorUserId,
+      actionType: "FULFILLMENT_METHOD_CHANGED", entityType: "order", entityId: input.orderId,
+      entityName: existing.displayNumber || existing.orderNumber,
+      description: "Changed fulfillment method through Fulfillment.",
+      oldValues: { shippingMethod: existing.shippingMethod, shippingCents: previousShippingCents },
+      newValues: { shippingMethod: input.method, shippingCents: Number(updated.shippingCents || 0) },
+    } as any);
+    return updated;
+  }
   async convertQuoteToOrder(input: { organizationId: string; actorUserId: string; quoteId: string; options?: CanonicalQuoteConversionOptions }) {
     return storage.convertQuoteToOrder(input.organizationId, input.quoteId, input.actorUserId, input.options);
   }
