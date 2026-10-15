@@ -346,6 +346,17 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  app.get('/api/fulfillment/shipments/:shipmentId/current-order-destination', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const data = await canonicalFulfillmentOperations.getCurrentOrderDestination(getRequestOrganizationId(req), req.params.shipmentId);
+      return res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] current Order destination error:', error);
+      return res.status(500).json({ success: false, message: 'Could not load the saved Order destination.' });
+    }
+  });
+
   app.get('/api/fulfillment/shipments/:shipmentId/documents/:documentType', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);

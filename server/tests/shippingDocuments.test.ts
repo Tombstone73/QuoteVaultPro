@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { getTableName } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { renderShippingDocumentHtml } from "../../shared/shippingDocumentRendering";
-import type { ShippingDocumentSource, ShippingParty } from "../../shared/shippingDocuments";
+import { shipmentShippingContextMismatches, type ShippingDocumentSource, type ShippingParty } from "../../shared/shippingDocuments";
 
 const select = jest.fn();
 const rootSelect = jest.fn((...args: unknown[]) => select(...args));
@@ -295,4 +295,16 @@ describe("shipping document sources with mocked database", () => {
     await expect(getShippingDocumentSource("other-org", "shipment")).rejects.toMatchObject({ status: 404 });
     expect(reads[0].params).toEqual(["other-org", "shipment"]); expect(select).toHaveBeenCalledTimes(1);
   });
+});
+
+test("saved DRAFT destination and blind sender are checked independently", () => {
+  const destination = party("Destination");
+  const sender = party("Blind Sender");
+  const intended = { version: 1 as const, source: "staff" as const, sourceOrderId: "order-qa", destination,
+    blindShipping: true, blindSenderSource: "custom" as const, blindSender: sender };
+  expect(shipmentShippingContextMismatches(intended, { ...intended, destination: { ...destination, state: "IN" } }))
+    .toEqual(["destination state"]);
+  expect(shipmentShippingContextMismatches(intended, { ...intended, blindSender: { ...sender, state: "IN" } }))
+    .toEqual(["sender state"]);
+  expect(shipmentShippingContextMismatches(intended, intended)).toEqual([]);
 });
