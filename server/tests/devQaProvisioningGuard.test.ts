@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { databaseIdentityFingerprint, getDevQaProvisioningConfig } from "../lib/devQaProvisioningGuard";
+import { databaseIdentityFingerprint, getDevQaProvisioningConfig, isApprovedDevQaOrigin } from "../lib/devQaProvisioningGuard";
 
 const databaseUrl = "postgres://user:pass@postgres.internal:5432/dev_db";
 
@@ -21,6 +21,12 @@ const devEnv = {
 };
 
 describe("DEV QA provisioning guard", () => {
+  test('accepts only the canonical DEV origin with an optional root slash', () => {
+    expect(isApprovedDevQaOrigin('https://dev.printershero.com')).toBe(true);
+    expect(isApprovedDevQaOrigin('https://dev.printershero.com/')).toBe(true);
+    expect(isApprovedDevQaOrigin('https://dev.printershero.com/other')).toBe(false);
+    expect(isApprovedDevQaOrigin('https://www.printershero.com')).toBe(false);
+  });
   test("accepts only the approved Railway DEV environment and exact PostgreSQL identity", () => {
     expect(getDevQaProvisioningConfig(devEnv)).toMatchObject({
       email: "qa.browser@example.test",

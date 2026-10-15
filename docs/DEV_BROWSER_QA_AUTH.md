@@ -16,7 +16,7 @@ prints credentials or connection details:
    and DEV frontend origin. Do not copy or print the connection URL.
 2. Run `npm run qa:inspect-dev-target` in that Railway DEV service context. This
    read-only command verifies the connected database user/name and reports only
-   an opaque database identity, Railway environment ID, active internal org
+   an opaque database identity, Railway environment ID, active org
    IDs/slugs, and whether the configured QA email already exists. Compare these
    facts with the reviewed Railway DEV services before proceeding.
 3. Set `PRINTERSHERO_DEV_QA_APPROVED_RAILWAY_ENVIRONMENT_ID` to the reviewed DEV

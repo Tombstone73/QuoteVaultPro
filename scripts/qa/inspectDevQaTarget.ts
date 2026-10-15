@@ -1,13 +1,13 @@
 import 'dotenv/config';
 import { eq, sql } from 'drizzle-orm';
-import { databaseIdentityFingerprint } from '../../server/lib/devQaProvisioningGuard';
+import { databaseIdentityFingerprint, isApprovedDevQaOrigin } from '../../server/lib/devQaProvisioningGuard';
 import { organizations, users, userOrganizations } from '../../shared/schema';
 
 async function inspect() {
   const env = process.env;
   if (env.APP_ENV?.toLowerCase() !== 'development' || env.NODE_ENV?.toLowerCase() !== 'production' ||
       !['dev', 'development'].includes(env.RAILWAY_ENVIRONMENT_NAME?.toLowerCase() ?? '') ||
-      !env.RAILWAY_ENVIRONMENT_ID || env.APP_PUBLIC_WEB_ORIGIN !== 'https://dev.printershero.com') {
+      !env.RAILWAY_ENVIRONMENT_ID || !isApprovedDevQaOrigin(env.APP_PUBLIC_WEB_ORIGIN)) {
     throw new Error('DEV QA inspection requires the deployed Railway DEV environment and approved DEV origin.');
   }
   const fingerprint = databaseIdentityFingerprint(env.DATABASE_URL);
@@ -23,8 +23,8 @@ async function inspect() {
       throw new Error('DEV QA inspection found a database identity mismatch.');
     }
     const orgs = await db.select({ id: organizations.id, slug: organizations.slug, type: organizations.type, status: organizations.status, isArchived: organizations.isArchived, deleteState: organizations.deleteState }).from(organizations);
-    const activeInternalOrgs = orgs.filter((org) => org.type === 'internal' && org.status === 'active' && !org.isArchived && org.deleteState === 'active')
-      .map(({ id, slug }) => ({ id, slug }));
+    const activeOrgs = orgs.filter((org) => org.status === 'active' && !org.isArchived && org.deleteState === 'active')
+      .map(({ id, slug, type }) => ({ id, slug, type }));
 
     let qaIdentityExists: boolean | null = null;
     let qaMemberships: string[] | null = null;
@@ -36,7 +36,7 @@ async function inspect() {
         ? (await db.select({ organizationId: userOrganizations.organizationId }).from(userOrganizations).where(eq(userOrganizations.userId, matches[0].id))).map((row) => row.organizationId)
         : null;
     }
-    console.log(JSON.stringify({ railwayEnvironmentId: env.RAILWAY_ENVIRONMENT_ID, databaseIdentity: fingerprint, activeInternalOrgs, qaIdentityExists, qaMemberships }));
+    console.log(JSON.stringify({ railwayEnvironmentId: env.RAILWAY_ENVIRONMENT_ID, databaseIdentity: fingerprint, activeOrgs, qaIdentityExists, qaMemberships }));
   } finally {
     await pool.end();
   }

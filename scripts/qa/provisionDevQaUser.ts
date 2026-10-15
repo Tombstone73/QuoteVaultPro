@@ -20,12 +20,12 @@ async function provision() {
     }
 
     const [organization] = await tx
-      .select({ id: organizations.id, slug: organizations.slug, type: organizations.type, status: organizations.status, isArchived: organizations.isArchived, deleteState: organizations.deleteState })
+      .select({ id: organizations.id, slug: organizations.slug, status: organizations.status, isArchived: organizations.isArchived, deleteState: organizations.deleteState })
       .from(organizations)
       .where(eq(organizations.id, config.organizationId))
       .limit(1);
 
-    if (!organization || organization.slug.toLowerCase() !== config.organizationSlug || organization.type !== 'internal' || organization.status !== 'active' || organization.isArchived || organization.deleteState !== "active") {
+    if (!organization || organization.slug.toLowerCase() !== config.organizationSlug || organization.status !== 'active' || organization.isArchived || organization.deleteState !== "active") {
       throw new Error("Configured DEV QA organization is missing, inactive, or does not match the expected slug.");
     }
 

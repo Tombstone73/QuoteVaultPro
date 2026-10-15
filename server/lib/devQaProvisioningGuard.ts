@@ -44,6 +44,16 @@ export function databaseIdentityFingerprint(databaseUrl: string | undefined): st
   }
 }
 
+/** Accept the canonical DEV origin with or without URL's harmless root slash. */
+export function isApprovedDevQaOrigin(value: string | undefined): boolean {
+  try {
+    const url = new URL(value ?? '');
+    return url.origin === 'https://dev.printershero.com' && url.pathname === '/' && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The QA user command is deliberately narrower than a general development
  * switch: it can run only from the deployed PrintersHero DEV environment and
