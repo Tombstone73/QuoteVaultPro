@@ -19,10 +19,11 @@ import { ShippingDocumentPrintDialog } from "@/components/production/ShippingDoc
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { fulfillmentReturnRoute } from "@/lib/fulfillmentWorkspaceMode";
-import { shippingPartyAddressLines, shippingPartyValidationErrors, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
+import { shippingPartyAddressLines, shippingPartyValidationErrors, shipmentShippingContextMismatches, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import {
   getOrderDetails,
+  getCurrentOrderDestination,
   getFulfillmentOrderDetail,
   FulfillmentDetail,
   toFulfillmentError,
@@ -141,6 +142,8 @@ export function FulfillmentShipmentEditor({
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
   const customSenderDraft = useRef<ShippingParty | null>(null);
   const [editingDestination, setEditingDestination] = useState(false);
+  const [editingSender, setEditingSender] = useState(false);
+  const [loadingOrderDestination, setLoadingOrderDestination] = useState(false);
   const [artworkViewer, setArtworkViewer] = useState<{ attachments: AttachmentData[]; initialIndex: number } | null>(null);
   const hydratedShipmentId = useRef<string | null>(null);
 
@@ -168,6 +171,7 @@ export function FulfillmentShipmentEditor({
     setShippingContext(shipment.shippingContext ?? null);
     customSenderDraft.current = shipment.shippingContext?.blindSenderSource === "ordering_customer" ? null : shipment.shippingContext?.blindSender ?? null;
     setEditingDestination(false);
+    setEditingSender(false);
     setArtworkViewer(null);
     const defaultPackage = shipment.packages[0];
     const nextForm: ShipmentFormState = {
@@ -383,9 +387,15 @@ export function FulfillmentShipmentEditor({
       setLastResponse(response);
       setPackageByLineItemId(Object.fromEntries(shipmentItems.filter(item => item.packageId).map(item => [item.orderLineItemId, item.packageId!])));
 
-      if (!silent) {
-        toast({ title: "Draft saved", description: "Shipment draft updated" });
+      const refreshed = await shipmentQuery.refetch();
+      if (!refreshed.data || refreshed.isError) throw new Error('Could not read back the saved shipment draft. Your edits remain available for retry.');
+      if (shippingContext) {
+        const mismatches = shipmentShippingContextMismatches(shippingContext, refreshed.data.shippingContext ?? null);
+        if (mismatches.length) throw new Error('Shipment shipping details did not match the saved draft: ' + mismatches.join(', '));
       }
+      hydratedShipmentId.current = null;
+      setShippingContext(refreshed.data.shippingContext ?? null);
+      if (!silent) toast({ title: "Draft saved", description: "Shipment draft verified after reload" });
       await onMutationComplete?.();
       return response;
     } catch (error) {
@@ -490,9 +500,28 @@ export function FulfillmentShipmentEditor({
   const packedCount = isDraft ? allocatedCount : shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
   const returnRoute = fulfillmentReturnRoute(location.state?.referrer, [ROUTES.fulfillment.list, ...shipment.orders.map(order => ROUTES.fulfillment.order(order.orderId))]);
-  const editContext = () => {
+  const editContext = (target: "destination" | "sender") => {
     setShippingContext(context => ({ ...(context ?? { version: 1, sourceOrderId: shipment.primaryOrderId ?? shipment.orders[0]?.orderId ?? null, destination: { ...emptyShippingParty }, blindShipping: false, blindSender: null }), source: "staff" }));
-    setEditingDestination(true);
+    if (target === "destination") setEditingDestination(true);
+    else setEditingSender(true);
+  };
+
+  const useSavedOrderAddress = async () => {
+    if (!shipmentId || !isDraft || !isSingleOrderShipment || loadingOrderDestination) return;
+    setLoadingOrderDestination(true);
+    try {
+      const latest = await getCurrentOrderDestination(shipmentId);
+      const oldAddress = shippingContext?.destination ?? emptyShippingParty;
+      if (JSON.stringify(oldAddress) !== JSON.stringify(latest.destination) &&
+        !window.confirm('Replace this DRAFT shipment destination with the currently saved Order address?\n\nCurrent: ' + shippingPartyAddressLines(oldAddress).join(', ') + '\nSaved Order: ' + shippingPartyAddressLines(latest.destination).join(', '))) return;
+      setShippingContext(context => context && ({ ...context, source: "staff", sourceOrderId: latest.orderId, destination: latest.destination }));
+      setEditingDestination(true);
+      toast({ title: "Order address staged", description: "Save Draft to persist the updated shipment destination." });
+    } catch (error) {
+      toast({ title: "Could not load Order address", description: toFulfillmentError(error).message, variant: "destructive" });
+    } finally {
+      setLoadingOrderDestination(false);
+    }
   };
 
   const enableBlindShipping = (enabled: boolean) => {
@@ -618,13 +647,14 @@ export function FulfillmentShipmentEditor({
 
           <section className="order-1 flex min-w-0 flex-col gap-6 xl:order-none">
             <section className="rounded-xl border border-primary/30 bg-card p-4 md:p-5" aria-labelledby="shipment-destination-heading">
-              <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="shipment-destination-heading" className="flex items-center gap-2 text-lg font-bold"><MapPinned className="h-5 w-5 text-primary" />Ship To</h2><div className="flex items-center gap-2">{blindShipping && <span className="rounded border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-semibold">Blind shipment</span>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={editContext}>{editingDestination ? "Editing destination" : "Edit destination / sender"}</button>}</div></div>
+              <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="shipment-destination-heading" className="flex items-center gap-2 text-lg font-bold"><MapPinned className="h-5 w-5 text-primary" />Ship To</h2><div className="flex items-center gap-2">{blindShipping && <span className="rounded border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-semibold">Blind shipment</span>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={() => editContext("destination")}>Edit Shipping Address</button>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={() => editContext("sender")}>Edit Sender</button>}</div></div>
               <div className="mt-3 grid gap-4 sm:grid-cols-2"><div>{destination ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(destination).map((line, index) => <p key={index} className={index === 0 ? "font-semibold" : ""}>{line}</p>)}{destination.phone && <p className="mt-1">{destination.phone}</p>}{destination.email && <p className="break-all">{destination.email}</p>}</address> : <p className="text-sm text-muted-foreground">Destination not recorded for this shipment.</p>}</div><div><h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{blindShipping ? "Alternate sender" : "Sender"}</h3>{sender ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(sender).map((line, index) => <p key={index}>{line}</p>)}{sender.phone && <p>{sender.phone}</p>}{sender.email && <p className="break-all">{sender.email}</p>}</address> : <p className="text-sm text-muted-foreground">{blindShipping ? "Alternate sender not recorded. No sender will be guessed." : documentSourceQuery.isLoading ? "Loading saved document sender..." : "Sender unavailable from the saved document source."}</p>}</div></div>
-              {(missingDestination.length > 0 || missingBlindSender.length > 0) && <div role="alert" className="mt-3 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><p>Missing {missingDestination.length ? `Ship To: ${missingDestination.join(", ")}` : ""}{missingDestination.length && missingBlindSender.length ? "; " : ""}{missingBlindSender.length ? `alternate sender: ${missingBlindSender.join(", ")}` : ""}.</p>{isDraft ? <button type="button" className="mt-1 font-semibold underline" onClick={editContext}>Complete destination / sender before shipping</button> : <p className="mt-1">Historical destination is not reconstructed from live customer fields.</p>}</div>}
-              {isDraft && editingDestination && shippingContext && <div className="mt-4 space-y-4 border-t pt-4">
-                <fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Ship To ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.destination[key] ?? ""} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", destination: { ...context.destination, [key]: event.target.value || null } }))} /></label>)}</div></fieldset>
-                <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={shippingContext.blindShipping} onChange={event => enableBlindShipping(event.target.checked)} />Blind shipping: use an alternate sender</label>
-                {shippingContext.blindShipping && <fieldset className="space-y-3"><legend className="text-sm font-semibold">Sender</legend>
+              {(missingDestination.length > 0 || missingBlindSender.length > 0) && <div role="alert" className="mt-3 space-y-2 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{missingDestination.length > 0 && <p>Shipping destination incomplete: {missingDestination.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("destination")}>Edit Shipping Address</button>}</p>}{missingBlindSender.length > 0 && <p>Blind Shipping sender incomplete: {missingBlindSender.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("sender")}>Edit Sender</button>}</p>}{!isDraft && <p>Historical shipping details are not reconstructed from live customer fields.</p>}</div>}
+              {isDraft && (editingDestination || editingSender) && shippingContext && <div className="mt-4 space-y-4 border-t pt-4">
+                {editingDestination && <fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Ship To ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.destination[key] ?? ""} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", destination: { ...context.destination, [key]: event.target.value || null } }))} /></label>)}</div></fieldset>}
+                {editingDestination && isSingleOrderShipment && <button type="button" className="w-fit rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={loadingOrderDestination} onClick={() => void useSavedOrderAddress()}>{loadingOrderDestination ? "Loading Order address..." : "Use saved Order address"}</button>}
+                {editingSender && <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={shippingContext.blindShipping} onChange={event => enableBlindShipping(event.target.checked)} />Blind shipping: use an alternate sender</label>}
+                {editingSender && shippingContext.blindShipping && <fieldset className="space-y-3"><legend className="text-sm font-semibold">Sender</legend>
                   <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
                     <label className="flex items-center gap-2"><input type="radio" name="blind-sender-source" checked={shippingContext.blindSenderSource === "ordering_customer"} onChange={() => chooseSender("ordering_customer")} />Ordering Customer</label>
                     <label className="flex items-center gap-2"><input type="radio" name="blind-sender-source" checked={shippingContext.blindSenderSource !== "ordering_customer"} onChange={() => chooseSender("custom")} />Custom Sender</label>

@@ -602,6 +602,16 @@ export class FulfillmentService {
     return await this.shipmentRepo.getShipmentById(orgId, shipment.id) ?? shipment;
   }
 
+  async getCurrentOrderDestination(orgId: string, shipmentId: string) {
+    const shipment = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
+    if (!shipment) throw new FulfillmentHttpError(404, 'Shipment not found.', 'NOT_FOUND');
+    if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only a DRAFT shipment can use a newer Order address.', 'INVALID_STATE');
+    if (shipment.orders.length !== 1) throw new FulfillmentHttpError(409, 'Combined shipments require their own reviewed destination; use separate shipments to change one Order.', 'COMBINED_SHIPMENT');
+    const orderId = shipment.orders[0].orderId;
+    const current = await resolveShipmentShippingContext(orgId, [orderId], this.dbInstance);
+    return { orderId, destination: current.destination };
+  }
+
   async getShipment(orgId: string, shipmentId: string) {
     const shipment = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!shipment) return null;

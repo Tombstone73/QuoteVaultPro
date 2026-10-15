@@ -588,6 +588,12 @@ export function useMarkShippedMutation(shipmentId: string) {
   });
 }
 
+export function getCurrentOrderDestination(shipmentId: string) {
+  return apiCall<{ orderId: string; destination: ShippingParty }>(
+    '/api/fulfillment/shipments/' + encodeURIComponent(shipmentId) + '/current-order-destination',
+  );
+}
+
 export function useVoidShipmentMutation(shipmentId: string) {
   const queryClient = useQueryClient();
   return useMutation({

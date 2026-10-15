@@ -126,3 +126,18 @@ export function shippingPartyAddressLines(party: ShippingParty): string[] {
     [party.city, party.state, party.postalCode].filter(Boolean).join(" "), party.country]
     .filter((value): value is string => Boolean(value?.trim()));
 }
+
+const shippingPartyFields = ["name", "company", "address1", "address2", "city", "state", "postalCode", "country", "phone", "email"] as const;
+
+/** Compare saved JSONB context by values, independent of key order. */
+export function shipmentShippingContextMismatches(intended: ShipmentShippingContext, saved: ShipmentShippingContext | null): string[] {
+  if (!saved) return ["shipping context"];
+  const mismatch: string[] = [];
+  if (intended.blindShipping !== saved.blindShipping) mismatch.push("blind shipping");
+  if ((intended.blindSenderSource ?? null) !== (saved.blindSenderSource ?? null)) mismatch.push("sender source");
+  for (const field of shippingPartyFields) {
+    if ((intended.destination[field] ?? "").trim() !== (saved.destination[field] ?? "").trim()) mismatch.push("destination " + field);
+    if ((intended.blindSender?.[field] ?? "").trim() !== (saved.blindSender?.[field] ?? "").trim()) mismatch.push("sender " + field);
+  }
+  return mismatch;
+}
