@@ -282,6 +282,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // the Quote revision even when the header query has not refetched yet.
     const confirmedQuoteRevisionRef = useRef<number | null>(null);
     const lineSaveInFlightRef = useRef<Promise<boolean> | null>(null);
+    const normalSaveInFlightRef = useRef(false);
 
     const readCurrentQuote = async (id: string): Promise<QuoteWithRelations> => {
         const response = await apiRequest("GET", `/api/quotes/${id}`);
@@ -674,7 +675,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 throw new Error("Missing quote id");
             }
 
-            const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, payload);
+            const response = await apiRequest("PATCH", `/api/quotes/${quoteId}/editor-save`, payload);
             return await response.json();
         },
     });
@@ -1874,6 +1875,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // ============================================================================
 
     const handleSaveQuote = async (shipToPatch: Record<string, string | null> = {}): Promise<SaveQuoteResult> => {
+        if (normalSaveInFlightRef.current) throw new Error("A Quote save is already in progress.");
         const payloadCustomerId = selectedCustomerId ?? selectedCustomer?.id ?? null;
         const payloadHasCustomerId = !!payloadCustomerId;
         const payloadHasLineItems = lineItems.length > 0;
@@ -1918,6 +1920,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             throw new Error(error);
         }
 
+        normalSaveInFlightRef.current = true;
         try {
             if (isNewQuote) {
                 const response = await apiRequest("POST", "/api/quotes", workingQuote);
@@ -1955,82 +1958,70 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 if (!currentQuote || !Number.isSafeInteger(currentQuote.revision)) {
                     throw new Error("Wait for the current Quote to load before saving.");
                 }
-                const payload = { ...buildQuotePayload(), ...shipToPatch, expectedRevision: confirmedQuoteRevisionRef.current ?? currentQuote.revision };
-                await saveQuoteMutation.mutateAsync(payload);
-
-                // Persist line item updates (create/update/delete) to match the current UI state.
-                // This is required to support "Discard" semantics and avoid auto-saving as the user types.
+                // Freeze the reviewed input. Later edits remain in React state and dirty
+                // against this submitted snapshot after the transaction commits.
                 const snapshot = savedSnapshotRef.current;
                 const prevIds = new Set((snapshot?.lineItems || []).map((li) => li.id).filter(Boolean) as string[]);
                 const nextIds = new Set(lineItems.map((li) => li.id).filter(Boolean) as string[]);
-
-                // Deletes
                 const deletedIds = Array.from(prevIds).filter((id) => !nextIds.has(id));
-                await Promise.all(
-                    deletedIds.map((id) => apiRequest("DELETE", `/api/quotes/${quoteId}/line-items/${id}`))
-                );
-
-                // Creates + Updates
-                for (const li of lineItems) {
-                    // Skip drafts with no product (placeholder)
-                    if (!li.productId) continue;
-
-                    const payloadLi: any = {
-                        productId: li.productId,
-                        productName: li.productName,
-                        variantId: li.variantId ?? null,
-                        variantName: li.variantName ?? null,
-                        productType: li.productType || "wide_roll",
-                        width: li.width,
-                        height: li.height,
-                        quantity: li.quantity,
-                        specsJson: li.specsJson || {},
-                        optionSelectionsJson: li.optionSelectionsJson ?? null,
-                        pbv2TreeVersionId: li.pbv2TreeVersionId ?? null,
-                        pbv2SnapshotJson: li.pbv2SnapshotJson ?? undefined,
-                        pricedAt: li.pricedAt ?? undefined,
-                        materialUsages: li.materialUsages ?? [],
-                        selectedOptions: li.selectedOptions || [],
-                        linePrice: li.linePrice ?? 0,
-                        priceBreakdown: li.priceBreakdown || {
-                            basePrice: li.linePrice ?? 0,
-                            optionsPrice: 0,
-                            total: li.linePrice ?? 0,
-                            formula: "",
-                        },
-                        displayOrder: li.displayOrder ?? 0,
-                        description: li.description ?? null,
-                        status: li.status === "canceled" ? "canceled" : "active",
-                        // Canonical routing intent (migration 0015)
-                        requiresDesign: li.requiresDesign ?? false,
-                        requiresPrepress: li.requiresPrepress ?? null,
-                    };
-
-                    if (li.id) {
-                        delete payloadLi.displayOrder;
-                        await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${li.id}`, payloadLi);
-                    } else {
-                        await requestLineCreate(`line:${getStableLineItemKey(li)}`, `/api/quotes/${quoteId}/line-items`, payloadLi, true)
-                            .then(async (resp) => await resp.json())
-                            .then((created) => {
-                                const createdId = created?.id || created?.data?.id;
-                                if (createdId) {
-                                    setLineItems((prev) =>
-                                        prev.map((x) => (x.tempId && x.tempId === li.tempId ? { ...x, id: createdId } : x))
-                                    );
-                                }
-                            });
-                    }
+                const savedById = new Map((snapshot?.lineItems || []).filter((li) => li.id).map((li) => [li.id!, li]));
+                const changedLines = lineItems.filter((li) => li.productId && li.id &&
+                    (!savedById.has(li.id) || JSON.stringify(buildQuoteLineItemSavePayload(li)) !== JSON.stringify(buildQuoteLineItemSavePayload(savedById.get(li.id)!))));
+                const newLines = lineItems.filter((li) => li.productId && !li.id);
+                const intendedHeader = { ...buildQuotePayload(), ...shipToPatch };
+                const header: Record<string, unknown> = {};
+                const compareHeaderField = (field: keyof typeof intendedHeader, saved: unknown = currentQuote[field as keyof QuoteWithRelations]) => {
+                    const intended = intendedHeader[field];
+                    if (intended !== undefined && JSON.stringify(intended) !== JSON.stringify(saved)) header[field] = intended;
+                };
+                for (const field of ["customerId", "contactId", "label", "shippingMethod", "shippingCents", "shippingInstructions", "customerNotes", "visibleInCustomerPortal"] as const) {
+                    compareHeaderField(field);
                 }
+                if (header.customerId !== undefined || header.contactId !== undefined) header.customerName = intendedHeader.customerName;
+                const savedDueDate = currentQuote.requestedDueDate ? new Date(String(currentQuote.requestedDueDate)).toISOString().slice(0, 10) : null;
+                const intendedDueDate = intendedHeader.requestedDueDate ? intendedHeader.requestedDueDate.slice(0, 10) : null;
+                if (savedDueDate !== intendedDueDate) header.requestedDueDate = intendedHeader.requestedDueDate;
+                if (Number(currentQuote.discountAmount ?? 0) !== intendedHeader.discountAmount) header.discountAmount = intendedHeader.discountAmount;
+                for (const [field, value] of Object.entries(shipToPatch)) {
+                    if (JSON.stringify(currentQuote[field as keyof QuoteWithRelations] ?? null) !== JSON.stringify(value)) header[field] = value;
+                }
+                // Tags live in the Quote list note. The server compares its persisted value
+                // inside the same transaction, including an intentionally cleared list.
+                header.tags = tags;
+                const hasCommercialIntent = deletedIds.length > 0 || changedLines.length > 0 || newLines.length > 0 ||
+                    ["customerId", "contactId", "shippingMethod", "shippingCents", "discountAmount"].some((field) => field in header) ||
+                    quoteTaxExempt !== snapshot?.quoteTaxExempt || quoteTaxRateOverride !== snapshot?.quoteTaxRateOverride;
+                if (hasCommercialIntent && Number(currentQuote.taxRate ?? 0) !== effectiveTaxRate) header.taxRate = effectiveTaxRate;
+                const payload = {
+                    expectedRevision: confirmedQuoteRevisionRef.current ?? currentQuote.revision,
+                    header,
+                    lines: {
+                        delete: deletedIds,
+                        update: changedLines.map((li) => ({ id: li.id!, data: buildQuoteLineItemSavePayload(li) })),
+                        create: newLines.map((li) => ({ clientKey: getStableLineItemKey(li), data: buildQuoteLineItemSavePayload(li) })),
+                    },
+                };
+                const result = await saveQuoteMutation.mutateAsync(payload) as {
+                    quote: QuoteWithRelations;
+                    created: Array<{ clientKey: string; id: string }>;
+                    changed: boolean;
+                };
+                if (!result.quote || !Number.isSafeInteger(result.quote.revision)) throw new Error("The server did not confirm the persisted Quote revision.");
+                const createdIds = new Map(result.created.map((item) => [item.clientKey, item.id]));
+                const submittedLines = lineItems.map((li) => ({
+                    ...li, id: li.id ?? createdIds.get(getStableLineItemKey(li)),
+                    status: li.status === "canceled" ? "canceled" as const : "active" as const,
+                }));
+                setLineItems((current) => current.map((li) => ({ ...li, id: li.id ?? createdIds.get(getStableLineItemKey(li)) })));
+                confirmedQuoteRevisionRef.current = result.quote.revision;
+                queryClientInstance.setQueryData(["/api/quotes", quoteId], result.quote);
 
                 toast({
-                    title: "Quote saved",
-                    description: "Your changes to this quote have been saved.",
+                    title: result.changed ? "Quote saved" : "No changes to save",
+                    description: result.changed ? "Your changes to this quote have been saved." : "This Quote is already up to date.",
                 });
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
-                await queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
-                const savedQuote = queryClientInstance.getQueryData<QuoteWithRelations>(["/api/quotes", quoteId]);
-                if (savedQuote) confirmedQuoteRevisionRef.current = savedQuote.revision;
+                void queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
 
                 // Update snapshot to current state (for discard behavior)
                 savedSnapshotRef.current = {
@@ -2054,7 +2045,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     quoteTaxExempt,
                     quoteTaxRateOverride,
                     visibleInCustomerPortal,
-                    lineItems: lineItems.map((li) => ({ ...li, status: li.status === "canceled" ? "canceled" : "active" })),
+                    lineItems: submittedLines,
                 };
 
                 // Return result for existing quote
@@ -2076,6 +2067,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 variant: "destructive",
             });
             throw error;
+        } finally {
+            normalSaveInFlightRef.current = false;
         }
     };
 

@@ -1159,7 +1159,7 @@ export class QuotesRepository {
         }
 
         const designSnapshot = materializeLineItemDesignSnapshot({
-            config: await productDesignConfigRepository.getByProductId(quoteRow.organizationId, lineItem.productId),
+            config: await productDesignConfigRepository.getByProductId(quoteRow.organizationId, lineItem.productId, this.dbInstance),
             requestedNeedsDesignOverride: (lineItem as any).needsDesignOverride,
             requestedEffectiveRequiresDesign: typeof (lineItem as any).requiresDesign === 'boolean' ? (lineItem as any).requiresDesign : null,
         });
@@ -1264,7 +1264,9 @@ export class QuotesRepository {
         const allowedStatus = ["draft", "active", "canceled"];
         if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
         if (lineItem.productName !== undefined) updateData.productName = lineItem.productName;
+        if (lineItem.productType !== undefined) updateData.productType = lineItem.productType;
         if (lineItem.description !== undefined) updateData.description = lineItem.description;
+        if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
         if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
         if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
         if (lineItem.status !== undefined && allowedStatus.includes(lineItem.status as any)) updateData.status = lineItem.status;
@@ -1332,6 +1334,7 @@ export class QuotesRepository {
                 config: await productDesignConfigRepository.getByProductId(
                     quoteRow.organizationId,
                     lineItem.productId ?? currentLineItem.productId,
+                    this.dbInstance,
                 ),
                 requestedNeedsDesignOverride: Object.prototype.hasOwnProperty.call(lineItem, 'needsDesignOverride')
                     ? ((lineItem as any).needsDesignOverride ?? null)
