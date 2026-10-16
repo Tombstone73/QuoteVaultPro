@@ -2,6 +2,7 @@ import type { Express, RequestHandler } from "express";
 import { z } from "zod";
 import { getRequestOrganizationId } from "../tenantContext";
 import { readArtworkFileForOrganization, type ArtworkAccessVariant } from "../services/artwork/ArtworkFileAccessService";
+import { requestArtworkDerivativeRecovery } from "../services/artwork/requestArtworkDerivativeRecovery";
 
 export function registerArtworkAccessRoutes(app: Express, middleware: {
   isAuthenticated: RequestHandler;
@@ -9,8 +10,10 @@ export function registerArtworkAccessRoutes(app: Express, middleware: {
   assertInternalUser: (req: any, res: any) => boolean;
 }, dependencies: {
   readArtworkFileForOrganization?: typeof readArtworkFileForOrganization;
+  requestArtworkDerivativeRecovery?: typeof requestArtworkDerivativeRecovery;
 } = {}): void {
   const readArtwork = dependencies.readArtworkFileForOrganization ?? readArtworkFileForOrganization;
+  const requestRecovery = dependencies.requestArtworkDerivativeRecovery ?? requestArtworkDerivativeRecovery;
   app.get("/api/artwork/file-records/:fileRecordId/content", middleware.isAuthenticated, middleware.tenantContext, async (req: any, res) => {
     if (!middleware.assertInternalUser(req, res)) return;
     const organizationId = getRequestOrganizationId(req);
@@ -24,7 +27,16 @@ export function registerArtworkAccessRoutes(app: Express, middleware: {
         : "original";
     try {
       const artwork = await readArtwork({ organizationId, fileRecordId: parsed.data.fileRecordId, variant });
-      if (!artwork) return res.status(404).json({ message: "Artwork file is unavailable." });
+      if (!artwork) {
+        if (variant !== "original") {
+          try {
+            await requestRecovery({ organizationId, fileRecordId: parsed.data.fileRecordId, variant });
+          } catch (recoveryError) {
+            console.error("[ArtworkAccess] Could not request derivative recovery", recoveryError);
+          }
+        }
+        return res.status(404).json({ message: "Artwork file is unavailable." });
+      }
 
       const filename = artwork.filename.replace(/[\r\n\\"]/g, "_");
       res.setHeader("Cache-Control", "private, max-age=60");
