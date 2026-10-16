@@ -72,7 +72,10 @@ test("saved job notes hydrate, edit/save, survive refetch and reopen from the ca
   mockQuote = { id: "q", revision: 1, customerId: "customer", shippingInstructions: "Original job notes", shippingMethod: "deliver", shippingCents: 2500,
     lineItems: [{ id: "line", productId: "product", productName: "Banner", quantity: 2, linePrice: "100", width: "24", height: "36", status: "active", description: null }] };
   mockApiRequest.mockImplementation(async (method, url, data) => {
-    if (method === "PATCH" && url === "/api/quotes/q" && data) mockQuote = { ...mockQuote, ...data, revision: mockQuote.revision + 1 };
+    if (method === "PATCH" && url === "/api/quotes/q/editor-save" && data) {
+      mockQuote = { ...mockQuote, ...(data.header as Partial<QuoteFixture>), revision: mockQuote.revision + 1 };
+      return { ok: true, json: async () => ({ quote: mockQuote, created: [], changed: true }) };
+    }
     return { ok: true, json: async () => mockQuote };
   });
   const first = renderHook(() => useQuoteEditorState());
@@ -83,7 +86,7 @@ test("saved job notes hydrate, edit/save, survive refetch and reopen from the ca
   first.rerender();
   expect(first.result.current.quoteNotes).toBe("Edited job notes");
   await act(async () => { await first.result.current.handlers.saveQuote(); });
-  expect(mockApiRequest).toHaveBeenCalledWith("PATCH", "/api/quotes/q", expect.objectContaining({ shippingInstructions: "Edited job notes", shippingMethod: "deliver", shippingCents: 2500 }));
+  expect(mockApiRequest).toHaveBeenCalledWith("PATCH", "/api/quotes/q/editor-save", expect.objectContaining({ header: expect.objectContaining({ shippingInstructions: "Edited job notes" }), lines: { create: [], update: [], delete: [] } }));
   first.unmount();
   const reopened = renderHook(() => useQuoteEditorState());
   expect(reopened.result.current.quoteNotes).toBe("Edited job notes");
@@ -98,24 +101,69 @@ test("customer-facing line description survives Quote save and reload", async ()
   const log = jest.spyOn(console, "log").mockImplementation(() => {});
   mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [{ id: "line", productId: "product", productName: "Coroplast", quantity: 2, linePrice: "100", width: "48", height: "96", status: "active", description: null }] };
   mockApiRequest.mockImplementation(async (method, url, data) => {
-    if (method === "PATCH" && url === "/api/quotes/q/line-items/line") {
+    if (method === "PATCH" && url === "/api/quotes/q/editor-save") {
       const [lineItem, ...remainingLineItems] = mockQuote.lineItems;
       if (lineItem) {
+        const submitted = (data?.lines as { update?: Array<{ data: { description?: string | null } }> })?.update?.[0]?.data;
         mockQuote = {
           ...mockQuote,
-          lineItems: [{ ...lineItem, description: typeof data?.description === "string" ? data.description : null }, ...remainingLineItems],
+          revision: mockQuote.revision + 1,
+          lineItems: [{ ...lineItem, description: submitted?.description ?? null }, ...remainingLineItems],
         };
       }
+      return { ok: true, json: async () => ({ quote: mockQuote, created: [], changed: true }) };
     }
     return { ok: true, json: async () => mockQuote };
   });
   const editor = renderHook(() => useQuoteEditorState());
   act(() => editor.result.current.handlers.updateLineItemLocal("line", { description: "48 x 96 fluted white sheets" }));
   await act(async () => { await editor.result.current.handlers.saveQuote(); });
-  expect(mockApiRequest).toHaveBeenCalledWith("PATCH", "/api/quotes/q/line-items/line", expect.objectContaining({ description: "48 x 96 fluted white sheets" }));
+  expect(mockApiRequest).toHaveBeenCalledWith("PATCH", "/api/quotes/q/editor-save", expect.objectContaining({ lines: expect.objectContaining({ update: [expect.objectContaining({ id: "line", data: expect.objectContaining({ description: "48 x 96 fluted white sheets" }) })] }) }));
   editor.unmount();
   const reopened = renderHook(() => useQuoteEditorState());
   expect(reopened.result.current.lineItems[0].description).toBe("48 x 96 fluted white sheets");
   reopened.unmount();
+  log.mockRestore();
+});
+
+test("a failed transactional save keeps local line edits and the reviewed revision", async () => {
+  const log = jest.spyOn(console, "log").mockImplementation(() => {});
+  const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [{ id: "line", productId: "product", productName: "Banner", quantity: 1, linePrice: "10", width: "24", height: "36", status: "active", description: null }] };
+  mockApiRequest.mockImplementation(async (method, url) => {
+    if (method === "PATCH" && url === "/api/quotes/q/editor-save") throw new Error("409: Quote changed; reload before saving.");
+    return { ok: true, json: async () => mockQuote };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  act(() => editor.result.current.handlers.updateLineItemLocal("line", { description: "Keep this edit" }));
+  await expect(act(async () => { await editor.result.current.handlers.saveQuote(); })).rejects.toThrow("Quote changed");
+  expect(editor.result.current.lineItems[0].description).toBe("Keep this edit");
+  expect(mockQuote.revision).toBe(1);
+  editor.unmount();
+  errorLog.mockRestore();
+  log.mockRestore();
+});
+
+test("an edit made during a pending save stays local and dirty after authoritative success", async () => {
+  const log = jest.spyOn(console, "log").mockImplementation(() => {});
+  mockQuote = { id: "q", revision: 1, customerId: "customer", shippingInstructions: "Original", lineItems: [{ id: "line", productId: "product", productName: "Banner", quantity: 1, linePrice: "10", width: "24", height: "36", status: "active", description: null }] };
+  let resolveSave: ((response: QuoteApiResponse) => void) | undefined;
+  mockApiRequest.mockImplementation(async (method, url) => {
+    if (method === "PATCH" && url === "/api/quotes/q/editor-save") return await new Promise<QuoteApiResponse>((resolve) => { resolveSave = resolve; });
+    return { ok: true, json: async () => mockQuote };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  act(() => editor.result.current.handlers.setQuoteNotes("Submitted note"));
+  let pendingSave: ReturnType<typeof editor.result.current.handlers.saveQuote>;
+  act(() => { pendingSave = editor.result.current.handlers.saveQuote(); });
+  await expect(editor.result.current.handlers.saveQuote()).rejects.toThrow("already in progress");
+  act(() => editor.result.current.handlers.setQuoteNotes("Later edit"));
+  await act(async () => {
+    resolveSave?.({ ok: true, json: async () => ({ quote: { ...mockQuote, revision: 2, shippingInstructions: "Submitted note" }, created: [], changed: true }) });
+    await pendingSave;
+  });
+  expect(editor.result.current.quoteNotes).toBe("Later edit");
+  expect(editor.result.current.hasUnsavedChanges).toBe(true);
+  editor.unmount();
   log.mockRestore();
 });

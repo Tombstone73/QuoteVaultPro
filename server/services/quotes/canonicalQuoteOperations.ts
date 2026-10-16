@@ -5,9 +5,11 @@ import { db } from "../../db";
 import { storage } from "../../storage";
 import { QuotesRepository } from "../../storage/quotes.repo";
 import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionService";
+import { getEffectiveWorkflowState, isQuoteLocked } from "@shared/quoteWorkflow";
 
 type CreateQuotePayload = Parameters<typeof storage.createQuote>[1];
 type UpdateQuotePayload = Parameters<typeof storage.updateQuote>[2];
+type QuoteTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export class CanonicalQuoteOperationError extends Error {
   constructor(readonly code: "QUOTE_NOT_FOUND" | "QUOTE_NOT_EDITABLE" | "QUOTE_STALE", message: string) { super(message); }
@@ -15,6 +17,30 @@ export class CanonicalQuoteOperationError extends Error {
 
 /** Shared boundary for Quote draft and header writes; line pricing remains specialised. */
 class CanonicalQuoteOperations {
+  async runEditableTransaction<T>(input: {
+    organizationId: string;
+    actorUserId: string;
+    quoteId: string;
+    expectedRevision: number;
+    auditDescription?: string;
+    apply: (tx: QuoteTransaction, existing: typeof quotes.$inferSelect) => Promise<{ changed: boolean; value: T }>;
+  }): Promise<T> {
+    return db.transaction(async (tx) => {
+      // All Quote and child writers serialize through this row and its database-owned revision.
+      const [existing] = await tx.select().from(quotes).where(and(eq(quotes.id, input.quoteId), eq(quotes.organizationId, input.organizationId))).for("update").limit(1);
+      if (!existing) throw new CanonicalQuoteOperationError("QUOTE_NOT_FOUND", "Quote not found.");
+      if (isQuoteLocked(getEffectiveWorkflowState(existing.status, existing.validUntil, Boolean(existing.convertedToOrderId)))) {
+        throw new CanonicalQuoteOperationError("QUOTE_NOT_EDITABLE", "This Quote is locked and cannot be edited.");
+      }
+      if (existing.revision !== input.expectedRevision) throw new CanonicalQuoteOperationError("QUOTE_STALE", "The quote changed after this proposal was prepared. Review the current Quote and try again.");
+      const result = await input.apply(tx, existing);
+      if (result.changed) {
+        await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "quote", entityId: existing.id, entityName: existing.displayNumber || existing.quoteNumber?.toString() || existing.id, description: input.auditDescription ?? `Updated quote ${existing.displayNumber || existing.quoteNumber}.` });
+      }
+      return result.value;
+    });
+  }
+
   async normalizeOwnerIdentity(input: { organizationId: string; customerId?: string | null; contactId?: string | null }) {
     return resolveOrderCustomerContactIds(input);
   }
