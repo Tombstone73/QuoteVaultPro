@@ -6,7 +6,7 @@ import { Pool } from 'pg';
 import express from 'express';
 import request from 'supertest';
 import { db } from '../db';
-import { auditLogs, organizations, products, quoteAttachments, quoteLineItems, quoteWorkflowStates, quotes, users } from '@shared/schema';
+import { auditLogs, customers, organizations, products, quoteAttachments, quoteLineItems, quoteWorkflowStates, quotes, users } from '@shared/schema';
 import { canonicalQuoteOperations, CanonicalQuoteOperationError } from '../services/quotes/canonicalQuoteOperations';
 import { DrizzleInvestigationRepository } from '../services/investigation/investigationService';
 import { registerQuoteRoutes } from '../routes/quotes.routes';
@@ -109,6 +109,59 @@ describe('Quote revision on isolated PostgreSQL', () => {
     expect(second.status).toBe(409);
     expect(second.body).toMatchObject({ code: 'QUOTE_STALE' });
     expect(await current(f.quote.id)).toMatchObject({ customerNotes: 'First', revision: revision + 1 });
+  });
+
+  test('explicit Ship To fields survive customer snapshot refresh and later header saves', async () => {
+    const f = await fixture();
+    const [customer] = await db.insert(customers).values({
+      organizationId: f.organization.id,
+      companyName: 'Master Customer',
+      shippingStreet1: '1 Master Street',
+      shippingCity: 'Master City',
+      shippingState: 'IN',
+      shippingPostalCode: '46201',
+      shippingCountry: 'US',
+    }).returning();
+    const [product] = await db.insert(products).values({ organizationId: f.organization.id, name: 'Fixture', description: 'Synthetic product' }).returning();
+    await db.insert(quoteLineItems).values({ quoteId: f.quote.id, productId: product.id, productName: 'Fixture', width: '1', height: '1', quantity: 1, pbv2SnapshotJson: {}, linePrice: '10', priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: '' } });
+    const app = express();
+    app.use(express.json());
+    registerQuoteRoutes(app, {
+      isAuthenticated: (req: express.Request, _res: express.Response, next: express.NextFunction) => { Object.assign(req, { user: { id: f.user.id, role: 'admin' } }); next(); },
+      isAdmin: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+      tenantContext: (req: express.Request, _res: express.Response, next: express.NextFunction) => { Object.assign(req, { organizationId: f.organization.id, orgRole: 'admin' }); next(); },
+    });
+
+    const custom = await request(app).patch(`/api/quotes/${f.quote.id}`).send({
+      expectedRevision: (await current(f.quote.id)).revision,
+      customerId: customer.id,
+      shippingMethod: 'ship',
+      shipToCompany: 'QA Destination',
+      shipToAddress1: '99 Custom Lane',
+      shipToAddress2: '',
+      shipToCity: 'Custom City',
+      shipToState: '',
+      shipToPostalCode: '46000',
+      shipToCountry: 'US',
+    });
+    expect(custom.status).toBe(200);
+    expect(await current(f.quote.id)).toMatchObject({
+      shipToCompany: 'QA Destination', shipToAddress1: '99 Custom Lane', shipToAddress2: '',
+      shipToCity: 'Custom City', shipToState: '', shipToPostalCode: '46000',
+    });
+    const header = await request(app).patch(`/api/quotes/${f.quote.id}`).send({
+      expectedRevision: (await current(f.quote.id)).revision,
+      customerId: customer.id,
+      shippingMethod: 'ship',
+      label: 'Updated header',
+    });
+    expect(header.status).toBe(200);
+    const readback = await request(app).get(`/api/quotes/${f.quote.id}`);
+    expect(readback.status).toBe(200);
+    expect(readback.body).toMatchObject({
+      label: 'Updated header', shipToCompany: 'QA Destination', shipToAddress1: '99 Custom Lane',
+      shipToAddress2: '', shipToCity: 'Custom City', shipToState: '', shipToPostalCode: '46000',
+    });
   });
 
   test('repeated Quote detail reads do not advance revision or stale a normal header save', async () => {
