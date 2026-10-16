@@ -99,7 +99,7 @@ import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValida
 import { normalizeRole } from "@shared/roleAccess";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { assertValidParentLink } from "../services/lineItemParentLinking";
-import { canonicalQuoteOperations } from "../services/quotes/canonicalQuoteOperations";
+import { canonicalQuoteOperations, CanonicalQuoteOperationError } from "../services/quotes/canonicalQuoteOperations";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -1493,6 +1493,7 @@ export function registerQuoteRoutes(
         shipToCountry,
         label,
         visibleInCustomerPortal,
+        expectedRevision,
         tags: rawTags,
         listLabel,
       } = req.body;
@@ -1536,7 +1537,7 @@ export function registerQuoteRoutes(
       }
 
       const isVisibilityOnlyUpdate =
-        Object.keys(req.body || {}).length === 1 &&
+        Object.keys(req.body || {}).every((key) => key === "visibleInCustomerPortal" || key === "expectedRevision") &&
         visibleInCustomerPortal !== undefined;
 
       if (!isVisibilityOnlyUpdate && !assertQuoteEditable(res, existing)) return;
@@ -1655,11 +1656,15 @@ export function registerQuoteRoutes(
       }
 
       if (!userId) return res.status(401).json({ message: 'Authentication required.' });
+      if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
+        return res.status(400).json({ code: "QUOTE_REVISION_INVALID", message: "A positive integer Quote revision is required." });
+      }
       let updatedQuote = await canonicalQuoteOperations.updateEditableHeader({
         organizationId,
         actorUserId: userId,
         quoteId: id,
         changes: updateData,
+        expectedRevision: expectedRevision ?? existing.revision,
       });
 
       if (
@@ -1754,8 +1759,15 @@ export function registerQuoteRoutes(
 
       console.log(`[PATCH /api/quotes/${id}] Updated customerName:`, updatedQuote.customerName);
 
-      res.json(updatedQuote);
+      // Repricing and snapshot work may advance the database-owned revision
+      // again after the canonical header write. Return the authoritative row.
+      const persistedQuote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
+      if (!persistedQuote) return res.status(404).json({ message: "Quote not found after update" });
+      res.json(persistedQuote);
     } catch (error) {
+      if (error instanceof CanonicalQuoteOperationError) {
+        return res.status(error.code === "QUOTE_NOT_FOUND" ? 404 : 409).json({ success: false, code: error.code, message: error.message });
+      }
       if (error instanceof QuoteIdentityError) {
         return res.status(error.statusCode).json({
           success: false,

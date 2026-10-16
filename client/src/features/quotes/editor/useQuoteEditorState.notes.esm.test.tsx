@@ -15,6 +15,7 @@ type QuoteLineFixture = {
 };
 type QuoteFixture = {
   id: string;
+  revision: number;
   customerId: string;
   shippingInstructions?: string | null;
   shippingMethod?: string | null;
@@ -68,10 +69,10 @@ function renderHook(hook: UseQuoteEditorState) {
 
 test("saved job notes hydrate, edit/save, survive refetch and reopen from the canonical field", async () => {
   const log = jest.spyOn(console, "log").mockImplementation(() => {});
-  mockQuote = { id: "q", customerId: "customer", shippingInstructions: "Original job notes", shippingMethod: "deliver", shippingCents: 2500,
+  mockQuote = { id: "q", revision: 1, customerId: "customer", shippingInstructions: "Original job notes", shippingMethod: "deliver", shippingCents: 2500,
     lineItems: [{ id: "line", productId: "product", productName: "Banner", quantity: 2, linePrice: "100", width: "24", height: "36", status: "active", description: null }] };
   mockApiRequest.mockImplementation(async (method, url, data) => {
-    if (method === "PATCH" && url === "/api/quotes/q" && data) mockQuote = { ...mockQuote, ...data };
+    if (method === "PATCH" && url === "/api/quotes/q" && data) mockQuote = { ...mockQuote, ...data, revision: mockQuote.revision + 1 };
     return { ok: true, json: async () => mockQuote };
   });
   const first = renderHook(() => useQuoteEditorState());
@@ -95,7 +96,7 @@ test("saved job notes hydrate, edit/save, survive refetch and reopen from the ca
 
 test("customer-facing line description survives Quote save and reload", async () => {
   const log = jest.spyOn(console, "log").mockImplementation(() => {});
-  mockQuote = { id: "q", customerId: "customer", lineItems: [{ id: "line", productId: "product", productName: "Coroplast", quantity: 2, linePrice: "100", width: "48", height: "96", status: "active", description: null }] };
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [{ id: "line", productId: "product", productName: "Coroplast", quantity: 2, linePrice: "100", width: "48", height: "96", status: "active", description: null }] };
   mockApiRequest.mockImplementation(async (method, url, data) => {
     if (method === "PATCH" && url === "/api/quotes/q/line-items/line") {
       const [lineItem, ...remainingLineItems] = mockQuote.lineItems;

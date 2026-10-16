@@ -1548,6 +1548,13 @@
       "when": 1788048000072,
       "tag": "0227_product_storefront_default",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1788048000073,
+      "tag": "0228_quote_revision",
+      "breakpoints": true
     }
   ]
 }
