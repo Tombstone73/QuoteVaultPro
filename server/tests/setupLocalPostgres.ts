@@ -26,6 +26,15 @@ beforeAll(async () => {
         rows[0]?.orders_table !== 'orders' || rows[0]?.invoices_table !== 'invoices') {
       throw new Error('Local PostgreSQL database identity or schema verification failed.');
     }
+    // db:push omits this migration-only constraint, which canonical numbering
+    // seeds require for their ON CONFLICT target (migration 0029).
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS global_variables_org_name_unique_idx ON public.global_variables (organization_id, name)');
+    // Production ownership reads and upserts use these migration-only station
+    // fields (migrations 0001 and 0002). The local schema projection models
+    // station IDs as varchar, so keep the test column's type aligned with it.
+    await pool.query('ALTER TABLE public.production_jobs ADD COLUMN IF NOT EXISTS station_id varchar');
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS production_jobs_org_line_item_station_unique
+      ON public.production_jobs (organization_id, line_item_id, station_id) WHERE station_id IS NOT NULL`);
   } finally {
     await pool.end();
   }

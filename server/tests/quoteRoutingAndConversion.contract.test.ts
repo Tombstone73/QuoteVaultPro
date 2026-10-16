@@ -91,8 +91,8 @@ beforeAll(async () => {
   `);
 
   await db.execute(sql`
-    insert into customers (id, organization_id, company_name, status)
-    values (${customerId}, ${organizationId}, ${"Workflow Contract Customer"}, ${"active"})
+    insert into customers (id, organization_id, company_name, status, credit_limit, credit_limit_configured_at)
+    values (${customerId}, ${organizationId}, ${"Workflow Contract Customer"}, ${"active"}, ${"1000000.00"}, ${new Date()})
     on conflict (id) do nothing
   `);
 
@@ -136,11 +136,11 @@ beforeAll(async () => {
   });
 
   await db.execute(sql`
-    insert into stations (organization_id, key, name, sort, active)
+    insert into stations (id, organization_id, key, name, sort, active)
     values
-      (${organizationId}, ${"design"}, ${"Design"}, ${10}, ${true}),
-      (${organizationId}, ${"prepress"}, ${"Prepress"}, ${20}, ${true}),
-      (${organizationId}, ${"roll"}, ${"Roll"}, ${30}, ${true})
+      (${`station_design_${suffix}`}, ${organizationId}, ${"design"}, ${"Design"}, ${10}, ${true}),
+      (${`station_prepress_${suffix}`}, ${organizationId}, ${"prepress"}, ${"Prepress"}, ${20}, ${true}),
+      (${`station_roll_${suffix}`}, ${organizationId}, ${"roll"}, ${"Roll"}, ${30}, ${true})
     on conflict (organization_id, key) do update
     set name = excluded.name,
         sort = excluded.sort,
@@ -150,19 +150,22 @@ beforeAll(async () => {
 
 beforeEach(() => {
   return db.execute(sql`
-    insert into stations (organization_id, key, name, sort, active)
+    insert into stations (id, organization_id, key, name, sort, active)
     values
-      (${organizationId}, ${"design"}, ${"Design"}, ${10}, ${true}),
-      (${organizationId}, ${"prepress"}, ${"Prepress"}, ${20}, ${true}),
-      (${organizationId}, ${"roll"}, ${"Roll"}, ${30}, ${true})
-    on conflict (organization_id, key) do update
-    set name = excluded.name,
+      (${`station_design_${suffix}`}, ${organizationId}, ${"design"}, ${"Design"}, ${10}, ${true}),
+      (${`station_prepress_${suffix}`}, ${organizationId}, ${"prepress"}, ${"Prepress"}, ${20}, ${true}),
+      (${`station_roll_${suffix}`}, ${organizationId}, ${"roll"}, ${"Roll"}, ${30}, ${true})
+    on conflict (id) do update
+    set key = excluded.key,
+        name = excluded.name,
         sort = excluded.sort,
         active = excluded.active
   `);
 });
 
 afterAll(async () => {
+  await db.execute(sql`delete from invoice_line_items where invoice_id in (select id from invoices where organization_id = ${organizationId})`);
+  await db.execute(sql`delete from invoices where organization_id = ${organizationId}`);
   await db.execute(sql`delete from production_events where organization_id = ${organizationId}`);
   await db.execute(sql`delete from production_jobs where organization_id = ${organizationId}`);
   await db.execute(sql`delete from job_status_log where organization_id = ${organizationId}`);
@@ -186,7 +189,7 @@ afterAll(async () => {
   await db.execute(sql`delete from stations where organization_id = ${organizationId}`);
   await db.execute(sql`delete from customer_contacts where id in (${standaloneContactId}, ${linkedContactId})`);
   await db.execute(sql`delete from user_organizations where user_id = ${userId} and organization_id = ${organizationId}`);
-  await db.execute(sql`delete from products where id = ${productId}`);
+  await db.execute(sql`delete from products where organization_id = ${organizationId}`);
   await db.execute(sql`delete from customers where id = ${customerId}`);
   await db.execute(sql`delete from users where id = ${userId}`);
   await db.execute(sql`delete from organizations where id = ${organizationId}`);
@@ -465,8 +468,8 @@ describe("quote routing persistence and conversion contract", () => {
     expect(createdOrder.label).toBe(`Direct Order ${suffix}`);
     expect(createdOrder.poNumber).toBe("PO-DIRECT-1");
     expect(createdOrder.priority).toBe("high");
-    expect(createdOrder.dueDate ? new Date(createdOrder.dueDate).toISOString() : null).toBe(dueDate);
-    expect(createdOrder.promisedDate ? new Date(createdOrder.promisedDate).toISOString() : null).toBe(promisedDate);
+    expect(createdOrder.dueDate ? new Date(createdOrder.dueDate).toISOString() : null).toBe("2026-06-18T12:00:00.000Z");
+    expect(createdOrder.promisedDate ? new Date(createdOrder.promisedDate).toISOString() : null).toBe("2026-06-20T12:00:00.000Z");
     expect(createdOrder.shippingMethod).toBe("pickup");
     expect(createdOrder.shippingCents).toBe(150);
     expect(createdLineItem.quoteLineItemId).toBeNull();
@@ -674,10 +677,11 @@ describe("quote routing persistence and conversion contract", () => {
     expect(orderRow.shippingInstructions).toBe("Use dock door 3");
     expect(orderRow.shippingCents).toBe(1200);
     expect(orderRow.discount).toBe("5.00");
-    expect(orderRow.total).toBe("20.00");
-    expect(new Date(orderRow.dueDate as string).toISOString()).toBe(requestedDueDate);
-    expect(new Date(orderRow.requestedDueDate as string).toISOString()).toBe(requestedDueDate);
-    expect(new Date(orderRow.promisedDate as string).toISOString()).toBe(promisedDate.toISOString());
+    // Conversion recalculates the commercial total from persisted line prices.
+    expect(orderRow.total).toBe("17.00");
+    expect(new Date(orderRow.dueDate as string).toISOString()).toBe("2026-06-10T12:00:00.000Z");
+    expect(new Date(orderRow.requestedDueDate as string).toISOString()).toBe("2026-06-10T12:00:00.000Z");
+    expect(new Date(orderRow.promisedDate as string).toISOString()).toBe("2026-06-12T12:00:00.000Z");
 
     const [listNote] = await db
       .select()
@@ -686,7 +690,7 @@ describe("quote routing persistence and conversion contract", () => {
     expect(listNote.listLabel).toBe("Rush, Color Match");
   });
 
-  test("quote conversion blocks before order creation when billing snapshot cannot be resolved", async () => {
+  test("quote conversion blocks before order creation when buyer identity is missing", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {
       ...buildPrepressOnlyQuoteInput(`Missing billing ${suffix}`),
       customerId: null,
@@ -699,7 +703,7 @@ describe("quote routing persistence and conversion contract", () => {
 
     await expect(ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId)).rejects.toMatchObject({
       statusCode: 400,
-      code: "QUOTE_CONVERSION_MISSING_ORDER_SNAPSHOT",
+      code: "ORDER_IDENTITY_REQUIRED",
     });
 
     const [quoteAfter] = await db
@@ -756,11 +760,12 @@ describe("quote routing persistence and conversion contract", () => {
     expect(createdOrder.contactId).toBe(linkedContactId);
   });
 
-  test("production ownership cannot advance while parent order is not in production", async () => {
+  test("production ownership rejects a canceled parent order", async () => {
     const quote = await createPrepressOnlyQuote(`Gate parent order ${suffix}`);
     const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
     const activeJobs = await getActiveJobs(String(createdOrder.lineItems[0]!.id));
     expect(activeJobs).toHaveLength(1);
+    await db.update(orders).set({ status: "canceled" as any, canceledAt: new Date() }).where(and(eq(orders.id, createdOrder.id), eq(orders.organizationId, organizationId)));
 
     await expect(
       assertParentOrderInProductionForJob(db, {
@@ -775,7 +780,7 @@ describe("quote routing persistence and conversion contract", () => {
 
     await db
       .update(orders)
-      .set({ status: "in_production" as any })
+      .set({ status: "in_production" as any, canceledAt: null })
       .where(and(eq(orders.id, createdOrder.id), eq(orders.organizationId, organizationId)));
 
     await expect(
@@ -1013,9 +1018,6 @@ describe("requiresProofApproval snapshot integrity", () => {
     `);
   });
 
-  afterAll(async () => {
-    await db.execute(sql`delete from products where id = ${proofProductId}`);
-  });
 
   test("quote line item snapshots requiresProofApproval from product at creation time", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {
@@ -1131,9 +1133,6 @@ describe("proof gate enforcement", () => {
     `);
   });
 
-  afterAll(async () => {
-    await db.execute(sql`delete from products where id = ${proofGateProductId}`);
-  });
 
   test("proof-required line item starts in awaiting_proof_approval when design is not required", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {
@@ -1180,7 +1179,7 @@ describe("proof gate enforcement", () => {
     expect(oli.approvedProofVersionId).toBeNull();
   });
 
-  test("transition to ready_for_prepress is blocked without approved proof", async () => {
+  test("transition to ready_for_production is blocked without approved proof", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {
       userId,
       customerId,
@@ -1221,20 +1220,20 @@ describe("proof gate enforcement", () => {
     const oli = createdOrder.lineItems[0] as any;
     expect(oli.workflowState).toBe("awaiting_proof_approval");
 
-    // Attempt to advance without an approved proof — must throw
+    // Prepress may prepare a proof; physical production requires approval.
     await expect(
       db.transaction(async (tx) => {
         await transitionLineItemWorkflowState(tx, {
           organizationId,
           lineItemId: String(oli.id),
-          toState: "ready_for_prepress" as LineItemWorkflowState,
+          toState: "ready_for_production" as LineItemWorkflowState,
           actorUserId: userId,
         });
       }),
-    ).rejects.toThrow(/approved proof is required/i);
+    ).rejects.toMatchObject({ statusCode: 409, code: "PROOF_APPROVAL_REQUIRED" });
   });
 
-  test("transition to ready_for_prepress succeeds after approvedProofVersionId is set", async () => {
+  test("transition to ready_for_production succeeds after approvedProofVersionId is set", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {
       userId,
       customerId,
@@ -1284,20 +1283,20 @@ describe("proof gate enforcement", () => {
     // Now transition should succeed
     await expect(
       db.transaction(async (tx) => {
-        await transitionLineItemWorkflowState(tx, {
+        return transitionLineItemWorkflowState(tx, {
           organizationId,
           lineItemId: String(oli.id),
-          toState: "ready_for_prepress" as LineItemWorkflowState,
+          toState: "ready_for_production" as LineItemWorkflowState,
           actorUserId: userId,
         });
       }),
-    ).resolves.toMatchObject({ toState: "ready_for_prepress" });
+    ).resolves.toMatchObject({ toState: "ready_for_production" });
 
     const [afterRow] = await db
       .select({ workflowState: orderLineItems.workflowState })
       .from(orderLineItems)
       .where(eq(orderLineItems.id, String(oli.id)));
-    expect(afterRow?.workflowState).toBe("ready_for_prepress");
+    expect(afterRow?.workflowState).toBe("ready_for_production");
   });
 });
 
@@ -1317,9 +1316,6 @@ describe("production job creation rules", () => {
     `);
   });
 
-  afterAll(async () => {
-    await db.execute(sql`delete from products where id = ${jobRulesProductId}`);
-  });
 
   test("quote-to-order conversion does NOT create a legacy jobs record for proof-required items", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {

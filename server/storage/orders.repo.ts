@@ -2456,7 +2456,7 @@ export class OrdersRepository {
             // Keep requestedDueDate as an audit/source snapshot while also populating dueDate.
             dueDate: options?.dueDate || (quote.requestedDueDate ? new Date(quote.requestedDueDate) : null),
             promisedDate: options?.promisedDate || null,
-            requestedDueDate: quote.requestedDueDate || null,
+            requestedDueDate: quote.requestedDueDate ? new Date(quote.requestedDueDate) : null,
             discount: quote.discountAmount ? Number(quote.discountAmount) : 0,
             notesInternal: options?.notesInternal ? String(options.notesInternal) : null,
             createdByUserId,
