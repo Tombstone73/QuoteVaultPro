@@ -22,6 +22,9 @@ const db = {
 
 jest.unstable_mockModule("../db", () => ({ db }));
 jest.unstable_mockModule("../storage", () => ({ storage: {} }));
+jest.unstable_mockModule("../prepressFileService", () => ({
+  getFileUploadNamingPolicy: jest.fn(),
+}));
 jest.unstable_mockModule("../tenantContext", () => ({
   getRequestOrganizationId: (req: any) => req.organizationId,
 }));

@@ -1383,13 +1383,29 @@ export async function registerOrderRoutes(
             },
         });
 
-        void import('../workers/thumbnailWorker')
-            .then(({ triggerThumbnailGenerationForAttachment }) => {
-                triggerThumbnailGenerationForAttachment({
-                    attachmentType: 'order',
-                    attachmentId: String(finalized.linkedRecord.id),
-                    reason: 'order-attachment-upload',
-                });
+        void import('../services/thumbnailGenerator')
+            .then(async ({ generateImageDerivatives, isSupportedImageType, isThumbnailGenerationEnabled }) => {
+                const attachment = finalized.linkedRecord;
+                const fileName = attachment.originalFilename ?? attachment.fileName;
+                if (!isSupportedImageType(attachment.mimeType, fileName) || !isThumbnailGenerationEnabled()) {
+                    const { triggerThumbnailGenerationForAttachment } = await import('../workers/thumbnailWorker');
+                    triggerThumbnailGenerationForAttachment({
+                        attachmentType: 'order',
+                        attachmentId: String(attachment.id),
+                        reason: 'order-attachment-upload',
+                    });
+                    return;
+                }
+
+                if (!attachment.fileRecordId) return;
+                const original = await canonicalFileReadResolver.resolveOriginal(String(attachment.fileRecordId));
+                const storageKey = original.objectKey ?? original.localPathRef;
+                if (original.status !== 'available' || !storageKey || !original.providerType) return;
+                await generateImageDerivatives(
+                    String(attachment.id), 'order', storageKey, attachment.mimeType,
+                    original.providerType === 'local_filesystem' ? 'local' : original.providerType,
+                    args.organizationId, fileName,
+                );
             })
             .catch((error) => {
                 console.error('[OrderAttachments:POST] Failed to trigger thumbnail generation:', error);
@@ -7195,12 +7211,6 @@ export async function registerOrderRoutes(
                     attachment,
                     logLabel: 'OrderFiles:POST',
                 });
-
-            await kickoffOrderPdfThumbnailProcessing({
-                organizationId,
-                attachment,
-                logLabel: 'OrderFiles:POST',
-            });
 
                 const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
                 if (orderLineItemId) {
