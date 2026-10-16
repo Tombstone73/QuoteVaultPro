@@ -2,6 +2,7 @@ import {
   buildOrderOriginalArtworkDisplayFilename,
   dedupeByCanonicalOriginalFileIdentity,
   getCanonicalOriginalFileIdentity,
+  uniqueOrderViewerFilesByFileRecordId,
   withOrderOriginalArtworkDisplayFilename,
 } from "../services/originalArtworkFiles";
 
@@ -60,5 +61,20 @@ describe("original artwork file identity and display naming", () => {
         { orderNumber: "ORD-1019", namingPolicy },
       ).displayFilename,
     ).toBe("1019_old-upload.pdf");
+  });
+
+  test("viewer keeps one entry per canonical file record without collapsing separate uploads or legacy rows", () => {
+    const rows = [
+      { id: "attachment", fileRecordId: "file-1", originalFilename: "art.pdf" },
+      { id: "asset-link", fileRecordId: "file-1", originalFilename: "20713_art.pdf" },
+      { id: "same-name-upload", fileRecordId: "file-2", originalFilename: "art.pdf" },
+      { id: "proof-version", fileRecordId: "file-3", originalFilename: "art.pdf" },
+      { id: "separate-proof-use", fileRecordId: "file-1", originalFilename: "art.pdf", role: "proof" },
+      { id: "legacy-a", fileRecordId: null, originalFilename: "art.pdf" },
+      { id: "legacy-b", fileRecordId: null, originalFilename: "art.pdf" },
+    ];
+    expect(uniqueOrderViewerFilesByFileRecordId(rows).map((row) => row.id)).toEqual([
+      "attachment", "same-name-upload", "proof-version", "separate-proof-use", "legacy-a", "legacy-b",
+    ]);
   });
 });

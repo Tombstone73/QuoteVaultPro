@@ -19,6 +19,7 @@ export type CanonicalOriginalFileInput = {
   mimeType?: string | null;
   sizeBytes?: number | null;
   fileSize?: number | null;
+  role?: string | null;
 };
 
 function normalizedText(value: unknown): string {
@@ -134,4 +135,21 @@ export function dedupeByCanonicalOriginalFileIdentity<T extends CanonicalOrigina
   }
 
   return deduped;
+}
+
+/** Collapse mirrored artwork links, while keeping distinct proof/reference/output uses visible.
+ * Legacy rows without a canonical record stay distinct; names and hashes are not identities.
+ */
+export function uniqueOrderViewerFilesByFileRecordId<T extends CanonicalOriginalFileInput>(files: T[]): T[] {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const fileRecordId = normalizedText(file.fileRecordId);
+    if (!fileRecordId) return true;
+    const role = normalizedLower(file.role);
+    const purpose = ["proof", "reference", "customer_po", "setup", "output"].includes(role) ? role : "artwork";
+    const identity = `${fileRecordId}:${purpose}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
 }

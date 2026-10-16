@@ -195,7 +195,7 @@ import {
 } from "./flatStockNesting.shared";
 import { generatePackingSlipHtmlForOrder } from "../services/packingSlipService";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
-import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
+import { uniqueOrderViewerFilesByFileRecordId, withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
 import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
@@ -4569,7 +4569,7 @@ export async function registerOrderRoutes(
                 }
             }
 
-            const allItems = [...attachmentItems, ...lineItemAssetItems]
+            const allItems = uniqueOrderViewerFilesByFileRecordId([...attachmentItems, ...lineItemAssetItems])
                 .sort((a, b) => {
                     const at = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
                     const bt = b?.createdAt ? new Date(b.createdAt).getTime() : 0;

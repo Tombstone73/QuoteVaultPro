@@ -802,7 +802,11 @@ export class OrdersRepository {
             };
         }));
 
+        const seenFileRecords = new Set<string>();
         for (const att of resolvedRows) {
+            const identity = att.fileRecordId ? `${att.orderId}:${att.fileRecordId}` : null;
+            if (identity && seenFileRecords.has(identity)) continue;
+            if (identity) seenFileRecords.add(identity);
             countMap.set(att.orderId, (countMap.get(att.orderId) || 0) + 1);
             if (!att.thumbnailUrl) continue;
             if (!groupedAttachments.has(att.orderId)) {

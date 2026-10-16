@@ -27,7 +27,7 @@ describe("Orders artwork thumbnail viewer", () => {
     expect(previewCell).toContain("event.stopPropagation();");
     expect(previewCell).toContain('type="button"');
     expect(previewCell).toContain('aria-label="Open artwork viewer"');
-    expect(orders).toContain('navigate(ROUTES.orders.detail(order.id)');
+    expect(orders).toContain('navigate(orderDetailPath(order), { state: { referrer: buildReferrer(location) } })');
   });
 
   test("does not retain the generic Attachments modal path in the Orders list", () => {

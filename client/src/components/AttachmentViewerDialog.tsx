@@ -7,11 +7,12 @@ import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?ur
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfDownloadUrl, buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
-import { buildArtworkAccessUrl, openArtworkPreview, resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
+import { buildArtworkAccessUrl, downloadArtwork, openArtworkPreview, resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { cn } from "@/lib/utils";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
@@ -36,6 +37,8 @@ export type AttachmentData = {
   mimeType?: string | null;
   createdAt?: string;
   originalFilename?: string | null;
+  displayFilename?: string | null;
+  computedDisplayFilename?: string | null;
   thumbStatus?: "uploaded" | "thumb_pending" | "thumb_ready" | "thumb_failed";
   thumbKey?: string | null;
   previewKey?: string | null;
@@ -63,7 +66,7 @@ interface AttachmentViewerDialogProps {
 
 function getAttachmentName(attachment: AttachmentData | null | undefined) {
   if (!attachment) return "Attachment";
-  return attachment.originalFilename || attachment.fileName || "Attachment";
+  return attachment.computedDisplayFilename || attachment.displayFilename || attachment.fileName || attachment.originalFilename || "Attachment";
 }
 
 function inferMimeType(name: string): string | null {
@@ -121,8 +124,7 @@ function FilmstripThumbnail({
   const itemIsPdf = isPdfFile(itemMimeType, itemName);
   const itemIsImage = typeof itemMimeType === "string" && itemMimeType.startsWith("image/");
   const normalizedThumbUrl = normalizeThumbnailUrl(
-    buildArtworkAccessUrl(item.fileRecordId, "thumbnail") ??
-      item.thumbUrl ??
+    item.thumbUrl ??
       item.pages?.[0]?.thumbUrl ??
       (itemIsImage ? item.previewUrl ?? item.originalUrl ?? null : null)
   );
@@ -142,7 +144,18 @@ function FilmstripThumbnail({
       )}
       title={itemName}
     >
-      {normalizedThumbUrl && !thumbFailed ? (
+      {item.fileRecordId ? (
+        <AuthenticatedArtworkThumbnail
+          fileRecordId={item.fileRecordId}
+          fileName={item.originalFilename ?? item.fileName}
+          mimeType={itemMimeType}
+          previewStatus={item.thumbStatus}
+          previewError={item.thumbError}
+          alt={itemName}
+          className="h-full w-full object-cover"
+          fallback={<span className="flex h-full items-center justify-center p-1 text-center text-[10px] text-muted-foreground">Preview unavailable</span>}
+        />
+      ) : normalizedThumbUrl && !thumbFailed ? (
         <img
           src={normalizedThumbUrl}
           alt={itemName}
@@ -151,7 +164,7 @@ function FilmstripThumbnail({
           onError={() => setThumbFailed(true)}
         />
       ) : itemIsPdf ? (
-        <div className="flex h-full w-full items-center justify-center bg-slate-700/60 text-[10px] font-bold text-white">PDF</div>
+        <div className="flex h-full w-full items-center justify-center p-1 text-center text-[10px] text-muted-foreground">Preview unavailable</div>
       ) : itemIsImage ? (
         <div className="flex h-full w-full items-center justify-center bg-slate-800 text-[10px] font-bold text-white">IMG</div>
       ) : (
@@ -633,6 +646,10 @@ export function AttachmentViewerDialog({
   const handleDownloadClick = () => {
     if (onDownload) {
       onDownload(currentAttachment);
+      return;
+    }
+    if (currentAttachment.fileRecordId) {
+      void downloadArtwork(currentAttachment.fileRecordId, fileName);
       return;
     }
     if (!downloadUrl) return;
