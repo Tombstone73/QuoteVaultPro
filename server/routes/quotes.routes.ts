@@ -1654,6 +1654,7 @@ export function registerQuoteRoutes(
         console.log(`[PATCH /api/quotes/${id}] label value:`, updateData.label);
       }
 
+      if (!userId) return res.status(401).json({ message: 'Authentication required.' });
       let updatedQuote = await canonicalQuoteOperations.updateEditableHeader({
         organizationId,
         actorUserId: userId,

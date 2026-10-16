@@ -964,7 +964,7 @@ export class CanonicalProductIntentService {
     return { ok: true, session, issues: validation.issues, card: await this.presentation(intent, validation.issues, [...dismissed, input.recommendationId]) };
   }
 
-  async applyCandidateAction(input: { organizationId: string; actorUserId: string; proposalId: string; actionId: string; newProductName?: string }): Promise<{ outcome?: CanonicalProductIntentOutcome; navigation?: { href: string; abandon: boolean; conversationId: string; cloneProductId?: string } }> {
+  async applyCandidateAction(input: { organizationId: string; actorUserId: string; proposalId: string; actionId: string; newProductName?: string }): Promise<{ outcome?: CanonicalProductIntentOutcome; navigation?: { href: string; abandon: boolean; conversationId: string | null; cloneProductId?: string } }> {
     const correlationId = `pica-${randomUUID()}`;
     const current = await this.persistence.load(input); const intent = current.specification.session.revisions.at(-1)!.intent;
     const validation = await this.validate(intent); const card = await this.presentation(intent, validation.issues);

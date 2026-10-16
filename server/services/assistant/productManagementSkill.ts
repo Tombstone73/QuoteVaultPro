@@ -127,7 +127,7 @@ export interface CanonicalProductIntentRouter {
    * The router still reloads tenant-scoped canonical state server-side. */
   applySemanticOperations?(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; operations: unknown }): Promise<CanonicalProductIntentOutcome>;
   inspect?(input: { organizationId: string; actorUserId: string; proposalId: string }): Promise<CanonicalProductIntentInspection>;
-  interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; conversationId: string; cloneProductId?: string } }>;
+  interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; conversationId: string | null; cloneProductId?: string } }>;
 }
 
 function compilerInput(orgId: string, request: string, candidates: { categories: Array<{ label: string }>; materials: Array<{ label: string }>; productionRoutes: Array<{ label: string }> }): ProductIntentCompilerInput {
@@ -195,7 +195,7 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
   async applySemanticOperations(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; operations: unknown }): Promise<CanonicalProductIntentOutcome> {
     return (await this.semanticService(input.organizationId)).applySemanticOperations(input);
   }
-  async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; conversationId: string; cloneProductId?: string } }> {
+  async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; conversationId: string | null; cloneProductId?: string } }> {
     // Candidate actions and recommendations are server-authored revisions of
     // an existing draft. They must remain available to the direct Operator
     // creation path even when no compiler provider is configured.

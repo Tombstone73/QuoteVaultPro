@@ -1124,7 +1124,7 @@ export function OptionDetailsEditor({
           <div>
             <Label className="text-slate-300">Pricing Impact</Label>
             <p className="text-xs text-slate-400 mt-0.5">
-              {option.input?.type === 'select'
+              {nodeData?.input?.type === 'select'
                 ? 'Applies to every selected choice, including the default/NONE choice. Use the choice-level Pricing Impacts above for choice-specific charges.'
                 : 'Add pricing rules that apply when this option is selected'}
             </p>

@@ -83,7 +83,7 @@ export function buildStatusPillChangeEvent(args: {
   previousPill: OrderStatusPill | null;
   previousLabel: string | null;
   targetPill: OrderStatusPill | null;
-  actorUserId: string;
+  actorUserId: string | null;
   source: StatusChangeSource;
   reason: string | null;
   metadata: Record<string, unknown>;
@@ -392,7 +392,7 @@ export async function assignOrderStatusPill(args: {
   statusPillId?: string | null;
   statusPillKey?: string | null;
   statusPillValue?: string | null;
-  actorUserId: string;
+  actorUserId: string | null;
   actorUserName?: string;
   source?: StatusChangeSource;
   reason?: string | null;
