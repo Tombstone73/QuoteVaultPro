@@ -33,7 +33,8 @@ export const THUMBNAIL_PENDING_RETRY_MS = 30 * 60 * 1000;
 let workerTimer: NodeJS.Timeout | null = null;
 let isPolling = false;
 let isDrainingTriggeredPolls = false;
-const triggeredThumbnailQueue: Array<{ attachmentType: AttachmentType; attachmentId: string }> = [];
+type TriggeredThumbnailRequest = { attachmentType: AttachmentType; attachmentId: string; authorizedRead: boolean };
+const triggeredThumbnailQueue: TriggeredThumbnailRequest[] = [];
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -276,8 +277,10 @@ async function fetchPendingAttachmentById(args: {
   return rows.map((r: any) => ({ ...r, organizationId: r.organizationId || "" }));
 }
 
-async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentId: string }): Promise<void> {
-  if (!isThumbnailWorkerEnabled()) return;
+async function pollOnce(priority?: TriggeredThumbnailRequest): Promise<void> {
+  // Scheduled and upload work still obeys the global worker gate. An authorized
+  // derivative read may process only its selected attachment through the same claim.
+  if (!priority?.authorizedRead && !isThumbnailWorkerEnabled()) return;
   const debug = isDebugEnabled();
   if (isPolling) {
     if (debug) console.log("[Thumbnail Worker] Already polling, skipping");
@@ -351,6 +354,12 @@ async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentI
     }));
 
     if (rows.length === 0) {
+      if (priority?.authorizedRead) {
+        console.info("[Thumbnail Worker] Authorized recovery attachment is no longer eligible", {
+          attachmentType: priority.attachmentType,
+          attachmentId: priority.attachmentId,
+        });
+      }
       return;
     }
 
@@ -573,23 +582,40 @@ export function triggerThumbnailGenerationForAttachment(args: {
   reason?: string;
 }): void {
   if (!args.attachmentId || !isThumbnailWorkerEnabled()) return;
+  queueThumbnailGeneration(args.attachmentType, args.attachmentId, false, args.reason ?? "upload-import");
+}
 
-  const alreadyQueued = triggeredThumbnailQueue.some(
-    (entry) => entry.attachmentType === args.attachmentType && entry.attachmentId === args.attachmentId
+/** Called only after the artwork read route verifies the internal tenant user. */
+export function triggerThumbnailGenerationForAuthorizedRead(args: {
+  attachmentType: AttachmentType;
+  attachmentId: string;
+}): void {
+  if (!args.attachmentId) return;
+  queueThumbnailGeneration(args.attachmentType, args.attachmentId, true, "authorized-derivative-read");
+}
+
+function queueThumbnailGeneration(
+  attachmentType: AttachmentType,
+  attachmentId: string,
+  authorizedRead: boolean,
+  reason: string,
+): void {
+  const alreadyQueued = triggeredThumbnailQueue.find(
+    (entry) => entry.attachmentType === attachmentType && entry.attachmentId === attachmentId
   );
-  if (!alreadyQueued) {
-    triggeredThumbnailQueue.push({
-      attachmentType: args.attachmentType,
-      attachmentId: args.attachmentId,
-    });
+  if (alreadyQueued) {
+    // A read can upgrade a queued upload trigger when scheduled work is gated.
+    alreadyQueued.authorizedRead ||= authorizedRead;
+  } else {
+    triggeredThumbnailQueue.push({ attachmentType, attachmentId, authorizedRead });
   }
 
   const handle = setImmediate(() => {
     drainTriggeredThumbnailQueue().catch((error) => {
       console.error("[Thumbnail Worker] Triggered thumbnail generation failed:", {
-        attachmentType: args.attachmentType,
-        attachmentId: args.attachmentId,
-        reason: args.reason ?? "upload-import",
+        attachmentType,
+        attachmentId,
+        reason,
         error,
       });
     });

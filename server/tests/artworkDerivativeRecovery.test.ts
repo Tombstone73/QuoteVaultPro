@@ -3,8 +3,7 @@ import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globa
 const getByIdForOrganization = jest.fn<(...args: any[]) => Promise<any>>();
 const resolveDerivative = jest.fn<(...args: any[]) => Promise<any>>();
 const resolveOriginal = jest.fn<(...args: any[]) => Promise<any>>();
-const triggerThumbnailGenerationForAttachment = jest.fn();
-const isThumbnailWorkerEnabled = jest.fn(() => true);
+const triggerThumbnailGenerationForAuthorizedRead = jest.fn();
 const isThumbnailGenerationEnabled = jest.fn(() => true);
 const isSupportedImageType = jest.fn(() => true);
 const queryRows: any[][] = [];
@@ -23,9 +22,8 @@ jest.unstable_mockModule("../services/thumbnailGenerator", () => ({
   isThumbnailGenerationEnabled,
 }));
 jest.unstable_mockModule("../workers/thumbnailWorker", () => ({
-  isThumbnailWorkerEnabled,
   THUMBNAIL_PENDING_RETRY_MS: 30 * 60 * 1000,
-  triggerThumbnailGenerationForAttachment,
+  triggerThumbnailGenerationForAuthorizedRead,
 }));
 
 let requestArtworkDerivativeRecovery: typeof import("../services/artwork/requestArtworkDerivativeRecovery").requestArtworkDerivativeRecovery;
@@ -41,7 +39,6 @@ beforeEach(() => {
   getByIdForOrganization.mockResolvedValue({ originalFilename: "qa.png", mimeType: "image/png" });
   resolveDerivative.mockResolvedValue({ status: "missing" });
   resolveOriginal.mockResolvedValue({ status: "available" });
-  isThumbnailWorkerEnabled.mockReturnValue(true);
   isThumbnailGenerationEnabled.mockReturnValue(true);
   isSupportedImageType.mockReturnValue(true);
 });
@@ -52,7 +49,7 @@ describe("targeted artwork derivative recovery", () => {
     await requestArtworkDerivativeRecovery(args);
     expect(getByIdForOrganization).toHaveBeenCalledWith("org_qa", "file_qa");
     expect(select).not.toHaveBeenCalled();
-    expect(triggerThumbnailGenerationForAttachment).not.toHaveBeenCalled();
+    expect(triggerThumbnailGenerationForAuthorizedRead).not.toHaveBeenCalled();
   });
 
   test("ready or permanently failed derivatives do not retry", async () => {
@@ -61,42 +58,42 @@ describe("targeted artwork derivative recovery", () => {
       await requestArtworkDerivativeRecovery(args);
     }
     expect(select).not.toHaveBeenCalled();
-    expect(triggerThumbnailGenerationForAttachment).not.toHaveBeenCalled();
+    expect(triggerThumbnailGenerationForAuthorizedRead).not.toHaveBeenCalled();
   });
 
   test("missing original cannot schedule work", async () => {
     resolveOriginal.mockResolvedValue({ status: "missing" });
     await requestArtworkDerivativeRecovery(args);
     expect(select).not.toHaveBeenCalled();
-    expect(triggerThumbnailGenerationForAttachment).not.toHaveBeenCalled();
+    expect(triggerThumbnailGenerationForAuthorizedRead).not.toHaveBeenCalled();
   });
 
-  test("unsupported files and disabled workers cannot start generation", async () => {
+  test("unsupported files and disabled generation cannot start recovery", async () => {
     isSupportedImageType.mockReturnValue(false);
     await requestArtworkDerivativeRecovery(args);
     expect(select).not.toHaveBeenCalled();
     isSupportedImageType.mockReturnValue(true);
-    isThumbnailWorkerEnabled.mockReturnValue(false);
+    isThumbnailGenerationEnabled.mockReturnValue(false);
     await requestArtworkDerivativeRecovery(args);
     expect(select).not.toHaveBeenCalled();
-    expect(triggerThumbnailGenerationForAttachment).not.toHaveBeenCalled();
+    expect(triggerThumbnailGenerationForAuthorizedRead).not.toHaveBeenCalled();
   });
 
   test("queues one tenant-scoped Order attachment when no Quote attachment matches", async () => {
     queryRows.push([], [{ id: "order_attachment_qa" }]);
     await requestArtworkDerivativeRecovery(args);
-    expect(triggerThumbnailGenerationForAttachment).toHaveBeenCalledTimes(1);
-    expect(triggerThumbnailGenerationForAttachment).toHaveBeenCalledWith({
-      attachmentType: "order", attachmentId: "order_attachment_qa", reason: "authorized-derivative-read",
+    expect(triggerThumbnailGenerationForAuthorizedRead).toHaveBeenCalledTimes(1);
+    expect(triggerThumbnailGenerationForAuthorizedRead).toHaveBeenCalledWith({
+      attachmentType: "order", attachmentId: "order_attachment_qa",
     });
   });
 
   test("queues the matching Quote attachment without scanning Order attachments", async () => {
     queryRows.push([{ id: "quote_attachment_qa" }]);
     await requestArtworkDerivativeRecovery(args);
-    expect(triggerThumbnailGenerationForAttachment).toHaveBeenCalledTimes(1);
-    expect(triggerThumbnailGenerationForAttachment).toHaveBeenCalledWith({
-      attachmentType: "quote", attachmentId: "quote_attachment_qa", reason: "authorized-derivative-read",
+    expect(triggerThumbnailGenerationForAuthorizedRead).toHaveBeenCalledTimes(1);
+    expect(triggerThumbnailGenerationForAuthorizedRead).toHaveBeenCalledWith({
+      attachmentType: "quote", attachmentId: "quote_attachment_qa",
     });
     expect(select).toHaveBeenCalledTimes(1);
   });
@@ -104,6 +101,6 @@ describe("targeted artwork derivative recovery", () => {
   test("skips scheduling when neither attachment is eligible for retry", async () => {
     queryRows.push([], []);
     await requestArtworkDerivativeRecovery(args);
-    expect(triggerThumbnailGenerationForAttachment).not.toHaveBeenCalled();
+    expect(triggerThumbnailGenerationForAuthorizedRead).not.toHaveBeenCalled();
   });
 });
