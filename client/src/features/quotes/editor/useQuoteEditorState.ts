@@ -278,6 +278,38 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         visibleInCustomerPortal: boolean;
         lineItems: QuoteLineItemDraft[];
     } | null>(null);
+    // Tracks this editor's last confirmed server revision. A line-item save advances
+    // the Quote revision even when the header query has not refetched yet.
+    const confirmedQuoteRevisionRef = useRef<number | null>(null);
+
+    const readCurrentQuote = async (id: string): Promise<QuoteWithRelations> => {
+        const response = await apiRequest("GET", `/api/quotes/${id}`);
+        return response.json() as Promise<QuoteWithRelations>;
+    };
+
+    const assertCurrentQuoteRevision = async (id: string): Promise<QuoteWithRelations> => {
+        const current = await readCurrentQuote(id);
+        if (confirmedQuoteRevisionRef.current !== current.revision) {
+            throw new Error("This Quote changed in another session. Reload before saving your changes.");
+        }
+        return current;
+    };
+
+    const confirmOwnLineWrite = async (id: string, before: QuoteWithRelations, ownLineId: string | null) => {
+        const current = await readCurrentQuote(id);
+        // An independent header or another line edit must not be accepted as our
+        // own revision advance. Keep the old token so the next header save fails stale.
+        const headerFields = ["customerId", "contactId", "label", "requestedDueDate", "shippingMethod", "shippingCents", "shippingInstructions", "customerNotes", "visibleInCustomerPortal", "shipToCompany", "shipToName", "shipToEmail", "shipToPhone", "shipToAddress1", "shipToAddress2", "shipToCity", "shipToState", "shipToPostalCode", "shipToCountry"] as const;
+        const headerChanged = headerFields.some((field) => JSON.stringify(before[field]) !== JSON.stringify(current[field]));
+        const otherLines = (value: QuoteWithRelations) => (value.lineItems ?? [])
+            .filter((line) => line.id !== ownLineId)
+            .map((line) => ({ id: line.id, updatedAt: (line as { updatedAt?: Date | string | null }).updatedAt ?? null }));
+        if (headerChanged || JSON.stringify(otherLines(before)) !== JSON.stringify(otherLines(current))) {
+            throw new Error("This Quote also changed in another session. Reload before saving the remaining changes.");
+        }
+        confirmedQuoteRevisionRef.current = current.revision;
+        queryClientInstance.setQueryData(["/api/quotes", id], current);
+    };
 
     // Track which quote we've hydrated tags from (prevent stomping on edits)
     const hydratedTagsForQuoteIdRef = useRef<string | null>(null);
@@ -690,6 +722,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
         // Mark as hydrated FIRST to prevent re-entrancy
         hydratedQuoteIdRef.current = quoteId;
+        confirmedQuoteRevisionRef.current = (quote as unknown as { revision: number }).revision;
 
         // Sync customer ID and contact ID
         if ((quote as any).customerId && !selectedCustomerId) {
@@ -1839,7 +1872,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // HANDLER: Save Quote
     // ============================================================================
 
-    const handleSaveQuote = async (): Promise<SaveQuoteResult> => {
+    const handleSaveQuote = async (shipToPatch: Record<string, string | null> = {}): Promise<SaveQuoteResult> => {
         const payloadCustomerId = selectedCustomerId ?? selectedCustomer?.id ?? null;
         const payloadHasCustomerId = !!payloadCustomerId;
         const payloadHasLineItems = lineItems.length > 0;
@@ -1867,6 +1900,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
             visibleInCustomerPortal,
+            ...shipToPatch,
             // Tags and tax overrides (backend may not support yet, but include in payload)
             tags: tags, // Always include tags array (empty array if no tags)
             quoteTaxExempt: quoteTaxExempt ?? undefined,
@@ -1916,7 +1950,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 if (!currentQuote || !Number.isSafeInteger(currentQuote.revision)) {
                     throw new Error("Wait for the current Quote to load before saving.");
                 }
-                const payload = { ...buildQuotePayload(), expectedRevision: currentQuote.revision };
+                const payload = { ...buildQuotePayload(), ...shipToPatch, expectedRevision: confirmedQuoteRevisionRef.current ?? currentQuote.revision };
                 await saveQuoteMutation.mutateAsync(payload);
 
                 // Persist line item updates (create/update/delete) to match the current UI state.
@@ -1990,6 +2024,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 });
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
                 await queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+                const savedQuote = queryClientInstance.getQueryData<QuoteWithRelations>(["/api/quotes", quoteId]);
+                if (savedQuote) confirmedQuoteRevisionRef.current = savedQuote.revision;
 
                 // Update snapshot to current state (for discard behavior)
                 savedSnapshotRef.current = {
@@ -2273,6 +2309,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             if (quoteId) {
                 try {
                     setIsCreatingDraft(true);
+                    const before = await assertCurrentQuoteRevision(quoteId);
                     const resp = await requestLineCreate(`product:${productId}`, `/api/quotes/${quoteId}/line-items`, {
                         productId: base.productId,
                         productName: base.productName,
@@ -2297,6 +2334,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     const created = json?.data || json;
                     const createdId = created?.id;
                     if (!createdId) throw new Error("Server did not confirm a line item identity");
+                    await confirmOwnLineWrite(quoteId, before, createdId);
                     const withId: QuoteLineItemDraft = { ...base, id: createdId, tempId: base.tempId };
                     setLineItems((prev) => prev.some((line) => line.id === createdId) ? prev : [...prev, withId]);
                     return withId;
@@ -2337,11 +2375,13 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         if (!item || !item.productId) return false;
 
         try {
+            const before = await assertCurrentQuoteRevision(quoteId);
             const payload = buildQuoteLineItemSavePayload(item, overrides);
 
             if (item.id) {
                 // Update existing line item
                 await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${item.id}`, payload);
+                await confirmOwnLineWrite(quoteId, before, item.id);
                 // Update local state to mark as saved
                 setLineItems((prev) =>
                     prev.map((li) => {
@@ -2358,6 +2398,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 const created = json?.data || json;
                 const createdId = created?.id;
                 if (createdId) {
+                    await confirmOwnLineWrite(quoteId, before, createdId);
                     setLineItems((prev) =>
                         prev.map((li) => {
                             if (getStableLineItemKey(li) === itemKey) {
