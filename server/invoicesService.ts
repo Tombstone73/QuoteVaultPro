@@ -1317,7 +1317,7 @@ function invoiceSnapshotComparable(row: any) {
  */
 export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   tx: any,
-  input: { organizationId: string; orderId: string; actorUserId?: string | null; requireDiscountParity?: boolean },
+  input: { organizationId: string; orderId: string; actorUserId?: string | null; requireDiscountParity?: boolean; requireInvoiceParity?: boolean },
 ) {
   await lockInvoiceOrderCreation(tx, input.organizationId, input.orderId);
   const [order] = await tx.select().from(orders).where(and(
@@ -1346,6 +1346,10 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
     return { status: "not_editable" as const, invoiceId: invoice.id,
       reason: input.requireDiscountParity ? orderDiscountInvoiceBlocker({ liveInvoiceCount: 1, invoice }) : undefined };
+  }
+  if (input.requireInvoiceParity && invoice.lockedReason) {
+    return { status: "not_editable" as const, invoiceId: invoice.id,
+      reason: "This Invoice is locked and cannot be rewritten by a fulfillment method change." };
   }
   const lineItems = await tx.select().from(orderLineItems).where(scopedOrderLine(order.id, input.organizationId));
   const snapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);

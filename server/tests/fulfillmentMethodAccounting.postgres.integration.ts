@@ -212,6 +212,24 @@ describe('fulfillment method accounting on local PostgreSQL', () => {
     expect(after.draftEvents).toHaveLength(before.draftEvents.length);
   });
 
+  test('explicitly locked Invoice blocks a shipping-charge change without partial writes', async () => {
+    const f = await fixture({ invoiceOverrides: { lockedReason: 'historical_import' } });
+    const before = await readback(f);
+    let failure: unknown;
+    try { await fulfillmentServiceV2.changeFulfillmentMethod(f.organization.id, f.order.id, 'pickup', f.user.id); }
+    catch (error) { failure = error; }
+    expect(methodChangeAccountingBlock(failure)).toMatchObject({ status: 409, code: 'ORDER_INVOICE_SYNC_BLOCKED' });
+    const after = await readback(f);
+    expect(after.order.shippingMethod).toBe(before.order.shippingMethod);
+    expect(after.order.shippingCents).toBe(before.order.shippingCents);
+    expect(after.draft?.status).toBe('DRAFT');
+    expect(after.invoice).toMatchObject({ lockedReason: before.invoice.lockedReason,
+      totalCents: before.invoice.totalCents, shippingCents: before.invoice.shippingCents,
+      invoiceVersion: before.invoice.invoiceVersion });
+    expect(after.orderAudit).toHaveLength(before.orderAudit.length);
+    expect(after.draftEvents).toHaveLength(before.draftEvents.length);
+  });
+
   test('linked native QuickBooks Invoice keeps its provider ID and is marked for resynchronization locally', async () => {
     const f = await fixture({ invoiceOverrides: { qbInvoiceId: 'QB-LOCAL-TEST', qbSyncStatus: 'synced', lastQbSyncedVersion: 1 } });
     await fulfillmentServiceV2.changeFulfillmentMethod(f.organization.id, f.order.id, 'pickup', f.user.id);
