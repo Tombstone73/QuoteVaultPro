@@ -1,7 +1,7 @@
 import { db } from "../db";
 import { EPS_PREVIEW_UNSUPPORTED, isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 import { orderAttachments, orders, quoteAttachments } from "@shared/schema";
-import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
 import { fileExists } from "../utils/fileStorage";
 import { canonicalDerivativeReadResolver } from "../services/storage/CanonicalDerivativeReadResolver";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
@@ -26,6 +26,9 @@ type PendingAttachmentRow = {
 export const THUMBNAIL_FALLBACK_INTERVAL_PROD_MS = 6 * 60 * 60 * 1000;
 export const THUMBNAIL_FALLBACK_INTERVAL_NON_PROD_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_BATCH_SIZE = 10;
+// A crashed worker may leave a row pending. A fresh claim waits long enough
+// for normal rendering and storage writes to finish before trying again.
+export const THUMBNAIL_PENDING_RETRY_MS = 30 * 60 * 1000;
 
 let workerTimer: NodeJS.Timeout | null = null;
 let isPolling = false;
@@ -87,11 +90,12 @@ function isPdfLike(mimeType: string | null, fileName: string | null): boolean {
   return lowerName.endsWith(".pdf");
 }
 
-async function claimForProcessing(row: PendingAttachmentRow): Promise<void> {
+async function claimForProcessing(row: PendingAttachmentRow): Promise<boolean> {
   const baseTable = row.attachmentType === "quote" ? quoteAttachments : orderAttachments;
-  // Best-effort claim: set status to pending unless already ready/failed.
-  // This keeps the worker idempotent and prevents tight re-processing loops.
-  await db
+  const staleBefore = new Date(Date.now() - THUMBNAIL_PENDING_RETRY_MS);
+  // A database compare-and-swap coordinates request triggers and fallback
+  // workers across app instances. Fresh pending work is owned elsewhere.
+  const claimed = await db
     .update(baseTable)
     .set({
       thumbStatus: "thumb_pending",
@@ -101,9 +105,14 @@ async function claimForProcessing(row: PendingAttachmentRow): Promise<void> {
     .where(
       and(
         eq(baseTable.id, row.id),
-        inArray(baseTable.thumbStatus, ["uploaded", "thumb_pending"])
+        or(
+          eq(baseTable.thumbStatus, "uploaded"),
+          and(eq(baseTable.thumbStatus, "thumb_pending"), lte(baseTable.updatedAt, staleBefore)),
+        ),
       )
-    );
+    )
+    .returning({ id: baseTable.id });
+  return claimed.length === 1;
 }
 
 async function getCanonicalOriginalWorkInput(row: PendingAttachmentRow): Promise<{ storageProvider: "local" | "supabase" | "s3" | "gcs" | "azure_blob" | "titan_managed"; storageKey: string } | null> {
@@ -424,7 +433,7 @@ async function pollOnce(priority?: { attachmentType: AttachmentType; attachmentI
           }
         }
 
-        await claimForProcessing(row);
+        if (!await claimForProcessing(row)) continue;
 
         const vectorArtwork = isVectorArtwork(fileName, row.mimeType);
         const isPdf = !vectorArtwork && isPdfLike(row.mimeType, fileName);
