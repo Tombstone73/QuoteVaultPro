@@ -281,6 +281,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // Tracks this editor's last confirmed server revision. A line-item save advances
     // the Quote revision even when the header query has not refetched yet.
     const confirmedQuoteRevisionRef = useRef<number | null>(null);
+    const lineSaveInFlightRef = useRef<Promise<boolean> | null>(null);
 
     const readCurrentQuote = async (id: string): Promise<QuoteWithRelations> => {
         const response = await apiRequest("GET", `/api/quotes/${id}`);
@@ -1946,6 +1947,10 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 // Return result instead of navigating
                 return { kind: "created", quoteId: newId, quoteNumber: newQuoteNumber };
             } else {
+                const pendingLineSave = lineSaveInFlightRef.current;
+                if (pendingLineSave && !(await pendingLineSave)) {
+                    throw new Error("Finish saving the line item before saving the Quote.");
+                }
                 const currentQuote = quote as QuoteWithRelations | undefined;
                 if (!currentQuote || !Number.isSafeInteger(currentQuote.revision)) {
                     throw new Error("Wait for the current Quote to load before saving.");
@@ -2374,7 +2379,15 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         const item = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
         if (!item || !item.productId) return false;
 
+        const precedingSave = lineSaveInFlightRef.current;
+        let finishSave!: (saved: boolean) => void;
+        const completion = new Promise<boolean>((resolve) => { finishSave = resolve; });
+        lineSaveInFlightRef.current = completion;
+        let saved = false;
         try {
+            if (precedingSave && !(await precedingSave)) {
+                throw new Error("A previous line item did not save. Review it before continuing.");
+            }
             const before = await assertCurrentQuoteRevision(quoteId);
             const payload = buildQuoteLineItemSavePayload(item, overrides);
 
@@ -2414,6 +2427,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 title: "Line item saved",
                 description: "Changes have been saved.",
             });
+            saved = true;
             return true;
         } catch (error: any) {
             toast({
@@ -2422,6 +2436,9 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 variant: "destructive",
             });
             return false;
+        } finally {
+            finishSave(saved);
+            if (lineSaveInFlightRef.current === completion) lineSaveInFlightRef.current = null;
         }
     }, [quoteId, lineItems, toast]);
 
