@@ -1810,6 +1810,9 @@ export const quotes = pgTable("quotes", {
   convertedToOrderId: varchar("converted_to_order_id"),
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Advanced together by the database for every persisted Quote/header/line mutation.
+  updatedAt: timestamp("updated_at").default(sql`(clock_timestamp() AT TIME ZONE 'UTC')`).notNull(),
+  revision: integer("revision").default(1).notNull(),
 }, (table) => [
   index("quotes_organization_id_idx").on(table.organizationId),
   index("quotes_user_id_idx").on(table.userId),
@@ -1933,6 +1936,8 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   id: true,
   quoteNumber: true,
   createdAt: true,
+  updatedAt: true,
+  revision: true,
   organizationId: true,
 }).extend({
   customerId: z.string().optional().nullable(),

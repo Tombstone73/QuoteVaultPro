@@ -1912,7 +1912,11 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 // Return result instead of navigating
                 return { kind: "created", quoteId: newId, quoteNumber: newQuoteNumber };
             } else {
-                const payload = buildQuotePayload();
+                const currentQuote = quote as QuoteWithRelations | undefined;
+                if (!currentQuote || !Number.isSafeInteger(currentQuote.revision)) {
+                    throw new Error("Wait for the current Quote to load before saving.");
+                }
+                const payload = { ...buildQuotePayload(), expectedRevision: currentQuote.revision };
                 await saveQuoteMutation.mutateAsync(payload);
 
                 // Persist line item updates (create/update/delete) to match the current UI state.
@@ -1985,7 +1989,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     description: "Your changes to this quote have been saved.",
                 });
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
-                queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+                await queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
 
                 // Update snapshot to current state (for discard behavior)
                 savedSnapshotRef.current = {
