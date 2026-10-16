@@ -7,9 +7,8 @@ import { isSupportedImageType, isThumbnailGenerationEnabled } from "../thumbnail
 import { canonicalDerivativeReadResolver } from "../storage/CanonicalDerivativeReadResolver";
 import { canonicalFileReadResolver } from "../storage/CanonicalFileReadResolver";
 import {
-  isThumbnailWorkerEnabled,
   THUMBNAIL_PENDING_RETRY_MS,
-  triggerThumbnailGenerationForAttachment,
+  triggerThumbnailGenerationForAuthorizedRead,
 } from "../../workers/thumbnailWorker";
 
 // New uploads already trigger rendering. Give that path time to complete
@@ -22,7 +21,10 @@ export async function requestArtworkDerivativeRecovery(args: {
   fileRecordId: string;
   variant: "thumbnail" | "preview";
 }): Promise<void> {
-  if (!isThumbnailWorkerEnabled() || !isThumbnailGenerationEnabled()) return;
+  if (!isThumbnailGenerationEnabled()) {
+    console.info("[ArtworkRecovery] Thumbnail generation disabled", { fileRecordId: args.fileRecordId });
+    return;
+  }
 
   const record = await fileRecordRepository.getByIdForOrganization(args.organizationId, args.fileRecordId);
   if (!record) return;
@@ -53,7 +55,7 @@ export async function requestArtworkDerivativeRecovery(args: {
       recoverable(quoteAttachments),
     )).limit(1);
   if (quote) {
-    triggerThumbnailGenerationForAttachment({ attachmentType: "quote", attachmentId: quote.id, reason: "authorized-derivative-read" });
+    triggerThumbnailGenerationForAuthorizedRead({ attachmentType: "quote", attachmentId: quote.id });
     return;
   }
 
@@ -65,5 +67,12 @@ export async function requestArtworkDerivativeRecovery(args: {
       eq(orderAttachments.fileRecordId, args.fileRecordId),
       recoverable(orderAttachments),
     )).limit(1);
-  if (order) triggerThumbnailGenerationForAttachment({ attachmentType: "order", attachmentId: order.id, reason: "authorized-derivative-read" });
+  if (order) {
+    triggerThumbnailGenerationForAuthorizedRead({ attachmentType: "order", attachmentId: order.id });
+  } else {
+    console.info("[ArtworkRecovery] No eligible attachment for authorized derivative read", {
+      fileRecordId: args.fileRecordId,
+      variant: args.variant,
+    });
+  }
 }
