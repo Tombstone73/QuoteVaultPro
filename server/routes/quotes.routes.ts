@@ -171,6 +171,10 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
       discountAmount: quotes.discountAmount,
       taxRate: quotes.taxRate,
       shippingCents: quotes.shippingCents,
+      subtotal: quotes.subtotal,
+      taxableSubtotal: quotes.taxableSubtotal,
+      taxAmount: quotes.taxAmount,
+      totalPrice: quotes.totalPrice,
     })
     .from(quotes)
     .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
@@ -200,14 +204,31 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
     shippingCents: quoteRow.shippingCents,
   });
 
+  const nextTotals = {
+    subtotal: totals.subtotal.toFixed(2),
+    taxableSubtotal: totals.taxableSubtotal.toFixed(2),
+    taxAmount: totals.taxAmount.toFixed(2),
+    totalPrice: totals.totalPrice.toFixed(2),
+  };
+  const hasSameAmount = (current: string | null, next: string) =>
+    current !== null && Number.isFinite(Number(current)) && Number(current).toFixed(2) === next;
+  if (
+    hasSameAmount(quoteRow.subtotal, nextTotals.subtotal) &&
+    hasSameAmount(quoteRow.taxableSubtotal, nextTotals.taxableSubtotal) &&
+    hasSameAmount(quoteRow.taxAmount, nextTotals.taxAmount) &&
+    hasSameAmount(quoteRow.totalPrice, nextTotals.totalPrice)
+  ) {
+    return {
+      subtotal: quoteRow.subtotal,
+      taxableSubtotal: quoteRow.taxableSubtotal,
+      taxAmount: quoteRow.taxAmount,
+      totalPrice: quoteRow.totalPrice,
+    };
+  }
+
   const [updated] = await executor
     .update(quotes)
-    .set({
-      subtotal: totals.subtotal.toFixed(2),
-      taxableSubtotal: totals.taxableSubtotal.toFixed(2),
-      taxAmount: totals.taxAmount.toFixed(2),
-      totalPrice: totals.totalPrice.toFixed(2),
-    })
+    .set(nextTotals)
     .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
     .returning({
       subtotal: quotes.subtotal,

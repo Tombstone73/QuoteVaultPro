@@ -111,6 +111,31 @@ describe('Quote revision on isolated PostgreSQL', () => {
     expect(await current(f.quote.id)).toMatchObject({ customerNotes: 'First', revision: revision + 1 });
   });
 
+  test('repeated Quote detail reads do not advance revision or stale a normal header save', async () => {
+    const f = await fixture();
+    const [product] = await db.insert(products).values({ organizationId: f.organization.id, name: 'Fixture', description: 'Synthetic product' }).returning();
+    await db.insert(quoteLineItems).values({ quoteId: f.quote.id, productId: product.id, productName: 'Fixture', width: '1', height: '1', quantity: 1, pbv2SnapshotJson: {}, linePrice: '10', priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: '' } });
+    const app = express();
+    app.use(express.json());
+    registerQuoteRoutes(app, {
+      isAuthenticated: (req: express.Request, _res: express.Response, next: express.NextFunction) => { Object.assign(req, { user: { id: f.user.id, role: 'admin' } }); next(); },
+      isAdmin: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+      tenantContext: (req: express.Request, _res: express.Response, next: express.NextFunction) => { Object.assign(req, { organizationId: f.organization.id, orgRole: 'admin' }); next(); },
+    });
+
+    const first = await request(app).get(`/api/quotes/${f.quote.id}`);
+    expect(first.status).toBe(200);
+    const settled = await current(f.quote.id);
+    const second = await request(app).get(`/api/quotes/${f.quote.id}`);
+    expect(second.status).toBe(200);
+    expect(second.body.revision).toBe(settled.revision);
+    expect((await current(f.quote.id)).updatedAt).toEqual(settled.updatedAt);
+
+    const saved = await request(app).patch(`/api/quotes/${f.quote.id}`).send({ expectedRevision: second.body.revision, customerNotes: 'Saved after detail reads' });
+    expect(saved.status).toBe(200);
+    expect((await current(f.quote.id)).customerNotes).toBe('Saved after detail reads');
+  });
+
   test('audit failure rolls back the header, revision, and audit together', async () => {
     const f = await fixture();
     const before = await current(f.quote.id);
