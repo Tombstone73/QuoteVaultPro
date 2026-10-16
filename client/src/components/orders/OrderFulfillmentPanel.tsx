@@ -188,6 +188,12 @@ export function OrderFulfillmentPanel({
     onShipToChange?.({ [field]: nextValue });
   };
 
+  const handleQuoteShipToInput = (field: keyof ShipToData, value: string) => {
+    if (mode === "quote" && !suppressBlurRef.current) {
+      onShipToChange?.({ [field]: normalizeNullableString(value) });
+    }
+  };
+
   const handleAddNewShipToAddress = () => {
     suppressBlurRef.current = true;
     onAddNewShipToAddress?.();
@@ -465,7 +471,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToCompanyInputRef}
                       defaultValue={shipToData?.company ?? ""}
-                      onBlur={(e) => handleShipToBlur("company", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("company", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("company", e.target.value); }}
                     />
                   </div>
 
@@ -474,7 +481,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToNameInputRef}
                       defaultValue={shipToData?.name ?? ""}
-                      onBlur={(e) => handleShipToBlur("name", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("name", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("name", e.target.value); }}
                     />
                   </div>
 
@@ -483,7 +491,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToEmailInputRef}
                       defaultValue={shipToData?.email ?? ""}
-                      onBlur={(e) => handleShipToBlur("email", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("email", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("email", e.target.value); }}
                     />
                   </div>
 
@@ -492,7 +501,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToPhoneInputRef}
                       defaultValue={shipToData?.phone ?? ""}
-                      onBlur={(e) => handleShipToBlur("phone", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("phone", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("phone", e.target.value); }}
                     />
                   </div>
 
@@ -501,7 +511,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToAddress1InputRef}
                       defaultValue={shipToData?.address1 ?? ""}
-                      onBlur={(e) => handleShipToBlur("address1", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("address1", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("address1", e.target.value); }}
                     />
                   </div>
 
@@ -510,7 +521,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToAddress2InputRef}
                       defaultValue={shipToData?.address2 ?? ""}
-                      onBlur={(e) => handleShipToBlur("address2", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("address2", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("address2", e.target.value); }}
                     />
                   </div>
 
@@ -519,7 +531,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToCityInputRef}
                       defaultValue={shipToData?.city ?? ""}
-                      onBlur={(e) => handleShipToBlur("city", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("city", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("city", e.target.value); }}
                     />
                   </div>
 
@@ -528,7 +541,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToStateInputRef}
                       defaultValue={shipToData?.state ?? ""}
-                      onBlur={(e) => handleShipToBlur("state", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("state", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("state", e.target.value); }}
                     />
                   </div>
 
@@ -537,7 +551,8 @@ export function OrderFulfillmentPanel({
                     <Input
                       ref={shipToPostalCodeInputRef}
                       defaultValue={shipToData?.postalCode ?? ""}
-                      onBlur={(e) => handleShipToBlur("postalCode", e.target.value)}
+                      onChange={(e) => handleQuoteShipToInput("postalCode", e.target.value)}
+                      onBlur={(e) => { if (mode !== "quote") handleShipToBlur("postalCode", e.target.value); }}
                     />
                   </div>
                 </div>

@@ -62,6 +62,30 @@ describe("OrderFulfillmentPanel customer address copy", () => {
     expect(container.textContent).toContain("Ship To");
   });
 
+  it("stages Quote Ship To fields on input without waiting for blur", () => {
+    const onShipToChange = jest.fn();
+    act(() => root.render(
+      <OrderFulfillmentPanel mode="quote" parentType="quote" fulfillmentMethod="ship"
+        canEditOrder isEditingFulfillment onShipToChange={onShipToChange} />,
+    ));
+    const inputFor = (label: string) => {
+      const labelNode = Array.from(container.querySelectorAll("label")).find((node) => node.textContent === label);
+      const input = labelNode?.parentElement?.querySelector("input");
+      if (!input) throw new Error(`${label} input was not rendered`);
+      return input;
+    };
+    act(() => {
+      const address = inputFor("Address 1");
+      address.value = "42 QA Lane";
+      Simulate.change(address);
+      const postalCode = inputFor("Postal Code");
+      postalCode.value = "46032";
+      Simulate.change(postalCode);
+    });
+    expect(onShipToChange).toHaveBeenCalledWith({ address1: "42 QA Lane" });
+    expect(onShipToChange).toHaveBeenCalledWith({ postalCode: "46032" });
+  });
+
   it("copies the customer shipping address into Ship To", () => {
     const onShipToChange = jest.fn();
     act(() => root.render(
