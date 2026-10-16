@@ -92,6 +92,19 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const [newQuoteEditMode, setNewQuoteEditMode] = useState(true);
     const [detailActionTarget, setDetailActionTarget] = useState<HTMLDivElement | null>(null);
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
+    const draftShipToDataRef = useRef<Record<string, string | null>>({});
+    const hasUnsavedQuoteChanges = state.hasUnsavedChanges || Object.keys(draftShipToData).length > 0;
+    const clearDraftShipToData = () => {
+        draftShipToDataRef.current = {};
+        setDraftShipToData({});
+    };
+    const shipToDraftQuoteIdRef = useRef(state.quoteId);
+    useEffect(() => {
+        if (shipToDraftQuoteIdRef.current === state.quoteId) return;
+        shipToDraftQuoteIdRef.current = state.quoteId;
+        draftShipToDataRef.current = {};
+        setDraftShipToData({});
+    }, [state.quoteId]);
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
     const [orderRouteAfterSave, setOrderRouteAfterSave] = useState<"save_only" | "route_eligible" | null>(null);
     const [recipientFallbackOpen, setRecipientFallbackOpen] = useState(false);
@@ -168,18 +181,28 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         return mappedPayload;
     };
 
-    const fulfillmentShipToData = useMemo(() => ({
-        company: draftShipToData.company ?? (state.quote as any)?.shipToCompany,
-        name: draftShipToData.name ?? (state.quote as any)?.shipToName,
-        email: draftShipToData.email ?? (state.quote as any)?.shipToEmail,
-        phone: draftShipToData.phone ?? (state.quote as any)?.shipToPhone,
-        address1: draftShipToData.address1 ?? (state.quote as any)?.shipToAddress1,
-        address2: draftShipToData.address2 ?? (state.quote as any)?.shipToAddress2,
-        city: draftShipToData.city ?? (state.quote as any)?.shipToCity,
-        state: draftShipToData.state ?? (state.quote as any)?.shipToState,
-        postalCode: draftShipToData.postalCode ?? (state.quote as any)?.shipToPostalCode,
-        country: draftShipToData.country ?? (state.quote as any)?.shipToCountry,
-    }), [draftShipToData, state.quote]);
+    const fulfillmentShipToData = useMemo(() => {
+        const value = (field: string, persisted: string | null | undefined) =>
+            Object.prototype.hasOwnProperty.call(draftShipToData, field) ? draftShipToData[field] : persisted;
+        const saved = state.quote as typeof state.quote & {
+            shipToCompany?: string | null; shipToName?: string | null; shipToEmail?: string | null;
+            shipToPhone?: string | null; shipToAddress1?: string | null; shipToAddress2?: string | null;
+            shipToCity?: string | null; shipToState?: string | null; shipToPostalCode?: string | null;
+            shipToCountry?: string | null;
+        };
+        return {
+            company: value("company", saved?.shipToCompany),
+            name: value("name", saved?.shipToName),
+            email: value("email", saved?.shipToEmail),
+            phone: value("phone", saved?.shipToPhone),
+            address1: value("address1", saved?.shipToAddress1),
+            address2: value("address2", saved?.shipToAddress2),
+            city: value("city", saved?.shipToCity),
+            state: value("state", saved?.shipToState),
+            postalCode: value("postalCode", saved?.shipToPostalCode),
+            country: value("country", saved?.shipToCountry),
+        };
+    }, [draftShipToData, state.quote]);
 
     // Revise quote mutation (creates new draft from approved/converted)
     const reviseMutation = useMutation({
@@ -553,67 +576,21 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
     };
 
-    // Quote update mutation for shipTo fields (like orders)
-    const updateQuote = useMutation({
-        mutationFn: async (updates: Record<string, any>) => {
-            if (!state.quoteId) return { skipped: true };
-            const res = await apiRequest("PATCH", `/api/quotes/${state.quoteId}`, updates);
-            return res.json();
-        },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
-        },
-        onError: (error: Error) => {
-            if (isSessionExpiredError(error)) {
-                handleSessionExpired("quote-editor-update");
-                return;
-            }
-            toast({
-                title: "Update Failed",
-                description: error.message,
-                variant: "destructive",
-            });
-        },
-    });
-
-    // Save shipTo fields (similar to orders)
-    const saveShipTo = async (payload: Record<string, any>) => {
-        try {
-            if (!state.quoteId) {
-                setDraftShipToData((prev) => ({ ...prev, ...payload }));
-                return;
-            }
-
-            const mappedPayload = mapShipToPayloadToQuotePatch(payload);
-            await updateQuote.mutateAsync(mappedPayload);
-        } catch (error) {
-            // Error toast handled by mutation
-        }
+    // Keep Quote fulfillment edits together until the explicit Quote save.
+    const saveShipTo = (payload: Record<string, string | null>) => {
+        const next = { ...draftShipToDataRef.current, ...payload };
+        draftShipToDataRef.current = next;
+        setDraftShipToData(next);
     };
 
     // Save shipping cost
-    const saveShippingCents = async (cents: number | null) => {
-        try {
-            // Update local state immediately so Save Changes has the latest value
-            state.handlers.setShippingCents(cents);
-            if (!state.quoteId) return;
-            await updateQuote.mutateAsync({ shippingCents: cents });
-        } catch (error) {
-            // Error toast handled by mutation
-        }
+    const saveShippingCents = (cents: number | null) => {
+        state.handlers.setShippingCents(cents);
     };
 
     // Save fulfillment method
-    const saveFulfillmentMethod = async (method: "pickup" | "ship" | "deliver") => {
-        try {
-            // Update local state immediately for UI responsiveness
-            state.handlers.setDeliveryMethod(method);
-            if (!state.quoteId) return;
-            // Persist to server
-            await updateQuote.mutateAsync({ shippingMethod: method });
-        } catch (error) {
-            // Error toast handled by mutation
-        }
+    const saveFulfillmentMethod = (method: "pickup" | "ship" | "deliver") => {
+        state.handlers.setDeliveryMethod(method);
     };
 
     // Existing Quotes edit inline; workflow locks remain authoritative.
@@ -784,15 +761,15 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // transition, and URL/render desync is worse than a missed prompt.
     useEffect(() => {
         return registerGuard(
-            () => (state.hasUnsavedChanges ? "You have unsaved changes. Leave without saving?" : false),
-            () => state.hasUnsavedChanges,
+            () => (hasUnsavedQuoteChanges ? "You have unsaved changes. Leave without saving?" : false),
+            () => hasUnsavedQuoteChanges,
             "quote-editor",
         );
-    }, [registerGuard, state.hasUnsavedChanges]);
+    }, [registerGuard, hasUnsavedQuoteChanges]);
 
     // Warn user before leaving page if there are unsaved changes (browser navigation)
     useEffect(() => {
-        if (!state.hasUnsavedChanges) return;
+        if (!hasUnsavedQuoteChanges) return;
 
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
             e.preventDefault();
@@ -801,7 +778,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
         window.addEventListener("beforeunload", handleBeforeUnload);
         return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-    }, [state.hasUnsavedChanges]);
+    }, [hasUnsavedQuoteChanges]);
 
     // Reset focus attempt tracking when route changes
     useEffect(() => {
@@ -926,8 +903,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
 
-            const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
-            setDraftShipToData({});
+            const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
+            clearDraftShipToData();
             handlePostSaveNavigation(result);
         } catch (err) {
             if (isSessionExpiredError(err)) {
@@ -996,8 +973,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
 
         // New quote - save it first
-        const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
-        setDraftShipToData({});
+        const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
+        clearDraftShipToData();
 
         // In the standard quote flow, we navigate to the newly created quote so the editor adopts
         // it as canonical. In the /orders/new flow, we intentionally avoid route changes.
@@ -1022,8 +999,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
 
-            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
-            setDraftShipToData({});
+            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
+            clearDraftShipToData();
             navigate(backPath, { replace: true });
         } catch (err) {
             // Error handling is already done inside saveQuote (toast shown)
@@ -1101,6 +1078,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
             // Reset local state (for both persisted and unpersisted quotes)
             await state.handlers.discardAllChanges();
+            clearDraftShipToData();
             setExpandedKey(null);
 
             // Navigate back to quotes list
@@ -1123,7 +1101,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      * sidebar/topbar navigation is handled by NavigationGuardContext.
      */
     const handleBack = () => {
-        if (state.hasUnsavedChanges) {
+        if (hasUnsavedQuoteChanges) {
             // Set up pending navigation for the back button
             setPendingNavigation(() => () => navigate(backPath));
             setShowUnsavedChangesDialog(true);
@@ -1133,7 +1111,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     };
 
     const handleQuoteListStep = async (direction: -1 | 1) => {
-        if (state.hasUnsavedChanges) {
+        if (hasUnsavedQuoteChanges) {
             setPendingNavigation(() => () => { void quoteListNavigation.go(direction); });
             setShowUnsavedChangesDialog(true);
             return;
@@ -1146,8 +1124,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleSaveAndLeave = async () => {
         try {
-            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
-            setDraftShipToData({});
+            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
+            clearDraftShipToData();
             setShowUnsavedChangesDialog(false);
 
             if (pendingNavigation) {
@@ -1167,6 +1145,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      * Handle "Discard & Leave" from unsaved changes dialog
      */
     const handleDiscardAndLeave = () => {
+        clearDraftShipToData();
         setShowUnsavedChangesDialog(false);
 
         if (pendingNavigation) {
@@ -1320,7 +1299,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             pricingStale={state.pricingStale}
             canSaveQuote={state.canSaveQuote}
             isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
-            hasUnsavedChanges={state.hasUnsavedChanges}
+            hasUnsavedChanges={hasUnsavedQuoteChanges}
             readOnly={readOnly}
             showSaveInFooter={!isQuoteDetail}
             onSave={createTarget === "order" ? handleCreateOrder : handleSave}
