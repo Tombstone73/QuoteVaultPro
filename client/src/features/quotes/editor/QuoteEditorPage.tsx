@@ -168,19 +168,6 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         return mappedPayload;
     };
 
-    const persistDraftShipToData = async (quoteId: string) => {
-        const hasPendingShipTo = Object.values(draftShipToData).some((value) => String(value ?? "").trim().length > 0);
-        if (!hasPendingShipTo) return;
-
-        const patch = mapShipToPayloadToQuotePatch(draftShipToData);
-        if (Object.keys(patch).length === 0) return;
-
-        const res = await apiRequest("PATCH", `/api/quotes/${quoteId}`, patch);
-        await res.json().catch(() => null);
-        setDraftShipToData({});
-        queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
-    };
-
     const fulfillmentShipToData = useMemo(() => ({
         company: draftShipToData.company ?? (state.quote as any)?.shipToCompany,
         name: draftShipToData.name ?? (state.quote as any)?.shipToName,
@@ -939,8 +926,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
 
-            const result = await state.handlers.saveQuote();
-            await persistDraftShipToData(result.quoteId);
+            const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
+            setDraftShipToData({});
             handlePostSaveNavigation(result);
         } catch (err) {
             if (isSessionExpiredError(err)) {
@@ -1009,8 +996,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
 
         // New quote - save it first
-        const result = await state.handlers.saveQuote();
-        await persistDraftShipToData(result.quoteId);
+        const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
+        setDraftShipToData({});
 
         // In the standard quote flow, we navigate to the newly created quote so the editor adopts
         // it as canonical. In the /orders/new flow, we intentionally avoid route changes.
@@ -1035,7 +1022,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
 
-            await state.handlers.saveQuote();
+            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
+            setDraftShipToData({});
             navigate(backPath, { replace: true });
         } catch (err) {
             // Error handling is already done inside saveQuote (toast shown)
@@ -1158,7 +1146,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleSaveAndLeave = async () => {
         try {
-            await state.handlers.saveQuote();
+            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToData));
+            setDraftShipToData({});
             setShowUnsavedChangesDialog(false);
 
             if (pendingNavigation) {
