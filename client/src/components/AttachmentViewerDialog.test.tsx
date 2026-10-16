@@ -38,6 +38,8 @@ type TestBlob = Blob & { arrayBuffer: () => Promise<ArrayBuffer> };
 const getDocument = jest.fn<(options: PdfDocumentOptions) => PdfLoadingTask>();
 const apiFetchBlob = jest.fn<(url: string, options?: RequestInit) => Promise<TestBlob>>();
 const downloadFileFromUrl = jest.fn<(url: string, fileName: string) => void>();
+const downloadArtwork = jest.fn<(_fileRecordId: string, _filename: string) => Promise<void>>(async () => {});
+const getArtworkObjectUrl = jest.fn<(_fileRecordId: string, _variant: string) => Promise<string>>(async () => "blob:artwork-thumbnail");
 
 jest.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: {},
@@ -54,6 +56,8 @@ jest.mock("@/lib/pdfUrls", () => ({
 }));
 jest.mock("@/lib/artworkAccess", () => ({
   buildArtworkAccessUrl: (id: string | null | undefined, variant: string) => id ? `/api/artwork/file-records/${id}/content?variant=${variant}` : null,
+  downloadArtwork,
+  getArtworkObjectUrl,
   openArtworkPreview: jest.fn(),
   resolveArtworkDownloadUrl: (id: string | null | undefined) => id ? `/api/artwork/file-records/${id}/content?variant=original` : null,
 }));
@@ -120,7 +124,7 @@ describe('Illustrator derivative viewer', () => {
     expect(apiFetchBlob).not.toHaveBeenCalled();
     const download = findButton(host, (button) => button.textContent?.includes("Download original") === true);
     await act(async () => { download.click(); });
-    expect(downloadFileFromUrl).toHaveBeenCalledWith('/api/artwork/file-records/eps-original/content?variant=original', 'logo.eps');
+    expect(downloadArtwork).toHaveBeenCalledWith('eps-original', 'logo.eps');
     act(() => root.unmount()); host.remove();
   });
   test('PDF MIME Illustrator uses only its ready image derivative, and downloads original', async () => {
@@ -134,7 +138,7 @@ describe('Illustrator derivative viewer', () => {
     expect(host.querySelector('img[alt="logo.ai"]')?.getAttribute('src')).toBe('blob:ai-preview');
     const download = findButton(host, (button) => button.textContent?.includes("Download original") === true);
     await act(async () => { download.click(); });
-    expect(downloadFileFromUrl).toHaveBeenCalledWith('/api/artwork/file-records/source-ai/content?variant=original', 'logo.ai');
+    expect(downloadArtwork).toHaveBeenCalledWith('source-ai', 'logo.ai');
     act(() => root.unmount()); host.remove();
   });
   test.each(previewStates)("state $status leaves original available without attempting native source rendering", async ({ status, error, message }) => {
@@ -163,6 +167,35 @@ trailer << /Root 1 0 R >>
 async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+test("PDF and image filmstrip entries load authenticated canonical thumbnails", async () => {
+  jest.clearAllMocks();
+  const createObjectUrl = jest.spyOn(URL, "createObjectURL").mockReturnValue("blob:viewer-image");
+  const revokeObjectUrl = jest.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  apiFetchBlob.mockResolvedValue(testBlob(new TextEncoder().encode("image"), "image/png"));
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(<AttachmentViewerDialog open onOpenChange={jest.fn()} hideFilmstrip={false} initialIndex={1} attachments={[
+        { id: "pdf-link", fileRecordId: "pdf-file", fileName: "20713_art.pdf", originalFilename: "art.pdf", mimeType: "application/pdf", thumbStatus: "thumb_ready" },
+        { id: "image-link", fileRecordId: "image-file", fileName: "photo.png", mimeType: "image/png", thumbStatus: "thumb_ready" },
+      ]} />);
+      await flush();
+      await flush();
+    });
+    expect(getArtworkObjectUrl).toHaveBeenCalledWith("pdf-file", "thumbnail");
+    expect(getArtworkObjectUrl).toHaveBeenCalledWith("image-file", "thumbnail");
+    expect(host.querySelector('button[title="20713_art.pdf"] img')?.getAttribute("src")).toBe("blob:artwork-thumbnail");
+    expect(host.querySelector('button[title="photo.png"] img')?.getAttribute("src")).toBe("blob:artwork-thumbnail");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    createObjectUrl.mockRestore();
+    revokeObjectUrl.mockRestore();
+  }
+});
 
 describe("AttachmentViewerDialog PDF rendering", () => {
   beforeEach(() => {
@@ -207,7 +240,7 @@ describe("AttachmentViewerDialog PDF rendering", () => {
 
     try {
       await act(async () => {
-        root.render(<AttachmentViewerDialog open onOpenChange={jest.fn()} attachment={{ id: "attachment-display-id", fileRecordId: "canonical-file-id", fileName: "visible.pdf", mimeType: "application/pdf" }} />);
+        root.render(<AttachmentViewerDialog open onOpenChange={jest.fn()} attachment={{ id: "attachment-display-id", fileRecordId: "canonical-file-id", fileName: "visible.pdf", originalFilename: "visible.pdf", computedDisplayFilename: "20713_visible.pdf", mimeType: "application/pdf" }} />);
         await flush();
         await flush();
         await flush();
@@ -244,7 +277,7 @@ describe("AttachmentViewerDialog PDF rendering", () => {
 
       const download = findButton(host, (button) => button.textContent?.includes("Download") === true);
       await act(async () => download.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-      expect(downloadFileFromUrl).toHaveBeenCalledWith("/api/artwork/file-records/canonical-file-id/content?variant=original", "visible.pdf");
+      expect(downloadArtwork).toHaveBeenCalledWith("canonical-file-id", "20713_visible.pdf");
     } finally {
       await act(async () => root.unmount());
       host.remove();

@@ -26,4 +26,16 @@ describe("toAttachmentViewerAttachment", () => {
 
     expect(attachment.fileRecordId).toBe("file-record-1");
   });
+
+  test("uses the Order display name while retaining the uploaded filename", () => {
+    const attachment = toAttachmentViewerAttachment({
+      id: "order-attachment-1",
+      fileRecordId: "file-record-1",
+      fileName: "art.pdf",
+      originalFilename: "art.pdf",
+      computedDisplayFilename: "20713_art.pdf",
+    });
+    expect(attachment.fileName).toBe("20713_art.pdf");
+    expect(attachment.originalFilename).toBe("art.pdf");
+  });
 });

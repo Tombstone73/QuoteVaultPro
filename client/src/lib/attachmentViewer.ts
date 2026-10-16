@@ -46,7 +46,7 @@ function normalizeAttachmentPage(page: RawAttachmentRecord, index: number): Atta
 
 export function toAttachmentViewerAttachment<T extends RawAttachmentRecord>(raw: T): AttachmentData & T {
   const fileName =
-    firstString(raw?.fileName, raw?.filename, raw?.originalFilename, raw?.name, raw?.title) ?? "Attachment";
+    firstString(raw?.computedDisplayFilename, raw?.displayFilename, raw?.fileName, raw?.filename, raw?.originalFilename, raw?.name, raw?.title) ?? "Attachment";
   const originalUrl = firstString(raw?.originalUrl, raw?.url, raw?.href, raw?.fileUrl);
   const previewUrl = firstString(raw?.previewUrl, raw?.viewerUrl, raw?.viewUrl, originalUrl);
   const downloadUrl = firstString(raw?.downloadUrl, raw?.originalDownloadUrl, originalUrl);
