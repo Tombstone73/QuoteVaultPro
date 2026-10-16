@@ -361,6 +361,20 @@ async function syncInboundCompletionForQuote(args: {
  * @param shippingMode - 'single_shipment' | 'multi_shipment' (defaults to 'single_shipment')
  * @returns Snapshot object with billTo and shipTo fields, shippingMethod, shippingMode
  */
+const quoteShipToFields = [
+  "shipToCompany", "shipToName", "shipToEmail", "shipToPhone",
+  "shipToAddress1", "shipToAddress2", "shipToCity", "shipToState",
+  "shipToPostalCode", "shipToCountry",
+] as const;
+
+function explicitQuoteShipTo(input: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const field of quoteShipToFields) {
+    if (input[field] !== undefined) fields[field] = input[field];
+  }
+  return fields;
+}
+
 async function snapshotCustomerData(
   organizationId: string,
   customerId: string,
@@ -980,6 +994,7 @@ export function registerQuoteRoutes(
         taxableSubtotal: totalsResult.taxableSubtotal,
         // Snapshot fields
         ...snapshotData,
+        ...explicitQuoteShipTo(quotePayload),
         requestedDueDate: quotePayload.requestedDueDate || undefined,
         validUntil: quotePayload.validUntil || undefined,
         carrier: quotePayload.carrier || undefined,
@@ -1670,6 +1685,7 @@ export function registerQuoteRoutes(
 
       // Add snapshot data if customer/shipping changed
       Object.assign(updateData, snapshotData);
+      Object.assign(updateData, explicitQuoteShipTo(req.body ?? {}));
 
       if (process.env.NODE_ENV === 'development') {
         console.log(`[PATCH /api/quotes/${id}] updateData keys:`, Object.keys(updateData));

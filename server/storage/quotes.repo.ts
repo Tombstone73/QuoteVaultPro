@@ -45,6 +45,14 @@ import {
     toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
 
+const quoteAddressSnapshotFields = [
+    "billToName", "billToCompany", "billToAddress1", "billToAddress2",
+    "billToCity", "billToState", "billToPostalCode", "billToCountry",
+    "billToPhone", "billToEmail", "shipToName", "shipToCompany",
+    "shipToAddress1", "shipToAddress2", "shipToCity", "shipToState",
+    "shipToPostalCode", "shipToCountry", "shipToPhone", "shipToEmail",
+] as const;
+
 function hasExplicitPriceOverrideMetadata(value: any): boolean {
     const override = value?.priceOverride ?? value?.specsJson?.priceOverride;
     const overrideRecord = override && typeof override === "object" && !Array.isArray(override) ? override : null;
@@ -1082,7 +1090,7 @@ export class QuotesRepository {
         label?: string | null;
         shippingMethod?: string | null;
         shippingMode?: string | null;
-    }): Promise<QuoteWithRelations> {
+    } & Partial<Pick<typeof quotes.$inferInsert, typeof quoteAddressSnapshotFields[number]>>): Promise<QuoteWithRelations> {
         const updateData: any = {
             customerId: data.customerId !== undefined ? data.customerId ?? null : sql`customer_id`,
             contactId: data.contactId !== undefined ? data.contactId ?? null : sql`contact_id`,
@@ -1107,6 +1115,9 @@ export class QuotesRepository {
         if (data.label !== undefined) updateData.label = data.label;
         if (data.shippingMethod !== undefined) updateData.shippingMethod = data.shippingMethod;
         if (data.shippingMode !== undefined) updateData.shippingMode = data.shippingMode;
+        for (const field of quoteAddressSnapshotFields) {
+            if (data[field] !== undefined) updateData[field] = data[field];
+        }
         if (data.visibleInCustomerPortal !== undefined) updateData.visibleInCustomerPortal = data.visibleInCustomerPortal;
 
         console.log(`[updateQuote] ID: ${id}, updateData:`, updateData);
