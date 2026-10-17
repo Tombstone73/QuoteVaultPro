@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { CustomerUploadReviewPanel } from "@/components/CustomerUploadReviewPanel";
 import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
@@ -28,6 +29,7 @@ import { useDeleteOrderAttachment } from "@/hooks/useOrderAttachments";
 
 type OrderAttachment = {
   id: string;
+  fileRecordId?: string | null;
   fileName: string;
   fileUrl: string;
   fileSize?: number | null;
@@ -516,7 +518,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
           <div className="grid grid-cols-3 gap-2">
             {displayedAttachments.map((a) => {
                   const displayName = a.originalFilename || a.fileName;
-                  const thumbSrc = getThumbSrc(a as any);
+                  const thumbSrc = a.fileRecordId ? null : getThumbSrc(a);
                   const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
 
                   const openInViewer = () => {
@@ -531,7 +533,18 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
                       onClick={openInViewer}
                     >
                       {/* Base thumbnail or icon placeholder */}
-                      {thumbSrc ? (
+                      {a.fileRecordId ? (
+                        <AuthenticatedArtworkThumbnail
+                          fileRecordId={a.fileRecordId}
+                          alt={displayName}
+                          fileName={displayName}
+                          mimeType={a.mimeType}
+                          previewStatus={a.thumbStatus}
+                          previewError={a.thumbError}
+                          className="absolute inset-0 h-full w-full object-cover"
+                          fallback={<div className="absolute inset-0 bg-muted flex items-center justify-center">{isPdf ? <FileText className="w-8 h-8 text-muted-foreground" /> : <ImageIcon className="w-8 h-8 text-muted-foreground" />}</div>}
+                        />
+                      ) : thumbSrc ? (
                         <img
                           src={thumbSrc}
                           alt={displayName}
