@@ -6,7 +6,7 @@ import { ProductImageManagerDialog } from './ProductImageManagerDialog';
 import { ProductImagesSection } from '@/components/pbv2/builder-v2/ProductImagesSection';
 
 jest.mock('@/lib/queryClient', () => ({ apiRequest: jest.fn() }));
-jest.mock('@/lib/apiConfig', () => ({ objectsUrl: (path: string) => `https://api-dev.printershero.com${path}` }));
+jest.mock('@/lib/apiConfig', () => ({ apiUrl: (path: string) => `https://api-dev.printershero.com${path}` }));
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }));
 jest.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: any) => open ? <>{children}</> : null,
