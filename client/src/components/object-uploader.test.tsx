@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { ObjectUploader } from './object-uploader';
 
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }));
+jest.mock('@/lib/apiConfig', () => ({ objectsUrl: (path: string) => `https://api-dev.printershero.com${path}` }));
 
 let host: HTMLDivElement;
 let root: Root;
@@ -69,4 +70,31 @@ test('does not register image metadata when the signed upload cannot reach stora
   expect(fetchMock.mock.calls[1][1]).toMatchObject({ credentials: 'omit' });
   expect(onUploaded).not.toHaveBeenCalled();
   expect(onChange).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('retry');
+});
+
+test('failed replacement preserves the existing image and the same control can retry', async () => {
+  const uploadUrl = 'https://storage.example.com/upload?token=secret';
+  let attempts = 0;
+  const fetchMock = jest.fn(async (input: RequestInfo | URL) => {
+    if (input === '/api/objects/upload') return { ok: true, json: async () => ({ storageTarget: 'supabase', method: 'PUT', url: uploadUrl, path: 'uploads/product-images/org-a/new-image' }) } as Response;
+    if (input === uploadUrl) return { ok: ++attempts > 1, status: attempts > 1 ? 200 : 503 } as Response;
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  global.fetch = fetchMock as any;
+  const onChange = jest.fn();
+  const onUploaded = jest.fn(async () => {});
+  const existing = '/objects/uploads/product-images/org-a/existing-image';
+  await act(async () => root.render(<ObjectUploader value={[existing]} onChange={onChange} onUploaded={onUploaded} />));
+  const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const file = new File(['new-image'], 'replacement.png', { type: 'image/png' });
+  Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
+  expect(onChange).not.toHaveBeenCalled();
+  expect(onUploaded).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('retry');
+  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
+  expect(onUploaded).toHaveBeenCalledTimes(1);
+  expect(onChange).toHaveBeenCalledWith([existing, '/objects/uploads/product-images/org-a/new-image']);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
 });

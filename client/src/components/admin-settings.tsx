@@ -18,6 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ObjectUploader } from "@/components/object-uploader";
+import { productImageDisplayUrl } from "@/lib/productImageUrl";
 import { MediaPicker } from "@/components/media-picker";
 import UserManagement from "@/components/user-management";
 import type {
@@ -222,7 +223,7 @@ export function MediaLibraryTab() {
                 <Card key={asset.id} className="overflow-hidden" data-testid={`media-asset-${asset.id}`}>
                   <div className="aspect-square relative bg-muted">
                     <img
-                      src={asset.url}
+                      src={productImageDisplayUrl(asset.url) ?? undefined}
                       alt={asset.filename}
                       className="w-full h-full object-cover"
                       data-testid={`media-image-${asset.id}`}
@@ -4421,7 +4422,7 @@ export default function AdminSettings() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" data-testid="products-grid">
                   {filteredProducts && filteredProducts.length > 0 ? (
                     filteredProducts.map((product) => {
-                      const safeSrc = isValidHttpUrl(product.thumbnailUrls?.[0]) ? product.thumbnailUrls[0] : null;
+                      const safeSrc = productImageDisplayUrl(product.thumbnailUrls?.[0]);
                       const hasError = imageErrors.has(product.id);
                       
                       return (

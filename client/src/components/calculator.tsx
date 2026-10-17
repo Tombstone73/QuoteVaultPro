@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "wouter";
 import type { Product, InsertQuote, ProductVariant, InsertQuoteLineItem, ProductOptionItem } from "@shared/schema";
+import { productImageDisplayUrl } from "@/lib/productImageUrl";
 
 /**
  * Helper function to format option price label based on priceMode
@@ -84,10 +85,6 @@ export default function CalculatorComponent() {
     quantity?: boolean;
   }>({});
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
-
-  // Helper: validate URL is a proper http(s) string
-  const isValidHttpUrl = (v: unknown): v is string =>
-    typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -493,7 +490,7 @@ export default function CalculatorComponent() {
                   {products?.filter(p => p.isActive).map((product) => {
                     const isSelected = selectedProductId === product.id;
                     const thumbnailUrl = product.thumbnailUrls?.[0];
-                    const safeSrc = isValidHttpUrl(thumbnailUrl) ? thumbnailUrl : null;
+                    const safeSrc = productImageDisplayUrl(thumbnailUrl);
                     const hasError = imageErrors.has(product.id);
                     
                     return (

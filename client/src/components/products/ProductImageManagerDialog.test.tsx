@@ -6,6 +6,7 @@ import { ProductImageManagerDialog } from './ProductImageManagerDialog';
 import { ProductImagesSection } from '@/components/pbv2/builder-v2/ProductImagesSection';
 
 jest.mock('@/lib/queryClient', () => ({ apiRequest: jest.fn() }));
+jest.mock('@/lib/apiConfig', () => ({ objectsUrl: (path: string) => `https://api-dev.printershero.com${path}` }));
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }));
 jest.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: any) => open ? <>{children}</> : null,
@@ -36,9 +37,14 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 test('staff can select, preview, reorder the primary image, and save only thumbnails', async () => {
   const product = { id: 'product-a', name: 'ACM', thumbnailUrls: [first] } as any;
   const saved = jest.fn();
-  request.mockImplementation(async (method, _path, body) => ({ json: async () => method === 'GET' ? product : ({ ...product, thumbnailUrls: body.thumbnailUrls }) }));
+  let persistedProduct = product;
+  request.mockImplementation(async (method, _path, body) => ({ json: async () => {
+    if (method === 'GET') return persistedProduct;
+    persistedProduct = { ...persistedProduct, thumbnailUrls: body.thumbnailUrls };
+    return persistedProduct;
+  } }));
   await act(async () => root.render(<QueryClientProvider client={new QueryClient()}><ProductImageManagerDialog product={product} onClose={jest.fn()} onSaved={saved} /></QueryClientProvider>));
-  expect(host.querySelector('img[alt="Product image 1, primary"]')).not.toBeNull();
+  expect(host.querySelector<HTMLImageElement>('img[alt="Product image 1, primary"]')?.src).toBe('https://api-dev.printershero.com/objects/uploads/first');
   act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Choose from media library')!).click());
   act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Select library image')!).click());
   expect(host.querySelectorAll('img[alt^="Product image"]')).toHaveLength(2);

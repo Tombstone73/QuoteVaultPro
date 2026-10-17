@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { X, GripVertical, Upload, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { productImageDisplayUrl } from "@/lib/productImageUrl";
 
 interface ObjectUploaderProps {
   value: string[];
@@ -20,6 +21,7 @@ export function ObjectUploader({
 }: ObjectUploaderProps) {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
@@ -43,6 +45,7 @@ export function ObjectUploader({
     }
 
     setUploading(true);
+    setUploadError(null);
     const uploadedFiles: Array<{ url: string; filename: string; fileSize: number; mimeType: string }> = [];
 
     try {
@@ -103,11 +106,12 @@ export function ObjectUploader({
       await onUploaded?.(uploadedFiles);
       onChange([...value, ...uploadedFiles.map((file) => file.url)]);
       toast({
-        title: "Upload successful",
-        description: `${uploadedFiles.length} file(s) uploaded`,
+        title: "Image upload complete",
+        description: `${uploadedFiles.length} image(s) uploaded. Save any pending Product image changes to attach them.`,
       });
     } catch (error) {
       console.error("Upload error:", error);
+      setUploadError(error instanceof Error ? error.message : "Failed to upload one or more files");
       toast({
         title: "Upload failed",
         description: error instanceof Error ? error.message : "Failed to upload one or more files",
@@ -172,7 +176,7 @@ export function ObjectUploader({
             >
               <div className="aspect-square relative">
                 <img
-                  src={url}
+                  src={productImageDisplayUrl(url) ?? undefined}
                   alt={`Thumbnail ${index + 1}`}
                   className="w-full h-full object-cover"
                 />
@@ -239,6 +243,7 @@ export function ObjectUploader({
             <p className="text-sm text-muted-foreground">
               {maxFiles - value.length} of {maxFiles} remaining
             </p>
+            {uploadError ? <p role="alert" className="text-sm text-destructive">{uploadError} Select a file to retry.</p> : null}
           </div>
         </div>
       )}

@@ -33,6 +33,7 @@ import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import { MediaLibraryTab } from "@/components/admin-settings";
 import { AiProductBuilderEntryButton } from "@/components/products/AiProductBuilderEntryButton";
 import { ProductImageManagerDialog } from "@/components/products/ProductImageManagerDialog";
+import { productImageDisplayUrl } from "@/lib/productImageUrl";
 import { useAuth } from "@/hooks/useAuth";
 import { canUseProductPlanning } from "@/lib/productPlanningAccess";
 import { ROUTES } from "@/config/routes";
@@ -545,11 +546,12 @@ export default function ProductsPage() {
             <TableBody>
               {filteredProducts.map((product) => {
                 const productType = productTypes?.find((pt) => pt.id === product.productTypeId);
+                const imageSrc = productImageDisplayUrl(product.thumbnailUrls?.[0]);
                 return (
                   <TableRow key={product.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
-                        {product.thumbnailUrls?.[0] ? <img src={product.thumbnailUrls[0]} alt="" className="h-10 w-10 rounded border object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded border text-muted-foreground"><Images className="h-4 w-4" /></span>}
+                        {imageSrc ? <img src={imageSrc} alt="" className="h-10 w-10 rounded border object-cover" /> : <span className="flex h-10 w-10 items-center justify-center rounded border text-muted-foreground"><Images className="h-4 w-4" /></span>}
                         {product.name}
                         {product.isService && (
                           <Badge variant="secondary" className="text-xs">Service</Badge>

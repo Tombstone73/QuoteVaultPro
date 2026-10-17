@@ -6,6 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { X } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { MediaAsset } from "@shared/schema";
+import { productImageDisplayUrl } from "@/lib/productImageUrl";
 
 interface MediaPickerProps {
   value: string[];
@@ -70,7 +71,7 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
                     data-testid={`selected-image-${url}`}
                   >
                     <img
-                      src={url}
+                      src={productImageDisplayUrl(url) ?? undefined}
                       alt="Selected"
                       className="w-20 h-20 object-cover rounded border-2 border-primary"
                     />
@@ -115,7 +116,7 @@ export function MediaPicker({ value, onChange, open, onOpenChange }: MediaPicker
                         : "border-transparent hover:border-primary/50"
                     }`}>
                       <img
-                        src={asset.url}
+                        src={productImageDisplayUrl(asset.url) ?? undefined}
                         alt={asset.filename}
                         className="w-full aspect-square object-cover"
                       />
