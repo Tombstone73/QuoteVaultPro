@@ -15,7 +15,11 @@ test("customer payment batch migration is registered, protected, and guarded at 
   expect(entries.map((entry) => entry.tag)).toContain("0205_customer_payment_batches");
 
   const manifest = JSON.parse(read("server/db/migrations_v2/meta/_history-integrity.json"));
-  expect(manifest.immutableThrough).toEqual({ idx: 207, when: 1788048000053, tag: "0206_customer_account_credit_ledger" });
+  // The integrity manifest must protect the entire registered history, including this migration.
+  const latest = entries.at(-1)!;
+  expect(manifest.entryCount).toBe(entries.length);
+  expect(manifest.immutableThrough).toEqual({ idx: latest.idx, when: latest.when, tag: latest.tag });
+  expect(migration!.idx).toBeLessThanOrEqual(manifest.immutableThrough.idx);
 
   const sql = read("server/db/migrations_v2/0205_customer_payment_batches.sql");
   expect(sql).toContain("CREATE TABLE IF NOT EXISTS customer_payment_batches");

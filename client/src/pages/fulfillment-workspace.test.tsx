@@ -50,6 +50,7 @@ jest.mock("@/hooks/useFulfillment", () => ({
   toFulfillmentError: (error: any) => ({ message: error?.message || "Unexpected error" }),
   useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: jest.fn() }),
   useCreateShipmentMutation: () => ({ mutateAsync: createShipment, isPending: false }),
+  useChangeFulfillmentMethodMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useCreatePickupTicketMutation: () => ({ mutateAsync: createTicket, isPending: false }),
   useMarkOrderReadyForPickupMutation: () => ({ mutateAsync: markOrderReady, isPending: false }),
   useUpdatePickupDetailsMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),

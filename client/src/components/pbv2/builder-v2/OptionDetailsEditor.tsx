@@ -265,7 +265,7 @@ export function OptionDetailsEditor({
   const defaultValue = nodeData?.input?.defaultValue;
   const isRequired = nodeData?.input?.required || false;
   
-  const isSelectType = option.type === 'radio' || option.type === 'dropdown';
+  const isSelectType = option.type === 'radio' || nodeData?.input?.type === 'select';
   const isCheckboxType = option.type === 'checkbox';
 
   // Validation

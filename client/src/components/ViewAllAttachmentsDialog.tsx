@@ -8,12 +8,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Search, Download, FileText, Image as ImageIcon, Trash2, Loader2, Eye } from "lucide-react";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { getPortalFileCategoryLabel, portalFileCategoryValues, type PortalFileCategory } from "@shared/portalFileVisibility";
 
 type AttachmentWithContext = {
   id: string;
+  fileRecordId?: string | null;
   fileName: string;
   originalFilename?: string | null;
   fileSize?: number | null;
@@ -350,7 +352,7 @@ export function ViewAllAttachmentsDialog({
 
   const renderAttachment = (a: AttachmentWithContext, activeTab: string) => {
     const displayName = a.originalFilename || a.fileName;
-    const thumbSrc = getThumbSrc(a);
+    const thumbSrc = a.fileRecordId ? null : getThumbSrc(a);
     const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
     const isSelected = selectedIds.has(a.id);
     const visibilityDraft = getVisibilityDraft(a);
@@ -374,7 +376,16 @@ export function ViewAllAttachmentsDialog({
           className="w-16 h-16 shrink-0 flex items-center justify-center bg-muted rounded overflow-hidden cursor-pointer"
           onClick={() => onViewAttachment(a)}
         >
-          {thumbSrc ? (
+          {a.fileRecordId ? (
+            <AuthenticatedArtworkThumbnail
+              fileRecordId={a.fileRecordId}
+              alt={displayName}
+              fileName={displayName}
+              mimeType={a.mimeType}
+              className="w-full h-full object-cover"
+              fallback={isPdf ? <FileText className="w-8 h-8 text-muted-foreground" /> : <ImageIcon className="w-8 h-8 text-muted-foreground" />}
+            />
+          ) : thumbSrc ? (
             <img src={thumbSrc} alt={displayName} className="w-full h-full object-cover" />
           ) : (
             <>

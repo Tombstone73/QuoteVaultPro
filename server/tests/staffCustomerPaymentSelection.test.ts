@@ -120,10 +120,16 @@ describe('staff selected versus payable customer payment (mocked transaction)', 
     rows.invoices[1].status = status;
     expect(await preview(input())).toMatchObject({ eligibleCount: 2, excludedCount: 3, totalOutstandingCents: 32500 });
   });
-  test('cancelled Order and imported QB invoice remain non-payable', async () => {
+  test('staff selection excludes a cancelled Order while retaining ordinary payable Invoices', async () => {
     rows.invoices[1].orderId = 'cancelled-order'; rows.orders.push({ id: 'cancelled-order', organizationId: 'org', customerId: 'customer', status: 'canceled' });
+    expect(await preview(input())).toMatchObject({ eligibleCount: 2, excludedCount: 3, totalOutstandingCents: 32500 });
+  });
+  test('imported QB invoice blocks staff preview and posting before any writes', async () => {
     rows.invoices[3].importSource = 'quickbooks';
-    expect(await preview(input())).toMatchObject({ eligibleCount: 1, excludedCount: 4, totalOutstandingCents: 7500 });
+    const before = structuredClone(rows);
+    await expect(preview(input())).rejects.toMatchObject({ code: 'IMPORTED_AR_PAYMENT_REVIEW_REQUIRED' });
+    await expect(record(input())).rejects.toMatchObject({ code: 'IMPORTED_AR_PAYMENT_REVIEW_REQUIRED' });
+    expect(rows).toEqual(before);
   });
   test('posting recomputes a newly settled invoice, reducing applied money and increasing change', async () => {
     const initial = await preview(input({ amountCents: 50000 }));

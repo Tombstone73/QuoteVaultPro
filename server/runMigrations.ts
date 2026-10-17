@@ -198,6 +198,7 @@ async function canUseCompletedPooledMigrationLedger(
 // Check types:
 //   column_exists — column must be present on a table in public schema
 //   table_exists  — table must exist in public schema
+//   trigger_exists — enabled trigger must call the named public function
 //   row_exists    — at least one row matching WHERE must exist (WHERE is in-file config, not user input)
 //
 // HOW TO USE FOR FUTURE RELEASES:
@@ -212,6 +213,7 @@ type ReleaseCheck =
   | { type: "column_nullable"; table: string; column: string; label: string }
   | { type: "table_exists"; table: string; label: string }
   | { type: "index_exists"; index: string; label: string }
+  | { type: "trigger_exists"; table: string; trigger: string; functionName: string; label: string }
   | { type: "index_absent"; index: string; label: string }
   | { type: "enum_value_exists"; enumType: string; value: string; label: string }
   | { type: "exact_foreign_key"; table: string; column: string; referencesTable: string; referencesColumn: string; onDelete: "SET NULL"; label: string }
@@ -301,6 +303,13 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "index_exists", index: "quotes_org_job_number_unique", label: "quotes_org_job_number_unique index" },
   { type: "index_exists", index: "orders_org_job_number_unique", label: "orders_org_job_number_unique index" },
   { type: "index_exists", index: "invoices_job_number_idx", label: "invoices_job_number_idx index" },
+  // Migration 0228 — Quote revision columns and active child triggers are the stale-save authority.
+  { type: "column_exists", table: "quotes", column: "updated_at", label: "quotes.updated_at" },
+  { type: "column_exists", table: "quotes", column: "revision", label: "quotes.revision" },
+  { type: "trigger_exists", table: "quotes", trigger: "quotes_advance_revision", functionName: "advance_quote_revision", label: "Quote revision trigger" },
+  { type: "trigger_exists", table: "quote_line_items", trigger: "quote_line_items_advance_quote_revision", functionName: "advance_quote_revision_from_child", label: "Quote line revision trigger" },
+  { type: "trigger_exists", table: "quote_attachments", trigger: "quote_attachments_advance_quote_revision", functionName: "advance_quote_revision_from_child", label: "Quote attachment revision trigger" },
+  { type: "trigger_exists", table: "quote_workflow_states", trigger: "quote_workflow_states_advance_quote_revision", functionName: "advance_quote_revision_from_child", label: "Quote workflow revision trigger" },
   { type: "index_exists", index: "invoices_org_job_sequence_unique", label: "invoices_org_job_sequence_unique index" },
   { type: "index_absent", index: "invoices_org_number_core_unique", label: "invoices_org_number_core_unique index removed" },
   // migration 0189 — invoice snapshots persist frozen PBV2 commercial terms.
@@ -373,6 +382,12 @@ async function runReleaseChecks(client: any): Promise<void> {
              WHERE schemaname = 'public' AND indexname = $1
            ) AS ok`,
           [check.index],
+        );
+        exists = res.rows[0].ok;
+      } else if (check.type === "trigger_exists") {
+        const res = await client.query(
+          "SELECT EXISTS (SELECT 1 FROM pg_trigger tg JOIN pg_class tbl ON tbl.oid = tg.tgrelid JOIN pg_namespace ns ON ns.oid = tbl.relnamespace JOIN pg_proc fn ON fn.oid = tg.tgfoid JOIN pg_namespace fn_ns ON fn_ns.oid = fn.pronamespace WHERE ns.nspname = 'public' AND tbl.relname = $1 AND tg.tgname = $2 AND fn_ns.nspname = 'public' AND fn.proname = $3 AND tg.tgenabled IN ('O', 'A') AND NOT tg.tgisinternal) AS ok",
+          [check.table, check.trigger, check.functionName],
         );
         exists = res.rows[0].ok;
       } else if (check.type === "index_absent") {
