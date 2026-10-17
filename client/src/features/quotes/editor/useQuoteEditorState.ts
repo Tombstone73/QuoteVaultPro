@@ -1664,7 +1664,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 variantId: selectedVariantId || null,
                 variantName: variant?.name || null,
                 productType: "wide_roll",
-                isTaxableSnapshot: product.isTaxable ?? true,
+                isTaxableSnapshot: product?.isTaxable ?? true,
                 width: widthVal,
                 height: heightVal,
                 quantity: quantityVal,
