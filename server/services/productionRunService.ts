@@ -2122,7 +2122,7 @@ async function returnProductionRunMembersToPrepressInTransaction(tx: any, input:
     .for("update");
   if (rows.length !== memberIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected members do not belong to this run.", 404);
 
-  const orderIds = Array.from(new Set(rows.map(({ line }: any) => line.orderId)));
+  const orderIds = Array.from(new Set<string>(rows.map(({ line }: { line: typeof orderLineItems.$inferSelect }) => line.orderId)));
   const [irreversibleOrder] = await tx.select({ id: orders.id }).from(orders).where(and(
     eq(orders.organizationId, input.organizationId),
     inArray(orders.id, orderIds),

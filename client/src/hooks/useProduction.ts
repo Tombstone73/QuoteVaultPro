@@ -127,6 +127,7 @@ export type ProductionOrderArtworkSummary = {
 
 export type ProductionFileSummary = {
   id: string;
+  status?: "active" | "superseded" | "retired";
   lineItemId: string;
   fileRecordId: string | null;
   fileName: string;

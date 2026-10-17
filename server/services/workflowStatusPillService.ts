@@ -172,7 +172,7 @@ export async function assignResolvedWorkflowStatusPill(args: {
   triggerKey: WorkflowStatusPillTrigger;
   mapping: Pick<WorkflowStatusPillMapping, "id" | "source">;
   targetPill: WorkflowStatusTarget;
-  actorUserId: string;
+  actorUserId: string | null;
   actorUserName?: string;
   source?: WorkflowStatusPillAssignmentSource;
   reason?: string | null;
@@ -235,7 +235,7 @@ export async function applyWorkflowStatusPill(args: {
   organizationId: string;
   orderId: string;
   triggerKey: WorkflowStatusPillTrigger;
-  actorUserId: string;
+  actorUserId: string | null;
   actorUserName?: string;
   source?: WorkflowStatusPillAssignmentSource;
   reason?: string | null;

@@ -3560,7 +3560,7 @@ export function registerProductionJobsRoutes(
         requestedItemCount: parsed.data.jobIds.length,
         uniqueItemCount: jobIds.length,
         updatedItemCount: updated.length,
-        updatedJobIds: updated.map((job) => job.id),
+        updatedJobIds: updated.map((job: typeof productionJobs.$inferSelect) => job.id),
         status: "in_progress",
         runId: null,
       } });
@@ -3695,7 +3695,7 @@ export function registerProductionJobsRoutes(
         requestedItemCount: parsed.data.jobIds.length,
         uniqueItemCount: jobIds.length,
         updatedItemCount: updated.length,
-        updatedJobIds: updated.map((job) => job.id),
+        updatedJobIds: updated.map((job: typeof productionJobs.$inferSelect) => job.id),
         assignedPrinterId: printerId || null,
         assignedPrinterName,
       } });
