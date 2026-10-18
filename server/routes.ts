@@ -490,7 +490,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Payment routes extracted to ./routes/mvpInvoicing.routes.ts (do NOT re-add here)
 
   // Fulfillment/shipment routes extracted to ./routes/fulfillment.routes.ts (do NOT re-add here)
-  registerFulfillmentRoutes(app, { isAuthenticated, tenantContext });
+  registerFulfillmentRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Order line item file routes extracted to ./routes/orderLineItemFiles.routes.ts (do NOT re-add here)
   registerOrderLineItemFileRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });

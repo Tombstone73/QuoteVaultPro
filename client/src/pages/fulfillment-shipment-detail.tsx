@@ -25,6 +25,7 @@ import {
   getOrderDetails,
   getCurrentOrderDestination,
   getFulfillmentOrderDetail,
+  apiCall,
   FulfillmentDetail,
   toFulfillmentError,
   useMarkShippedMutation,
@@ -140,6 +141,16 @@ export function FulfillmentShipmentEditor({
   const [shipmentReversalConfirmed, setShipmentReversalConfirmed] = useState(false);
   const [shipmentReversalQuantities, setShipmentReversalQuantities] = useState<Record<string, number>>({});
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
+  const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
+  const [upsRates, setUpsRates] = useState<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null }> | null>(null);
+  const [upsRateError, setUpsRateError] = useState<string | null>(null);
+  const [upsRatesLoading, setUpsRatesLoading] = useState(false);
+  const [upsRatesStale, setUpsRatesStale] = useState(false);
+  const [selectedUpsService, setSelectedUpsService] = useState<string | null>(null);
+  const upsRequestInFlight = useRef(false);
+  const upsRatePresented = useRef(false);
+  const upsRateEpoch = useRef(0);
+  const upsRateKeyRef = useRef('');
   const customSenderDraft = useRef<ShippingParty | null>(null);
   const [editingDestination, setEditingDestination] = useState(false);
   const [editingSender, setEditingSender] = useState(false);
@@ -345,6 +356,52 @@ export function FulfillmentShipmentEditor({
     })
   );
   const documentActionsDisabled = !!hasUnsavedChanges || loadingOrders || updateShipment.isPending;
+  const upsRateKey = JSON.stringify({ shipmentId: shipment?.id, updatedAt: shipment?.updatedAt,
+    shippingContext, packages: shipment?.packages.map(pkg => pkg.id), form: [form.weight, form.length, form.width, form.height],
+    packageFieldsById, upsPackageTypes });
+  useEffect(() => {
+    upsRateEpoch.current += 1;
+    upsRateKeyRef.current = upsRateKey;
+    if (upsRatePresented.current) setUpsRatesStale(true);
+    setUpsRates(null); setUpsRateError(null); setSelectedUpsService(null);
+  }, [upsRateKey]);
+  useEffect(() => {
+    const invalidate = () => { upsRateEpoch.current += 1; if (upsRatePresented.current) { setUpsRates(null); setUpsRatesStale(true); setSelectedUpsService(null); } };
+    const onVisible = () => { if (document.visibilityState === 'visible') invalidate(); };
+    window.addEventListener('focus', invalidate);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.removeEventListener('focus', invalidate); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+
+  const requestUpsRates = async () => {
+    if (!shipment || shipment.status !== 'DRAFT' || upsRequestInFlight.current) return;
+    upsRequestInFlight.current = true;
+    setUpsRatesLoading(true);
+    setUpsRates(null);
+    setUpsRatesStale(false);
+    setUpsRateError(null);
+    const requestedKey = upsRateKeyRef.current;
+    const requestedEpoch = upsRateEpoch.current;
+    const packages = shipment.packages.map((pkg, index) => {
+      const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height } :
+        packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? '', length: pkg.dimLengthIn ?? '', width: pkg.dimWidthIn ?? '', height: pkg.dimHeightIn ?? '' };
+      return { id: pkg.id, packagingType: upsPackageTypes[pkg.id] ?? '02', weightLbs: Number(fields.weight),
+        lengthIn: Number(fields.length), widthIn: Number(fields.width), heightIn: Number(fields.height) };
+    });
+    if (!packages.length || packages.some(pkg => [pkg.weightLbs, pkg.lengthIn, pkg.widthIn, pkg.heightIn].some(value => !Number.isFinite(value) || value <= 0))) {
+      setUpsRateError('Enter a positive weight and length, width, and height for every package.');
+      setUpsRatesLoading(false); upsRequestInFlight.current = false; return;
+    }
+    try {
+      const result = await apiCall<{ rates: NonNullable<typeof upsRates> }>(`/api/fulfillment/shipments/${shipment.id}/ups-rates`,
+        { method: 'POST', body: JSON.stringify({ packages }) });
+      if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
+        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates);
+      }
+    } catch (error) {
+      if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) setUpsRateError(toFulfillmentError(error).message);
+    } finally { setUpsRatesLoading(false); upsRequestInFlight.current = false; }
+  };
 
   const markShippedDisabled =
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
@@ -795,12 +852,31 @@ export function FulfillmentShipmentEditor({
                     <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
                     <details className="mt-2" open={Object.values(fields).some(value => String(value).trim()) || undefined}><summary className="cursor-pointer text-xs font-medium text-muted-foreground">Dimensions, weight & package notes</summary><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
                       {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="number" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft} /></label>)}
+                      <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">UPS package type
+                        <select aria-label={`UPS package type: ${pkg.packageReference}`} className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={upsPackageTypes[pkg.id] ?? '02'} disabled={!isDraft}
+                          onChange={event => setUpsPackageTypes(previous => ({ ...previous, [pkg.id]: event.target.value as '02' | '21' }))}>
+                          <option value="02">Customer supplied package</option><option value="21">UPS Express Box</option>
+                        </select>
+                      </label>
                       <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">Package Notes<textarea aria-label={`Package notes: ${pkg.packageReference}`} rows={2} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft} /></label>
                     </div></details>
                   </div>;
                 })}
               </div>
             </div>
+            {isDraft && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
+              <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Carrier cost is separate from the customer shipping charge; requesting or selecting a rate changes neither.</p></div>
+              {hasUnsavedChanges && <p className="text-xs text-amber-700">Save Draft before requesting rates so the current destination and package details are used.</p>}
+              <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={hasUnsavedChanges || upsRatesLoading || updateShipment.isPending || shipment.packages.length === 0}
+                onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</button>
+              {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
+              {upsRatesStale && !upsRatesLoading && !upsRateError && <p role="status" className="text-xs text-amber-700">Previous UPS rates are stale. Get fresh rates for the current details.</p>}
+              {upsRates && <div className="space-y-2" role="status">{upsRates.map(rate => <label key={`${rate.serviceCode}:${rate.currency}`} className="flex items-start gap-2 rounded border p-2 text-sm">
+                <input type="radio" name="ups-rate" checked={selectedUpsService === rate.serviceCode} onChange={() => setSelectedUpsService(rate.serviceCode)} aria-label={`Select ${rate.serviceName} estimate`} />
+                <span><strong>{rate.serviceName}</strong> · {rate.currency} {rate.total} {rate.negotiated ? 'negotiated account rate' : 'UPS returned rate'}
+                  {rate.estimatedArrival && <span className="block text-xs text-muted-foreground">UPS delivery estimate: {rate.estimatedArrival}</span>}</span>
+              </label>)}</div>}
+            </section>}
             <section className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="border-b border-border bg-muted/30 px-4 py-3"><h3 className="text-sm font-bold">Carrier & Tracking</h3></div>
               <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"], ["shipDate", "Ship Date"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type={key === "shipDate" ? "date" : "text"} className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>

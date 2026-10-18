@@ -17,6 +17,7 @@ const addPackage = jest.fn(async () => ({ packageReference: 'P2' }));
 const reverse = jest.fn(async () => ({ success: true }));
 const save = jest.fn(async (_payload: any) => shipment);
 const mark = jest.fn(async () => ({ status: 'SHIPPED' }));
+const upsRateCall = jest.fn(async () => ({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
 jest.mock('react-router-dom', () => ({ useLocation: () => location, useParams: () => ({ shipmentId: 'shipment-1' }) }));
 jest.mock('@/contexts/NavigationGuardContext', () => ({ useNavigationGuard: () => ({ guardedNavigate: navigate }) }));
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }));
@@ -25,6 +26,7 @@ jest.mock('@/components/artwork/AuthenticatedArtworkThumbnail', () => ({ Authent
 jest.mock('@/components/AttachmentViewerDialog', () => ({ AttachmentViewerDialog: ({ open, attachments, initialIndex, onOpenChange }: any) => open ? <div data-testid="artwork-viewer" data-file-record-id={attachments[initialIndex].fileRecordId}>{JSON.stringify(attachments)}<button onClick={() => onOpenChange(false)}>Close artwork</button></div> : null }));
 jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ ShippingDocumentPrintDialog: ({ shipmentId, documentType, packageId, label }: any) => <button data-print-document={documentType} data-shipment-id={shipmentId} data-package-id={packageId}>{label}</button> }), { virtual: true });
 jest.mock('@/hooks/useFulfillment', () => ({
+  apiCall: upsRateCall,
   useShipmentDetailQuery: () => ({ data: shipment, refetch: jest.fn() }),
   useShippingDocumentSourceQuery: () => documentSource,
   useUpdateShipmentMutation: () => ({ mutateAsync: save, isPending: false }),
@@ -36,6 +38,29 @@ jest.mock('@/hooks/useFulfillment', () => ({
   getFulfillmentOrderDetail: async (id: string) => fulfillmentByOrder[id] ?? fulfillment,
   toFulfillmentError: (error: any) => ({ message: error.message }),
 }));
+
+test('UPS estimates remain read-only, clear when package type changes, and retain inputs after a provider failure', async () => {
+  const originalPackages = shipment.packages;
+  shipment.packages = [{ ...originalPackages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' }];
+  const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
+    expect(upsRateCall).toHaveBeenCalledWith('/api/fulfillment/shipments/shipment-1/ups-rates', expect.objectContaining({ method: 'POST' }));
+    expect(container.textContent).toContain('USD 18.75');
+    expect(save).not.toHaveBeenCalled(); expect(mark).not.toHaveBeenCalled();
+    const type = container.querySelector('select[aria-label="UPS package type: SH-20306-01-P1"]') as HTMLSelectElement;
+    act(() => Simulate.change(type, { target: { value: '21' } } as any));
+    expect(container.textContent).not.toContain('USD 18.75');
+    expect(container.textContent).toContain('Previous UPS rates are stale');
+    upsRateCall.mockRejectedValueOnce(new Error('UPS temporarily unavailable'));
+    await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
+    expect(container.textContent).toContain('UPS temporarily unavailable');
+    expect(type.value).toBe('21');
+    const weightLabel = Array.from(container.querySelectorAll('label')).find(label => label.textContent?.includes('Weight (lbs)'));
+    expect((weightLabel?.querySelector('input') as HTMLInputElement).value).toBe('2');
+  } finally { act(() => root.unmount()); container.remove(); shipment.packages = originalPackages; upsRateCall.mockClear(); }
+});
 const { FulfillmentShipmentEditor } = require('./fulfillment-shipment-detail');
 function button(container: HTMLElement, text: string) { return Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === text)!; }
 afterEach(() => { jest.clearAllMocks(); fulfillmentByOrder = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });

@@ -74,6 +74,7 @@ function routeFor(f: Awaited<ReturnType<typeof fixture>>) {
     tenantContext: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
       Object.assign(req, { organizationId: f.organization.id }); next();
     },
+    requireOrgOwnerAdmin: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
   });
   return app;
 }
