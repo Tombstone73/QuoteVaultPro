@@ -245,6 +245,7 @@ export const ROUTES = {
     productTypes: "/settings/product-types",
     pricingFormulas: "/settings/pricing-formulas",
     integrations: "/settings/integrations",
+    shipping: "/settings/shipping",
     production: "/settings/production",
     inventory: "/settings/inventory",
     notifications: "/settings/notifications",

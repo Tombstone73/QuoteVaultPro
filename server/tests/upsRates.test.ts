@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
-import { createHash } from 'node:crypto';
 
 const selectRows = jest.fn<() => unknown[]>();
 const getShipment = jest.fn<() => Promise<unknown>>();
+const upsRateCredentials = jest.fn<() => Promise<unknown>>();
+const markUpsAccountVerified = jest.fn<() => Promise<void>>();
 const dbMock = { select: jest.fn(() => ({ from: () => ({ where: () => ({ limit: async () => selectRows() }) }) })),
   insert: jest.fn(), update: jest.fn() };
 jest.unstable_mockModule('../db', () => ({ db: dbMock }));
 jest.unstable_mockModule('../services/fulfillment/canonicalFulfillmentOperations', () => ({ canonicalFulfillmentOperations: { getShipment } }));
+jest.unstable_mockModule('../services/ups/upsConnection', () => ({ upsRateCredentials, markUpsAccountVerified }));
 
-const { buildUpsRateRequest, normalizeUpsRates, getUpsRates, upsConnectionStatus } = await import('../services/ups/upsRates');
+const { buildUpsRateRequest, normalizeUpsRates, getUpsRates } = await import('../services/ups/upsRates');
 const party = { name: 'Receiver', company: 'Custom Destination', address1: '10 QA Street', address2: null,
   city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: null, email: null };
 const origin = { ...party, company: 'Print Shop', address1: '20 Origin Road' };
@@ -16,11 +18,10 @@ const packages = [{ id: 'package-1', packagingType: '02' as const, weightLbs: 2,
 const originalEnv = { ...process.env };
 
 beforeEach(() => {
-  process.env.UPS_ORGANIZATION_ID = 'qa-org'; process.env.UPS_CLIENT_ID = 'test-client';
-  process.env.UPS_CLIENT_SECRET = 'test-secret'; process.env.UPS_SHIPPER_NUMBER = 'QA1234'; process.env.UPS_ENVIRONMENT = 'cie';
   dbMock.insert.mockClear(); dbMock.update.mockClear(); selectRows.mockReset(); getShipment.mockReset();
-  selectRows.mockReturnValueOnce([{ status: 'connected', mode: 'test', account: createHash('sha256').update('QA1234').digest('hex'), connectedAt: new Date() }])
-    .mockReturnValueOnce([{ companyName: 'Print Shop', phone: null, email: null,
+  upsRateCredentials.mockReset(); markUpsAccountVerified.mockReset();
+  upsRateCredentials.mockResolvedValue({ token: 'tenant-token', accountNumber: 'QA1234', baseUrl: 'https://wwwcie.ups.com', row: { verifiedAt: null } });
+  selectRows.mockReturnValue([{ companyName: 'Print Shop', phone: null, email: null,
       physicalAddress: { line1: '20 Origin Road', city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US' } }]);
   getShipment.mockResolvedValue({ status: 'DRAFT', shippingContext: { destination: party, blindShipping: false, blindSender: null },
     packages: [{ id: 'package-1' }] });
@@ -58,20 +59,21 @@ describe('UPS rating boundary', () => {
 
   test('returns account rates while leaving persisted shipment state unchanged', async () => {
     const fetchMock = jest.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'qa-token', expires_in: 3600 }) } as Response)
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ RateResponse: { RatedShipment: {
         Service: { Code: '03' }, TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '22.30' } } } }) } as Response);
     const result = await getUpsRates('qa-org', 'draft-1', packages);
     expect(result.rates).toMatchObject([{ total: '22.30', negotiated: false }]);
-    const ratingCall = fetchMock.mock.calls[1];
+    const ratingCall = fetchMock.mock.calls[0];
     const body = JSON.parse(String(ratingCall[1]?.body));
+    expect(new Headers(ratingCall[1]?.headers).get('Authorization')).toBe('Bearer tenant-token');
+    expect(body.RateRequest.Shipment.Shipper.ShipperNumber).toBe('QA1234');
     expect(body.RateRequest.Shipment.ShipTo.Address.AddressLine).toEqual(['10 QA Street']);
     expect(body.RateRequest.Shipment.ShipFrom.Address.AddressLine).toEqual(['20 Origin Road']);
     expect(dbMock.insert).not.toHaveBeenCalled(); expect(dbMock.update).not.toHaveBeenCalled();
+    expect(markUpsAccountVerified).toHaveBeenCalledTimes(1);
   });
 
   test('authentication failure reports safe recovery instructions and preserves package inputs', async () => {
-    process.env.UPS_CLIENT_ID = 'auth-failure-client';
     const originalPackages = structuredClone(packages);
     jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 401,
       json: async () => ({ error: 'secret upstream detail' }) } as Response);
@@ -81,10 +83,8 @@ describe('UPS rating boundary', () => {
   });
 
   test('provider rejection does not write or replace draft package data', async () => {
-    process.env.UPS_CLIENT_ID = 'provider-failure-client';
     const originalPackages = structuredClone(packages);
     jest.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'provider-test-token', expires_in: 3600 }) } as Response)
       .mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ detail: 'private address data' }) } as Response);
     await expect(getUpsRates('qa-org', 'draft-1', packages)).rejects.toMatchObject({ code: 'UPS_RATE_REJECTED' });
     expect(packages).toEqual(originalPackages);
@@ -92,6 +92,8 @@ describe('UPS rating boundary', () => {
   });
 
   test('does not expose another tenant connection', async () => {
-    expect((await upsConnectionStatus('another-org')).connected).toBe(false);
+    upsRateCredentials.mockRejectedValueOnce({ code: 'UPS_NOT_CONNECTED' });
+    await expect(getUpsRates('another-org', 'draft-1', packages)).rejects.toMatchObject({ code: 'UPS_NOT_CONNECTED' });
+    expect(upsRateCredentials).toHaveBeenCalledWith('another-org');
   });
 });

@@ -7717,6 +7717,23 @@ export const integrationConnections = pgTable('integration_connections', {
 export type IntegrationConnection = typeof integrationConnections.$inferSelect;
 export type InsertIntegrationConnection = typeof integrationConnections.$inferInsert;
 
+// UPS merchant authorization is independent of the PrintersHero developer app.
+// All account identifiers and OAuth tokens are encrypted before insertion.
+export const upsAccountConnections = pgTable('ups_account_connections', {
+  organizationId: varchar('organization_id').primaryKey().references(() => organizations.id, { onDelete: 'cascade' }),
+  encryptedAccountNumber: text('encrypted_account_number').notNull(),
+  encryptedAccessToken: text('encrypted_access_token').notNull(),
+  encryptedRefreshToken: text('encrypted_refresh_token').notNull(),
+  accessExpiresAt: timestamp('access_expires_at', { withTimezone: true }).notNull(),
+  refreshExpiresAt: timestamp('refresh_expires_at', { withTimezone: true }),
+  mode: varchar('mode', { length: 10 }).notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('connected'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+export type UpsAccountConnection = typeof upsAccountConnections.$inferSelect;
+
 // Quote List Notes (list-only annotations, always editable regardless of quote lock)
 export const quoteListNotes = pgTable('quote_list_notes', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),

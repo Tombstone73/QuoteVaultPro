@@ -50,7 +50,9 @@ import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
-import { connectUps, disconnectUps, getUpsRates, upsConnectionStatus } from '../services/ups/upsRates';
+import { getUpsRates } from '../services/ups/upsRates';
+import { completeUpsAuthorization, disconnectUps, startUpsAuthorization, upsConnectionStatus,
+  validUpsAuthorizationState, type UpsPendingAuthorization } from '../services/ups/upsConnection';
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
@@ -83,16 +85,42 @@ export function registerFulfillmentRoutes(
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
 
-  app.get('/api/integrations/ups/status', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/integrations/ups/status', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try { return res.json({ success: true, data: await upsConnectionStatus(getRequestOrganizationId(req)) }); }
     catch { return res.status(500).json({ success: false, message: 'Could not read UPS connection status.' }); }
   });
   app.post('/api/integrations/ups/connect', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
-    try { return res.json({ success: true, data: await connectUps(getRequestOrganizationId(req)) }); }
+    try {
+      const { accountNumber } = z.object({ accountNumber: z.string().trim().min(6).max(10) }).strict().parse(req.body);
+      const actorId = getUserId(req.user);
+      if (!actorId || !req.session) return res.status(401).json({ success: false, message: 'Sign in again to connect UPS.' });
+      const { url, pending } = startUpsAuthorization(getRequestOrganizationId(req), actorId, accountNumber);
+      const callback = new URL(String(process.env.UPS_REDIRECT_URI));
+      if (callback.host.toLowerCase() !== String(req.get('host') || '').toLowerCase()) return res.status(409).json({ success: false,
+        code: 'UPS_CALLBACK_MISMATCH', message: 'UPS callback must point to this backend. Ask an administrator to register and configure its exact callback URL.' });
+      req.session.upsPending = pending;
+      return res.json({ success: true, data: { authorizeUrl: url } });
+    }
     catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Enter a valid UPS shipper/account number.' });
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       return res.status(500).json({ success: false, message: 'Could not connect UPS. Retry or check server configuration.' });
     }
+  });
+  app.get('/api/integrations/ups/callback', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    const redirect = (result: string) => {
+      const base = String(process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+      return res.redirect(`${base}/settings/shipping?ups=${result}`);
+    };
+    const pending = req.session?.upsPending as UpsPendingAuthorization | undefined;
+    // A session-bound, single-use state binds UPS's callback to the initiating tenant and administrator.
+    delete req.session?.upsPending;
+    if (!validUpsAuthorizationState(pending, req.query.state, getRequestOrganizationId(req), getUserId(req.user) ?? '')) {
+      return redirect('invalid_state');
+    }
+    if (req.query.error || typeof req.query.code !== 'string' || !req.query.code) return redirect('denied');
+    try { await completeUpsAuthorization(pending, req.query.code); return redirect('connected'); }
+    catch { return redirect('failed'); }
   });
   app.post('/api/integrations/ups/disconnect', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try { return res.json({ success: true, data: await disconnectUps(getRequestOrganizationId(req)) }); }

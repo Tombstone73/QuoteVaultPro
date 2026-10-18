@@ -66,6 +66,7 @@ import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
+import ShippingSettings from "@/pages/settings/shipping";
 import QuickBooksSyncQueuePage from "@/pages/settings/quickbooks-sync-queue";
 import AdminTools from "@/pages/settings/admin-tools";
 import SetupSettings from "@/pages/settings/SetupSettings";
@@ -388,6 +389,7 @@ function Router() {
           <Route path="product-types" element={<ProductTypesSettings />} />
           <Route path="pricing-formulas" element={<PricingFormulasSettings />} />
           <Route path="integrations" element={<SettingsIntegrations />} />
+          <Route path="shipping" element={<ShippingSettings />} />
           <Route path="integrations/quickbooks-sync-queue" element={<QuickBooksSyncQueuePage />} />
           <Route path="email" element={<EmailSettings />} />
           <Route path="ai" element={<AiSettingsPage />} />

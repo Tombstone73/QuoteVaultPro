@@ -51,9 +51,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { format } from "date-fns";
-import { apiCall } from '@/hooks/useFulfillment';
-
-type UpsConnectionStatus = { connected: boolean; configured: boolean; mode: 'test' | 'live' | null; accountLast4: string | null; message: string };
 
 type QBConnectionStatus = {
   connected: boolean;
@@ -314,11 +311,6 @@ type QBInvoicePayloadInspection = {
 export default function SettingsIntegrations() {
   const { user } = useAuth();
   const { isAdminOrOwner, isLoading: isLoadingOrganizationRole } = useActiveOrganizationRole({ enabled: Boolean(user) });
-  const upsStatus = useQuery({ queryKey: ['ups', 'connection'], queryFn: () => apiCall<UpsConnectionStatus>('/api/integrations/ups/status') });
-  const upsConnect = useMutation({ mutationFn: () => apiCall<UpsConnectionStatus>('/api/integrations/ups/connect', { method: 'POST' }),
-    onSuccess: () => void upsStatus.refetch() });
-  const upsDisconnect = useMutation({ mutationFn: () => apiCall<UpsConnectionStatus>('/api/integrations/ups/disconnect', { method: 'POST' }),
-    onSuccess: () => void upsStatus.refetch() });
   const { toast } = useToast();
   const isPageVisible = usePageVisible();
   const queryClient = useQueryClient();
@@ -1001,23 +993,6 @@ export default function SettingsIntegrations() {
               Open Company Settings
             </Button>
           </Link>
-        </CardContent>
-      </Card>
-
-      <Card className="mb-6">
-        <CardHeader><CardTitle>UPS rating</CardTitle><CardDescription>Use the shop's UPS account to estimate carrier cost for DRAFT shipments.</CardDescription></CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          <p role="status">{upsStatus.isLoading ? 'Checking UPS connection…' : upsStatus.data?.message ?? 'UPS status is unavailable.'}</p>
-          {upsStatus.data?.connected && <p>Account ending {upsStatus.data.accountLast4} · {upsStatus.data.mode === 'live' ? 'UPS production' : 'UPS test environment'}</p>}
-          {isAdminOrOwner && <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" disabled={upsConnect.isPending || upsDisconnect.isPending || !upsStatus.data?.configured}
-              onClick={() => upsConnect.mutate()}>{upsConnect.isPending ? 'Verifying…' : upsStatus.data?.connected ? 'Verify UPS connection' : 'Connect UPS'}</Button>
-            {upsStatus.data?.connected && <Button type="button" variant="outline" disabled={upsConnect.isPending || upsDisconnect.isPending}
-              onClick={() => upsDisconnect.mutate()}>{upsDisconnect.isPending ? 'Disconnecting…' : 'Disconnect'}</Button>}
-          </div>}
-          {upsConnect.error && <p role="alert" className="text-destructive">{upsConnect.error.message}</p>}
-          {upsDisconnect.error && <p role="alert" className="text-destructive">{upsDisconnect.error.message}</p>}
-          <p className="text-xs text-muted-foreground">Credentials and account number are configured on the server. Connecting verifies UPS authentication; the first rate request also verifies Rating API access.</p>
         </CardContent>
       </Card>
 

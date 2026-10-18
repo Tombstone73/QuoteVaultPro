@@ -1555,6 +1555,13 @@
       "when": 1788048000073,
       "tag": "0228_quote_revision",
       "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "7",
+      "when": 1792368000000,
+      "tag": "0229_ups_tenant_oauth",
+      "breakpoints": true
     }
   ]
 }
