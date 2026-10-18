@@ -78,20 +78,25 @@ export function ProductImageManager({ productId, product: suppliedProduct, legac
   return <div className="space-y-4" data-testid="product-image-manager">
     <p className="text-sm text-muted-foreground">The first image is the primary customer thumbnail. Images save separately from pricing and PBV2 drafts.</p>
     {legacyImages.length > 0 ? <p className="text-xs text-amber-500">This PBV2 tree also contains {legacyImages.length} legacy image reference(s). They are preserved in the tree; customer images are managed below.</p> : null}
-    {urls.length ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{urls.map((url, index) => <div key={`${url}-${index}`} className="rounded-md border p-2">
-      <button type="button" onClick={() => setPreview(url)} aria-label={`Preview image ${index + 1}`} className="flex aspect-square w-full items-center justify-center overflow-hidden rounded bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><img src={productImageDisplayUrl(url) ?? undefined} alt={`Product image ${index + 1}${index === 0 ? ", primary" : ""}`} className="h-full w-full object-cover" /></button>
+    {urls.length ? <div className="flex flex-wrap gap-3">{urls.map((url, index) => <div key={`${url}-${index}`} className="w-[calc(50%-0.375rem)] rounded-md border p-2 sm:w-44">
+      <button type="button" onClick={() => setPreview(url)} aria-label={`Preview image ${index + 1}`} className="flex aspect-square w-full items-center justify-center overflow-hidden rounded bg-muted p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><img src={productImageDisplayUrl(url) ?? undefined} alt={`Product image ${index + 1}${index === 0 ? ", primary" : ""}`} className="h-full w-full object-contain" /></button>
       <p className="mt-2 text-xs font-medium">{index === 0 ? "Primary thumbnail" : `Image ${index + 1}`}</p>
       <div className="mt-2 flex flex-wrap gap-1">
-        {index > 0 ? <Button type="button" size="icon" variant="outline" aria-label={`Make image ${index + 1} primary`} onClick={() => move(index, 0)}><Star className="h-4 w-4" /></Button> : null}
-        <Button type="button" size="icon" variant="outline" aria-label={`Move image ${index + 1} left`} disabled={index === 0} onClick={() => move(index, index - 1)}><ArrowLeft className="h-4 w-4" /></Button>
-        <Button type="button" size="icon" variant="outline" aria-label={`Move image ${index + 1} right`} disabled={index === urls.length - 1} onClick={() => move(index, index + 1)}><ArrowRight className="h-4 w-4" /></Button>
-        <Button type="button" size="icon" variant="outline" aria-label={`Remove image ${index + 1}`} onClick={() => changeUrls(urls.filter((_, position) => position !== index))}><Trash2 className="h-4 w-4" /></Button>
+        {index > 0 ? <Button type="button" size="icon" variant="outline" className="h-8 w-8" aria-label={`Make image ${index + 1} primary`} onClick={() => move(index, 0)}><Star className="h-4 w-4" /></Button> : null}
+        <Button type="button" size="icon" variant="outline" className="h-8 w-8" aria-label={`Move image ${index + 1} left`} disabled={index === 0} onClick={() => move(index, index - 1)}><ArrowLeft className="h-4 w-4" /></Button>
+        <Button type="button" size="icon" variant="outline" className="h-8 w-8" aria-label={`Move image ${index + 1} right`} disabled={index === urls.length - 1} onClick={() => move(index, index + 1)}><ArrowRight className="h-4 w-4" /></Button>
+        <Button type="button" size="icon" variant="outline" className="h-8 w-8" aria-label={`Remove image ${index + 1}`} onClick={() => changeUrls(urls.filter((_, position) => position !== index))}><Trash2 className="h-4 w-4" /></Button>
       </div>
     </div>)}</div> : <div className="flex items-center gap-2 rounded-md border p-5 text-sm text-muted-foreground"><ImageOff className="h-5 w-5" />No customer-facing images assigned.</div>}
     <Button type="button" variant="outline" onClick={() => setLibraryOpen(true)}>Choose from media library</Button>
     {urls.length < 20 ? <div><p className="mb-2 text-sm font-medium">Upload new images</p><ObjectUploader value={[]} onChange={() => {}} onUploaded={registerUploadedImages} maxFiles={Math.min(5, 20 - urls.length)} allowedFileTypes={["image/jpeg", "image/png", "image/webp", "image/gif"]} /><p className="mt-2 text-xs text-muted-foreground">Accepted formats: JPG, JPEG, PNG, WebP, and GIF.</p></div> : <p className="text-sm text-muted-foreground">Maximum of 20 images reached.</p>}
     <Button type="button" onClick={() => save.mutate()} disabled={!dirty || save.isPending}>{save.isPending ? "Saving…" : "Save images"}</Button>
     <MediaPicker value={urls} onChange={changeUrls} open={libraryOpen} onOpenChange={setLibraryOpen} />
-    {preview ? <div role="dialog" aria-modal="true" aria-label="Product image preview" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-6" onClick={() => setPreview(null)}><button type="button" className="absolute right-5 top-5 rounded bg-background px-3 py-1 text-foreground" onClick={() => setPreview(null)}>Close preview</button><img src={productImageDisplayUrl(preview) ?? undefined} alt="Product image large preview" className="max-h-full max-w-full object-contain" onClick={(event) => event.stopPropagation()} /></div> : null}
+    {preview ? <div role="dialog" aria-modal="true" aria-label="Product image preview" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4 sm:p-8" onClick={() => setPreview(null)}>
+      <div className="flex h-full max-h-[min(76dvh,680px)] w-full max-w-3xl flex-col gap-3" onClick={(event) => event.stopPropagation()}>
+        <div className="flex shrink-0 justify-end"><Button type="button" variant="secondary" onClick={() => setPreview(null)}>Close preview</Button></div>
+        <div className="flex min-h-0 flex-1 items-center justify-center"><img src={productImageDisplayUrl(preview) ?? undefined} alt="Product image large preview" className="block max-h-full max-w-full object-contain" /></div>
+      </div>
+    </div> : null}
   </div>;
 }
