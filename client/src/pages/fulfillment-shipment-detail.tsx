@@ -65,9 +65,10 @@ interface OrderDetailLite {
 type UpsCustomerCharge = { orderId: string; orderNumber: string | null; shippingCents: number;
   shippingChargeDecision: string; shippingChargeRateQuoteId: string | null;
   shippingChargeRateServiceCode: string | null; updatedAt: string };
-type UpsLabelHistory = { id: string; status: string; serviceName: string; estimateCents: number;
+type UpsLabelHistory = { id: string; status: string; environment: 'unknown' | 'test' | 'live'; serviceName: string; estimateCents: number;
   estimateCurrency: string; carrierCostCents: number | null; carrierCurrency: string | null;
   providerShipmentId: string | null; purchasedAt: string | null; errorCode: string | null;
+  voidProviderCode: string | null;
   voidAcceptedAt: string | null; externalCanceledAt: string | null; externalCancelReason: string | null;
   adjustments: Array<{ id: string; kind: string; amountCents: number; currency: string; providerReference: string }>;
   labels: Array<{ packageId: string; trackingNumber: string; labelFormat: string }> };
@@ -184,6 +185,7 @@ export function FulfillmentShipmentEditor({
   const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
   const [upsRates, setUpsRates] = useState<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null }> | null>(null);
   const [upsQuoteId, setUpsQuoteId] = useState<string | null>(null);
+  const [upsEnvironment, setUpsEnvironment] = useState<'test' | 'live' | null>(null);
   const [upsCustomerCharges, setUpsCustomerCharges] = useState<UpsCustomerCharge[]>([]);
   const [upsLabelHistory, setUpsLabelHistory] = useState<UpsLabelHistory[]>([]);
   const [upsStateLoaded, setUpsStateLoaded] = useState(false);
@@ -198,7 +200,7 @@ export function FulfillmentShipmentEditor({
   const [carrierAdjustmentKind, setCarrierAdjustmentKind] = useState<'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT'>('CONFIRMED_CREDIT');
   const [carrierAdjustmentAmount, setCarrierAdjustmentAmount] = useState('');
   const [carrierAdjustmentReference, setCarrierAdjustmentReference] = useState('');
-  const [upsLabelPreview, setUpsLabelPreview] = useState<{ url: string; trackingNumber: string } | null>(null);
+  const [upsLabelPreview, setUpsLabelPreview] = useState<{ url: string; trackingNumber: string; printable: boolean } | null>(null);
   const [upsRateError, setUpsRateError] = useState<string | null>(null);
   const [upsRatesLoading, setUpsRatesLoading] = useState(false);
   const [upsRatesStale, setUpsRatesStale] = useState(false);
@@ -249,6 +251,11 @@ export function FulfillmentShipmentEditor({
       .catch(error => { if (!canceled) setUpsActionError(toFulfillmentError(error).message); });
     return () => { canceled = true; };
   }, [shipment?.id]);
+  useEffect(() => { let canceled = false;
+    apiCall<{ mode: 'test' | 'live' }>('/api/fulfillment/ups-environment')
+      .then(result => { if (!canceled) setUpsEnvironment(result.mode); }).catch(() => undefined);
+    return () => { canceled = true; };
+  }, []);
   useEffect(() => () => { if (upsLabelPreview) URL.revokeObjectURL(upsLabelPreview.url); }, [upsLabelPreview]);
   const documentSourceQuery = useShippingDocumentSourceQuery(shipmentId);
   const shipmentReversalLines = useMemo(() => {
@@ -498,10 +505,10 @@ export function FulfillmentShipmentEditor({
       setUpsRatesLoading(false); upsRequestInFlight.current = false; return;
     }
     try {
-      const result = await apiCall<{ rates: NonNullable<typeof upsRates>; quoteId: string }>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
+      const result = await apiCall<{ rates: NonNullable<typeof upsRates>; quoteId: string; environment: 'test' | 'live' }>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
         { method: 'POST', body: JSON.stringify({ packages }) });
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
-        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId);
+        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId); setUpsEnvironment(result.environment);
       }
     } catch (error) {
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) setUpsRateError(toFulfillmentError(error).message);
@@ -529,14 +536,16 @@ export function FulfillmentShipmentEditor({
     }
     setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
     try {
-      const purchased = await apiCall<{ carrierCostCents: number; carrierCurrency: string; labels: Array<{ trackingNumber: string }> }>(
+      const purchased = await apiCall<{ environment: 'test' | 'live'; carrierCostCents: number; carrierCurrency: string; labels: Array<{ trackingNumber: string }> }>(
         `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
         { method: 'POST', body: JSON.stringify({ quoteId: upsQuoteId, serviceCode: selectedUpsService }) });
       const refreshed = await shipmentQuery.refetch();
       if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? 'UPS',
         serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
       await refreshUpsState(shipmentId);
-      setUpsActionMessage(`UPS label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
+      setUpsActionMessage(purchased.environment === 'test'
+        ? `Test label created. This sample label and tracking cannot be used for shipping. UPS sandbox amount: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}.`
+        : `UPS live label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
     } catch (error) {
       setUpsActionError(`${toFulfillmentError(error).message} Review purchase history before retrying; UPS may have accepted the first request.`);
       await refreshUpsState(shipmentId).catch(() => undefined);
@@ -581,20 +590,21 @@ export function FulfillmentShipmentEditor({
   };
 
   const labelImagePath = (purchaseId: string, packageId: string) => `/api/fulfillment/shipments/${encodeURIComponent(shipmentId || '')}/ups-labels/${encodeURIComponent(purchaseId)}/packages/${encodeURIComponent(packageId)}/image`;
-  const openUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string) => {
+  const openUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string, printable: boolean) => {
     try { const blob = await apiFetchBlob(labelImagePath(purchaseId, packageId));
-      setUpsLabelPreview({ url: URL.createObjectURL(blob), trackingNumber }); }
+      setUpsLabelPreview({ url: URL.createObjectURL(blob), trackingNumber, printable }); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
   };
-  const downloadUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string) => {
+  const downloadUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string, environment: UpsLabelHistory['environment']) => {
     try { const blob = await apiFetchBlob(labelImagePath(purchaseId, packageId) + '?download=1');
       const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url;
-      link.download = `UPS-${trackingNumber}.gif`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+      link.download = `${environment === 'live' ? 'UPS' : 'NOT-FOR-SHIPPING-UPS'}-${trackingNumber}.gif`;
+      link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
   };
 
   const printPreviewedUpsLabel = () => {
-    if (!upsLabelPreview) return;
+    if (!upsLabelPreview?.printable) return;
     const popup = window.open('', '_blank');
     if (!popup) { setUpsActionError('Allow a print window, or download the UPS label and print it from your device.'); return; }
     popup.document.write(`<!doctype html><html><head><title>UPS label</title><style>@page{size:4in 6in;margin:0}html,body{margin:0;background:white}img{display:block;width:4in;height:6in;object-fit:contain}</style></head><body><img src="${upsLabelPreview.url}" onload="window.print()" /></body></html>`);
@@ -605,7 +615,9 @@ export function FulfillmentShipmentEditor({
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
     upsActionPending || upsLabelHistory.some(row => ['REQUESTING', 'UNCERTAIN', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status)) ||
-    (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId && row.status !== 'PURCHASED')) ||
+    (form.carrier.trim().toUpperCase() === 'UPS' && form.trackingNumber.trim().toUpperCase() === '1ZXXXXXXXXXXXXXXXX') ||
+    (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId &&
+      (row.status !== 'PURCHASED' || row.environment !== 'live' || row.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')))) ||
     validationErrors.size > 0 ||
     allocatedCount <= 0 ||
     missingDestination.length > 0 || missingBlindSender.length > 0 ||
@@ -1088,7 +1100,10 @@ export function FulfillmentShipmentEditor({
               </div>
             </div>
             {isDraft && !upsDraftLocked && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
-              <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p></div>
+              <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p>
+                {upsEnvironment && <p role="status" className={upsEnvironment === 'test' ? 'mt-2 rounded border border-amber-500 bg-amber-50 p-2 text-xs text-amber-900' : 'mt-2 rounded border border-green-600 p-2 text-xs'}>
+                  UPS environment: <strong>{upsEnvironment === 'test' ? 'Sandbox / Test' : 'Live'}</strong>{upsEnvironment === 'test' ? ' · Labels and tracking from this environment cannot be used for real shipping.' : ''}
+                </p>}</div>
               <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsRatesLoading || shipment.packages.length === 0}
                 onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</button>
               {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
@@ -1105,7 +1120,7 @@ export function FulfillmentShipmentEditor({
               {selectedUpsService && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
                 (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateServiceCode !== selectedUpsService)) &&
                 <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
-              {selectedUpsService && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.serviceName}</strong> · Estimated UPS carrier cost: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.currency} {upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.total}</strong></p><button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || upsRatesStale || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : 'Buy UPS Label'}</button></div>}
+              {selectedUpsService && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.serviceName}</strong> · Estimated UPS carrier cost: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.currency} {upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.total}</strong></p><button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || upsRatesStale || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
             </section>}
             {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>
@@ -1113,7 +1128,9 @@ export function FulfillmentShipmentEditor({
               {upsActionError && <p role="alert" className="text-sm text-destructive">{upsActionError}</p>}
               {upsActionMessage && <p role="status" className="text-sm">{upsActionMessage}</p>}
               {upsLabelHistory.map(purchase => <div key={purchase.id} className="rounded border p-3 text-sm space-y-2">
-                <p><strong>{purchase.serviceName}</strong> · {purchase.status.replaceAll('_', ' ')}{purchase.providerShipmentId && <> · UPS {purchase.providerShipmentId}</>}</p>
+                <p><strong>{purchase.serviceName}</strong> · {purchase.environment === 'test' && purchase.status === 'PURCHASED' ? 'TEST LABEL CREATED' : purchase.status.replaceAll('_', ' ')} · {purchase.environment === 'test' ? 'Sandbox / Test' : purchase.environment === 'live' ? 'Live' : 'Environment unverified'}{purchase.providerShipmentId && <> · UPS {purchase.providerShipmentId}</>}</p>
+                {(purchase.environment !== 'live' || purchase.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')) &&
+                  <p role="alert" className="text-xs font-semibold text-amber-700">This label is not verified for real shipping. Do not dispatch or print it as a shipping label. Historical environment is unverified unless explicitly recorded.</p>}
                 <p>Original UPS estimate: {purchase.estimateCurrency} {(purchase.estimateCents / 100).toFixed(2)} · Recorded UPS carrier cost: {purchase.carrierCostCents == null ? 'Not confirmed' : `${purchase.carrierCurrency} ${(purchase.carrierCostCents / 100).toFixed(2)}`}</p>
                 {purchase.carrierCostCents != null && <p className="text-xs text-muted-foreground">
                   {purchase.carrierCurrency === purchase.estimateCurrency
@@ -1124,11 +1141,14 @@ export function FulfillmentShipmentEditor({
                 {purchase.status === 'EXTERNAL_CANCEL_REPORTED' && <p className="text-xs text-amber-700">Operator reported external cancellation: {purchase.externalCancelReason}. UPS void and carrier credit are not confirmed here.</p>}
                 {purchase.adjustments?.map(adjustment => <p key={adjustment.id} className="text-xs">{adjustment.kind === 'CONFIRMED_CREDIT' ? 'Confirmed carrier credit' : 'Carrier cost adjustment'}: {adjustment.currency} {(adjustment.amountCents / 100).toFixed(2)} · {adjustment.providerReference}</p>)}
                 {purchase.errorCode && <p className="text-xs text-destructive">Carrier action needs review: {purchase.errorCode}</p>}
-                {purchase.labels.map(label => <div key={label.packageId} className="flex flex-wrap items-center gap-2"><span>Package {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label.packageId, label.trackingNumber)}>Preview / Browser Print</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label.packageId, label.trackingNumber)}>Download</button><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" /></>}</div>)}
+                {purchase.voidProviderCode && <p className="text-xs text-destructive">UPS void response code: {purchase.voidProviderCode}</p>}
+                {purchase.labels.map(label => <div key={label.packageId} className="flex flex-wrap items-center gap-2"><span>Package {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label.packageId, label.trackingNumber, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label.packageId, label.trackingNumber, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" />}</>}</div>)}
                 {['PURCHASED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
-                  {purchase.status === 'PURCHASED' && isDraft && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void UPS label</button>}
+                  {purchase.status === 'PURCHASED' && isDraft && purchase.environment !== 'unknown' && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || purchase.environment !== upsEnvironment} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void UPS label</button>}
                   <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>
                 </div>}
+                {purchase.status === 'PURCHASED' && purchase.environment !== upsEnvironment &&
+                  <p className="text-xs text-amber-700">Provider void requires a connection to this label’s original {purchase.environment === 'unknown' ? 'verified' : purchase.environment} environment. Use carrier support for historical unverified labels.</p>}
                 {externalCancelPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">This records an operator report only. It does not call UPS, refund a carrier cost, or reverse fulfillment.</p><textarea aria-label="External cancellation reason" className="w-full rounded border p-2" value={externalCancelReason} onChange={event => setExternalCancelReason(event.target.value)} placeholder="Reason" /><input aria-label="External cancellation reference" className="w-full rounded border p-2" value={externalCancelReference} onChange={event => setExternalCancelReference(event.target.value)} placeholder="UPS or support reference, if available" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || externalCancelReason.trim().length < 3} onClick={() => void recordExternalCancellation()}>Record external cancellation</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setExternalCancelPurchaseId(null)}>Cancel</button></div>}
                 {purchase.carrierCostCents != null && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(purchase.id)}>Record carrier credit / adjustment</button>}
                 {carrierAdjustmentPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">Use carrier billing evidence. A void request alone does not prove a credit.</p><select aria-label="Carrier adjustment type" className="w-full rounded border p-2" value={carrierAdjustmentKind} onChange={event => setCarrierAdjustmentKind(event.target.value as 'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT')}><option value="CONFIRMED_CREDIT">Confirmed carrier credit</option><option value="CARRIER_ADJUSTMENT">Later carrier cost adjustment (+ or −)</option></select><input aria-label="Carrier adjustment amount" type="number" step="0.01" className="w-full rounded border p-2" value={carrierAdjustmentAmount} onChange={event => setCarrierAdjustmentAmount(event.target.value)} placeholder="Amount in carrier currency" /><input aria-label="Carrier adjustment reference" className="w-full rounded border p-2" value={carrierAdjustmentReference} onChange={event => setCarrierAdjustmentReference(event.target.value)} placeholder="UPS statement or credit reference" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || !carrierAdjustmentAmount || !carrierAdjustmentReference.trim()} onClick={() => void recordCarrierAdjustment(purchase)}>Record evidence</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(null)}>Cancel</button></div>}
@@ -1208,7 +1228,7 @@ export function FulfillmentShipmentEditor({
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? shipmentQuery.data ?? null} lastError={lastError} />
         <Dialog open={!!upsLabelPreview} onOpenChange={open => !open && setUpsLabelPreview(null)}>
           <DialogContent className="max-h-[95dvh] max-w-[min(95vw,40rem)] overflow-auto"><DialogHeader><DialogTitle>UPS label · {upsLabelPreview?.trackingNumber}</DialogTitle></DialogHeader>
-            {upsLabelPreview && <><img src={upsLabelPreview.url} alt={`UPS shipping label for ${upsLabelPreview.trackingNumber}`} className="mx-auto max-h-[75dvh] max-w-full object-contain" /><button type="button" className="rounded border px-3 py-2 text-sm" onClick={printPreviewedUpsLabel}>Print in browser</button></>}
+            {upsLabelPreview && <><img src={upsLabelPreview.url} alt={`UPS label evidence for ${upsLabelPreview.trackingNumber}`} className="mx-auto max-h-[75dvh] max-w-full object-contain" />{upsLabelPreview.printable ? <button type="button" className="rounded border px-3 py-2 text-sm" onClick={printPreviewedUpsLabel}>Print in browser</button> : <p role="alert" className="text-sm text-amber-700">Test or unverified label: not usable for shipping.</p>}</>}
           </DialogContent>
         </Dialog>
         <AttachmentViewerDialog open={!!artworkViewer} onOpenChange={open => !open && setArtworkViewer(null)} attachments={artworkViewer?.attachments ?? []} initialIndex={artworkViewer?.initialIndex ?? 0} />

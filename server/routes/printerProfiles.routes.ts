@@ -198,7 +198,8 @@ export function registerPrinterProfileRoutes(
       const history = await getUpsLabelHistory(organizationId, shipmentId);
       const purchase = history.find(row => row.id === purchaseId);
       if (!purchase?.labels.some(label => label.packageId === packageId)) return res.status(404).json({ error: 'UPS package label not found.' });
-      if (purchase.status !== 'PURCHASED') return res.status(409).json({ code: 'UPS_LABEL_NOT_PRINTABLE', error: 'Canceled or unresolved UPS labels cannot be queued for printing.' });
+      if (purchase.status !== 'PURCHASED' || purchase.environment !== 'live' || purchase.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX'))
+        return res.status(409).json({ code: 'UPS_LABEL_NOT_PRINTABLE', error: 'Only verified live UPS labels can be queued for printing.' });
       const [created] = await db.insert(directPrintJobs).values({ organizationId, orderId: null,
         destinationId: destination.id, agentId: agent.id, documentType: 'ups_label', copies: parsed.copies,
         requestKey: parsed.requestKey, printContext: { shipmentId, purchaseId, packageId },

@@ -1576,6 +1576,13 @@
       "when": 1792540800000,
       "tag": "0231_ups_label_purchases",
       "breakpoints": true
+    },
+    {
+      "idx": 231,
+      "version": "7",
+      "when": 1792627200000,
+      "tag": "0232_ups_label_environment",
+      "breakpoints": true
     }
   ]
 }

@@ -130,7 +130,7 @@ export async function getUpsRates(orgId: string, shipmentId: string, packages: U
   if (!rates.length) throw new FulfillmentHttpError(422, 'UPS returned no available services for these addresses and packages.', 'UPS_NO_SERVICES');
   if (!credentials.row.verifiedAt) await markUpsAccountVerified(orgId, credentials.row);
   const [quote] = await db.insert(upsShipmentRateQuotes).values({ organizationId: orgId, shipmentId,
-    requestFingerprint: fingerprint, rates,
+    environment: credentials.row.mode, requestFingerprint: fingerprint, rates,
     expiresAt: new Date(Date.now() + 10 * 60_000) }).returning({ id: upsShipmentRateQuotes.id });
-  return { rates, quoteId: quote.id, requestedAt: new Date().toISOString() };
+  return { rates, quoteId: quote.id, environment: credentials.row.mode, requestedAt: new Date().toISOString() };
 }

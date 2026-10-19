@@ -16,6 +16,7 @@ export type UpsPendingAuthorization = {
 };
 
 type AppConfig = { clientId: string; clientSecret: string; redirectUri: string; mode: 'test' | 'live'; baseUrl: string };
+export const upsEnvironmentMode = (): 'test' | 'live' => process.env.UPS_ENVIRONMENT === 'production' ? 'live' : 'test';
 const pendingRefreshes = new Map<string, Promise<string>>();
 const safeText = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const asObject = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -30,7 +31,7 @@ function appConfig(): AppConfig | null {
     if (callback.pathname !== '/api/integrations/ups/callback' || callback.search || callback.hash ||
       (callback.protocol !== 'https:' && !(callback.protocol === 'http:' && callback.hostname === 'localhost'))) return null;
   } catch { return null; }
-  const mode = process.env.UPS_ENVIRONMENT === 'production' ? 'live' : 'test';
+  const mode = upsEnvironmentMode();
   return { clientId, clientSecret, redirectUri, mode,
     baseUrl: mode === 'live' ? 'https://onlinetools.ups.com' : 'https://wwwcie.ups.com' };
 }

@@ -5,7 +5,7 @@ import { db } from '../../db';
 import { FulfillmentHttpError } from '../fulfillment/types';
 
 export type UpsPurchaseForReport = Pick<typeof upsLabelPurchases.$inferSelect,
-  'id' | 'shipmentId' | 'createdAt' | 'purchasedAt' | 'status' | 'serviceName' | 'providerShipmentId' |
+  'id' | 'shipmentId' | 'createdAt' | 'purchasedAt' | 'status' | 'environment' | 'serviceName' | 'providerShipmentId' |
   'estimateCents' | 'estimateCurrency' | 'carrierCostCents' | 'carrierCurrency' | 'voidAcceptedAt' | 'externalCanceledAt'>;
 export type UpsOrderForReport = Pick<typeof upsLabelPurchaseOrders.$inferSelect,
   'purchaseId' | 'orderId' | 'invoiceId' | 'customerShippingChargeCents' | 'customerChargeDecision' | 'invoiceShippingCents' | 'invoiceStatus'>;
@@ -22,7 +22,7 @@ export function projectUpsProfitability(input: { purchases: UpsPurchaseForReport
   const linksByPurchase = new Map<string, UpsOrderForReport[]>();
   for (const link of input.orderLinks) linksByPurchase.set(link.purchaseId,
     [...(linksByPurchase.get(link.purchaseId) ?? []), link]);
-  const purchaseById = new Map(input.purchases.map(row => [row.id, row]));
+  const purchaseById = new Map(input.purchases.filter(row => row.environment === 'live').map(row => [row.id, row]));
   const chargeOwner = new Map<string, string>();
   for (const link of input.orderLinks) {
     const candidate = purchaseById.get(link.purchaseId);
@@ -37,7 +37,7 @@ export function projectUpsProfitability(input: { purchases: UpsPurchaseForReport
   for (const row of input.adjustments) adjustmentsByPurchase.set(row.purchaseId,
     [...(adjustmentsByPurchase.get(row.purchaseId) ?? []), row]);
   return input.purchases.filter((purchase): purchase is UpsPurchaseForReport & { purchasedAt: Date; carrierCostCents: number } =>
-    purchase.purchasedAt != null && purchase.carrierCostCents != null).map(purchase => {
+    purchase.environment === 'live' && purchase.purchasedAt != null && purchase.carrierCostCents != null).map(purchase => {
     const links = linksByPurchase.get(purchase.id) ?? [];
     const credited = (adjustmentsByPurchase.get(purchase.id) ?? []).filter(row => row.kind === 'CONFIRMED_CREDIT')
       .reduce((sum, row) => sum + row.amountCents, 0);

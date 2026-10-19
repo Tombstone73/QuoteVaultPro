@@ -48,6 +48,7 @@ import { fulfillmentQueueEligibleOrderCondition, fulfillmentQueueVisibility, isF
 import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
 import { buildFulfillmentArtworkProjection } from '../artwork/FulfillmentArtworkProjection';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
+import { isDispatchableUpsLabel, isUpsPlaceholderTracking } from '../ups/upsLabelEnvironment';
 import { resolveActiveProductionOwners } from '../productionOwnership';
 import { resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
 import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from '@shared/fulfillmentTerminalReversal';
@@ -617,13 +618,26 @@ export class ShipmentRepo {
         inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'VOID_REQUESTING', 'VOID_UNCERTAIN']))).limit(1);
       if (unresolvedUps) return { ok: false as const, code: 'UPS_LABEL_UNRESOLVED',
         message: 'Resolve the UPS label purchase or void outcome before marking this shipment shipped.' };
+      const [activeUpsLabel] = await tx.select({ environment: upsLabelPurchases.environment })
+        .from(upsLabelPurchases).where(and(eq(upsLabelPurchases.organizationId, orgId),
+          eq(upsLabelPurchases.shipmentId, shipmentId), eq(upsLabelPurchases.status, 'PURCHASED'))).limit(1);
+      if (activeUpsLabel && activeUpsLabel.environment !== 'live')
+        return { ok: false as const, code: 'UPS_LABEL_NOT_DISPATCHABLE',
+          message: 'A test or historically unverified UPS label cannot dispatch a real shipment. Obtain a verified live label.' };
+      if (shipment.carrier?.toUpperCase() === 'UPS' && isUpsPlaceholderTracking(shipment.trackingNumber))
+        return { ok: false as const, code: 'UPS_LABEL_NOT_DISPATCHABLE',
+          message: 'Sample UPS tracking cannot be used to dispatch a real shipment.' };
       if (shipment.carrierShipmentId) {
-        const [recordedLabel] = await tx.select({ status: upsLabelPurchases.status }).from(upsLabelPurchases).where(and(
+        const [recordedLabel] = await tx.select({ status: upsLabelPurchases.status,
+          environment: upsLabelPurchases.environment }).from(upsLabelPurchases).where(and(
           eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
           eq(upsLabelPurchases.providerShipmentId, shipment.carrierShipmentId))).limit(1);
         if (recordedLabel && recordedLabel.status !== 'PURCHASED') return { ok: false as const,
           code: 'UPS_LABEL_NOT_DISPATCHABLE',
           message: 'This UPS label was canceled or its status is unresolved. Buy a replacement label before marking this shipment shipped.' };
+        if (recordedLabel && !isDispatchableUpsLabel(recordedLabel.environment, shipment.trackingNumber))
+          return { ok: false as const, code: 'UPS_LABEL_NOT_DISPATCHABLE',
+            message: 'A test, unverified, or sample UPS label cannot dispatch a real shipment. Obtain a verified live label.' };
       }
 
       const draftItems = await tx

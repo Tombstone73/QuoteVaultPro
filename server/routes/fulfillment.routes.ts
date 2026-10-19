@@ -56,7 +56,7 @@ import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
 import { applyUpsRateToCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
 import { getUpsProfitabilityReport, recordUpsCarrierAdjustment, upsProfitabilityCsv } from '../services/ups/upsProfitability';
 import { completeUpsAuthorization, disconnectUps, startUpsAuthorization, upsConnectionStatus,
-  validUpsAuthorizationState, type UpsPendingAuthorization } from '../services/ups/upsConnection';
+  upsEnvironmentMode, validUpsAuthorizationState, type UpsPendingAuthorization } from '../services/ups/upsConnection';
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
@@ -88,6 +88,9 @@ export function registerFulfillmentRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
+
+  app.get('/api/fulfillment/ups-environment', isAuthenticated, tenantContext, (_req, res) =>
+    res.json({ success: true, data: { mode: upsEnvironmentMode() } }));
 
   app.get('/api/integrations/ups/status', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try { return res.json({ success: true, data: await upsConnectionStatus(getRequestOrganizationId(req)) }); }

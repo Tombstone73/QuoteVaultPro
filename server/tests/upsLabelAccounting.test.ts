@@ -5,6 +5,7 @@ jest.unstable_mockModule('../db', () => ({ db: {}, pool: {},
   probeDatabaseSchema: async () => undefined }));
 const { buildUpsLabelRequest, normalizeUpsPurchase, classifyUpsVoidResponse } = await import('../services/ups/upsLabels');
 const { projectUpsProfitability, upsProfitabilityCsv } = await import('../services/ups/upsProfitability');
+const { isDispatchableUpsLabel, isOriginalUpsEnvironment, isUpsPlaceholderTracking } = await import('../services/ups/upsLabelEnvironment');
 
 const party = (name: string, address1: string) => ({ name, company: null, address1, address2: null,
   city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: '3175550100', email: null });
@@ -55,10 +56,10 @@ describe('UPS purchase and profitability contracts', () => {
   test('combined and replacement labels retain both costs while attributing each Order charge once', () => {
     const at = new Date('2026-10-19T12:00:00.000Z');
     const purchases = [
-      { id: 'old', shipmentId: 'shipment-1', createdAt: at, purchasedAt: at, status: 'VOID_ACCEPTED',
+      { id: 'old', shipmentId: 'shipment-1', createdAt: at, purchasedAt: at, status: 'VOID_ACCEPTED', environment: 'live',
         serviceName: 'UPS Ground', providerShipmentId: '1ZOLD', estimateCents: 2100, estimateCurrency: 'USD',
         carrierCostCents: 1900, carrierCurrency: 'USD', voidAcceptedAt: at, externalCanceledAt: null },
-      { id: 'new', shipmentId: 'shipment-1', createdAt: at, purchasedAt: new Date(at.getTime() + 1000), status: 'PURCHASED',
+      { id: 'new', shipmentId: 'shipment-1', createdAt: at, purchasedAt: new Date(at.getTime() + 1000), status: 'PURCHASED', environment: 'live',
         serviceName: 'UPS Ground', providerShipmentId: '1ZNEW', estimateCents: 2300, estimateCurrency: 'USD',
         carrierCostCents: 2200, carrierCurrency: 'USD', voidAcceptedAt: null, externalCanceledAt: null },
     ];
@@ -89,7 +90,7 @@ describe('UPS purchase and profitability contracts', () => {
   test('does not subtract USD customer charge from a foreign-currency carrier cost', () => {
     const at = new Date('2026-10-19T12:00:00.000Z');
     const rows = projectUpsProfitability({ purchases: [{ id: 'cad', shipmentId: 'shipment', createdAt: at,
-      purchasedAt: at, status: 'PURCHASED', serviceName: 'UPS Standard', providerShipmentId: '1ZCAD',
+      purchasedAt: at, status: 'PURCHASED', environment: 'live', serviceName: 'UPS Standard', providerShipmentId: '1ZCAD',
       estimateCents: 2000, estimateCurrency: 'CAD', carrierCostCents: 1900, carrierCurrency: 'CAD',
       voidAcceptedAt: null, externalCanceledAt: null }],
       orderLinks: [{ purchaseId: 'cad', orderId: 'order', invoiceId: null,
@@ -102,7 +103,7 @@ describe('UPS purchase and profitability contracts', () => {
   test('uses the current Order charge for profitability while retaining the purchase-time amount', () => {
     const at = new Date('2026-10-19T12:00:00.000Z');
     const rows = projectUpsProfitability({ purchases: [{ id: 'label', shipmentId: 'shipment', createdAt: at,
-      purchasedAt: at, status: 'PURCHASED', serviceName: 'UPS Ground', providerShipmentId: '1ZLABEL01',
+      purchasedAt: at, status: 'PURCHASED', environment: 'live', serviceName: 'UPS Ground', providerShipmentId: '1ZLABEL01',
       estimateCents: 1800, estimateCurrency: 'USD', carrierCostCents: 1700, carrierCurrency: 'USD',
       voidAcceptedAt: null, externalCanceledAt: null }],
       orderLinks: [{ purchaseId: 'label', orderId: 'order', invoiceId: null,
@@ -116,7 +117,7 @@ describe('UPS purchase and profitability contracts', () => {
   test('includes a later single issued Invoice without multiplying the purchased label cost', () => {
     const at = new Date('2026-10-19T12:00:00.000Z');
     const rows = projectUpsProfitability({ purchases: [{ id: 'label', shipmentId: 'shipment', createdAt: at,
-      purchasedAt: at, status: 'PURCHASED', serviceName: 'UPS Ground', providerShipmentId: '1ZLABEL01',
+      purchasedAt: at, status: 'PURCHASED', environment: 'live', serviceName: 'UPS Ground', providerShipmentId: '1ZLABEL01',
       estimateCents: 1800, estimateCurrency: 'USD', carrierCostCents: 1700, carrierCurrency: 'USD',
       voidAcceptedAt: null, externalCanceledAt: null }],
       orderLinks: [{ purchaseId: 'label', orderId: 'order', invoiceId: null,
@@ -126,5 +127,39 @@ describe('UPS purchase and profitability contracts', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ carrierCostCents: 1700, issuedInvoiceShippingCents: 1800,
       orders: [{ invoiceId: 'invoice-later', invoiceStatus: 'issued' }] });
+  });
+
+  test('excludes sandbox and unverified purchases before attributing customer charges', () => {
+    const at = new Date('2026-10-19T12:00:00.000Z');
+    const base = { shipmentId: 'shipment', createdAt: at, purchasedAt: at, status: 'PURCHASED',
+      serviceName: 'UPS Ground', providerShipmentId: '1ZLABEL01', estimateCents: 1200,
+      estimateCurrency: 'USD', carrierCostCents: 1100, carrierCurrency: 'USD', voidAcceptedAt: null,
+      externalCanceledAt: null };
+    const purchases = [{ ...base, id: 'live', environment: 'live' as const },
+      { ...base, id: 'test', environment: 'test' as const, purchasedAt: new Date(at.getTime() + 1000) },
+      { ...base, id: 'old', environment: 'unknown' as const, purchasedAt: new Date(at.getTime() + 2000) }];
+    const orderLinks = purchases.map(purchase => ({ purchaseId: purchase.id, orderId: 'order',
+      invoiceId: null, customerShippingChargeCents: 1500, customerChargeDecision: 'manual',
+      invoiceShippingCents: null, invoiceStatus: null }));
+    const rows = projectUpsProfitability({ purchases, orderLinks, adjustments: [],
+      orderNames: new Map(), invoiceState: new Map() });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ purchaseId: 'live', carrierCostCents: 1100,
+      customerShippingChargeCents: 1500, differenceCents: 400 });
+  });
+
+  test('test, unknown, and sample-tracking labels cannot authorize dispatch', () => {
+    expect(isUpsPlaceholderTracking('1ZXXXXXXXXXXXXXXXX')).toBe(true);
+    expect(isDispatchableUpsLabel('test', '1ZREAL123456')).toBe(false);
+    expect(isDispatchableUpsLabel('unknown', '1ZREAL123456')).toBe(false);
+    expect(isDispatchableUpsLabel('live', '1ZXXXXXXXXXXXXXXXX')).toBe(false);
+    expect(isDispatchableUpsLabel('live', '1ZREAL123456')).toBe(true);
+  });
+
+  test('a void is bound to the original verified provider environment', () => {
+    expect(isOriginalUpsEnvironment('test', 'test')).toBe(true);
+    expect(isOriginalUpsEnvironment('live', 'live')).toBe(true);
+    expect(isOriginalUpsEnvironment('test', 'live')).toBe(false);
+    expect(isOriginalUpsEnvironment('unknown', 'test')).toBe(false);
   });
 });

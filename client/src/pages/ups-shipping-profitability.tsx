@@ -43,7 +43,7 @@ export default function UpsShippingProfitabilityPage() {
   return <main className="mx-auto max-w-7xl space-y-5 p-4 sm:p-6">
     <Link to="/reports" className="text-sm text-primary underline">Back to reports</Link>
     <header><h1 className="text-2xl font-semibold">UPS shipping profitability</h1>
-      <p className="mt-1 max-w-4xl text-sm text-muted-foreground">Recorded label cost is an expense estimate until UPS final billing. The current agreed Order shipping charge is attributed once to its latest active label, or its latest historical label if none is active; it is not cash collected. Issued Invoice shipping is shown separately. No shipping-specific payment allocation is inferred.</p></header>
+      <p className="mt-1 max-w-4xl text-sm text-muted-foreground">Live UPS labels only. Sandbox and historically unverified labels are excluded from costs and totals. Recorded label cost is an expense estimate until UPS final billing. The current agreed Order shipping charge is attributed once to its latest active live label, or its latest historical live label if none is active; it is not cash collected. Issued Invoice shipping is shown separately. No shipping-specific payment allocation is inferred.</p></header>
     <section className="flex flex-wrap items-end gap-3 rounded border bg-card p-4">
       <label className="grid gap-1 text-sm">From<input type="date" className="rounded border bg-background p-2" value={from} onChange={event => setFrom(event.target.value)} /></label>
       <label className="grid gap-1 text-sm">Through<input type="date" className="rounded border bg-background p-2" value={to} onChange={event => setTo(event.target.value)} /></label>

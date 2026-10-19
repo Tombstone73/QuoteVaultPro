@@ -19,7 +19,7 @@ const frozenSource: any = { version: 1, basis: "draft", organizationId: "org", s
 const source = jest.fn(async () => frozenSource);
 const wake = jest.fn(async (_hash: string) => ({ published: true, attempts: 1 }));
 const getUpsLabelHistory = jest.fn(async (_organizationId: string, _shipmentId: string) => [
-  { id: 'purchase', status: 'PURCHASED', labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] },
+  { id: 'purchase', status: 'PURCHASED', environment: 'live', labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] },
 ]);
 const readUpsPackageLabel = jest.fn(async () => ({ bytes: Buffer.from('GIF89a'), mimeType: 'image/gif', trackingNumber: '1ZPKG' }));
 function matching(table: string, condition: any) {
@@ -109,6 +109,17 @@ test('UPS label reprint queues only the existing purchased image and blocks canc
   const canceled = await supertest(app).post(route).set('x-staff', 'yes').send({ ...body, requestKey: 'label-after-void' });
   expect(canceled.status).toBe(409); expect(writes).toHaveLength(1);
   expect(readUpsPackageLabel).toHaveBeenCalledTimes(1);
+});
+test.each(['test', 'unknown'])('UPS %s label cannot be queued for direct print', async environment => {
+  rows.printer_profiles[0].printerType = 'shipping_label';
+  rows.printer_profiles[0].supportedDocuments = ['ups_label'];
+  rows.local_bridge_agents[0].agentVersion = '1.0.26';
+  getUpsLabelHistory.mockImplementationOnce(async () => [{ id: 'purchase', status: 'PURCHASED', environment,
+    labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] }]);
+  const result = await supertest(app).post('/api/fulfillment/shipments/shipment/ups-labels/purchase/packages/package-a/direct-print')
+    .set('x-staff', 'yes').send({ printerProfileId: 'printer', requestKey: `blocked-${environment}`, copies: 1 });
+  expect(result.status).toBe(409);
+  expect(writes).toHaveLength(0);
 });
 test("stable replay ignores edited live drafts, wakes actual saved agent, and never spools another job", async () => {
   await enqueue(); source.mockImplementation(async () => { throw new Error("Live source changed"); });

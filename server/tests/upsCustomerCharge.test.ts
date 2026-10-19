@@ -17,7 +17,7 @@ const { applyUpsRateToCustomerCharge } = await import('../services/ups/upsCharge
 
 const order = { orderId: 'order-1', orderNumber: 'QA-1', shippingCents: 0, shippingChargeDecision: 'unset',
   shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null, updatedAt: new Date('2026-10-19T12:00:00Z') };
-const quote = { id: 'quote-1', requestFingerprint: 'current-fingerprint', expiresAt: new Date('2099-01-01'),
+const quote = { id: 'quote-1', environment: 'test', requestFingerprint: 'current-fingerprint', expiresAt: new Date('2099-01-01'),
   rates: [{ serviceCode: '03', serviceName: 'UPS Ground', total: '18.40', currency: 'USD' }] };
 const input = { organizationId: 'tenant-a', shipmentId: 'shipment-1', quoteId: 'quote-1',
   serviceCode: '03', intent: 'default_if_unset' as const, actorUserId: 'staff-1' };
@@ -26,7 +26,7 @@ beforeEach(() => {
   db.select.mockClear(); selectRows.mockReset(); updateEditableHeader.mockReset();
   upsRateCredentials.mockReset(); resolveUpsShippingContext.mockReset();
   selectRows.mockReturnValueOnce([order]).mockReturnValueOnce([quote]);
-  upsRateCredentials.mockResolvedValue({ accountNumber: 'QA1234' });
+  upsRateCredentials.mockResolvedValue({ accountNumber: 'QA1234', row: { mode: 'test' } });
   resolveUpsShippingContext.mockResolvedValue({ origin: {}, sender: {}, destination: {}, packages: [] });
   updateEditableHeader.mockResolvedValue({ id: order.orderId, shippingCents: 1840 });
 });
@@ -41,6 +41,12 @@ describe('UPS customer charge policy', () => {
       changes: { shippingCents: 1840, shippingChargeDecision: 'ups_rate',
         shippingChargeRateQuoteId: 'quote-1', shippingChargeRateServiceCode: '03' },
     }));
+  });
+
+  test('does not apply a quote from another UPS environment', async () => {
+    upsRateCredentials.mockResolvedValueOnce({ accountNumber: 'QA1234', row: { mode: 'live' } });
+    await expect(applyUpsRateToCustomerCharge(input)).rejects.toMatchObject({ code: 'UPS_RATE_STALE' });
+    expect(updateEditableHeader).not.toHaveBeenCalled();
   });
 
   test.each([

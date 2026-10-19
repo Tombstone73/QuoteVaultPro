@@ -180,8 +180,9 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
         return res.status(404).json({ error: 'UPS label print context is unavailable.' });
       const history = await getUpsLabelHistory(agent.organizationId, context.shipmentId);
       const purchase = history.find(row => row.id === context.purchaseId);
-      if (purchase?.status !== 'PURCHASED' || !purchase.labels.some(label => label.packageId === context.packageId))
-        return res.status(409).json({ error: 'UPS label was canceled or cannot be printed.' });
+      if (purchase?.status !== 'PURCHASED' || purchase.environment !== 'live' ||
+        !purchase.labels.some(label => label.packageId === context.packageId && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX'))
+        return res.status(409).json({ error: 'Only verified live UPS labels can be printed.' });
       const label = await readUpsPackageLabel(agent.organizationId, context.shipmentId, context.purchaseId, context.packageId);
       res.setHeader('Cache-Control', 'private, no-store');
       return res.json({ success: true, data: { jobId: upsJob.id, documentType: 'ups_label',

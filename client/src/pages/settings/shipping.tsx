@@ -36,6 +36,10 @@ export default function ShippingSettings() {
       {callback === 'connected' && <p role="status" className="text-sm">UPS authorization saved. Request a rate on a DRAFT shipment to verify the account number and Rating API access.</p>}
       {callback && callback !== 'connected' && <p role="alert" className="text-sm text-destructive">UPS connection did not complete ({callback.replaceAll('_', ' ')}). Please try again.</p>}
       <p role="status" className="text-sm">{status.isLoading ? 'Checking UPS connection…' : status.data?.message ?? 'UPS status is unavailable.'}</p>
+      {status.data?.mode && <p role="status" className={status.data.mode === 'test' ? 'rounded border border-amber-500 bg-amber-50 p-2 text-sm text-amber-900' : 'rounded border border-green-600 p-2 text-sm'}>
+        UPS environment: <strong>{status.data.mode === 'live' ? 'Live' : 'Sandbox / Test'}</strong>.
+        {status.data.mode === 'test' ? ' Test labels and tracking cannot be used for real shipments.' : ' Live labels may be used for shipping after carrier confirmation.'}
+      </p>}
       {status.data?.accountLast4 && <p className="text-sm">Saved account ending {status.data.accountLast4} · {status.data.mode === 'live' ? 'UPS production' : 'UPS test environment'}{status.data.verified ? ' · Rating verified' : ' · Rating not yet verified'}</p>}
       <div className="max-w-xs space-y-1"><Label htmlFor="ups-account-number">UPS shipper/account number</Label>
         <Input id="ups-account-number" value={accountNumber} onChange={event => setAccountNumber(event.target.value.toUpperCase())}

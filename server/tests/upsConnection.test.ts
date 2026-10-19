@@ -22,7 +22,7 @@ const dbMock = {
 };
 jest.unstable_mockModule('../db', () => ({ db: dbMock }));
 const { startUpsAuthorization, validUpsAuthorizationState, completeUpsAuthorization,
-  upsConnectionStatus, upsRateCredentials, disconnectUps } = await import('../services/ups/upsConnection');
+  upsConnectionStatus, upsRateCredentials, disconnectUps, upsEnvironmentMode } = await import('../services/ups/upsConnection');
 const { decryptAiSecret, encryptAiSecret } = await import('../services/ai/aiSecretsEncryption');
 const originalEnv = { ...process.env };
 
@@ -40,6 +40,13 @@ beforeEach(() => {
 afterEach(() => { process.env = { ...originalEnv }; jest.restoreAllMocks(); });
 
 describe('tenant UPS OAuth connection', () => {
+  test('only the explicit production setting selects the live OAuth endpoint', () => {
+    expect(upsEnvironmentMode()).toBe('test');
+    expect(new URL(startUpsAuthorization('org-a', 'admin-a', 'ABC123').url).hostname).toBe('wwwcie.ups.com');
+    process.env.UPS_ENVIRONMENT = 'production';
+    expect(upsEnvironmentMode()).toBe('live');
+    expect(new URL(startUpsAuthorization('org-a', 'admin-a', 'ABC123').url).hostname).toBe('onlinetools.ups.com');
+  });
   test('requires developer-app configuration and a tenant account number', async () => {
     delete process.env.UPS_CLIENT_ID;
     expect(() => startUpsAuthorization('org-a', 'admin-a', 'ABC123')).toThrow();

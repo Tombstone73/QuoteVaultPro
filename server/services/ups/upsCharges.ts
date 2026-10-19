@@ -37,7 +37,7 @@ export async function applyUpsRateToCustomerCharge(input: { organizationId: stri
   const [quote] = await db.select().from(upsShipmentRateQuotes).where(and(eq(upsShipmentRateQuotes.organizationId, input.organizationId),
     eq(upsShipmentRateQuotes.shipmentId, input.shipmentId), eq(upsShipmentRateQuotes.id, input.quoteId))).limit(1);
   const rate = quote?.rates.find(item => item.serviceCode === input.serviceCode);
-  if (!quote || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint)
+  if (!quote || quote.environment !== credentials.row.mode || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint)
     throw new FulfillmentHttpError(409, 'UPS rate is stale. Get fresh rates before changing the customer charge.', 'UPS_RATE_STALE');
   const cents = rateCents(rate.total);
   if (cents == null || rate.currency !== 'USD') throw new FulfillmentHttpError(409,

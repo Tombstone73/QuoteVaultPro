@@ -8,6 +8,7 @@ import { isFulfillmentQueueEligibleOrder } from '../fulfillment/eligibility';
 import { FulfillmentDashboardRepo } from '../fulfillment/repository';
 import { FulfillmentHttpError } from '../fulfillment/types';
 import { upsRateCredentials } from './upsConnection';
+import { isOriginalUpsEnvironment, isUpsPlaceholderTracking } from './upsLabelEnvironment';
 import { countryCode, resolveUpsShippingContext, upsShippingFingerprint, type UpsRatePackage } from './upsRates';
 
 type UpsPurchaseResult = { providerShipmentId: string; carrierCostCents: number; carrierCurrency: string;
@@ -90,6 +91,7 @@ async function purchaseHistory(orgId: string, shipmentId: string) {
     createdAt: upsCarrierAdjustments.createdAt }).from(upsCarrierAdjustments).where(and(
       eq(upsCarrierAdjustments.organizationId, orgId), inArray(upsCarrierAdjustments.purchaseId, rows.map(row => row.id)))) : [];
   return rows.map(({ providerEvidence, providerTransactionId, requestFingerprint, ...row }) => ({ ...row,
+    voidProviderCode: str(object(providerEvidence).voidProviderCode) || null,
     labels: labels.filter(label => label.purchaseId === row.id),
     adjustments: adjustments.filter(adjustment => adjustment.purchaseId === row.id) }));
 }
@@ -165,7 +167,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     const [quote] = await tx.select().from(upsShipmentRateQuotes).where(and(eq(upsShipmentRateQuotes.id, input.quoteId),
       eq(upsShipmentRateQuotes.organizationId, orgId), eq(upsShipmentRateQuotes.shipmentId, shipmentId))).limit(1);
     const rate = quote?.rates.find(item => item.serviceCode === input.serviceCode);
-    if (!quote || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint) throw new FulfillmentHttpError(409,
+    if (!quote || quote.environment !== credentials.row.mode || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint) throw new FulfillmentHttpError(409,
         'UPS rates expired or shipment details changed. Get fresh rates before buying.', 'UPS_RATE_STALE');
     const [packages, links, items] = await Promise.all([
       tx.select().from(shipmentPackages).where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId))).orderBy(shipmentPackages.ordinal),
@@ -204,6 +206,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     const estimateCents = cents(rate.total);
     if (estimateCents == null) throw new FulfillmentHttpError(409, 'UPS rate amount is invalid. Get fresh rates.', 'UPS_RATE_STALE');
     const [created] = await tx.insert(upsLabelPurchases).values({ organizationId: orgId, shipmentId, quoteId: quote.id,
+      environment: credentials.row.mode,
       serviceCode: rate.serviceCode, serviceName: rate.serviceName, estimateCents, estimateCurrency: rate.currency,
       providerTransactionId: randomUUID().replace(/-/g, ''), requestFingerprint: fingerprint,
       createdByUserId: actorUserId ?? null }).returning();
@@ -241,6 +244,13 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
       response: object(body) }).catch(() => undefined);
     throw new FulfillmentHttpError(409, 'UPS accepted the request but tracking, cost, or labels were incomplete. Do not buy again; investigate this attempt.', 'UPS_PURCHASE_UNCERTAIN');
   }
+  if (attempt.environment === 'live' && (isUpsPlaceholderTracking(normalized.providerShipmentId) ||
+    normalized.labels.some(label => isUpsPlaceholderTracking(label.trackingNumber)))) {
+    await markUncertain(orgId, attempt.id, 'UPS_LIVE_PLACEHOLDER_TRACKING', {
+      providerShipmentId: normalized.providerShipmentId, trackingNumbers: normalized.labels.map(label => label.trackingNumber),
+      response: object(body) }).catch(() => undefined);
+    throw new FulfillmentHttpError(409, 'UPS returned sample tracking from the live endpoint. Do not buy again; investigate this attempt with UPS.', 'UPS_PURCHASE_UNCERTAIN');
+  }
   try {
     await persistUpsPurchase(orgId, attempt, normalized, details.packages.map(pkg => pkg.id), actorUserId);
   } catch {
@@ -248,7 +258,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
       trackingNumbers: normalized.labels.map(label => label.trackingNumber), response: object(body) }).catch(() => undefined);
     throw new FulfillmentHttpError(409, 'UPS returned a purchased label, but local recording needs recovery. Do not buy again; contact support with the shown attempt ID.', 'UPS_LOCAL_RECOVERY_REQUIRED');
   }
-  return { attemptId: attempt.id, providerShipmentId: normalized.providerShipmentId,
+  return { attemptId: attempt.id, environment: attempt.environment, providerShipmentId: normalized.providerShipmentId,
     carrierCostCents: normalized.carrierCostCents, carrierCurrency: normalized.carrierCurrency,
     labels: normalized.labels.map((label, i) => ({ packageId: details.packages[i].id, trackingNumber: label.trackingNumber })) };
 }
@@ -265,6 +275,9 @@ export async function recoverRecordedUpsPurchase(orgId: string, shipmentId: stri
   const normalized = normalizeUpsPurchase(response, packages.length);
   if (!normalized) throw new FulfillmentHttpError(409,
     'No complete UPS purchase response is saved. Verify this attempt in the UPS account before any replacement.', 'UPS_MANUAL_RECOVERY_REQUIRED');
+  if (attempt.environment === 'live' && (isUpsPlaceholderTracking(normalized.providerShipmentId) ||
+    normalized.labels.some(label => isUpsPlaceholderTracking(label.trackingNumber))))
+    throw new FulfillmentHttpError(409, 'A live UPS attempt returned sample tracking. Investigate with UPS before recovery.', 'UPS_MANUAL_RECOVERY_REQUIRED');
   await persistUpsPurchase(orgId, attempt, normalized, packages.map(pkg => pkg.id), actorUserId);
   return { attemptId: attempt.id, status: 'PURCHASED' as const };
 }
@@ -282,9 +295,12 @@ export async function readUpsPackageLabel(orgId: string, shipmentId: string, pur
 export async function voidUpsLabel(orgId: string, purchaseId: string, actorUserId?: string | null) {
   // Authentication failure must leave the purchased label eligible for a later void attempt.
   const credentials = await upsRateCredentials(orgId);
-  const [candidate] = await db.select({ shipmentId: upsLabelPurchases.shipmentId }).from(upsLabelPurchases).where(and(
+  const [candidate] = await db.select({ shipmentId: upsLabelPurchases.shipmentId,
+    environment: upsLabelPurchases.environment }).from(upsLabelPurchases).where(and(
     eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId))).limit(1);
   if (!candidate) throw new FulfillmentHttpError(404, 'UPS purchase not found.', 'NOT_FOUND');
+  if (!isOriginalUpsEnvironment(candidate.environment, credentials.row.mode)) throw new FulfillmentHttpError(409,
+    'This label belongs to a different or unverified UPS environment. Reconnect to its original environment or investigate it with UPS.', 'UPS_VOID_ENVIRONMENT_MISMATCH');
   const attempt = await db.transaction(async tx => {
     // Match Mark as Shipped's shipment-first lock order. A simultaneous
     // dispatch cannot pass the purchased-label check while voiding begins.
@@ -295,6 +311,8 @@ export async function voidUpsLabel(orgId: string, purchaseId: string, actorUserI
     const [row] = await tx.select().from(upsLabelPurchases).where(and(eq(upsLabelPurchases.organizationId, orgId),
       eq(upsLabelPurchases.id, purchaseId))).for('update').limit(1);
     if (!row || row.shipmentId !== candidate.shipmentId) throw new FulfillmentHttpError(404, 'UPS purchase not found.', 'NOT_FOUND');
+    if (!isOriginalUpsEnvironment(row.environment, credentials.row.mode)) throw new FulfillmentHttpError(409,
+      'UPS environment changed. Reconnect to the label’s original environment before voiding.', 'UPS_VOID_ENVIRONMENT_MISMATCH');
     if (row.status !== 'PURCHASED' || !row.providerShipmentId) throw new FulfillmentHttpError(409,
       'Only a confirmed, unused UPS label can be voided. Investigate uncertain attempts separately.', 'UPS_VOID_UNAVAILABLE');
     await tx.update(upsLabelPurchases).set({ status: 'VOID_REQUESTING', voidRequestedAt: new Date(),
@@ -324,9 +342,13 @@ export async function voidUpsLabel(orgId: string, purchaseId: string, actorUserI
   const outcome = classifyUpsVoidResponse(response.status, voidBody);
   if (outcome !== 'ACCEPTED') {
     const uncertain = outcome === 'UNCERTAIN';
+    const providerErrors = array(object(object(voidBody).response).errors);
+    const voidProviderCode = str(object(providerErrors[0]).code).slice(0, 80) || null;
     await db.transaction(async tx => {
       await tx.update(upsLabelPurchases).set({ status: uncertain ? 'VOID_UNCERTAIN' : 'PURCHASED',
-        errorCode: `UPS_VOID_HTTP_${response.status}`, updatedAt: new Date() })
+        errorCode: `UPS_VOID_HTTP_${response.status}`,
+        providerEvidence: { ...object(attempt.providerEvidence), voidHttpStatus: response.status, voidProviderCode },
+        updatedAt: new Date() })
         .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId)));
       await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: actorUserId ?? null,
         entityType: 'SHIPMENT', entityId: attempt.shipmentId, eventType: 'SHIPMENT_UPDATED',

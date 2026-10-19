@@ -20,7 +20,7 @@ const originalEnv = { ...process.env };
 beforeEach(() => {
   dbMock.insert.mockClear(); dbMock.update.mockClear(); selectRows.mockReset(); getShipment.mockReset();
   upsRateCredentials.mockReset(); markUpsAccountVerified.mockReset();
-  upsRateCredentials.mockResolvedValue({ token: 'tenant-token', accountNumber: 'QA1234', baseUrl: 'https://wwwcie.ups.com', row: { verifiedAt: null } });
+  upsRateCredentials.mockResolvedValue({ token: 'tenant-token', accountNumber: 'QA1234', baseUrl: 'https://wwwcie.ups.com', row: { mode: 'test', verifiedAt: null } });
   selectRows.mockReturnValue([{ companyName: 'Print Shop', phone: null, email: null,
       physicalAddress: { line1: '20 Origin Road', city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US' } }]);
   getShipment.mockResolvedValue({ status: 'DRAFT', shippingContext: { destination: party, blindShipping: false, blindSender: null },
@@ -71,6 +71,7 @@ describe('UPS rating boundary', () => {
     expect(body.RateRequest.Shipment.ShipTo.Address.AddressLine).toEqual(['10 QA Street']);
     expect(body.RateRequest.Shipment.ShipFrom.Address.AddressLine).toEqual(['20 Origin Road']);
     expect(result.quoteId).toBe('quote-1');
+    expect(result.environment).toBe('test');
     expect(dbMock.insert).toHaveBeenCalledTimes(1); expect(dbMock.update).not.toHaveBeenCalled();
     expect(markUpsAccountVerified).toHaveBeenCalledTimes(1);
   });
