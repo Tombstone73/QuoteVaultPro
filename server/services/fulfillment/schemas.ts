@@ -52,6 +52,7 @@ export const shipmentPackageInputSchema = z.object({
     height: z.coerce.number().min(0).optional().nullable(),
   }).optional(),
   notes: z.string().trim().max(2000).optional().nullable(),
+  upsPackagingType: z.enum(['02', '21']).optional(),
 });
 
 export const patchShipmentSchema = z.object({

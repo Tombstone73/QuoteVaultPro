@@ -542,7 +542,7 @@ export class ShipmentRepo {
   }
 
   async patchDraftShipmentPackages(orgId: string, shipmentId: string, packages: Array<{
-    id: string; weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
+    id: string; upsPackagingType?: '02' | '21'; weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
   }>, executor?: DbExecutor) {
     if (!packages.length) return;
     const patch = async (tx: DbExecutor) => {
@@ -560,6 +560,7 @@ export class ShipmentRepo {
           if (item[key] !== undefined) values[key] = item[key] == null ? null : String(item[key]);
         }
         if (item.notes !== undefined) values.notes = item.notes;
+        if (item.upsPackagingType !== undefined) values.upsPackagingType = item.upsPackagingType;
         await tx.update(shipmentPackages).set(values).where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.id, item.id)));
       }
       await tx.update(shipments).set({ boxCount: existing.length, updatedAt: new Date() }).where(and(

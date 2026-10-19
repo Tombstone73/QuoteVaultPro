@@ -653,6 +653,7 @@ export class FulfillmentService {
     }>;
     packages?: Array<{
       id: string;
+      upsPackagingType?: '02' | '21';
       weightLbs?: number | null;
       dims?: { length?: number | null; width?: number | null; height?: number | null };
       notes?: string | null;
@@ -689,6 +690,7 @@ export class FulfillmentService {
     },
       packages: payload.packages?.map((item) => ({
         id: item.id,
+        upsPackagingType: item.upsPackagingType,
         weightLbs: item.weightLbs,
         dimLengthIn: item.dims?.length,
         dimWidthIn: item.dims?.width,

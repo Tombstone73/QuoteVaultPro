@@ -52,7 +52,7 @@ test('an existing DRAFT shipment persists the representative logistics and packa
     serviceLevel: 'Ground',
     trackingNumber: '1Z-TRACKING',
     shipDate: '2026-08-26',
-    packages: [{ id: 'package-a', weightLbs: 4, dims: { length: 10, width: 6, height: 5 }, notes: null }],
+    packages: [{ id: 'package-a', upsPackagingType: '21', weightLbs: 4, dims: { length: 10, width: 6, height: 5 }, notes: null }],
     actorUserId: 'user-a',
   });
 
@@ -65,7 +65,7 @@ test('an existing DRAFT shipment persists the representative logistics and packa
   const patch = shipmentRepo.saveDraftShipment.mock.calls[0][2].patch;
   expect(patch.shipDate.toISOString()).toBe('2026-08-26T00:00:00.000Z');
   expect(shipmentRepo.saveDraftShipment.mock.calls[0][2].packages).toEqual([{
-    id: 'package-a', weightLbs: 4, dimLengthIn: 10, dimWidthIn: 6, dimHeightIn: 5, notes: null,
+    id: 'package-a', upsPackagingType: '21', weightLbs: 4, dimLengthIn: 10, dimWidthIn: 6, dimHeightIn: 5, notes: null,
   }]);
   expect(result).toMatchObject({ status: 'DRAFT', carrier: 'UPS', serviceLevel: 'Ground', trackingNumber: '1Z-TRACKING' });
   expect(shipmentRepo.markShipped).not.toHaveBeenCalled();
@@ -103,4 +103,5 @@ test('draft updates reject missing, cross-tenant, non-draft, and invalid-date re
   const { service } = serviceForDraftUpdate();
   await expect(service.patchShipment(orgId, shipmentId, { shipDate: '2026-02-30' })).rejects.toMatchObject({ status: 400, code: 'SHIP_DATE_INVALID' });
   expect(() => patchShipmentSchema.parse({ shipDate: '08/26/2026' })).toThrow();
+  expect(() => patchShipmentSchema.parse({ packages: [{ id: 'package-a', upsPackagingType: '99' }] })).toThrow();
 });

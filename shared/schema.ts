@@ -5978,6 +5978,7 @@ export const shipmentPackages = pgTable("shipment_packages", {
   dimLengthIn: decimal("dim_length_in", { precision: 10, scale: 2 }),
   dimWidthIn: decimal("dim_width_in", { precision: 10, scale: 2 }),
   dimHeightIn: decimal("dim_height_in", { precision: 10, scale: 2 }),
+  upsPackagingType: varchar("ups_packaging_type", { length: 2 }).notNull().default('02'),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

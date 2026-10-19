@@ -267,6 +267,7 @@ export interface ShipmentDetail {
     dimLengthIn: string | null;
     dimWidthIn: string | null;
     dimHeightIn: string | null;
+    upsPackagingType: '02' | '21';
     notes: string | null;
   }>;
 }
@@ -560,7 +561,7 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       internalNotes?: string | null;
       shippingContext?: ShipmentShippingContext;
       shipmentItems?: Array<{ orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null }>;
-      packages?: Array<{ id: string; weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }>;
+      packages?: Array<{ id: string; upsPackagingType?: '02' | '21'; weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }>;
     }) => apiCall<ShipmentDetail>(`/api/fulfillment/shipments/${shipmentId}`, {
       method: "PATCH",
       body: JSON.stringify(payload),

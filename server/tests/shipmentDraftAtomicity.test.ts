@@ -74,10 +74,10 @@ describe('draft transaction and terminal package evidence', () => {
   test('save commits metadata, package patch, exact partial allocations and event together', async () => {
     const f = fixture();
     await f.repo.saveDraftShipment('org-a', 'shipment-a', { patch: { carrier: '', shipDate: new Date('2026-10-01T00:00:00Z') },
-      packages: [{ id: 'package-a', notes: 'Updated' }], items: [{ orderId: 'order-a', orderLineItemId: 'line-a', packageId: 'package-a', quantity: 1 }] });
+      packages: [{ id: 'package-a', upsPackagingType: '21', notes: 'Updated' }], items: [{ orderId: 'order-a', orderLineItemId: 'line-a', packageId: 'package-a', quantity: 1 }] });
     expect(f.state.shipment.carrier).toBe('');
     expect(() => shipments.shipDate.mapToDriverValue(f.state.shipment.shipDate)).not.toThrow();
-    expect(f.state.packages[0]).toMatchObject({ notes: 'Updated', weightLbs: '4', dimLengthIn: '10' });
+    expect(f.state.packages[0]).toMatchObject({ notes: 'Updated', upsPackagingType: '21', weightLbs: '4', dimLengthIn: '10' });
     expect(f.state.items).toEqual([expect.objectContaining({ quantity: 1, packageId: 'package-a' })]);
     expect(f.state.events).toEqual([expect.objectContaining({ eventType: 'SHIPMENT_UPDATED' })]);
     expect(f.locks.some(lock => lock.sql?.includes('FOR UPDATE'))).toBe(true);
