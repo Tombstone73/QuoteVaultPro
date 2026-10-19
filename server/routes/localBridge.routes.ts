@@ -12,7 +12,8 @@ import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../lib/directTravelerPrintUrl";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getPrintAgentRealtimeConfiguration } from "../services/printAgentWake";
-import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsShippingDocumentAgent } from "../lib/directPrintAgentCapabilities";
+import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
+import { getUpsLabelHistory, readUpsPackageLabel } from "../services/ups/upsLabels";
 import { isShippingDocumentType, shippingPrintContextSchema } from "@shared/directPrintDocuments";
 import { pickupTravelerContext } from "@shared/pickupTravelerProgress";
 
@@ -151,6 +152,7 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
       case "packing_slip":
       case "shipment_manifest":
       case "package_ticket": travelerUrl = `${canonicalWebOrigin}/print-agent/documents/${encodeURIComponent(job.id)}`; break;
+      case "ups_label": travelerUrl = `${canonicalWebOrigin}/print-agent/documents/${encodeURIComponent(job.id)}`; break;
       default: return res.status(409).json({ error: "Unsupported print document type" });
     }
     return res.json({
@@ -168,6 +170,24 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   app.get("/api/local-bridge/direct-print/jobs/:id/traveler", bridgeAuth, async (req: any, res) => { try { const agent = req.bridgeAgent; const [job] = await db.select({ orderId: directPrintJobs.orderId, documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext }).from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"), inArray(directPrintJobs.documentType, ["traveler", "pickup_traveler"]))).limit(1); if (!job || !job.orderId || !["traveler", "pickup_traveler"].includes(job.documentType)) return res.status(404).json({ error: "Print job not claimed" }); const context = job.documentType === "pickup_traveler" ? pickupTravelerContext(job.printContext) : null; if (job.documentType === "pickup_traveler" && !context) return res.status(409).json({ error: "Pickup traveler print context is unavailable" }); const traveler = await (context ? getOrderTravelerSource(agent.organizationId, job.orderId, context) : getOrderTravelerSource(agent.organizationId, job.orderId)); if (!traveler) return res.status(404).json({ error: "Order not found" }); res.json({ success: true, data: traveler }); } catch (error: any) { const status = Number(error?.status) || 500; if (status >= 500) console.error("[PICKUP TRAVELER] Source read failed", error); return res.status(status).json({ error: status < 500 ? error.message : "Could not load Traveler" }); } });
   app.get("/api/local-bridge/direct-print/jobs/:jobId/document", bridgeAuth, async (req: any, res) => {
     const agent = req.bridgeAgent;
+    const [upsJob] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId),
+      eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId),
+      eq(directPrintJobs.status, 'claimed'), eq(directPrintJobs.documentType, 'ups_label'))).limit(1);
+    if (upsJob) {
+      if (!supportsUpsLabelAgent(agent.agentVersion)) return res.status(409).json({ error: 'Print Agent 1.0.26 or newer required.' });
+      const context = upsJob.printContext as { shipmentId?: unknown; purchaseId?: unknown; packageId?: unknown } | null;
+      if (typeof context?.shipmentId !== 'string' || typeof context.purchaseId !== 'string' || typeof context.packageId !== 'string')
+        return res.status(404).json({ error: 'UPS label print context is unavailable.' });
+      const history = await getUpsLabelHistory(agent.organizationId, context.shipmentId);
+      const purchase = history.find(row => row.id === context.purchaseId);
+      if (purchase?.status !== 'PURCHASED' || !purchase.labels.some(label => label.packageId === context.packageId))
+        return res.status(409).json({ error: 'UPS label was canceled or cannot be printed.' });
+      const label = await readUpsPackageLabel(agent.organizationId, context.shipmentId, context.purchaseId, context.packageId);
+      res.setHeader('Cache-Control', 'private, no-store');
+      return res.json({ success: true, data: { jobId: upsJob.id, documentType: 'ups_label',
+        purchaseId: context.purchaseId, packageId: context.packageId, trackingNumber: label.trackingNumber,
+        labelFormat: 'GIF', labelBase64: label.bytes.toString('base64'), copies: upsJob.copies } });
+    }
     if (!supportsShippingDocumentAgent(agent.agentVersion)) return res.status(409).json({ error: "Print Agent update required" });
     const [job] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId),
       eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"),

@@ -2409,7 +2409,7 @@ export const insertPrinterProfileSchema = createInsertSchema(printerProfiles).om
   location: z.string().trim().max(160).optional().nullable(),
   windowsQueueName: z.string().trim().max(255).optional().nullable(),
   printAgentId: z.string().trim().min(1).optional().nullable(),
-  supportedDocuments: z.array(z.enum(["traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket"])).min(1).default(["traveler"]),
+  supportedDocuments: z.array(z.enum(["traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket", "ups_label"])).min(1).default(["traveler"]),
   defaultCopies: z.number().int().min(1).max(99).default(1),
   trailingFeedMm: z.coerce.number().min(0).max(100).default(0),
   receiptWidthMm: z.coerce.number().min(40).max(120).default(80),
@@ -3905,6 +3905,9 @@ export const orders = pgTable("orders", {
   carrierAccountNumber: text("carrier_account_number"),
   shippingInstructions: text("shipping_instructions"),
   shippingCents: integer("shipping_cents").notNull().default(0), // Shipping/delivery cost in cents
+  shippingChargeDecision: varchar("shipping_charge_decision", { length: 16 }).notNull().default('unset'),
+  shippingChargeRateQuoteId: varchar("shipping_charge_rate_quote_id", { length: 64 }),
+  shippingChargeRateServiceCode: varchar("shipping_charge_rate_service_code", { length: 8 }),
   trackingNumber: text("tracking_number"),
   shippedAt: timestamp("shipped_at", { withTimezone: true, mode: "string" }),
   
@@ -3988,6 +3991,9 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   total: z.coerce.number().min(0),
   discount: z.coerce.number().min(0).default(0),
   shippingMethod: z.enum(['pickup', 'ship', 'deliver']).optional().nullable(),
+  shippingChargeDecision: z.enum(['unset', 'manual', 'free', 'ups_rate', 'legacy']).optional(),
+  shippingChargeRateQuoteId: z.string().max(64).optional().nullable(),
+  shippingChargeRateServiceCode: z.string().max(8).optional().nullable(),
   shippingMode: z.enum(['single_shipment', 'multi_shipment']).optional().nullable(),
   shippingAddress: z.object({
     name: z.string().optional(),
@@ -6017,6 +6023,96 @@ export const insertPickupTicketSchema = createInsertSchema(pickupTickets).omit({
 }).extend({
   status: pickupTicketStatusSchema.optional(),
 });
+
+/** UPS quotes are server-observed estimates, never customer charges. */
+export const upsShipmentRateQuotes = pgTable("ups_shipment_rate_quotes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
+  requestFingerprint: varchar("request_fingerprint", { length: 64 }).notNull(),
+  rates: jsonb("rates").$type<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null }>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, table => [index("ups_rate_quotes_org_shipment_idx").on(table.organizationId, table.shipmentId)]);
+
+/** One durable UPS purchase attempt per provider call. Historical rows are retained on void/replacement. */
+export const upsLabelPurchases = pgTable("ups_label_purchases", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
+  quoteId: varchar("quote_id").notNull().references(() => upsShipmentRateQuotes.id),
+  status: varchar("status", { length: 32 }).notNull().default('REQUESTING'),
+  serviceCode: varchar("service_code", { length: 8 }).notNull(),
+  serviceName: varchar("service_name", { length: 100 }).notNull(),
+  estimateCents: integer("estimate_cents").notNull(),
+  estimateCurrency: varchar("estimate_currency", { length: 3 }).notNull(),
+  carrierCostCents: integer("carrier_cost_cents"),
+  carrierCurrency: varchar("carrier_currency", { length: 3 }),
+  providerShipmentId: varchar("provider_shipment_id", { length: 80 }),
+  providerTransactionId: varchar("provider_transaction_id", { length: 32 }).notNull(),
+  requestFingerprint: varchar("request_fingerprint", { length: 64 }).notNull(),
+  /** Minimal returned evidence; labels are kept separately with tenant-scoped reads. */
+  providerEvidence: jsonb("provider_evidence").$type<Record<string, unknown>>(),
+  errorCode: varchar("error_code", { length: 80 }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  purchasedAt: timestamp("purchased_at", { withTimezone: true }),
+  voidRequestedAt: timestamp("void_requested_at", { withTimezone: true }),
+  voidAcceptedAt: timestamp("void_accepted_at", { withTimezone: true }),
+  externalCanceledAt: timestamp("external_canceled_at", { withTimezone: true }),
+  externalCancelReason: text("external_cancel_reason"),
+  externalCancelReference: varchar("external_cancel_reference", { length: 160 }),
+  externalCanceledByUserId: varchar("external_canceled_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [
+  index("ups_label_purchases_org_shipment_idx").on(table.organizationId, table.shipmentId, table.createdAt),
+  uniqueIndex("ups_label_purchases_active_shipment_uidx").on(table.organizationId, table.shipmentId)
+    .where(sql`${table.status} IN ('REQUESTING', 'UNCERTAIN', 'PURCHASED', 'VOID_REQUESTING', 'VOID_UNCERTAIN')`),
+  uniqueIndex("ups_label_purchases_provider_transaction_uidx").on(table.organizationId, table.providerTransactionId),
+]);
+
+export const upsPackageLabels = pgTable("ups_package_labels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  purchaseId: varchar("purchase_id").notNull().references(() => upsLabelPurchases.id, { onDelete: 'cascade' }),
+  packageId: varchar("package_id").notNull().references(() => shipmentPackages.id),
+  trackingNumber: varchar("tracking_number", { length: 80 }).notNull(),
+  labelFormat: varchar("label_format", { length: 8 }).notNull(),
+  labelBytes: bytea("label_bytes").notNull(),
+  labelSha256: varchar("label_sha256", { length: 64 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [uniqueIndex("ups_package_labels_purchase_package_uidx").on(table.purchaseId, table.packageId),
+  index("ups_package_labels_org_purchase_idx").on(table.organizationId, table.purchaseId)]);
+
+/** Immutable commercial snapshot for each Order associated with a purchased shipment. */
+export const upsLabelPurchaseOrders = pgTable("ups_label_purchase_orders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  purchaseId: varchar("purchase_id").notNull().references(() => upsLabelPurchases.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id),
+  invoiceId: varchar("invoice_id").references(() => invoices.id),
+  customerShippingChargeCents: integer("customer_shipping_charge_cents").notNull(),
+  customerChargeDecision: varchar("customer_charge_decision", { length: 16 }).notNull(),
+  invoiceShippingCents: integer("invoice_shipping_cents"),
+  invoiceStatus: varchar("invoice_status", { length: 32 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [uniqueIndex("ups_purchase_orders_purchase_order_uidx").on(table.purchaseId, table.orderId),
+  index("ups_purchase_orders_org_order_idx").on(table.organizationId, table.orderId)]);
+
+/** Confirmed carrier credits and later billing adjustments are separate from void requests. */
+export const upsCarrierAdjustments = pgTable("ups_carrier_adjustments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  purchaseId: varchar("purchase_id").notNull().references(() => upsLabelPurchases.id),
+  kind: varchar("kind", { length: 24 }).notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  providerReference: varchar("provider_reference", { length: 160 }).notNull(),
+  note: text("note"),
+  recordedByUserId: varchar("recorded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [uniqueIndex("ups_carrier_adjustments_provider_uidx").on(table.organizationId, table.purchaseId, table.providerReference),
+  index("ups_carrier_adjustments_purchase_idx").on(table.purchaseId)]);
 
 export const updatePickupTicketSchema = insertPickupTicketSchema.partial().extend({
   id: z.string(),

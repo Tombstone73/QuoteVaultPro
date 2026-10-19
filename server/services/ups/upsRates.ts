@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { companySettings } from '@shared/schema';
+import { companySettings, upsShipmentRateQuotes } from '@shared/schema';
 import { shippingPartyValidationErrors, type ShippingParty } from '@shared/shippingDocuments';
 import { db } from '../../db';
 import { canonicalFulfillmentOperations } from '../fulfillment/canonicalFulfillmentOperations';
@@ -13,7 +14,7 @@ const names: Record<string, string> = { '01': 'UPS Next Day Air', '02': 'UPS 2nd
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : value == null ? [] : [value];
-function countryCode(value: string | null): string | null {
+export function countryCode(value: string | null): string | null {
   const code = text(value).toUpperCase();
   if (['USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(code)) return 'US';
   if (['CAN', 'CANADA'].includes(code)) return 'CA';
@@ -25,11 +26,12 @@ function address(party: ShippingParty) {
     PostalCode: party.postalCode, CountryCode: countryCode(party.country) };
 }
 
-export function buildUpsRateRequest(input: { origin: ShippingParty; destination: ShippingParty; shipperNumber: string; packages: UpsRatePackage[] }) {
+export function buildUpsRateRequest(input: { origin: ShippingParty; sender?: ShippingParty; destination: ShippingParty; shipperNumber: string; packages: UpsRatePackage[] }) {
   const { origin, destination, shipperNumber, packages } = input;
+  const sender = input.sender ?? origin;
   return { RateRequest: { Request: { RequestOption: 'Shop' }, Shipment: {
     Shipper: { Name: origin.company || origin.name, ShipperNumber: shipperNumber, Address: address(origin) },
-    ShipFrom: { Name: origin.company || origin.name, Address: address(origin) },
+    ShipFrom: { Name: sender.company || sender.name, Address: address(sender) },
     ShipTo: { Name: destination.company || destination.name, Address: address(destination) },
     PaymentDetails: { ShipmentCharge: [{ Type: '01', BillShipper: { AccountNumber: shipperNumber } }] },
     Package: packages.map(pkg => ({ PackagingType: { Code: pkg.packagingType },
@@ -58,27 +60,37 @@ export function normalizeUpsRates(payload: unknown): UpsRate[] {
   });
 }
 
-function validatePackages(packages: UpsRatePackage[], savedIds: string[]) {
-  if (!packages.length || packages.length !== savedIds.length || new Set(packages.map(pkg => pkg.id)).size !== packages.length ||
-    packages.some(pkg => !savedIds.includes(pkg.id))) throw new FulfillmentHttpError(400, 'Rate each package on this DRAFT exactly once.', 'UPS_PACKAGE_MISMATCH');
+type SavedPackage = { id: string; upsPackagingType: string; weightLbs: string | null; dimLengthIn: string | null; dimWidthIn: string | null; dimHeightIn: string | null };
+function validatePackages(packages: UpsRatePackage[], saved: SavedPackage[]) {
+  const byId = new Map(saved.map(pkg => [pkg.id, pkg]));
+  if (!packages.length || packages.length !== saved.length || new Set(packages.map(pkg => pkg.id)).size !== packages.length ||
+    packages.some(pkg => !byId.has(pkg.id))) throw new FulfillmentHttpError(400, 'Rate each package on this DRAFT exactly once.', 'UPS_PACKAGE_MISMATCH');
   if (packages.some(pkg => !['02', '21'].includes(pkg.packagingType) ||
     ![pkg.weightLbs, pkg.lengthIn, pkg.widthIn, pkg.heightIn].every(value => Number.isFinite(value) && value > 0))) {
     throw new FulfillmentHttpError(400, 'Every UPS package needs a supported type and positive weight and dimensions.', 'UPS_INVALID_PACKAGE');
   }
+  if (packages.some(pkg => { const row = byId.get(pkg.id)!; return pkg.packagingType !== row.upsPackagingType ||
+    pkg.weightLbs !== Number(row.weightLbs) || pkg.lengthIn !== Number(row.dimLengthIn) ||
+    pkg.widthIn !== Number(row.dimWidthIn) || pkg.heightIn !== Number(row.dimHeightIn); })) {
+    throw new FulfillmentHttpError(409, 'Package details changed or have not finished saving. Save the draft and get fresh UPS rates.', 'UPS_PACKAGE_STALE');
+  }
 }
 
-export async function getUpsRates(orgId: string, shipmentId: string, packages: UpsRatePackage[]) {
+export function upsShippingFingerprint(input: { origin: ShippingParty; sender: ShippingParty; destination: ShippingParty; accountNumber: string; packages: UpsRatePackage[] }) {
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+}
+
+export async function resolveUpsShippingContext(orgId: string, shipmentId: string) {
   const shipment = await canonicalFulfillmentOperations.getShipment(orgId, shipmentId);
   if (!shipment) throw new FulfillmentHttpError(404, 'Shipment not found.', 'NOT_FOUND');
-  if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'UPS rates require a DRAFT shipment.', 'UPS_INVALID_SHIPMENT');
+  if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'UPS labels and rates require a DRAFT shipment.', 'UPS_INVALID_SHIPMENT');
   const context = shipment.shippingContext;
   if (!context) throw new FulfillmentHttpError(409, 'Save a shipping destination before requesting rates.', 'UPS_DESTINATION_MISSING');
   const missing = shippingPartyValidationErrors(context.destination);
   if (missing.length) throw new FulfillmentHttpError(409, `Ship To is incomplete: ${missing.join(', ')}.`, 'UPS_DESTINATION_INCOMPLETE');
-  if (!countryCode(context.destination.country)) throw new FulfillmentHttpError(409, 'Ship To needs a two-letter country code for UPS rating.', 'UPS_DESTINATION_INCOMPLETE');
-  if (context.blindShipping && (!context.blindSender || shippingPartyValidationErrors(context.blindSender).length)) {
-    throw new FulfillmentHttpError(409, 'Complete the blind-shipping sender on the DRAFT before requesting rates.', 'UPS_SENDER_INCOMPLETE');
-  }
+  if (!countryCode(context.destination.country)) throw new FulfillmentHttpError(409, 'Ship To needs a two-letter country code for UPS.', 'UPS_DESTINATION_INCOMPLETE');
+  if (context.blindShipping && (!context.blindSender || shippingPartyValidationErrors(context.blindSender).length))
+    throw new FulfillmentHttpError(409, 'Complete the blind-shipping sender on the DRAFT before requesting UPS.', 'UPS_SENDER_INCOMPLETE');
   const [settings] = await db.select({ companyName: companySettings.companyName, phone: companySettings.phone,
     email: companySettings.email, physicalAddress: companySettings.physicalAddress })
     .from(companySettings).where(eq(companySettings.organizationId, orgId)).limit(1);
@@ -89,13 +101,24 @@ export async function getUpsRates(orgId: string, shipmentId: string, packages: U
   const originMissing = shippingPartyValidationErrors(origin);
   if (originMissing.length) throw new FulfillmentHttpError(409, `Shop shipper/origin is incomplete in Company Settings: ${originMissing.join(', ')}.`, 'UPS_ORIGIN_INCOMPLETE');
   if (!countryCode(origin.country)) throw new FulfillmentHttpError(409, 'Shop shipper/origin needs a two-letter country code in Company Settings.', 'UPS_ORIGIN_INCOMPLETE');
-  validatePackages(packages, shipment.packages.map(pkg => pkg.id));
+  const sender = context.blindShipping ? context.blindSender! : origin;
+  if (!countryCode(sender.country)) throw new FulfillmentHttpError(409, 'Sender needs a two-letter country code for UPS.', 'UPS_SENDER_INCOMPLETE');
+  const packages: UpsRatePackage[] = shipment.packages.map(pkg => ({ id: pkg.id, packagingType: pkg.upsPackagingType as UpsPackageType,
+    weightLbs: Number(pkg.weightLbs), lengthIn: Number(pkg.dimLengthIn), widthIn: Number(pkg.dimWidthIn), heightIn: Number(pkg.dimHeightIn) }));
+  validatePackages(packages, shipment.packages);
+  return { shipment, origin, sender, destination: context.destination, packages };
+}
+
+export async function getUpsRates(orgId: string, shipmentId: string, packages: UpsRatePackage[]) {
+  const { origin, sender, destination, shipment } = await resolveUpsShippingContext(orgId, shipmentId);
+  validatePackages(packages, shipment.packages);
   const credentials = await upsRateCredentials(orgId);
+  const fingerprint = upsShippingFingerprint({ origin, sender, destination, accountNumber: credentials.accountNumber, packages });
   let response: Response;
   try {
     response = await fetch(`${credentials.baseUrl}/api/rating/v2409/Shop`, { method: 'POST', signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json', Accept: 'application/json', transactionSrc: 'PrintersHero' },
-      body: JSON.stringify(buildUpsRateRequest({ origin, destination: context.destination, shipperNumber: credentials.accountNumber, packages })) });
+      body: JSON.stringify(buildUpsRateRequest({ origin, sender, destination, shipperNumber: credentials.accountNumber, packages })) });
   } catch { throw new FulfillmentHttpError(503, 'UPS rating timed out or is unavailable. Package inputs are unchanged.', 'UPS_RATE_UNAVAILABLE'); }
   const body = object(await response.json().catch(() => ({})));
   if (response.status === 401 || response.status === 403) {
@@ -106,5 +129,8 @@ export async function getUpsRates(orgId: string, shipmentId: string, packages: U
   const rates = normalizeUpsRates(body);
   if (!rates.length) throw new FulfillmentHttpError(422, 'UPS returned no available services for these addresses and packages.', 'UPS_NO_SERVICES');
   if (!credentials.row.verifiedAt) await markUpsAccountVerified(orgId, credentials.row);
-  return { rates, requestedAt: new Date().toISOString() };
+  const [quote] = await db.insert(upsShipmentRateQuotes).values({ organizationId: orgId, shipmentId,
+    requestFingerprint: fingerprint, rates,
+    expiresAt: new Date(Date.now() + 10 * 60_000) }).returning({ id: upsShipmentRateQuotes.id });
+  return { rates, quoteId: quote.id, requestedAt: new Date().toISOString() };
 }

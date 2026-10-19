@@ -1,9 +1,9 @@
 # PrintersHero Windows Traveler Print Agent
 
-Version 1.0.25
+Version 1.0.26
 
 This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
-Note, Packing Slip, Shipment Manifest, and Package Ticket jobs. It runs
+Note, Packing Slip, Shipment Manifest, Package Ticket, and UPS Label jobs. It runs
 in the logged-in Windows session because Edge WebView2 and Windows printer
 drivers must use that session. It never listens on the LAN and the cloud never
 opens a connection to the workstation.
@@ -32,9 +32,14 @@ The opaque shipping shell waits for pages, fonts, and images and binds readiness
 to both the job id and document type. Unsupported types fail instead of printing
 a Traveler. A full Package Ticket set is one spool job with multiple pages.
 
+UPS 4 x 6 inch GIF labels require agent 1.0.26 or newer, a shipping-label
+printer profile, and a Windows printer driver configured for matching label
+stock. The label is printed as a raster image through the existing queue;
+the agent does not send ZPL to devices that may not support it.
+
 Source milestone: the installer/package must be rebuilt from these sources
-before distributing 1.0.25. An existing downloadable ZIP is not updated by a
-source-only change. Verify the rebuilt executable reports 1.0.25 before release.
+before distributing 1.0.26. An existing downloadable ZIP is not updated by a
+source-only change. Verify the rebuilt executable reports 1.0.26 before release.
 
 ## Shop workstation setup
 

@@ -1,4 +1,4 @@
-PrintersHero Traveler Print Agent 1.0.25
+PrintersHero Traveler Print Agent 1.0.26
 
 1. Extract this complete folder to a stable local location.
 2. Create a Local Bridge / Print Agent pairing token in PrintersHero Settings.
@@ -27,4 +27,7 @@ Shipping documents use the same paired agent and configured Windows queue.
 Enable Packing Slip, Shipment Manifest, or Package Ticket on the printer profile
 only if its paper is suitable. Agents older than 1.0.25 cannot receive these jobs.
 Submitted means accepted by Windows, not confirmed physical printing.
-Source milestone: rebuild the installer/release ZIP before distributing 1.0.25.
+UPS labels require agent 1.0.26 or newer, a shipping-label printer profile,
+and a Windows printer driver configured for 4 x 6 inch stock. The agent prints
+the GIF through Windows; it does not send ZPL directly.
+Source milestone: rebuild the installer/release ZIP before distributing 1.0.26.

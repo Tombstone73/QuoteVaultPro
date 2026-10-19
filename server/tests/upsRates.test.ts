@@ -5,7 +5,7 @@ const getShipment = jest.fn<() => Promise<unknown>>();
 const upsRateCredentials = jest.fn<() => Promise<unknown>>();
 const markUpsAccountVerified = jest.fn<() => Promise<void>>();
 const dbMock = { select: jest.fn(() => ({ from: () => ({ where: () => ({ limit: async () => selectRows() }) }) })),
-  insert: jest.fn(), update: jest.fn() };
+  insert: jest.fn(() => ({ values: () => ({ returning: async () => [{ id: 'quote-1' }] }) })), update: jest.fn() };
 jest.unstable_mockModule('../db', () => ({ db: dbMock }));
 jest.unstable_mockModule('../services/fulfillment/canonicalFulfillmentOperations', () => ({ canonicalFulfillmentOperations: { getShipment } }));
 jest.unstable_mockModule('../services/ups/upsConnection', () => ({ upsRateCredentials, markUpsAccountVerified }));
@@ -24,7 +24,8 @@ beforeEach(() => {
   selectRows.mockReturnValue([{ companyName: 'Print Shop', phone: null, email: null,
       physicalAddress: { line1: '20 Origin Road', city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US' } }]);
   getShipment.mockResolvedValue({ status: 'DRAFT', shippingContext: { destination: party, blindShipping: false, blindSender: null },
-    packages: [{ id: 'package-1' }] });
+    packages: [{ id: 'package-1', upsPackagingType: '02', weightLbs: '2',
+      dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' }] });
 });
 afterEach(() => { process.env = { ...originalEnv }; jest.restoreAllMocks(); });
 
@@ -57,7 +58,7 @@ describe('UPS rating boundary', () => {
     expect(dbMock.insert).not.toHaveBeenCalled(); expect(dbMock.update).not.toHaveBeenCalled();
   });
 
-  test('returns account rates while leaving persisted shipment state unchanged', async () => {
+  test('returns account rates and saves only a bounded quote, leaving shipment and finances unchanged', async () => {
     const fetchMock = jest.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ RateResponse: { RatedShipment: {
         Service: { Code: '03' }, TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '22.30' } } } }) } as Response);
@@ -69,7 +70,8 @@ describe('UPS rating boundary', () => {
     expect(body.RateRequest.Shipment.Shipper.ShipperNumber).toBe('QA1234');
     expect(body.RateRequest.Shipment.ShipTo.Address.AddressLine).toEqual(['10 QA Street']);
     expect(body.RateRequest.Shipment.ShipFrom.Address.AddressLine).toEqual(['20 Origin Road']);
-    expect(dbMock.insert).not.toHaveBeenCalled(); expect(dbMock.update).not.toHaveBeenCalled();
+    expect(result.quoteId).toBe('quote-1');
+    expect(dbMock.insert).toHaveBeenCalledTimes(1); expect(dbMock.update).not.toHaveBeenCalled();
     expect(markUpsAccountVerified).toHaveBeenCalledTimes(1);
   });
 

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Link } from 'react-router-dom';
 import { apiCall } from '@/hooks/useFulfillment';
 
 type UpsStatus = { configured: boolean; connected: boolean; verified: boolean; mode: 'test' | 'live' | null;
@@ -52,5 +53,6 @@ export default function ShippingSettings() {
       {connect.error && <p role="alert" className="text-sm text-destructive">{connect.error.message}</p>}
       {disconnect.error && <p role="alert" className="text-sm text-destructive">{disconnect.error.message}</p>}
     </CardContent></Card>
+    <Card><CardHeader><CardTitle>Shipping label printer</CardTitle><CardDescription>Assign a 4 × 6 inch Windows label printer for direct UPS label printing. Browser preview and download remain available without an agent.</CardDescription></CardHeader><CardContent><Button asChild variant="outline"><Link to="/settings/printers">Configure printer profiles</Link></Button></CardContent></Card>
   </div>;
 }

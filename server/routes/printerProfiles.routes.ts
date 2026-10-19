@@ -13,10 +13,11 @@ import { TRAVELER_PRINTER_PREFERENCE_LIST_KEY, travelerPrinterPreferenceSchema }
 import { publishPrintAgentWake } from "../services/printAgentWake";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import type { PickupTravelerPrintContext } from "@shared/productionTicket";
-import { supportsQuickNoteAgent, supportsShippingDocumentAgent } from "../lib/directPrintAgentCapabilities";
+import { supportsQuickNoteAgent, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
 import { shippingDocumentTypeSchema } from "@shared/shippingDocuments";
-import { matchesShippingPrintRequest, shippingDirectPrintRequestSchema } from "@shared/directPrintDocuments";
+import { matchesShippingPrintRequest, shippingDirectPrintRequestSchema, upsLabelDirectPrintRequestSchema } from "@shared/directPrintDocuments";
 import { getShippingDocumentSource } from "../services/shippingDocumentService";
+import { getUpsLabelHistory } from "../services/ups/upsLabels";
 
 const pickupTravelerPrintSchema = z.union([
   z.object({ destinationId: z.string().min(1), reprintJobId: z.string().min(1), requestKey: z.string().min(1).max(160).optional() }).strict(),
@@ -112,16 +113,18 @@ export function registerPrinterProfileRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(401).json({ error: "Organization required" });
-      const documentType = shippingDocumentTypeSchema.parse(req.query.documentType);
+      const documentType = z.union([shippingDocumentTypeSchema, z.literal('ups_label')]).parse(req.query.documentType);
       const destinations = await db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName, location: printerProfiles.location,
         defaultCopies: printerProfiles.defaultCopies, isDefault: printerProfiles.isDefault, agentId: printerProfiles.printAgentId,
+        printerType: printerProfiles.printerType,
         queueName: printerProfiles.windowsQueueName, configuredQueueName: localBridgeAgents.configuredTravelerPrinterName,
         agentVersion: localBridgeAgents.agentVersion, agentStatus: localBridgeAgents.status }).from(printerProfiles)
         .leftJoin(localBridgeAgents, and(eq(printerProfiles.printAgentId, localBridgeAgents.id), eq(localBridgeAgents.organizationId, organizationId)))
         .where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.isActive, true), sql`${printerProfiles.supportedDocuments} ? ${documentType}`));
       return res.json({ success: true, data: destinations.map((item) => {
-        const unavailableReason = !item.agentId || item.agentStatus !== "active" ? "DIRECT_PRINT_UNAVAILABLE"
-          : !supportsShippingDocumentAgent(item.agentVersion) ? "PRINT_AGENT_UPDATE_REQUIRED"
+        const unavailableReason = documentType === 'ups_label' && item.printerType !== 'shipping_label' ? 'UPS_LABEL_PRINTER_TYPE'
+          : !item.agentId || item.agentStatus !== "active" ? "DIRECT_PRINT_UNAVAILABLE"
+          : !(documentType === 'ups_label' ? supportsUpsLabelAgent(item.agentVersion) : supportsShippingDocumentAgent(item.agentVersion)) ? "PRINT_AGENT_UPDATE_REQUIRED"
           : !item.queueName || item.queueName !== item.configuredQueueName ? "PRINT_AGENT_CONFIGURATION_MISMATCH" : null;
         return { id: item.id, displayName: item.displayName, location: item.location, defaultCopies: item.defaultCopies,
           isDefault: item.isDefault, agentVersion: item.agentVersion, available: !unavailableReason, unavailableReason };
@@ -165,6 +168,51 @@ export function registerPrinterProfileRoutes(
       if (!job) return res.status(500).json({ error: "Could not queue shipping print job" });
       return respond(job, !created[0]);
     } catch (error) { return sendError(res, error, "Could not queue shipping document"); }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/packages/:packageId/direct-print', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const { shipmentId, purchaseId, packageId } = req.params;
+      const parsed = upsLabelDirectPrintRequestSchema.parse(req.body);
+      if (req.header('Idempotency-Key') && req.header('Idempotency-Key') !== parsed.requestKey)
+        return res.status(400).json({ error: 'Print request keys must match.' });
+      const [existing] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId),
+        eq(directPrintJobs.requestKey, parsed.requestKey))).limit(1);
+      const sameRequest = (job: typeof directPrintJobs.$inferSelect) => {
+        const context = job.printContext as { shipmentId?: string; purchaseId?: string; packageId?: string } | null;
+        return job.documentType === 'ups_label' && job.destinationId === parsed.printerProfileId && job.copies === parsed.copies &&
+          context?.shipmentId === shipmentId && context?.purchaseId === purchaseId && context?.packageId === packageId;
+      };
+      if (existing) return sameRequest(existing)
+        ? res.json({ success: true, data: { id: existing.id, status: existing.status, duplicate: true } })
+        : res.status(409).json({ code: 'UPS_PRINT_IDEMPOTENCY_CONFLICT', error: 'Print request key belongs to another job.' });
+      const [destination] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.organizationId, organizationId),
+        eq(printerProfiles.id, parsed.printerProfileId), eq(printerProfiles.isActive, true),
+        eq(printerProfiles.printerType, 'shipping_label'), sql`${printerProfiles.supportedDocuments} ? 'ups_label'`)).limit(1);
+      if (!destination?.printAgentId || !destination.windowsQueueName) return res.status(409).json({ code: 'DIRECT_PRINT_UNAVAILABLE', error: 'Select an active 4 × 6 inch Shipping Label printer profile.' });
+      const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, destination.printAgentId),
+        eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, 'active'))).limit(1);
+      if (!agent || !supportsUpsLabelAgent(agent.agentVersion)) return res.status(409).json({ code: 'PRINT_AGENT_UPDATE_REQUIRED', error: 'UPS labels require Windows Print Agent 1.0.26 or newer.' });
+      if (agent.configuredTravelerPrinterName !== destination.windowsQueueName) return res.status(409).json({ code: 'PRINT_AGENT_CONFIGURATION_MISMATCH', error: 'The paired agent is not mapped to this label printer queue.' });
+      const history = await getUpsLabelHistory(organizationId, shipmentId);
+      const purchase = history.find(row => row.id === purchaseId);
+      if (!purchase?.labels.some(label => label.packageId === packageId)) return res.status(404).json({ error: 'UPS package label not found.' });
+      if (purchase.status !== 'PURCHASED') return res.status(409).json({ code: 'UPS_LABEL_NOT_PRINTABLE', error: 'Canceled or unresolved UPS labels cannot be queued for printing.' });
+      const [created] = await db.insert(directPrintJobs).values({ organizationId, orderId: null,
+        destinationId: destination.id, agentId: agent.id, documentType: 'ups_label', copies: parsed.copies,
+        requestKey: parsed.requestKey, printContext: { shipmentId, purchaseId, packageId },
+        trailingFeedMm: '0', createdByUserId: getUserId(req.user) ?? null })
+        .onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
+      const job = created ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId),
+        eq(directPrintJobs.requestKey, parsed.requestKey))).limit(1))[0];
+      if (!job) return res.status(500).json({ error: 'Could not queue UPS label print job.' });
+      if (!sameRequest(job)) return res.status(409).json({ code: 'UPS_PRINT_IDEMPOTENCY_CONFLICT', error: 'Print request key belongs to another job.' });
+      const wake = job.status === 'queued' ? await publishPrintAgentWake(agent.tokenHash) : null;
+      return res.status(created ? 202 : 200).json({ success: true,
+        data: { id: job.id, status: job.status, duplicate: !created, durablyQueued: true,
+          wake: { status: wake?.published ? 'published' : 'not_published' } } });
+    } catch (error) { return sendError(res, error, 'Could not queue UPS label print job.'); }
   });
 
   app.get("/api/printer-profiles", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -371,6 +419,8 @@ export function registerPrinterProfileRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
       const parsed = insertPrinterProfileSchema.parse(req.body);
+      if (parsed.supportedDocuments.includes('ups_label') && parsed.printerType !== 'shipping_label')
+        return res.status(400).json({ code: 'UPS_LABEL_PRINTER_TYPE', error: 'UPS labels require a Shipping Label printer profile.' });
       const created = await storage.createPrinterProfile(organizationId, parsed, getUserId(req.user));
       res.status(201).json({ success: true, data: created });
     } catch (error) {
@@ -383,6 +433,14 @@ export function registerPrinterProfileRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
       const parsed = updatePrinterProfileSchema.parse(req.body);
+      if (parsed.supportedDocuments?.includes('ups_label') || parsed.printerType && parsed.printerType !== 'shipping_label') {
+        const [current] = await db.select({ printerType: printerProfiles.printerType,
+          supportedDocuments: printerProfiles.supportedDocuments }).from(printerProfiles).where(and(
+          eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.id, req.params.id))).limit(1);
+        if ((parsed.supportedDocuments ?? current?.supportedDocuments ?? []).includes('ups_label') &&
+          (parsed.printerType ?? current?.printerType) !== 'shipping_label')
+          return res.status(400).json({ code: 'UPS_LABEL_PRINTER_TYPE', error: 'UPS labels require a Shipping Label printer profile.' });
+      }
       const updated = await storage.updatePrinterProfile(organizationId, req.params.id, parsed, getUserId(req.user));
       res.json({ success: true, data: updated });
     } catch (error) {

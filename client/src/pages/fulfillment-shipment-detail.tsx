@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetchBlob } from "@/lib/queryClient";
 import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebugPanel";
 import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
@@ -21,6 +22,7 @@ import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { fulfillmentReturnRoute } from "@/lib/fulfillmentWorkspaceMode";
 import { shippingPartyAddressLines, shippingPartyValidationErrors, shipmentShippingContextMismatches, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   getOrderDetails,
   getCurrentOrderDestination,
@@ -59,6 +61,16 @@ interface OrderDetailLite {
     product?: { name?: string | null; sku?: string | null } | null;
   }>;
 }
+
+type UpsCustomerCharge = { orderId: string; orderNumber: string | null; shippingCents: number;
+  shippingChargeDecision: string; shippingChargeRateQuoteId: string | null;
+  shippingChargeRateServiceCode: string | null; updatedAt: string };
+type UpsLabelHistory = { id: string; status: string; serviceName: string; estimateCents: number;
+  estimateCurrency: string; carrierCostCents: number | null; carrierCurrency: string | null;
+  providerShipmentId: string | null; purchasedAt: string | null; errorCode: string | null;
+  voidAcceptedAt: string | null; externalCanceledAt: string | null; externalCancelReason: string | null;
+  adjustments: Array<{ id: string; kind: string; amountCents: number; currency: string; providerReference: string }>;
+  labels: Array<{ packageId: string; trackingNumber: string; labelFormat: string }> };
 
 interface ShipmentFormState {
   carrier: string;
@@ -171,6 +183,22 @@ export function FulfillmentShipmentEditor({
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
   const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
   const [upsRates, setUpsRates] = useState<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null }> | null>(null);
+  const [upsQuoteId, setUpsQuoteId] = useState<string | null>(null);
+  const [upsCustomerCharges, setUpsCustomerCharges] = useState<UpsCustomerCharge[]>([]);
+  const [upsLabelHistory, setUpsLabelHistory] = useState<UpsLabelHistory[]>([]);
+  const [upsStateLoaded, setUpsStateLoaded] = useState(false);
+  const [upsActionPending, setUpsActionPending] = useState(false);
+  const [upsChargePending, setUpsChargePending] = useState(false);
+  const [upsActionError, setUpsActionError] = useState<string | null>(null);
+  const [upsActionMessage, setUpsActionMessage] = useState<string | null>(null);
+  const [externalCancelPurchaseId, setExternalCancelPurchaseId] = useState<string | null>(null);
+  const [externalCancelReason, setExternalCancelReason] = useState('');
+  const [externalCancelReference, setExternalCancelReference] = useState('');
+  const [carrierAdjustmentPurchaseId, setCarrierAdjustmentPurchaseId] = useState<string | null>(null);
+  const [carrierAdjustmentKind, setCarrierAdjustmentKind] = useState<'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT'>('CONFIRMED_CREDIT');
+  const [carrierAdjustmentAmount, setCarrierAdjustmentAmount] = useState('');
+  const [carrierAdjustmentReference, setCarrierAdjustmentReference] = useState('');
+  const [upsLabelPreview, setUpsLabelPreview] = useState<{ url: string; trackingNumber: string } | null>(null);
   const [upsRateError, setUpsRateError] = useState<string | null>(null);
   const [upsRatesLoading, setUpsRatesLoading] = useState(false);
   const [upsRatesStale, setUpsRatesStale] = useState(false);
@@ -201,6 +229,27 @@ export function FulfillmentShipmentEditor({
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
+  const upsActivePurchase = upsLabelHistory.find(row => ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status));
+  const upsDraftLocked = upsActionPending || !!upsActivePurchase;
+  const refreshUpsState = async (id: string) => {
+    const [charges, history] = await Promise.all([
+      apiCall<UpsCustomerCharge[]>(`/api/fulfillment/shipments/${id}/ups-customer-charges`),
+      apiCall<UpsLabelHistory[]>(`/api/fulfillment/shipments/${id}/ups-labels`),
+    ]);
+    setUpsCustomerCharges(charges); setUpsLabelHistory(history); setUpsStateLoaded(true);
+  };
+  useEffect(() => {
+    if (!shipment?.id) return;
+    let canceled = false;
+    setUpsStateLoaded(false);
+    Promise.all([
+      apiCall<UpsCustomerCharge[]>(`/api/fulfillment/shipments/${shipment.id}/ups-customer-charges`),
+      apiCall<UpsLabelHistory[]>(`/api/fulfillment/shipments/${shipment.id}/ups-labels`),
+    ]).then(([charges, history]) => { if (!canceled) { setUpsCustomerCharges(charges); setUpsLabelHistory(history); setUpsStateLoaded(true); } })
+      .catch(error => { if (!canceled) setUpsActionError(toFulfillmentError(error).message); });
+    return () => { canceled = true; };
+  }, [shipment?.id]);
+  useEffect(() => () => { if (upsLabelPreview) URL.revokeObjectURL(upsLabelPreview.url); }, [upsLabelPreview]);
   const documentSourceQuery = useShippingDocumentSourceQuery(shipmentId);
   const shipmentReversalLines = useMemo(() => {
     const quantities: Record<string, number> = {};
@@ -413,7 +462,7 @@ export function FulfillmentShipmentEditor({
     upsRateEpoch.current += 1;
     upsRateKeyRef.current = upsRateKey;
     if (upsRatePresented.current) setUpsRatesStale(true);
-    setUpsRates(null); setUpsRateError(null); setSelectedUpsService(null);
+    setUpsRates(null); setUpsQuoteId(null); setUpsRateError(null); setSelectedUpsService(null);
   }, [upsRateKey]);
   useEffect(() => {
     const invalidate = () => { upsRateEpoch.current += 1; if (upsRatePresented.current) { setUpsRates(null); setUpsRatesStale(true); setSelectedUpsService(null); } };
@@ -449,19 +498,114 @@ export function FulfillmentShipmentEditor({
       setUpsRatesLoading(false); upsRequestInFlight.current = false; return;
     }
     try {
-      const result = await apiCall<{ rates: NonNullable<typeof upsRates> }>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
+      const result = await apiCall<{ rates: NonNullable<typeof upsRates>; quoteId: string }>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
         { method: 'POST', body: JSON.stringify({ packages }) });
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
-        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates);
+        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId);
       }
     } catch (error) {
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) setUpsRateError(toFulfillmentError(error).message);
     } finally { setUpsRatesLoading(false); upsRequestInFlight.current = false; }
   };
 
+  const applySelectedUpsRate = async (serviceCode: string, intent: 'default_if_unset' | 'use_ups_rate') => {
+    if (!shipmentId || !upsQuoteId || upsChargePending || upsRatesStale) return;
+    setUpsChargePending(true); setUpsActionError(null); setUpsActionMessage(null);
+    try {
+      const result = await apiCall<{ applied: boolean; reason: string }>(`/api/fulfillment/shipments/${shipmentId}/ups-customer-charge`,
+        { method: 'POST', body: JSON.stringify({ quoteId: upsQuoteId, serviceCode, intent }) });
+      await refreshUpsState(shipmentId);
+      setUpsActionMessage(result.reason);
+    } catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+    finally { setUpsChargePending(false); }
+  };
+
+  const buySelectedUpsLabel = async () => {
+    if (!shipmentId || !upsQuoteId || !selectedUpsService || !upsStateLoaded || upsRatesStale || upsActionPending || upsChargePending || upsActivePurchase) return;
+    const saved = await flushDraft();
+    if (!saved) { setUpsActionError('Save the latest draft details before buying a UPS label. No purchase request was sent.'); return; }
+    if (upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')) {
+      setUpsActionError('A customer shipping charge is still unset. Set it on the Order or apply the UPS rate before buying.'); return;
+    }
+    setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
+    try {
+      const purchased = await apiCall<{ carrierCostCents: number; carrierCurrency: string; labels: Array<{ trackingNumber: string }> }>(
+        `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
+        { method: 'POST', body: JSON.stringify({ quoteId: upsQuoteId, serviceCode: selectedUpsService }) });
+      const refreshed = await shipmentQuery.refetch();
+      if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? 'UPS',
+        serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
+      await refreshUpsState(shipmentId);
+      setUpsActionMessage(`UPS label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
+    } catch (error) {
+      setUpsActionError(`${toFulfillmentError(error).message} Review purchase history before retrying; UPS may have accepted the first request.`);
+      await refreshUpsState(shipmentId).catch(() => undefined);
+    } finally { setUpsActionPending(false); }
+  };
+
+  const voidPurchasedUpsLabel = async (purchaseId: string) => {
+    if (!shipmentId || upsActionPending || !window.confirm('Request UPS to void this unused label? This does not reverse fulfillment or confirm a carrier credit.')) return;
+    setUpsActionPending(true); setUpsActionError(null);
+    try { await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${purchaseId}/void`, { method: 'POST' });
+      await refreshUpsState(shipmentId); setUpsActionMessage('UPS accepted the void request. Carrier credit is not yet confirmed.'); }
+    catch (error) { setUpsActionError(toFulfillmentError(error).message); await refreshUpsState(shipmentId).catch(() => undefined); }
+    finally { setUpsActionPending(false); }
+  };
+
+  const recordExternalCancellation = async () => {
+    if (!shipmentId || !externalCancelPurchaseId || externalCancelReason.trim().length < 3 || upsActionPending) return;
+    setUpsActionPending(true); setUpsActionError(null);
+    try { await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${externalCancelPurchaseId}/external-cancellation`,
+      { method: 'POST', body: JSON.stringify({ reason: externalCancelReason.trim(), reference: externalCancelReference.trim() || undefined }) });
+      await refreshUpsState(shipmentId); setExternalCancelPurchaseId(null); setExternalCancelReason(''); setExternalCancelReference('');
+      setUpsActionMessage('External cancellation reported. UPS void and carrier credit are not confirmed by this record.'); }
+    catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+    finally { setUpsActionPending(false); }
+  };
+
+  const recordCarrierAdjustment = async (purchase: UpsLabelHistory) => {
+    if (!shipmentId || !purchase.carrierCurrency || upsActionPending) return;
+    const amount = Number(carrierAdjustmentAmount);
+    if (!/^-?\d+(?:\.\d{1,2})?$/.test(carrierAdjustmentAmount.trim()) || !Number.isSafeInteger(Math.round(amount * 100)) ||
+      Math.round(amount * 100) === 0 || (carrierAdjustmentKind === 'CONFIRMED_CREDIT' && amount < 0) || !carrierAdjustmentReference.trim()) {
+      setUpsActionError('Enter a nonzero amount with no more than two decimals and a carrier confirmation/reference. Confirmed credits must be positive.'); return;
+    }
+    setUpsActionPending(true); setUpsActionError(null);
+    try { await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${purchase.id}/carrier-adjustments`,
+      { method: 'POST', body: JSON.stringify({ kind: carrierAdjustmentKind, amountCents: Math.round(amount * 100),
+        currency: purchase.carrierCurrency, providerReference: carrierAdjustmentReference.trim() }) });
+      await refreshUpsState(shipmentId); setCarrierAdjustmentPurchaseId(null); setCarrierAdjustmentAmount(''); setCarrierAdjustmentReference('');
+      setUpsActionMessage('Carrier billing evidence recorded. The original purchase cost remains in history.'); }
+    catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+    finally { setUpsActionPending(false); }
+  };
+
+  const labelImagePath = (purchaseId: string, packageId: string) => `/api/fulfillment/shipments/${encodeURIComponent(shipmentId || '')}/ups-labels/${encodeURIComponent(purchaseId)}/packages/${encodeURIComponent(packageId)}/image`;
+  const openUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string) => {
+    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, packageId));
+      setUpsLabelPreview({ url: URL.createObjectURL(blob), trackingNumber }); }
+    catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+  };
+  const downloadUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string) => {
+    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, packageId) + '?download=1');
+      const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url;
+      link.download = `UPS-${trackingNumber}.gif`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+    catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+  };
+
+  const printPreviewedUpsLabel = () => {
+    if (!upsLabelPreview) return;
+    const popup = window.open('', '_blank');
+    if (!popup) { setUpsActionError('Allow a print window, or download the UPS label and print it from your device.'); return; }
+    popup.document.write(`<!doctype html><html><head><title>UPS label</title><style>@page{size:4in 6in;margin:0}html,body{margin:0;background:white}img{display:block;width:4in;height:6in;object-fit:contain}</style></head><body><img src="${upsLabelPreview.url}" onload="window.print()" /></body></html>`);
+    popup.document.close();
+  };
+
   const markShippedDisabled =
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
+    upsActionPending || upsLabelHistory.some(row => ['REQUESTING', 'UNCERTAIN', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status)) ||
+    (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId && row.status !== 'PURCHASED')) ||
     validationErrors.size > 0 ||
     allocatedCount <= 0 ||
     missingDestination.length > 0 || missingBlindSender.length > 0 ||
@@ -469,6 +613,7 @@ export function FulfillmentShipmentEditor({
     updateShipment.isPending;
 
   const flushDraft = async (): Promise<boolean> => {
+    if (upsDraftLocked) return !latestDraft.current.hasUnsavedChanges;
     if (saveInFlight.current) {
       try { await saveInFlight.current; } catch { return false; }
       if (latestDraft.current.draftKey === savedDraftKey.current) return true;
@@ -529,7 +674,7 @@ export function FulfillmentShipmentEditor({
   };
 
   useEffect(() => {
-    if (!shipment || shipment.status !== 'DRAFT' || loadingOrders || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId])) return;
+    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked || loadingOrders || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId])) return;
     if (!hasUnsavedChanges) {
       if (!saveInFlight.current && failedDraftKey.current !== draftKey) savedDraftKey.current = draftKey;
       return;
@@ -537,7 +682,7 @@ export function FulfillmentShipmentEditor({
     if (failedDraftKey.current === draftKey || saveInFlight.current) return;
     const timer = window.setTimeout(() => { void flushDraft(); }, 500);
     return () => window.clearTimeout(timer);
-  }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId]);
+  }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked]);
 
   const retryDraftSave = () => { failedDraftKey.current = null; void flushDraft(); };
 
@@ -634,13 +779,14 @@ export function FulfillmentShipmentEditor({
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
   const returnRoute = fulfillmentReturnRoute(location.state?.referrer, [ROUTES.fulfillment.list, ...shipment.orders.map(order => ROUTES.fulfillment.order(order.orderId))]);
   const editContext = (target: "destination" | "sender") => {
+    if (upsDraftLocked) { setUpsActionError('Void or resolve the UPS label before editing this shipment draft.'); return; }
     setShippingContext(context => ({ ...(context ?? { version: 1, sourceOrderId: shipment.primaryOrderId ?? shipment.orders[0]?.orderId ?? null, destination: { ...emptyShippingParty }, blindShipping: false, blindSender: null }), source: "staff" }));
     if (target === "destination") setEditingDestination(true);
     else setEditingSender(true);
   };
 
   const useSavedOrderAddress = async () => {
-    if (!shipmentId || !isDraft || !isSingleOrderShipment || loadingOrderDestination) return;
+    if (!shipmentId || !isDraft || upsDraftLocked || !isSingleOrderShipment || loadingOrderDestination) return;
     setLoadingOrderDestination(true);
     try {
       const latest = await getCurrentOrderDestination(shipmentId);
@@ -784,7 +930,7 @@ export function FulfillmentShipmentEditor({
               <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="shipment-destination-heading" className="flex items-center gap-2 text-lg font-bold"><MapPinned className="h-5 w-5 text-primary" />Ship To</h2><div className="flex items-center gap-2">{blindShipping && <span className="rounded border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-semibold">Blind shipment</span>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={() => editContext("destination")}>Edit Shipping Address</button>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={() => editContext("sender")}>Edit Sender</button>}</div></div>
               <div className="mt-3 grid gap-4 sm:grid-cols-2"><div>{destination ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(destination).map((line, index) => <p key={index} className={index === 0 ? "font-semibold" : ""}>{line}</p>)}{destination.phone && <p className="mt-1">{destination.phone}</p>}{destination.email && <p className="break-all">{destination.email}</p>}</address> : <p className="text-sm text-muted-foreground">Destination not recorded for this shipment.</p>}</div><div><h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{blindShipping ? "Alternate sender" : "Sender"}</h3>{sender ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(sender).map((line, index) => <p key={index}>{line}</p>)}{sender.phone && <p>{sender.phone}</p>}{sender.email && <p className="break-all">{sender.email}</p>}</address> : <p className="text-sm text-muted-foreground">{blindShipping ? "Alternate sender not recorded. No sender will be guessed." : documentSourceQuery.isLoading ? "Loading saved document sender..." : "Sender unavailable from the saved document source."}</p>}</div></div>
               {(missingDestination.length > 0 || missingBlindSender.length > 0) && <div role="alert" className="mt-3 space-y-2 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{missingDestination.length > 0 && <p>Shipping destination incomplete: {missingDestination.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("destination")}>Edit Shipping Address</button>}</p>}{missingBlindSender.length > 0 && <p>Blind Shipping sender incomplete: {missingBlindSender.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("sender")}>Edit Sender</button>}</p>}{!isDraft && <p>Historical shipping details are not reconstructed from live customer fields.</p>}</div>}
-              {isDraft && (editingDestination || editingSender) && shippingContext && <div className="mt-4 space-y-4 border-t pt-4">
+              {isDraft && !upsDraftLocked && (editingDestination || editingSender) && shippingContext && <div className="mt-4 space-y-4 border-t pt-4">
                 {editingDestination && <fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Ship To ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.destination[key] ?? ""} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", destination: { ...context.destination, [key]: event.target.value || null } }))} /></label>)}</div></fieldset>}
                 {editingDestination && isSingleOrderShipment && <button type="button" className="w-fit rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={loadingOrderDestination} onClick={() => void useSavedOrderAddress()}>{loadingOrderDestination ? "Loading Order address..." : "Use saved Order address"}</button>}
                 {editingSender && <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={shippingContext.blindShipping} onChange={event => enableBlindShipping(event.target.checked)} />Blind shipping: use an alternate sender</label>}
@@ -812,7 +958,7 @@ export function FulfillmentShipmentEditor({
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
                 <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
               </div>
-              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Choose how many units are leaving now. Reduce Qty in this shipment for a partial shipment; set zero to leave a line out.</p></div>{isDraft && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
+              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Choose how many units are leaving now. Reduce Qty in this shipment for a partial shipment; set zero to leave a line out.</p></div>{isDraft && !upsDraftLocked && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
               <div>
                 <table className="block w-full text-left">
                   <thead className="sr-only">
@@ -870,7 +1016,7 @@ export function FulfillmentShipmentEditor({
                                     max={item.remainingQty}
                                     step={1}
                                     value={value}
-                                    disabled={!isDraft}
+                                    disabled={!isDraft || upsDraftLocked}
                                     className={`h-8 w-16 rounded border-2 bg-background text-center text-sm font-bold focus:border-primary focus:ring-0 ${hasError ? "border-red-500" : "border-primary/20"}`}
                                     onChange={(event) => {
                                       const next = Math.max(0, Number(event.target.value || 0));
@@ -878,7 +1024,7 @@ export function FulfillmentShipmentEditor({
                                     }}
                                   /> : <div className="space-y-2">{splits.map(allocation => <label key={allocation.id} className="flex min-w-0 flex-col items-start gap-1 break-all text-xs">
                                     {shipment.packages.find(pkg => pkg.id === allocation.packageId)?.packageReference || "Unpacked"}
-                                    <input type="number" aria-label={`Qty in package ${allocation.packageId}: ${item.label}`} min={0} max={item.remainingQty} step={1} disabled={!isDraft}
+                                    <input type="number" aria-label={`Qty in package ${allocation.packageId}: ${item.label}`} min={0} max={item.remainingQty} step={1} disabled={!isDraft || upsDraftLocked}
                                       className="h-8 w-16 rounded border bg-background text-center" value={splitQuantities[allocation.id] ?? allocation.quantity}
                                       onChange={event => {
                                         const next = Math.max(0, Number(event.target.value || 0));
@@ -896,7 +1042,7 @@ export function FulfillmentShipmentEditor({
                                 <select
                                   aria-label={`Package assignment: ${item.label}, Order ${group.orderNumber}`}
                                   className="h-8 w-full min-w-0 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
-                                  disabled={!isDraft || shipment.packages.length === 0 || splits.length > 1}
+                                  disabled={!isDraft || upsDraftLocked || shipment.packages.length === 0 || splits.length > 1}
                                   value={packageByLineItemId[item.id] || ""}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
@@ -917,7 +1063,7 @@ export function FulfillmentShipmentEditor({
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
-                {(advancedPacking || shipment.packages.length === 0) && <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || createPackage.isPending} onClick={() => void handleAddPackage()}>
+                {(advancedPacking || shipment.packages.length === 0) && <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || upsDraftLocked || createPackage.isPending} onClick={() => void handleAddPackage()}>
                   {createPackage.isPending ? "ADDING..." : "ADD PACKAGE"}
                 </button>}
               </div>
@@ -928,36 +1074,71 @@ export function FulfillmentShipmentEditor({
                   return <div key={pkg.id} className="px-6 py-4">
                     <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
                     <div className="mt-2"><h4 className="text-xs font-medium text-muted-foreground">Dimensions, weight & package notes</h4><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                      {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="text" inputMode="decimal" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft} /></label>)}
+                      {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="text" inputMode="decimal" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft || upsDraftLocked} /></label>)}
                       <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">UPS package type
-                        <select aria-label={`UPS package type: ${pkg.packageReference}`} className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={upsPackageTypes[pkg.id] ?? '02'} disabled={!isDraft}
+                        <select aria-label={`UPS package type: ${pkg.packageReference}`} className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={upsPackageTypes[pkg.id] ?? '02'} disabled={!isDraft || upsDraftLocked}
                           onChange={event => setUpsPackageTypes(previous => ({ ...previous, [pkg.id]: event.target.value as '02' | '21' }))}>
                           <option value="02">Customer supplied package</option><option value="21">UPS Express Box</option>
                         </select>
                       </label>
-                      <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">Package Notes<textarea aria-label={`Package notes: ${pkg.packageReference}`} rows={2} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft} /></label>
+                      <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">Package Notes<textarea aria-label={`Package notes: ${pkg.packageReference}`} rows={2} className="resize-none rounded border border-input bg-background p-2 text-sm normal-case" value={fields.notes} onChange={(event) => updateFields('notes', event.target.value)} disabled={!isDraft || upsDraftLocked} /></label>
                     </div></div>
                   </div>;
                 })}
               </div>
             </div>
-            {isDraft && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
-              <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Carrier cost is separate from the customer shipping charge; requesting or selecting a rate changes neither.</p></div>
+            {isDraft && !upsDraftLocked && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
+              <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p></div>
               <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsRatesLoading || shipment.packages.length === 0}
                 onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</button>
               {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
               {upsRatesStale && !upsRatesLoading && !upsRateError && <p role="status" className="text-xs text-amber-700">Previous UPS rates are stale. Get fresh rates for the current details.</p>}
               {upsRates && <div className="space-y-2" role="status">{upsRates.map(rate => <label key={`${rate.serviceCode}:${rate.currency}`} className="flex items-start gap-2 rounded border p-2 text-sm">
-                <input type="radio" name="ups-rate" checked={selectedUpsService === rate.serviceCode} onChange={() => setSelectedUpsService(rate.serviceCode)} aria-label={`Select ${rate.serviceName} estimate`} />
+                <input type="radio" name="ups-rate" checked={selectedUpsService === rate.serviceCode} disabled={upsChargePending || upsActionPending} onChange={() => { setSelectedUpsService(rate.serviceCode); void applySelectedUpsRate(rate.serviceCode, 'default_if_unset'); }} aria-label={`Select ${rate.serviceName} estimate`} />
                 <span><strong>{rate.serviceName}</strong> · {rate.currency} {rate.total} {rate.negotiated ? 'negotiated account rate' : 'UPS returned rate'}
                   {rate.estimatedArrival && <span className="block text-xs text-muted-foreground">UPS delivery estimate: {rate.estimatedArrival}</span>}</span>
               </label>)}</div>}
+              {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'unset' ? 'unset' : row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'UPS rate selected' : 'existing decision'})</span></p>)}
+              {selectedUpsService && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
+                <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsChargePending || upsActionPending} onClick={() => void applySelectedUpsRate(selectedUpsService, 'use_ups_rate')}>{upsChargePending ? 'Saving customer charge…' : 'Use UPS rate as customer charge'}</button>}
+              {selectedUpsService && upsQuoteId && upsCustomerCharges.length > 1 && <p className="text-xs text-amber-700">Combined shipment: keep each Order’s existing charge, or set its amount on that Order. The full UPS cost will not be charged to every Order.</p>}
+              {selectedUpsService && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
+                (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateServiceCode !== selectedUpsService)) &&
+                <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
+              {selectedUpsService && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.serviceName}</strong> · Estimated UPS carrier cost: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.currency} {upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.total}</strong></p><button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || upsRatesStale || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : 'Buy UPS Label'}</button></div>}
+            </section>}
+            {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
+              <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>
+              {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'selected UPS rate' : 'existing Order decision'})</span></p>)}
+              {upsActionError && <p role="alert" className="text-sm text-destructive">{upsActionError}</p>}
+              {upsActionMessage && <p role="status" className="text-sm">{upsActionMessage}</p>}
+              {upsLabelHistory.map(purchase => <div key={purchase.id} className="rounded border p-3 text-sm space-y-2">
+                <p><strong>{purchase.serviceName}</strong> · {purchase.status.replaceAll('_', ' ')}{purchase.providerShipmentId && <> · UPS {purchase.providerShipmentId}</>}</p>
+                <p>Original UPS estimate: {purchase.estimateCurrency} {(purchase.estimateCents / 100).toFixed(2)} · Recorded UPS carrier cost: {purchase.carrierCostCents == null ? 'Not confirmed' : `${purchase.carrierCurrency} ${(purchase.carrierCostCents / 100).toFixed(2)}`}</p>
+                {purchase.carrierCostCents != null && <p className="text-xs text-muted-foreground">
+                  {purchase.carrierCurrency === purchase.estimateCurrency
+                    ? `Difference from estimate: ${purchase.carrierCurrency} ${((purchase.carrierCostCents - purchase.estimateCents) / 100).toFixed(2)}.`
+                    : 'Estimate and purchased cost use different currencies; conversion is needed to compare them.'}
+                  {' '}Buying this label did not change the customer shipping charge.</p>}
+                {purchase.status === 'VOID_ACCEPTED' && <p className="text-xs text-amber-700">UPS accepted the void request. Carrier credit is not confirmed; original cost remains recorded.</p>}
+                {purchase.status === 'EXTERNAL_CANCEL_REPORTED' && <p className="text-xs text-amber-700">Operator reported external cancellation: {purchase.externalCancelReason}. UPS void and carrier credit are not confirmed here.</p>}
+                {purchase.adjustments?.map(adjustment => <p key={adjustment.id} className="text-xs">{adjustment.kind === 'CONFIRMED_CREDIT' ? 'Confirmed carrier credit' : 'Carrier cost adjustment'}: {adjustment.currency} {(adjustment.amountCents / 100).toFixed(2)} · {adjustment.providerReference}</p>)}
+                {purchase.errorCode && <p className="text-xs text-destructive">Carrier action needs review: {purchase.errorCode}</p>}
+                {purchase.labels.map(label => <div key={label.packageId} className="flex flex-wrap items-center gap-2"><span>Package {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label.packageId, label.trackingNumber)}>Preview / Browser Print</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label.packageId, label.trackingNumber)}>Download</button><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" /></>}</div>)}
+                {['PURCHASED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
+                  {purchase.status === 'PURCHASED' && isDraft && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void UPS label</button>}
+                  <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>
+                </div>}
+                {externalCancelPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">This records an operator report only. It does not call UPS, refund a carrier cost, or reverse fulfillment.</p><textarea aria-label="External cancellation reason" className="w-full rounded border p-2" value={externalCancelReason} onChange={event => setExternalCancelReason(event.target.value)} placeholder="Reason" /><input aria-label="External cancellation reference" className="w-full rounded border p-2" value={externalCancelReference} onChange={event => setExternalCancelReference(event.target.value)} placeholder="UPS or support reference, if available" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || externalCancelReason.trim().length < 3} onClick={() => void recordExternalCancellation()}>Record external cancellation</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setExternalCancelPurchaseId(null)}>Cancel</button></div>}
+                {purchase.carrierCostCents != null && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(purchase.id)}>Record carrier credit / adjustment</button>}
+                {carrierAdjustmentPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">Use carrier billing evidence. A void request alone does not prove a credit.</p><select aria-label="Carrier adjustment type" className="w-full rounded border p-2" value={carrierAdjustmentKind} onChange={event => setCarrierAdjustmentKind(event.target.value as 'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT')}><option value="CONFIRMED_CREDIT">Confirmed carrier credit</option><option value="CARRIER_ADJUSTMENT">Later carrier cost adjustment (+ or −)</option></select><input aria-label="Carrier adjustment amount" type="number" step="0.01" className="w-full rounded border p-2" value={carrierAdjustmentAmount} onChange={event => setCarrierAdjustmentAmount(event.target.value)} placeholder="Amount in carrier currency" /><input aria-label="Carrier adjustment reference" className="w-full rounded border p-2" value={carrierAdjustmentReference} onChange={event => setCarrierAdjustmentReference(event.target.value)} placeholder="UPS statement or credit reference" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || !carrierAdjustmentAmount || !carrierAdjustmentReference.trim()} onClick={() => void recordCarrierAdjustment(purchase)}>Record evidence</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(null)}>Cancel</button></div>}
+              </div>)}
             </section>}
             <section className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="border-b border-border bg-muted/30 px-4 py-3"><h3 className="text-sm font-bold">Carrier & Tracking</h3></div>
-              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"], ["shipDate", "Ship Date"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type={key === "shipDate" ? "date" : "text"} className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>
+              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"], ["shipDate", "Ship Date"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type={key === "shipDate" ? "date" : "text"} className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>
             </section>
-            <details className="rounded-xl border border-border bg-card p-4" open={!!form.internalNotes || undefined}><summary className="cursor-pointer text-sm font-semibold">Shipment Internal Notes</summary><textarea aria-label="Shipment internal notes" className="mt-3 w-full resize-none rounded border border-input bg-background p-3 text-sm" rows={2} placeholder="Internal shipping instructions..." value={form.internalNotes} disabled={!isDraft} onChange={event => setForm(previous => ({ ...previous, internalNotes: event.target.value }))} /></details>
+            <details className="rounded-xl border border-border bg-card p-4" open={!!form.internalNotes || undefined}><summary className="cursor-pointer text-sm font-semibold">Shipment Internal Notes</summary><textarea aria-label="Shipment internal notes" className="mt-3 w-full resize-none rounded border border-input bg-background p-3 text-sm" rows={2} placeholder="Internal shipping instructions..." value={form.internalNotes} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, internalNotes: event.target.value }))} /></details>
           </section>
 
           <aside className="order-2 flex min-w-0 flex-col gap-4 xl:order-none xl:sticky xl:top-24">
@@ -1025,6 +1206,11 @@ export function FulfillmentShipmentEditor({
         </div>
 
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? shipmentQuery.data ?? null} lastError={lastError} />
+        <Dialog open={!!upsLabelPreview} onOpenChange={open => !open && setUpsLabelPreview(null)}>
+          <DialogContent className="max-h-[95dvh] max-w-[min(95vw,40rem)] overflow-auto"><DialogHeader><DialogTitle>UPS label · {upsLabelPreview?.trackingNumber}</DialogTitle></DialogHeader>
+            {upsLabelPreview && <><img src={upsLabelPreview.url} alt={`UPS shipping label for ${upsLabelPreview.trackingNumber}`} className="mx-auto max-h-[75dvh] max-w-full object-contain" /><button type="button" className="rounded border px-3 py-2 text-sm" onClick={printPreviewedUpsLabel}>Print in browser</button></>}
+          </DialogContent>
+        </Dialog>
         <AttachmentViewerDialog open={!!artworkViewer} onOpenChange={open => !open && setArtworkViewer(null)} attachments={artworkViewer?.attachments ?? []} initialIndex={artworkViewer?.initialIndex ?? 0} />
         <AlertDialog open={shipmentReversalOpen} onOpenChange={setShipmentReversalOpen}>
           <AlertDialogContent>

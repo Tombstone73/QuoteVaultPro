@@ -37,6 +37,7 @@ import {
   shipmentOrders,
   shipmentPackages,
   shipments,
+  upsLabelPurchases,
   users,
 } from '@shared/schema';
 import { FulfillmentHttpError, type DerivedOrderFulfillmentStatus, type FulfillmentDetailDto, type QueueRowDto } from './types';
@@ -428,6 +429,11 @@ export class ShipmentRepo {
     )).for('update').limit(1);
     if (!shipment) throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
     if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only DRAFT shipments are editable. Completed shipment evidence is immutable.', 'INVALID_STATE');
+    const [label] = await executor.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
+      eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
+      inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'VOID_REQUESTING', 'VOID_UNCERTAIN']),
+    )).limit(1);
+    if (label) throw new FulfillmentHttpError(409, 'A UPS label purchase exists or may have succeeded. Resolve or void it before editing this draft.', 'UPS_LABEL_LOCKED');
     return shipment;
   }
 
@@ -464,6 +470,7 @@ export class ShipmentRepo {
     orderId: string; orderLineItemId: string; quantity: number; packageId?: string | null;
   }>, executor?: DbExecutor) {
     const replace = async (tx: DbExecutor) => {
+      await this.lockDraftShipment(orgId, shipmentId, tx);
       const [shipment] = await tx.select({ id: shipments.id }).from(shipments).where(and(
         eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
       )).for('update').limit(1);
@@ -605,6 +612,19 @@ export class ShipmentRepo {
 
       if (!shipment) return { ok: false as const, code: 'NOT_FOUND', message: 'Shipment not found' };
       if (shipment.status !== 'DRAFT') return { ok: false as const, code: 'INVALID_STATE', message: 'Only DRAFT shipments can be marked SHIPPED' };
+      const [unresolvedUps] = await tx.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
+        eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
+        inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'VOID_REQUESTING', 'VOID_UNCERTAIN']))).limit(1);
+      if (unresolvedUps) return { ok: false as const, code: 'UPS_LABEL_UNRESOLVED',
+        message: 'Resolve the UPS label purchase or void outcome before marking this shipment shipped.' };
+      if (shipment.carrierShipmentId) {
+        const [recordedLabel] = await tx.select({ status: upsLabelPurchases.status }).from(upsLabelPurchases).where(and(
+          eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
+          eq(upsLabelPurchases.providerShipmentId, shipment.carrierShipmentId))).limit(1);
+        if (recordedLabel && recordedLabel.status !== 'PURCHASED') return { ok: false as const,
+          code: 'UPS_LABEL_NOT_DISPATCHABLE',
+          message: 'This UPS label was canceled or its status is unresolved. Buy a replacement label before marking this shipment shipped.' };
+      }
 
       const draftItems = await tx
         .select()
@@ -719,6 +739,7 @@ export class ShipmentRepo {
 
   async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null, executor?: DbExecutor) {
     const voidDraft = async (tx: DbExecutor) => {
+      await this.lockDraftShipment(orgId, shipmentId, tx);
       const [shipment] = await tx
         .select()
         .from(shipments)

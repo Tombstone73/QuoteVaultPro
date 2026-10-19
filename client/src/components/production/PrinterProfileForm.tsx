@@ -51,6 +51,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
   const [intendedUse, setIntendedUse] = useState("production_ticket");
   const [supportsTraveler, setSupportsTraveler] = useState(true);
   const [supportsQuickNote, setSupportsQuickNote] = useState(false);
+  const [supportsUpsLabel, setSupportsUpsLabel] = useState(false);
   const [shippingDocuments, setShippingDocuments] = useState<ShippingDocumentType[]>([]);
   const [isActive, setIsActive] = useState(true);
   const [isDefault, setIsDefault] = useState(false);
@@ -65,13 +66,14 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     setIntendedUse(profile?.intendedUse ?? toIntendedUse(profile?.printerType ?? defaultType));
     setSupportsTraveler(profile?.supportedDocuments?.includes("traveler") ?? true);
     setSupportsQuickNote(profile?.supportedDocuments?.includes("quick_note") ?? false);
+    setSupportsUpsLabel(profile?.supportedDocuments?.includes("ups_label") ?? false);
     setShippingDocuments(shippingDocumentTypes.filter((type) => profile?.supportedDocuments?.includes(type)));
     setIsActive(profile?.isActive ?? true);
     setIsDefault(profile?.isDefault ?? false);
   }, [defaultType, profile]);
 
   const saving = createMutation.isPending || updateMutation.isPending;
-  const canSave = displayName.trim().length > 0 && (supportsTraveler || supportsQuickNote || shippingDocuments.length > 0) && !saving;
+  const canSave = displayName.trim().length > 0 && (supportsTraveler || supportsQuickNote || supportsUpsLabel || shippingDocuments.length > 0) && !saving;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -81,7 +83,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
       intendedUse,
       stationRoute: stationRoute.trim() || null,
       location: location.trim() || null, windowsQueueName: windowsQueueName.trim() || null,
-      supportedDocuments: [...([supportsTraveler && "traveler", supportsQuickNote && "quick_note"].filter(Boolean) as string[]), ...shippingDocuments], defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm), receiptWidthMm: Number(receiptWidthMm),
+      supportedDocuments: [...([supportsTraveler && "traveler", supportsQuickNote && "quick_note", supportsUpsLabel && "ups_label"].filter(Boolean) as string[]), ...shippingDocuments], defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm), receiptWidthMm: Number(receiptWidthMm),
       scope: "organization",
       isActive,
       isDefault: isActive && isDefault,
@@ -111,8 +113,10 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
           <Label>Supported documents</Label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsTraveler} onChange={(event) => setSupportsTraveler(event.target.checked)} /> Traveler</label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsQuickNote} onChange={(event) => setSupportsQuickNote(event.target.checked)} /> Quick Note</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsUpsLabel} onChange={(event) => { setSupportsUpsLabel(event.target.checked); if (event.target.checked) setPrinterType('shipping_label'); }} /> UPS shipping label (4 × 6 in GIF)</label>
           {shippingDocumentTypes.map((type) => <label key={type} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={shippingDocuments.includes(type)} onChange={(event) => setShippingDocuments((current) => event.target.checked ? [...current, type] : current.filter((item) => item !== type))} />{type === "packing_slip" ? "Packing Slip" : type === "shipment_manifest" ? "Shipment Manifest" : "Package Ticket"}</label>)}
           <p className="text-xs text-titan-text-secondary">Shipping documents require Print Agent 1.0.25 or newer. Enable only documents suitable for this printer's paper.</p>
+          {supportsUpsLabel && <p className="text-xs text-titan-text-secondary">UPS labels require Print Agent 1.0.26 or newer, a Windows queue set to 4 × 6 inch label stock, and a raster-capable driver. The agent does not send raw ZPL or change the queue's media/DPI settings.</p>}
         </div>
         <div className="space-y-1.5">
           <Label>Printer type</Label>

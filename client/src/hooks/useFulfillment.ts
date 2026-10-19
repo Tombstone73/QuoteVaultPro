@@ -232,6 +232,7 @@ export interface ShipmentDetail {
   carrier: string | null;
   serviceLevel: string | null;
   trackingNumber: string | null;
+  carrierShipmentId: string | null;
   shipDate: string | null;
   boxCount: number | null;
   packingMode?: "simple_verified_packing" | "advanced_separate_packing";

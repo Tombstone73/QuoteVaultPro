@@ -1,9 +1,14 @@
 import { z } from "zod";
 import { shippingDocumentTypeSchema, shippingDocumentSourceSchema, type ShippingDocumentSource, type ShippingDocumentType } from "./shippingDocuments";
 
-export const directPrintDocumentTypes = ["traveler", "pickup_traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket"] as const;
+export const directPrintDocumentTypes = ["traveler", "pickup_traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket", "ups_label"] as const;
 export type DirectPrintDocumentType = typeof directPrintDocumentTypes[number];
-export const printerDocumentCapabilities = ["traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket"] as const;
+export const printerDocumentCapabilities = ["traveler", "quick_note", "packing_slip", "shipment_manifest", "package_ticket", "ups_label"] as const;
+export const upsLabelDirectPrintRequestSchema = z.object({ printerProfileId: z.string().trim().min(1),
+  requestKey: z.string().trim().min(1).max(160), copies: z.number().int().min(1).max(99) }).strict();
+export const claimedUpsLabelSchema = z.object({ jobId: z.string().min(1), documentType: z.literal('ups_label'),
+  purchaseId: z.string().min(1), packageId: z.string().min(1), trackingNumber: z.string().min(1),
+  labelFormat: z.literal('GIF'), labelBase64: z.string().min(8), copies: z.number().int().min(1).max(99) }).strict();
 export const shippingDirectPrintRequestSchema = z.object({
   documentType: shippingDocumentTypeSchema,
   printerProfileId: z.string().trim().min(1),

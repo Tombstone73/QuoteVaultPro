@@ -142,6 +142,8 @@ export async function duplicateOrder(input: {
       carrierAccountNumber: sourceOrder.carrierAccountNumber,
       shippingInstructions: sourceOrder.shippingInstructions,
       shippingCents: sourceOrder.shippingCents,
+      shippingChargeDecision: sourceOrder.shippingChargeDecision === 'ups_rate' ? 'manual'
+        : sourceOrder.shippingChargeDecision as 'unset' | 'manual' | 'free' | 'legacy',
       invoiceAuditSource: "order_created",
     });
 

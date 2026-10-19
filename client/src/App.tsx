@@ -112,6 +112,7 @@ import { fulfillmentShipmentDetailRoute, fulfillmentWorkspaceRoute } from "@shar
 import FulfillmentShipmentManifestPage from "@/pages/fulfillment-shipment-manifest";
 import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
+import UpsShippingProfitabilityPage from "@/pages/ups-shipping-profitability";
 import DailyProductionListPage from "@/pages/daily-production-list";
 import AccountsReceivableReportPage from "@/pages/accounts-receivable-report";
 import ReportStudioRoute from "@/pages/report-studio";
@@ -364,6 +365,7 @@ function Router() {
         <Route path={ROUTES.reports} element={<ReportsPage />} />
         <Route path={ROUTES.dailyProductionReport} element={<DailyProductionListPage />} />
         <Route path={ROUTES.accountsReceivableReport} element={<AccountsReceivableReportPage />} />
+        <Route path="/reports/ups-shipping-profitability" element={<UpsShippingProfitabilityPage />} />
         <Route path="/reports/:reportId" element={<ReportStudioRoute />} />
         <Route path={ROUTES.finance} element={<FinancePage />} />
         <Route path="/tools/bulk-file-renamer" element={<BulkFileRenamerPage />} />

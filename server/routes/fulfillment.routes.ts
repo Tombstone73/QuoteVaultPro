@@ -51,6 +51,10 @@ import { canonicalFulfillmentOperations } from "../services/fulfillment/canonica
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
 import { getUpsRates } from '../services/ups/upsRates';
+import { buyUpsLabel, getUpsLabelHistory, readUpsPackageLabel, recoverRecordedUpsPurchase, voidUpsLabel } from '../services/ups/upsLabels';
+import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
+import { applyUpsRateToCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
+import { getUpsProfitabilityReport, recordUpsCarrierAdjustment, upsProfitabilityCsv } from '../services/ups/upsProfitability';
 import { completeUpsAuthorization, disconnectUps, startUpsAuthorization, upsConnectionStatus,
   validUpsAuthorizationState, type UpsPendingAuthorization } from '../services/ups/upsConnection';
 
@@ -137,6 +141,103 @@ export function registerFulfillmentRoutes(
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       return res.status(500).json({ success: false, message: 'Could not retrieve UPS rates. Try again.' });
     }
+  });
+  app.get('/api/fulfillment/shipments/:shipmentId/ups-customer-charges', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { return res.json({ success: true, data: await getUpsCustomerCharges(getRequestOrganizationId(req), req.params.shipmentId) }); }
+    catch (error) { return upsFailure(res, error, 'Could not load customer shipping charges.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-customer-charge', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const input = z.object({ quoteId: z.string().uuid(), serviceCode: z.string().min(2).max(8),
+        intent: z.enum(['default_if_unset', 'use_ups_rate']) }).strict().parse(req.body);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      return res.json({ success: true, data: await applyUpsRateToCustomerCharge({ ...input,
+        organizationId: getRequestOrganizationId(req), shipmentId: req.params.shipmentId,
+        actorUserId, actorOrgRole: req.actorOrgRole ?? req.orgRole ?? null }) });
+    } catch (error) {
+      const block = methodChangeAccountingBlock(error);
+      if (block) return res.status(block.status).json({ success: false, code: block.code, message: block.message });
+      return upsFailure(res, error, 'Could not change the customer shipping charge.');
+    }
+  });
+  const upsPurchaseBody = z.object({ quoteId: z.string().uuid(), serviceCode: z.string().min(2).max(8) }).strict();
+  const upsFailure = (res: any, error: unknown, fallback: string) => {
+    if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: 'UPS_INVALID_REQUEST', message: 'Select a current UPS rate.' });
+    if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+    const known = error as { statusCode?: number; code?: string; message?: string } | null;
+    if (known?.statusCode === 409 && known.code) return res.status(409).json({ success: false, code: known.code, message: known.message || fallback });
+    console.error('[ups-label] unexpected operation failure', error instanceof Error ? error.name : 'unknown');
+    return res.status(500).json({ success: false, code: 'UPS_OPERATION_FAILED', message: fallback });
+  };
+  app.get('/api/fulfillment/shipments/:shipmentId/ups-labels', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { return res.json({ success: true, data: await getUpsLabelHistory(getRequestOrganizationId(req), req.params.shipmentId) }); }
+    catch (error) { return upsFailure(res, error, 'Could not load UPS label history.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/purchase', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const input = upsPurchaseBody.parse(req.body); return res.status(201).json({ success: true,
+      data: await buyUpsLabel(getRequestOrganizationId(req), req.params.shipmentId, input, getUserId(req.user)) }); }
+    catch (error) { return upsFailure(res, error, 'UPS label purchase needs investigation. Refresh the attempt history before taking another action.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/recover', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try { return res.json({ success: true, data: await recoverRecordedUpsPurchase(getRequestOrganizationId(req),
+      req.params.shipmentId, req.params.purchaseId, getUserId(req.user)) }); }
+    catch (error) { return upsFailure(res, error, 'UPS attempt recovery requires review.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/void', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try { const history = await getUpsLabelHistory(getRequestOrganizationId(req), req.params.shipmentId);
+      if (!history.some(row => row.id === req.params.purchaseId)) return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'UPS label not found.' });
+      return res.json({ success: true, data: await voidUpsLabel(getRequestOrganizationId(req), req.params.purchaseId, getUserId(req.user)) }); }
+    catch (error) { return upsFailure(res, error, 'UPS void outcome needs investigation.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/external-cancellation', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const input = z.object({ reason: z.string().trim().min(3).max(2000), reference: z.string().trim().max(160).optional() }).strict().parse(req.body);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      return res.json({ success: true, data: await reportExternalUpsCancellation(getRequestOrganizationId(req),
+        req.params.shipmentId, req.params.purchaseId, actorUserId, input) });
+    } catch (error) { return upsFailure(res, error, 'Could not record external cancellation.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/carrier-adjustments', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const input = z.object({ kind: z.enum(['CONFIRMED_CREDIT', 'CARRIER_ADJUSTMENT']),
+        amountCents: z.number().int().refine(value => value !== 0), currency: z.string().regex(/^[A-Z]{3}$/),
+        providerReference: z.string().trim().min(1).max(160), note: z.string().trim().max(2000).optional() }).strict().parse(req.body);
+      if (input.kind === 'CONFIRMED_CREDIT' && input.amountCents <= 0) return res.status(400).json({ success: false, message: 'A confirmed carrier credit must be positive.' });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      const history = await getUpsLabelHistory(getRequestOrganizationId(req), req.params.shipmentId);
+      if (!history.some(row => row.id === req.params.purchaseId)) return res.status(404).json({ success: false, message: 'UPS purchase not found.' });
+      return res.json({ success: true, data: await recordUpsCarrierAdjustment({ ...input,
+        organizationId: getRequestOrganizationId(req), purchaseId: req.params.purchaseId, actorUserId }) });
+    } catch (error) { return upsFailure(res, error, 'Could not record carrier adjustment.'); }
+  });
+  app.get('/api/reports/ups-shipping-profitability', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const query = z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        format: z.enum(['json', 'csv']).optional() }).parse(req.query);
+      const from = new Date(`${query.from}T00:00:00.000Z`);
+      const toExclusive = new Date(new Date(`${query.to}T00:00:00.000Z`).getTime() + 86_400_000);
+      if (Number.isNaN(from.getTime()) || Number.isNaN(toExclusive.getTime())) return res.status(400).json({ success: false, message: 'Invalid date range.' });
+      const report = await getUpsProfitabilityReport(getRequestOrganizationId(req), from, toExclusive);
+      if (query.format === 'csv') {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="ups-shipping-profitability-${query.from}-${query.to}.csv"`);
+        res.setHeader('Cache-Control', 'private, no-store');
+        return res.send(upsProfitabilityCsv(report.rows));
+      }
+      return res.json({ success: true, data: report });
+    } catch (error) { return upsFailure(res, error, 'Could not load UPS profitability report.'); }
+  });
+  app.get('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/packages/:packageId/image', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const label = await readUpsPackageLabel(getRequestOrganizationId(req), req.params.shipmentId,
+      req.params.purchaseId, req.params.packageId);
+      res.setHeader('Content-Type', label.mimeType); res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="UPS-${label.trackingNumber}.gif"`);
+      return res.send(label.bytes); }
+    catch (error) { return upsFailure(res, error, 'Could not retrieve UPS label.'); }
   });
 
   // ===== SHIPMENT & FULFILLMENT ROUTES =====

@@ -10,10 +10,10 @@ import { useAuth } from "@/hooks/useAuth";
 import { apiFetch } from "@/lib/queryClient";
 import { readShippingPrinterPreference, saveShippingPrinterPreference, resolveTravelerPrinterDestinationId } from "@/lib/shippingPrinterPreferences";
 
-export type ShippingDocumentPrintDialogProps = { shipmentId: string; documentType: ShippingDocumentType; packageId?: string; label?: string };
-const titles: Record<ShippingDocumentType, string> = { packing_slip: "Packing Slip", shipment_manifest: "Shipment Manifest", package_ticket: "Package Tickets" };
+export type ShippingDocumentPrintDialogProps = { shipmentId: string; documentType: ShippingDocumentType | 'ups_label'; packageId?: string; purchaseId?: string; label?: string };
+const titles: Record<ShippingDocumentType | 'ups_label', string> = { packing_slip: "Packing Slip", shipment_manifest: "Shipment Manifest", package_ticket: "Package Tickets", ups_label: 'UPS Label' };
 
-export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageId, label }: ShippingDocumentPrintDialogProps) {
+export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageId, purchaseId, label }: ShippingDocumentPrintDialogProps) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [destinationId, setDestinationId] = useState("");
@@ -51,17 +51,23 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
   }, [open, destinations, user?.id, user?.lastActiveOrgId, documentType]);
   useEffect(() => {
     requestKey.current = null; resolved.current = false; setError(null); setFeedback(null); setDestinationId("");
-  }, [shipmentId, documentType, packageId, user?.id, user?.lastActiveOrgId]);
+  }, [shipmentId, documentType, packageId, purchaseId, user?.id, user?.lastActiveOrgId]);
   const revise = () => { requestKey.current = null; setError(null); setFeedback(null); };
   async function submit() {
     const count = Number(copies);
-    if (!selected?.available || !Number.isInteger(count) || count < 1 || count > 99 || submitting) return;
+    if (!selected?.available || !Number.isInteger(count) || count < 1 || count > 99 || submitting ||
+      (documentType === 'ups_label' && (!purchaseId || !packageId))) return;
     const key = requestKey.current ?? crypto.randomUUID();
     requestKey.current = key; setSubmitting(true); setError(null);
     try {
-      const response = await apiFetch(`/api/fulfillment/shipments/${encodeURIComponent(shipmentId)}/direct-print`, {
+      const endpoint = documentType === 'ups_label'
+        ? `/api/fulfillment/shipments/${encodeURIComponent(shipmentId)}/ups-labels/${encodeURIComponent(purchaseId!)}/packages/${encodeURIComponent(packageId!)}/direct-print`
+        : `/api/fulfillment/shipments/${encodeURIComponent(shipmentId)}/direct-print`;
+      const response = await apiFetch(endpoint, {
         method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "Idempotency-Key": key },
-        body: JSON.stringify({ documentType, printerProfileId: destinationId, copies: count, requestKey: key, ...(packageId ? { packageId } : {}) }),
+        body: JSON.stringify(documentType === 'ups_label'
+          ? { printerProfileId: destinationId, copies: count, requestKey: key }
+          : { documentType, printerProfileId: destinationId, copies: count, requestKey: key, ...(packageId ? { packageId } : {}) }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not queue shipping document");
@@ -83,14 +89,14 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
               <option value="">Select a destination</option>{destinations.map((item) => <option key={item.id} value={item.id} disabled={!item.available}>{item.displayName}{item.location ? ` (${item.location})` : ""}{item.available ? "" : item.unavailableReason === "PRINT_AGENT_UPDATE_REQUIRED" ? " - agent update required" : " - unavailable"}</option>)}
             </select>
             {!destinations.length && <p>No printers are configured for this document. Use browser preview or configure the profile's supported documents.</p>}
-            {destinations.some((item) => item.unavailableReason === "PRINT_AGENT_UPDATE_REQUIRED") && <p>Shipping documents require Windows Print Agent 1.0.25 or newer. Older agents must be updated.</p>}
+            {destinations.some((item) => item.unavailableReason === "PRINT_AGENT_UPDATE_REQUIRED") && <p>{documentType === 'ups_label' ? 'UPS labels require Windows Print Agent 1.0.26 or newer.' : 'Shipping documents require Windows Print Agent 1.0.25 or newer.'} Older agents must be updated.</p>}
             <Button type="button" variant="outline" size="sm" disabled={query.isFetching || submitting} onClick={() => void query.refetch()}>Check Printers Again</Button>
             <div className="grid gap-2"><Label htmlFor="shipping-print-copies">Copies</Label><Input id="shipping-print-copies" type="number" min="1" max="99" value={copies} disabled={submitting || !!feedback} onChange={(event) => { revise(); setCopies(event.target.value); }} /></div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={saveDefault} onChange={(event) => setSaveDefault(event.target.checked)} />Remember my printer for this document</label>
           </div>}
         {error && <p role="alert" className="text-sm text-destructive">{error} Retry uses the same request key to avoid duplicate jobs.</p>}
         {feedback && <p role="status" className="text-sm">{feedback}</p>}
-        <DialogFooter><Button variant="outline" asChild><a href={`/fulfillment/shipments/${encodeURIComponent(shipmentId)}/manifest?${previewQuery}`} target="_blank" rel="noopener noreferrer">Browser Preview / Print</a></Button>
+        <DialogFooter>{documentType !== 'ups_label' && <Button variant="outline" asChild><a href={`/fulfillment/shipments/${encodeURIComponent(shipmentId)}/manifest?${previewQuery}`} target="_blank" rel="noopener noreferrer">Browser Preview / Print</a></Button>}
           <Button variant="outline" disabled={submitting} onClick={() => { setOpen(false); if (feedback) { requestKey.current = null; setFeedback(null); } }}>Close</Button>
           <Button disabled={submitting || !!feedback || !selected?.available || !Number.isInteger(Number(copies)) || Number(copies) < 1 || Number(copies) > 99} onClick={() => void submit()}>{submitting ? "Queueing..." : error ? "Retry Print" : "Queue Print"}</Button>
         </DialogFooter>

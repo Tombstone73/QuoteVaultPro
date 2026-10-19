@@ -1631,6 +1631,7 @@ export class OrdersRepository {
         shippingInstructions?: string | null;
         trackingNumber?: string | null;
         shippingCents?: number | null;
+        shippingChargeDecision?: 'unset' | 'manual' | 'free' | 'ups_rate' | 'legacy';
         /** Durable provenance for the required linked draft invoice. */
         invoiceAuditSource?: "order_created" | "quote_converted" | "inbound_order";
         /** Opt-in policy for workflows that must defer all production intake. */
@@ -1753,6 +1754,8 @@ export class OrdersRepository {
                 shippingInstructions: data.shippingInstructions ?? null,
                 trackingNumber: data.trackingNumber ?? null,
                 shippingCents: data.shippingCents ?? 0,
+                shippingChargeDecision: data.shippingChargeDecision ?? (data.shippingCents == null || (data.shippingMethod === 'pickup' && Number(data.shippingCents) === 0)
+                    ? 'unset' : Number(data.shippingCents) === 0 ? 'free' : 'manual'),
             };
             const [order] = await tx.insert(orders).values(orderInsert).returning();
 
@@ -2118,7 +2121,21 @@ export class OrdersRepository {
                 orderData.contactId !== undefined ? orderData.contactId ?? null : existing.contactId,
             );
         }
-        const updateData: any = { ...orderData, updatedAt: new Date() };
+        const implicitShippingDecision = orderData.shippingCents !== undefined && orderData.shippingChargeDecision === undefined;
+        const [currentShipping] = implicitShippingDecision ? await this.dbInstance
+            .select({ shippingCents: orders.shippingCents }).from(orders)
+            .where(and(eq(orders.id, id), eq(orders.organizationId, organizationId))).limit(1) : [];
+        const shippingAmountChanged = implicitShippingDecision && currentShipping &&
+            Number(currentShipping.shippingCents) !== Number(orderData.shippingCents);
+        const updateData: any = {
+            ...orderData,
+            ...(shippingAmountChanged
+                ? { shippingChargeDecision: Number(orderData.shippingCents) === 0
+                    ? orderData.shippingMethod === 'pickup' ? 'unset' : 'free' : 'manual',
+                    shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null }
+                : {}),
+            updatedAt: new Date(),
+        };
         for (const field of ["dueDate", "promisedDate", "requestedDueDate", "productionDueDate"] as const) {
             if (field in orderData) updateData[field] = serializeOrderBusinessDate(orderData[field]);
         }
@@ -2470,7 +2487,7 @@ export class OrdersRepository {
             taxRate: quote.taxRate != null ? parseFloat(quote.taxRate.toString()) : undefined,
             taxAmount: quote.taxAmount != null ? parseFloat(quote.taxAmount) : undefined,
             taxableSubtotal: quote.taxableSubtotal != null ? parseFloat(quote.taxableSubtotal) : undefined,
-            shippingCents: quote.shippingCents ?? 0,
+            shippingCents: quote.shippingCents,
             productionIntakePolicy: options?.productionIntakePolicy,
             ...orderSnapshot,
         };

@@ -17,7 +17,7 @@ record Job(string id, string? orderId, string? documentType, JsonElement? printC
 record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.25";
+  const string AgentVersion = "1.0.26";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -292,7 +292,7 @@ static class Program {
     if (!string.Equals(travelerUri.AbsolutePath, expectedPath, StringComparison.Ordinal) || !string.Equals(GetQueryParameter(travelerUri, "directPrintJobId"), job.id, StringComparison.Ordinal)) throw new InvalidOperationException("PrintersHero returned an invalid Traveler print route.");
     return travelerUri;
   }
-  static bool IsShippingDocument(string? type) => type is "packing_slip" or "shipment_manifest" or "package_ticket";
+  static bool IsShippingDocument(string? type) => type is "packing_slip" or "shipment_manifest" or "package_ticket" or "ups_label";
   static Uri GetShippingNavigationUri(Claim job) {
     if (!IsShippingDocument(job.documentType) || string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var uri)) throw new InvalidOperationException("Shipping print URL unavailable.");
     if (uri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(uri.Host) || !uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo)
@@ -394,6 +394,12 @@ static class Program {
     settings.Copies = job.copies;
     settings.ShouldPrintBackgrounds = true;
     settings.ShouldPrintHeaderAndFooter = false;
+    if (job.documentType == "ups_label") {
+      settings.MediaSize = CoreWebView2PrintMediaSize.Custom;
+      settings.PageWidth = 4;
+      settings.PageHeight = 6;
+      settings.MarginTop = settings.MarginRight = settings.MarginBottom = settings.MarginLeft = 0;
+    }
     Log("WebView2 PrintAsync submitted.");
     var status = await web.CoreWebView2.PrintAsync(settings);
     Log($"WebView2 print status: {status}.");

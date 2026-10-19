@@ -33,7 +33,7 @@ class CanonicalOrderOperations {
     return order;
   }
 
-  async updateEditableHeader(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; orderId: string; changes: UpdateOrderPayload; expectedUpdatedAt?: Date | string | null; billingOwnershipOverride?: BillingOwnershipOverrideContext & { reason: string; confirmed: boolean }; allowNonNew?: boolean; auditDescription?: string }) {
+  async updateEditableHeader(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; orderId: string; changes: UpdateOrderPayload; expectedUpdatedAt?: Date | string | null; billingOwnershipOverride?: BillingOwnershipOverrideContext & { reason: string; confirmed: boolean }; allowNonNew?: boolean; requireInvoiceParity?: boolean; auditDescription?: string }) {
     if (input.changes.discount !== undefined && !hasAdminOrOwnerOperationalRole(input.actorOrgRole)) {
       throw new CanonicalOrderOperationError("ORDER_DISCOUNT_FORBIDDEN", "Only an Admin or Owner can change a saved Order discount.", undefined, 403);
     }
@@ -57,6 +57,14 @@ class CanonicalOrderOperations {
     if (override && (!billingOwnerChanges || !Number.isFinite(Date.parse(override.orderUpdatedAt)))) throw new BillingOwnershipReviewError('Select a different billing owner and retry normal Save first.', 400);
     // Credit controls forward physical release, never commercial Order capture.
     return db.transaction(async (tx) => {
+      if (input.changes.shippingCents !== undefined && !ownerTouched) {
+        await tx.execute(sql`select id from ${orders} where ${orders.id} = ${input.orderId} and ${orders.organizationId} = ${input.organizationId} for update`);
+        const [lockedOrder] = await tx.select({ updatedAt: orders.updatedAt }).from(orders).where(and(
+          eq(orders.id, input.orderId), eq(orders.organizationId, input.organizationId))).limit(1);
+        if (!lockedOrder || (input.expectedUpdatedAt && new Date(lockedOrder.updatedAt).getTime() !== new Date(input.expectedUpdatedAt).getTime())) {
+          throw new CanonicalOrderOperationError('ORDER_STALE', 'The Order changed while applying the shipping charge. Reload and retry.', undefined, 409);
+        }
+      }
       if (ownerTouched) {
         // Lock the Order before inspecting the Invoice. A simultaneous send,
         // payment, or owner edit must not observe a partially changed owner.
@@ -157,6 +165,7 @@ class CanonicalOrderOperations {
           orderId: order.id,
           actorUserId: input.actorUserId,
           requireDiscountParity: input.changes.discount !== undefined,
+          requireInvoiceParity: input.requireInvoiceParity === true,
         }) ?? order;
       }
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Updated order ${order.displayNumber || order.orderNumber}.`,
@@ -167,7 +176,8 @@ class CanonicalOrderOperations {
         if (input.changes.discount !== undefined) {
           throw new CanonicalOrderOperationError('ORDER_DISCOUNT_INVOICE_BLOCKED', error.message, undefined, 409);
         }
-        throw new CanonicalOrderOperationError('ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED', error.message);
+        throw new CanonicalOrderOperationError('ORDER_INVOICE_CUSTOMER_REVIEW_REQUIRED', error.message, undefined,
+          input.requireInvoiceParity ? 409 : 400);
       }
       throw error;
     });

@@ -4,8 +4,9 @@ import express from "express";
 import supertest from "supertest";
 import { getTableName } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { shippingDirectPrintRequestSchema, matchesShippingPrintRequest } from "../../shared/directPrintDocuments";
-import { supportedAgentDocumentTypes, supportsShippingDocumentAgent } from "../lib/directPrintAgentCapabilities";
+import { shippingDirectPrintRequestSchema, upsLabelDirectPrintRequestSchema,
+  claimedUpsLabelSchema, matchesShippingPrintRequest } from "../../shared/directPrintDocuments";
+import { supportedAgentDocumentTypes, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
 
 const dialect = new PgDialect();
 const camel = (name: string) => name.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -17,6 +18,10 @@ const frozenSource: any = { version: 1, basis: "draft", organizationId: "org", s
   packages: ["package-a", "package-b"].map((id, index) => ({ id, ordinal: index + 1, packageReference: id, weightLbs: null, dimLengthIn: null, dimWidthIn: null, dimHeightIn: null, internalNotes: null, lines: [] })), lines: [], capturedAt: "2026-10-01T12:00:00Z" };
 const source = jest.fn(async () => frozenSource);
 const wake = jest.fn(async (_hash: string) => ({ published: true, attempts: 1 }));
+const getUpsLabelHistory = jest.fn(async (_organizationId: string, _shipmentId: string) => [
+  { id: 'purchase', status: 'PURCHASED', labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] },
+]);
+const readUpsPackageLabel = jest.fn(async () => ({ bytes: Buffer.from('GIF89a'), mimeType: 'image/gif', trackingNumber: '1ZPKG' }));
 function matching(table: string, condition: any) {
   const { sql, params } = dialect.sqlToQuery(condition);
   reads.push({ table, sql, params });
@@ -56,6 +61,7 @@ jest.unstable_mockModule("../db", () => ({ db: fakeDb }));
 jest.unstable_mockModule("../storage", () => ({ storage: {} }));
 jest.unstable_mockModule("../tenantContext", () => ({ getRequestOrganizationId: (req: any) => req.organizationId }));
 jest.unstable_mockModule("../services/shippingDocumentService", () => ({ getShippingDocumentSource: source }));
+jest.unstable_mockModule('../services/ups/upsLabels', () => ({ getUpsLabelHistory, readUpsPackageLabel }));
 jest.unstable_mockModule("../services/orderTravelerSourceService", () => ({ getOrderTravelerSource: jest.fn() }));
 jest.unstable_mockModule("../services/fulfillment/canonicalFulfillmentOperations", () => ({ canonicalFulfillmentOperations: {} }));
 jest.unstable_mockModule("../services/printAgentWake", () => ({ publishPrintAgentWake: wake, getPrintAgentRealtimeConfiguration: () => null }));
@@ -80,6 +86,29 @@ test("one full package ticket set creates one frozen print job and no business w
   const response = await enqueue(); expect(response.status).toBe(202);
   expect(writes).toHaveLength(1); expect(writes[0]).toMatchObject({ table: "direct_print_jobs", value: { documentType: "package_ticket", copies: 2, printContext: { shipmentId: "shipment", packageId: null, source: frozenSource } } });
   expect(wake).toHaveBeenCalledWith(rows.local_bridge_agents[0].tokenHash);
+});
+test('UPS label reprint queues only the existing purchased image and blocks canceled labels', async () => {
+  rows.printer_profiles[0].printerType = 'shipping_label';
+  rows.printer_profiles[0].supportedDocuments = ['ups_label'];
+  rows.local_bridge_agents[0].agentVersion = '1.0.26';
+  const route = '/api/fulfillment/shipments/shipment/ups-labels/purchase/packages/package-a/direct-print';
+  const body = { printerProfileId: 'printer', requestKey: 'label-once', copies: 1 };
+  const first = await supertest(app).post(route).set('x-staff', 'yes').send(body);
+  expect(first.status).toBe(202);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].value).toMatchObject({ documentType: 'ups_label',
+    printContext: { shipmentId: 'shipment', purchaseId: 'purchase', packageId: 'package-a' } });
+  const replay = await supertest(app).post(route).set('x-staff', 'yes').send(body);
+  expect(replay.status).toBe(200); expect(writes).toHaveLength(1);
+  rows.direct_print_jobs[0].status = 'claimed';
+  const image = await supertest(app).get('/api/local-bridge/direct-print/jobs/job/document').set('Authorization', 'Bearer bearer');
+  expect(image.status).toBe(200);
+  expect(image.body.data).toMatchObject({ documentType: 'ups_label', trackingNumber: '1ZPKG', labelBase64: Buffer.from('GIF89a').toString('base64') });
+  getUpsLabelHistory.mockImplementationOnce(async () => [{ id: 'purchase', status: 'VOID_ACCEPTED',
+    labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] }]);
+  const canceled = await supertest(app).post(route).set('x-staff', 'yes').send({ ...body, requestKey: 'label-after-void' });
+  expect(canceled.status).toBe(409); expect(writes).toHaveLength(1);
+  expect(readUpsPackageLabel).toHaveBeenCalledTimes(1);
 });
 test("stable replay ignores edited live drafts, wakes actual saved agent, and never spools another job", async () => {
   await enqueue(); source.mockImplementation(async () => { throw new Error("Live source changed"); });
@@ -151,6 +180,12 @@ test("claimed source rejects malformed, wrong tenant/resource/package snapshots 
 });
 test("closed request and semantic/version helpers preserve intentional old capabilities", () => {
   expect(supportsShippingDocumentAgent("1.0.24")).toBe(false); expect(supportsShippingDocumentAgent("1.0.25")).toBe(true);
+  expect(supportsUpsLabelAgent('1.0.25')).toBe(false); expect(supportsUpsLabelAgent('1.0.26')).toBe(true);
+  expect(supportedAgentDocumentTypes('1.0.25')).not.toContain('ups_label');
+  expect(supportedAgentDocumentTypes('1.0.26')).toContain('ups_label');
+  expect(upsLabelDirectPrintRequestSchema.safeParse({ printerProfileId: 'printer', requestKey: 'once', copies: 1 }).success).toBe(true);
+  expect(claimedUpsLabelSchema.safeParse({ jobId: 'job', documentType: 'ups_label', purchaseId: 'purchase',
+    packageId: 'package', trackingNumber: '1ZPKG', labelFormat: 'GIF', labelBase64: 'R0lGODlh', copies: 1 }).success).toBe(true);
   expect(supportedAgentDocumentTypes("1.0.23")).toEqual(["traveler", "pickup_traveler"]);
   expect(shippingDirectPrintRequestSchema.safeParse({ ...payload, documentType: "unknown" }).success).toBe(false);
   expect(shippingDirectPrintRequestSchema.safeParse({ ...payload, documentType: "packing_slip", packageId: "a" }).success).toBe(false);

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { claimedShippingDocumentSchema, type ClaimedShippingDocument } from "@shared/directPrintDocuments";
+import { claimedShippingDocumentSchema, claimedUpsLabelSchema, type ClaimedShippingDocument } from "@shared/directPrintDocuments";
 import { renderShippingDocumentHtml } from "@shared/shippingDocumentRendering";
 import { apiFetch } from "@/lib/queryClient";
 
@@ -13,19 +13,22 @@ export default function DirectPrintShippingDocument() {
   const [ready, setReady] = useState(false);
   const [printMarkup, setPrintMarkup] = useState("");
   const [renderError, setRenderError] = useState<string | null>(null);
-  const query = useQuery<ClaimedShippingDocument>({ queryKey: ["claimed-shipping-document", jobId], enabled: validId, retry: false,
+  const query = useQuery<ClaimedShippingDocument | ReturnType<typeof claimedUpsLabelSchema.parse>>({ queryKey: ["claimed-shipping-document", jobId], enabled: validId, retry: false,
     queryFn: async ({ signal }) => {
       const response = await apiFetch(`/api/local-bridge/direct-print/jobs/${encodeURIComponent(jobId)}/document`, { signal });
       if (!response.ok) throw new Error("Claimed shipping document unavailable");
-      const data = claimedShippingDocumentSchema.parse((await response.json()).data);
-      if (data.jobId !== jobId || (data.packageId && (data.documentType !== "package_ticket" || !data.source.packages.some((item) => item.id === data.packageId)))) throw new Error("Shipping print source does not match the claimed job");
+      const payload = (await response.json()).data;
+      const data = payload?.documentType === 'ups_label' ? claimedUpsLabelSchema.parse(payload) : claimedShippingDocumentSchema.parse(payload);
+      if (data.jobId !== jobId || (data.documentType !== 'ups_label' && data.packageId &&
+        (data.documentType !== "package_ticket" || !data.source.packages.some((item) => item.id === data.packageId))))
+        throw new Error("Shipping print source does not match the claimed job");
       return data;
     },
   });
   useEffect(() => { generation.current += 1; setReady(false); setPrintMarkup(""); setRenderError(null); }, [jobId, query.data]);
   let html = "";
   let sourceError: string | null = null;
-  try { if (query.data) html = renderShippingDocumentHtml(query.data.source, query.data.documentType, { packageId: query.data.packageId ?? undefined }); }
+  try { if (query.data && query.data.documentType !== 'ups_label') html = renderShippingDocumentHtml(query.data.source, query.data.documentType, { packageId: query.data.packageId ?? undefined }); }
   catch { sourceError = "Shipping document rendering failed"; }
   async function loaded() {
     const current = generation.current;
@@ -49,8 +52,12 @@ export default function DirectPrintShippingDocument() {
   }
   const error = !validId || query.error || renderError || sourceError;
   return <main data-print-job-id={jobId} data-print-document-type={query.data?.documentType ?? ""} data-print-ready={ready && !error ? "true" : "false"} data-print-error={error ? "true" : "false"}>
-    <style>{`html,body,#root,main{margin:0;padding:0;background:white}iframe{position:absolute;left:-10000px;width:816px;height:1056px;border:0}@media print{iframe{display:none}}`}</style>
-    {error ? <p>Failed to load shipping print document.</p> : !html ? <p>Loading shipping print document...</p>
+    <style>{`html,body,#root,main{margin:0;padding:0;background:white}iframe{position:absolute;left:-10000px;width:816px;height:1056px;border:0}@media print{iframe{display:none}}${query.data?.documentType === 'ups_label' ? '@page{size:4in 6in;margin:0}.ups-print-label{display:block;width:4in;height:6in;object-fit:contain}' : ''}`}</style>
+    {error ? <p>Failed to load shipping print document.</p> : query.data?.documentType === 'ups_label'
+      ? <img className="ups-print-label" src={`data:image/gif;base64,${query.data.labelBase64}`} alt={`UPS label ${query.data.trackingNumber}`}
+          onLoad={event => { if (event.currentTarget.naturalWidth > 0) setReady(true); else setRenderError('UPS label image is empty'); }}
+          onError={() => setRenderError('UPS label image failed to render')} />
+      : !html ? <p>Loading shipping print document...</p>
       : <><iframe key={jobId} ref={frame} title="Claimed shipping print document" srcDoc={html} onLoad={() => void loaded()} sandbox="allow-same-origin" /><div data-print-pages dangerouslySetInnerHTML={{ __html: printMarkup }} /></>}
   </main>;
 }
