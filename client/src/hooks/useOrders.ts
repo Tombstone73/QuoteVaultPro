@@ -65,6 +65,8 @@ function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: s
   if (orderId) {
     queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
     queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+    queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+    queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}/attachments`] });
   }
 
   queryClient.invalidateQueries({ queryKey: ["orders", "list"] });

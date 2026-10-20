@@ -1892,7 +1892,8 @@ export async function registerOrderRoutes(
                                         .where(
                                             and(
                                                 inArray(orderLineItems.orderId, needsFallbackOrderIds),
-                                                eq(orders.organizationId, organizationId)
+                                                eq(orders.organizationId, organizationId),
+                                                sql`lower(trim(coalesce(${orderLineItems.status}, ''))) not in ('canceled', 'cancelled', 'void', 'voided')`,
                                             )
                                         );
 
@@ -1914,7 +1915,8 @@ export async function registerOrderRoutes(
                                                     eq(assetLinks.parentType, 'order_line_item'),
                                                     inArray(assetLinks.parentId, lineItemIds),
                                                     inArray(orderLineItems.orderId, needsFallbackOrderIds),
-                                                    eq(orders.organizationId, organizationId)
+                                                    eq(orders.organizationId, organizationId),
+                                                    sql`lower(trim(coalesce(${orderLineItems.status}, ''))) not in ('canceled', 'cancelled', 'void', 'voided')`,
                                                 )
                                             )
                                             .orderBy(desc(assetLinks.createdAt));

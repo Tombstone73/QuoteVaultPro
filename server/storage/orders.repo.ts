@@ -86,6 +86,7 @@ import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPr
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 import { activeOrderDuePredicates } from "../services/orderDueDateService";
 import { canonicalOpenOrderBucketPredicate } from "../services/orderListBuckets";
+import { selectCurrentOrderPreviewAttachments } from "../services/orders/orderListArtworkProjection";
 import { serializeOrderBusinessDate } from "@shared/orderBusinessDate";
 import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
@@ -96,6 +97,10 @@ import {
 } from "../services/orders/initialOrderStatus";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+
+// Historical lines remain in the Order for audit, but are absent from its
+// current commercial and artwork preview snapshot.
+const currentOrderLinePredicate = sql`lower(trim(coalesce(${orderLineItems.status}, ''))) not in ('canceled', 'cancelled', 'void', 'voided')`;
 
 /** Stable errors for all direct, quote, inbound, and assistant order writes. */
 export class OrderIdentityError extends Error {
@@ -456,7 +461,7 @@ export class OrdersRepository {
             })
             .from(orderLineItems)
             .innerJoin(products, eq(orderLineItems.productId, products.id))
-            .where(inArray(orderLineItems.orderId, orderIds));
+            .where(and(inArray(orderLineItems.orderId, orderIds), currentOrderLinePredicate));
 
         const lineItemIds = lineItems.map((lineItem) => String(lineItem.lineItemId));
         const activeOwners = lineItemIds.length > 0
@@ -599,7 +604,7 @@ export class OrdersRepository {
                 approvedProofVersionId: orderLineItems.approvedProofVersionId,
             })
             .from(orderLineItems)
-            .where(inArray(orderLineItems.orderId, orderIds));
+            .where(and(inArray(orderLineItems.orderId, orderIds), currentOrderLinePredicate));
 
         const lineItemIds = lineItems.map((lineItem) => String(lineItem.lineItemId));
 
@@ -772,16 +777,22 @@ export class OrdersRepository {
                 fileRecordId: orderAttachments.fileRecordId,
                 orderId: orderAttachments.orderId,
                 orderLineItemId: orderAttachments.orderLineItemId,
+                linkedLineItemId: orderLineItems.id,
+                linkedLineStatus: orderLineItems.status,
                 fileName: orderAttachments.fileName,
                 originalFilename: orderAttachments.originalFilename,
                 mimeType: orderAttachments.mimeType,
             })
             .from(orderAttachments)
             .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+            .leftJoin(orderLineItems, and(
+                eq(orderLineItems.id, orderAttachments.orderLineItemId),
+                eq(orderLineItems.orderId, orderAttachments.orderId),
+            ))
             .where(
                 and(
                     inArray(orderAttachments.orderId, orderIds),
-                    eq(orders.organizationId, organizationId)
+                    eq(orders.organizationId, organizationId),
                 )
             )
             .orderBy(orderAttachments.createdAt);
@@ -790,7 +801,8 @@ export class OrdersRepository {
         const groupedPreviews = new Map<string, Array<{ id: string; fileRecordId?: string | null; orderLineItemId?: string | null; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>>();
         const countMap = new Map<string, number>();
 
-        const resolvedRows = await Promise.all(attachmentsQuery.map(async (att) => {
+        const currentAttachments = selectCurrentOrderPreviewAttachments(attachmentsQuery);
+        const resolvedRows = await Promise.all(currentAttachments.map(async (att) => {
             return {
                 id: String(att.id),
                 fileRecordId: att.fileRecordId ?? null,
@@ -802,11 +814,7 @@ export class OrdersRepository {
             };
         }));
 
-        const seenFileRecords = new Set<string>();
         for (const att of resolvedRows) {
-            const identity = att.fileRecordId ? `${att.orderId}:${att.fileRecordId}` : null;
-            if (identity && seenFileRecords.has(identity)) continue;
-            if (identity) seenFileRecords.add(identity);
             countMap.set(att.orderId, (countMap.get(att.orderId) || 0) + 1);
             if (!att.thumbnailUrl) continue;
             if (!groupedAttachments.has(att.orderId)) {
@@ -1061,6 +1069,7 @@ export class OrdersRepository {
                 lineItemsCount: sql<number>`(
                     select count(*)::int from ${orderLineItems}
                     where ${orderLineItems.orderId} = ${orders.id}
+                      and ${currentOrderLinePredicate}
                 )`,
             })
             .from(orders)
@@ -1124,7 +1133,7 @@ export class OrdersRepository {
                 })
                 .from(orderLineItems)
                 .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
-                .where(inArray(orderLineItems.orderId, orderIds))
+                .where(and(inArray(orderLineItems.orderId, orderIds), currentOrderLinePredicate))
             : [];
         const invoiceEligibilityLinesByOrderId = new Map<string, typeof invoiceEligibilityRows>();
         for (const line of invoiceEligibilityRows) {

@@ -499,7 +499,9 @@ export default function OrderDetail() {
   }, [focusProduction, focusProductionStatus, order]);
 
   const orderOperationalSummary = useMemo(() => {
-    const lineItems = order?.lineItems ?? [];
+    const lineItems = (order?.lineItems ?? []).filter((lineItem: any) =>
+      !["canceled", "cancelled", "void", "voided"].includes(String(lineItem?.status ?? "").trim().toLowerCase()),
+    );
     const totalItems = lineItems.length;
     const productionRequiredCount = lineItems.filter((lineItem: any) =>
       (lineItem?.product as any)?.requiresProductionJob === true && (lineItem?.product as any)?.workflowIntent !== "service_fee",
