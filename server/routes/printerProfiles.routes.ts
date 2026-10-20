@@ -99,6 +99,15 @@ async function getAvailableTravelerDestination(organizationId: string, destinati
   return agent?.configuredTravelerPrinterName === destination.windowsQueueName ? destination : null;
 }
 
+async function isValidPrintAgentMapping(organizationId: string, agentId: string, queueName: string | null | undefined): Promise<boolean> {
+  if (!queueName) return false;
+  const [agent] = await db.select({ configuredQueueName: localBridgeAgents.configuredTravelerPrinterName })
+    .from(localBridgeAgents)
+    .where(and(eq(localBridgeAgents.id, agentId), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active")))
+    .limit(1);
+  return agent?.configuredQueueName === queueName;
+}
+
 export function registerPrinterProfileRoutes(
   app: Express,
   middleware: {
@@ -420,6 +429,8 @@ export function registerPrinterProfileRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
       const parsed = insertPrinterProfileSchema.parse(req.body);
+      if (parsed.printAgentId && !await isValidPrintAgentMapping(organizationId, parsed.printAgentId, parsed.windowsQueueName))
+        return res.status(409).json({ code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The selected Print Agent must be active in this organization and configured for this exact Windows printer queue." });
       if (parsed.supportedDocuments.includes('ups_label') && parsed.printerType !== 'shipping_label')
         return res.status(400).json({ code: 'UPS_LABEL_PRINTER_TYPE', error: 'UPS labels require a Shipping Label printer profile.' });
       const created = await storage.createPrinterProfile(organizationId, parsed, getUserId(req.user));
@@ -434,6 +445,15 @@ export function registerPrinterProfileRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
       const parsed = updatePrinterProfileSchema.parse(req.body);
+      if (parsed.printAgentId !== undefined || parsed.windowsQueueName !== undefined) {
+        const [current] = await db.select({ printAgentId: printerProfiles.printAgentId, windowsQueueName: printerProfiles.windowsQueueName })
+          .from(printerProfiles).where(and(eq(printerProfiles.id, req.params.id), eq(printerProfiles.organizationId, organizationId))).limit(1);
+        if (!current) return res.status(404).json({ code: "PRINTER_PROFILE_NOT_FOUND", error: "Printer profile not found." });
+        const agentId = parsed.printAgentId === undefined ? current.printAgentId : parsed.printAgentId;
+        const queueName = parsed.windowsQueueName === undefined ? current.windowsQueueName : parsed.windowsQueueName;
+        if (agentId && !await isValidPrintAgentMapping(organizationId, agentId, queueName))
+          return res.status(409).json({ code: "PRINT_AGENT_CONFIGURATION_MISMATCH", error: "The selected Print Agent must be active in this organization and configured for this exact Windows printer queue." });
+      }
       if (parsed.supportedDocuments?.includes('ups_label') || parsed.printerType && parsed.printerType !== 'shipping_label') {
         const [current] = await db.select({ printerType: printerProfiles.printerType,
           supportedDocuments: printerProfiles.supportedDocuments }).from(printerProfiles).where(and(

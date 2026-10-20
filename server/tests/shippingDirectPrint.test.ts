@@ -22,6 +22,11 @@ const getUpsLabelHistory = jest.fn(async (_organizationId: string, _shipmentId: 
   { id: 'purchase', status: 'PURCHASED', environment: 'live', labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] },
 ]);
 const readUpsPackageLabel = jest.fn(async () => ({ bytes: Buffer.from('GIF89a'), mimeType: 'image/gif', trackingNumber: '1ZPKG' }));
+const updatePrinterProfile = jest.fn(async (_organizationId: string, id: string, change: any) => {
+  const profile = rows.printer_profiles.find((item) => item.id === id);
+  Object.assign(profile, change);
+  return profile;
+});
 function matching(table: string, condition: any) {
   const { sql, params } = dialect.sqlToQuery(condition);
   reads.push({ table, sql, params });
@@ -38,10 +43,13 @@ function matching(table: string, condition: any) {
   });
 }
 const fakeDb: any = {
-  select: () => {
+  select: (selection?: Record<string, any>) => {
     let table = "", condition: any, limit = Infinity;
     const chain: any = { from: (value: any) => { table = getTableName(value); return chain; }, where: (value: any) => { condition = value; return chain; }, limit: (value: number) => { limit = value; return chain; },
-      then: (resolve: any) => Promise.resolve(matching(table, condition).slice(0, limit)).then(resolve) };
+      then: (resolve: any) => Promise.resolve(matching(table, condition).slice(0, limit).map((row) => selection
+        ? Object.fromEntries(Object.entries(selection).map(([key, column]) => [key, row[key] ?? row[camel(column.name)]]))
+        : row)).then(resolve) };
+    chain.orderBy = () => chain;
     chain.leftJoin = chain.innerJoin = () => chain; return chain;
   },
   insert: (table: any) => ({ values: (value: any) => ({ onConflictDoNothing: () => ({ returning: async () => {
@@ -58,7 +66,7 @@ const fakeDb: any = {
   } }) }),
 };
 jest.unstable_mockModule("../db", () => ({ db: fakeDb }));
-jest.unstable_mockModule("../storage", () => ({ storage: {} }));
+jest.unstable_mockModule("../storage", () => ({ storage: { updatePrinterProfile } }));
 jest.unstable_mockModule("../tenantContext", () => ({ getRequestOrganizationId: (req: any) => req.organizationId }));
 jest.unstable_mockModule("../services/shippingDocumentService", () => ({ getShippingDocumentSource: source }));
 jest.unstable_mockModule('../services/ups/upsLabels', () => ({ getUpsLabelHistory, readUpsPackageLabel }));
@@ -81,6 +89,44 @@ beforeEach(() => {
   source.mockImplementation(async () => frozenSource);
   rows = { direct_print_jobs: [], printer_profiles: [{ id: "printer", organizationId: "org", isActive: true, printAgentId: "agent", windowsQueueName: "queue-secret", queueName: "queue-secret", configuredQueueName: "queue-secret", displayName: "Office", location: "Shop", defaultCopies: 1, isDefault: true, supportedDocuments: ["packing_slip", "shipment_manifest", "package_ticket"], agentVersion: "1.0.25", agentStatus: "active", agentId: "agent" }],
     local_bridge_agents: [{ id: "agent", organizationId: "org", status: "active", tokenHash: crypto.createHash("sha256").update("bearer").digest("hex"), agentVersion: "1.0.25", configuredTravelerPrinterName: "queue-secret" }] };
+});
+
+test("admin can reassign a Traveler profile to the newly paired agent on the same Epson queue", async () => {
+  rows.printer_profiles[0].supportedDocuments = ["traveler"];
+  rows.printer_profiles[0].printAgentId = "old-agent";
+  rows.orders = [{ id: "order", organizationId: "org" }];
+  rows.direct_print_jobs.push({ id: "previous-job", organizationId: "org", orderId: "order", destinationId: "printer", agentId: "old-agent", status: "queued", requestKey: "previous-key" });
+  const newTokenHash = crypto.createHash("sha256").update("new-token").digest("hex");
+  rows.local_bridge_agents.push({ id: "new-agent", organizationId: "org", status: "active", configuredTravelerPrinterName: "queue-secret", agentVersion: "1.0.26", tokenHash: newTokenHash });
+  const response = await supertest(app).patch("/api/printer-profiles/printer").set("x-staff", "yes").send({ printAgentId: "new-agent" });
+  expect(response.status).toBe(200);
+  expect(updatePrinterProfile).toHaveBeenCalledWith("org", "printer", { printAgentId: "new-agent" }, undefined);
+  expect(rows.direct_print_jobs[0]).toMatchObject({ id: "previous-job", agentId: "old-agent", status: "queued" });
+  expect(writes).toHaveLength(0);
+  const queued = await supertest(app).post("/api/orders/order/direct-print/traveler").set("x-staff", "yes").set("Idempotency-Key", "new-key")
+    .send({ destinationId: "printer", copies: 1 });
+  expect(queued.status).toBe(202);
+  expect(writes[0]).toMatchObject({ table: "direct_print_jobs", value: { agentId: "new-agent", destinationId: "printer", orderId: "order" } });
+  expect(wake).toHaveBeenCalledWith(newTokenHash);
+});
+
+test.each([
+  { organizationId: "other-org", status: "active", configuredTravelerPrinterName: "queue-secret" },
+  { organizationId: "org", status: "active", configuredTravelerPrinterName: "Zebra" },
+  { organizationId: "org", status: "revoked", configuredTravelerPrinterName: "queue-secret" },
+])("rejects an unsafe printer re-pair without changing a job or profile: %j", async (agent) => {
+  rows.local_bridge_agents.push({ id: "new-agent", ...agent });
+  const response = await supertest(app).patch("/api/printer-profiles/printer").set("x-staff", "yes").send({ printAgentId: "new-agent" });
+  expect(response.status).toBe(409);
+  expect(updatePrinterProfile).not.toHaveBeenCalled();
+  expect(writes).toHaveLength(0);
+});
+
+test("agent list omits credential hashes while exposing pairing status", async () => {
+  const response = await supertest(app).get("/api/local-bridge/admin/agents").set("x-staff", "yes");
+  expect(response.status).toBe(200);
+  expect(response.body.data[0]).toMatchObject({ id: "agent", configuredTravelerPrinterName: "queue-secret" });
+  expect(response.body.data[0]).not.toHaveProperty("tokenHash");
 });
 test("one full package ticket set creates one frozen print job and no business writes", async () => {
   const response = await enqueue(); expect(response.status).toBe(202);

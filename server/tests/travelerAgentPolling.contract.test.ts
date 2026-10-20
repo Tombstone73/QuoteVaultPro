@@ -140,9 +140,9 @@ describe("Traveler print agent event-driven wake contract", () => {
     const setup = read("windows-print-agent/setup-agent.ps1");
     const readme = read("windows-print-agent/README.md");
 
-    expect(agent).toContain('const string AgentVersion = "1.0.25"');
-    expect(project).toContain("<Version>1.0.25</Version>");
-    expect(setup).toContain("$script:SetupVersion = '1.0.25'");
-    expect(readme).toContain("Version 1.0.25");
+    expect(agent).toContain('const string AgentVersion = "1.0.26"');
+    expect(project).toContain("<Version>1.0.26</Version>");
+    expect(setup).toContain("$script:SetupVersion = '1.0.26'");
+    expect(readme).toContain("Version 1.0.26");
   });
 });

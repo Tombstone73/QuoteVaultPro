@@ -1,9 +1,11 @@
 import { type FormEvent, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { shippingDocumentTypes, type ShippingDocumentType } from "@shared/shippingDocuments";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { apiFetch } from "@/lib/queryClient";
 import {
   Select,
   SelectContent,
@@ -33,6 +35,14 @@ type Props = {
   compact?: boolean;
 };
 
+type PairedPrintAgent = {
+  id: string;
+  machineLabel: string | null;
+  agentVersion: string | null;
+  configuredTravelerPrinterName: string | null;
+  lastSeenAt: string;
+};
+
 function toIntendedUse(type: PrinterProfileInput["printerType"]) {
   return type;
 }
@@ -45,6 +55,16 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
   const [stationRoute, setStationRoute] = useState("");
   const [location, setLocation] = useState("");
   const [windowsQueueName, setWindowsQueueName] = useState("");
+  const [printAgentId, setPrintAgentId] = useState<string | null>(null);
+  const agents = useQuery<PairedPrintAgent[]>({
+    queryKey: ["/api/local-bridge/admin/agents", "printer-profile"],
+    queryFn: async () => {
+      const response = await apiFetch("/api/local-bridge/admin/agents");
+      if (!response.ok) throw new Error("Could not load paired Print Agents");
+      const body = await response.json();
+      return body.data;
+    },
+  });
   const [defaultCopies, setDefaultCopies] = useState("1");
   const [trailingFeedMm, setTrailingFeedMm] = useState("0");
   const [receiptWidthMm, setReceiptWidthMm] = useState("80");
@@ -61,6 +81,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     setPrinterType(profile?.printerType ?? defaultType);
     setStationRoute(profile?.stationRoute ?? "");
     setLocation(profile?.location ?? ""); setWindowsQueueName(profile?.windowsQueueName ?? "");
+    setPrintAgentId(profile?.printAgentId ?? null);
     setDefaultCopies(String(profile?.defaultCopies ?? 1)); setTrailingFeedMm(String(profile?.trailingFeedMm ?? 0));
     setReceiptWidthMm(String((profile as any)?.receiptWidthMm ?? 80));
     setIntendedUse(profile?.intendedUse ?? toIntendedUse(profile?.printerType ?? defaultType));
@@ -82,7 +103,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
       printerType,
       intendedUse,
       stationRoute: stationRoute.trim() || null,
-      location: location.trim() || null, windowsQueueName: windowsQueueName.trim() || null,
+      location: location.trim() || null, windowsQueueName: windowsQueueName.trim() || null, printAgentId,
       supportedDocuments: [...([supportsTraveler && "traveler", supportsQuickNote && "quick_note", supportsUpsLabel && "ups_label"].filter(Boolean) as string[]), ...shippingDocuments], defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm), receiptWidthMm: Number(receiptWidthMm),
       scope: "organization",
       isActive,
@@ -102,6 +123,22 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
         </div>
         <div className="space-y-1.5"><Label>Location</Label><Input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Front Office" /></div>
         <div className="space-y-1.5"><Label>Windows printer queue</Label><Input value={windowsQueueName} onChange={(event) => setWindowsQueueName(event.target.value)} placeholder="Select from the paired agent inventory" /></div>
+        <div className="space-y-1.5">
+          <Label>Paired Print Agent</Label>
+          <Select value={printAgentId ?? "unpaired"} onValueChange={(value) => setPrintAgentId(value === "unpaired" ? null : value)}>
+            <SelectTrigger aria-label="Paired Print Agent"><SelectValue placeholder="Select a paired workstation" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unpaired">Unpaired</SelectItem>
+              {(agents.data ?? []).filter((agent) => agent.configuredTravelerPrinterName === windowsQueueName.trim()).map((agent) => (
+                <SelectItem key={agent.id} value={agent.id}>
+                  {agent.machineLabel || "Unnamed workstation"} · {agent.agentVersion || "Version unknown"} · last active {new Date(agent.lastSeenAt).toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-titan-text-secondary">Choose the currently paired workstation for this exact Windows queue. This changes future jobs only; existing queued jobs remain with their original agent.</p>
+          {agents.isError ? <p className="text-xs text-destructive">Paired agents could not be loaded. Retry by reopening this editor.</p> : null}
+        </div>
         <div className="space-y-1.5"><Label>Default copies</Label><Input type="number" min="1" max="99" value={defaultCopies} onChange={(event) => setDefaultCopies(event.target.value)} /></div>
         <div className="space-y-1.5"><Label>Additional trailing feed (mm)</Label><Input type="number" min="0" max="100" step="0.1" value={trailingFeedMm} onChange={(event) => setTrailingFeedMm(event.target.value)} placeholder="12.7 for 0.5 in" /><p className="text-xs text-titan-text-secondary">Added after the standard 38.1 mm / 1.5 in tear-off space.</p></div>
         <div className="space-y-1.5"><Label>Receipt width (mm)</Label><Input type="number" min="40" max="120" step="0.1" value={receiptWidthMm} onChange={(event) => setReceiptWidthMm(event.target.value)} /></div>
