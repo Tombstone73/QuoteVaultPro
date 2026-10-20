@@ -8,7 +8,7 @@ import { isFulfillmentQueueEligibleOrder } from '../fulfillment/eligibility';
 import { FulfillmentDashboardRepo } from '../fulfillment/repository';
 import { FulfillmentHttpError } from '../fulfillment/types';
 import { upsRateCredentials } from './upsConnection';
-import { isOriginalUpsEnvironment, isUpsPlaceholderTracking } from './upsLabelEnvironment';
+import { isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } from './upsLabelEnvironment';
 import { countryCode, resolveUpsShippingContext, upsShippingFingerprint, type UpsRatePackage } from './upsRates';
 
 type UpsPurchaseResult = { providerShipmentId: string; carrierCostCents: number; carrierCurrency: string;
@@ -96,6 +96,39 @@ async function purchaseHistory(orgId: string, shipmentId: string) {
     adjustments: adjustments.filter(adjustment => adjustment.purchaseId === row.id) }));
 }
 export { purchaseHistory as getUpsLabelHistory };
+
+/** Retires only a proven sample placeholder; no UPS request, void, or carrier credit is implied. */
+export async function retireUpsSampleLabel(orgId: string, shipmentId: string, purchaseId: string,
+  actorUserId: string, input: { reason: string; evidenceReference?: string }) {
+  return db.transaction(async tx => {
+    const [shipment] = await tx.select().from(shipments).where(and(eq(shipments.organizationId, orgId),
+      eq(shipments.id, shipmentId))).for('update').limit(1);
+    if (!shipment || shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409,
+      'Only a DRAFT shipment can retire a sample label.', 'UPS_SAMPLE_RETIRE_UNAVAILABLE');
+    const [purchase] = await tx.select().from(upsLabelPurchases).where(and(eq(upsLabelPurchases.organizationId, orgId),
+      eq(upsLabelPurchases.shipmentId, shipmentId), eq(upsLabelPurchases.id, purchaseId))).for('update').limit(1);
+    if (!purchase) throw new FulfillmentHttpError(404, 'UPS purchase not found.', 'NOT_FOUND');
+    const labels = await tx.select({ trackingNumber: upsPackageLabels.trackingNumber }).from(upsPackageLabels)
+      .where(and(eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, purchaseId)));
+    if (!isRetirableUpsSample({ status: purchase.status, environment: purchase.environment,
+      providerShipmentId: purchase.providerShipmentId, trackingNumbers: labels.map(label => label.trackingNumber) }))
+      throw new FulfillmentHttpError(409, 'Only a saved sandbox sample with placeholder tracking can be retired here. Investigate any real or uncertain UPS purchase before retrying.', 'UPS_SAMPLE_RETIRE_UNAVAILABLE');
+    if (purchase.environment === 'unknown' && !input.evidenceReference?.trim()) throw new FulfillmentHttpError(409,
+      'Record evidence that this historical sample was created in UPS test mode before retiring it.', 'UPS_SAMPLE_EVIDENCE_REQUIRED');
+    if (shipment.carrierShipmentId !== purchase.providerShipmentId || !isUpsPlaceholderTracking(shipment.trackingNumber))
+      throw new FulfillmentHttpError(409, 'Shipment tracking changed. Reload and investigate before retiring this sample.', 'UPS_SAMPLE_RETIRE_STALE');
+    await tx.update(upsLabelPurchases).set({ status: 'SAMPLE_RETIRED', updatedAt: new Date() })
+      .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId)));
+    await tx.update(shipments).set({ carrier: null, serviceLevel: null, trackingNumber: null,
+      carrierShipmentId: null, updatedAt: new Date() }).where(and(eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId)));
+    await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId, entityType: 'SHIPMENT',
+      entityId: shipmentId, eventType: 'SHIPMENT_UPDATED', payloadJson: { action: 'ups_sample_label_retired', purchaseId,
+        recordedEnvironment: purchase.environment, reason: input.reason.trim(),
+        evidenceReference: input.evidenceReference?.trim() || null, providerVoidConfirmed: false,
+        carrierCreditConfirmed: false } });
+    return { status: 'SAMPLE_RETIRED' as const, environment: purchase.environment };
+  });
+}
 
 async function markUncertain(orgId: string, purchaseId: string, errorCode: string, evidence?: Record<string, unknown>) {
   await db.update(upsLabelPurchases).set({ status: 'UNCERTAIN', errorCode,

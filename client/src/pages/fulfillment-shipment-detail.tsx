@@ -196,6 +196,9 @@ export function FulfillmentShipmentEditor({
   const [externalCancelPurchaseId, setExternalCancelPurchaseId] = useState<string | null>(null);
   const [externalCancelReason, setExternalCancelReason] = useState('');
   const [externalCancelReference, setExternalCancelReference] = useState('');
+  const [retireSamplePurchaseId, setRetireSamplePurchaseId] = useState<string | null>(null);
+  const [retireSampleReason, setRetireSampleReason] = useState('');
+  const [retireSampleEvidence, setRetireSampleEvidence] = useState('');
   const [carrierAdjustmentPurchaseId, setCarrierAdjustmentPurchaseId] = useState<string | null>(null);
   const [carrierAdjustmentKind, setCarrierAdjustmentKind] = useState<'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT'>('CONFIRMED_CREDIT');
   const [carrierAdjustmentAmount, setCarrierAdjustmentAmount] = useState('');
@@ -569,6 +572,23 @@ export function FulfillmentShipmentEditor({
       await refreshUpsState(shipmentId); setExternalCancelPurchaseId(null); setExternalCancelReason(''); setExternalCancelReference('');
       setUpsActionMessage('External cancellation reported. UPS void and carrier credit are not confirmed by this record.'); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+    finally { setUpsActionPending(false); }
+  };
+
+  const retireSampleLabel = async () => {
+    if (!shipmentId || !retireSamplePurchaseId || retireSampleReason.trim().length < 10 || upsActionPending) return;
+    setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
+    try {
+      await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${retireSamplePurchaseId}/retire-sample`,
+        { method: 'POST', body: JSON.stringify({ reason: retireSampleReason.trim(),
+          evidenceReference: retireSampleEvidence.trim() || undefined }) });
+      const refreshed = await shipmentQuery.refetch();
+      if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? '',
+        serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
+      await refreshUpsState(shipmentId);
+      setRetireSamplePurchaseId(null); setRetireSampleReason(''); setRetireSampleEvidence('');
+      setUpsActionMessage('Sample label retired locally. UPS void and carrier credit were not confirmed. Get fresh rates before buying a live label.');
+    } catch (error) { setUpsActionError(toFulfillmentError(error).message); await refreshUpsState(shipmentId).catch(() => undefined); }
     finally { setUpsActionPending(false); }
   };
 
@@ -1139,6 +1159,7 @@ export function FulfillmentShipmentEditor({
                   {' '}Buying this label did not change the customer shipping charge.</p>}
                 {purchase.status === 'VOID_ACCEPTED' && <p className="text-xs text-amber-700">UPS accepted the void request. Carrier credit is not confirmed; original cost remains recorded.</p>}
                 {purchase.status === 'EXTERNAL_CANCEL_REPORTED' && <p className="text-xs text-amber-700">Operator reported external cancellation: {purchase.externalCancelReason}. UPS void and carrier credit are not confirmed here.</p>}
+                {purchase.status === 'SAMPLE_RETIRED' && <p className="text-xs text-amber-700">Sample label retired locally. Original label, cost, and audit history remain. No UPS void or carrier credit was confirmed.</p>}
                 {purchase.adjustments?.map(adjustment => <p key={adjustment.id} className="text-xs">{adjustment.kind === 'CONFIRMED_CREDIT' ? 'Confirmed carrier credit' : 'Carrier cost adjustment'}: {adjustment.currency} {(adjustment.amountCents / 100).toFixed(2)} · {adjustment.providerReference}</p>)}
                 {purchase.errorCode && <p className="text-xs text-destructive">Carrier action needs review: {purchase.errorCode}</p>}
                 {purchase.voidProviderCode && <p className="text-xs text-destructive">UPS void response code: {purchase.voidProviderCode}</p>}
@@ -1146,6 +1167,22 @@ export function FulfillmentShipmentEditor({
                 {['PURCHASED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
                   {purchase.status === 'PURCHASED' && isDraft && purchase.environment !== 'unknown' && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || purchase.environment !== upsEnvironment} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void UPS label</button>}
                   <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>
+                </div>}
+                {isDraft && purchase.status === 'PURCHASED' && purchase.environment !== 'live' &&
+                  purchase.providerShipmentId?.toUpperCase() === '1ZXXXXXXXXXXXXXXXX' && purchase.labels.length > 0 &&
+                  purchase.labels.every(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX') &&
+                  <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending}
+                    onClick={() => setRetireSamplePurchaseId(purchase.id)}>Retire sample label for replacement</button>}
+                {retireSamplePurchaseId === purchase.id && <div className="space-y-2 rounded border border-amber-500 p-2">
+                  <p className="text-xs">Owner/Admin review: this retires only the saved placeholder label. It does not contact UPS, confirm a void or refund, change the customer charge, or mark the shipment shipped. The original evidence remains in history.</p>
+                  {purchase.environment === 'unknown' && <p className="text-xs font-semibold">This historical label’s environment is unverified. Confirm test-mode provenance and record its evidence before proceeding.</p>}
+                  <textarea aria-label="Sample retirement reason" className="w-full rounded border p-2" value={retireSampleReason}
+                    onChange={event => setRetireSampleReason(event.target.value)} placeholder="Why is this sample label being replaced?" />
+                  <input aria-label="Test environment evidence reference" className="w-full rounded border p-2" value={retireSampleEvidence}
+                    onChange={event => setRetireSampleEvidence(event.target.value)} placeholder="Deployment, UPS account, or support evidence reference" />
+                  <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || retireSampleReason.trim().length < 10 ||
+                    (purchase.environment === 'unknown' && retireSampleEvidence.trim().length < 8)} onClick={() => void retireSampleLabel()}>Retire saved sample</button>
+                  <button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setRetireSamplePurchaseId(null)}>Cancel</button>
                 </div>}
                 {purchase.status === 'PURCHASED' && purchase.environment !== upsEnvironment &&
                   <p className="text-xs text-amber-700">Provider void requires a connection to this label’s original {purchase.environment === 'unknown' ? 'verified' : purchase.environment} environment. Use carrier support for historical unverified labels.</p>}

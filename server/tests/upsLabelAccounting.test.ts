@@ -5,7 +5,7 @@ jest.unstable_mockModule('../db', () => ({ db: {}, pool: {},
   probeDatabaseSchema: async () => undefined }));
 const { buildUpsLabelRequest, normalizeUpsPurchase, classifyUpsVoidResponse } = await import('../services/ups/upsLabels');
 const { projectUpsProfitability, upsProfitabilityCsv } = await import('../services/ups/upsProfitability');
-const { isDispatchableUpsLabel, isOriginalUpsEnvironment, isUpsPlaceholderTracking } = await import('../services/ups/upsLabelEnvironment');
+const { isDispatchableUpsLabel, isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } = await import('../services/ups/upsLabelEnvironment');
 
 const party = (name: string, address1: string) => ({ name, company: null, address1, address2: null,
   city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: '3175550100', email: null });
@@ -161,5 +161,15 @@ describe('UPS purchase and profitability contracts', () => {
     expect(isOriginalUpsEnvironment('live', 'live')).toBe(true);
     expect(isOriginalUpsEnvironment('test', 'live')).toBe(false);
     expect(isOriginalUpsEnvironment('unknown', 'test')).toBe(false);
+  });
+
+  test('only a purchased non-live placeholder can be retired locally', () => {
+    const sample = { status: 'PURCHASED', environment: 'unknown' as const,
+      providerShipmentId: '1ZXXXXXXXXXXXXXXXX', trackingNumbers: ['1ZXXXXXXXXXXXXXXXX'] };
+    expect(isRetirableUpsSample(sample)).toBe(true);
+    expect(isRetirableUpsSample({ ...sample, environment: 'test' })).toBe(true);
+    expect(isRetirableUpsSample({ ...sample, environment: 'live' })).toBe(false);
+    expect(isRetirableUpsSample({ ...sample, trackingNumbers: ['1ZREAL123456'] })).toBe(false);
+    expect(isRetirableUpsSample({ ...sample, status: 'UNCERTAIN' })).toBe(false);
   });
 });

@@ -51,7 +51,7 @@ import { canonicalFulfillmentOperations } from "../services/fulfillment/canonica
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
 import { getUpsRates } from '../services/ups/upsRates';
-import { buyUpsLabel, getUpsLabelHistory, readUpsPackageLabel, recoverRecordedUpsPurchase, voidUpsLabel } from '../services/ups/upsLabels';
+import { buyUpsLabel, getUpsLabelHistory, readUpsPackageLabel, recoverRecordedUpsPurchase, retireUpsSampleLabel, voidUpsLabel } from '../services/ups/upsLabels';
 import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
 import { applyUpsRateToCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
 import { getUpsProfitabilityReport, recordUpsCarrierAdjustment, upsProfitabilityCsv } from '../services/ups/upsProfitability';
@@ -186,6 +186,16 @@ export function registerFulfillmentRoutes(
     try { return res.json({ success: true, data: await recoverRecordedUpsPurchase(getRequestOrganizationId(req),
       req.params.shipmentId, req.params.purchaseId, getUserId(req.user)) }); }
     catch (error) { return upsFailure(res, error, 'UPS attempt recovery requires review.'); }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/retire-sample', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const input = z.object({ reason: z.string().trim().min(10).max(500),
+        evidenceReference: z.string().trim().min(8).max(300).optional() }).strict().parse(req.body);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      return res.json({ success: true, data: await retireUpsSampleLabel(getRequestOrganizationId(req),
+        req.params.shipmentId, req.params.purchaseId, actorUserId, input) });
+    } catch (error) { return upsFailure(res, error, 'Could not retire the sample label.'); }
   });
   app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/void', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try { const history = await getUpsLabelHistory(getRequestOrganizationId(req), req.params.shipmentId);
