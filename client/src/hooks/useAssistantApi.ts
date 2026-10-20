@@ -14,7 +14,9 @@ const conversationsKey = ["/api/assistant/conversations"] as const;
 export function assistantTurnFailureMessage(error: unknown): string {
   if (error instanceof ApiRequestError) {
     const reference = error.correlationId ? ` Reference: ${error.correlationId}.` : "";
-    if (error.code === "message_persistence_failed") return `The assistant could not save this turn. Refresh the conversation before retrying.${reference}`;
+    if (error.code === "message_persistence_failed") return `The assistant could not confirm this turn was saved. Your message is preserved and the conversation is refreshing. Check for any completed actions before retrying.${reference}`;
+    if (error.code === "conversation_not_found") return `This conversation is no longer available. Your message is preserved; retry to start a new conversation.${reference}`;
+    if (error.code === "request_id_conflict") return `This request was already used for another message. Your draft is preserved; refresh the conversation before retrying.${reference}`;
     if (error.code === "context_invalid") return `The page context was rejected. Refresh the page and try again.${reference}`;
     if (error.status === 401 || error.status === 403) return `Your session cannot send this turn. Sign in again or check access.${reference}`;
     if (error.status >= 500) return `The assistant request failed on the server. Retry after checking the conversation.${reference}`;

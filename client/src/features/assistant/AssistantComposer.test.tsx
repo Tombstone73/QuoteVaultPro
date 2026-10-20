@@ -110,7 +110,8 @@ describe("Assistant composer", () => {
   test("shows the persistence failure boundary and correlation reference without raw server text", () => {
     const error = new ApiRequestError("503: sensitive response", 503, "message_persistence_failed", "corr_123");
     const message = assistantTurnFailureMessage(error);
-    expect(message).toContain("could not save this turn");
+    expect(message).toContain("could not confirm this turn was saved");
+    expect(message).toContain("message is preserved");
     expect(message).toContain("corr_123");
     expect(message).not.toContain("sensitive response");
   });

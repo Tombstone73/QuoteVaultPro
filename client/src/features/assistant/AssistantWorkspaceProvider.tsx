@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { assistantTurnFailureMessage, useAssistantCapabilities, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
+import { ApiRequestError } from "@/lib/queryClient";
 import type { AssistantMessage } from "@shared/assistantContracts";
 import type { AssistantCapabilities, AssistantContextEnvelope, AssistantLayoutPreferences, AssistantPresentation } from "./types";
 import { buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, resolveAssistantPresentation, shouldEnableAssistantForRoute } from "./assistantWorkspaceCore";
@@ -47,6 +48,7 @@ type WorkspaceContextValue = {
   setDockSize: (size: number) => void;
   persistLayout: () => void;
   refreshContext: () => void;
+  setInvoicePageContext: (activeFilters: AssistantContextEnvelope['activeFilters'], selectedRecordIds: string[]) => void;
   activeConversationId: string | null;
   setActiveConversationId: React.Dispatch<React.SetStateAction<string | null>>;
   draft: string;
@@ -93,6 +95,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   const [optimisticConversationId, setOptimisticConversationId] = React.useState<string | null>(null);
   const activeTurnRef = React.useRef<ActiveAssistantTurn | null>(null);
   const startingTurnRef = React.useRef(false);
+  const retryTurnRef = React.useRef<{ conversationId: string; message: string; clientRequestId: string } | null>(null);
   const [activeTurn, setActiveTurn] = React.useState<ActiveAssistantTurn | null>(null);
   const [turnNotice, setTurnNotice] = React.useState<{ conversationId: string | null; message: string } | null>(null);
   React.useEffect(() => () => { activeTurnRef.current?.controller.abort(); }, []);
@@ -114,7 +117,10 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
         conversationId = conversation.id;
         setActiveConversationId(conversationId);
       }
-      const id = crypto.randomUUID();
+      const prior = retryTurnRef.current;
+      const id = prior?.conversationId === conversationId && prior.message === message
+        ? prior.clientRequestId : crypto.randomUUID();
+      retryTurnRef.current = { conversationId, message, clientRequestId: id };
       turnId = id;
       const controller = new AbortController();
       const turn = { id, controller, conversationId };
@@ -125,6 +131,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
       setOptimisticUserMessage({ id: `pending-${id}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
       const response = await sendTurn.mutateAsync({ conversationId, message, context, signal: controller.signal, clientRequestId: id });
       completed = true;
+      retryTurnRef.current = null;
       const persistedCorrelationId = typeof response?.data?.correlationId === "string" ? response.data.correlationId : null;
       if (persistedCorrelationId) setOptimisticUserMessage((current) => current?.id === `pending-${id}` ? { ...current, correlationId: persistedCorrelationId } : current);
       if (activeTurnRef.current?.id === id) {
@@ -132,6 +139,12 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
         setTurnNotice(null);
       }
     } catch (error) {
+      setDraft(current => current || message);
+      if (error instanceof ApiRequestError && error.code === "conversation_not_found") {
+        setActiveConversationId(null);
+        retryTurnRef.current = null;
+      }
+      if (error instanceof ApiRequestError && error.code === "request_id_conflict") retryTurnRef.current = null;
       if (!turnId || (activeTurnRef.current?.id === turnId && !activeTurnRef.current.controller.signal.aborted)) {
         setTurnNotice({ conversationId, message: assistantTurnFailureMessage(error) });
       }
@@ -166,7 +179,17 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   const [executionPlans, setExecutionPlans] = React.useState<WorkspaceContextValue["executionPlans"]>({});
 
   React.useEffect(() => {
-    setContext(buildAssistantContext(location.pathname));
+    setContext(current => current.route === location.pathname ? current : buildAssistantContext(location.pathname));
+  }, [location.pathname]);
+
+  const setInvoicePageContext = React.useCallback((activeFilters: AssistantContextEnvelope['activeFilters'], selectedRecordIds: string[]) => {
+    if (location.pathname !== '/invoices') return;
+    setContext(current => {
+      const next = { ...current, route: '/invoices', entityType: 'invoice' as const,
+        pageTitle: 'Invoices', activeFilters, selectedRecordIds, capturedAt: new Date().toISOString() };
+      return JSON.stringify([current.activeFilters, current.selectedRecordIds, current.route]) ===
+        JSON.stringify([next.activeFilters, next.selectedRecordIds, next.route]) ? current : next;
+    });
   }, [location.pathname]);
 
   React.useEffect(() => {
@@ -246,7 +269,8 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     setFloatingBounds: (bounds) => setLayout((current) => ({ ...current, floatingBounds: clampBounds(bounds) })),
     setDockSize: (dockSize) => setLayout((current) => ({ ...current, dockSize: Math.min(Math.max(dockSize, 300), 760) })),
     persistLayout,
-    refreshContext: () => setContext(buildAssistantContext(location.pathname)),
+    refreshContext: () => setContext(current => current.route === location.pathname ? current : buildAssistantContext(location.pathname)),
+    setInvoicePageContext,
     activeConversationId,
     setActiveConversationId,
     draft,
@@ -261,7 +285,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     executionPlans,
     saveExecutionPlan,
     updateExecutionPlan,
-  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
+  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setInvoicePageContext, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
 
   return <AssistantWorkspaceContext.Provider value={value}>{children}</AssistantWorkspaceContext.Provider>;
 }

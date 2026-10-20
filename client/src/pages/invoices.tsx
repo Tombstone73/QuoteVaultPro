@@ -53,6 +53,7 @@ import { CloseJobOverrideAction, CloseJobOverrideDialog, type CloseJobOverrideTa
 import { OrderNumberLink } from "@/components/orders/OrderNumberLink";
 import { MultiInvoicePaymentDialog } from "@/components/invoices/MultiInvoicePaymentDialog";
 import { InvoiceColumnResizeHandle } from "@/components/invoices/InvoiceColumnResizeHandle";
+import { useAssistantWorkspace } from "@/features/assistant/AssistantWorkspaceProvider";
 
 const EMPTY_VALUE = "\u2014";
 
@@ -281,6 +282,7 @@ const INVOICE_BUILTIN_PRESETS: InvoiceBuiltinPreset[] = [
 ];
 
 export default function InvoicesListPage() {
+  const { setInvoicePageContext } = useAssistantWorkspace();
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -386,6 +388,20 @@ export default function InvoicesListPage() {
   const setIncludePaidHistorical = (nextValue: boolean) => updateListState({ includePaidHistorical: nextValue ? "1" : undefined }, true);
   const setIncludeCanceled = (nextValue: boolean) => updateListState({ includeCanceled: nextValue ? "1" : undefined }, true);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
+  const assistantPageState = JSON.stringify({
+    filters: { ...(statusFilter !== 'all' ? { status: statusFilter } : {}),
+      ...(includePaidHistorical ? { includePaidHistorical: '1' } : {}),
+      ...(includeCanceled ? { includeCanceled: '1' } : {}),
+      ...(customerIds ? { customerIds } : {}),
+      ...(normalizeInvoiceListSearchQuery(search) ? { search: normalizeInvoiceListSearchQuery(search) } : {}),
+      ...columnFilters, page: String(page), pageSize: String(pageSize), sortBy: sortKey, sortDir },
+      selected: Array.from(selectedInvoiceIds),
+  });
+  useEffect(() => {
+    const state = JSON.parse(assistantPageState) as { filters: Record<string, string>; selected: string[] };
+    setInvoicePageContext(Object.entries(state.filters).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .map(([key, value]) => ({ key, value: value.slice(0, 256) })), state.selected);
+  }, [assistantPageState, setInvoicePageContext]);
   const invoiceSelectionAnchorRef = useRef<string | null>(null);
   const invoiceCheckboxClickRef = useRef<{ invoiceId: string; shiftKey: boolean } | null>(null);
   const [showTotals, setShowTotals] = useState(getInvoiceTotalsVisible);

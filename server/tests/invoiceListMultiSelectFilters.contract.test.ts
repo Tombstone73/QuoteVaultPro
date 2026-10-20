@@ -7,8 +7,10 @@ const source = (file: string) => readFile(path.resolve(process.cwd(), file), "ut
 describe("Invoice list multi-select filter contract", () => {
   it("normalizes legacy and CSV categorical request values before the canonical list read", async () => {
     const routes = await source("server/routes/mvpInvoicing.routes.ts");
-    expect(routes).toContain("function invoiceListQueryValues");
-    expect(routes).toContain("item.split(',')");
+    const filters = await source("server/invoiceListFilters.ts");
+    expect(routes).toContain("invoiceListQueryValues");
+    expect(filters).toContain("function invoiceListQueryValues");
+    expect(filters).toContain("item.split(',')");
     expect(routes).toContain("status: statusValues?.length === 1 ? statusValues[0] : undefined");
     expect(routes).toContain("statuses: statusValues && statusValues.length > 1 ? statusValues : undefined");
   });
@@ -33,8 +35,8 @@ describe("Invoice list multi-select filter contract", () => {
 
   it("keeps exact displayed Job Status values separate while preserving legacy open and complete semantics", async () => {
     const service = await source("server/invoicesService.ts");
-    const routes = await source("server/routes/mvpInvoicing.routes.ts");
-    expect(routes).toContain("['open', 'complete', 'job_complete', 'new', 'in_production', 'on_hold', 'ready_for_shipment', 'production_complete', 'fulfillment_complete', 'closed', 'cancelled'");
+    const filters = await source("server/invoiceListFilters.ts");
+    expect(filters).toContain("['open', 'complete', 'job_complete', 'new', 'in_production', 'on_hold', 'ready_for_shipment', 'production_complete', 'fulfillment_complete', 'closed', 'cancelled'");
     expect(service).toContain("function canonicalDisplayedJobStatusExpression()");
     expect(service).toContain("return canonicalDisplayedJobStatusExpression();");
     expect(service).toContain("fulfillment_complete: 'fulfillment complete'");

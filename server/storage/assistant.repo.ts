@@ -66,6 +66,33 @@ function conversationPredicate(scope: AssistantScope, conversationId: string) {
 }
 
 export class DrizzleAssistantRepository implements AssistantRepository {
+  async getTurnByClientRequestId(input: AssistantScope & { conversationId: string; clientRequestId: string }): Promise<AssistantTurnResult | null> {
+    const [row] = await db.select({ turn: aiTurns }).from(aiTurns)
+      .innerJoin(aiConversations, eq(aiTurns.conversationId, aiConversations.id))
+      .where(and(conversationPredicate(input, input.conversationId), eq(aiTurns.orgId, input.organizationId),
+        eq(aiTurns.userId, input.userId), eq(aiTurns.clientRequestId, input.clientRequestId)))
+      .limit(1);
+    if (!row) return null;
+    const messages = await db.select().from(aiMessages).where(and(eq(aiMessages.orgId, input.organizationId),
+      eq(aiMessages.conversationId, input.conversationId), eq(aiMessages.turnId, row.turn.id)));
+    const userMessage = messages.find(message => message.role === "user");
+    const assistantMessage = messages.find(message => message.role === "assistant");
+    const conversation = await this.getConversation(input);
+    if (!userMessage || !assistantMessage || !conversation) return null;
+    return { turnId: row.turn.id, correlationId: row.turn.correlationId,
+      status: row.turn.status === "failed" ? "failed" : "responded", conversation,
+      userMessage: toMessage(userMessage), assistantMessage: toMessage(assistantMessage) };
+  }
+
+  async recordTurnPersistenceFailure(input: AssistantScope & { conversationId: string; correlationId: string;
+    stage: string; databaseCode: string | null; constraint: string | null; table: string | null }): Promise<void> {
+    await db.insert(aiAuditEvents).values({ orgId: input.organizationId, actorUserId: input.userId,
+      eventType: "assistant_turn_persistence_failed", status: "failed", correlationId: input.correlationId,
+      metadata: { stage: input.stage, databaseCode: input.databaseCode, constraint: input.constraint, table: input.table,
+        conversationId: input.conversationId },
+    });
+  }
+
   async listConversations(scope: AssistantScope, status: "active" | "archived" = "active"): Promise<AssistantConversationRecord[]> {
     const rows = await db
       .select()
@@ -213,6 +240,13 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       // (conversation_id, sequence) unique key.
       persistenceStage = "lock_conversation_sequence";
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${conversation.id}))`);
+      if (input.clientRequestId) {
+        const [existing] = await tx.select({ id: aiTurns.id }).from(aiTurns).where(and(
+          eq(aiTurns.orgId, input.organizationId), eq(aiTurns.conversationId, conversation.id),
+          eq(aiTurns.userId, input.userId), eq(aiTurns.clientRequestId, input.clientRequestId),
+        )).limit(1);
+        if (existing) return { existingTurnId: existing.id };
+      }
 
       if (input.materialTaskTransition) {
         persistenceStage = "material_task_transition";
@@ -401,6 +435,12 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       throw error;
     });
     if (!created) return null;
+    if ("existingTurnId" in created) {
+      const existing = await this.getTurnByClientRequestId({ ...input, clientRequestId: input.clientRequestId! });
+      if (!existing) throw new Error("Previously saved assistant turn could not be reloaded.");
+      if (existing.userMessage.content !== input.message) throw new Error("Assistant request ID was reused for another message.");
+      return existing;
+    }
 
     const conversation = await this.getConversation(input);
     if (!conversation) throw new Error("Assistant conversation disappeared after turn creation.");

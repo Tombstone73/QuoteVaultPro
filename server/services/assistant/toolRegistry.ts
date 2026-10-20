@@ -38,6 +38,8 @@ import {
   analyticsCustomerUninvoicedOrdersResultSchema,
   analyticsInvoiceActivityInputSchema,
   analyticsInvoiceActivityResultSchema,
+  assistantInvoiceFilterTotalInputSchema,
+  assistantInvoiceFilterTotalResultSchema,
   assistantOrderSummaryInputSchema,
   assistantOrderSummaryResultSchema,
   assistantOrderSearchInputSchema,
@@ -380,6 +382,18 @@ const toolMetadata = {
     sourceLinkBehavior: "required",
     auditCategory: "assistant_analytics_invoice_activity",
     modelSummarizationAllowed: true,
+  },
+  "analytics.invoice_filter_total": {
+    description: "Return the full tenant-scoped Invoice count and invoice-total sum by currency for the Invoice page's named Ready to Finalize filter or its current filters. Ready to Finalize is a page preset (completed job/fulfillment and never successfully sent), not an Invoice status enum. No date range or 200-row cap. Use named_filter for 'ready to finalize'; current_filtered for 'these filtered invoices'; current_page or selected_rows only when explicitly requested. The metric is Invoice total, not balance or collected revenue.",
+    requiredPermission: "finance_read", requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantInvoiceFilterTotalInputSchema,
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["scope"], properties: {
+      scope: { enum: ["named_filter", "current_filtered", "current_page", "selected_rows"] },
+      namedFilter: { enum: ["ready_to_finalize"] },
+    } },
+    resultSchema: assistantInvoiceFilterTotalResultSchema, maxResults: 20, timeoutMs: 5_000,
+    dataClassification: "restricted_finance", sourceLinkBehavior: "required",
+    auditCategory: "assistant_analytics_invoice_filter_total", modelSummarizationAllowed: true,
   },
   "analytics.customer_balance": {
     description: "Read current customer invoice outstanding from the authoritative tenant-scoped Accounts Receivable summary, including qualifying reconciled historical A/R. Requires customer {id?,name?}; no date range or pagination. Supply the exact customer name or a trusted id. This is invoice outstanding, not uninvoiced order value or a net balance after unapplied account credits. Never infer zero if this read fails.",

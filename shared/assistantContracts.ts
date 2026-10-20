@@ -77,6 +77,7 @@ export const assistantToolNameValues = [
   "analytics.customer_product_sales",
   "analytics.customer_uninvoiced_orders",
   "analytics.invoice_activity",
+  "analytics.invoice_filter_total",
   "analytics.customer_balance",
 ] as const;
 export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "analytical_reporting", "navigation", "unsupported_write", "clarification"] as const;
@@ -233,8 +234,8 @@ export const assistantContextEnvelopeSchema = z.object({
   pageTitle: z.string().trim().min(1).max(240),
   entityType: z.enum(assistantEntityTypeValues).optional(),
   entityId: assistantSafeIdentifierSchema.optional(),
-  selectedRecordIds: z.array(assistantSafeIdentifierSchema).max(25).default([]),
-  activeFilters: z.array(assistantActiveFilterSchema).max(20).default([]),
+  selectedRecordIds: z.array(assistantSafeIdentifierSchema).max(100).default([]),
+  activeFilters: z.array(assistantActiveFilterSchema).max(40).default([]),
   capturedAt: assistantIsoDateTimeSchema,
   unsavedChanges: z.boolean(),
   focusedFieldId: assistantSafeIdentifierSchema.optional(),
@@ -259,6 +260,11 @@ export const assistantContextEnvelopeSchema = z.object({
 });
 export type AssistantContextEnvelope = z.infer<typeof assistantContextEnvelopeSchema>;
 
+/** Invoice-page presets are UI filters, not persisted Invoice status values. */
+export const assistantInvoiceFilterTotalInputSchema = z.object({
+  scope: z.enum(["named_filter", "current_filtered", "current_page", "selected_rows"]),
+  namedFilter: z.literal("ready_to_finalize").optional(),
+}).strict();
 export const assistantSourceLinkSchema = z.object({
   label: z.string().trim().min(1).max(160),
   href: z.string().trim().min(1).max(512).startsWith("/"),
@@ -267,6 +273,16 @@ export const assistantSourceLinkSchema = z.object({
   capturedAt: assistantIsoDateTimeSchema.optional(),
 }).strict();
 export type AssistantSourceLink = z.infer<typeof assistantSourceLinkSchema>;
+
+export const assistantInvoiceFilterTotalResultSchema = z.object({
+  scope: z.enum(["named_filter", "current_filtered", "current_page", "selected_rows"]),
+  filterLabel: z.string().min(1).max(120),
+  metric: z.literal("invoice_total"),
+  count: z.number().int().nonnegative(),
+  totalsByCurrency: z.array(z.object({ currency: z.string().min(3).max(8), count: z.number().int().nonnegative(),
+      totalCents: z.number().int().safe() }).strict()).max(20),
+  sourceLink: assistantSourceLinkSchema,
+}).strict();
 
 /** A reduced, presentation-safe provenance object required for every Stage 2
  * business result.  It deliberately never accepts external URLs. */

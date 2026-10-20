@@ -203,10 +203,23 @@ describe("AssistantService", () => {
       .rejects.toMatchObject({ code: "ASSISTANT_MESSAGE_PERSISTENCE_FAILED", statusCode: 503 });
   });
 
+  test("returns a previously persisted request without rerunning or inserting a turn", async () => {
+    const existing = { turnId: "turn_saved", correlationId: "original_ref", status: "responded",
+      conversation: makeConversation(),
+      userMessage: { id: "user_saved", content: "What is ready to finalize?", role: "user" },
+      assistantMessage: { id: "answer_saved", content: "Saved answer", role: "assistant" } };
+    const repo = makeRepo({ getTurnByClientRequestId: jest.fn(async () => existing) });
+    const service = new AssistantService(repo, resolver);
+    const result = await service.createTurn(scope, "conversation_1", actor,
+      { message: "What is ready to finalize?", context, clientRequestId: "request_saved" });
+    expect(result).toBe(existing);
+    expect(repo.createFoundationTurn).not.toHaveBeenCalled();
+  });
+
   test("context contract rejects oversized selected-record scope", () => {
     expect(() => assistantContextEnvelopeSchema.parse({
       ...context,
-      selectedRecordIds: Array.from({ length: 26 }, (_, index) => `record_${index}`),
+      selectedRecordIds: Array.from({ length: 101 }, (_, index) => `record_${index}`),
     })).toThrow();
   });
 });

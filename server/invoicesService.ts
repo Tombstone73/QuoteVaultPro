@@ -298,6 +298,7 @@ export interface ListInvoicesForOrganizationOptions {
   statuses?: readonly string[];
   customerId?: string;
   customerIds?: string[];
+  invoiceIds?: string[];
   orderId?: string;
   search?: string;
   /** Allowlisted, server-composed column predicates for the Invoice workspace. */
@@ -336,6 +337,7 @@ export type InvoiceListPage = {
   pageSize: number;
   totalCount: number;
   totalValueCents: number;
+  totalsByCurrency: Array<{ currency: string; count: number; totalCents: number }>;
   totalPages: number;
   summary?: InvoiceDashboardSummary;
 };
@@ -546,6 +548,7 @@ export async function listInvoicesPageForOrganization(
     .filter((id) => !excludedCustomerIds.includes(id));
   if (customerIds.length === 1) whereClauses.push(eq(canonicalInvoiceCustomerId, customerIds[0]!));
   if (customerIds.length > 1) whereClauses.push(inArray(canonicalInvoiceCustomerId, customerIds));
+  if (opts.invoiceIds) whereClauses.push(opts.invoiceIds.length ? inArray(invoices.id, opts.invoiceIds) : sql`false`);
   if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
   const postedOrIssuedAt = sql<Date>`coalesce(${invoices.issuedAt}, ${invoices.issueDate})`;
   if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
@@ -709,8 +712,11 @@ export async function listInvoicesPageForOrganization(
 
   // The joins above are all single-record enrichment joins.  Count the same
   // scoped query rather than inferring a total from the bounded result set.
-  const countQuery = db
-    .select({ totalCount: count(), totalValueCents: sql<string>`coalesce(sum(${invoices.totalCents}), 0)::bigint` })
+  // Deduplicate by invoice identity before aggregation. Future enrichment
+  // joins must not multiply a financial total, and currency is never blended
+  // in the assistant's answer.
+  const matchingInvoiceValues = db
+    .selectDistinctOn([invoices.id], { id: invoices.id, currency: invoices.currency, totalCents: invoices.totalCents })
     .from(invoices)
     .leftJoin(orders, and(
       eq(orders.id, invoices.orderId),
@@ -724,7 +730,10 @@ export async function listInvoicesPageForOrganization(
       eq(customerContacts.id, sql<string>`coalesce(${invoices.contactId}, ${orders.contactId})`),
       eq(customerContacts.organizationId, opts.organizationId),
     ))
-    .where(and(...whereClauses));
+    .where(and(...whereClauses)).as('matching_invoice_values');
+  const countQuery = db.select({ currency: matchingInvoiceValues.currency, totalCount: count(),
+    totalValueCents: sql<string>`coalesce(sum(${matchingInvoiceValues.totalCents}), 0)::bigint` })
+    .from(matchingInvoiceValues).groupBy(matchingInvoiceValues.currency).orderBy(matchingInvoiceValues.currency);
 
   const summaryPromise: Promise<InvoiceDashboardSummary | undefined> = opts.includeSummary ? (async () => {
     const now = new Date();
@@ -767,9 +776,12 @@ export async function listInvoicesPageForOrganization(
   })() : Promise.resolve(undefined);
 
   const [rows, countRows, summary] = await Promise.all([rowsQuery, countQuery, summaryPromise]);
-  const totalCount = Math.max(0, Number(countRows[0]?.totalCount ?? 0));
-  const totalValueCents = Number(countRows[0]?.totalValueCents ?? 0);
-  if (!Number.isSafeInteger(totalValueCents)) throw new Error('Invoice list value exceeds safe integer cents');
+  const totalsByCurrency = countRows.map(row => ({ currency: row.currency, count: Number(row.totalCount), totalCents: Number(row.totalValueCents) }));
+  if (totalsByCurrency.some(row => !Number.isSafeInteger(row.count) || !Number.isSafeInteger(row.totalCents)))
+    throw new Error('Invoice list aggregate exceeds safe integer range');
+  const totalCount = totalsByCurrency.reduce((sum, row) => sum + row.count, 0);
+  const totalValueCents = totalsByCurrency.reduce((sum, row) => sum + row.totalCents, 0);
+  if (!Number.isSafeInteger(totalCount) || !Number.isSafeInteger(totalValueCents)) throw new Error('Invoice list aggregate exceeds safe integer range');
 
   return {
     items: rows.map((row) => ({
@@ -792,6 +804,7 @@ export async function listInvoicesPageForOrganization(
     pageSize: limit,
     totalCount,
     totalValueCents,
+    totalsByCurrency,
     totalPages: Math.max(1, Math.ceil(totalCount / limit)),
     summary,
   };

@@ -116,6 +116,8 @@ function sendError(res: Response, error: unknown) {
   if (error instanceof AssistantServiceError) {
     const code = error.code === "ASSISTANT_CONVERSATION_NOT_FOUND"
       ? "conversation_not_found"
+        : error.code === "ASSISTANT_REQUEST_ID_CONFLICT"
+          ? "request_id_conflict"
       : error.code === "ASSISTANT_DISABLED"
         ? "assistant_disabled"
         : error.code === "ASSISTANT_MESSAGE_PERSISTENCE_FAILED"
@@ -277,7 +279,18 @@ export function registerAssistantRoutes(
     const reference = String(req.params.reference ?? "");
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(reference)) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
     const rows = await db.select().from(aiAuditEvents).where(and(eq(aiAuditEvents.orgId, scope.organizationId), or(eq(aiAuditEvents.correlationId, reference), eq(sql<string>`${aiAuditEvents.metadata}->>'referenceId'`, reference)))).orderBy(asc(aiAuditEvents.createdAt)).limit(20);
-    const diagnostics = rows.flatMap((row) => { const parsed = aiDiagnosticEnvelopeSchema.safeParse(row.metadata); return parsed.success ? [parsed.data] : []; });
+    const diagnostics = rows.flatMap<unknown>((row) => {
+      if (row.eventType === "assistant_turn_persistence_failed") {
+        const metadata = row.metadata as Record<string, unknown>;
+        return [{ reference: row.correlationId, eventType: row.eventType, occurredAt: row.createdAt,
+          stage: typeof metadata.stage === "string" ? metadata.stage : "unknown",
+          databaseCode: typeof metadata.databaseCode === "string" ? metadata.databaseCode : null,
+          constraint: typeof metadata.constraint === "string" ? metadata.constraint : null,
+          table: typeof metadata.table === "string" ? metadata.table : null }];
+      }
+      const parsed = aiDiagnosticEnvelopeSchema.safeParse(row.metadata);
+      return parsed.success ? [parsed.data] : [];
+    });
     await db.insert(aiAuditEvents).values({ orgId: scope.organizationId, actorUserId: scope.userId, eventType: "ai_diagnostic_lookup", status: diagnostics.length ? "found" : "not_found", correlationId: reference, metadata: { identifierType: reference.startsWith("aip-") || reference.startsWith("pic-") ? "reference" : "correlation", reference, matchingEvents: diagnostics.length } }).catch(() => undefined);
     if (!diagnostics.length) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
     return res.json({ success: true, data: diagnostics });

@@ -19,6 +19,7 @@ import { createStage2OrderProductToolAdapters } from "./orderProductOperationalT
 import { createAssistantProductionReportingToolAdapters } from "./productionReportingTools";
 import { createAssistantAnalyticsReportingToolAdapters } from "./analyticsReportingTools";
 import { createAssistantInvoiceActivityToolAdapters } from "./invoiceActivityTools";
+import { createAssistantInvoiceFilterTotalToolAdapters } from "./invoiceFilterTotalTools";
 import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryTools";
 import { createAssistantOrderSearchToolAdapters } from "./orderSearchTools";
 import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
@@ -109,6 +110,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
     ...createAssistantCompletedJobReportingToolAdapters(),
     ...createAssistantAnalyticsReportingToolAdapters(),
     ...createAssistantInvoiceActivityToolAdapters(),
+    ...createAssistantInvoiceFilterTotalToolAdapters(),
     "search.global": {
       async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
         const input = assistantGlobalSearchInputSchema.parse(rawInput);

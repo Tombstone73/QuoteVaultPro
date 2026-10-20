@@ -136,6 +136,8 @@ export interface AssistantRepository {
   createConversation(input: AssistantScope & { title?: string | null }): Promise<AssistantConversationRecord>;
   getConversation(scope: AssistantScope & { conversationId: string }): Promise<AssistantConversationDetailRecord | null>;
   getLatestAssistantMessage(scope: AssistantScope & { conversationId: string }): Promise<AssistantMessageRecord | null>;
+  getTurnByClientRequestId?(input: AssistantScope & { conversationId: string; clientRequestId: string }): Promise<AssistantTurnResult | null>;
+  recordTurnPersistenceFailure?(input: AssistantScope & { conversationId: string; correlationId: string; stage: string; databaseCode: string | null; constraint: string | null; table: string | null }): Promise<void>;
   updateConversation(input: AssistantScope & { conversationId: string; patch: AssistantUpdateConversationRequest }): Promise<AssistantConversationRecord | null>;
   archiveConversations(input: AssistantScope & { conversationIds: string[] }): Promise<AssistantConversationRecord[]>;
   /** Replaces the canonical Product Intent cards on the assistant turn that
@@ -866,6 +868,13 @@ export class AssistantService {
         capability.unavailableReason ?? "The assistant is unavailable.",
         503,
       );
+    }
+    if (request.clientRequestId && this.repo.getTurnByClientRequestId) {
+      const existing = await this.repo.getTurnByClientRequestId({ ...scope, conversationId, clientRequestId: request.clientRequestId });
+      if (existing) {
+        if (existing.userMessage.content !== request.message) throw new AssistantServiceError("ASSISTANT_REQUEST_ID_CONFLICT", "This request ID belongs to a different message. Refresh the conversation.", 409);
+        return existing;
+      }
     }
 
     const correlationId = options?.correlationId ?? crypto.randomUUID();
@@ -1634,6 +1643,13 @@ export class AssistantService {
         constraint: typeof failure?.constraint === "string" ? failure.constraint : null,
         table: typeof failure?.table === "string" ? failure.table : null,
       });
+      await this.repo.recordTurnPersistenceFailure?.({ organizationId: input.organizationId, userId: input.userId,
+        conversationId: input.conversationId, correlationId: input.correlationId,
+        stage: typeof failure?.assistantPersistenceStage === "string" ? failure.assistantPersistenceStage : "reload_conversation_or_unknown",
+        databaseCode: typeof failure?.code === "string" ? failure.code : null,
+        constraint: typeof failure?.constraint === "string" ? failure.constraint : null,
+        table: typeof failure?.table === "string" ? failure.table : null,
+      }).catch(() => undefined);
       throw new AssistantServiceError(
         "ASSISTANT_MESSAGE_PERSISTENCE_FAILED",
         "The lookup completed, but the assistant response could not be saved. Please retry.",
@@ -1710,11 +1726,23 @@ function displayToolTitle(toolName: string): string {
     "analytics.customer_uninvoiced_orders": "Uninvoiced orders",
     "analytics.customer_balance": "Current invoice outstanding",
     "analytics.invoice_activity": "Invoice activity",
+    "analytics.invoice_filter_total": "Invoice filter total",
   };
   return titles[toolName] ?? "Assistant result";
 }
 
 function summaryForTool(toolName: string, data: any): string {
+  if (toolName === "analytics.invoice_filter_total") {
+    const totals = Array.isArray(data.totalsByCurrency) ? data.totalsByCurrency as Array<{ currency: string; totalCents: number }> : [];
+    const formatted = totals.length ? totals.map(({ currency, totalCents }) => {
+      try { return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(totalCents / 100); }
+      catch { return `${currency} ${(totalCents / 100).toFixed(2)}`; }
+    }).join(" and ") : null;
+    const subject = data.scope === "named_filter" ? `${data.filterLabel} filter` : data.filterLabel;
+    return formatted
+      ? `Your ${subject} contains ${data.count} ${data.count === 1 ? "invoice" : "invoices"} totaling ${formatted} in invoice total.`
+      : `Your ${subject} contains no invoices. The invoice total is zero; no currency applies.`;
+  }
   if (toolName === "analytics.customer_balance") {
     const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(data.invoiceOutstandingCents / 100);
     return `${data.customer.displayName}'s current invoice outstanding is ${amount} as of ${data.asOf}, across ${data.openInvoiceCount} open invoices, from canonical Accounts Receivable. This includes qualifying reconciled historical A/R, excludes uninvoiced work, and does not deduct unapplied account credits.`;

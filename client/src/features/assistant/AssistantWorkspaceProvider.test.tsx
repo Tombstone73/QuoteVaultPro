@@ -3,10 +3,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { jest, test, expect } from "@jest/globals";
 
-const mockSendTurn = jest.fn<(input: { signal: AbortSignal }) => Promise<unknown>>();
+const mockSendTurn = jest.fn<(input: { signal: AbortSignal; clientRequestId: string; message: string }) => Promise<unknown>>();
 jest.mock("react-router-dom", () => ({ useLocation: () => ({ pathname: "/products" }) }));
 jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ isAuthenticated: true, isPortalCustomer: false }) }));
 jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
+jest.mock("@/lib/queryClient", () => ({ ApiRequestError: class ApiRequestError extends Error { code?: string; constructor(message: string, code?: string) { super(message); this.code = code; } } }));
 jest.mock("@/hooks/useAssistantApi", () => ({
   assistantTurnFailureMessage: () => "Turn failed",
   useAssistantCapabilities: () => ({ data: undefined, error: null, isLoading: false }),
@@ -55,6 +56,28 @@ test("minimizing preserves a turn, Stop recovers immediately, and a late old rep
   expect(workspace.activeTurn?.id).toBe(secondId);
   await act(async () => { second.resolve({ data: { correlationId: "new_corr" } }); });
   expect(workspace.activeTurn).toBeNull();
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("failed persistence preserves the draft and explicit retry reuses the request ID", async () => {
+  Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: jest.fn(() => "request_retry") });
+  mockSendTurn.mockReset().mockRejectedValueOnce(new Error("write failed"))
+    .mockResolvedValueOnce({ data: { correlationId: "saved_ref" } });
+  let workspace!: ReturnType<typeof useAssistantWorkspace>;
+  function Harness() { workspace = useAssistantWorkspace(); return null; }
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => { root.render(<AssistantWorkspaceProvider><Harness /></AssistantWorkspaceProvider>); });
+  await act(async () => { workspace.setDraft("Keep this message"); });
+  await act(async () => { await workspace.sendOrdinaryTurn("Keep this message", true); });
+  expect(workspace.draft).toBe("Keep this message");
+  expect(workspace.turnNotice?.message).toBe("Turn failed");
+  await act(async () => { await workspace.sendOrdinaryTurn("Keep this message", true); });
+  expect(mockSendTurn).toHaveBeenCalledTimes(2);
+  expect(mockSendTurn.mock.calls[1][0].clientRequestId).toBe(mockSendTurn.mock.calls[0][0].clientRequestId);
+  expect(workspace.draft).toBe("");
   await act(async () => root.unmount());
   container.remove();
 });
