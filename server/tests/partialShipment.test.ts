@@ -1,14 +1,18 @@
 import { afterEach, expect, jest, test } from '@jest/globals';
-import { shipments, shipmentItems, orders, fulfillmentEvents } from '@shared/schema';
-import { resolveFulfillmentLineQuantity } from '@shared/fulfillmentReadiness';
-import { orderShippingContext } from '../services/fulfillment/shippingContext';
-import { FulfillmentHttpError } from '../services/fulfillment/types';
+import { PgDialect } from 'drizzle-orm/pg-core';
 const capture = jest.fn<(...args: any[]) => Promise<any>>();
+jest.unstable_mockModule('../db', () => ({ db: {}, pool: {},
+  hasQuoteAttachmentPagesTable: () => false, hasPageCountStatusColumn: () => false,
+  probeDatabaseSchema: async () => undefined }));
 jest.unstable_mockModule('../services/shippingDocumentService', () => ({ getShippingDocumentSource: capture }));
+const { shipments, shipmentItems, orders, fulfillmentEvents } = await import('@shared/schema');
+const { resolveFulfillmentLineQuantity } = await import('@shared/fulfillmentReadiness');
+const { orderShippingContext } = await import('../services/fulfillment/shippingContext');
+const { FulfillmentHttpError } = await import('../services/fulfillment/types');
 const { FulfillmentDashboardRepo, ShipmentRepo } = await import('../services/fulfillment/repository');
 const { FulfillmentService } = await import('../services/fulfillment/service');
 
-afterEach(() => jest.restoreAllMocks());
+afterEach(() => { jest.restoreAllMocks(); capture.mockReset(); });
 function fixture(quantity: number, packageId: string | null = 'package-1', shipDate: Date | null = null, transactionErrors: unknown[] = []) {
   const shippingContext = orderShippingContext({ id: 'order-20306', shipToCompany: 'Recipient', shipToAddress1: '12 Main', shipToCity: 'Phoenix', shipToState: 'AZ', shipToPostalCode: '85001' });
   const shipment: any = { id: 'shipment-1', organizationId: 'org', status: 'DRAFT', shippingContext, shipDate, carrier: null, trackingNumber: null };
@@ -20,7 +24,7 @@ function fixture(quantity: number, packageId: string | null = 'package-1', shipD
   const attempts: any[] = [];
   const db: any = {
     transaction: jest.fn(async (callback: any) => {
-      responses = [[shipment], items, [{ id: 'package-1' }], [{ orderId: 'order-20306', shippingMethod: 'ship' }], [{ orderedQty: 2 }], [{ shippedQty: quantity }], [{ id: 'line-1' }], []];
+      responses = [[shipment], [], [], items, [{ id: 'package-1' }], [{ orderId: 'order-20306', shippingMethod: 'ship' }], [{ orderedQty: 2 }], [{ shippedQty: quantity }], [{ id: 'line-1' }], []];
       const beforeShipment = structuredClone(shipment); const beforeOrder = structuredClone(order); const eventCount = events.length;
       // structuredClone returns host-realm Dates; the serializer uses Jest's Date.
       if (shipment.shipDate) beforeShipment.shipDate = new Date(shipment.shipDate.getTime());
@@ -61,7 +65,7 @@ function fixture(quantity: number, packageId: string | null = 'package-1', shipD
     expect(shipment.status).toBe('DRAFT');
     return { version: 1, basis: 'shipped', shipDate: shipment.shipDate.toISOString().slice(0, 10), lines: items.map(item => ({ quantity: item.quantity })) };
   });
-  const eligibility = jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-1', orderId: 'order-20306', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, productionCompleteQuantity: 2 }) }]);
+  const eligibility = jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-1', orderId: 'order-20306', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, productionCompleteQuantity: 2, readyWaitingQuantity: 2 }) }]);
   return { repo: new ShipmentRepo(db), shipment, items, order, events, eligibility, db, attempts, locks };
 }
 
@@ -191,7 +195,7 @@ test.each(['08006', 'ECONNRESET'])('an ambiguous %s commit failure never reexecu
 });
 
 test('legacy DRAFT context resolves on read without persisting while terminal context stays recorded only', async () => {
-  const legacy: any = { id: 'shipment-1', status: 'DRAFT', shippingContext: null, orders: [{ orderId: 'order-20306' }], packages: [] };
+  const legacy: any = { id: 'shipment-1', status: 'DRAFT', shippingContext: null, orders: [{ orderId: 'order-20306' }], packages: [], items: [] };
   const write = jest.fn(() => { throw new Error('GET must not write'); });
   const rows = [[{ id: 'order-20306', shipToCompany: 'Recipient', shipToAddress1: '12 Main', shipToCity: 'Phoenix', shipToState: 'AZ', shipToPostalCode: '85001', blindShipping: true }], [{ settings: {} }], [{ settings: {} }]];
   const database: any = { update: write, insert: write, delete: write, select: () => {
@@ -199,7 +203,10 @@ test('legacy DRAFT context resolves on read without persisting while terminal co
     for (const method of ['from', 'where', 'leftJoin', 'limit']) chain[method] = () => chain;
     return chain;
   } };
-  const service = new FulfillmentService({ shipmentRepo: { getShipmentById: async () => legacy } as any, dbInstance: database });
+  const service = new FulfillmentService({ shipmentRepo: { getShipmentById: async () => legacy,
+    listDraftReservationQuantities: async () => new Map() } as any,
+    dashboardRepo: { listLineEligibility: async () => [] } as any, dbInstance: database });
+  jest.spyOn(service as any, 'getPackingMode').mockResolvedValue('simple');
   await expect(service.getShipment('org', 'shipment-1')).resolves.toMatchObject({ shippingContext: { blindShipping: true, blindSender: null, sourceOrderId: 'order-20306' } });
   expect(legacy.shippingContext).toBeNull();
   legacy.status = 'SHIPPED';
@@ -228,12 +235,88 @@ test('draft replacement persists the reduced quantity on its canonical package a
     return chain;
   }, delete: (table: any) => ({ where: async () => { expect(table).toBe(shipmentItems); saved = []; } }), insert: (table: any) => ({ values: async (values: any[]) => { expect(table).toBe(shipmentItems); saved = values; } }) };
   const repo = new ShipmentRepo(db);
-  jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-1', orderId: 'order-20306', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2 }) }]);
-  responses = [[{ id: 'shipment-1' }], [{ orderId: 'order-20306' }], [{ id: 'line-1', orderId: 'order-20306', quantity: 2 }], [{ id: 'package-1' }]];
+  jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-1', orderId: 'order-20306', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, readyWaitingQuantity: 2 }) }]);
+  jest.spyOn(repo, 'listDraftReservationQuantities').mockResolvedValue(new Map());
+  responses = [[{ id: 'shipment-1', status: 'DRAFT' }], [], [{ id: 'shipment-1' }], [{ orderId: 'order-20306' }], [{ id: 'line-1', orderId: 'order-20306', quantity: 2 }], [{ id: 'package-1' }]];
   await expect(repo.replaceDraftShipmentItems('org', 'shipment-1', [{ orderId: 'order-20306', orderLineItemId: 'line-1', quantity: 1, packageId: 'package-1' }])).resolves.toEqual({ ok: true });
   expect(locked).toBe(true);
   expect(saved).toEqual([expect.objectContaining({ organizationId: 'org', shipmentId: 'shipment-1', packageId: 'package-1', quantity: 1 })]);
-  responses = [[{ id: 'shipment-1' }], [{ orderId: 'order-20306' }]];
+  responses = [[{ id: 'shipment-1', status: 'DRAFT' }], [], [{ id: 'shipment-1' }], [{ orderId: 'order-20306' }]];
   await repo.replaceDraftShipmentItems('org', 'shipment-1', []);
   expect(saved).toEqual([]);
+});
+
+test('competing draft reservations leave 40 of 100 ready signs for two boxes, then 60 for three boxes', async () => {
+  let rows: any[][] = [];
+  let saved: any[] = [];
+  const lineLocks: string[] = [];
+  const database: any = { transaction: async (callback: any) => callback(database), execute: async (query: any) => {
+    lineLocks.push(new PgDialect().sqlToQuery(query).sql);
+    return [];
+  },
+    select: () => { const selected = rows.shift() ?? []; const chain: any = {
+      then: (resolve: any) => Promise.resolve(selected).then(resolve), limit: async () => selected,
+      for: () => chain,
+    }; for (const method of ['from', 'where', 'innerJoin']) chain[method] = () => chain; return chain; },
+    delete: () => ({ where: async () => { saved = []; } }),
+    insert: () => ({ values: async (values: any[]) => { saved = values; } }),
+  };
+  const repo = new ShipmentRepo(database);
+  const reservation = jest.spyOn(repo, 'listDraftReservationQuantities');
+  const eligibility = jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility');
+  const pack = (shipmentId: string, packageIds: string[]) => {
+    rows = [[{ id: shipmentId, status: 'DRAFT' }], [], [{ id: shipmentId }],
+      [{ orderId: 'order-100' }], [{ id: 'line-100', orderId: 'order-100', quantity: 100 }],
+      packageIds.map(id => ({ id }))];
+  };
+  const allocation = (packageIds: string[], quantities: number[]) => packageIds.map((packageId, index) => ({
+    orderId: 'order-100', orderLineItemId: 'line-100', packageId, quantity: quantities[index],
+  }));
+  eligibility.mockResolvedValue([{ id: 'line-100', orderId: 'order-100', projection:
+    resolveFulfillmentLineQuantity({ orderedQuantity: 100, readyWaitingQuantity: 100 }) }]);
+  reservation.mockResolvedValue(new Map([['line-100', 60]]));
+  pack('shipment-40', ['box-a', 'box-b']);
+  await expect(repo.replaceDraftShipmentItems('org', 'shipment-40', allocation(['box-a', 'box-b'], [15, 25])))
+    .resolves.toEqual({ ok: true });
+  expect(saved.map(item => item.quantity)).toEqual([15, 25]);
+  pack('shipment-overbook', ['box-a', 'box-b']);
+  await expect(repo.replaceDraftShipmentItems('org', 'shipment-overbook', allocation(['box-a', 'box-b'], [16, 25])))
+    .resolves.toMatchObject({ ok: false, code: 'QTY_RESERVED' });
+  expect(saved.map(item => item.quantity)).toEqual([15, 25]);
+  eligibility.mockResolvedValue([{ id: 'line-100', orderId: 'order-100', projection:
+    resolveFulfillmentLineQuantity({ orderedQuantity: 100, shippedQuantity: 40, readyWaitingQuantity: 100 }) }]);
+  reservation.mockResolvedValue(new Map());
+  pack('shipment-60', ['box-c', 'box-d', 'box-e']);
+  await expect(repo.replaceDraftShipmentItems('org', 'shipment-60', allocation(['box-c', 'box-d', 'box-e'], [20, 20, 20])))
+    .resolves.toEqual({ ok: true });
+  expect(saved.map(item => item.quantity)).toEqual([20, 20, 20]);
+  expect(saved.reduce((total, item) => total + item.quantity, 0)).toBe(60);
+  expect(lineLocks).toHaveLength(3);
+  expect(lineLocks.every(query => query.includes('FOR UPDATE') && query.includes('order_line_items'))).toBe(true);
+});
+
+test('voiding one partial draft records only its transition and preserves another shipment', async () => {
+  const drafts: Record<string, any> = {
+    'shipment-40': { id: 'shipment-40', status: 'DRAFT', organizationId: 'org' },
+    'shipment-60': { id: 'shipment-60', status: 'DRAFT', organizationId: 'org' },
+  };
+  const events: any[] = [];
+  let target = 'shipment-40';
+  const database: any = { transaction: async (callback: any) => callback(database), execute: async () => [],
+    select: () => { const selected = [drafts[target]];
+      const chain: any = { then: (resolve: any) => Promise.resolve(selected).then(resolve), limit: async () => selected,
+        for: () => chain }; for (const method of ['from', 'where']) chain[method] = () => chain; return chain; },
+    update: () => ({ set: (patch: any) => ({ where: () => ({ returning: async () => {
+      Object.assign(drafts[target], patch); return [drafts[target]]; } }) }) }),
+    insert: () => ({ values: async (event: any) => { events.push(event); } }),
+  };
+  const repo = new ShipmentRepo(database);
+  jest.spyOn(repo, 'lockDraftShipment').mockImplementation(async (_org, shipmentId) => {
+    target = shipmentId;
+    return drafts[shipmentId];
+  });
+  await expect(repo.voidShipment('org', 'shipment-40')).resolves.toMatchObject({ ok: true });
+  expect(drafts['shipment-40'].status).toBe('VOIDED');
+  expect(drafts['shipment-60'].status).toBe('DRAFT');
+  expect(events).toEqual([expect.objectContaining({ entityId: 'shipment-40', eventType: 'SHIPMENT_VOIDED' })]);
 });

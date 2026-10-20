@@ -621,7 +621,22 @@ export class FulfillmentService {
       ? await resolveShipmentShippingContext(orgId, shipment.orders.map(order => order.orderId), this.dbInstance) : null);
     const orderingCustomer = shipment.status === 'DRAFT'
       ? await resolveOrderingCustomerSender(orgId, shipment.orders.map(order => order.orderId), this.dbInstance) : null;
-    return { ...shipment, shippingContext, orderingCustomer, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
+    const lines = await this.dashboardRepo.listLineEligibility(orgId, {
+      orderIds: shipment.orders.map(order => order.orderId),
+    });
+    const otherDrafts = await this.shipmentRepo.listDraftReservationQuantities(orgId, lines.map(line => line.id), shipmentId);
+    const thisDraft = new Map<string, number>();
+    if (shipment.status === 'DRAFT') for (const item of shipment.items)
+      thisDraft.set(item.orderLineItemId, (thisDraft.get(item.orderLineItemId) ?? 0) + item.quantity);
+    const lineAvailability = lines.map(line => ({ orderLineItemId: line.id,
+      orderedQuantity: line.projection.orderedQuantity,
+      readyQuantity: line.projection.readyWaitingQuantity,
+      shippedQuantity: line.projection.shippedQuantity,
+      remainingQuantity: line.projection.remainingQuantity,
+      reservedHere: thisDraft.get(line.id) ?? 0,
+      reservedElsewhere: otherDrafts.get(line.id) ?? 0 }));
+    return { ...shipment, shippingContext, orderingCustomer, lineAvailability,
+      packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
   }
 
   async getShipmentDocument(orgId: string, shipmentId: string, documentType: ShippingDocumentType, packageId?: string) {
@@ -811,10 +826,12 @@ export class FulfillmentService {
     const orderIds = Array.from(new Set(shipment.orders.map((order: any) => String(order.orderId)).filter(Boolean)));
     if (!orderIds.length) return;
     const lines = await this.dashboardRepo.listLineEligibility(orgId, { orderIds });
+    const reserved = await this.shipmentRepo.listDraftReservationQuantities(orgId, lines.map(line => line.id), shipmentId);
     let defaultPackage = shipment.packages[0] ?? null;
     if (!defaultPackage) defaultPackage = await this.createShipmentPackage(orgId, shipmentId, { actorUserId });
     const items = lines.flatMap((line) => {
-      const allocatableQuantity = line.projection.remainingQuantity;
+      const allocatableQuantity = Math.max(0, Math.min(line.projection.remainingQuantity,
+        line.projection.readyWaitingQuantity) - (reserved.get(line.id) ?? 0));
       return line.projection.requiresFulfillment && allocatableQuantity > 0
         ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: allocatableQuantity, packageId: defaultPackage!.id }]
         : [];
@@ -857,6 +874,7 @@ export class FulfillmentService {
   async createShipmentPackage(orgId: string, shipmentId: string, payload: {
     weightLbs?: number | null;
     dims?: { length?: number | null; width?: number | null; height?: number | null };
+    upsPackagingType?: '02' | '21';
     notes?: string | null;
     actorUserId?: string | null;
   }) {
@@ -866,6 +884,7 @@ export class FulfillmentService {
         dimLengthIn: payload.dims?.length,
         dimWidthIn: payload.dims?.width,
         dimHeightIn: payload.dims?.height,
+        upsPackagingType: payload.upsPackagingType,
         notes: payload.notes,
       }, tx as any);
       if (!created) throw new FulfillmentHttpError(404, 'Draft shipment not found', 'NOT_FOUND');

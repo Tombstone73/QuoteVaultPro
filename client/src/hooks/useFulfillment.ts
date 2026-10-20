@@ -260,6 +260,15 @@ export interface ShipmentDetail {
     quantity: number;
     packageId: string | null;
   }>;
+  lineAvailability?: Array<{
+    orderLineItemId: string;
+    orderedQuantity: number;
+    readyQuantity: number;
+    shippedQuantity: number;
+    remainingQuantity: number;
+    reservedHere: number;
+    reservedElsewhere: number;
+  }>;
   packages: Array<{
     id: string;
     ordinal: number;
@@ -581,7 +590,7 @@ export function getFulfillmentOrderDetail(orderId: string) {
 export function useCreateShipmentPackageMutation(shipmentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload?: { weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; notes?: string | null }) =>
+    mutationFn: (payload?: { weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; upsPackagingType?: '02' | '21'; notes?: string | null }) =>
       apiCall<any>(`/api/fulfillment/shipments/${shipmentId}/packages`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });

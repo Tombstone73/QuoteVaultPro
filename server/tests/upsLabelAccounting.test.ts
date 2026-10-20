@@ -3,7 +3,8 @@ import { describe, expect, jest, test } from '@jest/globals';
 jest.unstable_mockModule('../db', () => ({ db: {}, pool: {},
   hasQuoteAttachmentPagesTable: () => false, hasPageCountStatusColumn: () => false,
   probeDatabaseSchema: async () => undefined }));
-const { buildUpsLabelRequest, normalizeUpsPurchase, classifyUpsVoidResponse } = await import('../services/ups/upsLabels');
+const { buildUpsLabelRequest, normalizeUpsPurchase, classifyUpsVoidResponse,
+  hasCompleteUpsBoxMapping, supportsUpsPackageReference } = await import('../services/ups/upsLabels');
 const { projectUpsProfitability, upsProfitabilityCsv } = await import('../services/ups/upsProfitability');
 const { isDispatchableUpsLabel, isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } = await import('../services/ups/upsLabelEnvironment');
 
@@ -16,8 +17,8 @@ describe('UPS purchase and profitability contracts', () => {
     const request = buildUpsLabelRequest({ origin: party('Shop', '1 Origin St'),
       sender: party('Blind Sender', '2 Sender St'), destination: party('Recipient', '3 Custom Ship To St'),
       accountNumber: 'QA1234', serviceCode: '03', packages: [
-        { id: 'a', packagingType: '02', weightLbs: 2, lengthIn: 10, widthIn: 8, heightIn: 4 },
-        { id: 'b', packagingType: '21', weightLbs: 3, lengthIn: 12, widthIn: 9, heightIn: 5 },
+        { id: 'a', packageReference: 'BOX-1', packagingType: '02', weightLbs: 2, lengthIn: 10, widthIn: 8, heightIn: 4 },
+        { id: 'b', packageReference: 'BOX-2', packagingType: '21', weightLbs: 3, lengthIn: 12, widthIn: 9, heightIn: 5 },
       ] });
     const shipment = request.ShipmentRequest.Shipment;
     expect(shipment.Shipper.ShipperNumber).toBe('QA1234');
@@ -25,8 +26,23 @@ describe('UPS purchase and profitability contracts', () => {
     expect(shipment.ShipTo.Address.AddressLine).toEqual(['3 Custom Ship To St']);
     expect(shipment.Package).toHaveLength(2);
     expect(shipment.Package.map(pkg => pkg.Packaging.Code)).toEqual(['02', '21']);
+    expect(shipment.Package.map(pkg => pkg.ReferenceNumber?.[0]?.Value)).toEqual(['BOX-1', 'BOX-2']);
     expect(request.ShipmentRequest.LabelSpecification).toMatchObject({ LabelImageFormat: { Code: 'GIF' },
       LabelStockSize: { Height: '6', Width: '4' } });
+  });
+
+  test('multi-box purchase requires a provider-supported route for printed box references', () => {
+    expect(supportsUpsPackageReference('US', 'US')).toBe(true);
+    expect(supportsUpsPackageReference('PR', 'PR')).toBe(true);
+    expect(supportsUpsPackageReference('US', 'CA')).toBe(false);
+    const longReference = `SHIP-${'X'.repeat(40)}-P2`;
+    const request = buildUpsLabelRequest({ origin: party('Shop', '1 Origin St'),
+      sender: party('Shop', '1 Origin St'), destination: party('Recipient', '2 Main St'),
+      accountNumber: 'QA1234', serviceCode: '03', packages: [
+        { id: 'a', packageReference: longReference, packagingType: '02', weightLbs: 2,
+          lengthIn: 10, widthIn: 8, heightIn: 4 },
+      ] });
+    expect(request.ShipmentRequest.Shipment.Package[0].ReferenceNumber?.[0].Value).toBe(longReference.slice(-35));
   });
 
   test('normalizes purchased cost and two reusable package labels, rejecting incomplete provider evidence', () => {
@@ -42,6 +58,21 @@ describe('UPS purchase and profitability contracts', () => {
     expect(normalizeUpsPurchase(response, 1)).toBeNull();
     expect(normalizeUpsPurchase({ ShipmentResponse: { ShipmentResults: {
       ...response.ShipmentResponse.ShipmentResults, PackageResults: [{ TrackingNumber: '1ZPKG0001' }] } } }, 1)).toBeNull();
+  });
+
+  test('box mapping accepts verified physical identity even when UPS result order differs', () => {
+    const labels = [{ id: 'label-a', packageId: null }, { id: 'label-b', packageId: null }];
+    const boxes = [{ id: 'box-1' }, { id: 'box-2' }];
+    expect(hasCompleteUpsBoxMapping(labels, boxes, [
+      { labelId: 'label-b', packageId: 'box-1' }, { labelId: 'label-a', packageId: 'box-2' },
+    ])).toBe(true);
+    expect(hasCompleteUpsBoxMapping(labels, boxes, [
+      { labelId: 'label-a', packageId: 'box-1' }, { labelId: 'label-b', packageId: 'box-1' },
+    ])).toBe(false);
+    expect(hasCompleteUpsBoxMapping(labels, boxes, [
+      { labelId: 'label-a', packageId: 'box-1' }, { labelId: 'foreign-label', packageId: 'box-2' },
+    ])).toBe(false);
+    expect(hasCompleteUpsBoxMapping(labels, boxes, [{ labelId: 'label-a', packageId: 'box-1' }])).toBe(false);
   });
 
   test('distinguishes a confirmed UPS void from provider rejection and an uncertain response', () => {

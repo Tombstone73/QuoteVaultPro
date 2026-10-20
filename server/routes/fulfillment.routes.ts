@@ -51,7 +51,9 @@ import { canonicalFulfillmentOperations } from "../services/fulfillment/canonica
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
 import { getUpsRates } from '../services/ups/upsRates';
-import { buyUpsLabel, getUpsLabelHistory, readUpsPackageLabel, recoverRecordedUpsPurchase, retireUpsSampleLabel, voidUpsLabel } from '../services/ups/upsLabels';
+import archiver from 'archiver';
+import { buyUpsLabel, getUpsLabelHistory, readUpsLabelArchive, readUpsLabelEvidence, readUpsPackageLabel,
+  recoverRecordedUpsPurchase, retireUpsSampleLabel, verifyUpsPackageLabelMapping, voidUpsLabel } from '../services/ups/upsLabels';
 import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
 import { applyUpsRateToCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
 import { getUpsProfitabilityReport, recordUpsCarrierAdjustment, upsProfitabilityCsv } from '../services/ups/upsProfitability';
@@ -182,6 +184,16 @@ export function registerFulfillmentRoutes(
       data: await buyUpsLabel(getRequestOrganizationId(req), req.params.shipmentId, input, getUserId(req.user)) }); }
     catch (error) { return upsFailure(res, error, 'UPS label purchase needs investigation. Refresh the attempt history before taking another action.'); }
   });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/map-packages', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const input = z.object({ assignments: z.array(z.object({ labelId: z.string().uuid(),
+        packageId: z.string().uuid() }).strict()).min(2).max(100), operatorConfirmed: z.literal(true) }).strict().parse(req.body);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      return res.json({ success: true, data: await verifyUpsPackageLabelMapping(getRequestOrganizationId(req),
+        req.params.shipmentId, req.params.purchaseId, actorUserId, input.assignments) });
+    } catch (error) { return upsFailure(res, error, 'Could not verify UPS box labels.'); }
+  });
   app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/recover', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try { return res.json({ success: true, data: await recoverRecordedUpsPurchase(getRequestOrganizationId(req),
       req.params.shipmentId, req.params.purchaseId, getUserId(req.user)) }); }
@@ -251,6 +263,30 @@ export function registerFulfillmentRoutes(
       res.setHeader('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="UPS-${label.trackingNumber}.gif"`);
       return res.send(label.bytes); }
     catch (error) { return upsFailure(res, error, 'Could not retrieve UPS label.'); }
+  });
+  app.get('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/labels/:labelId/image', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { const label = await readUpsLabelEvidence(getRequestOrganizationId(req), req.params.shipmentId,
+      req.params.purchaseId, req.params.labelId);
+      res.setHeader('Content-Type', label.mimeType); res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `inline; filename="UPS-${label.trackingNumber}.gif"`);
+      return res.send(label.bytes); }
+    catch (error) { return upsFailure(res, error, 'Could not retrieve UPS label evidence.'); }
+  });
+  app.get('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/all-labels.zip', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const labels = await readUpsLabelArchive(getRequestOrganizationId(req), req.params.shipmentId, req.params.purchaseId);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="UPS-${req.params.purchaseId}.zip"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      const archive = archiver('zip', { zlib: { level: 6 } });
+      archive.on('error', error => res.destroy(error));
+      archive.pipe(res);
+      for (const label of labels) archive.append(Buffer.from(label.bytes), {
+        name: `${label.package.reference.replace(/[^A-Za-z0-9_-]/g, '_')}-${label.trackingNumber}.gif`,
+      });
+      await archive.finalize();
+    } catch (error) { if (!res.headersSent) return upsFailure(res, error, 'Could not download UPS labels.'); }
   });
 
   // ===== SHIPMENT & FULFILLMENT ROUTES =====
@@ -606,6 +642,7 @@ export function registerFulfillmentRoutes(
       const parsed = z.object({
         weightLbs: z.coerce.number().min(0).optional().nullable(),
         dims: z.object({ length: z.coerce.number().min(0).optional().nullable(), width: z.coerce.number().min(0).optional().nullable(), height: z.coerce.number().min(0).optional().nullable() }).optional(),
+        upsPackagingType: z.enum(['02', '21']).optional(),
         notes: z.string().max(2000).optional().nullable(),
       }).parse(req.body || {});
       const shipmentPackage = await canonicalFulfillmentOperations.createShipmentPackage(organizationId, req.params.shipmentId, { ...parsed, actorUserId });

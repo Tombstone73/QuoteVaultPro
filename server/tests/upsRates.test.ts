@@ -76,6 +76,27 @@ describe('UPS rating boundary', () => {
     expect(markUpsAccountVerified).toHaveBeenCalledTimes(1);
   });
 
+  test('rates two differently sized saved boxes as one shipment total', async () => {
+    const second = { id: 'package-2', packagingType: '21' as const, weightLbs: 6,
+      lengthIn: 20, widthIn: 12, heightIn: 8 };
+    getShipment.mockResolvedValueOnce({ status: 'DRAFT',
+      shippingContext: { destination: party, blindShipping: false, blindSender: null },
+      packages: [
+        { id: 'package-1', upsPackagingType: '02', weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' },
+        { id: 'package-2', upsPackagingType: '21', weightLbs: '6', dimLengthIn: '20', dimWidthIn: '12', dimHeightIn: '8' },
+      ] });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: true, status: 200,
+      json: async () => ({ RateResponse: { RatedShipment: { Service: { Code: '03' },
+        TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '30.00' } } } }) } as Response);
+    const result = await getUpsRates('qa-org', 'draft-1', [...packages, second]);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.RateRequest.Shipment.Package).toHaveLength(2);
+    expect(body.RateRequest.Shipment.Package.map((item: any) => item.PackageWeight.Weight)).toEqual(['2', '6']);
+    expect(result.rates).toMatchObject([{ total: '30.00' }]);
+    expect(dbMock.insert).toHaveBeenCalledTimes(1);
+    expect(dbMock.update).not.toHaveBeenCalled();
+  });
+
   test('authentication failure reports safe recovery instructions and preserves package inputs', async () => {
     const originalPackages = structuredClone(packages);
     jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 401,

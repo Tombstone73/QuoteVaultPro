@@ -71,7 +71,8 @@ type UpsLabelHistory = { id: string; status: string; environment: 'unknown' | 't
   voidProviderCode: string | null;
   voidAcceptedAt: string | null; externalCanceledAt: string | null; externalCancelReason: string | null;
   adjustments: Array<{ id: string; kind: string; amountCents: number; currency: string; providerReference: string }>;
-  labels: Array<{ packageId: string; trackingNumber: string; labelFormat: string }> };
+  labels: Array<{ id: string; packageId: string | null; providerResultOrdinal: number | null;
+    trackingNumber: string; labelFormat: string }> };
 
 interface ShipmentFormState {
   carrier: string;
@@ -168,6 +169,9 @@ export function FulfillmentShipmentEditor({
 
   const [form, setForm] = useState<ShipmentFormState>(defaultForm);
   const [splitQuantities, setSplitQuantities] = useState<Record<string, number>>({});
+  const [splitPackagesById, setSplitPackagesById] = useState<Record<string, string>>({});
+  const [newSplitRows, setNewSplitRows] = useState<Array<{ id: string; orderLineItemId: string;
+    packageId: string; quantity: number }>>([]);
   const [allocatedByLineItemId, setAllocatedByLineItemId] = useState<Record<string, number>>({});
   const [packageByLineItemId, setPackageByLineItemId] = useState<Record<string, string>>({});
   const [packageFieldsById, setPackageFieldsById] = useState<Record<string, { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string }>>({});
@@ -193,6 +197,8 @@ export function FulfillmentShipmentEditor({
   const [upsChargePending, setUpsChargePending] = useState(false);
   const [upsActionError, setUpsActionError] = useState<string | null>(null);
   const [upsActionMessage, setUpsActionMessage] = useState<string | null>(null);
+  const [boxByUpsLabelId, setBoxByUpsLabelId] = useState<Record<string, string>>({});
+  const [boxMappingConfirmed, setBoxMappingConfirmed] = useState(false);
   const [externalCancelPurchaseId, setExternalCancelPurchaseId] = useState<string | null>(null);
   const [externalCancelReason, setExternalCancelReason] = useState('');
   const [externalCancelReference, setExternalCancelReference] = useState('');
@@ -234,7 +240,7 @@ export function FulfillmentShipmentEditor({
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
-  const upsActivePurchase = upsLabelHistory.find(row => ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status));
+  const upsActivePurchase = upsLabelHistory.find(row => ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status));
   const upsDraftLocked = upsActionPending || !!upsActivePurchase;
   const refreshUpsState = async (id: string) => {
     const [charges, history] = await Promise.all([
@@ -302,6 +308,8 @@ export function FulfillmentShipmentEditor({
     }
     setAllocatedByLineItemId(allocatedMap);
     setSplitQuantities({});
+    setSplitPackagesById({});
+    setNewSplitRows([]);
     const packageMap: Record<string, string> = {};
     for (const item of shipment.items) if (item.packageId) packageMap[item.orderLineItemId] = item.packageId;
     setPackageByLineItemId(packageMap);
@@ -407,15 +415,23 @@ export function FulfillmentShipmentEditor({
   const draftShipmentItems = useMemo(() => lineItemsByOrder.flatMap(group =>
     group.lineItems.flatMap(item => {
       const existing = shipment?.items.filter(allocation => allocation.orderLineItemId === item.id) ?? [];
-      return existing.length > 1
-        ? existing.map(allocation => ({
-          orderId: group.orderId, orderLineItemId: item.id,
-          quantity: splitQuantities[allocation.id] ?? allocation.quantity, packageId: allocation.packageId,
-        }))
-        : [{ orderId: group.orderId, orderLineItemId: item.id,
-          quantity: Number(allocatedByLineItemId[item.id] || 0), packageId: packageByLineItemId[item.id] || null }];
+      const added = newSplitRows.filter(row => row.orderLineItemId === item.id);
+      if (existing.length <= 1 && added.length === 0) return [{ orderId: group.orderId,
+        orderLineItemId: item.id, quantity: Number(allocatedByLineItemId[item.id] || 0),
+        packageId: packageByLineItemId[item.id] || null }];
+      const saved = existing.map(allocation => ({ orderId: group.orderId, orderLineItemId: item.id,
+        quantity: splitQuantities[allocation.id] ?? (existing.length === 1
+          ? Number(allocatedByLineItemId[item.id] || 0) : allocation.quantity),
+        packageId: splitPackagesById[allocation.id] ?? allocation.packageId }));
+      return [...saved, ...added.map(row => ({ orderId: group.orderId, orderLineItemId: item.id,
+        quantity: row.quantity, packageId: row.packageId }))];
     }),
-  ), [lineItemsByOrder, shipment?.items, splitQuantities, allocatedByLineItemId, packageByLineItemId]);
+  ), [lineItemsByOrder, shipment?.items, splitQuantities, splitPackagesById,
+    newSplitRows, allocatedByLineItemId, packageByLineItemId]);
+
+  const availabilityByLineItemId = useMemo(() => new Map(
+    (shipment?.lineAvailability ?? []).map(line => [line.orderLineItemId, line]),
+  ), [shipment?.lineAvailability]);
 
   const validationErrors = useMemo(() => {
     const errors = new Set<string>();
@@ -424,18 +440,23 @@ export function FulfillmentShipmentEditor({
     }
     for (const group of lineItemsByOrder) {
       for (const item of group.lineItems) {
-        const allocated = Number(allocatedByLineItemId[item.id] || 0);
-        if (!Number.isInteger(allocated) || allocated < 0 || allocated > item.remainingQty) {
+        const allocated = draftShipmentItems.filter(row => row.orderLineItemId === item.id)
+          .reduce((total, row) => total + row.quantity, 0);
+        const availability = availabilityByLineItemId.get(item.id);
+        const availableForThisDraft = availability
+          ? Math.max(0, Math.min(availability.remainingQuantity, availability.readyQuantity) - availability.reservedElsewhere)
+          : item.remainingQty;
+        if (!Number.isInteger(allocated) || allocated < 0 || allocated > availableForThisDraft) {
           errors.add(item.id);
         }
       }
     }
     return errors;
-  }, [allocatedByLineItemId, lineItemsByOrder, draftShipmentItems]);
+  }, [lineItemsByOrder, draftShipmentItems, availabilityByLineItemId]);
 
   const allocatedCount = useMemo(
-    () => Object.values(allocatedByLineItemId).reduce((acc, value) => acc + (Number(value) > 0 ? Number(value) : 0), 0),
-    [allocatedByLineItemId],
+    () => draftShipmentItems.reduce((acc, item) => acc + (Number(item.quantity) > 0 ? Number(item.quantity) : 0), 0),
+    [draftShipmentItems],
   );
 
   const hasUnsavedChanges = shipment?.status === "DRAFT" && (
@@ -467,7 +488,9 @@ export function FulfillmentShipmentEditor({
   const documentActionsDisabled = !!hasUnsavedChanges || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
   const upsRateKey = JSON.stringify({ shipmentId: shipment?.id,
     shippingContext, packages: shipment?.packages.map(pkg => pkg.id), form: [form.weight, form.length, form.width, form.height],
-    packageFieldsById, upsPackageTypes });
+    packageFieldsById, upsPackageTypes,
+    allocations: draftShipmentItems.filter(item => item.quantity > 0)
+      .map(item => [item.orderId, item.orderLineItemId, item.packageId, item.quantity]).sort() });
   useEffect(() => {
     upsRateEpoch.current += 1;
     upsRateKeyRef.current = upsRateKey;
@@ -539,14 +562,17 @@ export function FulfillmentShipmentEditor({
     }
     setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
     try {
-      const purchased = await apiCall<{ environment: 'test' | 'live'; carrierCostCents: number; carrierCurrency: string; labels: Array<{ trackingNumber: string }> }>(
+      const purchased = await apiCall<{ environment: 'test' | 'live'; carrierCostCents: number;
+        carrierCurrency: string; mappingRequired: boolean; labels: Array<{ trackingNumber: string }> }>(
         `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
         { method: 'POST', body: JSON.stringify({ quoteId: upsQuoteId, serviceCode: selectedUpsService }) });
       const refreshed = await shipmentQuery.refetch();
       if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? 'UPS',
         serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
       await refreshUpsState(shipmentId);
-      setUpsActionMessage(purchased.environment === 'test'
+      setUpsActionMessage(purchased.mappingRequired
+        ? `UPS recorded ${purchased.labels.length} package labels and ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)} carrier cost. Match each label to its physical box before printing or dispatch. Do not buy again.`
+        : purchased.environment === 'test'
         ? `Test label created. This sample label and tracking cannot be used for shipping. UPS sandbox amount: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}.`
         : `UPS live label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
     } catch (error) {
@@ -609,18 +635,51 @@ export function FulfillmentShipmentEditor({
     finally { setUpsActionPending(false); }
   };
 
-  const labelImagePath = (purchaseId: string, packageId: string) => `/api/fulfillment/shipments/${encodeURIComponent(shipmentId || '')}/ups-labels/${encodeURIComponent(purchaseId)}/packages/${encodeURIComponent(packageId)}/image`;
-  const openUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string, printable: boolean) => {
-    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, packageId));
-      setUpsLabelPreview({ url: URL.createObjectURL(blob), trackingNumber, printable }); }
+  const labelImagePath = (purchaseId: string, label: { id: string; packageId: string | null }) =>
+    `/api/fulfillment/shipments/${encodeURIComponent(shipmentId || '')}/ups-labels/${encodeURIComponent(purchaseId)}` +
+    (label.packageId ? `/packages/${encodeURIComponent(label.packageId)}/image` : `/labels/${encodeURIComponent(label.id)}/image`);
+  const openUpsLabel = async (purchaseId: string, label: UpsLabelHistory['labels'][number], printable: boolean) => {
+    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, label));
+      setUpsLabelPreview({ url: URL.createObjectURL(blob), trackingNumber: label.trackingNumber, printable }); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
   };
-  const downloadUpsLabel = async (purchaseId: string, packageId: string, trackingNumber: string, environment: UpsLabelHistory['environment']) => {
-    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, packageId) + '?download=1');
+  const downloadUpsLabel = async (purchaseId: string, label: UpsLabelHistory['labels'][number], environment: UpsLabelHistory['environment']) => {
+    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, label) + '?download=1');
       const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url;
-      link.download = `${environment === 'live' ? 'UPS' : 'NOT-FOR-SHIPPING-UPS'}-${trackingNumber}.gif`;
+      link.download = `${environment === 'live' && label.packageId ? 'UPS' : 'NOT-FOR-SHIPPING-UPS'}-${label.trackingNumber}.gif`;
       link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+  };
+
+  const downloadAllUpsLabels = async (purchaseId: string) => {
+    if (!shipmentId) return;
+    try {
+      const blob = await apiFetchBlob(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${purchaseId}/all-labels.zip`);
+      const url = URL.createObjectURL(blob); const link = document.createElement('a');
+      link.href = url; link.download = `UPS-${purchaseId}-all-labels.zip`; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+  };
+
+  const verifyBoxMapping = async (purchase: UpsLabelHistory) => {
+    if (!shipmentId || upsActionPending || !boxMappingConfirmed || purchase.status !== 'MAPPING_REQUIRED') return;
+    const assignments = purchase.labels.map(label => ({ labelId: label.id, packageId: boxByUpsLabelId[label.id] }));
+    if (assignments.some(item => !item.packageId) || new Set(assignments.map(item => item.packageId)).size !== assignments.length) return;
+    setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
+    try {
+      await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${purchase.id}/map-packages`,
+        { method: 'POST', body: JSON.stringify({ assignments, operatorConfirmed: true }) });
+      const refreshed = await shipmentQuery.refetch();
+      const history = await apiCall<UpsLabelHistory[]>(`/api/fulfillment/shipments/${shipmentId}/ups-labels`);
+      if (!refreshed.data || history.find(row => row.id === purchase.id)?.status !== 'PURCHASED' ||
+        history.find(row => row.id === purchase.id)?.labels.some(label => !label.packageId))
+        throw new Error('Could not verify the saved box mapping. Reload before printing.');
+      setUpsLabelHistory(history);
+      setForm(previous => ({ ...previous, trackingNumber: refreshed.data!.trackingNumber ?? '' }));
+      setBoxByUpsLabelId({}); setBoxMappingConfirmed(false);
+      setUpsActionMessage('Every UPS label is saved against its verified box. The shipment remains DRAFT until marked shipped.');
+    } catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+    finally { setUpsActionPending(false); }
   };
 
   const printPreviewedUpsLabel = () => {
@@ -634,7 +693,7 @@ export function FulfillmentShipmentEditor({
   const markShippedDisabled =
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
-    upsActionPending || upsLabelHistory.some(row => ['REQUESTING', 'UNCERTAIN', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status)) ||
+    upsActionPending || upsLabelHistory.some(row => ['REQUESTING', 'UNCERTAIN', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status)) ||
     (form.carrier.trim().toUpperCase() === 'UPS' && form.trackingNumber.trim().toUpperCase() === '1ZXXXXXXXXXXXXXXXX') ||
     (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId &&
       (row.status !== 'PURCHASED' || row.environment !== 'live' || row.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')))) ||
@@ -685,6 +744,11 @@ export function FulfillmentShipmentEditor({
       const refreshed = await shipmentQuery.refetch();
       if (!refreshed.data || refreshed.isError || !draftReadbackMatches(refreshed.data, payload))
         throw new Error('Could not verify the saved shipment draft. Your edits remain available for retry.');
+      if (latestDraft.current.draftKey === snapshot.draftKey) {
+        setNewSplitRows([]);
+        setSplitQuantities({});
+        setSplitPackagesById({});
+      }
       savedDraftKey.current = snapshot.draftKey;
       failedDraftKey.current = null;
       if (latestDraft.current.shippingContext === snapshot.shippingContext && snapshot.shippingContext === null)
@@ -718,17 +782,75 @@ export function FulfillmentShipmentEditor({
 
   const retryDraftSave = () => { failedDraftKey.current = null; void flushDraft(); };
 
-  const handleAddPackage = async () => {
-    if (!shipmentId || !shipment) return;
+  const handleAddPackage = async (duplicateFromId?: string) => {
+    if (!shipmentId || !shipment || !isDraft || upsDraftLocked) return;
+    if (!await flushDraft()) {
+      setDraftSaveError('Save the current draft before adding a box. Your inputs are preserved.');
+      return;
+    }
     try {
-      const created = await createPackage.mutateAsync({});
-      toast({ title: "Package added", description: created.packageReference });
+      const current = await shipmentQuery.refetch();
+      const source = duplicateFromId ? current.data?.packages.find(pkg => pkg.id === duplicateFromId) : null;
+      if (duplicateFromId && !source) throw new Error('Source box changed. Reload and try again.');
+      const created = await createPackage.mutateAsync(source ? {
+        weightLbs: parseNumber(source.weightLbs ?? ''),
+        dims: { length: parseNumber(source.dimLengthIn ?? ''), width: parseNumber(source.dimWidthIn ?? ''),
+          height: parseNumber(source.dimHeightIn ?? '') },
+        upsPackagingType: source.upsPackagingType, notes: source.notes,
+      } : {});
+      setPackageFieldsById(previous => ({ ...previous, [created.id]: {
+        weight: created.weightLbs ?? '', length: created.dimLengthIn ?? '', width: created.dimWidthIn ?? '',
+        height: created.dimHeightIn ?? '', notes: created.notes ?? '',
+      } }));
+      setUpsPackageTypes(previous => ({ ...previous, [created.id]: created.upsPackagingType ?? '02' }));
       await shipmentQuery.refetch();
       await onMutationComplete?.();
+      toast({ title: duplicateFromId ? 'Box duplicated' : 'Box added', description: created.packageReference });
     } catch (error) {
       const parsed = toFulfillmentError(error);
-      toast({ title: "Package could not be added", description: parsed.message, variant: "destructive" });
+      toast({ title: "Box could not be added", description: parsed.message, variant: "destructive" });
     }
+  };
+
+  const handleRemovePackage = async (packageId: string) => {
+    if (!shipmentId || !shipment || !isDraft || upsDraftLocked) return;
+    if (latestDraft.current.draftShipmentItems.some(item => item.packageId === packageId && item.quantity > 0)) {
+      setDraftSaveError('Move or remove this box’s quantities before removing the box.'); return;
+    }
+    if (!await flushDraft()) return;
+    try {
+      await apiCall(`/api/fulfillment/shipments/${shipmentId}/packages/${packageId}`, { method: 'DELETE' });
+      const refreshed = await shipmentQuery.refetch();
+      if (!refreshed.data || refreshed.data.packages.some(pkg => pkg.id === packageId))
+        throw new Error('Could not verify that the box was removed. Reload before continuing.');
+      setPackageFieldsById(previous => { const next = { ...previous }; delete next[packageId]; return next; });
+      setUpsPackageTypes(previous => { const next = { ...previous }; delete next[packageId]; return next; });
+      if (shipment.packages[0]?.id === packageId) {
+        const first = refreshed.data.packages[0];
+        setForm(previous => ({ ...previous, weight: first?.weightLbs ?? '', length: first?.dimLengthIn ?? '',
+          width: first?.dimWidthIn ?? '', height: first?.dimHeightIn ?? '', packageNotes: first?.notes ?? '' }));
+      }
+      await onMutationComplete?.();
+      toast({ title: 'Box removed' });
+    } catch (error) { setDraftSaveError(toFulfillmentError(error).message); }
+  };
+
+  const handleAddSplit = async (orderLineItemId: string) => {
+    if (!shipmentId || !shipment || shipment.packages.length < 2 || upsDraftLocked) return;
+    if (!await flushDraft()) return;
+    const refreshed = await shipmentQuery.refetch();
+    const allocations = refreshed.data?.items.filter(item => item.orderLineItemId === orderLineItemId) ?? [];
+    if (!allocations.length) {
+      setDraftSaveError('Enter a quantity for this line and let it save before splitting it between boxes.'); return;
+    }
+    const used = new Set([...allocations.map(item => item.packageId),
+      ...newSplitRows.filter(row => row.orderLineItemId === orderLineItemId).map(row => row.packageId)]);
+    const nextPackage = refreshed.data?.packages.find(pkg => !used.has(pkg.id)) ?? refreshed.data?.packages[0];
+    if (!nextPackage) return;
+    if (allocations.length === 1) setSplitQuantities(previous => ({ ...previous,
+      [allocations[0].id]: Number(allocatedByLineItemId[orderLineItemId] ?? allocations[0].quantity) }));
+    setNewSplitRows(previous => [...previous, { id: crypto.randomUUID(), orderLineItemId,
+      packageId: nextPackage.id, quantity: 0 }]);
   };
 
   const handleMarkShipped = async () => {
@@ -907,9 +1029,8 @@ export function FulfillmentShipmentEditor({
             {shipment.orders.map((orderRef) => {
               const order = ordersById[orderRef.orderId];
               const lineCount = order?.lineItems?.length ?? 0;
-              const allocatedForOrder = lineItemsByOrder
-                .find((g) => g.orderId === orderRef.orderId)
-                ?.lineItems.reduce((acc, item) => acc + Number(allocatedByLineItemId[item.id] || 0), 0) ?? 0;
+              const allocatedForOrder = draftShipmentItems.filter(item => item.orderId === orderRef.orderId)
+                .reduce((acc, item) => acc + Number(item.quantity || 0), 0);
 
               const addressPreview = destination ? shippingPartyAddressLines(destination).join(", ") : "Destination not recorded";
 
@@ -1030,22 +1151,30 @@ export function FulfillmentShipmentEditor({
                           const value = Number(allocatedByLineItemId[item.id] || 0);
                           const hasError = validationErrors.has(item.id);
                           const splits = shipment.items.filter(allocation => allocation.orderLineItemId === item.id);
+                          const addedSplits = newSplitRows.filter(row => row.orderLineItemId === item.id);
+                          const isSplit = splits.length > 1 || addedSplits.length > 0;
+                          const splitRows = [...splits.map(row => ({ ...row, newlyAdded: false })),
+                            ...addedSplits.map(row => ({ ...row, newlyAdded: true }))];
+                          const availability = availabilityByLineItemId.get(item.id);
+                          const availableForThisDraft = availability
+                            ? Math.max(0, Math.min(availability.remainingQuantity, availability.readyQuantity) - availability.reservedElsewhere)
+                            : item.remainingQty;
                           return (
                             <tr key={item.id} className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
                               {lineItemsByOrder.length > 1 && <td className="col-span-2 block text-xs font-mono text-muted-foreground sm:col-span-4">#{group.orderNumber}</td>}
                               <td className="col-span-2 block min-w-0 sm:col-span-4">
                                 <div className="flex min-w-0 items-start gap-3"><div className="max-w-[140px] shrink-0">{item.artwork.length ? <div className="flex flex-wrap gap-1">{item.artwork.map((file, index) => <button key={`${file.id}-${file.fileRecordId}`} type="button" aria-label={`View artwork ${file.fileName} for ${item.label}, Order ${group.orderNumber}`} title={`${file.fileName} (${file.role || "artwork"})`} className="flex h-16 w-16 items-center justify-center overflow-hidden rounded border border-border bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setArtworkViewer({ attachments: toAttachmentViewerAttachments(item.artwork), initialIndex: index })}><AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} fileName={file.fileName} mimeType={file.mimeType} previewStatus={file.previewStatus} previewError={file.previewError} alt={file.fileName} className="h-full w-full object-contain text-[10px]" fallback={<span className="p-1 text-[10px] text-muted-foreground">No artwork available</span>} /></button>)}</div> : <span className="block w-16 text-xs text-muted-foreground">No artwork available</span>}</div><div className="min-w-0 break-words"><p className="text-sm font-bold">{item.label}</p>{(item.size || item.material) && <p className="mt-1 text-xs text-muted-foreground">{[item.size, item.material].filter(Boolean).join(" · ")}</p>}{item.options.length > 0 && <p className="mt-1 text-xs text-muted-foreground">{item.options.join(" · ")}</p>}{item.artwork[0] && <p className="mt-1 text-[10px] text-muted-foreground">{item.artwork[0].role === "modified_production" || item.artwork[0].role === "production" ? "Production artwork first" : "Source artwork"}</p>}</div></div>
                               </td>
-                              <td className="block text-sm"><span className="mb-1 block text-xs text-muted-foreground">Ordered</span>{item.orderedQty}</td>
-                              <td className={`block text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-foreground"}`}><span className="mb-1 block text-xs font-normal text-muted-foreground">Remaining</span>{item.remainingQty}</td>
+                              <td className="block text-sm"><span className="mb-1 block text-xs text-muted-foreground">Ordered</span>{availability?.orderedQuantity ?? item.orderedQty}{availability && <p className="mt-1 text-xs text-muted-foreground">Shipped {availability.shippedQuantity}</p>}</td>
+                              <td className={`block text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-foreground"}`}><span className="mb-1 block text-xs font-normal text-muted-foreground">Remaining</span>{availability?.remainingQuantity ?? item.remainingQty}{availability && <p className="mt-1 text-xs font-normal text-muted-foreground">Ready {availability.readyQuantity} · Reserved here {availability.reservedHere} · Other drafts {availability.reservedElsewhere}</p>}</td>
                               <td className="block min-w-0">
                                 <span className="mb-1 block text-xs font-medium text-muted-foreground">Qty in this shipment</span>
                                 <div className="inline-flex items-center gap-2">
-                                  {splits.length <= 1 ? <input
+                                  {!isSplit ? <input
                                     type="number"
                                     aria-label={`Qty in this shipment: ${item.label}`}
                                     min={0}
-                                    max={item.remainingQty}
+                                    max={availableForThisDraft}
                                     step={1}
                                     value={value}
                                     disabled={!isDraft || upsDraftLocked}
@@ -1054,27 +1183,39 @@ export function FulfillmentShipmentEditor({
                                       const next = Math.max(0, Number(event.target.value || 0));
                                       setAllocatedByLineItemId((prev) => ({ ...prev, [item.id]: next }));
                                     }}
-                                  /> : <div className="space-y-2">{splits.map(allocation => <label key={allocation.id} className="flex min-w-0 flex-col items-start gap-1 break-all text-xs">
-                                    {shipment.packages.find(pkg => pkg.id === allocation.packageId)?.packageReference || "Unpacked"}
-                                    <input type="number" aria-label={`Qty in package ${allocation.packageId}: ${item.label}`} min={0} max={item.remainingQty} step={1} disabled={!isDraft || upsDraftLocked}
-                                      className="h-8 w-16 rounded border bg-background text-center" value={splitQuantities[allocation.id] ?? allocation.quantity}
-                                      onChange={event => {
-                                        const next = Math.max(0, Number(event.target.value || 0));
-                                        setSplitQuantities(values => ({ ...values, [allocation.id]: next }));
-                                        setAllocatedByLineItemId(values => ({ ...values, [item.id]: splits.reduce(
-                                          (sum, part) => sum + (part.id === allocation.id ? next : splitQuantities[part.id] ?? part.quantity), 0,
-                                        ) }));
+                                  /> : <div className="space-y-2">{splitRows.map(allocation => <div key={allocation.id} className="flex flex-wrap items-center gap-1 text-xs">
+                                    <select aria-label={`Box for ${item.label} allocation ${allocation.id}`} className="max-w-36 rounded border bg-background p-1"
+                                      value={(allocation.newlyAdded ? allocation.packageId : splitPackagesById[allocation.id] ?? allocation.packageId) ?? ''}
+                                      disabled={!isDraft || upsDraftLocked}
+                                      onChange={event => allocation.newlyAdded
+                                        ? setNewSplitRows(rows => rows.map(row => row.id === allocation.id ? { ...row, packageId: event.target.value } : row))
+                                        : setSplitPackagesById(previous => ({ ...previous, [allocation.id]: event.target.value }))}>
+                                      <option value="">Choose box</option>{shipment.packages.map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                                    </select>
+                                    <input type="number" aria-label={`Quantity in box for ${item.label} allocation ${allocation.id}`}
+                                      min={0} max={availableForThisDraft} step={1} disabled={!isDraft || upsDraftLocked}
+                                      className="h-8 w-16 rounded border bg-background text-center"
+                                      value={allocation.newlyAdded ? allocation.quantity : splitQuantities[allocation.id] ?? allocation.quantity}
+                                      onChange={event => { const next = Math.max(0, Number(event.target.value || 0));
+                                        if (allocation.newlyAdded) setNewSplitRows(rows => rows.map(row => row.id === allocation.id ? { ...row, quantity: next } : row));
+                                        else setSplitQuantities(previous => ({ ...previous, [allocation.id]: next }));
                                       }} />
-                                  </label>)}</div>}
+                                    {isDraft && !upsDraftLocked && <button type="button" className="rounded border px-1.5 py-1 text-xs"
+                                      onClick={() => allocation.newlyAdded
+                                        ? setNewSplitRows(rows => rows.filter(row => row.id !== allocation.id))
+                                        : setSplitQuantities(previous => ({ ...previous, [allocation.id]: 0 }))}>Remove allocation</button>}
+                                  </div>)}</div>}
                                 </div>
-                                {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Enter a whole quantity from 0 to {item.remainingQty}</p>}
+                                {isDraft && !upsDraftLocked && shipment.packages.length > 1 && <button type="button" className="mt-2 rounded border px-2 py-1 text-xs"
+                                  onClick={() => void handleAddSplit(item.id)}>Add box allocation</button>}
+                                {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Enter a whole quantity from 0 to {availableForThisDraft} ready and unreserved</p>}
                               </td>
                               <td className="block min-w-0">
                                 <span className="mb-1 block text-xs font-medium text-muted-foreground">Package</span>
                                 <select
                                   aria-label={`Package assignment: ${item.label}, Order ${group.orderNumber}`}
                                   className="h-8 w-full min-w-0 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
-                                  disabled={!isDraft || upsDraftLocked || shipment.packages.length === 0 || splits.length > 1}
+                                  disabled={!isDraft || upsDraftLocked || shipment.packages.length === 0 || isSplit}
                                   value={packageByLineItemId[item.id] || ""}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
@@ -1095,16 +1236,24 @@ export function FulfillmentShipmentEditor({
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
-                {(advancedPacking || shipment.packages.length === 0) && <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted" disabled={!isDraft || upsDraftLocked || createPackage.isPending} onClick={() => void handleAddPackage()}>
-                  {createPackage.isPending ? "ADDING..." : "ADD PACKAGE"}
-                </button>}
+                <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted"
+                  disabled={!isDraft || upsDraftLocked || createPackage.isPending} onClick={() => void handleAddPackage()}>
+                  {createPackage.isPending ? 'ADDING...' : 'ADD BOX'}
+                </button>
               </div>
               <div className="divide-y divide-border">
                 {shipment.packages.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No packages yet. Create one to group physical contents and print a package ticket.</p> : shipment.packages.map((pkg, index) => {
                   const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes } : packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
                   const updateFields = (key: keyof typeof fields, value: string) => index === 0 ? setForm(previous => ({ ...previous, [key === "notes" ? "packageNotes" : key]: value })) : setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
                   return <div key={pkg.id} className="px-6 py-4">
-                    <div className="flex items-center justify-between gap-3"><span className="font-semibold">{pkg.packageReference}</span><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span></div>
+                    <div className="flex flex-wrap items-center justify-between gap-3"><span className="font-semibold">Box {index + 1} · {pkg.packageReference}</span>
+                      <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span>
+                        {isDraft && !upsDraftLocked && <><button type="button" className="rounded border px-2 py-1 text-xs" disabled={createPackage.isPending}
+                          onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</button>
+                          <button type="button" className="rounded border px-2 py-1 text-xs" disabled={createPackage.isPending ||
+                            draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0)}
+                            title={draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0) ? 'Move or remove assigned quantities first' : undefined}
+                            onClick={() => void handleRemovePackage(pkg.id)}>Remove Box</button></>}</div></div>
                     <div className="mt-2"><h4 className="text-xs font-medium text-muted-foreground">Dimensions, weight & package notes</h4><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
                       {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="text" inputMode="decimal" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft || upsDraftLocked} /></label>)}
                       <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">UPS package type
@@ -1163,9 +1312,34 @@ export function FulfillmentShipmentEditor({
                 {purchase.adjustments?.map(adjustment => <p key={adjustment.id} className="text-xs">{adjustment.kind === 'CONFIRMED_CREDIT' ? 'Confirmed carrier credit' : 'Carrier cost adjustment'}: {adjustment.currency} {(adjustment.amountCents / 100).toFixed(2)} · {adjustment.providerReference}</p>)}
                 {purchase.errorCode && <p className="text-xs text-destructive">Carrier action needs review: {purchase.errorCode}</p>}
                 {purchase.voidProviderCode && <p className="text-xs text-destructive">UPS void response code: {purchase.voidProviderCode}</p>}
-                {purchase.labels.map(label => <div key={label.packageId} className="flex flex-wrap items-center gap-2"><span>Package {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label.packageId, label.trackingNumber, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label.packageId, label.trackingNumber, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" />}</>}</div>)}
-                {['PURCHASED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
-                  {purchase.status === 'PURCHASED' && isDraft && purchase.environment !== 'unknown' && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || purchase.environment !== upsEnvironment} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void UPS label</button>}
+                {purchase.status === 'MAPPING_REQUIRED' && <div className="rounded border border-amber-500 p-3 space-y-2">
+                  <p role="alert" className="text-xs font-semibold">UPS completed this purchase, but its response did not identify which saved box owns each label. Preview each label and match the printed box reference. Printing and dispatch remain blocked until all labels are matched. Do not buy again.</p>
+                  {purchase.labels.map(label => <label key={label.id} className="flex flex-wrap items-center gap-2 text-xs">
+                    <span>UPS label {label.providerResultOrdinal ?? '?'} · {label.trackingNumber}</span>
+                    <button type="button" className="rounded border px-2 py-1" onClick={() => void openUpsLabel(purchase.id, label, false)}>Preview label</button>
+                    <select aria-label={`Box for UPS label ${label.trackingNumber}`} className="rounded border bg-background p-1"
+                      value={boxByUpsLabelId[label.id] ?? ''} onChange={event => { setBoxByUpsLabelId(previous => ({ ...previous, [label.id]: event.target.value })); setBoxMappingConfirmed(false); }}>
+                      <option value="">Select physical box</option>
+                      {shipment.packages.map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                    </select>
+                  </label>)}
+                  <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={boxMappingConfirmed}
+                    onChange={event => setBoxMappingConfirmed(event.target.checked)} />I checked each label’s printed box reference against the selected physical box.</label>
+                  <button type="button" className="rounded border px-2 py-1 text-xs font-semibold" disabled={upsActionPending || !boxMappingConfirmed ||
+                    purchase.labels.some(label => !boxByUpsLabelId[label.id]) ||
+                    new Set(purchase.labels.map(label => boxByUpsLabelId[label.id])).size !== purchase.labels.length}
+                    onClick={() => void verifyBoxMapping(purchase)}>Save verified box mapping</button>
+                </div>}
+                {purchase.status === 'PURCHASED' && purchase.environment === 'live' && purchase.labels.length > 1 &&
+                  purchase.labels.every(label => label.packageId && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX') &&
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id}
+                      packageIds={shipment.packages.map(pkg => pkg.id)} label="Print All Labels" />
+                    <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadAllUpsLabels(purchase.id)}>Download All Labels</button>
+                  </div>}
+                {purchase.labels.map(label => <div key={label.id} className="flex flex-wrap items-center gap-2"><span>{label.packageId ? shipment.packages.find(pkg => pkg.id === label.packageId)?.packageReference ?? 'Box' : 'Unmatched label'} · {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && label.packageId && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" />}</>}</div>)}
+                {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
+                  {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && isDraft && purchase.environment !== 'unknown' && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || purchase.environment !== upsEnvironment} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void entire UPS shipment ({purchase.labels.length} labels)</button>}
                   <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>
                 </div>}
                 {isDraft && purchase.status === 'PURCHASED' && purchase.environment !== 'live' &&

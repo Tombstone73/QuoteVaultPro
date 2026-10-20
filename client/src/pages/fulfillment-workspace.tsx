@@ -99,7 +99,7 @@ export default function FulfillmentWorkspacePage() {
     return Number.isFinite(parsed) ? Math.max(0, Math.min(max, parsed)) : 0;
   };
   const startShipment = async () => {
-    if (isPickup || singleDrafts.length) return;
+    if (isPickup || detail.remainingQuantity <= 0) return;
     try {
       const created = await createShipment.mutateAsync({ scope: "SINGLE_ORDER", orderIds: [orderId], primaryOrderId: orderId });
       setCreatedShipmentId(created.shipmentId);
@@ -199,7 +199,7 @@ export default function FulfillmentWorkspacePage() {
       </div></div>
       <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => { setNextMethod(detail.fulfillmentMethod || "ship"); setMethodChangeOpen(true); }}>Change Fulfillment Method</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>
         {isPickup && detail.pickupTicket?.status !== "READY_FOR_PICKUP" && detail.remainingQuantity > 0 && <button disabled={markOrderReadyForPickup.isPending} className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void markOrderReady()}>{markOrderReadyForPickup.isPending ? "Marking…" : "Mark Order Ready for Pickup"}</button>}
-        {!isPickup && !singleDrafts.length && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : "Start shipment"}</button>}
+        {!isPickup && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : singleDrafts.length ? "Start another shipment" : "Start shipment"}</button>}
       </div>
     </header>
 

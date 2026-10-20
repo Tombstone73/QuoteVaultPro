@@ -58,6 +58,28 @@ test("destination loading failure supports retry without queue submission", asyn
   const refetch = jest.fn(); queryMock.mockReturnValue({ data: undefined, isLoading: false, error: new Error("offline"), refetch } as any);
   await open(); await click("Retry destinations"); expect(refetch).toHaveBeenCalledTimes(1); expect(fetchMock).not.toHaveBeenCalled();
 });
+test("Print All queues each saved box once with stable per-box retry keys", async () => {
+  queryMock.mockReturnValue({ data: [{ ...destinations[0], agentVersion: "1.0.26" }],
+    isLoading: false, error: null, refetch: jest.fn() } as any);
+  fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: { status: "queued" } }) } as any)
+    .mockResolvedValueOnce({ ok: false, json: async () => ({ error: "Printer unavailable" }) } as any)
+    .mockResolvedValue({ ok: true, json: async () => ({ data: { status: "queued" } }) } as any);
+  await act(async () => { root.render(<ShippingDocumentPrintDialog shipmentId="shipment" documentType="ups_label"
+    purchaseId="purchase" packageIds={["box-a", "box-b"]} label="Print All Labels" />); });
+  await click("Print All Labels");
+  expect(container.querySelector("#shipping-print-copies")).toBeNull();
+  await click("Queue Print");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Printer unavailable");
+  await click("Retry Print");
+  expect(fetchMock).toHaveBeenCalledTimes(4);
+  const requests = fetchMock.mock.calls.map(([url, init]) => ({ url, body: JSON.parse(init!.body as string) }));
+  expect(requests.map(request => request.body.requestKey)).toEqual([
+    "key-1:box-a", "key-1:box-b", "key-1:box-a", "key-1:box-b",
+  ]);
+  expect(requests.every(request => request.body.copies === 1)).toBe(true);
+  expect(requests.every(request => String(request.url).includes("/ups-labels/purchase/packages/"))).toBe(true);
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("2 UPS labels durably queued");
+});
 test("preferences are user/org/document scoped and do not overwrite existing Traveler or Quick Note keys", () => {
   localStorage.setItem("titanos:traveler:printer-preferences:v1:org_org:user_staff", "traveler-sentinel");
   localStorage.setItem("titanos:quick-note:printer-preferences:v1:org_org:user_staff", "quick-note-sentinel");

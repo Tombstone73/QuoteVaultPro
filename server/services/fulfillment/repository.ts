@@ -38,6 +38,7 @@ import {
   shipmentPackages,
   shipments,
   upsLabelPurchases,
+  upsPackageLabels,
   users,
 } from '@shared/schema';
 import { FulfillmentHttpError, type DerivedOrderFulfillmentStatus, type FulfillmentDetailDto, type QueueRowDto } from './types';
@@ -432,7 +433,7 @@ export class ShipmentRepo {
     if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only DRAFT shipments are editable. Completed shipment evidence is immutable.', 'INVALID_STATE');
     const [label] = await executor.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
       eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
-      inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'VOID_REQUESTING', 'VOID_UNCERTAIN']),
+      inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN']),
     )).limit(1);
     if (label) throw new FulfillmentHttpError(409, 'A UPS label purchase exists or may have succeeded. Resolve or void it before editing this draft.', 'UPS_LABEL_LOCKED');
     return shipment;
@@ -504,12 +505,20 @@ export class ShipmentRepo {
         }
       }
       const eligible = ids.length ? await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { lineItemIds: ids }) : [];
+      // The line locks above serialize competing draft saves. A DRAFT owns a
+      // reservation only while it remains DRAFT; shipped quantities are already
+      // represented by the canonical eligibility projection.
+      const reservedElsewhere = await this.listDraftReservationQuantities(orgId, ids, shipmentId, tx);
       const totals = new Map<string, number>();
       for (const item of items) totals.set(item.orderLineItemId, (totals.get(item.orderLineItemId) ?? 0) + item.quantity);
       for (const [id, quantity] of Array.from(totals.entries())) {
         const line = eligible.find(entry => entry.id === id);
         if (!line?.projection.requiresFulfillment) return { ok: false as const, code: 'LINE_NOT_FULFILLABLE', message: 'Shipment quantities require a physical fulfillment line item.' };
-        if (quantity > line.projection.remainingQuantity) return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Shipment quantity exceeds the remaining order quantity.' };
+        const otherDrafts = reservedElsewhere.get(id) ?? 0;
+        if (quantity + otherDrafts > line.projection.remainingQuantity) return { ok: false as const,
+          code: 'QTY_RESERVED', message: 'Another DRAFT shipment reserves some of this line. Reload quantities and choose an available amount.' };
+        if (quantity + otherDrafts > line.projection.readyWaitingQuantity) return { ok: false as const,
+          code: 'QTY_NOT_READY', message: 'Shipment quantity exceeds the ready, unreserved quantity for this line.' };
       }
       await tx.delete(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId)));
       if (items.length) await tx.insert(shipmentItems).values(items.map((item) => ({
@@ -521,6 +530,19 @@ export class ShipmentRepo {
     return executor ? replace(executor) : this.dbInstance.transaction(tx => replace(tx as any));
   }
 
+  async listDraftReservationQuantities(orgId: string, lineItemIds: string[], excludeShipmentId?: string,
+    executor: DbExecutor = this.dbInstance): Promise<Map<string, number>> {
+    if (!lineItemIds.length) return new Map();
+    const rows = await executor.select({ lineItemId: shipmentItems.orderLineItemId,
+      quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
+      .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
+      .where(and(eq(shipmentItems.organizationId, orgId), eq(shipments.organizationId, orgId),
+        eq(shipments.status, 'DRAFT'), inArray(shipmentItems.orderLineItemId, lineItemIds),
+        ...(excludeShipmentId ? [ne(shipmentItems.shipmentId, excludeShipmentId)] : [])))
+      .groupBy(shipmentItems.orderLineItemId);
+    return new Map(rows.map(row => [row.lineItemId, Number(row.quantity)]));
+  }
+
   async listShipmentPackages(orgId: string, shipmentId: string) {
     return this.dbInstance.select().from(shipmentPackages).where(and(
       eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
@@ -528,7 +550,8 @@ export class ShipmentRepo {
   }
 
   async createShipmentPackage(orgId: string, shipmentId: string, payload: {
-    weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null; notes?: string | null;
+    weightLbs?: number | null; dimLengthIn?: number | null; dimWidthIn?: number | null; dimHeightIn?: number | null;
+    upsPackagingType?: '02' | '21'; notes?: string | null;
   }, executor?: DbExecutor) {
     const create = async (tx: DbExecutor) => {
       const shipment = await this.lockDraftShipment(orgId, shipmentId, tx);
@@ -539,7 +562,8 @@ export class ShipmentRepo {
       const [created] = await tx.insert(shipmentPackages).values({
         organizationId: orgId, shipmentId, ordinal, packageReference: `${shipment.shipmentReference || `SH-${shipmentId.slice(0, 8)}`}-P${ordinal}`,
         weightLbs: payload.weightLbs == null ? null : String(payload.weightLbs), dimLengthIn: payload.dimLengthIn == null ? null : String(payload.dimLengthIn),
-        dimWidthIn: payload.dimWidthIn == null ? null : String(payload.dimWidthIn), dimHeightIn: payload.dimHeightIn == null ? null : String(payload.dimHeightIn), notes: payload.notes ?? null,
+        dimWidthIn: payload.dimWidthIn == null ? null : String(payload.dimWidthIn), dimHeightIn: payload.dimHeightIn == null ? null : String(payload.dimHeightIn),
+        upsPackagingType: payload.upsPackagingType ?? '02', notes: payload.notes ?? null,
       }).returning();
       await tx.update(shipments).set({ boxCount: Number(count || 0) + 1, updatedAt: new Date() }).where(and(
         eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
@@ -582,6 +606,15 @@ export class ShipmentRepo {
   async deleteShipmentPackage(orgId: string, shipmentId: string, packageId: string, executor?: DbExecutor) {
     const remove = async (tx: DbExecutor) => {
       await this.lockDraftShipment(orgId, shipmentId, tx);
+      const [allocated] = await tx.select({ id: shipmentItems.id }).from(shipmentItems).where(and(
+        eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId),
+        eq(shipmentItems.packageId, packageId))).limit(1);
+      if (allocated) throw new FulfillmentHttpError(409,
+        'Move or remove the quantities assigned to this box before removing it.', 'PACKAGE_HAS_ALLOCATIONS');
+      const [savedLabel] = await tx.select({ id: upsPackageLabels.id }).from(upsPackageLabels).where(and(
+        eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.packageId, packageId))).limit(1);
+      if (savedLabel) throw new FulfillmentHttpError(409,
+        'This box has saved UPS label history. Keep it and create a separate shipment for replacement work.', 'PACKAGE_HAS_LABEL_HISTORY');
       const [deleted] = await tx.delete(shipmentPackages).where(and(eq(shipmentPackages.id, packageId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.organizationId, orgId))).returning();
       if (!deleted) return null;
       const [{ count }] = await tx.select({ count: sql<number>`COUNT(*)::int` }).from(shipmentPackages).where(and(
@@ -615,7 +648,7 @@ export class ShipmentRepo {
       if (shipment.status !== 'DRAFT') return { ok: false as const, code: 'INVALID_STATE', message: 'Only DRAFT shipments can be marked SHIPPED' };
       const [unresolvedUps] = await tx.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
         eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
-        inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'VOID_REQUESTING', 'VOID_UNCERTAIN']))).limit(1);
+        inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN']))).limit(1);
       if (unresolvedUps) return { ok: false as const, code: 'UPS_LABEL_UNRESOLVED',
         message: 'Resolve the UPS label purchase or void outcome before marking this shipment shipped.' };
       const [activeUpsLabel] = await tx.select({ environment: upsLabelPurchases.environment })
@@ -685,6 +718,9 @@ export class ShipmentRepo {
         }
         if (draftQty > line.projection.remainingQuantity) {
           return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Shipment quantity exceeds the remaining order quantity.' };
+        }
+        if (draftQty > line.projection.readyWaitingQuantity) {
+          return { ok: false as const, code: 'QTY_NOT_READY', message: 'Shipment quantity exceeds the ready quantity for this line.' };
         }
       }
 

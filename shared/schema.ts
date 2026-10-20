@@ -6077,13 +6077,15 @@ export const upsPackageLabels = pgTable("ups_package_labels", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   purchaseId: varchar("purchase_id").notNull().references(() => upsLabelPurchases.id, { onDelete: 'cascade' }),
-  packageId: varchar("package_id").notNull().references(() => shipmentPackages.id),
+  packageId: varchar("package_id").references(() => shipmentPackages.id),
+  providerResultOrdinal: integer("provider_result_ordinal"),
   trackingNumber: varchar("tracking_number", { length: 80 }).notNull(),
   labelFormat: varchar("label_format", { length: 8 }).notNull(),
   labelBytes: bytea("label_bytes").notNull(),
   labelSha256: varchar("label_sha256", { length: 64 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, table => [uniqueIndex("ups_package_labels_purchase_package_uidx").on(table.purchaseId, table.packageId),
+  uniqueIndex("ups_package_labels_purchase_result_uidx").on(table.purchaseId, table.providerResultOrdinal),
   index("ups_package_labels_org_purchase_idx").on(table.organizationId, table.purchaseId)]);
 
 /** Immutable commercial snapshot for each Order associated with a purchased shipment. */
