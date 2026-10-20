@@ -27,6 +27,9 @@ function currency(cents: number) {
 
 function pricingErrorPresentation(error: unknown): { message: string; retryable: boolean } {
   if (error instanceof PortalApiError) {
+    if (error.status === 401) return { message: 'Your portal session has expired. Sign in again to see pricing.', retryable: false };
+    if (error.code === 'STAFF_PORTAL_PREVIEW_REQUIRED') return { message: 'Open this portal from a customer record to preview pricing.', retryable: false };
+    if (error.status === 403) return { message: 'Pricing is unavailable in this portal session. Reopen the customer portal or contact the shop.', retryable: false };
     if (error.code === 'PRODUCT_PRICING_NOT_CONFIGURED') return { message: 'Product pricing is not configured.', retryable: false };
     if (error.code === 'ACCOUNT_PRICING_UNAVAILABLE') return { message: 'Pricing is unavailable for this account.', retryable: false };
     if (error.code === 'CONFIGURATION_CANNOT_BE_PRICED' || error.status === 400) return { message: 'This configuration cannot be priced.', retryable: false };

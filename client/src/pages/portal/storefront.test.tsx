@@ -168,6 +168,7 @@ test("product without published pricing remains browsable without requesting a p
 });
 
 test.each([
+  ['STAFF_PORTAL_PREVIEW_READ_ONLY', 403, 'Pricing is unavailable in this portal session.', false],
   ['ACCOUNT_PRICING_UNAVAILABLE', 422, 'Pricing is unavailable for this account.', false],
   ['PRODUCT_PRICING_NOT_CONFIGURED', 422, 'Product pricing is not configured.', false],
   ['CONFIGURATION_CANNOT_BE_PRICED', 422, 'This configuration cannot be priced.', false],

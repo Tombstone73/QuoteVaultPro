@@ -55,9 +55,12 @@ describe("customer portal contract boundary", () => {
 
     expect(customerRouteLines.length).toBeGreaterThan(20);
     for (const line of customerRouteLines) {
-      expect(line.includes("...portalMiddlewares") || line.includes("...portalPaymentMiddlewares")).toBe(true);
+      expect(line.includes("...portalMiddlewares") || line.includes("...portalPaymentMiddlewares") || line.includes("...portalPricingPreviewMiddlewares")).toBe(true);
     }
     expect(routes).toContain("const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations]");
+    expect(routes).toContain("const portalPricingPreviewMiddlewares = [isAuthenticated, portalContext]");
+    expect(routes).toContain('app.post("/api/portal/products/:id/price", ...portalPricingPreviewMiddlewares, portalPostById("id", previewPortalStorefrontPrice))');
+    expect(customerRouteLines.filter((line) => line.includes("...portalPricingPreviewMiddlewares"))).toHaveLength(1);
     expect(routes).toContain("const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment]");
   });
 

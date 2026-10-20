@@ -352,6 +352,9 @@ export function registerPortalRoutes(
 ): void {
   const { isAuthenticated, portalContext, tenantContext } = middleware;
   const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations];
+  // Pricing preview reads the canonical price without creating portal state.
+  // Its POST body carries configuration; staff preview may use this one read.
+  const portalPricingPreviewMiddlewares = [isAuthenticated, portalContext];
   const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment];
 
   function requireNonProductionStaff(req: Request, res: Response, next: () => void) {
@@ -378,7 +381,7 @@ export function registerPortalRoutes(
   app.patch("/api/portal/profile", ...portalMiddlewares, portalPatch(updatePortalProfile));
   app.get("/api/portal/products", ...portalMiddlewares, portalGet(listPortalStorefrontProducts));
   app.get("/api/portal/products/:id", ...portalMiddlewares, portalGetById("id", getPortalStorefrontProduct));
-  app.post("/api/portal/products/:id/price", ...portalMiddlewares, portalPostById("id", previewPortalStorefrontPrice));
+  app.post("/api/portal/products/:id/price", ...portalPricingPreviewMiddlewares, portalPostById("id", previewPortalStorefrontPrice));
   app.get("/api/portal/debug/customer-quotes", isAuthenticated, tenantContext, requireNonProductionStaff, async (req: Request, res: Response) => {
     try {
       const customerId = String(req.query.customerId || "").trim();
