@@ -10,7 +10,7 @@ jest.unstable_mockModule('../db', () => ({ db: dbMock }));
 jest.unstable_mockModule('../services/fulfillment/canonicalFulfillmentOperations', () => ({ canonicalFulfillmentOperations: { getShipment } }));
 jest.unstable_mockModule('../services/ups/upsConnection', () => ({ upsRateCredentials, markUpsAccountVerified }));
 
-const { buildUpsRateRequest, normalizeUpsRates, getUpsRates } = await import('../services/ups/upsRates');
+const { buildUpsRateRequest, normalizeUpsRates, getUpsRates, upsProviderRateError } = await import('../services/ups/upsRates');
 const party = { name: 'Receiver', company: 'Custom Destination', address1: '10 QA Street', address2: null,
   city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: null, email: null };
 const origin = { ...party, company: 'Print Shop', address1: '20 Origin Road' };
@@ -36,6 +36,7 @@ describe('UPS rating boundary', () => {
     expect(request.RateRequest.Shipment.ShipFrom.Address.AddressLine).toEqual(['20 Origin Road']);
     expect(request.RateRequest.Shipment.Shipper.ShipperNumber).toBe('QA1234');
     expect(request.RateRequest.Shipment.ShipmentRatingOptions.NegotiatedRatesIndicator).toBe('Y');
+    expect(request.RateRequest.Request.RequestOption).toBe('Shop');
     expect(request.RateRequest.Shipment.Package).toHaveLength(1);
   });
 
@@ -49,6 +50,43 @@ describe('UPS rating boundary', () => {
       { serviceName: 'UPS 2nd Day Air', total: '31.25', negotiated: true },
     ]);
     expect(normalizeUpsRates({ RateResponse: { RatedShipment: [] } })).toEqual([]);
+  });
+
+  test('uses the planned ship date and only a provider calendar date for delivery display', () => {
+    const request = buildUpsRateRequest({ origin, destination: party, shipperNumber: 'QA1234', packages, shipDate: '2026-10-23' });
+    expect(request.RateRequest.Request.RequestOption).toBe('shopTimeInTransit');
+    expect(request.RateRequest.Shipment.DeliveryTimeInformation).toMatchObject({ Pickup: { Date: '20261023' } });
+    expect(normalizeUpsRates({ RateResponse: { RatedShipment: [
+      { Service: { Code: '03' }, TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '20.00' },
+        TimeInTransit: { ServiceSummary: { EstimatedArrival: { Arrival: { Date: '20261027', Time: '1600' } } } } },
+      { Service: { Code: '02' }, TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '40.00' },
+        GuaranteedDelivery: { BusinessDaysInTransit: '2' } },
+    ] } })).toMatchObject([{ estimatedArrival: '2026-10-27', estimatedDeliveryTime: '1600' },
+      { estimatedArrival: null }]);
+  });
+
+  test('uses UPS time-in-transit rating only when the draft has a planned ship date', async () => {
+    getShipment.mockResolvedValueOnce({ status: 'DRAFT', shipDate: '2026-10-23',
+      shippingContext: { destination: party, blindShipping: false, blindSender: null },
+      packages: [{ id: 'package-1', upsPackagingType: '02', weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' }] });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: true, status: 200,
+      json: async () => ({ RateResponse: { RatedShipment: { Service: { Code: '03' },
+        TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '22.30' } } } }) } as Response);
+    await getUpsRates('qa-org', 'draft-1', packages);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://wwwcie.ups.com/api/rating/v2409/Shoptimeintransit');
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.RateRequest.Request.RequestOption).toBe('shopTimeInTransit');
+    expect(body.RateRequest.Shipment.DeliveryTimeInformation.Pickup.Date).toBe('20261023');
+  });
+
+  test('preserves safe UPS reason, code and affected box without exposing credentials', () => {
+    expect(upsProviderRateError({ response: { errors: [{ code: '111590',
+      message: 'Package 1 length is invalid for this service.' }] } }, packages))
+      .toMatchObject({ code: '111590', description: 'Package 1 length is invalid for this service.', affectedField: 'Box 1' });
+    expect(upsProviderRateError({ response: { errors: [{ code: 'BAD!', message: 'token: secretvalue test@example.com 12345678' }] } }, packages))
+      .toMatchObject({ code: null, description: '[credential] [email] [number]' });
+    expect(upsProviderRateError({ response: { errors: [{ code: '110001', message: 'Unable to rate 123 Main Street for package 1.' }] } }, packages))
+      .toMatchObject({ description: 'Unable to rate [address] for package 1.', affectedField: 'Box 1' });
   });
 
   test('rejects invalid packages before calling UPS and never writes shipment or financial records', async () => {
@@ -65,6 +103,7 @@ describe('UPS rating boundary', () => {
     const result = await getUpsRates('qa-org', 'draft-1', packages);
     expect(result.rates).toMatchObject([{ total: '22.30', negotiated: false }]);
     const ratingCall = fetchMock.mock.calls[0];
+    expect(ratingCall[0]).toBe('https://wwwcie.ups.com/api/rating/v2409/Shop');
     const body = JSON.parse(String(ratingCall[1]?.body));
     expect(new Headers(ratingCall[1]?.headers).get('Authorization')).toBe('Bearer tenant-token');
     expect(body.RateRequest.Shipment.Shipper.ShipperNumber).toBe('QA1234');
@@ -113,6 +152,17 @@ describe('UPS rating boundary', () => {
     await expect(getUpsRates('qa-org', 'draft-1', packages)).rejects.toMatchObject({ code: 'UPS_RATE_REJECTED' });
     expect(packages).toEqual(originalPackages);
     expect(dbMock.insert).not.toHaveBeenCalled(); expect(dbMock.update).not.toHaveBeenCalled();
+  });
+
+  test('provider rejection carries the sanitized UPS explanation and correlation reference', async () => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 400,
+      json: async () => ({ response: { errors: [{ code: '111590', message: 'Package 1 length is invalid.' }] } }) } as Response);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(getUpsRates('qa-org', 'draft-1', packages)).rejects.toMatchObject({ code: 'UPS_RATE_REJECTED',
+      providerCode: '111590', providerDescription: 'Package 1 length is invalid.', affectedField: 'Box 1',
+      requestReference: expect.stringMatching(/^[a-f0-9]{32}$/) });
+    expect(warn).toHaveBeenCalledWith('[UPS RATE] Provider rejection', expect.objectContaining({ providerCode: '111590' }));
+    expect(dbMock.insert).not.toHaveBeenCalled();
   });
 
   test('does not expose another tenant connection', async () => {

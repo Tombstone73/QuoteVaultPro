@@ -1,6 +1,7 @@
 export const MINIMUM_QUICK_NOTE_AGENT_VERSION = "1.0.24";
 export const MINIMUM_SHIPPING_DOCUMENT_AGENT_VERSION = "1.0.25";
 export const MINIMUM_UPS_LABEL_AGENT_VERSION = "1.0.26";
+export const MINIMUM_PROFILE_TEST_AGENT_VERSION = "1.0.27";
 
 function parseNumericVersion(version: string | null | undefined): number[] | null {
   const normalized = version?.trim().replace(/^v/i, "");
@@ -39,8 +40,13 @@ export function supportsUpsLabelAgent(version: string | null | undefined): boole
   return isAgentVersionAtLeast(version, MINIMUM_UPS_LABEL_AGENT_VERSION);
 }
 
+export function supportsProfileTestAgent(version: string | null | undefined): boolean {
+  return isAgentVersionAtLeast(version, MINIMUM_PROFILE_TEST_AGENT_VERSION);
+}
+
 export function supportedAgentDocumentTypes(version: string | null | undefined): string[] {
   return ["traveler", "pickup_traveler", ...(supportsQuickNoteAgent(version) ? ["quick_note"] : []),
     ...(supportsShippingDocumentAgent(version) ? ["packing_slip", "shipment_manifest", "package_ticket"] : []),
-    ...(supportsUpsLabelAgent(version) ? ["ups_label"] : [])];
+    ...(supportsUpsLabelAgent(version) ? ["ups_label"] : []),
+    ...(supportsProfileTestAgent(version) ? ["profile_test"] : [])];
 }

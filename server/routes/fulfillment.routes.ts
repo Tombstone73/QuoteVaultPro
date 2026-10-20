@@ -50,7 +50,7 @@ import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
-import { getUpsRates } from '../services/ups/upsRates';
+import { getUpsRates, UpsRateRejection } from '../services/ups/upsRates';
 import archiver from 'archiver';
 import { buyUpsLabel, getUpsLabelHistory, readUpsLabelArchive, readUpsLabelEvidence, readUpsPackageLabel,
   recoverRecordedUpsPurchase, retireUpsSampleLabel, verifyUpsPackageLabelMapping, voidUpsLabel } from '../services/ups/upsLabels';
@@ -143,6 +143,9 @@ export function registerFulfillmentRoutes(
       return res.json({ success: true, data: await getUpsRates(getRequestOrganizationId(req), req.params.shipmentId, packages) });
     } catch (error) {
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: 'Enter a supported package type and positive weight and dimensions for every package.', code: 'UPS_INVALID_PACKAGE' });
+      if (error instanceof UpsRateRejection) return res.status(error.status).json({ success: false, message: error.message,
+        code: error.code, providerCode: error.providerCode, providerDescription: error.providerDescription,
+        requestReference: error.requestReference, affectedField: error.affectedField });
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       return res.status(500).json({ success: false, message: 'Could not retrieve UPS rates. Try again.' });
     }

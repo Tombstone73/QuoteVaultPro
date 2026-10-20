@@ -9,7 +9,10 @@ jest.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [
   { id: "other-agent", machineLabel: "OTHER-PC", agentVersion: "1.0.24", configuredTravelerPrinterName: "Other queue", lastSeenAt: "2026-10-20T12:00:00Z" },
 ], isError: false }) }));
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
-jest.mock("@/hooks/usePrinterProfiles", () => ({ useCreatePrinterProfile: () => ({ isPending: false, mutateAsync: save }), useUpdatePrinterProfile: () => ({ isPending: false, mutateAsync: save }) }));
+jest.mock("@/hooks/usePrinterProfiles", () => ({
+  PrinterProfileApiError: class extends Error { constructor(message: string, public details: Array<{ path: string[]; message: string }>) { super(message); } },
+  useCreatePrinterProfile: () => ({ isPending: false, mutateAsync: save }), useUpdatePrinterProfile: () => ({ isPending: false, mutateAsync: save }),
+}));
 jest.mock("@/components/ui/button", () => ({ Button: ({ children, variant, ...props }: any) => <button {...props}>{children}</button> }));
 jest.mock("@/components/ui/input", () => ({ Input: (props: any) => <input {...props} /> }));
 jest.mock("@/components/ui/label", () => ({ Label: (props: any) => <label {...props} /> }));
@@ -44,5 +47,21 @@ test("re-pairing keeps the Epson queue and changes only the selected agent ident
     await act(async () => { Simulate.change(agentSelect, { target: { value: "new-agent" } } as any); });
     await act(async () => { Simulate.submit(container.querySelector("form")!); });
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ printAgentId: "new-agent", windowsQueueName: "EPSON TM-L90 Liner-Free 1", supportedDocuments: ["traveler"] }));
+  } finally { act(() => root.unmount()); }
+});
+
+test("a rejected profile save keeps the entered queue and shows the server field error", async () => {
+  const container = document.createElement("div"); const root = createRoot(container);
+  try {
+    const { PrinterProfileApiError } = jest.requireMock("@/hooks/usePrinterProfiles") as { PrinterProfileApiError: new (message: string, details: Array<{ path: string[]; message: string }>) => Error };
+    save.mockRejectedValueOnce(new PrinterProfileApiError("Invalid printer profile", [
+      { path: ["windowsQueueName"], message: "Choose the paired agent's exact Windows queue." },
+    ]));
+    await act(async () => root.render(<PrinterProfileForm profile={{ id: "printer", displayName: "Label printer",
+      printerType: "shipping_label", windowsQueueName: "Zebra ZP 450-200 dpi", supportedDocuments: ["ups_label"], isActive: true } as any} />));
+    await act(async () => Simulate.submit(container.querySelector("form")!));
+    expect(container.textContent).toContain("Choose the paired agent's exact Windows queue.");
+    expect((Array.from(container.querySelectorAll("input")).find(input => input.value === "Zebra ZP 450-200 dpi") as HTMLInputElement).value)
+      .toBe("Zebra ZP 450-200 dpi");
   } finally { act(() => root.unmount()); }
 });

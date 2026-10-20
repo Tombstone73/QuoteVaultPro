@@ -34,8 +34,12 @@ const persistDraft = async (payload: any) => {
 };
 const save = jest.fn(persistDraft);
 const mark = jest.fn(async () => ({ status: 'SHIPPED' }));
-const upsRateCall = jest.fn(async () => ({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
+type MockUpsRateResponse = { rates: Array<{ serviceCode: string; serviceName: string; currency: string; total: string;
+  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test' };
+const upsRateCall = jest.fn(async (_path: string, _init?: RequestInit): Promise<MockUpsRateResponse> => ({ rates: [
+  { serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
 jest.mock('react-router-dom', () => ({ useLocation: () => location, useParams: () => ({ shipmentId: 'shipment-1' }) }));
+jest.mock('@/lib/queryClient', () => ({ apiFetch: jest.fn() }));
 jest.mock('@/contexts/NavigationGuardContext', () => ({ useNavigationGuard: () => ({ guardedNavigate: navigate }) }));
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }));
 jest.mock('@/components/fulfillment/FulfillmentDebugPanel', () => ({ FulfillmentDebugPanel: () => null }));
@@ -43,7 +47,8 @@ jest.mock('@/components/artwork/AuthenticatedArtworkThumbnail', () => ({ Authent
 jest.mock('@/components/AttachmentViewerDialog', () => ({ AttachmentViewerDialog: ({ open, attachments, initialIndex, onOpenChange }: any) => open ? <div data-testid="artwork-viewer" data-file-record-id={attachments[initialIndex].fileRecordId}>{JSON.stringify(attachments)}<button onClick={() => onOpenChange(false)}>Close artwork</button></div> : null }));
 jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ ShippingDocumentPrintDialog: ({ shipmentId, documentType, packageId, label }: any) => <button data-print-document={documentType} data-shipment-id={shipmentId} data-package-id={packageId}>{label}</button> }), { virtual: true });
 jest.mock('@/hooks/useFulfillment', () => ({
-  apiCall: upsRateCall,
+  apiCall: (path: string, init?: RequestInit) => /\/ups-(?:customer-charges|labels)$/.test(path)
+    ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' }) : upsRateCall(path, init),
   useShipmentDetailQuery: () => ({ data: shipment, refetch: async () => ({ data: shipment, isError: false }) }),
   useShippingDocumentSourceQuery: () => documentSource,
   useUpdateShipmentMutation: () => ({ mutateAsync: save, isPending: false }),
@@ -108,6 +113,7 @@ test('simple packing exposes quantity and saves the reduced package allocation b
 });
 
 test('existing split package quantities remain separate and zero removes only that package allocation', async () => {
+  shipment.packingMode = 'advanced_separate_packing';
   const originalItems = shipment.items;
   const originalPackages = shipment.packages;
   shipment.items = [
@@ -118,8 +124,8 @@ test('existing split package quantities remain separate and zero removes only th
   const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
   try {
     await act(async () => { root.render(<FulfillmentShipmentEditor />); });
-    const first = container.querySelector('input[aria-label="Qty in package package-1: Magnetic"]') as HTMLInputElement;
-    const second = container.querySelector('input[aria-label="Qty in package package-2: Magnetic"]') as HTMLInputElement;
+    const first = container.querySelector('input[aria-label="Quantity in box for Magnetic allocation allocation-1"]') as HTMLInputElement;
+    const second = container.querySelector('input[aria-label="Quantity in box for Magnetic allocation allocation-2"]') as HTMLInputElement;
     expect(first.value).toBe('1'); expect(second.value).toBe('1');
     expect(save).not.toHaveBeenCalled();
     act(() => Simulate.change(first, { target: { value: '0.5' } } as any));
@@ -521,5 +527,22 @@ test('late UPS responses are discarded after package type changes', async () => 
     await act(async () => finishRate({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '99.00', negotiated: false, estimatedArrival: null }] }));
     expect(container.textContent).not.toContain('USD 99.00');
     expect(button(container, 'Get UPS Rates').disabled).toBe(false);
+  } finally { act(() => root.unmount()); }
+});
+
+test('shows a provider delivery date and clears it when the planned ship date changes', async () => {
+  shipment.shipDate = '2026-10-23';
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75',
+    negotiated: false, estimatedArrival: '2026-10-27', estimatedDeliveryTime: '1600' }], quoteId: 'quote-1', environment: 'live' });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
+    expect(container.textContent).toContain('Tuesday, October 27, 2026 by 4:00 PM');
+    const date = container.querySelector('input[aria-label="Ship Date"]') as HTMLInputElement;
+    act(() => Simulate.change(date, { target: { value: '2026-10-24' } } as any));
+    expect(container.textContent).not.toContain('Tuesday, October 27, 2026');
+    expect(container.textContent).toContain('Previous UPS rates are stale');
   } finally { act(() => root.unmount()); }
 });

@@ -116,6 +116,13 @@ function toDateInput(value: string | null | undefined): string {
   return parsed.toISOString().slice(0, 10);
 }
 
+function formatUpsDeliveryTime(value: string): string {
+  if (!/^\d{4}(?:\d{2})?$/.test(value)) return value;
+  const hours = Number(value.slice(0, 2)); const minutes = Number(value.slice(2, 4));
+  if (hours > 23 || minutes > 59) return value;
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`;
+}
+
 function parseNumber(value: string | number): number | null {
   if (!String(value).trim()) return null;
   const n = Number(value);
@@ -187,7 +194,7 @@ export function FulfillmentShipmentEditor({
   const [shipmentReversalQuantities, setShipmentReversalQuantities] = useState<Record<string, number>>({});
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
   const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
-  const [upsRates, setUpsRates] = useState<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null }> | null>(null);
+  const [upsRates, setUpsRates] = useState<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' }> | null>(null);
   const [upsQuoteId, setUpsQuoteId] = useState<string | null>(null);
   const [upsEnvironment, setUpsEnvironment] = useState<'test' | 'live' | null>(null);
   const [upsCustomerCharges, setUpsCustomerCharges] = useState<UpsCustomerCharge[]>([]);
@@ -487,7 +494,7 @@ export function FulfillmentShipmentEditor({
   }, [draftKey]);
   const documentActionsDisabled = !!hasUnsavedChanges || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
   const upsRateKey = JSON.stringify({ shipmentId: shipment?.id,
-    shippingContext, packages: shipment?.packages.map(pkg => pkg.id), form: [form.weight, form.length, form.width, form.height],
+    shippingContext, packages: shipment?.packages.map(pkg => pkg.id), form: [form.weight, form.length, form.width, form.height, form.shipDate],
     packageFieldsById, upsPackageTypes,
     allocations: draftShipmentItems.filter(item => item.quantity > 0)
       .map(item => [item.orderId, item.orderLineItemId, item.packageId, item.quantity]).sort() });
@@ -537,7 +544,12 @@ export function FulfillmentShipmentEditor({
         upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId); setUpsEnvironment(result.environment);
       }
     } catch (error) {
-      if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) setUpsRateError(toFulfillmentError(error).message);
+      if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
+        const failure = toFulfillmentError(error);
+        const reference = failure.payload && typeof failure.payload === 'object' && 'requestReference' in failure.payload
+          ? String(failure.payload.requestReference) : null;
+        setUpsRateError(`${failure.message}${reference ? ` Request reference: ${reference}.` : ''}`);
+      }
     } finally { setUpsRatesLoading(false); upsRequestInFlight.current = false; }
   };
 
@@ -745,6 +757,14 @@ export function FulfillmentShipmentEditor({
       if (!refreshed.data || refreshed.isError || !draftReadbackMatches(refreshed.data, payload))
         throw new Error('Could not verify the saved shipment draft. Your edits remain available for retry.');
       if (latestDraft.current.draftKey === snapshot.draftKey) {
+        const savedAllocations: Record<string, number> = {};
+        const savedPackages: Record<string, string> = {};
+        for (const item of refreshed.data.items) {
+          savedAllocations[item.orderLineItemId] = (savedAllocations[item.orderLineItemId] ?? 0) + item.quantity;
+          if (item.packageId) savedPackages[item.orderLineItemId] = item.packageId;
+        }
+        setAllocatedByLineItemId(savedAllocations);
+        setPackageByLineItemId(savedPackages);
         setNewSplitRows([]);
         setSplitQuantities({});
         setSplitPackagesById({});
@@ -1270,6 +1290,7 @@ export function FulfillmentShipmentEditor({
             </div>
             {isDraft && !upsDraftLocked && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
               <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p>
+                {!form.shipDate && <p className="mt-1 text-xs text-muted-foreground">Set the planned Ship Date below to request a UPS delivery date with these rates.</p>}
                 {upsEnvironment && <p role="status" className={upsEnvironment === 'test' ? 'mt-2 rounded border border-amber-500 bg-amber-50 p-2 text-xs text-amber-900' : 'mt-2 rounded border border-green-600 p-2 text-xs'}>
                   UPS environment: <strong>{upsEnvironment === 'test' ? 'Sandbox / Test' : 'Live'}</strong>{upsEnvironment === 'test' ? ' · Labels and tracking from this environment cannot be used for real shipping.' : ''}
                 </p>}</div>
@@ -1280,7 +1301,9 @@ export function FulfillmentShipmentEditor({
               {upsRates && <div className="space-y-2" role="status">{upsRates.map(rate => <label key={`${rate.serviceCode}:${rate.currency}`} className="flex items-start gap-2 rounded border p-2 text-sm">
                 <input type="radio" name="ups-rate" checked={selectedUpsService === rate.serviceCode} disabled={upsChargePending || upsActionPending} onChange={() => { setSelectedUpsService(rate.serviceCode); void applySelectedUpsRate(rate.serviceCode, 'default_if_unset'); }} aria-label={`Select ${rate.serviceName} estimate`} />
                 <span><strong>{rate.serviceName}</strong> · {rate.currency} {rate.total} {rate.negotiated ? 'negotiated account rate' : 'UPS returned rate'}
-                  {rate.estimatedArrival && <span className="block text-xs text-muted-foreground">UPS delivery estimate: {rate.estimatedArrival}</span>}</span>
+                  <span className="block text-xs text-muted-foreground">{rate.estimatedArrival && /^\d{4}-\d{2}-\d{2}$/.test(rate.estimatedArrival)
+                    ? `UPS delivery estimate: ${new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${rate.estimatedArrival}T12:00:00Z`))}${rate.estimatedDeliveryTime ? ` by ${formatUpsDeliveryTime(rate.estimatedDeliveryTime)}` : ''}`
+                    : 'Delivery estimate unavailable'}</span></span>
               </label>)}</div>}
               {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'unset' ? 'unset' : row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'UPS rate selected' : 'existing decision'})</span></p>)}
               {selectedUpsService && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
@@ -1289,7 +1312,7 @@ export function FulfillmentShipmentEditor({
               {selectedUpsService && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
                 (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateServiceCode !== selectedUpsService)) &&
                 <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
-              {selectedUpsService && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.serviceName}</strong> · Estimated UPS carrier cost: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.currency} {upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.total}</strong></p><button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || upsRatesStale || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
+              {selectedUpsService && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.serviceName}</strong> · Estimated UPS carrier cost: <strong>{upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.currency} {upsRates?.find(rate => rate.serviceCode === selectedUpsService)?.total}</strong></p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || upsRatesStale || allocatedCount <= 0 || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
             </section>}
             {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>

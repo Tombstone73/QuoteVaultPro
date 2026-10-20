@@ -57,3 +57,21 @@ test("query uses only claimed endpoint and rejects foreign job/type/malformed so
 test("packing source HTML excludes notes and never performs an operator URL fetch", async () => {
   queryMock.mockReturnValue({ data: { ...data, documentType: "packing_slip" }, error: null } as any); await render(); expect(container.querySelector("iframe")!.srcdoc).not.toContain("PRIVATE_NOTES"); expect(apiFetch).not.toHaveBeenCalled();
 });
+
+test('renders an unmistakable 4 × 6 test label from the claimed job without an Order or UPS purchase', async () => {
+  const testSource = { jobId: 'job', documentType: 'profile_test', profileName: 'Zebra QA', workstation: 'Front Desk',
+    queueName: 'Zebra ZP 450-200 dpi', createdAt: '2026-10-20T12:00:00.000Z', mediaKind: 'label', receiptWidthMm: 80 };
+  queryMock.mockReturnValue({ data: testSource, error: null } as any);
+  await render();
+  expect(container.querySelector('main')?.dataset.printReady).toBe('true');
+  expect(container.textContent).toContain('TEST PRINT · NOT A SHIPPING LABEL');
+  expect(container.textContent).toContain('Zebra ZP 450-200 dpi');
+  expect(container.textContent).not.toContain('PRIVATE_NOTES');
+  expect(container.querySelector('style')?.textContent).toContain('@page{size:4in 6in;margin:0}');
+  expect(container.querySelector('iframe')).toBeNull();
+  const queryFn = (queryMock.mock.calls[0][0] as any).queryFn;
+  jest.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({ data: testSource }) } as any);
+  await expect(queryFn({ signal: undefined })).resolves.toMatchObject({ documentType: 'profile_test' });
+  jest.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({ data: { ...testSource, jobId: 'foreign' } }) } as any);
+  await expect(queryFn({ signal: undefined })).rejects.toThrow();
+});

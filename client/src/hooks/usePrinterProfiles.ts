@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
+export class PrinterProfileApiError extends Error {
+  constructor(message: string, public readonly details: Array<{ path: Array<string | number>; message: string }> = []) {
+    super(message);
+  }
+}
+
 export type PrinterProfileType = "production_ticket" | "shipping_label" | "office_document" | "other";
 
 export interface PrinterProfile {
@@ -46,9 +52,10 @@ function unwrap<T>(json: any): T {
   return json?.success ? json.data : json;
 }
 
-async function readJson<T>(res: Response, fallback: string): Promise<T> {
+export async function readPrinterProfileJson<T>(res: Response, fallback: string): Promise<T> {
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || json.message || fallback);
+  if (!res.ok) throw new PrinterProfileApiError(json.error || json.message || fallback,
+    Array.isArray(json.details) ? json.details.filter((item: unknown) => item && typeof item === 'object' && 'path' in item && 'message' in item) : []);
   return unwrap<T>(json);
 }
 
@@ -61,7 +68,7 @@ export function usePrinterProfiles(filters: { active?: boolean; intendedUse?: st
       if (filters.intendedUse) params.set("intendedUse", filters.intendedUse);
       if (filters.printerType) params.set("printerType", filters.printerType);
       const res = await fetch(`/api/printer-profiles${params.toString() ? `?${params.toString()}` : ""}`, { credentials: "include" });
-      return readJson<PrinterProfile[]>(res, "Failed to load printer profiles");
+      return readPrinterProfileJson<PrinterProfile[]>(res, "Failed to load printer profiles");
     },
   });
 }
@@ -77,7 +84,7 @@ export function useCreatePrinterProfile() {
         credentials: "include",
         body: JSON.stringify(input),
       });
-      return readJson<PrinterProfile>(res, "Failed to create printer profile");
+      return readPrinterProfileJson<PrinterProfile>(res, "Failed to create printer profile");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/printer-profiles"] });
@@ -98,7 +105,7 @@ export function useUpdatePrinterProfile(id: string) {
         credentials: "include",
         body: JSON.stringify(input),
       });
-      return readJson<PrinterProfile>(res, "Failed to update printer profile");
+      return readPrinterProfileJson<PrinterProfile>(res, "Failed to update printer profile");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/printer-profiles"] });
@@ -113,7 +120,7 @@ export function useSetDefaultPrinterProfile() {
   return useMutation({
     mutationFn: async (id: string) => {
       const res = await fetch(`/api/printer-profiles/${id}/default`, { method: "POST", credentials: "include" });
-      return readJson<PrinterProfile>(res, "Failed to set default printer profile");
+      return readPrinterProfileJson<PrinterProfile>(res, "Failed to set default printer profile");
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/printer-profiles"] }),
   });
@@ -124,7 +131,7 @@ export function useDeactivatePrinterProfile() {
   return useMutation({
     mutationFn: async (id: string) => {
       const res = await fetch(`/api/printer-profiles/${id}/deactivate`, { method: "POST", credentials: "include" });
-      return readJson<PrinterProfile>(res, "Failed to deactivate printer profile");
+      return readPrinterProfileJson<PrinterProfile>(res, "Failed to deactivate printer profile");
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/printer-profiles"] }),
   });
@@ -135,7 +142,7 @@ export function useDeletePrinterProfile() {
   return useMutation({
     mutationFn: async (id: string) => {
       const res = await fetch(`/api/printer-profiles/${id}`, { method: "DELETE", credentials: "include" });
-      return readJson<{ deleted: boolean }>(res, "Failed to delete printer profile");
+      return readPrinterProfileJson<{ deleted: boolean }>(res, "Failed to delete printer profile");
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/printer-profiles"] }),
   });

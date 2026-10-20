@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { companySettings, upsShipmentRateQuotes } from '@shared/schema';
 import { shippingPartyValidationErrors, type ShippingParty } from '@shared/shippingDocuments';
@@ -9,7 +9,7 @@ import { markUpsAccountVerified, upsRateCredentials } from './upsConnection';
 
 export type UpsPackageType = '02' | '21';
 export type UpsRatePackage = { id: string; packagingType: UpsPackageType; weightLbs: number; lengthIn: number; widthIn: number; heightIn: number };
-export type UpsRate = { serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null };
+export type UpsRate = { serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' };
 const names: Record<string, string> = { '01': 'UPS Next Day Air', '02': 'UPS 2nd Day Air', '03': 'UPS Ground', '07': 'UPS Worldwide Express', '08': 'UPS Worldwide Expedited', '11': 'UPS Standard', '12': 'UPS 3 Day Select', '13': 'UPS Next Day Air Saver', '14': 'UPS Next Day Air Early', '54': 'UPS Worldwide Express Plus', '59': 'UPS 2nd Day Air A.M.', '65': 'UPS Worldwide Saver' };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
@@ -26,10 +26,10 @@ function address(party: ShippingParty) {
     PostalCode: party.postalCode, CountryCode: countryCode(party.country) };
 }
 
-export function buildUpsRateRequest(input: { origin: ShippingParty; sender?: ShippingParty; destination: ShippingParty; shipperNumber: string; packages: UpsRatePackage[] }) {
+export function buildUpsRateRequest(input: { origin: ShippingParty; sender?: ShippingParty; destination: ShippingParty; shipperNumber: string; packages: UpsRatePackage[]; shipDate?: string | null }) {
   const { origin, destination, shipperNumber, packages } = input;
   const sender = input.sender ?? origin;
-  return { RateRequest: { Request: { RequestOption: 'Shop' }, Shipment: {
+  return { RateRequest: { Request: { RequestOption: input.shipDate ? 'shopTimeInTransit' : 'Shop' }, Shipment: {
     Shipper: { Name: origin.company || origin.name, ShipperNumber: shipperNumber, Address: address(origin) },
     ShipFrom: { Name: sender.company || sender.name, Address: address(sender) },
     ShipTo: { Name: destination.company || destination.name, Address: address(destination) },
@@ -38,7 +38,45 @@ export function buildUpsRateRequest(input: { origin: ShippingParty; sender?: Shi
       Dimensions: { UnitOfMeasurement: { Code: 'IN' }, Length: String(pkg.lengthIn), Width: String(pkg.widthIn), Height: String(pkg.heightIn) },
       PackageWeight: { UnitOfMeasurement: { Code: 'LBS' }, Weight: String(pkg.weightLbs) } })),
     ShipmentRatingOptions: { NegotiatedRatesIndicator: 'Y' },
+    ...(input.shipDate && /^\d{4}-\d{2}-\d{2}$/.test(input.shipDate) ? { DeliveryTimeInformation: { PackageBillType: '03', Pickup: { Date: input.shipDate.replace(/-/g, ''), Time: '1200' } } } : {}),
   } } };
+}
+
+function providerDate(value: unknown): string | null {
+  const raw = text(value);
+  const iso = /^\d{8}$/.test(raw) ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6)}` : raw;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const date = new Date(`${iso}T12:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+function safeProviderText(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  return raw.slice(0, 240).replace(/[\r\n\x00-\x1f]/g, ' ').replace(/https?:\/\/\S+/gi, '[link]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
+    .replace(/\b\d{1,5}\s+(?:[A-Za-z]+\s+){0,4}(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd)\b\.?/gi, '[address]')
+    .replace(/\b\d{6,}\b/g, '[number]').replace(/\b(?:bearer|token|secret|password)\s*[:=]?\s*\S+/gi, '[credential]').trim() || null;
+}
+
+export function upsProviderRateError(payload: unknown, packages: UpsRatePackage[]) {
+  const response = object(object(payload).response);
+  const first = object(list(response.errors)[0]);
+  const code = /^[A-Za-z0-9_-]{1,24}$/.test(text(first.code)) ? text(first.code) : null;
+  const description = safeProviderText(first.message || first.description);
+  const lower = (description ?? '').toLowerCase();
+  const index = /\b(?:package|box)\s*(?:number|#|no\.?|:)??\s*(\d{1,2})\b/i.exec(description ?? '');
+  const affectedBox = index && Number(index[1]) > 0 && Number(index[1]) <= packages.length ? `Box ${index[1]}` : null;
+  const affectedField = affectedBox ?? (/\bship\s*to|destination|recipient\b/.test(lower) ? 'Ship To'
+    : /\bship\s*from|origin|shipper\b/.test(lower) ? 'Shop origin / sender'
+    : /\baccount|entitlement\b/.test(lower) ? 'UPS account' : null);
+  return { code, description, affectedField };
+}
+
+export class UpsRateRejection extends FulfillmentHttpError {
+  constructor(status: number, message: string, public readonly providerCode: string | null,
+    public readonly providerDescription: string | null, public readonly requestReference: string,
+    public readonly affectedField: string | null) { super(status, message, 'UPS_RATE_REJECTED'); }
 }
 
 export function normalizeUpsRates(payload: unknown): UpsRate[] {
@@ -52,11 +90,12 @@ export function normalizeUpsRates(payload: unknown): UpsRate[] {
     const currency = text(charge.CurrencyCode);
     if (!code || !currency || !/^\d+(?:\.\d{1,2})?$/.test(total)) return [];
     const transit = object(row.TimeInTransit);
-    const guaranteed = object(row.GuaranteedDelivery);
-    const arrival = object(object(transit.ServiceSummary).EstimatedArrival);
-    const days = text(guaranteed.BusinessDaysInTransit);
+    const arrival = object(object(object(transit.ServiceSummary).EstimatedArrival).Arrival);
+    const estimatedArrival = providerDate(arrival.Date);
+    const estimatedDeliveryTime = /^\d{4}(?:\d{2})?$/.test(text(arrival.Time)) ? text(arrival.Time) : null;
     return [{ serviceCode: code, serviceName: names[code] ?? `UPS service ${code}`, currency, total, negotiated: charge === negotiated,
-      estimatedArrival: text(arrival.Date) || text(transit.EstimatedArrival) || (days ? `${days} business days` : null) }];
+      estimatedArrival, estimatedDeliveryTime: estimatedArrival ? estimatedDeliveryTime : null,
+      deliveryCommitment: 'estimated' as const }];
   });
 }
 
@@ -76,7 +115,7 @@ function validatePackages(packages: UpsRatePackage[], saved: SavedPackage[]) {
   }
 }
 
-export function upsShippingFingerprint(input: { origin: ShippingParty; sender: ShippingParty; destination: ShippingParty; accountNumber: string; packages: UpsRatePackage[] }) {
+export function upsShippingFingerprint(input: { origin: ShippingParty; sender: ShippingParty; destination: ShippingParty; accountNumber: string; packages: UpsRatePackage[]; shipDate?: string | null }) {
   return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
 
@@ -113,19 +152,29 @@ export async function getUpsRates(orgId: string, shipmentId: string, packages: U
   const { origin, sender, destination, shipment } = await resolveUpsShippingContext(orgId, shipmentId);
   validatePackages(packages, shipment.packages);
   const credentials = await upsRateCredentials(orgId);
-  const fingerprint = upsShippingFingerprint({ origin, sender, destination, accountNumber: credentials.accountNumber, packages });
+  const shipDate = shipment.shipDate ? new Date(shipment.shipDate).toISOString().slice(0, 10) : null;
+  const fingerprint = upsShippingFingerprint({ origin, sender, destination, accountNumber: credentials.accountNumber, packages, shipDate });
+  const requestReference = randomUUID().replace(/-/g, '');
   let response: Response;
   try {
-    response = await fetch(`${credentials.baseUrl}/api/rating/v2409/Shop`, { method: 'POST', signal: AbortSignal.timeout(15_000),
-      headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json', Accept: 'application/json', transactionSrc: 'PrintersHero' },
-      body: JSON.stringify(buildUpsRateRequest({ origin, sender, destination, shipperNumber: credentials.accountNumber, packages })) });
+    response = await fetch(`${credentials.baseUrl}/api/rating/v2409/${shipDate ? 'Shoptimeintransit' : 'Shop'}`, { method: 'POST', signal: AbortSignal.timeout(15_000),
+      headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json', Accept: 'application/json', transactionSrc: 'PrintersHero', transId: requestReference },
+      body: JSON.stringify(buildUpsRateRequest({ origin, sender, destination, shipperNumber: credentials.accountNumber, packages, shipDate })) });
   } catch { throw new FulfillmentHttpError(503, 'UPS rating timed out or is unavailable. Package inputs are unchanged.', 'UPS_RATE_UNAVAILABLE'); }
   const body = object(await response.json().catch(() => ({})));
   if (response.status === 401 || response.status === 403) {
     throw new FulfillmentHttpError(409, 'UPS authorization or Rating API access failed. Reconnect in Shipping Settings or check account entitlement.', 'UPS_AUTH_FAILED');
   }
-  if (!response.ok) throw new FulfillmentHttpError(response.status === 429 ? 503 : 422,
-    response.status === 429 ? 'UPS rate limits are active. Try again shortly.' : 'UPS could not rate these addresses or packages. Review the details and retry.', 'UPS_RATE_REJECTED');
+  if (!response.ok) {
+    const provider = upsProviderRateError(body, packages);
+    console.warn('[UPS RATE] Provider rejection', { status: response.status, requestReference,
+      providerCode: provider.code, providerDescription: provider.description, affectedField: provider.affectedField, boxCount: packages.length });
+    const reason = provider.description ? `${provider.description}${provider.code ? ` (UPS ${provider.code})` : ''}` : 'UPS did not return a specific reason.';
+    const action = provider.affectedField ? ` Check ${provider.affectedField} and try again.` : ' Review the addresses, packages, and account access, then try again.';
+    throw new UpsRateRejection(response.status === 429 ? 503 : 422,
+      response.status === 429 ? 'UPS rate limits are active. Try again shortly.' : `UPS rejected this rate request: ${reason}${action}`,
+      provider.code, provider.description, requestReference, provider.affectedField);
+  }
   const rates = normalizeUpsRates(body);
   if (!rates.length) throw new FulfillmentHttpError(422, 'UPS returned no available services for these addresses and packages.', 'UPS_NO_SERVICES');
   if (!credentials.row.verifiedAt) await markUpsAccountVerified(orgId, credentials.row);

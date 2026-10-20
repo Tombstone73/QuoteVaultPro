@@ -128,6 +128,33 @@ test("agent list omits credential hashes while exposing pairing status", async (
   expect(response.body.data[0]).toMatchObject({ id: "agent", configuredTravelerPrinterName: "queue-secret" });
   expect(response.body.data[0]).not.toHaveProperty("tokenHash");
 });
+test('profile test queues only a saved, tenant-bound job and requires the matching current agent', async () => {
+  const profile = rows.printer_profiles[0]; const agent = rows.local_bridge_agents[0];
+  profile.printerType = 'shipping_label'; profile.supportedDocuments = ['ups_label'];
+  expect((await supertest(app).post('/api/printer-profiles/printer/test-print')).status).toBe(401);
+  profile.printAgentId = null;
+  const unpaired = await supertest(app).post('/api/printer-profiles/printer/test-print').set('x-staff', 'yes');
+  expect(unpaired.status).toBe(409); expect(unpaired.body.code).toBe('PRINT_AGENT_UNASSIGNED');
+  profile.printAgentId = 'agent';
+  agent.agentVersion = '1.0.26';
+  expect((await supertest(app).post('/api/printer-profiles/printer/test-print').set('x-staff', 'yes')).body.code).toBe('PRINT_AGENT_UPDATE_REQUIRED');
+  expect(writes).toHaveLength(0);
+  agent.agentVersion = '1.0.27'; agent.name = 'QA workstation';
+  const queued = await supertest(app).post('/api/printer-profiles/printer/test-print').set('x-staff', 'yes').set('Idempotency-Key', 'test-once');
+  expect(queued.status).toBe(202);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].value).toMatchObject({ orderId: null, documentType: 'profile_test', copies: 1,
+    printContext: { mediaKind: 'label' }, destinationId: 'printer', agentId: 'agent' });
+  expect(wake).toHaveBeenCalledWith(agent.tokenHash);
+  expect((await supertest(app).get('/api/printer-profiles/printer/test-print/job').set('x-staff', 'yes').set('x-org', 'foreign')).status).toBe(404);
+  expect((await supertest(app).get('/api/local-bridge/direct-print/jobs/job/document').set('Authorization', 'Bearer bearer')).status).toBe(404);
+  const claim = await supertest(app).post('/api/local-bridge/direct-print/jobs/job/claim').set('Authorization', 'Bearer bearer').send({});
+  expect(claim.status).toBe(200);
+  const document = await supertest(app).get('/api/local-bridge/direct-print/jobs/job/document').set('Authorization', 'Bearer bearer');
+  expect(document.status).toBe(200);
+  expect(document.body.data).toMatchObject({ documentType: 'profile_test', profileName: 'Office', queueName: 'queue-secret', mediaKind: 'label' });
+  expect(document.body.data).not.toHaveProperty('tokenHash');
+});
 test("one full package ticket set creates one frozen print job and no business writes", async () => {
   const response = await enqueue(); expect(response.status).toBe(202);
   expect(writes).toHaveLength(1); expect(writes[0]).toMatchObject({ table: "direct_print_jobs", value: { documentType: "package_ticket", copies: 2, printContext: { shipmentId: "shipment", packageId: null, source: frozenSource } } });

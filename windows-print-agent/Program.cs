@@ -17,7 +17,7 @@ record Job(string id, string? orderId, string? documentType, JsonElement? printC
 record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.26";
+  const string AgentVersion = "1.0.27";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -256,7 +256,9 @@ static class Program {
         case "pickup_traveler":
         case "packing_slip":
         case "shipment_manifest":
-        case "package_ticket": await RunOnTravelerStaAsync(() => PrintTraveler(claim)); break;
+        case "package_ticket":
+        case "ups_label":
+        case "profile_test": await RunOnTravelerStaAsync(() => PrintTraveler(claim)); break;
         case "quick_note": await RunOnTravelerStaAsync(() => PrintQuickNote(claim)); break;
         default: throw new InvalidOperationException("Unsupported print document type.");
       }
@@ -292,7 +294,7 @@ static class Program {
     if (!string.Equals(travelerUri.AbsolutePath, expectedPath, StringComparison.Ordinal) || !string.Equals(GetQueryParameter(travelerUri, "directPrintJobId"), job.id, StringComparison.Ordinal)) throw new InvalidOperationException("PrintersHero returned an invalid Traveler print route.");
     return travelerUri;
   }
-  static bool IsShippingDocument(string? type) => type is "packing_slip" or "shipment_manifest" or "package_ticket" or "ups_label";
+  static bool IsShippingDocument(string? type) => type is "packing_slip" or "shipment_manifest" or "package_ticket" or "ups_label" or "profile_test";
   static Uri GetShippingNavigationUri(Claim job) {
     if (!IsShippingDocument(job.documentType) || string.IsNullOrWhiteSpace(job.travelerUrl) || !Uri.TryCreate(job.travelerUrl, UriKind.Absolute, out var uri)) throw new InvalidOperationException("Shipping print URL unavailable.");
     if (uri.Scheme != Uri.UriSchemeHttps || !CanonicalTravelerWebHosts.Contains(uri.Host) || !uri.IsDefaultPort || !string.IsNullOrEmpty(uri.UserInfo)
@@ -394,9 +396,18 @@ static class Program {
     settings.Copies = job.copies;
     settings.ShouldPrintBackgrounds = true;
     settings.ShouldPrintHeaderAndFooter = false;
-    if (job.documentType == "ups_label") {
+    if (job.documentType == "ups_label" || job.documentType == "profile_test" && job.printContext is JsonElement context
+      && context.TryGetProperty("mediaKind", out var kind) && kind.GetString() == "label") {
       settings.MediaSize = CoreWebView2PrintMediaSize.Custom;
       settings.PageWidth = 4;
+      settings.PageHeight = 6;
+      settings.MarginTop = settings.MarginRight = settings.MarginBottom = settings.MarginLeft = 0;
+    }
+    else if (job.documentType == "profile_test" && job.printContext is JsonElement receiptContext
+      && receiptContext.TryGetProperty("mediaKind", out var receiptKind) && receiptKind.GetString() == "receipt"
+      && receiptContext.TryGetProperty("receiptWidthMm", out var widthElement) && widthElement.TryGetDouble(out var receiptWidthMm)) {
+      settings.MediaSize = CoreWebView2PrintMediaSize.Custom;
+      settings.PageWidth = Math.Clamp(receiptWidthMm, 40, 120) / 25.4;
       settings.PageHeight = 6;
       settings.MarginTop = settings.MarginRight = settings.MarginBottom = settings.MarginLeft = 0;
     }

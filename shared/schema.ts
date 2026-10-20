@@ -6031,7 +6031,7 @@ export const upsShipmentRateQuotes = pgTable("ups_shipment_rate_quotes", {
   shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
   environment: varchar("environment", { length: 8 }).notNull().default('unknown').$type<'unknown' | 'test' | 'live'>(),
   requestFingerprint: varchar("request_fingerprint", { length: 64 }).notNull(),
-  rates: jsonb("rates").$type<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null }>>().notNull(),
+  rates: jsonb("rates").$type<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' }>>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 }, table => [index("ups_rate_quotes_org_shipment_idx").on(table.organizationId, table.shipmentId)]);

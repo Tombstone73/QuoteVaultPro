@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { isNumericAgentVersion, MINIMUM_QUICK_NOTE_AGENT_VERSION, supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
+import { isNumericAgentVersion, MINIMUM_QUICK_NOTE_AGENT_VERSION, supportsProfileTestAgent, supportedAgentDocumentTypes, supportsQuickNoteAgent } from "../lib/directPrintAgentCapabilities";
 
 describe("Quick Note Print Agent capability", () => {
   test("accepts the minimum and newer numeric versions", () => {
@@ -19,5 +19,12 @@ describe("Quick Note Print Agent capability", () => {
     expect(isNumericAgentVersion("1.0.24")).toBe(true);
     expect(isNumericAgentVersion("installer-check")).toBe(false);
     expect(isNumericAgentVersion(undefined)).toBe(false);
+  });
+
+  test('does not offer profile test jobs to older installed agents', () => {
+    expect(supportsProfileTestAgent('1.0.26')).toBe(false);
+    expect(supportedAgentDocumentTypes('1.0.26')).not.toContain('profile_test');
+    expect(supportsProfileTestAgent('1.0.27')).toBe(true);
+    expect(supportedAgentDocumentTypes('1.0.27')).toContain('profile_test');
   });
 });

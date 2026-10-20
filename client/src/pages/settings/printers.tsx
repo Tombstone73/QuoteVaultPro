@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -25,8 +27,9 @@ import {
   useDeletePrinterProfile,
   usePrinterProfiles,
   useSetDefaultPrinterProfile,
+  readPrinterProfileJson,
 } from "@/hooks/usePrinterProfiles";
-import { Edit, Plus, Star, Trash2 } from "lucide-react";
+import { Edit, Plus, Printer, Star, Trash2 } from "lucide-react";
 
 function formatDate(value?: string | null) {
   return value ? value.substring(0, 10) : "Never";
@@ -39,6 +42,26 @@ export default function PrinterSettingsPage() {
   const deleteMutation = useDeletePrinterProfile();
   const [editing, setEditing] = useState<PrinterProfile | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [testPendingId, setTestPendingId] = useState<string | null>(null);
+  const [testJob, setTestJob] = useState<{ profileId: string; jobId: string; agentLastSeenAt: string | null } | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const testStatus = useQuery<{ status: string; lastError: string | null }>({
+    queryKey: ['printer-profile-test', testJob?.jobId], enabled: Boolean(testJob),
+    queryFn: async () => readPrinterProfileJson(await apiFetch(`/api/printer-profiles/${testJob!.profileId}/test-print/${testJob!.jobId}`), 'Could not read test print status.'),
+    refetchInterval: query => ['submitted', 'failed'].includes(query.state.data?.status ?? '') ? false : 1500,
+  });
+
+  async function handleTestPrint(profile: PrinterProfile) {
+    if (testPendingId) return;
+    setTestPendingId(profile.id); setTestError(null); setTestJob(null);
+    try {
+      const response = await apiFetch(`/api/printer-profiles/${profile.id}/test-print`, {
+        method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, credentials: 'include' });
+      const job = await readPrinterProfileJson<{ id: string; agentLastSeenAt: string | null }>(response, 'Could not queue test print.');
+      setTestJob({ profileId: profile.id, jobId: job.id, agentLastSeenAt: job.agentLastSeenAt });
+    } catch (error) { setTestError(error instanceof Error ? error.message : 'Could not queue test print.'); }
+    finally { setTestPendingId(null); }
+  }
 
   async function handleDelete(profile: PrinterProfile) {
     if (!window.confirm(`Delete printer profile "${profile.displayName}"?`)) return;
@@ -54,9 +77,7 @@ export default function PrinterSettingsPage() {
             <p className="mt-1 text-titan-sm text-titan-text-secondary">
               Manage organization-wide printer profiles used to guide production ticket and document printing.
             </p>
-            <p className="mt-2 text-xs text-titan-text-muted">
-              Current printing opens the browser print dialog. Profiles do not map to physical devices yet.
-            </p>
+            <p className="mt-2 text-xs text-titan-text-muted">Test Print uses the saved profile and its paired Windows Print Agent. The job status confirms spool submission, not paper output.</p>
           </div>
           <Button onClick={() => setShowAdd(true)}>
             <Plus className="mr-2 h-4 w-4" />
@@ -64,6 +85,16 @@ export default function PrinterSettingsPage() {
           </Button>
         </div>
       </TitanCard>
+
+      {(testJob || testError) && <div role={testError ? 'alert' : 'status'} className="rounded border p-3 text-sm">
+        {testError ? <p className="text-destructive">Test print failed: {testError}</p> : testJob && <>
+          <p>Test print job {testJob.jobId}: {testStatus.data?.status === 'submitted' ? 'Submitted to the Windows spooler; check the physical printer.'
+            : testStatus.data?.status === 'failed' ? `Agent failed: ${testStatus.data.lastError || 'Check the agent log and Windows queue.'}`
+            : testStatus.data?.status === 'claimed' || testStatus.data?.status === 'rendering' ? 'Agent processing.' : 'Queued for the paired agent.'}</p>
+          {testJob.agentLastSeenAt && <p className="text-xs text-titan-text-secondary">Agent last contact: {new Date(testJob.agentLastSeenAt).toLocaleString()} (last seen, not proof it is online now).</p>}
+          {testStatus.isError && <p className="text-destructive">Could not read job status. Refresh this page or check the agent log using job {testJob.jobId}.</p>}
+        </>}
+      </div>}
 
       <TitanTableContainer>
         <TitanTable>
@@ -107,6 +138,9 @@ export default function PrinterSettingsPage() {
                 <TitanTableCell>{formatDate(profile.lastUsedAt)}</TitanTableCell>
                 <TitanTableCell className="text-right">
                   <div className="flex justify-end gap-1">
+                    <Button size="sm" variant="outline" disabled={Boolean(testPendingId)} onClick={() => void handleTestPrint(profile)}>
+                      <Printer className="mr-1 h-4 w-4" />{testPendingId === profile.id ? 'Queuing…' : 'Test Print'}
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => setEditing(profile)}>
                       <Edit className="h-4 w-4" />
                     </Button>

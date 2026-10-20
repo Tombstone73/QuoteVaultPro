@@ -7,10 +7,10 @@ const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "
 describe("printer profile UI contract", () => {
   test("Settings exposes printer management under /settings/printers", () => {
     const app = read("client/src/App.tsx");
-    const settings = read("client/src/pages/settings/SettingsLayout.tsx");
+    const settings = read("client/src/lib/settingsSearch.ts");
 
     expect(app).toContain('path="printers"');
-    expect(settings).toContain('path: "/settings/printers"');
+    expect(settings).toContain('route: "/settings/printers"');
     expect(settings).toContain('label: "Printers"');
   });
 

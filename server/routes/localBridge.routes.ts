@@ -12,7 +12,7 @@ import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../lib/directTravelerPrintUrl";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getPrintAgentRealtimeConfiguration } from "../services/printAgentWake";
-import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
+import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsProfileTestAgent, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
 import { getUpsLabelHistory, readUpsPackageLabel } from "../services/ups/upsLabels";
 import { isShippingDocumentType, shippingPrintContextSchema } from "@shared/directPrintDocuments";
 import { pickupTravelerContext } from "@shared/pickupTravelerProgress";
@@ -153,6 +153,7 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
       case "shipment_manifest":
       case "package_ticket": travelerUrl = `${canonicalWebOrigin}/print-agent/documents/${encodeURIComponent(job.id)}`; break;
       case "ups_label": travelerUrl = `${canonicalWebOrigin}/print-agent/documents/${encodeURIComponent(job.id)}`; break;
+      case "profile_test": travelerUrl = `${canonicalWebOrigin}/print-agent/documents/${encodeURIComponent(job.id)}`; break;
       default: return res.status(409).json({ error: "Unsupported print document type" });
     }
     return res.json({
@@ -170,6 +171,21 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   app.get("/api/local-bridge/direct-print/jobs/:id/traveler", bridgeAuth, async (req: any, res) => { try { const agent = req.bridgeAgent; const [job] = await db.select({ orderId: directPrintJobs.orderId, documentType: directPrintJobs.documentType, printContext: directPrintJobs.printContext }).from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.id), eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.status, "claimed"), inArray(directPrintJobs.documentType, ["traveler", "pickup_traveler"]))).limit(1); if (!job || !job.orderId || !["traveler", "pickup_traveler"].includes(job.documentType)) return res.status(404).json({ error: "Print job not claimed" }); const context = job.documentType === "pickup_traveler" ? pickupTravelerContext(job.printContext) : null; if (job.documentType === "pickup_traveler" && !context) return res.status(409).json({ error: "Pickup traveler print context is unavailable" }); const traveler = await (context ? getOrderTravelerSource(agent.organizationId, job.orderId, context) : getOrderTravelerSource(agent.organizationId, job.orderId)); if (!traveler) return res.status(404).json({ error: "Order not found" }); res.json({ success: true, data: traveler }); } catch (error: any) { const status = Number(error?.status) || 500; if (status >= 500) console.error("[PICKUP TRAVELER] Source read failed", error); return res.status(status).json({ error: status < 500 ? error.message : "Could not load Traveler" }); } });
   app.get("/api/local-bridge/direct-print/jobs/:jobId/document", bridgeAuth, async (req: any, res) => {
     const agent = req.bridgeAgent;
+    const [testJob] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId),
+      eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId),
+      eq(directPrintJobs.status, 'claimed'), eq(directPrintJobs.documentType, 'profile_test'))).limit(1);
+    if (testJob) {
+      if (!supportsProfileTestAgent(agent.agentVersion)) return res.status(409).json({ error: 'Print Agent 1.0.27 or newer required.' });
+      const [profile] = await db.select({ displayName: printerProfiles.displayName, printerType: printerProfiles.printerType,
+        windowsQueueName: printerProfiles.windowsQueueName, receiptWidthMm: printerProfiles.receiptWidthMm })
+        .from(printerProfiles).where(and(eq(printerProfiles.id, testJob.destinationId), eq(printerProfiles.organizationId, agent.organizationId))).limit(1);
+      if (!profile || profile.windowsQueueName !== agent.configuredTravelerPrinterName) return res.status(409).json({ error: 'Test print queue no longer matches the paired agent.' });
+      const mediaKind = profile.printerType === 'shipping_label' ? 'label' : profile.printerType === 'production_ticket' ? 'receipt' : 'document';
+      res.setHeader('Cache-Control', 'private, no-store');
+      return res.json({ success: true, data: { jobId: testJob.id, documentType: 'profile_test', profileName: profile.displayName,
+        workstation: agent.machineLabel ?? agent.name, queueName: profile.windowsQueueName, createdAt: testJob.createdAt,
+        mediaKind, receiptWidthMm: Number(profile.receiptWidthMm) || 80 } });
+    }
     const [upsJob] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId),
       eq(directPrintJobs.agentId, agent.id), eq(directPrintJobs.organizationId, agent.organizationId),
       eq(directPrintJobs.status, 'claimed'), eq(directPrintJobs.documentType, 'ups_label'))).limit(1);

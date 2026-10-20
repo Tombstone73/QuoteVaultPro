@@ -1,4 +1,5 @@
 import { buildPickupTravelerProgressSnapshot, pickupTravelerBoxSchema, pickupTravelerContext } from "@shared/pickupTravelerProgress";
+import { randomUUID } from "node:crypto";
 import { loadSavedPickupTraveler } from "../services/pickupTravelerLifecycle";
 import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import type { Express } from "express";
@@ -13,7 +14,7 @@ import { TRAVELER_PRINTER_PREFERENCE_LIST_KEY, travelerPrinterPreferenceSchema }
 import { publishPrintAgentWake } from "../services/printAgentWake";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import type { PickupTravelerPrintContext } from "@shared/productionTicket";
-import { supportsQuickNoteAgent, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
+import { supportsProfileTestAgent, supportsQuickNoteAgent, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
 import { shippingDocumentTypeSchema } from "@shared/shippingDocuments";
 import { matchesShippingPrintRequest, shippingDirectPrintRequestSchema, upsLabelDirectPrintRequestSchema } from "@shared/directPrintDocuments";
 import { getShippingDocumentSource } from "../services/shippingDocumentService";
@@ -467,6 +468,53 @@ export function registerPrinterProfileRoutes(
     } catch (error) {
       sendError(res, error, "Failed to update printer profile");
     }
+  });
+
+  app.post("/api/printer-profiles/:id/test-print", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const [profile] = await db.select().from(printerProfiles).where(and(eq(printerProfiles.id, req.params.id),
+        eq(printerProfiles.organizationId, organizationId))).limit(1);
+      if (!profile) return res.status(404).json({ code: 'PRINTER_PROFILE_NOT_FOUND', error: 'Saved printer profile not found.' });
+      if (!profile.isActive) return res.status(409).json({ code: 'PRINTER_PROFILE_INACTIVE', error: 'Activate and save this printer profile before testing it.' });
+      if (profile.printerType === 'other') return res.status(409).json({ code: 'TEST_MEDIA_UNSUPPORTED', error: 'Choose a supported printer type and save this profile before testing its paper layout.' });
+      if (!profile.printAgentId) return res.status(409).json({ code: 'PRINT_AGENT_UNASSIGNED', error: 'Select and save a paired Print Agent for this profile.' });
+      if (!profile.windowsQueueName) return res.status(409).json({ code: 'PRINT_QUEUE_MISSING', error: 'Enter and save the exact Windows printer queue.' });
+      if (profile.printerType === 'shipping_label' && !profile.supportedDocuments.includes('ups_label'))
+        return res.status(409).json({ code: 'TEST_MEDIA_UNSUPPORTED', error: 'Enable UPS 4 × 6 label support and save this Shipping Label profile.' });
+      const [agent] = await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, profile.printAgentId),
+        eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, 'active'))).limit(1);
+      if (!agent) return res.status(409).json({ code: 'PRINT_AGENT_UNAVAILABLE', error: 'The paired Print Agent is inactive or no longer belongs to this organization. Select another agent.' });
+      if (agent.configuredTravelerPrinterName !== profile.windowsQueueName)
+        return res.status(409).json({ code: 'PRINT_AGENT_CONFIGURATION_MISMATCH', error: 'The paired agent is configured for a different Windows queue. Match the queue and save this profile.' });
+      if (!supportsProfileTestAgent(agent.agentVersion))
+        return res.status(409).json({ code: 'PRINT_AGENT_UPDATE_REQUIRED', error: 'Install Print Agent 1.0.27 or newer on this workstation to use Test Print.' });
+      const requestKey = String(req.header('Idempotency-Key') || randomUUID()).slice(0, 160);
+      const [created] = await db.insert(directPrintJobs).values({ organizationId, orderId: null,
+        destinationId: profile.id, agentId: agent.id, documentType: 'profile_test', copies: 1,
+        requestKey, printContext: { mediaKind: profile.printerType === 'shipping_label' ? 'label' : profile.printerType === 'production_ticket' ? 'receipt' : 'document',
+          receiptWidthMm: Number(profile.receiptWidthMm) || 80 },
+        trailingFeedMm: '0', createdByUserId: getUserId(req.user) ?? null })
+        .onConflictDoNothing({ target: [directPrintJobs.organizationId, directPrintJobs.requestKey] }).returning();
+      const job = created ?? (await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId),
+        eq(directPrintJobs.requestKey, requestKey))).limit(1))[0];
+      if (!job || job.documentType !== 'profile_test' || job.destinationId !== profile.id)
+        return res.status(409).json({ code: 'TEST_PRINT_REQUEST_CONFLICT', error: 'This test-print request key belongs to a different job. Retry from this page.' });
+      const wake = job.status === 'queued' ? await publishPrintAgentWake(agent.tokenHash) : null;
+      return res.status(created ? 202 : 200).json({ success: true, data: { id: job.id, status: job.status,
+        agentLastSeenAt: agent.lastSeenAt, wakePublished: Boolean(wake?.published), duplicate: !created } });
+    } catch (error) { return sendError(res, error, 'Could not queue printer test.'); }
+  });
+
+  app.get("/api/printer-profiles/:id/test-print/:jobId", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const [job] = await db.select({ id: directPrintJobs.id, status: directPrintJobs.status, lastError: directPrintJobs.lastError,
+      submittedAt: directPrintJobs.submittedAt, claimedAt: directPrintJobs.claimedAt })
+      .from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId), eq(directPrintJobs.destinationId, req.params.id),
+        eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.documentType, 'profile_test'))).limit(1);
+    if (!job) return res.status(404).json({ code: 'TEST_PRINT_NOT_FOUND', error: 'Test print job not found.' });
+    return res.json({ success: true, data: { ...job,
+      lastError: job.lastError ? job.lastError.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 240) : null } });
   });
 
   app.post("/api/printer-profiles/:id/default", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
