@@ -206,7 +206,8 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
       'UPS does not support the box references needed to verify labels for this route. Use separate one-box shipments.',
       'UPS_MULTI_BOX_ROUTE_UNSUPPORTED');
   const fingerprint = upsShippingFingerprint({ origin: details.origin, sender: details.sender,
-    destination: details.destination, accountNumber: credentials.accountNumber, packages: details.packages });
+    destination: details.destination, accountNumber: credentials.accountNumber, packages: details.packages,
+    shipDate: details.shipment.shipDate ? new Date(details.shipment.shipDate).toISOString().slice(0, 10) : null });
   const attempt = await db.transaction(async tx => {
     const [shipment] = await tx.select().from(shipments).where(and(eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId))).for('update').limit(1);
     if (!shipment || shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only a saved DRAFT shipment can purchase a label.', 'UPS_INVALID_SHIPMENT');

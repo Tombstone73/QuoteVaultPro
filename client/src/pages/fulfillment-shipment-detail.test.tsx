@@ -35,9 +35,14 @@ const persistDraft = async (payload: any) => {
 const save = jest.fn(persistDraft);
 const mark = jest.fn(async () => ({ status: 'SHIPPED' }));
 type MockUpsRateResponse = { rates: Array<{ serviceCode: string; serviceName: string; currency: string; total: string;
-  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test' };
+  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test'; expiresAt?: string };
 const upsRateCall = jest.fn(async (_path: string, _init?: RequestInit): Promise<MockUpsRateResponse> => ({ rates: [
   { serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
+const upsPurchaseCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ environment: 'live', carrierCostCents: 1875,
+  carrierCurrency: 'USD', mappingRequired: false, labels: [{ trackingNumber: '1ZTEST' }] }));
+const upsChargeCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ applied: false, reason: 'Existing customer shipping charge preserved.' }));
+const upsVerifyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ status: 'suggested', message: 'UPS suggests a correction.',
+  normalized: destination, candidates: [{ ...destination, address1: '123 SAVED ST', postalCode: '78701-1234' }] }));
 jest.mock('react-router-dom', () => ({ useLocation: () => location, useParams: () => ({ shipmentId: 'shipment-1' }) }));
 jest.mock('@/lib/queryClient', () => ({ apiFetch: jest.fn() }));
 jest.mock('@/contexts/NavigationGuardContext', () => ({ useNavigationGuard: () => ({ guardedNavigate: navigate }) }));
@@ -48,7 +53,10 @@ jest.mock('@/components/AttachmentViewerDialog', () => ({ AttachmentViewerDialog
 jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ ShippingDocumentPrintDialog: ({ shipmentId, documentType, packageId, label }: any) => <button data-print-document={documentType} data-shipment-id={shipmentId} data-package-id={packageId}>{label}</button> }), { virtual: true });
 jest.mock('@/hooks/useFulfillment', () => ({
   apiCall: (path: string, init?: RequestInit) => /\/ups-(?:customer-charges|labels)$/.test(path)
-    ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' }) : upsRateCall(path, init),
+    ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' })
+      : path.endsWith('/ups-customer-charge') ? upsChargeCall(path, init)
+        : path.endsWith('/ups-labels/purchase') ? upsPurchaseCall(path, init)
+          : path.endsWith('/ups-verify-address') ? upsVerifyCall(path, init) : upsRateCall(path, init),
   useShipmentDetailQuery: () => ({ data: shipment, refetch: async () => ({ data: shipment, isError: false }) }),
   useShippingDocumentSourceQuery: () => documentSource,
   useUpdateShipmentMutation: () => ({ mutateAsync: save, isPending: false }),
@@ -70,11 +78,13 @@ test('UPS estimates remain read-only, clear when package type changes, and retai
     await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
     expect(upsRateCall).toHaveBeenCalledWith('/api/fulfillment/shipments/shipment-1/ups-rates', expect.objectContaining({ method: 'POST' }));
     expect(container.textContent).toContain('USD 18.75');
+    expect(container.textContent).toContain('Delivery estimate unavailable');
     expect(save).not.toHaveBeenCalled(); expect(mark).not.toHaveBeenCalled();
     const type = container.querySelector('select[aria-label="UPS package type: SH-20306-01-P1"]') as HTMLSelectElement;
     act(() => Simulate.change(type, { target: { value: '21' } } as any));
-    expect(container.textContent).not.toContain('USD 18.75');
-    expect(container.textContent).toContain('Previous UPS rates are stale');
+    expect(container.textContent).toContain('USD 18.75');
+    expect(container.textContent).toContain('Previous UPS rates are for different shipping details');
+    expect((container.querySelector('input[aria-label="Select UPS Ground estimate"]') as HTMLInputElement).disabled).toBe(true);
     upsRateCall.mockRejectedValueOnce(new Error('UPS temporarily unavailable'));
     await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
     expect(container.textContent).toContain('UPS temporarily unavailable');
@@ -540,9 +550,115 @@ test('shows a provider delivery date and clears it when the planned ship date ch
     await act(async () => root.render(<FulfillmentShipmentEditor />));
     await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
     expect(container.textContent).toContain('Tuesday, October 27, 2026 by 4:00 PM');
-    const date = container.querySelector('input[aria-label="Ship Date"]') as HTMLInputElement;
+    const date = container.querySelector('input[aria-label="Planned Ship Date"]') as HTMLInputElement;
     act(() => Simulate.change(date, { target: { value: '2026-10-24' } } as any));
-    expect(container.textContent).not.toContain('Tuesday, October 27, 2026');
-    expect(container.textContent).toContain('Previous UPS rates are stale');
+    expect(container.textContent).toContain('Tuesday, October 27, 2026');
+    expect(container.textContent).toContain('Previous UPS rates are for different shipping details');
   } finally { act(() => root.unmount()); }
+});
+
+const quotedGround = (total = '18.75', estimatedArrival: string | null = '2026-10-27') => ({
+  serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total, negotiated: false, estimatedArrival,
+});
+
+async function selectGroundRate(container: HTMLElement) {
+  await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
+  await act(async () => Simulate.change(container.querySelector('input[aria-label="Select UPS Ground estimate"]')!));
+}
+
+test('expired quote remains visible and refreshes without a second selection when the UPS result is unchanged', async () => {
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'old-quote', environment: 'live', expiresAt: '2020-01-01T00:00:00Z' })
+    .mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'fresh-quote', environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    expect(container.textContent).toContain('UPS quote expired; displayed rates are for reference');
+    expect(container.textContent).toContain('USD 18.75');
+    act(() => window.dispatchEvent(new Event('focus')));
+    expect(container.textContent).toContain('USD 18.75');
+    expect(container.textContent).not.toContain('Previous UPS rates are for different shipping details');
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(upsRateCall).toHaveBeenCalledTimes(2);
+    expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((upsPurchaseCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ quoteId: 'fresh-quote', serviceCode: '03' });
+  } finally { act(() => root.unmount()); }
+});
+
+test('changed UPS price requires confirmation before purchase and preserves the selected service', async () => {
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'old-quote', environment: 'live', expiresAt: '2020-01-01T00:00:00Z' })
+    .mockResolvedValueOnce({ rates: [quotedGround('21.50', '2026-10-28')], quoteId: 'fresh-quote', environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('New: USD 21.50'));
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('USD 21.50');
+    expect((container.querySelector('input[aria-label="Select UPS Ground estimate"]') as HTMLInputElement).checked).toBe(true);
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(upsRateCall).toHaveBeenCalledTimes(2);
+    expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
+  } finally { confirm.mockRestore(); act(() => root.unmount()); }
+});
+
+test('failed expiry refresh retains displayed rate and does not send a purchase', async () => {
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'old-quote', environment: 'live', expiresAt: '2020-01-01T00:00:00Z' })
+    .mockRejectedValueOnce(new Error('UPS unavailable'));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('UPS unavailable');
+    expect(container.textContent).toContain('No label was purchased');
+    expect(container.textContent).toContain('USD 18.75');
+  } finally { act(() => root.unmount()); }
+});
+
+test('saving an unrelated package note keeps the existing UPS rate and selected service', async () => {
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'quote-1', environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    const notes = container.querySelector('textarea[aria-label="Package notes: SH-20306-01-P1"]')!;
+    act(() => Simulate.change(notes, { target: { value: 'Leave at receiving dock' } } as any));
+    await blurAndSave(notes);
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ packages: [expect.objectContaining({ notes: 'Leave at receiving dock' })] }));
+    expect(container.textContent).toContain('USD 18.75');
+    expect(container.textContent).not.toContain('Previous UPS rates are for different shipping details');
+    expect((container.querySelector('input[aria-label="Select UPS Ground estimate"]') as HTMLInputElement).checked).toBe(true);
+  } finally { act(() => root.unmount()); }
+});
+
+test('accepting a UPS address suggestion saves only the draft destination and survives reopen', async () => {
+  jest.useFakeTimers();
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    act(() => Simulate.click(button(container, 'Edit Shipping Address')));
+    await act(async () => Simulate.click(button(container, 'Verify Address')));
+    expect(upsVerifyCall).toHaveBeenCalledWith('/api/fulfillment/shipments/shipment-1/ups-verify-address', expect.objectContaining({ method: 'POST' }));
+    expect(container.textContent).toContain('Entered:');
+    expect(container.textContent).toContain('UPS candidate 1:');
+    expect(shipment.shippingContext.destination.address1).toBe(destination.address1);
+    act(() => Simulate.click(button(container, 'Accept this address')));
+    await act(async () => { jest.advanceTimersByTime(500); await Promise.resolve(); });
+    expect(shipment.shippingContext.destination).toMatchObject({ address1: '123 SAVED ST', address2: 'Dock B', postalCode: '78701-1234' });
+    expect(shipment.shippingContext.blindSender).toBeNull();
+    act(() => root.unmount());
+    const reopened = createRoot(container);
+    await act(async () => reopened.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).toContain('123 SAVED ST');
+    expect(container.textContent).toContain('Dock B');
+    act(() => reopened.unmount());
+  } finally { jest.useRealTimers(); container.remove(); }
 });

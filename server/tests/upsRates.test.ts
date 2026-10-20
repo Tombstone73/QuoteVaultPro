@@ -10,7 +10,8 @@ jest.unstable_mockModule('../db', () => ({ db: dbMock }));
 jest.unstable_mockModule('../services/fulfillment/canonicalFulfillmentOperations', () => ({ canonicalFulfillmentOperations: { getShipment } }));
 jest.unstable_mockModule('../services/ups/upsConnection', () => ({ upsRateCredentials, markUpsAccountVerified }));
 
-const { buildUpsRateRequest, normalizeUpsRates, getUpsRates, upsProviderRateError } = await import('../services/ups/upsRates');
+const { buildUpsRateRequest, normalizeUpsRates, getUpsRates, upsProviderRateError,
+  upsShippingFingerprint, upsQuoteLifetimeMs } = await import('../services/ups/upsRates');
 const party = { name: 'Receiver', company: 'Custom Destination', address1: '10 QA Street', address2: null,
   city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: null, email: null };
 const origin = { ...party, company: 'Print Shop', address1: '20 Origin Road' };
@@ -38,6 +39,35 @@ describe('UPS rating boundary', () => {
     expect(request.RateRequest.Shipment.ShipmentRatingOptions.NegotiatedRatesIndicator).toBe('Y');
     expect(request.RateRequest.Request.RequestOption).toBe('Shop');
     expect(request.RateRequest.Shipment.Package).toHaveLength(1);
+  });
+
+  test('normalizes both saved origin and destination before calling UPS without changing saved records', async () => {
+    const savedDestination = { ...party, state: ' Florida ', country: 'United States' };
+    getShipment.mockResolvedValueOnce({ status: 'DRAFT', shippingContext: { destination: savedDestination,
+      blindShipping: false, blindSender: null }, packages: [{ id: 'package-1', upsPackagingType: '02', weightLbs: '2',
+      dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' }] });
+    selectRows.mockReturnValueOnce([{ companyName: 'Print Shop', phone: null, email: null,
+      physicalAddress: { line1: '20 Origin Road', city: 'Orlando', state: 'Florida', postalCode: '32801', country: 'USA' } }]);
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: true, status: 200,
+      json: async () => ({ RateResponse: { RatedShipment: { Service: { Code: '03' },
+        TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '20.00' } } } }) } as Response);
+    await getUpsRates('qa-org', 'draft-1', packages);
+    const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(request.RateRequest.Shipment.Shipper.Address).toMatchObject({ StateProvinceCode: 'FL', CountryCode: 'US' });
+    expect(request.RateRequest.Shipment.ShipTo.Address).toMatchObject({ StateProvinceCode: 'FL', CountryCode: 'US' });
+    expect(savedDestination.state).toBe(' Florida ');
+  });
+
+  test('quote fingerprints ignore unrelated names while retaining rate-relevant changes', () => {
+    const input = { origin, sender: origin, destination: party, accountNumber: 'QA1234', packages, shipDate: '2026-10-23' };
+    const fingerprint = upsShippingFingerprint(input);
+    expect(upsShippingFingerprint({ ...input, destination: { ...party, name: 'Another recipient' } })).toBe(fingerprint);
+    expect(upsShippingFingerprint({ ...input, shipDate: '2026-10-24' })).not.toBe(fingerprint);
+    expect(upsShippingFingerprint({ ...input, packages: [{ ...packages[0], weightLbs: 3 }] })).not.toBe(fingerprint);
+    expect(upsShippingFingerprint({ ...input, destination: { ...party, state: 'Florida' } })).not.toBe(fingerprint);
+    expect(upsQuoteLifetimeMs()).toBe(15 * 60_000);
+    process.env.UPS_RATE_QUOTE_TTL_MINUTES = '20';
+    expect(upsQuoteLifetimeMs()).toBe(20 * 60_000);
   });
 
   test('normalizes published and negotiated totals without falsely labeling published prices', () => {

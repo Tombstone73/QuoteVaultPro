@@ -33,7 +33,8 @@ export async function applyUpsRateToCustomerCharge(input: { organizationId: stri
   const details = await resolveUpsShippingContext(input.organizationId, input.shipmentId);
   const credentials = await upsRateCredentials(input.organizationId);
   const fingerprint = upsShippingFingerprint({ origin: details.origin, sender: details.sender,
-    destination: details.destination, accountNumber: credentials.accountNumber, packages: details.packages });
+    destination: details.destination, accountNumber: credentials.accountNumber, packages: details.packages,
+    shipDate: details.shipment.shipDate ? new Date(details.shipment.shipDate).toISOString().slice(0, 10) : null });
   const [quote] = await db.select().from(upsShipmentRateQuotes).where(and(eq(upsShipmentRateQuotes.organizationId, input.organizationId),
     eq(upsShipmentRateQuotes.shipmentId, input.shipmentId), eq(upsShipmentRateQuotes.id, input.quoteId))).limit(1);
   const rate = quote?.rates.find(item => item.serviceCode === input.serviceCode);

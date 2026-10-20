@@ -2,10 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { companySettings, upsShipmentRateQuotes } from '@shared/schema';
 import { shippingPartyValidationErrors, type ShippingParty } from '@shared/shippingDocuments';
+import { normalizeUpsAddress, upsAddressFormatIssues, upsCountryCode } from '@shared/upsAddress';
 import { db } from '../../db';
 import { canonicalFulfillmentOperations } from '../fulfillment/canonicalFulfillmentOperations';
 import { FulfillmentHttpError } from '../fulfillment/types';
 import { markUpsAccountVerified, upsRateCredentials } from './upsConnection';
+import { verifyUpsAddress } from './upsAddressVerification';
 
 export type UpsPackageType = '02' | '21';
 export type UpsRatePackage = { id: string; packagingType: UpsPackageType; weightLbs: number; lengthIn: number; widthIn: number; heightIn: number };
@@ -15,10 +17,7 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : value == null ? [] : [value];
 export function countryCode(value: string | null): string | null {
-  const code = text(value).toUpperCase();
-  if (['USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(code)) return 'US';
-  if (['CAN', 'CANADA'].includes(code)) return 'CA';
-  return /^[A-Z]{2}$/.test(code) ? code : null;
+  return upsCountryCode(value);
 }
 
 function address(party: ShippingParty) {
@@ -116,7 +115,18 @@ function validatePackages(packages: UpsRatePackage[], saved: SavedPackage[]) {
 }
 
 export function upsShippingFingerprint(input: { origin: ShippingParty; sender: ShippingParty; destination: ShippingParty; accountNumber: string; packages: UpsRatePackage[]; shipDate?: string | null }) {
-  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+  const rateAddress = (party: ShippingParty) => {
+    const normalized = normalizeUpsAddress(party);
+    return [normalized.address1, normalized.address2, normalized.city, normalized.state, normalized.postalCode, normalized.country];
+  };
+  return createHash('sha256').update(JSON.stringify({ origin: rateAddress(input.origin), sender: rateAddress(input.sender),
+    destination: rateAddress(input.destination), accountNumber: input.accountNumber, packages: input.packages,
+    shipDate: input.shipDate ?? null })).digest('hex');
+}
+
+export function upsQuoteLifetimeMs(): number {
+  const configured = Number(process.env.UPS_RATE_QUOTE_TTL_MINUTES);
+  return (Number.isInteger(configured) && configured >= 1 && configured <= 120 ? configured : 15) * 60_000;
 }
 
 export async function resolveUpsShippingContext(orgId: string, shipmentId: string) {
@@ -125,9 +135,11 @@ export async function resolveUpsShippingContext(orgId: string, shipmentId: strin
   if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'UPS labels and rates require a DRAFT shipment.', 'UPS_INVALID_SHIPMENT');
   const context = shipment.shippingContext;
   if (!context) throw new FulfillmentHttpError(409, 'Save a shipping destination before requesting rates.', 'UPS_DESTINATION_MISSING');
-  const missing = shippingPartyValidationErrors(context.destination);
+  const destination = normalizeUpsAddress(context.destination);
+  const missing = shippingPartyValidationErrors(destination);
   if (missing.length) throw new FulfillmentHttpError(409, `Ship To is incomplete: ${missing.join(', ')}.`, 'UPS_DESTINATION_INCOMPLETE');
-  if (!countryCode(context.destination.country)) throw new FulfillmentHttpError(409, 'Ship To needs a two-letter country code for UPS.', 'UPS_DESTINATION_INCOMPLETE');
+  const destinationFormat = upsAddressFormatIssues(destination);
+  if (destinationFormat.length) throw new FulfillmentHttpError(409, `Ship To: ${destinationFormat.join(' ')}`, 'UPS_DESTINATION_INCOMPLETE');
   if (context.blindShipping && (!context.blindSender || shippingPartyValidationErrors(context.blindSender).length))
     throw new FulfillmentHttpError(409, 'Complete the blind-shipping sender on the DRAFT before requesting UPS.', 'UPS_SENDER_INCOMPLETE');
   const [settings] = await db.select({ companyName: companySettings.companyName, phone: companySettings.phone,
@@ -137,21 +149,26 @@ export async function resolveUpsShippingContext(orgId: string, shipmentId: strin
   const origin: ShippingParty = { name: null, company: settings?.companyName ?? null, address1: physical?.line1 ?? null,
     address2: physical?.line2 ?? null, city: physical?.city ?? null, state: physical?.state ?? null,
     postalCode: physical?.postalCode ?? null, country: physical?.country ?? null, phone: settings?.phone ?? null, email: settings?.email ?? null };
-  const originMissing = shippingPartyValidationErrors(origin);
+  const normalizedOrigin = normalizeUpsAddress(origin);
+  const originMissing = shippingPartyValidationErrors(normalizedOrigin);
   if (originMissing.length) throw new FulfillmentHttpError(409, `Shop shipper/origin is incomplete in Company Settings: ${originMissing.join(', ')}.`, 'UPS_ORIGIN_INCOMPLETE');
-  if (!countryCode(origin.country)) throw new FulfillmentHttpError(409, 'Shop shipper/origin needs a two-letter country code in Company Settings.', 'UPS_ORIGIN_INCOMPLETE');
-  const sender = context.blindShipping ? context.blindSender! : origin;
-  if (!countryCode(sender.country)) throw new FulfillmentHttpError(409, 'Sender needs a two-letter country code for UPS.', 'UPS_SENDER_INCOMPLETE');
+  const originFormat = upsAddressFormatIssues(normalizedOrigin);
+  if (originFormat.length) throw new FulfillmentHttpError(409, `Shop shipper/origin in Company Settings: ${originFormat.join(' ')}`, 'UPS_ORIGIN_INCOMPLETE');
+  const sender = context.blindShipping ? normalizeUpsAddress(context.blindSender!) : normalizedOrigin;
+  const senderFormat = upsAddressFormatIssues(sender);
+  if (senderFormat.length) throw new FulfillmentHttpError(409, `Sender: ${senderFormat.join(' ')}`, 'UPS_SENDER_INCOMPLETE');
   const packages: UpsRatePackage[] = shipment.packages.map(pkg => ({ id: pkg.id, packagingType: pkg.upsPackagingType as UpsPackageType,
     weightLbs: Number(pkg.weightLbs), lengthIn: Number(pkg.dimLengthIn), widthIn: Number(pkg.dimWidthIn), heightIn: Number(pkg.dimHeightIn) }));
   validatePackages(packages, shipment.packages);
-  return { shipment, origin, sender, destination: context.destination, packages };
+  return { shipment, origin: normalizedOrigin, sender, destination, packages };
 }
 
 export async function getUpsRates(orgId: string, shipmentId: string, packages: UpsRatePackage[]) {
   const { origin, sender, destination, shipment } = await resolveUpsShippingContext(orgId, shipmentId);
   validatePackages(packages, shipment.packages);
   const credentials = await upsRateCredentials(orgId);
+  const verification = await Promise.all([verifyUpsAddress(origin, { ...credentials, mode: credentials.row.mode }),
+    verifyUpsAddress(destination, { ...credentials, mode: credentials.row.mode })]);
   const shipDate = shipment.shipDate ? new Date(shipment.shipDate).toISOString().slice(0, 10) : null;
   const fingerprint = upsShippingFingerprint({ origin, sender, destination, accountNumber: credentials.accountNumber, packages, shipDate });
   const requestReference = randomUUID().replace(/-/g, '');
@@ -178,8 +195,23 @@ export async function getUpsRates(orgId: string, shipmentId: string, packages: U
   const rates = normalizeUpsRates(body);
   if (!rates.length) throw new FulfillmentHttpError(422, 'UPS returned no available services for these addresses and packages.', 'UPS_NO_SERVICES');
   if (!credentials.row.verifiedAt) await markUpsAccountVerified(orgId, credentials.row);
+  const expiresAt = new Date(Date.now() + upsQuoteLifetimeMs());
   const [quote] = await db.insert(upsShipmentRateQuotes).values({ organizationId: orgId, shipmentId,
     environment: credentials.row.mode, requestFingerprint: fingerprint, rates,
-    expiresAt: new Date(Date.now() + 10 * 60_000) }).returning({ id: upsShipmentRateQuotes.id });
-  return { rates, quoteId: quote.id, environment: credentials.row.mode, requestedAt: new Date().toISOString() };
+    expiresAt }).returning({ id: upsShipmentRateQuotes.id });
+  return { rates, quoteId: quote.id, environment: credentials.row.mode, requestedAt: new Date().toISOString(), expiresAt: expiresAt.toISOString(),
+    addressVerification: { origin: verification[0], destination: verification[1] } };
+}
+
+export async function verifyUpsShipmentDestination(orgId: string, shipmentId: string) {
+  const shipment = await canonicalFulfillmentOperations.getShipment(orgId, shipmentId);
+  if (!shipment || shipment.status !== 'DRAFT' || !shipment.shippingContext)
+    throw new FulfillmentHttpError(409, 'Save a DRAFT shipping destination before verifying it.', 'UPS_DESTINATION_MISSING');
+  const destination = normalizeUpsAddress(shipment.shippingContext.destination);
+  const missing = shippingPartyValidationErrors(destination);
+  if (missing.length) throw new FulfillmentHttpError(409, `Ship To is incomplete: ${missing.join(', ')}.`, 'UPS_DESTINATION_INCOMPLETE');
+  const format = upsAddressFormatIssues(destination);
+  if (format.length) throw new FulfillmentHttpError(409, `Ship To: ${format.join(' ')}`, 'UPS_DESTINATION_INCOMPLETE');
+  const credentials = await upsRateCredentials(orgId);
+  return verifyUpsAddress(destination, { ...credentials, mode: credentials.row.mode });
 }

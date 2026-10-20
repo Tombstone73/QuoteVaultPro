@@ -50,7 +50,9 @@ import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
-import { getUpsRates, UpsRateRejection } from '../services/ups/upsRates';
+import { getUpsRates, UpsRateRejection, verifyUpsShipmentDestination } from '../services/ups/upsRates';
+import { getOrganizationTimezone } from '../services/orderDueDateService';
+import { organizationBusinessToday } from '../lib/orderDueDate';
 import archiver from 'archiver';
 import { buyUpsLabel, getUpsLabelHistory, readUpsLabelArchive, readUpsLabelEvidence, readUpsPackageLabel,
   recoverRecordedUpsPurchase, retireUpsSampleLabel, verifyUpsPackageLabelMapping, voidUpsLabel } from '../services/ups/upsLabels';
@@ -91,8 +93,11 @@ export function registerFulfillmentRoutes(
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
 
-  app.get('/api/fulfillment/ups-environment', isAuthenticated, tenantContext, (_req, res) =>
-    res.json({ success: true, data: { mode: upsEnvironmentMode() } }));
+  app.get('/api/fulfillment/ups-environment', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { return res.json({ success: true, data: { mode: upsEnvironmentMode(),
+      businessDate: organizationBusinessToday(new Date(), await getOrganizationTimezone(getRequestOrganizationId(req))) } }); }
+    catch { return res.status(500).json({ success: false, message: 'Could not read the shop business date.' }); }
+  });
 
   app.get('/api/integrations/ups/status', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try { return res.json({ success: true, data: await upsConnectionStatus(getRequestOrganizationId(req)) }); }
@@ -148,6 +153,13 @@ export function registerFulfillmentRoutes(
         requestReference: error.requestReference, affectedField: error.affectedField });
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       return res.status(500).json({ success: false, message: 'Could not retrieve UPS rates. Try again.' });
+    }
+  });
+  app.post('/api/fulfillment/shipments/:shipmentId/ups-verify-address', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { return res.json({ success: true, data: await verifyUpsShipmentDestination(getRequestOrganizationId(req), req.params.shipmentId) }); }
+    catch (error) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+      return res.status(503).json({ success: false, code: 'UPS_VERIFY_UNAVAILABLE', message: 'Address verification is unavailable. You can still request rates.' });
     }
   });
   app.get('/api/fulfillment/shipments/:shipmentId/ups-customer-charges', isAuthenticated, tenantContext, async (req: any, res) => {

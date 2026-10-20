@@ -27,7 +27,8 @@ beforeEach(() => {
   upsRateCredentials.mockReset(); resolveUpsShippingContext.mockReset();
   selectRows.mockReturnValueOnce([order]).mockReturnValueOnce([quote]);
   upsRateCredentials.mockResolvedValue({ accountNumber: 'QA1234', row: { mode: 'test' } });
-  resolveUpsShippingContext.mockResolvedValue({ origin: {}, sender: {}, destination: {}, packages: [] });
+  resolveUpsShippingContext.mockResolvedValue({ origin: {}, sender: {}, destination: {}, packages: [],
+    shipment: { shipDate: null } });
   updateEditableHeader.mockResolvedValue({ id: order.orderId, shippingCents: 1840 });
 });
 

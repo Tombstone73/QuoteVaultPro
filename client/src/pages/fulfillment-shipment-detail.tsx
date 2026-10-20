@@ -21,6 +21,7 @@ import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { fulfillmentReturnRoute } from "@/lib/fulfillmentWorkspaceMode";
 import { shippingPartyAddressLines, shippingPartyValidationErrors, shipmentShippingContextMismatches, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
+import { normalizeUpsAddress, upsAddressFormatIssues, upsCountryCode, US_STATE_OPTIONS } from "@shared/upsAddress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -73,6 +74,15 @@ type UpsLabelHistory = { id: string; status: string; environment: 'unknown' | 't
   adjustments: Array<{ id: string; kind: string; amountCents: number; currency: string; providerReference: string }>;
   labels: Array<{ id: string; packageId: string | null; providerResultOrdinal: number | null;
     trackingNumber: string; labelFormat: string }> };
+type UpsAddressVerification = { status: 'verified' | 'suggested' | 'ambiguous' | 'no_match' | 'unsupported' | 'unavailable';
+  message: string; normalized: ShippingParty; candidates: ShippingParty[] };
+type UpsRateView = { serviceCode: string; serviceName: string; currency: string; total: string;
+  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null;
+  deliveryCommitment?: 'estimated' | 'guaranteed' };
+type UpsQuoteResponse = { rates: UpsRateView[]; quoteId: string;
+  environment: 'test' | 'live'; expiresAt: string;
+  addressVerification?: { origin: UpsAddressVerification; destination: UpsAddressVerification } };
+const addressKey = (party: ShippingParty | null | undefined) => party ? JSON.stringify(normalizeUpsAddress(party)) : '';
 
 interface ShipmentFormState {
   carrier: string;
@@ -159,6 +169,23 @@ function draftReadbackMatches(saved: ShipmentDetail, patch: DraftPatch): boolean
 const emptyShippingParty: ShippingParty = { name: null, company: null, address1: null, address2: null, city: null, state: null, postalCode: null, country: null, phone: null, email: null };
 const partyFields: Array<[keyof ShippingParty, string]> = [["name", "Contact name"], ["company", "Company"], ["address1", "Street address"], ["address2", "Address line 2"], ["city", "City"], ["state", "State / province"], ["postalCode", "ZIP / postal code"], ["country", "Country"], ["phone", "Phone"], ["email", "Email"]];
 
+function ShippingPartyEditorFields({ party, prefix, onChange }: { party: ShippingParty; prefix: string;
+  onChange: (key: keyof ShippingParty, value: string | null) => void }) {
+  const us = upsCountryCode(party.country) === 'US';
+  const countryListId = `${prefix.replace(/\W/g, '-').toLowerCase()}-country-options`;
+  return <><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}
+    {key === 'state' && us ? <select aria-label={`${prefix} ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm"
+      value={normalizeUpsAddress(party).state ?? ''} onChange={event => onChange(key, event.target.value || null)}>
+      <option value="">Select state or territory</option>{US_STATE_OPTIONS.map(([code, name]) => <option key={code} value={code}>{name} ({code})</option>)}
+    </select> : <input aria-label={`${prefix} ${label}`} list={key === 'country' ? countryListId : undefined}
+      className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={party[key] ?? ''}
+      onChange={event => onChange(key, event.target.value || null)} />}
+  </label>)}</div><datalist id={countryListId}><option value="US">United States</option><option value="CA">Canada</option>
+    <option value="GB">United Kingdom</option><option value="MX">Mexico</option><option value="PR">Puerto Rico</option></datalist>
+    {upsAddressFormatIssues(party).map(issue => <p key={issue} role="alert" className="text-xs text-destructive">{issue}</p>)}
+  </>;
+}
+
 export function FulfillmentShipmentEditor({
   shipmentId: embeddedShipmentId,
   embedded = false,
@@ -194,8 +221,14 @@ export function FulfillmentShipmentEditor({
   const [shipmentReversalQuantities, setShipmentReversalQuantities] = useState<Record<string, number>>({});
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
   const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
-  const [upsRates, setUpsRates] = useState<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' }> | null>(null);
+  const [upsRates, setUpsRates] = useState<UpsRateView[] | null>(null);
   const [upsQuoteId, setUpsQuoteId] = useState<string | null>(null);
+  const [upsQuoteExpiresAt, setUpsQuoteExpiresAt] = useState<string | null>(null);
+  const [quoteClock, setQuoteClock] = useState(Date.now());
+  const [originBusinessDate, setOriginBusinessDate] = useState<string | null>(null);
+  const [destinationVerification, setDestinationVerification] = useState<{ key: string; result: UpsAddressVerification } | null>(null);
+  const [originVerification, setOriginVerification] = useState<UpsAddressVerification | null>(null);
+  const [verifyingDestination, setVerifyingDestination] = useState(false);
   const [upsEnvironment, setUpsEnvironment] = useState<'test' | 'live' | null>(null);
   const [upsCustomerCharges, setUpsCustomerCharges] = useState<UpsCustomerCharge[]>([]);
   const [upsLabelHistory, setUpsLabelHistory] = useState<UpsLabelHistory[]>([]);
@@ -231,6 +264,7 @@ export function FulfillmentShipmentEditor({
   const [loadingOrderDestination, setLoadingOrderDestination] = useState(false);
   const [artworkViewer, setArtworkViewer] = useState<{ attachments: AttachmentData[]; initialIndex: number } | null>(null);
   const hydratedShipmentId = useRef<string | null>(null);
+  const defaultedShipDateId = useRef<string | null>(null);
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [draftSaveError, setDraftSaveError] = useState<string | null>(null);
   const saveInFlight = useRef<Promise<void> | null>(null);
@@ -268,10 +302,11 @@ export function FulfillmentShipmentEditor({
     return () => { canceled = true; };
   }, [shipment?.id]);
   useEffect(() => { let canceled = false;
-    apiCall<{ mode: 'test' | 'live' }>('/api/fulfillment/ups-environment')
-      .then(result => { if (!canceled) setUpsEnvironment(result.mode); }).catch(() => undefined);
+    apiCall<{ mode: 'test' | 'live'; businessDate?: string }>('/api/fulfillment/ups-environment')
+      .then(result => { if (!canceled) { setUpsEnvironment(result.mode); setOriginBusinessDate(result.businessDate ?? null); } }).catch(() => undefined);
     return () => { canceled = true; };
   }, []);
+  useEffect(() => { const timer = window.setInterval(() => setQuoteClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => () => { if (upsLabelPreview) URL.revokeObjectURL(upsLabelPreview.url); }, [upsLabelPreview]);
   const documentSourceQuery = useShippingDocumentSourceQuery(shipmentId);
   const shipmentReversalLines = useMemo(() => {
@@ -329,6 +364,12 @@ export function FulfillmentShipmentEditor({
     }])));
     setUpsPackageTypes(Object.fromEntries(shipment.packages.map(pkg => [pkg.id, pkg.upsPackagingType ?? '02'])));
   }, [shipment]);
+  useEffect(() => {
+    if (!shipment || shipment.status !== 'DRAFT' || !originBusinessDate ||
+      hydratedShipmentId.current !== shipment.id || defaultedShipDateId.current === shipment.id) return;
+    defaultedShipDateId.current = shipment.id;
+    if (!shipment.shipDate) setForm(previous => previous.shipDate ? previous : { ...previous, shipDate: originBusinessDate });
+  }, [shipment?.id, shipment?.status, shipment?.shipDate, originBusinessDate]);
 
   useEffect(() => {
     if (!shipment?.orders?.length) return;
@@ -494,35 +535,29 @@ export function FulfillmentShipmentEditor({
   }, [draftKey]);
   const documentActionsDisabled = !!hasUnsavedChanges || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
   const upsRateKey = JSON.stringify({ shipmentId: shipment?.id,
-    shippingContext, packages: shipment?.packages.map(pkg => pkg.id), form: [form.weight, form.length, form.width, form.height, form.shipDate],
-    packageFieldsById, upsPackageTypes,
-    allocations: draftShipmentItems.filter(item => item.quantity > 0)
-      .map(item => [item.orderId, item.orderLineItemId, item.packageId, item.quantity]).sort() });
+    destination: addressKey(shippingContext?.destination),
+    sender: shippingContext?.blindShipping ? addressKey(shippingContext.blindSender) : null,
+    packages: shipment?.packages.map((pkg, index) => [pkg.id, upsPackageTypes[pkg.id] ?? pkg.upsPackagingType,
+      ...(index === 0 ? [form.weight, form.length, form.width, form.height]
+        : [packageFieldsById[pkg.id]?.weight, packageFieldsById[pkg.id]?.length,
+          packageFieldsById[pkg.id]?.width, packageFieldsById[pkg.id]?.height])]), shipDate: form.shipDate });
+  const quoteExpired = Boolean(upsQuoteExpiresAt && Date.parse(upsQuoteExpiresAt) <= quoteClock);
   useEffect(() => {
     upsRateEpoch.current += 1;
     upsRateKeyRef.current = upsRateKey;
     if (upsRatePresented.current) setUpsRatesStale(true);
-    setUpsRates(null); setUpsQuoteId(null); setUpsRateError(null); setSelectedUpsService(null);
+    setUpsQuoteId(null); setUpsQuoteExpiresAt(null); setUpsRateError(null); setSelectedUpsService(null);
   }, [upsRateKey]);
-  useEffect(() => {
-    const invalidate = () => { upsRateEpoch.current += 1; if (upsRatePresented.current) { setUpsRates(null); setUpsRatesStale(true); setSelectedUpsService(null); } };
-    const onVisible = () => { if (document.visibilityState === 'visible') invalidate(); };
-    window.addEventListener('focus', invalidate);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { window.removeEventListener('focus', invalidate); document.removeEventListener('visibilitychange', onVisible); };
-  }, []);
 
-  const requestUpsRates = async () => {
-    if (!shipment || shipment.status !== 'DRAFT' || upsRequestInFlight.current) return;
+  const requestUpsRates = async (): Promise<UpsQuoteResponse | null> => {
+    if (!shipment || shipment.status !== 'DRAFT' || upsRequestInFlight.current) return null;
     upsRequestInFlight.current = true;
     setUpsRatesLoading(true);
-    setUpsRates(null);
-    setUpsRatesStale(false);
     setUpsRateError(null);
     const saved = await flushDraft();
     if (!saved) {
       setUpsRateError('Could not save the current draft. Correct the issue or retry saving before requesting rates.');
-      setUpsRatesLoading(false); upsRequestInFlight.current = false; return;
+      setUpsRatesLoading(false); upsRequestInFlight.current = false; return null;
     }
     const requestedKey = upsRateKeyRef.current;
     const requestedEpoch = upsRateEpoch.current;
@@ -535,13 +570,19 @@ export function FulfillmentShipmentEditor({
     });
     if (!packages.length || packages.some(pkg => [pkg.weightLbs, pkg.lengthIn, pkg.widthIn, pkg.heightIn].some(value => !Number.isFinite(value) || value <= 0))) {
       setUpsRateError('Enter a positive weight and length, width, and height for every package.');
-      setUpsRatesLoading(false); upsRequestInFlight.current = false; return;
+      setUpsRatesLoading(false); upsRequestInFlight.current = false; return null;
     }
     try {
-      const result = await apiCall<{ rates: NonNullable<typeof upsRates>; quoteId: string; environment: 'test' | 'live' }>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
+      const result = await apiCall<UpsQuoteResponse>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
         { method: 'POST', body: JSON.stringify({ packages }) });
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
-        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId); setUpsEnvironment(result.environment);
+        upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId);
+        setUpsQuoteExpiresAt(result.expiresAt); setQuoteClock(Date.now()); setUpsEnvironment(result.environment);
+        setDestinationVerification(result.addressVerification?.destination
+          ? { key: addressKey(current.shippingContext?.destination), result: result.addressVerification.destination } : null);
+        setOriginVerification(result.addressVerification?.origin ?? null);
+        setSelectedUpsService(previous => previous && result.rates.some(rate => rate.serviceCode === previous) ? previous : null);
+        return result;
       }
     } catch (error) {
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
@@ -551,6 +592,7 @@ export function FulfillmentShipmentEditor({
         setUpsRateError(`${failure.message}${reference ? ` Request reference: ${reference}.` : ''}`);
       }
     } finally { setUpsRatesLoading(false); upsRequestInFlight.current = false; }
+    return null;
   };
 
   const applySelectedUpsRate = async (serviceCode: string, intent: 'default_if_unset' | 'use_ups_rate') => {
@@ -572,12 +614,26 @@ export function FulfillmentShipmentEditor({
     if (upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')) {
       setUpsActionError('A customer shipping charge is still unset. Set it on the Order or apply the UPS rate before buying.'); return;
     }
+    let purchaseQuoteId = upsQuoteId;
+    if (!upsQuoteExpiresAt || Date.parse(upsQuoteExpiresAt) <= Date.now() + 5_000) {
+      const previous = upsRates?.find(rate => rate.serviceCode === selectedUpsService);
+      const refreshed = await requestUpsRates();
+      if (!refreshed) { setUpsActionError('Could not refresh the expired UPS quote. No label was purchased. Review the rate error and retry.'); return; }
+      const next = refreshed.rates.find(rate => rate.serviceCode === selectedUpsService);
+      if (!next) { setUpsActionError('The selected UPS service is no longer available. Choose another service; no label was purchased.'); return; }
+      const changed = !previous || ['total', 'currency', 'estimatedArrival', 'estimatedDeliveryTime', 'deliveryCommitment']
+        .some(key => previous[key as keyof typeof previous] !== next[key as keyof typeof next]);
+      if (changed && !window.confirm(`UPS refreshed ${next.serviceName}. Previous: ${previous?.currency ?? '—'} ${previous?.total ?? '—'}, arrival ${previous?.estimatedArrival ?? 'unavailable'}. New: ${next.currency} ${next.total}, arrival ${next.estimatedArrival ?? 'unavailable'}${next.estimatedDeliveryTime ? ` at ${formatUpsDeliveryTime(next.estimatedDeliveryTime)}` : ''}. Buy the label at the new estimate?`)) {
+        setUpsActionMessage('The refreshed quote is available for review. No label was purchased.'); return;
+      }
+      purchaseQuoteId = refreshed.quoteId;
+    }
     setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
     try {
       const purchased = await apiCall<{ environment: 'test' | 'live'; carrierCostCents: number;
         carrierCurrency: string; mappingRequired: boolean; labels: Array<{ trackingNumber: string }> }>(
         `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
-        { method: 'POST', body: JSON.stringify({ quoteId: upsQuoteId, serviceCode: selectedUpsService }) });
+        { method: 'POST', body: JSON.stringify({ quoteId: purchaseQuoteId, serviceCode: selectedUpsService }) });
       const refreshed = await shipmentQuery.refetch();
       if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? 'UPS',
         serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
@@ -588,7 +644,10 @@ export function FulfillmentShipmentEditor({
         ? `Test label created. This sample label and tracking cannot be used for shipping. UPS sandbox amount: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}.`
         : `UPS live label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
     } catch (error) {
-      setUpsActionError(`${toFulfillmentError(error).message} Review purchase history before retrying; UPS may have accepted the first request.`);
+      const failure = toFulfillmentError(error);
+      setUpsActionError(failure.code === 'UPS_RATE_STALE'
+        ? `${failure.message} No UPS purchase request was sent. Get fresh rates and retry.`
+        : `${failure.message} Review purchase history before retrying; UPS may have accepted the first request.`);
       await refreshUpsState(shipmentId).catch(() => undefined);
     } finally { setUpsActionPending(false); }
   };
@@ -977,6 +1036,27 @@ export function FulfillmentShipmentEditor({
     }
   };
 
+  const verifyDestination = async () => {
+    if (!shipmentId || !shippingContext || verifyingDestination || !isDraft || upsDraftLocked) return;
+    setVerifyingDestination(true);
+    const key = addressKey(shippingContext.destination);
+    try {
+      if (!await flushDraft()) throw new Error('Save the destination draft before verifying it. Your entries are preserved.');
+      const result = await apiCall<UpsAddressVerification>(`/api/fulfillment/shipments/${shipmentId}/ups-verify-address`, { method: 'POST' });
+      if (addressKey(latestDraft.current.shippingContext?.destination) === key) setDestinationVerification({ key, result });
+    } catch (error) {
+      if (addressKey(latestDraft.current.shippingContext?.destination) === key)
+        setDestinationVerification({ key, result: { status: 'unavailable', message: toFulfillmentError(error).message,
+          normalized: normalizeUpsAddress(shippingContext.destination), candidates: [] } });
+    } finally { setVerifyingDestination(false); }
+  };
+
+  const acceptDestinationSuggestion = (candidate: ShippingParty) => {
+    setShippingContext(context => context && ({ ...context, source: 'staff', destination: candidate }));
+    setDestinationVerification(null);
+    setEditingDestination(true);
+  };
+
   const enableBlindShipping = (enabled: boolean) => {
     setShippingContext(context => {
       if (!context) return context;
@@ -1104,7 +1184,26 @@ export function FulfillmentShipmentEditor({
               <div className="mt-3 grid gap-4 sm:grid-cols-2"><div>{destination ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(destination).map((line, index) => <p key={index} className={index === 0 ? "font-semibold" : ""}>{line}</p>)}{destination.phone && <p className="mt-1">{destination.phone}</p>}{destination.email && <p className="break-all">{destination.email}</p>}</address> : <p className="text-sm text-muted-foreground">Destination not recorded for this shipment.</p>}</div><div><h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{blindShipping ? "Alternate sender" : "Sender"}</h3>{sender ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(sender).map((line, index) => <p key={index}>{line}</p>)}{sender.phone && <p>{sender.phone}</p>}{sender.email && <p className="break-all">{sender.email}</p>}</address> : <p className="text-sm text-muted-foreground">{blindShipping ? "Alternate sender not recorded. No sender will be guessed." : documentSourceQuery.isLoading ? "Loading saved document sender..." : "Sender unavailable from the saved document source."}</p>}</div></div>
               {(missingDestination.length > 0 || missingBlindSender.length > 0) && <div role="alert" className="mt-3 space-y-2 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{missingDestination.length > 0 && <p>Shipping destination incomplete: {missingDestination.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("destination")}>Edit Shipping Address</button>}</p>}{missingBlindSender.length > 0 && <p>Blind Shipping sender incomplete: {missingBlindSender.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("sender")}>Edit Sender</button>}</p>}{!isDraft && <p>Historical shipping details are not reconstructed from live customer fields.</p>}</div>}
               {isDraft && !upsDraftLocked && (editingDestination || editingSender) && shippingContext && <div className="mt-4 space-y-4 border-t pt-4">
-                {editingDestination && <fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Ship To ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.destination[key] ?? ""} onChange={event => setShippingContext(context => context && ({ ...context, source: "staff", destination: { ...context.destination, [key]: event.target.value || null } }))} /></label>)}</div></fieldset>}
+                {editingDestination && <fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend>
+                  <ShippingPartyEditorFields party={shippingContext.destination} prefix="Ship To" onChange={(key, value) =>
+                    setShippingContext(context => context && ({ ...context, source: 'staff', destination: { ...context.destination, [key]: value } }))} />
+                  <button type="button" className="mt-3 rounded border px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                    disabled={verifyingDestination || draftSaveState === 'saving'} onClick={() => void verifyDestination()}>
+                    {verifyingDestination ? 'Verifying address…' : 'Verify Address'}</button>
+                </fieldset>}
+                {destinationVerification?.key === addressKey(shippingContext.destination) && <div className="rounded border p-3 text-xs" role="status">
+                  <p><strong>{destinationVerification.result.status === 'verified' ? 'UPS matched address'
+                    : destinationVerification.result.status === 'ambiguous' ? 'Multiple UPS candidates'
+                    : destinationVerification.result.status === 'suggested' ? 'UPS suggested correction'
+                    : destinationVerification.result.status === 'unsupported' ? 'Verification coverage unavailable'
+                    : destinationVerification.result.status === 'no_match' ? 'No UPS match' : 'Verification unavailable'}</strong>: {destinationVerification.result.message}</p>
+                  <p className="mt-1">Entered: {shippingPartyAddressLines(shippingContext.destination).join(', ')}</p>
+                  {destinationVerification.result.candidates.map((candidate, index) => <div key={`${index}:${addressKey(candidate)}`} className="mt-2 border-t pt-2">
+                    <p>UPS candidate {index + 1}: {shippingPartyAddressLines(candidate).join(', ')}</p>
+                    {isDraft && !upsDraftLocked && <button type="button" className="mt-1 underline" onClick={() => acceptDestinationSuggestion(candidate)}>Accept this address</button>}
+                  </div>)}
+                  {destinationVerification.result.candidates.length > 0 && <p className="mt-2">The entered address remains in use unless you accept a candidate. Accepting saves through the shipment draft.</p>}
+                </div>}
                 {editingDestination && isSingleOrderShipment && <button type="button" className="w-fit rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={loadingOrderDestination} onClick={() => void useSavedOrderAddress()}>{loadingOrderDestination ? "Loading Order address..." : "Use saved Order address"}</button>}
                 {editingSender && <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={shippingContext.blindShipping} onChange={event => enableBlindShipping(event.target.checked)} />Blind shipping: use an alternate sender</label>}
                 {editingSender && shippingContext.blindShipping && <fieldset className="space-y-3"><legend className="text-sm font-semibold">Sender</legend>
@@ -1120,7 +1219,9 @@ export function FulfillmentShipmentEditor({
                         {!shippingContext.blindSender && <p role="alert">Ordering Customer sender is unavailable. Select Custom Sender.</p>}
                         <p className="mt-2 text-xs text-muted-foreground">This sender is copied into the shipment draft; later Customer changes will not update it.</p>
                       </div>
-                    : <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{partyFields.map(([key, label]) => <label key={key} className="grid gap-1 text-xs font-medium">{label}<input aria-label={`Alternate sender ${label}`} className="h-9 min-w-0 rounded border border-input bg-background px-2 text-sm" value={shippingContext.blindSender?.[key] ?? ""} onChange={event => setShippingContext(context => { if (!context) return context; const blindSender = { ...emptyShippingParty, ...context.blindSender, [key]: event.target.value || null }; customSenderDraft.current = blindSender; return { ...context, source: "staff", blindSenderSource: "custom", blindSender }; })} /></label>)}</div>}
+                    : <ShippingPartyEditorFields party={shippingContext.blindSender ?? emptyShippingParty} prefix="Alternate sender" onChange={(key, value) =>
+                      setShippingContext(context => { if (!context) return context; const blindSender = { ...emptyShippingParty, ...context.blindSender, [key]: value };
+                        customSenderDraft.current = blindSender; return { ...context, source: 'staff', blindSenderSource: 'custom', blindSender }; })} />}
                 </fieldset>}
                 <p className="text-xs text-muted-foreground">Saved with this draft only. Order and customer records are unchanged.</p>
               </div>}
@@ -1290,20 +1391,30 @@ export function FulfillmentShipmentEditor({
             </div>
             {isDraft && !upsDraftLocked && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
               <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p>
-                {!form.shipDate && <p className="mt-1 text-xs text-muted-foreground">Set the planned Ship Date below to request a UPS delivery date with these rates.</p>}
+                <label className="mt-3 grid max-w-xs gap-1 text-xs font-medium">Planned Ship Date
+                  <input aria-label="Planned Ship Date" type="date" value={form.shipDate} disabled={!isDraft || upsDraftLocked}
+                    className="h-9 rounded border border-input bg-background px-2 text-sm" onChange={event => setForm(previous => ({ ...previous, shipDate: event.target.value }))} />
+                </label>
+                {!form.shipDate && <p className="mt-1 text-xs text-muted-foreground">Set a planned Ship Date to ask UPS for delivery estimates.</p>}
                 {upsEnvironment && <p role="status" className={upsEnvironment === 'test' ? 'mt-2 rounded border border-amber-500 bg-amber-50 p-2 text-xs text-amber-900' : 'mt-2 rounded border border-green-600 p-2 text-xs'}>
                   UPS environment: <strong>{upsEnvironment === 'test' ? 'Sandbox / Test' : 'Live'}</strong>{upsEnvironment === 'test' ? ' · Labels and tracking from this environment cannot be used for real shipping.' : ''}
                 </p>}</div>
               <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsRatesLoading || shipment.packages.length === 0}
                 onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</button>
               {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
-              {upsRatesStale && !upsRatesLoading && !upsRateError && <p role="status" className="text-xs text-amber-700">Previous UPS rates are stale. Get fresh rates for the current details.</p>}
+              {upsRatesStale && !upsRatesLoading && <p role="status" className="text-xs text-amber-700">Previous UPS rates are for different shipping details. Get fresh rates before buying.</p>}
+              {!upsRatesStale && upsQuoteId && <p role="status" className="text-xs text-muted-foreground">{quoteExpired
+                ? 'UPS quote expired; displayed rates are for reference. Buy will refresh the selected service first.'
+                : `UPS quote available until ${upsQuoteExpiresAt ? new Date(upsQuoteExpiresAt).toLocaleTimeString() : 'the server expiry time'}.`}</p>}
+              {originVerification && <p className="text-xs text-muted-foreground">Shop origin verification: {originVerification.message}</p>}
+              {destinationVerification?.key === addressKey(shippingContext?.destination) &&
+                <p className="text-xs text-muted-foreground">Ship To verification: {destinationVerification.result.message}</p>}
               {upsRates && <div className="space-y-2" role="status">{upsRates.map(rate => <label key={`${rate.serviceCode}:${rate.currency}`} className="flex items-start gap-2 rounded border p-2 text-sm">
-                <input type="radio" name="ups-rate" checked={selectedUpsService === rate.serviceCode} disabled={upsChargePending || upsActionPending} onChange={() => { setSelectedUpsService(rate.serviceCode); void applySelectedUpsRate(rate.serviceCode, 'default_if_unset'); }} aria-label={`Select ${rate.serviceName} estimate`} />
+                <input type="radio" name="ups-rate" checked={selectedUpsService === rate.serviceCode} disabled={upsChargePending || upsActionPending || upsRatesStale || !upsQuoteId} onChange={() => { setSelectedUpsService(rate.serviceCode); void applySelectedUpsRate(rate.serviceCode, 'default_if_unset'); }} aria-label={`Select ${rate.serviceName} estimate`} />
                 <span><strong>{rate.serviceName}</strong> · {rate.currency} {rate.total} {rate.negotiated ? 'negotiated account rate' : 'UPS returned rate'}
                   <span className="block text-xs text-muted-foreground">{rate.estimatedArrival && /^\d{4}-\d{2}-\d{2}$/.test(rate.estimatedArrival)
-                    ? `UPS delivery estimate: ${new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${rate.estimatedArrival}T12:00:00Z`))}${rate.estimatedDeliveryTime ? ` by ${formatUpsDeliveryTime(rate.estimatedDeliveryTime)}` : ''}`
-                    : 'Delivery estimate unavailable'}</span></span>
+                    ? `${rate.deliveryCommitment === 'guaranteed' ? 'UPS committed arrival' : 'Estimated arrival'}: ${new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${rate.estimatedArrival}T12:00:00Z`))}${rate.estimatedDeliveryTime ? ` by ${formatUpsDeliveryTime(rate.estimatedDeliveryTime)}` : ''}`
+                    : `Delivery estimate unavailable${!form.shipDate ? ' — set a planned Ship Date and request rates again' : ' — UPS did not return an arrival date for this service'}`}</span></span>
               </label>)}</div>}
               {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'unset' ? 'unset' : row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'UPS rate selected' : 'existing decision'})</span></p>)}
               {selectedUpsService && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
@@ -1390,7 +1501,7 @@ export function FulfillmentShipmentEditor({
             </section>}
             <section className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="border-b border-border bg-muted/30 px-4 py-3"><h3 className="text-sm font-bold">Carrier & Tracking</h3></div>
-              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"], ["shipDate", "Ship Date"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type={key === "shipDate" ? "date" : "text"} className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>
+              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type="text" className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>
             </section>
             <details className="rounded-xl border border-border bg-card p-4" open={!!form.internalNotes || undefined}><summary className="cursor-pointer text-sm font-semibold">Shipment Internal Notes</summary><textarea aria-label="Shipment internal notes" className="mt-3 w-full resize-none rounded border border-input bg-background p-3 text-sm" rows={2} placeholder="Internal shipping instructions..." value={form.internalNotes} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, internalNotes: event.target.value }))} /></details>
           </section>
