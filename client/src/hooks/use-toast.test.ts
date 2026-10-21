@@ -24,6 +24,18 @@ describe("recent notification history", () => {
     expect(history.some((item) => item.title === "Message 0")).toBe(false);
   });
 
+  test("moves a repeated message to the top and announces each occurrence", () => {
+    setNotificationScope("user:a:tenant:a");
+    const first = addNotification({ title: "Autosaved", severity: "success" });
+    addNotification({ title: "Other", severity: "info" });
+    const before = getNotificationSnapshot().announcement?.id;
+    const repeated = addNotification({ title: "Autosaved", severity: "success" });
+    const state = getNotificationSnapshot();
+    expect(repeated).toBe(first);
+    expect(state.toasts[0]).toMatchObject({ id: first, count: 2, read: false });
+    expect(state.announcement?.id).not.toBe(before);
+  });
+
   test("keeps errors visible until read or dismissed and updates async progress in place", () => {
     setNotificationScope("user:a:tenant:a");
     const progress = toast({ title: "Saving", severity: "info" });
