@@ -51,7 +51,7 @@ describe("header notification area", () => {
       });
     });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="Notifications"]');
-    expect(trigger?.getAttribute("aria-label")).toContain("1 unread errors");
+    expect(trigger?.getAttribute("aria-label")).toContain("latest error: Save failed");
     await act(async () => trigger?.focus());
     expect(document.activeElement).toBe(trigger);
     await act(async () => trigger?.click());
@@ -65,38 +65,47 @@ describe("header notification area", () => {
     expect(document.querySelector(".toast-viewport")).toBeNull();
   });
 
-  test("keeps an unread-error indicator after a later success and marks errors read explicitly", async () => {
+  test("keeps error details in history without unread indicators or mark-read controls", async () => {
     await act(async () => root.render(<NotificationArea />));
     await act(async () => {
       toast({ title: "Failed", variant: "destructive" });
       toast({ title: "Saved" });
     });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="Notifications"]');
-    expect(trigger?.getAttribute("aria-label")).toContain("1 unread errors");
+    expect(trigger?.getAttribute("aria-label")).toContain("latest success: Saved");
+    expect(trigger?.getAttribute("aria-label")).not.toContain("unread");
+    expect(trigger?.querySelector(".rounded-full")).toBeNull();
     await act(async () => trigger?.click());
-    const markRead = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Mark all read");
-    await act(async () => markRead?.click());
-    expect(trigger?.getAttribute("aria-label")).not.toContain("unread errors");
+    expect(document.body.textContent).toContain("Failed");
+    expect(document.body.textContent).toContain("Clear history");
+    expect(document.body.textContent).not.toContain("Mark read");
+    expect(document.body.textContent).not.toContain("Mark all read");
   });
 
-  test("shows each newest arrival immediately, including grouped repeats, with severity styling that settles", async () => {
+  test("shows the newest message with a four-second blue highlight that grouped repeats restart", async () => {
     jest.useFakeTimers();
     await act(async () => root.render(<NotificationArea />));
     await act(async () => { addNotification({ title: "First", severity: "info" }); addNotification({ title: "Second", severity: "warning" }); });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="Notifications"]')!;
     expect(trigger.textContent).toContain("Second");
-    expect(trigger.className).toContain("border-amber-600");
-    await act(async () => { jest.advanceTimersByTime(1900); });
-    expect(trigger.className).toContain("border-amber-400");
-    await act(async () => { jest.advanceTimersByTime(1100); });
-    expect(trigger.textContent).toContain("First");
+    expect(trigger.className).toContain("bg-primary");
+    expect(trigger.className).toContain("text-primary-foreground");
+    await act(async () => { jest.advanceTimersByTime(3999); });
+    expect(trigger.className).toContain("bg-primary");
     await act(async () => { addNotification({ title: "Second", severity: "warning" }); });
     expect(trigger.textContent).toContain("Second (×2)");
-    expect(trigger.className).toContain("border-amber-600");
+    await act(async () => { jest.advanceTimersByTime(1); });
+    expect(trigger.className).toContain("bg-primary");
+    await act(async () => { jest.advanceTimersByTime(3999); });
+    expect(trigger.className).not.toContain("bg-primary");
+    expect(trigger.textContent).toContain("Second (×2)");
+    expect(trigger.querySelector("svg")?.getAttribute("class")).toContain("text-amber-600");
     await act(async () => { addNotification({ title: "Failure", severity: "error" }); addNotification({ title: "Saved", severity: "success" }); });
     expect(trigger.textContent).toContain("Saved");
-    expect(trigger.className).toContain("border-emerald-600");
-    expect(trigger.getAttribute("aria-label")).toContain("1 unread errors");
+    expect(trigger.className).toContain("bg-primary");
+    await act(async () => { jest.advanceTimersByTime(4000); });
+    expect(trigger.className).not.toContain("bg-primary");
+    expect(trigger.textContent).toContain("Saved");
   });
 
   test("respects reduced motion and keeps scrolled history in place until New messages is selected", async () => {
@@ -111,6 +120,7 @@ describe("header notification area", () => {
     });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="Notifications"]')!;
     expect(trigger.className).toContain("motion-reduce:transition-none");
+    expect(trigger.className).toContain("bg-primary");
     await act(async () => trigger.click());
     const list = document.querySelector<HTMLDivElement>('[aria-label="Notification history"]')!;
     expect(list.scrollTop).toBe(0);

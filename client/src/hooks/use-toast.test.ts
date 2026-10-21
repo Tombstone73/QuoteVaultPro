@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "@jest/globals";
 import {
   NOTIFICATION_HISTORY_LIMIT, addNotification, clearNotificationSession, dismissNotification,
-  getNotificationSnapshot, markNotificationRead, setNotificationScope, toast, updateNotification,
+  getNotificationSnapshot, setNotificationScope, toast, updateNotification,
 } from "./use-toast";
 
 afterEach(() => {
@@ -32,19 +32,17 @@ describe("recent notification history", () => {
     const repeated = addNotification({ title: "Autosaved", severity: "success" });
     const state = getNotificationSnapshot();
     expect(repeated).toBe(first);
-    expect(state.toasts[0]).toMatchObject({ id: first, count: 2, read: false });
+    expect(state.toasts[0]).toMatchObject({ id: first, count: 2 });
     expect(state.announcement?.id).not.toBe(before);
   });
 
-  test("keeps errors visible until read or dismissed and updates async progress in place", () => {
+  test("keeps errors in history until dismissed and updates async progress in place", () => {
     setNotificationScope("user:a:tenant:a");
     const progress = toast({ title: "Saving", severity: "info" });
     progress.update({ title: "Save failed" });
     addNotification({ title: "Saved" });
-    expect(getNotificationSnapshot().toasts.filter((item) => !item.read && item.severity === "error")).toHaveLength(1);
+    expect(getNotificationSnapshot().toasts.filter((item) => item.severity === "error")).toHaveLength(1);
     expect(getNotificationSnapshot().toasts.find((item) => item.id === progress.id)?.title).toBe("Save failed");
-    markNotificationRead(progress.id);
-    expect(getNotificationSnapshot().toasts.filter((item) => !item.read && item.severity === "error")).toHaveLength(0);
     dismissNotification(progress.id);
     expect(getNotificationSnapshot().toasts.some((item) => item.id === progress.id)).toBe(false);
   });

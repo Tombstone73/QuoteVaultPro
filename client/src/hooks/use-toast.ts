@@ -13,12 +13,11 @@ export type AppNotification = ToastProps & {
   severity: Severity;
   createdAt: number;
   count: number;
-  read: boolean;
 };
 
-type NotificationInput = Omit<Partial<AppNotification>, "id" | "createdAt" | "count" | "read">;
+type NotificationInput = Omit<Partial<AppNotification>, "id" | "createdAt" | "count">;
 type State = { toasts: AppNotification[]; scope: string | null; announcement: { id: number; text: string; error: boolean } | null };
-type StoredNotification = Pick<AppNotification, "id" | "severity" | "createdAt" | "count" | "read" | "path"> & { title?: string; description?: string };
+type StoredNotification = Pick<AppNotification, "id" | "severity" | "createdAt" | "count" | "path"> & { title?: string; description?: string };
 
 let state: State = { toasts: [], scope: null, announcement: null };
 const listeners = new Set<() => void>();
@@ -38,8 +37,8 @@ const severityOf = (input: NotificationInput): Severity => {
 function persist() {
   if (!state.scope || typeof sessionStorage === "undefined") return;
   try {
-    const stored: StoredNotification[] = state.toasts.map(({ id, title, description, severity, createdAt, count, read, path }) => ({
-      id, title: textOf(title), description: textOf(description), severity, createdAt, count, read, path,
+    const stored: StoredNotification[] = state.toasts.map(({ id, title, description, severity, createdAt, count, path }) => ({
+      id, title: textOf(title), description: textOf(description), severity, createdAt, count, path,
     }));
     sessionStorage.setItem(storageKey(state.scope), JSON.stringify(stored));
   } catch { /* Browsers may deny storage; in-memory history still works. */ }
@@ -65,7 +64,7 @@ export function setNotificationScope(scope: string) {
       if (Array.isArray(parsed)) restored = parsed.filter((item): item is StoredNotification =>
         typeof item?.id === "string" && typeof item?.createdAt === "number" &&
         ["success", "info", "warning", "error"].includes(item?.severity) &&
-        typeof item?.count === "number" && typeof item?.read === "boolean" &&
+        typeof item?.count === "number" &&
         (item?.title === undefined || typeof item.title === "string") &&
         (item?.description === undefined || typeof item.description === "string")
       ).slice(0, NOTIFICATION_HISTORY_LIMIT);
@@ -92,8 +91,8 @@ export function addNotification(input: NotificationInput) {
     textOf(item.description) === textOf(input.description)
   );
   const notification: AppNotification = duplicate
-    ? { ...duplicate, ...input, path, severity, createdAt, count: duplicate.count + 1, read: false }
-    : { ...input, id, path, severity, createdAt, count: 1, read: false };
+    ? { ...duplicate, ...input, path, severity, createdAt, count: duplicate.count + 1 }
+    : { ...input, id, path, severity, createdAt, count: 1 };
   publish({
     ...state,
     toasts: [notification, ...state.toasts.filter((item) => item.id !== duplicate?.id)].slice(0, NOTIFICATION_HISTORY_LIMIT),
@@ -105,7 +104,7 @@ export function addNotification(input: NotificationInput) {
 export function updateNotification(id: string, input: NotificationInput) {
   const existing = state.toasts.find((item) => item.id === id);
   if (!existing) return;
-  const next = { ...existing, ...input, severity: input.severity ?? (input.title || input.variant ? severityOf(input) : existing.severity), createdAt: Date.now(), read: false };
+  const next = { ...existing, ...input, severity: input.severity ?? (input.title || input.variant ? severityOf(input) : existing.severity), createdAt: Date.now() };
   publish({
     ...state,
     toasts: [next, ...state.toasts.filter((item) => item.id !== id)],
@@ -115,10 +114,6 @@ export function updateNotification(id: string, input: NotificationInput) {
 
 export function dismissNotification(id?: string) {
   publish({ ...state, toasts: id ? state.toasts.filter((item) => item.id !== id) : [] });
-}
-
-export function markNotificationRead(id?: string) {
-  publish({ ...state, toasts: state.toasts.map((item) => !id || item.id === id ? { ...item, read: true } : item) });
 }
 
 function subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
@@ -135,5 +130,5 @@ export function toast(input: NotificationInput) {
 
 export function useToast() {
   const snapshot = React.useSyncExternalStore(subscribe, getNotificationSnapshot, getNotificationSnapshot);
-  return { ...snapshot, toast, dismiss: dismissNotification, markRead: markNotificationRead, clearHistory: () => dismissNotification() };
+  return { ...snapshot, toast, dismiss: dismissNotification, clearHistory: () => dismissNotification() };
 }

@@ -12,19 +12,6 @@ const colors = {
   warning: "text-amber-600 dark:text-amber-400",
   error: "text-destructive",
 };
-const unreadStyles = {
-  success: "border-emerald-400 bg-emerald-50 dark:border-emerald-600 dark:bg-emerald-950/60",
-  info: "border-sky-400 bg-sky-50 dark:border-sky-600 dark:bg-sky-950/60",
-  warning: "border-amber-400 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/60",
-  error: "border-red-400 bg-red-50 dark:border-red-600 dark:bg-red-950/60",
-};
-const arrivalStyles = {
-  success: "border-emerald-600 bg-emerald-100 dark:border-emerald-400 dark:bg-emerald-900",
-  info: "border-sky-600 bg-sky-100 dark:border-sky-400 dark:bg-sky-900",
-  warning: "border-amber-600 bg-amber-100 dark:border-amber-400 dark:bg-amber-900",
-  error: "border-red-600 bg-red-100 dark:border-red-400 dark:bg-red-900",
-};
-
 type ScrollSnapshot = { top: number; anchors: { id: string; offset: number }[] };
 
 function captureScroll(list: HTMLDivElement): ScrollSnapshot {
@@ -56,46 +43,25 @@ function NotificationAction({ notification, onDone }: { notification: AppNotific
 }
 
 export function NotificationArea() {
-  const { toasts, announcement, markRead, clearHistory, dismiss } = useToast();
+  const { toasts, announcement, clearHistory, dismiss } = useToast();
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
-  const [paused, setPaused] = React.useState(false);
-  const [reducedMotion, setReducedMotion] = React.useState(false);
-  const [rotation, setRotation] = React.useState({ arrivalId: announcement?.id, step: 0 });
   const [highlight, setHighlight] = React.useState<{ id: number; active: boolean } | null>(null);
   const [newMessages, setNewMessages] = React.useState(0);
   const listRef = React.useRef<HTMLDivElement>(null);
   const scrollSnapshot = React.useRef<ScrollSnapshot>({ top: 0, anchors: [] });
   const handledArrival = React.useRef(announcement?.id);
-  const recent = toasts.slice(0, 3);
-  const unread = toasts.filter((item) => !item.read).length;
-  const unreadErrors = toasts.filter((item) => !item.read && item.severity === "error").length;
-  const rotationStep = rotation.arrivalId === announcement?.id ? rotation.step : 0;
-  const current = recent[rotationStep % Math.max(1, recent.length)];
+  const current = toasts[0];
   const CurrentIcon = current ? icons[current.severity] : Bell;
-  const highlightActive = !!announcement && (highlight?.id !== announcement.id || highlight.active);
-  const visibleSeverity = (highlightActive ? toasts[0] : current && !current.read ? current : toasts.find((item) => !item.read))?.severity;
-
-  React.useEffect(() => {
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const sync = () => setReducedMotion(media.matches);
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
+  const highlightActive = !!current && !!announcement && (highlight?.id !== announcement.id || highlight.active);
 
   React.useEffect(() => {
     if (!announcement) return;
     setHighlight({ id: announcement.id, active: true });
-    const timer = window.setTimeout(() => setHighlight({ id: announcement.id, active: false }), 1800);
+    const timer = window.setTimeout(() => setHighlight({ id: announcement.id, active: false }), 4000);
     return () => window.clearTimeout(timer);
   }, [announcement?.id]);
-  React.useEffect(() => {
-    if (open || paused || reducedMotion || recent.length < 2 || rotationStep >= recent.length * 2 - 1) return;
-    const timer = window.setTimeout(() => setRotation({ arrivalId: announcement?.id, step: rotationStep + 1 }), 3000);
-    return () => window.clearTimeout(timer);
-  }, [open, paused, reducedMotion, recent.length, rotationStep, announcement?.id]);
 
   React.useLayoutEffect(() => {
     if (!open || !listRef.current) return;
@@ -129,28 +95,20 @@ export function NotificationArea() {
   }, [announcement?.id]);
 
   return (
-    <div
-      className="min-w-0 shrink-0"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-      onFocusCapture={() => setPaused(true)}
-      onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPaused(false); }}
-    >
+    <div className="min-w-0 shrink-0">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className={cn("relative flex h-9 max-w-[18rem] min-w-9 items-center gap-2 rounded-md border px-2 text-left text-sm transition-colors duration-300 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none xl:w-64", visibleSeverity ? (highlightActive ? arrivalStyles[visibleSeverity] : unreadStyles[visibleSeverity]) : "border-transparent")}
-            aria-label={`Notifications${current ? `, latest ${current.severity}: ${current.title || current.description || "Notification"}` : ""}, ${unread} unread${unreadErrors ? `, ${unreadErrors} unread errors` : ""}`}
+            className={cn("flex h-9 max-w-[18rem] min-w-9 items-center gap-2 rounded-md border px-2 text-left text-sm transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none xl:w-64", highlightActive ? "border-primary bg-primary text-primary-foreground hover:bg-primary" : "border-transparent hover:bg-muted")}
+            aria-label={`Notifications${current ? `, latest ${current.severity}: ${current.title || current.description || "Notification"}` : ""}`}
             aria-expanded={open}
           >
-            <CurrentIcon aria-hidden="true" className={cn("h-4 w-4 shrink-0", current ? colors[current.severity] : "text-muted-foreground")} />
+            <CurrentIcon aria-hidden="true" className={cn("h-4 w-4 shrink-0", highlightActive ? "text-primary-foreground" : current ? colors[current.severity] : "text-muted-foreground")} />
             {current && <span className="sr-only capitalize">{current.severity}: </span>}
             <span className="hidden min-w-0 flex-1 truncate xl:block">
               {current ? <>{current.title || current.description || "Notification"}{current.count > 1 ? ` (×${current.count})` : ""}</> : "Notifications"}
             </span>
-            {unread > 0 && <span className="rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground">{unread > 99 ? "99+" : unread}</span>}
-            {unreadErrors > 0 && <span className="absolute right-0 top-0 h-2 w-2 rounded-full bg-destructive" aria-hidden="true" />}
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -161,7 +119,6 @@ export function NotificationArea() {
           <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
             <h2 className="text-sm font-semibold">Recent notifications</h2>
             <div className="flex gap-2 text-xs">
-              <button type="button" onClick={() => markRead()} disabled={!unread} className="rounded px-1 hover:underline disabled:opacity-50">Mark all read</button>
               <button type="button" onClick={clearHistory} disabled={!toasts.length} className="rounded px-1 hover:underline disabled:opacity-50">Clear history</button>
             </div>
           </div>
@@ -172,7 +129,7 @@ export function NotificationArea() {
               const Icon = icons[item.severity];
               const onOriginalScreen = item.path === location.pathname + location.search;
               return (
-                <div key={item.id} data-notification-id={item.id} className={cn("flex gap-2 border-b px-3 py-2.5 last:border-b-0", !item.read && "bg-muted/40")}>
+                <div key={item.id} data-notification-id={item.id} className="flex gap-2 border-b px-3 py-2.5 last:border-b-0">
                   <Icon aria-hidden="true" className={cn("mt-0.5 h-4 w-4 shrink-0", colors[item.severity])} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
@@ -183,9 +140,8 @@ export function NotificationArea() {
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <time dateTime={new Date(item.createdAt).toISOString()} className="text-[11px] text-muted-foreground">{new Date(item.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
                       <span className="text-[11px] capitalize text-muted-foreground">{item.severity}</span>
-                      {!item.read && <button type="button" className="rounded text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => markRead(item.id)}>Mark read</button>}
-                      {item.action && onOriginalScreen && <NotificationAction notification={item} onDone={() => { markRead(item.id); setOpen(false); }} />}
-                      {item.path && !onOriginalScreen && <button type="button" className="rounded text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { markRead(item.id); navigate(item.path!); setOpen(false); }}>View screen</button>}
+                      {item.action && onOriginalScreen && <NotificationAction notification={item} onDone={() => setOpen(false)} />}
+                      {item.path && !onOriginalScreen && <button type="button" className="rounded text-xs underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { navigate(item.path!); setOpen(false); }}>View screen</button>}
                     </div>
                   </div>
                 </div>
