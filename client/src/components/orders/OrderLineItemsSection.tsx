@@ -629,10 +629,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const { isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const [localProofWarningIds, setLocalProofWarningIds] = useState<string[]>([]);
   const [proofReturnTarget, setProofReturnTarget] = useState<ReturnUpstreamTarget | null>(null);
+  const [proofReturnDestination, setProofReturnDestination] = useState<"proofing" | "design">("proofing");
+  const [routingSaveError, setRoutingSaveError] = useState<{ lineItemId: string; message: string } | null>(null);
+  const [productionReturnTargets, setProductionReturnTargets] = useState<Array<{ lineItemId: string; jobId: string }> | null>(null);
+  const [productionReturnDestination, setProductionReturnDestination] = useState<"prepress" | "proofing" | "design">("prepress");
+  const [productionReturnReason, setProductionReturnReason] = useState("");
+  const [productionReturnError, setProductionReturnError] = useState<string | null>(null);
   const proofWarningIds = [...newProofRequirementLineItemIds, ...localProofWarningIds];
   const prepressReturnQueue = useQuery({
     queryKey: ["/api/prepress/queue", "order-proof-return"],
-    enabled: isAdminOrOwner && proofWarningIds.length > 0,
+    enabled: isAdminOrOwner && (proofWarningIds.length > 0 || lineItems.some((line) => ["ready_for_prepress", "in_prepress"].includes(String(line.workflowState)))),
     queryFn: async () => {
       const response = await apiFetch("/api/prepress/queue");
       if (!response.ok) throw new Error("Could not load current Prepress state.");
@@ -647,6 +653,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const displayPreferenceScope = user?.id ? `${user.lastActiveOrgId ?? "unknown"}:${user.id}` : null;
   const [productionBypassTarget, setProductionBypassTarget] = useState<OrderLineItem | null>(null);
   const [productionBypassReason, setProductionBypassReason] = useState("");
+  const [productionRestoreTarget, setProductionRestoreTarget] = useState<OrderLineItem | null>(null);
+  const [productionRestoreReason, setProductionRestoreReason] = useState("");
+  const [productionRestoreError, setProductionRestoreError] = useState<string | null>(null);
   const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
   const [parentLinkTarget, setParentLinkTarget] = useState<OrderLineItem | null>(null);
   const [selectedParentLineItemId, setSelectedParentLineItemId] = useState<string | null>(null);
@@ -777,6 +786,45 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       toast({ title: "Workflow action failed", description: error.message, variant: "destructive" });
     },
   });
+  const productionReturn = useMutation({
+    retry: false,
+    mutationFn: async () => {
+      if (!productionReturnTargets?.length) throw new Error("Select current production work to return.");
+      const response = await apiFetch("/api/production/jobs/return-for-correction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobIds: productionReturnTargets.map((target) => target.jobId),
+          destination: productionReturnDestination,
+          reason: productionReturnReason.trim(),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || payload.message || "Could not return production work.");
+      return payload;
+    },
+    onSuccess: async () => {
+      const destination = productionReturnDestination;
+      setProductionReturnTargets(null);
+      setProductionReturnReason("");
+      setProductionReturnError(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) }),
+        queryClient.invalidateQueries({ queryKey: ["orders", "list"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["fulfillment"] }),
+        queryClient.invalidateQueries({ queryKey: ["shipments", orderId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+      ]);
+      await onAfterLineItemsChange?.();
+      toast({ title: `Returned to ${destination === "design" ? "Design" : destination === "proofing" ? "Proofing" : "Prepress"}` });
+    },
+    onError: (error: Error) => setProductionReturnError(error.message),
+  });
 
   const productionBypass = useMutation({
     mutationFn: async ({ lineItemId, reason }: { lineItemId: string; reason: string }) => {
@@ -791,6 +839,34 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       await onAfterLineItemsChange?.();
     },
     onError: (error: Error) => toast({ title: "Unable to bypass production", description: error.message, variant: "destructive" }),
+  });
+  const productionRestore = useMutation({
+    retry: false,
+    mutationFn: async () => {
+      if (!productionRestoreTarget) throw new Error("Choose a line to restore.");
+      const response = await apiFetch(`/api/order-line-items/${productionRestoreTarget.id}/restore-production`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: productionRestoreReason.trim() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Unable to restore production requirement.");
+      return payload;
+    },
+    onSuccess: async () => {
+      setProductionRestoreTarget(null);
+      setProductionRestoreReason("");
+      setProductionRestoreError(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["fulfillment"] }),
+        queryClient.invalidateQueries({ queryKey: ["shipments", orderId] }),
+      ]);
+      await onAfterLineItemsChange?.();
+      toast({ title: "Production required", description: "The saved line has a current production obligation." });
+    },
+    onError: (error: Error) => setProductionRestoreError(error.message),
   });
 
   const parentLinkMutation = useMutation({
@@ -2466,6 +2542,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
     setSavingItemId(itemId);
     setSavedItemId(null);
+    setRoutingSaveError(null);
 
     try {
       const persistedPricing = hydrateLineItemEditPricingState(expandedItem);
@@ -2621,6 +2698,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       }
 
       setSavedItemId(itemId);
+      setRoutingSaveError(null);
 
       const nextSavedSnapshot: OrderLineItemSavedSnapshot = {
         productId: currentDraftProductId,
@@ -2679,11 +2757,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       // rejected line mutation.  The editor keeps its draft for correction or
       // retry, but an unsaved local preview must not look persisted.
       onDraftLineItemPricingChange?.(itemId, null);
-      try {
-        await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-        await queryClient.refetchQueries({ queryKey: orderDetailQueryKey(orderId), type: "active" });
-      } catch (refreshError) {
-        console.error("[OrderLineItemsSection] Failed to restore authoritative Order after a rejected line save", refreshError);
+      const isRoutingRejection = error instanceof OrderLineItemApiError &&
+        Boolean(error.code?.startsWith("ROUTING_") || error.code?.startsWith("PRODUCTION_BYPASS_ROUTING_"));
+      if (isRoutingRejection) {
+        setRoutingSaveError({ lineItemId: itemId, message: error.message });
+      } else {
+        try {
+          await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+          await queryClient.refetchQueries({ queryKey: orderDetailQueryKey(orderId), type: "active" });
+        } catch (refreshError) {
+          console.error("[OrderLineItemsSection] Failed to restore authoritative Order after a rejected line save", refreshError);
+        }
       }
       if (error instanceof OrderLineItemApiError && error.code === "COMPLETED_LINE_ITEM_REPLACEMENT_REQUIRED" && correctionPayload) {
         setRecordCorrectionTarget({
@@ -3398,7 +3482,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 <Checkbox
                                   checked={isSelectedForProduction}
                                   onCheckedChange={() => handleToggleProductionSelection(item.id)}
-                                  aria-label="Select for production"
+                                  aria-label="Select this line for Send to Production; this is not a routing requirement"
                                 />
                               </div>
                             )}
@@ -3415,10 +3499,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   <span className="font-semibold">Line {lineNumber}: Proofing is now required.</span>{" "}
                                   {workflowState === "ready_for_prepress" || workflowState === "in_prepress"
                                     ? "The work is already downstream. Return this line to Proofing before continuing production."
-                                    : "The work is already in Production. Return it to Prepress first, then an Owner or Admin can return this line to Proofing."}
+                                    : "The work is already in Production. An Owner or Admin can use Return for Correction → Proofing after resolving any active machine run or lock."}
                                   {!isAdminOrOwner && <span> An Owner or Admin must perform the return.</span>}
                                   {canReturnUpstream(currentReturnTarget, isAdminOrOwner) && (
-                                    <Button type="button" variant="outline" size="sm" className="ml-2" onClick={() => setProofReturnTarget(currentReturnTarget)}>
+                                    <Button type="button" variant="outline" size="sm" className="ml-2" onClick={() => { setProofReturnDestination("proofing"); setProofReturnTarget(currentReturnTarget); }}>
                                       Return to Proofing
                                     </Button>
                                   )}
@@ -3484,6 +3568,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       Next: <span className="text-foreground">{operationalNextStep}</span>
                                     </span>
                                     {ownerLabel && !ownerDuplicatesOperationalStatus ? <span className="text-muted-foreground">Owner: {String(ownerLabel)}</span> : null}
+                                    {operationalItem.activeOwnerJobId ? (
+                                      <Link className="font-medium text-primary underline-offset-2 hover:underline" to={`/production/jobs/${operationalItem.activeOwnerJobId}`}>
+                                        Open current job
+                                      </Link>
+                                    ) : null}
                                     {operationalWarning ? (
                                       <span
                                         className={cn(
@@ -4306,6 +4395,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 onRequiresDesignChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresDesignInput : undefined}
                                 onRequiresPrepressChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresPrepressInput : undefined}
                                 onRequiresProofApprovalChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresProofApprovalInput : undefined}
+                                routingError={isExpanded && expandedItem?.id === item.id && routingSaveError?.lineItemId === item.id ? routingSaveError.message : null}
                                 topAnchorRef={setLineItemTopAnchorRef(String(item.id))}
                                 widthInputRef={setLineItemWidthInputRef(String(item.id))}
                                 detailsSide="right"
@@ -4366,7 +4456,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       Unlink
                                     </Button>
                                   ) : null}
-                                  {!childItem && !(item as any).productionBypassed ? (
+                                  {!childItem && !(item as any).productionBypassed && isAdminOrOwner ? (
                                     <Button
                                       type="button"
                                       variant="ghost"
@@ -4376,6 +4466,21 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     >
                                       {getLineItemWorkflowActionLabel("Bypass Production", hasGroupChildren)}
                                     </Button>
+                                  ) : null}
+                                  {(item as any).productionBypassed && (item as any).lineItemRole !== "parent" && isAdminOrOwner ? (
+                                    <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => {
+                                      setProductionRestoreTarget(item);
+                                      setProductionRestoreReason("");
+                                      setProductionRestoreError(null);
+                                    }}>
+                                      Restore Production Required
+                                    </Button>
+                                  ) : null}
+                                  {!childItem && canReturnUpstream(currentReturnTarget, isAdminOrOwner) ? (
+                                    <>
+                                      <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => { setProofReturnDestination("design"); setProofReturnTarget(currentReturnTarget); }}>Return to Design</Button>
+                                      <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => { setProofReturnDestination("proofing"); setProofReturnTarget(currentReturnTarget); }}>Return to Proofing</Button>
+                                    </>
                                   ) : null}
                                   {!childItem && showOpenProofingAction ? (
                                     <Button asChild type="button" variant="outline" size="sm" className="h-8">
@@ -4389,14 +4494,21 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       variant="outline"
                                       size="sm"
                                       className="h-8"
-                                      disabled={productionAction.isPending}
-                                      onClick={() => productionAction.mutate({
-                                        action,
-                                        targets: groupProductionActionTargets,
-                                      })}
+                                      disabled={productionAction.isPending || productionReturn.isPending || (action === "return_to_prepress" && !isAdminOrOwner)}
+                                      title={action === "return_to_prepress" && !isAdminOrOwner ? "An Owner or Admin must return production work for correction." : undefined}
+                                      onClick={() => {
+                                        if (action === "return_to_prepress") {
+                                          setProductionReturnTargets(groupProductionActionTargets);
+                                          setProductionReturnDestination("prepress");
+                                          setProductionReturnReason("");
+                                          setProductionReturnError(null);
+                                        } else {
+                                          productionAction.mutate({ action, targets: groupProductionActionTargets });
+                                        }
+                                      }}
                                     >
                                       {getLineItemWorkflowActionLabel(
-                                        ({ start: "Start Production", resume: "Resume Production", hold: "Hold", complete: "Complete", return_to_prepress: "Return to Prepress" }[action]),
+                                        ({ start: "Start Production", resume: "Resume Production", hold: "Hold", complete: "Complete", return_to_prepress: "Return for Correction" }[action]),
                                         hasGroupChildren,
                                       )}
                                     </Button>
@@ -4849,6 +4961,23 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={productionRestoreTarget !== null} onOpenChange={(open) => { if (!open && !productionRestore.isPending) setProductionRestoreTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Restore production requirement?</DialogTitle>
+            <DialogDescription>This restores the Product's required Design, Proofing, Prepress, and Production route for this saved line. Existing fulfillment or production history may require a separate recovery workflow.</DialogDescription>
+          </DialogHeader>
+          <Label htmlFor="production-restore-reason">Reason</Label>
+          <Textarea id="production-restore-reason" value={productionRestoreReason} onChange={(event) => setProductionRestoreReason(event.target.value)} maxLength={2000} disabled={productionRestore.isPending} required />
+          {productionRestoreError ? <p role="alert" className="text-sm text-destructive">{productionRestoreError}</p> : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={productionRestore.isPending} onClick={() => setProductionRestoreTarget(null)}>Cancel</Button>
+            <Button disabled={productionRestoreReason.trim().length < 3 || productionRestore.isPending} onClick={() => { setProductionRestoreError(null); productionRestore.mutate(); }}>
+              {productionRestore.isPending ? "Restoring…" : "Restore Production Required"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={parentLinkTarget !== null} onOpenChange={(open) => { if (!open && !parentLinkMutation.isPending) setParentLinkTarget(null); }}>
         <DialogContent>
           <DialogHeader>
@@ -4874,7 +5003,32 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <ReturnUpstreamDialog target={proofReturnTarget} destination={proofReturnTarget ? "proofing" : null} onClose={() => setProofReturnTarget(null)} />
+      <ReturnUpstreamDialog target={proofReturnTarget} destination={proofReturnTarget ? proofReturnDestination : null} onClose={() => setProofReturnTarget(null)} />
+      <Dialog open={productionReturnTargets !== null} onOpenChange={(open) => { if (!open && !productionReturn.isPending) setProductionReturnTargets(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Return production work for correction</DialogTitle>
+            <DialogDescription>Choose the earlier stage. This preserves production and proof history; it does not reverse shipped quantities. Active machine runs and locked jobs must be resolved first.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="production-return-destination">Return to</Label>
+            <select id="production-return-destination" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={productionReturnDestination} onChange={(event) => setProductionReturnDestination(event.target.value as "prepress" | "proofing" | "design")} disabled={productionReturn.isPending}>
+              <option value="prepress">Prepress</option>
+              <option value="proofing">Proofing</option>
+              <option value="design">Design</option>
+            </select>
+            <Label htmlFor="production-return-reason">Reason</Label>
+            <Textarea id="production-return-reason" value={productionReturnReason} onChange={(event) => setProductionReturnReason(event.target.value)} maxLength={2000} disabled={productionReturn.isPending} required />
+            {productionReturnError ? <p role="alert" className="text-sm text-destructive">{productionReturnError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={productionReturn.isPending} onClick={() => setProductionReturnTargets(null)}>Cancel</Button>
+            <Button type="button" disabled={!productionReturnReason.trim() || productionReturn.isPending} onClick={() => { setProductionReturnError(null); productionReturn.mutate(); }}>
+              {productionReturn.isPending ? "Returning…" : `Return to ${productionReturnDestination === "design" ? "Design" : productionReturnDestination === "proofing" ? "Proofing" : "Prepress"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DetailLineItemsCard>
     </Popover>
   );

@@ -337,11 +337,7 @@ export function buildOrderLineItemProductionActionRequests(input: {
     ];
   }
   if (input.action === "return_to_prepress") {
-    return [{
-      url: `/api/production/line-item/${input.lineItemId}/send-to-prepress`,
-      method: "POST",
-      body: { note: "Returned to prepress from the order line item.", noPrintsCompletedYet: false },
-    }];
+    throw new Error("Returning production work requires a destination and an operator reason.");
   }
   if (input.action === "complete") {
     return [{ url: `/api/production/jobs/${input.jobId}/complete`, method: "POST" }];

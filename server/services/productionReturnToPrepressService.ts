@@ -1,8 +1,9 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { auditLogs, orderLineItems, orders, prepressSessions, productionJobs, productionRunMembers, productionRuns } from "@shared/schema";
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from "@shared/productionRunLifecycle";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { findActiveJobForLineItem, isPrepressOwnershipJob } from "./productionOwnership";
+import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 
 export class ReturnToPrepressError extends Error {
   constructor(message: string, readonly statusCode = 409, readonly code = "RETURN_TO_PREPRESS_BLOCKED") {
@@ -65,23 +66,34 @@ export async function returnProductionJobsToPrepressInTransaction(tx: any, input
       eq(productionRunMembers.organizationId, input.organizationId),
       inArray(productionRunMembers.productionJobId, input.jobIds),
       inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
-      sql`coalesce(${productionRunMembers.remainingQuantity}, 0) > 0`,
     ));
   const activeRunByJobId = new Map(activeRunMembers.map((member: any) => [member.productionJobId, member.runNumber]));
 
   for (const { job } of rows as Array<any>) {
-    if (String(job.stationKey || "").toLowerCase() !== input.station) {
+    const station = String(job.stationKey || "").toLowerCase();
+    if ((station === "wide_roll" ? "roll" : station) !== input.station) {
       throw new ReturnToPrepressError(`Job ${job.id} is not owned by the ${input.station} board.`, 422, "RETURN_TO_PREPRESS_WRONG_STATION");
     }
     const activeRunNumber = activeRunByJobId.get(job.id);
     if (activeRunNumber != null) {
-      throw new ReturnToPrepressError(`Job ${job.id} is owned by active Combined Run PR-${String(activeRunNumber).padStart(4, "0")}.`, 409, "RETURN_TO_PREPRESS_ACTIVE_RUN");
+      throw new ReturnToPrepressError(`Job ${job.id} belongs to active Combined Run PR-${String(activeRunNumber).padStart(4, "0")}. Open that run and use its member recovery before returning this line.`, 409, "RETURN_TO_PREPRESS_ACTIVE_RUN");
     }
     const blockedReason = getReturnToPrepressBlockedReason({ lineItemId: job.lineItemId, status: job.status });
-    if (blockedReason) throw new ReturnToPrepressError(`Job ${job.id} cannot return to Prepress: ${blockedReason}.`, 409);
+    if (blockedReason) {
+      const guidance = blockedReason === "Currently printing"
+        ? "Stop the machine timer and return the job to Queued before retrying."
+        : blockedReason === "Production lock active"
+          ? "Release the paused production lock and return the job to Queued before retrying."
+          : "Use the production recovery workflow for completed work.";
+      throw new ReturnToPrepressError(`Job ${job.id} cannot return to Prepress: ${blockedReason}. ${guidance}`, 409);
+    }
     const activeOwner = await findActiveJobForLineItem(tx, { organizationId: input.organizationId, lineItemId: job.lineItemId });
     if (!activeOwner || activeOwner.id !== job.id) {
       throw new ReturnToPrepressError(`Job ${job.id} is no longer the active production owner. Refresh and try again.`, 409, "RETURN_TO_PREPRESS_OWNER_CHANGED");
+    }
+    const [eligibility] = await new FulfillmentDashboardRepo(tx).listLineEligibility(input.organizationId, { lineItemIds: [job.lineItemId] }, tx);
+    if (!eligibility || eligibility.projection.fulfilledQuantity > 0 || eligibility.projection.administrativelyReconciledQuantity > 0) {
+      throw new ReturnToPrepressError("Fulfilled or administratively resolved quantities require the existing reversal or replacement workflow.", 409, "RETURN_TO_PREPRESS_FULFILLMENT_BOUNDARY");
     }
   }
 

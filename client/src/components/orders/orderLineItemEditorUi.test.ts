@@ -202,8 +202,8 @@ describe("order line item editor UI policy", () => {
         { url: "/api/production/jobs/job-1/stop", method: "POST" },
         { url: "/api/production/jobs/job-1/status", method: "PATCH", body: { status: "paused" } },
       ]);
-    expect(buildOrderLineItemProductionActionRequests({ action: "return_to_prepress", lineItemId: "line-1", jobId: "job-1" })[0].url)
-      .toBe("/api/production/line-item/line-1/send-to-prepress");
+    expect(() => buildOrderLineItemProductionActionRequests({ action: "return_to_prepress", lineItemId: "line-1", jobId: "job-1" }))
+      .toThrow(/requires a destination and an operator reason/);
   });
 
   it("reflects hold and return-to-prepress owner updates without a page reload", () => {

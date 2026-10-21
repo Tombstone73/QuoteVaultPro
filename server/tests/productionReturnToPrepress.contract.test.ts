@@ -8,12 +8,14 @@ describe("production Return to Prepress contract", () => {
   const runService = fs.readFileSync(path.join(root, "server/services/productionRunService.ts"), "utf8");
   const runRoute = fs.readFileSync(path.join(root, "server/routes/productionRuns.routes.ts"), "utf8");
   const workflow = fs.readFileSync(path.join(root, "server/services/lineItemWorkflowService.ts"), "utf8");
+  const correction = fs.readFileSync(path.join(root, "server/services/productionCorrectionReturnService.ts"), "utf8");
 
   test("uses an all-or-nothing tenant-scoped transition and preserves historical run members", () => {
     expect(service).toContain("returnProductionJobsToPrepressInTransaction");
     expect(service).toContain("eq(productionJobs.organizationId, input.organizationId)");
     expect(service).toContain("inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES])");
-    expect(service).toContain("coalesce(${productionRunMembers.remainingQuantity}, 0) > 0");
+    expect(service).not.toContain("coalesce(${productionRunMembers.remainingQuantity}, 0) > 0");
+    expect(service).toContain("Open that run and use its member recovery");
     expect(service).toContain('toState: "in_prepress"');
     expect(service).not.toContain("delete(productionRunMembers)");
   });
@@ -33,7 +35,7 @@ describe("production Return to Prepress contract", () => {
 
   test("exposes the canonical bulk endpoint and makes legacy canceled-run reconciliation identify Prepress predecessors", () => {
     expect(jobsRoute).toContain('app.post("/api/production/jobs/return-to-prepress"');
-    expect(jobsRoute).toContain("returnProductionJobsToPrepressInTransaction");
+    expect(jobsRoute).toContain("canonicalPrepressOperations.returnProductionJobs");
     expect(runService).toContain("prepressPredecessorIds");
     expect(runService).toContain("previousJobId");
   });
@@ -53,5 +55,15 @@ describe("production Return to Prepress contract", () => {
     expect(memberRecovery).not.toContain("successfulQuantity: 0");
     expect(memberRecovery).not.toContain("damagedQuantity: 0");
     expect(memberRecovery).not.toContain("delete(productionRunMembers)");
+  });
+
+  test("returns Roll and Flatbed work through one transaction before any Design or Proofing move", () => {
+    expect(correction).toContain("return db.transaction(async (tx) => {");
+    expect(correction).toContain("await lockWorkflowLines(tx, input.organizationId");
+    expect(correction).toContain("returnProductionJobsToPrepressInTransaction(tx");
+    expect(correction).toContain("returnUpstreamInTransaction(tx");
+    expect(correction).toContain("expectedOwnerJobId: prepress.prepressJobId");
+    expect(jobsRoute).toContain('app.post("/api/production/jobs/return-for-correction"');
+    expect(service).toContain("RETURN_TO_PREPRESS_FULFILLMENT_BOUNDARY");
   });
 });

@@ -137,6 +137,7 @@ export type LineItemCardProps = {
   onRequiresDesignChange?: (value: boolean) => void;
   onRequiresPrepressChange?: (value: boolean) => void;
   onRequiresProofApprovalChange?: (value: boolean) => void;
+  routingError?: string | null;
   topAnchorRef?: (node: HTMLDivElement | null) => void;
   widthInputRef?: (node: HTMLInputElement | null) => void;
 
@@ -310,6 +311,7 @@ export function LineItemCard({
   onRequiresDesignChange,
   onRequiresPrepressChange,
   onRequiresProofApprovalChange,
+  routingError,
   topAnchorRef,
   widthInputRef,
   optionsSlot,
@@ -449,7 +451,8 @@ export function LineItemCard({
   );
 
   const routingControls = !readOnly ? (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2" aria-label="Line routing requirements">
+    <div className="space-y-1.5" aria-label="Line routing requirements">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
       <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer select-none">
         <input type="checkbox" checked={requiresDesign === true} onChange={(e) => onRequiresDesignChange?.(e.target.checked)} className="h-3.5 w-3.5 rounded border-input accent-primary" />
         Design
@@ -462,6 +465,9 @@ export function LineItemCard({
         <input type="checkbox" checked={displayedRequiresProofApproval} onChange={(e) => onRequiresProofApprovalChange?.(e.target.checked)} disabled={proofApprovalDisabled} className="h-3.5 w-3.5 rounded border-input accent-primary" />
         Proof approval
       </label>
+      </div>
+      <p className="text-[11px] text-muted-foreground">Required stages for this line. To move active work backward, use the appropriate Return action.</p>
+      {routingError ? <p role="alert" className="text-xs text-destructive">{routingError}</p> : null}
     </div>
   ) : null;
 

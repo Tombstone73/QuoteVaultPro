@@ -78,6 +78,9 @@ import { portalContext, tenantContext, getPortalCustomer } from "../tenantContex
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { listOrderDesignBillingVisibility } from "../services/designCostSummaryService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { hasSavedLineProductChange, hasSavedLineRoutingChange, savedLineRequirementConflict } from "@shared/savedLineRouting";
+import { lockWorkflowLines } from "../services/workflowMutationLock";
+import { FulfillmentDashboardRepo } from "../services/fulfillment/repository";
 import { completeProductionJobWorkflow, markOrderReadyForFulfillmentIfProductionComplete } from "./productionJobs.routes";
 import {
     isOrderShortcutCompletableProductionStation,
@@ -8307,6 +8310,79 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.post("/api/order-line-items/:id/restore-production", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const actorUserId = getUserId(req.user);
+            if (!organizationId || !actorUserId) return res.status(401).json({ message: "Missing organization or user context" });
+            const { reason } = z.object({ reason: z.string().trim().min(3).max(2000) }).strict().parse(req.body ?? {});
+            const lineItemId = String(req.params.id);
+            const result = await db.transaction(async (tx) => {
+                await lockWorkflowLines(tx, organizationId, [lineItemId]);
+                const [row] = await tx.select({ line: orderLineItems, product: products })
+                    .from(orderLineItems)
+                    .innerJoin(orders, and(eq(orders.id, orderLineItems.orderId), eq(orders.organizationId, organizationId)))
+                    .innerJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+                    .where(eq(orderLineItems.id, lineItemId)).limit(1);
+                if (!row) throw Object.assign(new Error("Order line item not found"), { statusCode: 404 });
+                const { line, product } = row;
+                if (!line.productionBypassed) throw Object.assign(new Error("Production is already required for this line. Refresh the Order."), { statusCode: 409, code: "PRODUCTION_ALREADY_REQUIRED" });
+                if (line.lineItemRole === "parent" || product.workflowIntent !== "standard_production" || !product.requiresProductionJob) {
+                    throw Object.assign(new Error("This line's Product does not have a physical production obligation. Adjust the Product workflow before restoring production."), { statusCode: 409, code: "NO_PRODUCTION_OBLIGATION" });
+                }
+                const existingOwner = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
+                const priorJob = await tx.select({ id: productionJobs.id }).from(productionJobs)
+                    .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId))).limit(1);
+                if (existingOwner || priorJob.length) {
+                    throw Object.assign(new Error("This bypassed line has production history. Use the production conflict/rework workflow before creating another obligation."), { statusCode: 409, code: "PRODUCTION_RESTORE_HISTORY" });
+                }
+                const executor = tx as unknown as typeof db;
+                const [eligibility] = await new FulfillmentDashboardRepo(executor).listLineEligibility(organizationId, { lineItemIds: [lineItemId] }, executor);
+                if (!eligibility || eligibility.projection.fulfilledQuantity > 0 || eligibility.projection.administrativelyReconciledQuantity > 0) {
+                    throw Object.assign(new Error("This line has fulfilled quantities. Use the authorized reversal or replacement workflow first."), { statusCode: 409, code: "PRODUCTION_RESTORE_FULFILLED" });
+                }
+                const routing = await resolveEffectiveLineItemRouting({
+                    organizationId, productId: product.id,
+                    designDefaultRequiresDesign: line.requiresDesignSnapshot,
+                });
+                await tx.update(orderLineItems).set({
+                    productionBypassed: false,
+                    productionBypassReason: null,
+                    productionBypassedByUserId: null,
+                    productionBypassedAt: null,
+                    requiresDesign: routing.requiresDesign,
+                    needsDesignOverride: routing.requiresDesign === Boolean(line.requiresDesignSnapshot) ? null : routing.requiresDesign,
+                    requiresPrepress: routing.requiresPrepress,
+                    requiresProofApproval: routing.requiresProofApproval,
+                    workflowState: "new",
+                    status: "new",
+                    updatedAt: new Date(),
+                }).where(eq(orderLineItems.id, lineItemId));
+                const transition = await transitionLineItemWorkflowState(tx, {
+                    organizationId, lineItemId, toState: routing.workflowState,
+                    actorUserId, note: reason,
+                    metadata: { source: "restore_production_requirement" },
+                });
+                await tx.insert(auditLogs).values({
+                    organizationId, userId: actorUserId, actionType: "ORDER_LINE_ITEM_PRODUCTION_RESTORED",
+                    entityType: "order_line_item", entityId: lineItemId, entityName: line.description ?? lineItemId,
+                    description: `Production requirement restored: ${reason}`,
+                    oldValues: { productionBypassed: true, productionBypassReason: line.productionBypassReason, workflowState: line.workflowState },
+                    newValues: { productionBypassed: false, workflowState: transition.toState, ownerJobId: transition.activeOwnerJobId, reason },
+                } as any);
+                const [updated] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
+                return updated;
+            });
+            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(result as any) });
+        } catch (error: any) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            return res.status(error?.statusCode ?? 500).json({
+                message: error?.statusCode ? error.message : "Failed to restore production requirement",
+                code: error?.code,
+            });
+        }
+    });
+
     app.post("/api/orders/:orderId/production-bypass-conflict/reconcile", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -8811,6 +8887,10 @@ export async function registerOrderRoutes(
             if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });
 
             const oldLineItemStatus = String((oldLineItem as any).status || "").trim().toLowerCase();
+            const productIdChanged = hasSavedLineProductChange(
+                String(oldLineItem.productId),
+                updateData.productId === undefined ? undefined : String(updateData.productId),
+            );
             const oldLineItemWorkflowState = String((oldLineItem as any).workflowState || "new").trim().toLowerCase();
             if (LINE_ITEM_EDIT_LOCKED_STATES.has(oldLineItemStatus) || LINE_ITEM_EDIT_LOCKED_STATES.has(oldLineItemWorkflowState)) {
                 return res.status(409).json({
@@ -8843,12 +8923,22 @@ export async function registerOrderRoutes(
             const shouldReconcileProofGateRemoval =
                 requestedRequiresProofApproval === false &&
                 oldLineItemWorkflowState === "awaiting_proof_approval";
-            const hasRoutingChange =
-                updateData.productId !== undefined ||
-                (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
-                (typeof requestedRequiresPrepress === "boolean" && requestedRequiresPrepress !== Boolean((oldLineItem as any).requiresPrepress)) ||
-                (typeof requestedRequiresProofApproval === "boolean" && requestedRequiresProofApproval !== Boolean((oldLineItem as any).requiresProofApproval));
+            const hasRoutingChange = hasSavedLineRoutingChange({
+                previousProductId: String(oldLineItem.productId),
+                submittedProductId: updateData.productId === undefined ? undefined : String(updateData.productId),
+                previous: {
+                    design: Boolean((oldLineItem as any).requiresDesign),
+                    prepress: Boolean((oldLineItem as any).requiresPrepress),
+                    proof: Boolean((oldLineItem as any).requiresProofApproval),
+                },
+                submitted: {
+                    design: requestedRequiresDesign,
+                    prepress: requestedRequiresPrepress,
+                    proof: requestedRequiresProofApproval,
+                },
+            });
             let proofApprovalManualOverride = false;
+            let routingTargetState: ReturnType<typeof getInitialWorkflowState> | null = null;
 
             if (hasRoutingChange) {
                 if (!canEditLineItemRouting({
@@ -8872,7 +8962,7 @@ export async function registerOrderRoutes(
                 });
                 proofApprovalManualOverride =
                     routing.proofApprovalManualOverride &&
-                    (Boolean((oldLineItem as any).requiresProofApproval) || updateData.productId !== undefined);
+                    (Boolean((oldLineItem as any).requiresProofApproval) || productIdChanged);
 
                 const snapshotRequiresDesign = Boolean((oldLineItem as any).requiresDesignSnapshot);
                 updateData.needsDesignOverride = routing.requiresDesign === snapshotRequiresDesign
@@ -8882,10 +8972,26 @@ export async function registerOrderRoutes(
                 updateData.requiresDesign = routing.requiresDesign;
                 updateData.requiresProofApproval = routing.requiresProofApproval;
                 updateData.requiresPrepress = routing.requiresPrepress;
-                if (!isActiveOperationalEdit) {
-                    updateData.workflowState = routing.workflowState;
-                    updateData.status = "new";
+                routingTargetState = routing.workflowState;
+                if ((oldLineItem as any).productionBypassed) {
+                    throw Object.assign(new Error("Production is marked No Production Required for this line. Restore that decision before changing routing requirements."), {
+                        statusCode: 409, code: "PRODUCTION_BYPASS_ROUTING_CONFLICT",
+                    });
                 }
+                const conflict = savedLineRequirementConflict({
+                    previous: {
+                        design: Boolean((oldLineItem as any).requiresDesign),
+                        prepress: Boolean((oldLineItem as any).requiresPrepress),
+                        proof: Boolean((oldLineItem as any).requiresProofApproval),
+                    },
+                    next: {
+                        design: routing.requiresDesign,
+                        prepress: routing.requiresPrepress,
+                        proof: routing.requiresProofApproval,
+                    },
+                    activeStation: activeJob?.stationKey ?? null,
+                });
+                if (conflict) throw Object.assign(new Error(conflict), { statusCode: 409, code: "ROUTING_RETURN_REQUIRED" });
             }
 
             if (isActiveOperationalEdit && submittedFields.length > 0) {
@@ -9052,6 +9158,18 @@ export async function registerOrderRoutes(
             // boundary.  Do not let the browser, a refresh, or a later PDF/QB
             // action repair an Invoice after an Order edit has committed.
             const lineItem = await db.transaction(async (tx) => {
+                if (hasRoutingChange) {
+                    await lockWorkflowLines(tx, organizationId, [lineItemId]);
+                    const [current] = await tx.select({ updatedAt: orderLineItems.updatedAt }).from(orderLineItems)
+                        .where(eq(orderLineItems.id, lineItemId)).limit(1);
+                    const currentOwner = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
+                    if (!current || current.updatedAt.getTime() !== new Date((oldLineItem as any).updatedAt).getTime()
+                        || currentOwner?.id !== activeJob?.id) {
+                        throw Object.assign(new Error("This line or its production owner changed. Refresh the Order and review the current routing before saving."), {
+                            statusCode: 409, code: "ROUTING_STALE_STATE",
+                        });
+                    }
+                }
                 if (shouldReconcileProofGateRemoval) {
                     await tx
                         .update(orderLineItems)
@@ -9077,14 +9195,63 @@ export async function registerOrderRoutes(
                     await recomputeOrderBillingStatus({ organizationId, orderId: String(reconciled.orderId), executor: tx });
                     return reconciled;
                 }
-                const updated = await new OrdersRepository(tx).updateOrderLineItem(lineItemId, updateData);
+                await new OrdersRepository(tx).updateOrderLineItem(lineItemId, updateData);
+                if (hasRoutingChange && !activeJob && routingTargetState) {
+                    const executor = tx as unknown as typeof db;
+                    const [eligibility] = await new FulfillmentDashboardRepo(executor).listLineEligibility(organizationId, { lineItemIds: [lineItemId] }, executor);
+                    if (!eligibility || eligibility.projection.fulfilledQuantity > 0 || eligibility.projection.administrativelyReconciledQuantity > 0) {
+                        throw Object.assign(new Error("Fulfilled or administratively resolved quantities require the existing reversal or replacement workflow before changing routing."), {
+                            statusCode: 409, code: "ROUTING_FULFILLMENT_BOUNDARY",
+                        });
+                    }
+                    const existingJobs = await tx.select({ id: productionJobs.id }).from(productionJobs)
+                        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId))).limit(1);
+                    if (existingJobs.length) {
+                        throw Object.assign(new Error("This line has production history. Use the existing return or replacement workflow to change its active stage."), {
+                            statusCode: 409, code: "ROUTING_HISTORY_REQUIRES_RECOVERY",
+                        });
+                    }
+                    if (oldLineItemWorkflowState !== "new" && oldLineItemWorkflowState !== routingTargetState) {
+                        // An ownerless, never-routed saved line still carries its initial
+                        // planned state. Rebase only that plan before the canonical transition
+                        // creates the required owner; no completed work is rewritten.
+                        await tx.update(orderLineItems).set({ workflowState: "new", status: "new", updatedAt: new Date() })
+                            .where(eq(orderLineItems.id, lineItemId));
+                    }
+                    await transitionLineItemWorkflowState(tx, {
+                        organizationId, lineItemId, toState: routingTargetState,
+                        actorUserId: userId,
+                        note: "Saved Order line routing requirements updated.",
+                        metadata: { source: "saved_order_line_requirements" },
+                    });
+                }
+                const [authoritativeLine] = await tx.select().from(orderLineItems)
+                    .where(eq(orderLineItems.id, lineItemId)).limit(1);
+                if (!authoritativeLine) throw new Error("Order line item not found after routing reconciliation");
+                if (proofApprovalManualOverride) {
+                    await createProofApprovalManualOverrideAuditLog({
+                        organizationId,
+                        userId,
+                        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                        entityType: "order_line_item",
+                        entityId: String(authoritativeLine.id),
+                        entityName: authoritativeLine.description ?? null,
+                        executor: tx,
+                    });
+                }
+                if (hasRoutingChange && userId) {
+                    await autoSyncCanonicalProofForLineItem(tx, {
+                        organizationId, lineItemId, actorUserId: userId,
+                        reason: "line_item_saved",
+                    });
+                }
                 await recalculateEditableOrderFinancialsInTransaction(tx, {
                     organizationId,
-                    orderId: String(updated.orderId),
+                    orderId: String(authoritativeLine.orderId),
                     actorUserId: userId ?? null,
                 });
-                await recomputeOrderBillingStatus({ organizationId, orderId: String(updated.orderId), executor: tx });
-                return updated;
+                await recomputeOrderBillingStatus({ organizationId, orderId: String(authoritativeLine.orderId), executor: tx });
+                return authoritativeLine;
             });
             const quantityChanged =
                 updateData.quantity !== undefined &&
@@ -9099,18 +9266,7 @@ export async function registerOrderRoutes(
                 })
                 : null;
 
-            if (proofApprovalManualOverride) {
-                await createProofApprovalManualOverrideAuditLog({
-                    organizationId,
-                    userId,
-                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                    entityType: "order_line_item",
-                    entityId: String(lineItem.id),
-                    entityName: (lineItem as any).description ?? null,
-                });
-            }
-
-            if (userId) {
+            if (userId && !hasRoutingChange) {
                 try {
                     await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
                         organizationId,
@@ -9325,7 +9481,7 @@ export async function registerOrderRoutes(
             // Auto-schedule production job when productId changes and new product type has sendToProductionDefault=true.
             // Guard: only fires when productId is explicitly changed by this edit.
             // Fail-soft: scheduling failure does not block the line item update response.
-            if (updateData.productId !== undefined && !isActiveOperationalEdit) {
+            if (productIdChanged && !isActiveOperationalEdit) {
                 try {
                     const newProductId = String(updateData.productId);
                     const [ptRow] = await db

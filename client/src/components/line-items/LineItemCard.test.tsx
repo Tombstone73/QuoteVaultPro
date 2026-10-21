@@ -265,6 +265,33 @@ describe("LineItemCard collapsed header actions", () => {
   });
 });
 
+describe("saved line routing controls", () => {
+  it("keeps Design and Prepress editable and explains a blocked save beside the controls", async () => {
+    const onDesign = jest.fn();
+    const onPrepress = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      requiresDesign: false,
+      requiresPrepress: false,
+      onSave: () => undefined,
+      onRequiresDesignChange: onDesign,
+      onRequiresPrepressChange: onPrepress,
+      routingError: "Production owns this line. Use Return for Correction → Design with a reason.",
+    });
+    const controls = container.querySelector('[aria-label="Line routing requirements"]')!;
+    const design = Array.from(controls.querySelectorAll("input")).find((input) => input.parentElement?.textContent?.includes("Design"))!;
+    const prepress = Array.from(controls.querySelectorAll("input")).find((input) => input.parentElement?.textContent?.includes("Prepress"))!;
+    expect(design).toBeTruthy();
+    expect(prepress).toBeTruthy();
+    click(design);
+    click(prepress);
+    expect(onDesign).toHaveBeenCalledWith(true);
+    expect(onPrepress).toHaveBeenCalledWith(true);
+    expect(controls.querySelector('[role="alert"]')?.textContent).toContain("Return for Correction");
+    await cleanup();
+  });
+});
+
 describe("LineItemCard fixed-size editing", () => {
   it("shows width and height controls when dimensions are customer-entered", async () => {
     const { container, cleanup } = await renderInteractiveLineItemCard({

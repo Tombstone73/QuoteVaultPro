@@ -22,6 +22,9 @@ export function ReturnUpstreamDialog({ target, destination, onClose }: {
       queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] }),
       queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] }),
       queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+      queryClient.invalidateQueries({ queryKey: ["fulfillment"] }),
+      queryClient.invalidateQueries({ queryKey: ["shipments", orderId] }),
       queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] }),
       queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
     ]);

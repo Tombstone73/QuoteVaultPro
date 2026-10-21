@@ -83,6 +83,7 @@ import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 import { ReturnToPrepressError, getReturnToPrepressBlockedReason } from "../services/productionReturnToPrepressService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
+import { productionCorrectionReturnSchema, returnProductionForCorrection } from "../services/productionCorrectionReturnService";
 import { canonicalProductionOperations } from "../services/canonicalProductionOperations";
 import {
   hasOutstandingCanonicalProductionObligations,
@@ -3523,6 +3524,24 @@ export function registerProductionJobsRoutes(
       return res.status(status).json({
         error: error?.message || "Failed to return selected jobs to Prepress",
         code: error instanceof ReturnToPrepressError ? error.code : error?.code,
+      });
+    }
+  });
+
+  app.post("/api/production/jobs/return-for-correction", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ error: "Missing organization or user context" });
+      const parsed = productionCorrectionReturnSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+      const data = await returnProductionForCorrection({ ...parsed.data, organizationId, actorUserId });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(error?.statusCode ?? 500).json({
+        error: error?.statusCode ? error.message : "Unable to return production work. Refresh and retry.",
+        code: error?.code,
       });
     }
   });

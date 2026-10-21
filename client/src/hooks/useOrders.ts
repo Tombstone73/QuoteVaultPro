@@ -67,6 +67,7 @@ function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: s
     queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
     queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
     queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}/attachments`] });
+    queryClient.invalidateQueries({ queryKey: ["shipments", orderId] });
   }
 
   queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
@@ -75,6 +76,7 @@ function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: s
   queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] });
   queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
   queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
+  queryClient.invalidateQueries({ queryKey: ["fulfillment"] });
   queryClient.invalidateQueries({
     predicate: (query) => {
       const key = query.queryKey;
