@@ -41,7 +41,10 @@ type PairedPrintAgent = {
   machineLabel: string | null;
   agentVersion: string | null;
   configuredTravelerPrinterName: string | null;
-  lastSeenAt: string;
+  knownWindowsQueues: string[];
+  servesMultipleQueues: boolean;
+  status: string;
+  lastSeenAt: string | null;
 };
 
 function toIntendedUse(type: PrinterProfileInput["printerType"]) {
@@ -98,6 +101,11 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
   }, [defaultType, profile]);
 
   const saving = createMutation.isPending || updateMutation.isPending;
+  const selectedAgent = (agents.data ?? []).find(agent => agent.id === printAgentId);
+  const availableQueues = selectedAgent ? Array.from(new Set([
+    ...(selectedAgent.configuredTravelerPrinterName ? [selectedAgent.configuredTravelerPrinterName] : []),
+    ...(selectedAgent.servesMultipleQueues ? selectedAgent.knownWindowsQueues ?? [] : []),
+  ])) : [];
   const canSave = displayName.trim().length > 0 && (supportsTraveler || supportsQuickNote || supportsUpsLabel || shippingDocuments.length > 0) && !saving;
 
   async function handleSubmit(event: FormEvent) {
@@ -137,26 +145,35 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
           {fieldErrors.displayName && <p role="alert" className="text-xs text-destructive">{fieldErrors.displayName}</p>}
         </div>
         <div className="space-y-1.5"><Label>Location</Label><Input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Front Office" /></div>
-        <div className="space-y-1.5"><Label>Windows printer queue</Label><Input value={windowsQueueName} onChange={(event) => setWindowsQueueName(event.target.value)} placeholder="Select from the paired agent inventory" />{fieldErrors.windowsQueueName && <p role="alert" className="text-xs text-destructive">{fieldErrors.windowsQueueName}</p>}</div>
+        <div className="space-y-1.5"><Label>Windows printer queue</Label>
+          {selectedAgent ? <Select value={availableQueues.includes(windowsQueueName) ? windowsQueueName : undefined} onValueChange={setWindowsQueueName}>
+            <SelectTrigger aria-label="Windows printer queue"><SelectValue placeholder="Choose a queue reported by this workstation" /></SelectTrigger>
+            <SelectContent>{availableQueues.map(queue => <SelectItem key={queue} value={queue}>{queue}</SelectItem>)}</SelectContent>
+          </Select> : <Input value={windowsQueueName} onChange={(event) => setWindowsQueueName(event.target.value)} placeholder="Pair a workstation to choose a queue" />}
+          {selectedAgent && windowsQueueName && !availableQueues.includes(windowsQueueName) ? <p role="alert" className="text-xs text-amber-700">Saved queue “{windowsQueueName}” is not reported by this workstation. Choose its installed queue before saving.</p> : null}
+          {selectedAgent && !selectedAgent.servesMultipleQueues ? <p className="text-xs text-titan-text-secondary">This agent version exposes only its configured Traveler queue. Update to Print Agent 1.0.28 for additional Windows queues.</p> : null}
+          {fieldErrors.windowsQueueName && <p role="alert" className="text-xs text-destructive">{fieldErrors.windowsQueueName}</p>}</div>
         <div className="space-y-1.5">
           <Label>Paired Print Agent</Label>
           <Select value={printAgentId ?? "unpaired"} onValueChange={(value) => setPrintAgentId(value === "unpaired" ? null : value)}>
             <SelectTrigger aria-label="Paired Print Agent"><SelectValue placeholder="Select a paired workstation" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="unpaired">Unpaired</SelectItem>
-              {(agents.data ?? []).filter((agent) => agent.configuredTravelerPrinterName === windowsQueueName.trim()).map((agent) => (
+              {(agents.data ?? []).filter((agent) => agent.status === "active").map((agent) => (
                 <SelectItem key={agent.id} value={agent.id}>
-                  {agent.machineLabel || "Unnamed workstation"} · {agent.agentVersion || "Version unknown"} · last active {new Date(agent.lastSeenAt).toLocaleString()}
+                  {agent.machineLabel || "Unnamed workstation"} · {agent.agentVersion || "Version unknown"} · last contact {agent.lastSeenAt ? new Date(agent.lastSeenAt).toLocaleString() : "never"}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <p className="text-xs text-titan-text-secondary">Choose the currently paired workstation for this exact Windows queue. This changes future jobs only; existing queued jobs remain with their original agent.</p>
+          <p className="text-xs text-titan-text-secondary">One paired workstation can serve multiple reported Windows queues. Choose the exact queue above. Changing this profile affects future jobs only; queued jobs keep their assigned agent.</p>
           {agents.isError ? <p className="text-xs text-destructive">Paired agents could not be loaded. Retry by reopening this editor.</p> : null}
         </div>
         <div className="space-y-1.5"><Label>Default copies</Label><Input type="number" min="1" max="99" value={defaultCopies} onChange={(event) => setDefaultCopies(event.target.value)} /></div>
         {(printerType === 'production_ticket' || supportsQuickNote) && <><div className="space-y-1.5"><Label>Additional trailing feed (mm)</Label><Input type="number" min="0" max="100" step="0.1" value={trailingFeedMm} onChange={(event) => setTrailingFeedMm(event.target.value)} placeholder="12.7 for 0.5 in" /><p className="text-xs text-titan-text-secondary">Added after the standard 38.1 mm / 1.5 in tear-off space.</p></div>
         <div className="space-y-1.5"><Label>Receipt width (mm)</Label><Input type="number" min="40" max="120" step="0.1" value={receiptWidthMm} onChange={(event) => setReceiptWidthMm(event.target.value)} />{fieldErrors.receiptWidthMm && <p role="alert" className="text-xs text-destructive">{fieldErrors.receiptWidthMm}</p>}</div></>}
+        {printerType === 'shipping_label' && <p className="text-sm text-titan-text-secondary">Label media: 4 × 6 inches. Configure the Windows driver for 4 × 6 inch stock; PrintersHero sends a raster image and does not send raw ZPL.</p>}
+        {printerType === 'office_document' && <p className="text-sm text-titan-text-secondary">Document media: use a Windows queue configured for the page size of the selected document. This profile does not override the document's page layout or Windows driver settings.</p>}
         <div className="space-y-1.5">
           <Label>Intended use</Label>
           <Input value={intendedUse} onChange={(event) => setIntendedUse(event.target.value)} placeholder="production_ticket or quick_note" />

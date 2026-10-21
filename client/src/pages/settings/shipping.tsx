@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Link } from 'react-router-dom';
 import { apiCall } from '@/hooks/useFulfillment';
+import { usePrinterProfiles, useSetDefaultPrinterProfile } from '@/hooks/usePrinterProfiles';
 
 type UpsStatus = { configured: boolean; connected: boolean; verified: boolean; mode: 'test' | 'live' | null;
   accountLast4: string | null; message: string };
@@ -21,6 +22,8 @@ export default function ShippingSettings() {
     window.history.replaceState(window.history.state, '', url);
   }, []);
   const queryClient = useQueryClient();
+  const shippingPrinters = usePrinterProfiles({ active: true, printerType: 'shipping_label' });
+  const setShippingDefault = useSetDefaultPrinterProfile();
   const status = useQuery({ queryKey: ['ups', 'connection'], queryFn: () => apiCall<UpsStatus>('/api/integrations/ups/status') });
   const connect = useMutation({ mutationFn: (number: string) => apiCall<{ authorizeUrl: string }>('/api/integrations/ups/connect',
     { method: 'POST', body: JSON.stringify({ accountNumber: number }) }),
@@ -57,6 +60,19 @@ export default function ShippingSettings() {
       {connect.error && <p role="alert" className="text-sm text-destructive">{connect.error.message}</p>}
       {disconnect.error && <p role="alert" className="text-sm text-destructive">{disconnect.error.message}</p>}
     </CardContent></Card>
-    <Card><CardHeader><CardTitle>Shipping label printer</CardTitle><CardDescription>Assign a 4 × 6 inch Windows label printer for direct UPS label printing. Browser preview and download remain available without an agent.</CardDescription></CardHeader><CardContent><Button asChild variant="outline"><Link to="/settings/printers">Configure printer profiles</Link></Button></CardContent></Card>
+    <Card><CardHeader><CardTitle>Shipping label printer</CardTitle><CardDescription>Shipping uses the same saved printer profiles as Printers. Select an active 4 × 6 inch label profile; each profile maps to an exact queue on a paired Windows workstation. Browser preview and download remain available without an agent.</CardDescription></CardHeader>
+      <CardContent className="space-y-3">
+        {shippingPrinters.isLoading ? <p className="text-sm">Loading shipping printer profiles…</p> : null}
+        {shippingPrinters.isError ? <p role="alert" className="text-sm text-destructive">Could not load printer profiles. Open Printers to check the configuration.</p> : null}
+        {shippingPrinters.data?.filter(profile => profile.supportedDocuments?.includes('ups_label')).map(profile => <div key={profile.id} className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm">
+          <span><strong>{profile.displayName}</strong> · {profile.windowsQueueName || 'Queue missing'}{profile.isDefault && profile.intendedUse === 'shipping_label' ? ' · Shipping default' : ''}
+            {profile.intendedUse !== 'shipping_label' ? ' · Change Intended use to shipping_label in Printers before setting a shipping default' : ''}</span>
+          {!profile.isDefault ? <Button size="sm" variant="outline" disabled={setShippingDefault.isPending || !profile.printAgentId || !profile.windowsQueueName || profile.intendedUse !== 'shipping_label'}
+            onClick={() => setShippingDefault.mutate(profile.id)}>Set default</Button> : null}
+        </div>)}
+        {setShippingDefault.error ? <p role="alert" className="text-sm text-destructive">{setShippingDefault.error.message}</p> : null}
+        {!shippingPrinters.isLoading && !shippingPrinters.data?.some(profile => profile.supportedDocuments?.includes('ups_label')) ? <p className="text-sm text-muted-foreground">No UPS label profile is ready. Pair a Print Agent, choose its Windows label queue in Printers, enable UPS labels, then run Test Print.</p> : null}
+        <Button asChild variant="outline"><Link to="/settings/printers">Manage the same printer profiles</Link></Button>
+      </CardContent></Card>
   </div>;
 }

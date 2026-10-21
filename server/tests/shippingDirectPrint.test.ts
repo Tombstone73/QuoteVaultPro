@@ -44,15 +44,24 @@ function matching(table: string, condition: any) {
 }
 const fakeDb: any = {
   select: (selection?: Record<string, any>) => {
-    let table = "", condition: any, limit = Infinity;
+    let table = "", condition: any, limit = Infinity, groupedColumn: string | null = null;
     const chain: any = { from: (value: any) => { table = getTableName(value); return chain; }, where: (value: any) => { condition = value; return chain; }, limit: (value: number) => { limit = value; return chain; },
-      then: (resolve: any) => Promise.resolve(matching(table, condition).slice(0, limit).map((row) => selection
+      then: (resolve: any) => Promise.resolve(groupedColumn
+        ? Object.values(matching(table, condition).reduce((groups: Record<string, { agentId: string; count: number }>, row) => {
+          const agentId = row[camel(groupedColumn!)];
+          if (agentId) { groups[agentId] ??= { agentId, count: 0 }; groups[agentId].count += 1; }
+          return groups;
+        }, {}))
+        : matching(table, condition).slice(0, limit).map((row) => selection
         ? Object.fromEntries(Object.entries(selection).map(([key, column]) => [key, row[key] ?? row[camel(column.name)]]))
         : row)).then(resolve) };
-    chain.orderBy = () => chain;
+    chain.orderBy = chain.for = () => chain;
+    chain.groupBy = (column: any) => { groupedColumn = column.name; return chain; };
     chain.leftJoin = chain.innerJoin = () => chain; return chain;
   },
-  insert: (table: any) => ({ values: (value: any) => ({ onConflictDoNothing: () => ({ returning: async () => {
+  insert: (table: any) => ({ values: (value: any) => getTableName(table) === "audit_logs"
+    ? Promise.resolve(writes.push({ table: "audit_logs", value }))
+    : ({ onConflictDoNothing: () => ({ returning: async () => {
     const name = getTableName(table);
     if (name !== "direct_print_jobs") throw new Error("Unexpected business write");
     if (rows[name].some((row) => row.organizationId === value.organizationId && row.requestKey === value.requestKey)) return [];
@@ -60,10 +69,11 @@ const fakeDb: any = {
   } }) }) }),
   update: (table: any) => ({ set: (value: any) => ({ where: (condition: any) => {
     const name = getTableName(table);
-    if (!["direct_print_jobs", "local_bridge_agents"].includes(name)) throw new Error("Unexpected business write");
+    if (!["direct_print_jobs", "local_bridge_agents", "printer_profiles"].includes(name)) throw new Error("Unexpected business write");
     const selected = matching(name, condition); selected.forEach((row) => { const { attempts, ...fields } = value; Object.assign(row, fields); if (attempts) row.attempts = (row.attempts ?? 0) + 1; });
     const result: any = Promise.resolve(); result.returning = async () => selected; return result;
   } }) }),
+  transaction: (callback: (tx: any) => Promise<unknown>) => callback(fakeDb),
 };
 jest.unstable_mockModule("../db", () => ({ db: fakeDb }));
 jest.unstable_mockModule("../storage", () => ({ storage: { updatePrinterProfile } }));
@@ -127,6 +137,52 @@ test("agent list omits credential hashes while exposing pairing status", async (
   expect(response.status).toBe(200);
   expect(response.body.data[0]).toMatchObject({ id: "agent", configuredTravelerPrinterName: "queue-secret" });
   expect(response.body.data[0]).not.toHaveProperty("tokenHash");
+  expect((await supertest(app).get("/api/local-bridge/admin/agents")).status).toBe(401);
+  expect((await supertest(app).get("/api/local-bridge/admin/agents").set("x-staff", "yes").set("x-org", "other-org")).body.data).toEqual([]);
+});
+test("replacement preview keeps exact queue identity and warns about unfinished jobs", async () => {
+  rows.local_bridge_agents.push({ id: "replacement", organizationId: "org", status: "active", agentVersion: "1.0.28",
+    configuredTravelerPrinterName: "different primary", knownWindowsQueues: ["queue-secret", "Zebra ZD421"] });
+  rows.direct_print_jobs.push({ id: "pending", organizationId: "org", agentId: "agent", status: "queued" });
+  const preview = await supertest(app).get("/api/local-bridge/admin/agents/agent/replacement-preview?targetAgentId=replacement").set("x-staff", "yes");
+  expect(preview.status).toBe(200);
+  expect(preview.body.data).toMatchObject({ outstandingPrintJobs: 1,
+    profiles: [{ id: "printer", windowsQueueName: "queue-secret", targetHasQueue: true }] });
+  expect(preview.body.data.warning).toContain("old agent");
+  const blockedRetirement = await supertest(app).post("/api/local-bridge/admin/agents/agent/revoke").set("x-staff", "yes");
+  expect(blockedRetirement.status).toBe(409);
+  expect(rows.local_bridge_agents[0].status).toBe("active");
+  expect((await supertest(app).get("/api/local-bridge/admin/agents/agent/replacement-preview?targetAgentId=replacement")
+    .set("x-staff", "yes").set("x-org", "other-org")).status).toBe(409);
+});
+test("one authenticated paired agent reports a second queue and routes its test print there", async () => {
+  const agent = rows.local_bridge_agents[0];
+  const heartbeat = await supertest(app).post("/api/local-bridge/heartbeat").set("Authorization", "Bearer bearer")
+    .send({ name: "SHOP-PC", agentVersion: "1.0.28", windowsQueues: ["queue-secret", "Zebra ZD421"] });
+  expect(heartbeat.status).toBe(200);
+  expect(agent).toMatchObject({ agentVersion: "1.0.28", knownWindowsQueues: ["queue-secret", "Zebra ZD421"] });
+  const profile = rows.printer_profiles[0];
+  profile.windowsQueueName = "Zebra ZD421"; profile.printerType = "shipping_label"; profile.supportedDocuments = ["ups_label"];
+  const queued = await supertest(app).post("/api/printer-profiles/printer/test-print").set("x-staff", "yes").set("Idempotency-Key", "zebra-test");
+  expect(queued.status).toBe(202);
+  expect(writes[0].value).toMatchObject({ destinationId: "printer", agentId: "agent", printContext: { mediaKind: "label" } });
+  expect(profile.windowsQueueName).toBe("Zebra ZD421");
+  expect(agent.configuredTravelerPrinterName).toBe("queue-secret");
+});
+test("explicit replacement reassigns only profiles, preserving queued job ownership and exact queue", async () => {
+  const profileId = "ba27e14c-2757-43ee-87dc-247eb38e1bce";
+  const targetId = "fb139294-815a-4fb5-ae21-3b77af357d0f";
+  rows.printer_profiles[0].id = profileId;
+  rows.direct_print_jobs.push({ id: "old-job", organizationId: "org", agentId: "agent", destinationId: profileId, status: "queued" });
+  rows.local_bridge_agents.push({ id: targetId, organizationId: "org", status: "active", agentVersion: "1.0.28",
+    configuredTravelerPrinterName: "other primary", knownWindowsQueues: ["queue-secret"] });
+  const response = await supertest(app).post("/api/local-bridge/admin/agents/agent/reassign-profiles").set("x-staff", "yes")
+    .send({ targetAgentId: targetId, expectedProfileIds: [profileId] });
+  expect(response.status).toBe(200);
+  expect(response.body.data).toMatchObject({ reassignedProfiles: 1, futureJobsOnly: true });
+  expect(rows.printer_profiles[0]).toMatchObject({ printAgentId: targetId, windowsQueueName: "queue-secret" });
+  expect(rows.direct_print_jobs[0]).toMatchObject({ agentId: "agent", destinationId: profileId, status: "queued" });
+  expect(writes.filter(write => write.table === "audit_logs")).toHaveLength(1);
 });
 test('profile test queues only a saved, tenant-bound job and requires the matching current agent', async () => {
   const profile = rows.printer_profiles[0]; const agent = rows.local_bridge_agents[0];

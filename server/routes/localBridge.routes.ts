@@ -4,6 +4,7 @@ import fs from "fs";
 import archiver from "archiver";
 import type { Express } from "express";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "../db";
 import { ObjectStorageService } from "../objectStorage";
 import { auditLogs, customers, directPrintJobs, localBridgeAgents, localFileCopyJobs, localFileDestinations, lineItemFiles, orders, printerProfiles, productionRuns } from "@shared/schema";
@@ -12,7 +13,8 @@ import { getOrderTravelerSource } from "../services/orderTravelerSourceService";
 import { buildClaimedTravelerWebUrl, getCanonicalTravelerWebOrigin } from "../lib/directTravelerPrintUrl";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { getPrintAgentRealtimeConfiguration } from "../services/printAgentWake";
-import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsProfileTestAgent, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
+import { isNumericAgentVersion, supportedAgentDocumentTypes, supportsMultiQueueAgent, supportsProfileTestAgent, supportsShippingDocumentAgent, supportsUpsLabelAgent } from "../lib/directPrintAgentCapabilities";
+import { canAgentServeQueue } from "../services/printAgentQueueMapping";
 import { getUpsLabelHistory, readUpsPackageLabel } from "../services/ups/upsLabels";
 import { isShippingDocumentType, shippingPrintContextSchema } from "@shared/directPrintDocuments";
 import { pickupTravelerContext } from "@shared/pickupTravelerProgress";
@@ -24,11 +26,108 @@ const recordBridgeActivity = (agentId: string) => db.update(localBridgeAgents).s
 export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated: any; tenantContext: any; requireOrgOwnerAdmin: any }) {
   const admin = [deps.isAuthenticated, deps.tenantContext, deps.requireOrgOwnerAdmin];
   app.post("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const rawToken = crypto.randomBytes(32).toString("base64url"); const [agent] = await db.insert(localBridgeAgents).values({ organizationId, name: String(req.body?.name || "Local Bridge"), tokenHash: tokenHash(rawToken), status: "active" }).returning(); res.json({ success: true, data: { agent, token: rawToken } }); });
-  // Revoked credentials remain in the database for audit purposes, but are
-  // intentionally not returned to the operator UI because they cannot pair
-  // or receive work again.
-  app.get("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); res.json({ success: true, data: await db.select({ id: localBridgeAgents.id, name: localBridgeAgents.name, status: localBridgeAgents.status, machineLabel: localBridgeAgents.machineLabel, agentVersion: localBridgeAgents.agentVersion, configuredTravelerPrinterName: localBridgeAgents.configuredTravelerPrinterName, lastSeenAt: localBridgeAgents.lastSeenAt }).from(localBridgeAgents).where(and(eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).orderBy(desc(localBridgeAgents.updatedAt)) }); });
-  app.post("/api/local-bridge/admin/agents/:id/revoke", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); await db.update(localBridgeAgents).set({ status: "revoked", revokedAt: new Date(), updatedAt: new Date() }).where(and(eq(localBridgeAgents.id, req.params.id), eq(localBridgeAgents.organizationId, organizationId))); res.json({ success: true, data: {} }); });
+  // Tokens are never returned. Revoked identities remain visible for audit
+  // and for comparing historical registrations with current installations.
+  app.get("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const [agents, profiles, outstanding, copyJobs] = await Promise.all([
+      db.select({ id: localBridgeAgents.id, name: localBridgeAgents.name, status: localBridgeAgents.status,
+        machineLabel: localBridgeAgents.machineLabel, agentVersion: localBridgeAgents.agentVersion,
+        configuredTravelerPrinterName: localBridgeAgents.configuredTravelerPrinterName,
+        knownWindowsQueues: localBridgeAgents.knownWindowsQueues, inventoryReportedAt: localBridgeAgents.inventoryReportedAt,
+        lastSeenAt: localBridgeAgents.lastSeenAt, createdAt: localBridgeAgents.createdAt, revokedAt: localBridgeAgents.revokedAt,
+      }).from(localBridgeAgents).where(eq(localBridgeAgents.organizationId, organizationId)).orderBy(desc(localBridgeAgents.updatedAt)),
+      db.select({ id: printerProfiles.id, printAgentId: printerProfiles.printAgentId, displayName: printerProfiles.displayName,
+        windowsQueueName: printerProfiles.windowsQueueName, isActive: printerProfiles.isActive,
+      }).from(printerProfiles).where(eq(printerProfiles.organizationId, organizationId)),
+      db.select({ agentId: directPrintJobs.agentId, count: sql<number>`count(*)::int` }).from(directPrintJobs)
+        .where(and(eq(directPrintJobs.organizationId, organizationId), inArray(directPrintJobs.status, ["queued", "claimed", "rendering"])))
+        .groupBy(directPrintJobs.agentId),
+      db.select({ agentId: localFileCopyJobs.claimedByAgentId, count: sql<number>`count(*)::int` }).from(localFileCopyJobs)
+        .where(and(eq(localFileCopyJobs.organizationId, organizationId), eq(localFileCopyJobs.status, "claimed")))
+        .groupBy(localFileCopyJobs.claimedByAgentId),
+    ]);
+    res.json({ success: true, data: agents.map(agent => ({ ...agent,
+      servesMultipleQueues: supportsMultiQueueAgent(agent.agentVersion),
+      profiles: profiles.filter(profile => profile.printAgentId === agent.id),
+      outstandingPrintJobs: outstanding.find(row => row.agentId === agent.id)?.count ?? 0,
+      outstandingCopyJobs: copyJobs.find(row => row.agentId === agent.id)?.count ?? 0,
+    })) });
+  });
+  app.get("/api/local-bridge/admin/agents/:id/replacement-preview", ...admin, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const targetId = String(req.query.targetAgentId || "");
+    const [source, target] = await Promise.all([req.params.id, targetId].map(async id =>
+      (await db.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, id),
+        eq(localBridgeAgents.organizationId, organizationId))).limit(1))[0]));
+    if (!source || !target || source.id === target.id || target.status !== "active")
+      return res.status(409).json({ error: "Choose a different active Print Agent in this organization." });
+    const [profiles, pending] = await Promise.all([
+      db.select({ id: printerProfiles.id, displayName: printerProfiles.displayName,
+        windowsQueueName: printerProfiles.windowsQueueName, isActive: printerProfiles.isActive })
+        .from(printerProfiles).where(and(eq(printerProfiles.organizationId, organizationId), eq(printerProfiles.printAgentId, source.id))),
+      db.select({ id: directPrintJobs.id }).from(directPrintJobs).where(and(eq(directPrintJobs.organizationId, organizationId),
+        eq(directPrintJobs.agentId, source.id), inArray(directPrintJobs.status, ["queued", "claimed", "rendering"]))),
+    ]);
+    return res.json({ success: true, data: { sourceId: source.id, targetId: target.id,
+      profiles: profiles.map(profile => ({ ...profile, targetHasQueue: canAgentServeQueue(target, profile.windowsQueueName) })),
+      outstandingPrintJobs: pending.length,
+      warning: pending.length ? "Existing unfinished jobs remain assigned to the old agent. Resolve those jobs before retiring it." : null,
+    } });
+  });
+  app.post("/api/local-bridge/admin/agents/:id/reassign-profiles", ...admin, async (req: any, res) => {
+    const parsed = z.object({ targetAgentId: z.string().uuid(), expectedProfileIds: z.array(z.string().uuid()).max(100) }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Select a replacement agent and refresh the profile preview." });
+    const organizationId = getRequestOrganizationId(req);
+    try {
+      const reassigned = await db.transaction(async tx => {
+        const [source, target] = await Promise.all([req.params.id, parsed.data.targetAgentId].map(async id =>
+          (await tx.select().from(localBridgeAgents).where(and(eq(localBridgeAgents.id, id),
+            eq(localBridgeAgents.organizationId, organizationId))).limit(1))[0]));
+        if (!source || !target || source.id === target.id || target.status !== "active")
+          throw Object.assign(new Error("Choose a different active Print Agent in this organization."), { statusCode: 409 });
+        const profiles = await tx.select().from(printerProfiles).where(and(eq(printerProfiles.organizationId, organizationId),
+          eq(printerProfiles.printAgentId, source.id))).for("update");
+        if (profiles.length !== parsed.data.expectedProfileIds.length ||
+          profiles.some(profile => !parsed.data.expectedProfileIds.includes(profile.id)))
+          throw Object.assign(new Error("Printer assignments changed. Refresh the replacement preview."), { statusCode: 409 });
+        const unsupported = profiles.find(profile => !canAgentServeQueue(target, profile.windowsQueueName));
+        if (unsupported) throw Object.assign(new Error(`The replacement workstation has not reported Windows queue “${unsupported.windowsQueueName}”. Install that queue there and refresh its agent before reassigning.`), { statusCode: 409 });
+        for (const profile of profiles) {
+          await tx.update(printerProfiles).set({ printAgentId: target.id, updatedAt: new Date() })
+            .where(and(eq(printerProfiles.id, profile.id), eq(printerProfiles.organizationId, organizationId)));
+          await tx.insert(auditLogs).values({ organizationId, userId: req.user?.claims?.sub ?? req.user?.id ?? null,
+            actionType: "PRINT_PROFILE_AGENT_REASSIGNED", entityType: "printer_profile", entityId: profile.id,
+            entityName: profile.displayName, description: "Future print jobs reassigned to a paired workstation.",
+            oldValues: { printAgentId: source.id, windowsQueueName: profile.windowsQueueName },
+            newValues: { printAgentId: target.id, windowsQueueName: profile.windowsQueueName },
+          } as typeof auditLogs.$inferInsert);
+        }
+        return profiles.length;
+      });
+      return res.json({ success: true, data: { reassignedProfiles: reassigned, futureJobsOnly: true } });
+    } catch (error: any) {
+      return res.status(error?.statusCode ?? 500).json({ error: error?.statusCode ? error.message : "Could not reassign printer profiles." });
+    }
+  });
+  app.post("/api/local-bridge/admin/agents/:id/revoke", ...admin, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const [outstanding] = await db.select({ id: directPrintJobs.id }).from(directPrintJobs)
+      .where(and(eq(directPrintJobs.organizationId, organizationId), eq(directPrintJobs.agentId, req.params.id),
+        inArray(directPrintJobs.status, ["queued", "claimed", "rendering"]))).limit(1);
+    if (outstanding) return res.status(409).json({ error: "This agent has unfinished print jobs. Resolve them before retiring its identity." });
+    const [copyJob, profile] = await Promise.all([
+      db.select({ id: localFileCopyJobs.id }).from(localFileCopyJobs).where(and(eq(localFileCopyJobs.organizationId, organizationId),
+        eq(localFileCopyJobs.claimedByAgentId, req.params.id), eq(localFileCopyJobs.status, "claimed"))).limit(1),
+      db.select({ id: printerProfiles.id }).from(printerProfiles).where(and(eq(printerProfiles.organizationId, organizationId),
+        eq(printerProfiles.printAgentId, req.params.id))).limit(1),
+    ]);
+    if (copyJob.length || profile.length) return res.status(409).json({ error: "This agent still owns a claimed local-copy job or printer profile. Resolve those assignments before retiring it." });
+    const [revoked] = await db.update(localBridgeAgents).set({ status: "revoked", revokedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(localBridgeAgents.id, req.params.id), eq(localBridgeAgents.organizationId, organizationId), eq(localBridgeAgents.status, "active"))).returning({ id: localBridgeAgents.id });
+    if (!revoked) return res.status(404).json({ error: "Active Print Agent not found." });
+    res.json({ success: true, data: {} });
+  });
   app.post("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => {
     const organizationId = getRequestOrganizationId(req); const customerId = String(req.body?.customerId || ""); const localPath = String(req.body?.localPath || "").trim();
     if (!customerId || !localPath) return res.status(400).json({ success: false, error: "customerId and localPath are required" });
@@ -56,8 +155,8 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
       path.resolve(process.cwd(), "dist", "print-agent", travelerPrintAgentPackageName),
       path.resolve(process.cwd(), "server", "assets", "print-agent", travelerPrintAgentPackageName),
     ].find(fs.existsSync);
-    if (!packagePath) return res.status(404).json({ error: "Traveler Print Agent package unavailable" });
-    return res.download(packagePath, travelerPrintAgentPackageName);
+    if (!packagePath) return res.status(404).json({ error: "PrintersHero Print Agent package unavailable" });
+    return res.download(packagePath, "PrintersHero-Print-Agent-win-x64.zip");
   });
   app.post("/api/local-bridge/heartbeat", bridgeAuth, async (req: any, res) => {
     const agent = req.bridgeAgent;
@@ -66,11 +165,20 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
     // executable may replace its known version. Invalid/missing values retain
     // the version already tied to this token's single agent identity.
     const agentVersion = isNumericAgentVersion(reportedVersion) ? reportedVersion : agent.agentVersion;
-    await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name), agentVersion, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id));
+    const reportedQueues = req.body?.windowsQueues;
+    if (reportedQueues !== undefined && (!Array.isArray(reportedQueues) || reportedQueues.length > 128 ||
+      reportedQueues.some((queue: unknown) => typeof queue !== "string" || !queue.trim() || queue.length > 255))) {
+      return res.status(400).json({ error: "Invalid Windows printer inventory." });
+    }
+    const inventory = supportsMultiQueueAgent(agentVersion) && Array.isArray(reportedQueues)
+      ? Array.from(new Set(reportedQueues.map((queue: string) => queue.trim()))) : null;
+    await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name),
+      agentVersion, ...(inventory ? { knownWindowsQueues: inventory, inventoryReportedAt: new Date() } : {}),
+      updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id));
     res.json({ success: true, data: { status: "active", agentVersion } });
   });
-  // The installer may configure only its own paired agent. It never sends the
-  // printer inventory to the server; only the explicit selection is persisted.
+  // Setup selects the original/default queue only. The running executable
+  // separately reports its authenticated Windows queue inventory.
   app.post("/api/local-bridge/direct-print/configuration", bridgeAuth, async (req: any, res) => {
     const agent = req.bridgeAgent;
     const realtime = getPrintAgentRealtimeConfiguration();
@@ -102,6 +210,7 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
         .where(and(
           eq(printerProfiles.organizationId, agent.organizationId),
           eq(printerProfiles.printAgentId, agent.id),
+          eq(printerProfiles.windowsQueueName, queueName),
           sql`${printerProfiles.supportedDocuments} ? 'traveler'`,
         ))
         .limit(1))[0];
@@ -179,7 +288,7 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
       const [profile] = await db.select({ displayName: printerProfiles.displayName, printerType: printerProfiles.printerType,
         windowsQueueName: printerProfiles.windowsQueueName, receiptWidthMm: printerProfiles.receiptWidthMm })
         .from(printerProfiles).where(and(eq(printerProfiles.id, testJob.destinationId), eq(printerProfiles.organizationId, agent.organizationId))).limit(1);
-      if (!profile || profile.windowsQueueName !== agent.configuredTravelerPrinterName) return res.status(409).json({ error: 'Test print queue no longer matches the paired agent.' });
+      if (!profile || !canAgentServeQueue(agent, profile.windowsQueueName)) return res.status(409).json({ error: 'Test print queue is not in the paired agent inventory. Update the agent or choose a reported queue.' });
       const mediaKind = profile.printerType === 'shipping_label' ? 'label' : profile.printerType === 'production_ticket' ? 'receipt' : 'document';
       res.setHeader('Cache-Control', 'private, no-store');
       return res.json({ success: true, data: { jobId: testJob.id, documentType: 'profile_test', profileName: profile.displayName,

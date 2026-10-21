@@ -1,6 +1,6 @@
-# PrintersHero Windows Traveler Print Agent
+# PrintersHero Windows Print Agent
 
-Version 1.0.26
+Version 1.0.28
 
 This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
 Note, Packing Slip, Shipment Manifest, Package Ticket, and UPS Label jobs. It runs
@@ -38,8 +38,8 @@ stock. The label is printed as a raster image through the existing queue;
 the agent does not send ZPL to devices that may not support it.
 
 Source milestone: the installer/package must be rebuilt from these sources
-before distributing 1.0.26. An existing downloadable ZIP is not updated by a
-source-only change. Verify the rebuilt executable reports 1.0.26 before release.
+before distributing 1.0.28. An existing downloadable ZIP is not updated by a
+source-only change. Verify the rebuilt executable reports 1.0.28 before release.
 
 ## Shop workstation setup
 
@@ -58,17 +58,25 @@ creation is required.
    error.
 5. If needed, accept the prompt to open the official Microsoft WebView2
    Runtime installer page. Install it, then run setup again.
-6. Choose the installed Epson TM-L90 Windows queue from the numbered list,
+6. Choose the existing initial Traveler Windows queue from the numbered list,
    then paste the pairing token when prompted. USB and IP-installed queues
    work the same way. The production API defaults to
    `https://api.printershero.com`; do not substitute the web-app URL.
-7. Setup registers that queue only for the paired agent, securely receives the
+7. Setup registers the initial Traveler queue for the paired agent, securely receives the
    Supabase project URL and non-secret publishable subscription key, installs
    and starts the per-user logon task, and shows an `[OK]` checklist. It never
    receives a Supabase service-role key. The pairing token is never shown again
    or written to agent logs.
-8. In PrintersHero, use **Print Traveler** for one test ticket. **Open Browser
-   Print** remains available as a fallback.
+8. On the Printers page, map each reported Windows queue to a profile and
+   select its document purpose and media. An updated paired agent can serve
+   Epson, Zebra, and supported office queues concurrently. Run **Test Print**
+   for each profile and confirm paper output at the physical printer.
+
+The pairing token identifies this installation, not a printer. Reuse the
+installed token when adding queues on the same workstation. After installing
+a new Windows queue, restart the agent so its reported inventory refreshes.
+The existing task and environment variable name retain "Traveler" for upgrade
+compatibility; neither limits the updated agent to that printer.
 
 The release is a **self-contained win-x64** build. It includes the required
 .NET runtime files; WebView2 remains the only workstation prerequisite.

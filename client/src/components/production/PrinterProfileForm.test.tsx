@@ -4,9 +4,9 @@ import { Simulate } from "react-dom/test-utils";
 import { PrinterProfileForm } from "./PrinterProfileForm";
 const save = jest.fn<Promise<any>, [any]>(async () => ({}));
 jest.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [
-  { id: "old-agent", machineLabel: "SHOP-PC", agentVersion: "1.0.25", configuredTravelerPrinterName: "EPSON TM-L90 Liner-Free 1", lastSeenAt: "2026-10-19T12:00:00Z" },
-  { id: "new-agent", machineLabel: "SHOP-PC", agentVersion: "1.0.26", configuredTravelerPrinterName: "EPSON TM-L90 Liner-Free 1", lastSeenAt: "2026-10-20T12:00:00Z" },
-  { id: "other-agent", machineLabel: "OTHER-PC", agentVersion: "1.0.24", configuredTravelerPrinterName: "Other queue", lastSeenAt: "2026-10-20T12:00:00Z" },
+  { id: "old-agent", machineLabel: "SHOP-PC", agentVersion: "1.0.25", configuredTravelerPrinterName: "EPSON TM-L90 Liner-Free 1", knownWindowsQueues: [], servesMultipleQueues: false, status: "active", lastSeenAt: "2026-10-19T12:00:00Z" },
+  { id: "new-agent", machineLabel: "SHOP-PC", agentVersion: "1.0.28", configuredTravelerPrinterName: "EPSON TM-L90 Liner-Free 1", knownWindowsQueues: ["EPSON TM-L90 Liner-Free 1", "Zebra ZD421"], servesMultipleQueues: true, status: "active", lastSeenAt: "2026-10-20T12:00:00Z" },
+  { id: "other-agent", machineLabel: "OTHER-PC", agentVersion: "1.0.24", configuredTravelerPrinterName: "Other queue", knownWindowsQueues: [], servesMultipleQueues: false, status: "active", lastSeenAt: "2026-10-20T12:00:00Z" },
 ], isError: false }) }));
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
 jest.mock("@/hooks/usePrinterProfiles", () => ({
@@ -41,12 +41,29 @@ test("re-pairing keeps the Epson queue and changes only the selected agent ident
   const container = document.createElement("div"); const root = createRoot(container);
   try {
     await act(async () => { root.render(<PrinterProfileForm profile={{ id: "printer", displayName: "Dale's office", printerType: "production_ticket", windowsQueueName: "EPSON TM-L90 Liner-Free 1", printAgentId: "old-agent", supportedDocuments: ["traveler"], isActive: true } as any} />); });
-    const agentSelect = Array.from(container.querySelectorAll("select")).find((item) => item.textContent?.includes("new-agent") || item.textContent?.includes("1.0.26"))!;
+    const agentSelect = Array.from(container.querySelectorAll("select")).find((item) => item.textContent?.includes("1.0.28"))!;
     expect(agentSelect).toBeDefined();
-    expect(agentSelect.textContent).not.toContain("OTHER-PC");
+    expect(agentSelect.textContent).toContain("OTHER-PC");
     await act(async () => { Simulate.change(agentSelect, { target: { value: "new-agent" } } as any); });
     await act(async () => { Simulate.submit(container.querySelector("form")!); });
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ printAgentId: "new-agent", windowsQueueName: "EPSON TM-L90 Liner-Free 1", supportedDocuments: ["traveler"] }));
+  } finally { act(() => root.unmount()); }
+});
+
+test("one updated workstation exposes a second Zebra queue without replacing its Epson mapping", async () => {
+  const container = document.createElement("div"); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<PrinterProfileForm defaultType="shipping_label" />));
+    const agentSelect = Array.from(container.querySelectorAll("select")).find(item => item.textContent?.includes("1.0.28"))!;
+    await act(async () => Simulate.change(agentSelect, { target: { value: "new-agent" } } as any));
+    const queueSelect = Array.from(container.querySelectorAll("select")).find(item => item.textContent?.includes("Zebra ZD421"))!;
+    expect(queueSelect.textContent).toContain("EPSON TM-L90 Liner-Free 1");
+    await act(async () => Simulate.change(queueSelect, { target: { value: "Zebra ZD421" } } as any));
+    const name = container.querySelector('input[placeholder="Epson TM-L90 Ticket Printer"]') as HTMLInputElement;
+    await act(async () => Simulate.change(name, { target: { value: "Zebra labels" } } as any));
+    await act(async () => Simulate.submit(container.querySelector("form")!));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ printAgentId: "new-agent", windowsQueueName: "Zebra ZD421",
+      printerType: "shipping_label", supportedDocuments: expect.arrayContaining(["ups_label"]) }));
   } finally { act(() => root.unmount()); }
 });
 

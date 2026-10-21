@@ -33,7 +33,7 @@ describe("Traveler print agent event-driven wake contract", () => {
     const presenceStart = agent.indexOf("static async Task ReportAgentPresenceAsync()");
     const presenceEnd = agent.indexOf("static bool IsTravelerStaThread", presenceStart);
     const presence = agent.slice(presenceStart, presenceEnd);
-    expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion })');
+    expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues })');
     expect(presence).toContain("Agent version {AgentVersion} registered");
     expect(presence).not.toContain("Task.Delay");
     expect(agent).toContain("await ReportAgentPresenceAsync(); await StartRealtimeWakeSubscriber();");
@@ -140,9 +140,9 @@ describe("Traveler print agent event-driven wake contract", () => {
     const setup = read("windows-print-agent/setup-agent.ps1");
     const readme = read("windows-print-agent/README.md");
 
-    expect(agent).toContain('const string AgentVersion = "1.0.26"');
-    expect(project).toContain("<Version>1.0.26</Version>");
-    expect(setup).toContain("$script:SetupVersion = '1.0.26'");
-    expect(readme).toContain("Version 1.0.26");
+    expect(agent).toContain('const string AgentVersion = "1.0.28"');
+    expect(project).toContain("<Version>1.0.28</Version>");
+    expect(setup).toContain("$script:SetupVersion = '1.0.28'");
+    expect(readme).toContain("Version 1.0.28");
   });
 });

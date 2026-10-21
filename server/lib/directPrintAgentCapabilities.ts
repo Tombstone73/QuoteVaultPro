@@ -2,6 +2,7 @@ export const MINIMUM_QUICK_NOTE_AGENT_VERSION = "1.0.24";
 export const MINIMUM_SHIPPING_DOCUMENT_AGENT_VERSION = "1.0.25";
 export const MINIMUM_UPS_LABEL_AGENT_VERSION = "1.0.26";
 export const MINIMUM_PROFILE_TEST_AGENT_VERSION = "1.0.27";
+export const MINIMUM_MULTI_QUEUE_AGENT_VERSION = "1.0.28";
 
 function parseNumericVersion(version: string | null | undefined): number[] | null {
   const normalized = version?.trim().replace(/^v/i, "");
@@ -42,6 +43,10 @@ export function supportsUpsLabelAgent(version: string | null | undefined): boole
 
 export function supportsProfileTestAgent(version: string | null | undefined): boolean {
   return isAgentVersionAtLeast(version, MINIMUM_PROFILE_TEST_AGENT_VERSION);
+}
+
+export function supportsMultiQueueAgent(version: string | null | undefined): boolean {
+  return isAgentVersionAtLeast(version, MINIMUM_MULTI_QUEUE_AGENT_VERSION);
 }
 
 export function supportedAgentDocumentTypes(version: string | null | undefined): string[] {

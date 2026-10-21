@@ -30,6 +30,7 @@ import {
   readPrinterProfileJson,
 } from "@/hooks/usePrinterProfiles";
 import { Edit, Plus, Printer, Star, Trash2 } from "lucide-react";
+import { Link } from "react-router-dom";
 
 function formatDate(value?: string | null) {
   return value ? value.substring(0, 10) : "Never";
@@ -37,6 +38,11 @@ function formatDate(value?: string | null) {
 
 export default function PrinterSettingsPage() {
   const { data: profiles = [], isLoading } = usePrinterProfiles();
+  const agents = useQuery<Array<{ id: string; machineLabel: string | null; name: string; agentVersion: string | null; lastSeenAt: string | null }>>({
+    queryKey: ["/api/local-bridge/admin/agents", "printer-list"],
+    queryFn: async () => readPrinterProfileJson<Array<{ id: string; machineLabel: string | null; name: string; agentVersion: string | null; lastSeenAt: string | null }>>(await apiFetch("/api/local-bridge/admin/agents"), "Could not load paired workstations."),
+  });
+  const agentById = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
   const setDefaultMutation = useSetDefaultPrinterProfile();
   const deactivateMutation = useDeactivatePrinterProfile();
   const deleteMutation = useDeletePrinterProfile();
@@ -75,9 +81,10 @@ export default function PrinterSettingsPage() {
           <div>
             <h2 className="text-titan-lg font-semibold text-titan-text-primary">Printers</h2>
             <p className="mt-1 text-titan-sm text-titan-text-secondary">
-              Manage organization-wide printer profiles used to guide production ticket and document printing.
+              Manage the saved profiles used for Travelers, shipping labels, Quick Notes, and office documents. Each direct-print profile belongs to one paired workstation and one exact Windows queue.
             </p>
             <p className="mt-2 text-xs text-titan-text-muted">Test Print uses the saved profile and its paired Windows Print Agent. The job status confirms spool submission, not paper output.</p>
+            <p className="mt-2 text-xs text-titan-text-muted">Setup: <Link className="underline" to="/settings/local-bridge">install and pair the Print Agent</Link> → choose a reported Windows queue → choose document purpose and media → set a default → Test Print. One paired installation can serve multiple printers after the 1.0.28 update; adding a printer does not require another token.</p>
           </div>
           <Button onClick={() => setShowAdd(true)}>
             <Plus className="mr-2 h-4 w-4" />
@@ -103,6 +110,8 @@ export default function PrinterSettingsPage() {
               <TitanTableHead>Display Name</TitanTableHead>
               <TitanTableHead>Type</TitanTableHead>
               <TitanTableHead>Intended Use</TitanTableHead>
+              <TitanTableHead>Windows queue</TitanTableHead>
+              <TitanTableHead>Workstation</TitanTableHead>
               <TitanTableHead>Status</TitanTableHead>
               <TitanTableHead>Default</TitanTableHead>
               <TitanTableHead>Scope</TitanTableHead>
@@ -113,12 +122,12 @@ export default function PrinterSettingsPage() {
           <TitanTableBody>
             {isLoading && (
               <TitanTableRow>
-                <TitanTableCell colSpan={8}>Loading printer profiles...</TitanTableCell>
+                <TitanTableCell colSpan={10}>Loading printer profiles...</TitanTableCell>
               </TitanTableRow>
             )}
             {!isLoading && profiles.length === 0 && (
               <TitanTableRow>
-                <TitanTableCell colSpan={8}>
+                <TitanTableCell colSpan={10}>
                   <div className="py-8 text-center text-titan-text-secondary">
                     No printer profiles are configured.
                   </div>
@@ -130,6 +139,8 @@ export default function PrinterSettingsPage() {
                 <TitanTableCell className="font-medium">{profile.displayName}</TitanTableCell>
                 <TitanTableCell>{PRINTER_TYPE_LABELS[profile.printerType]}</TitanTableCell>
                 <TitanTableCell>{profile.stationRoute || profile.intendedUse.replace(/_/g, " ")}</TitanTableCell>
+                <TitanTableCell>{profile.windowsQueueName || "Not selected"}</TitanTableCell>
+                <TitanTableCell>{profile.printAgentId ? (agentById.get(profile.printAgentId)?.machineLabel || agentById.get(profile.printAgentId)?.name || "Agent identity unavailable") : "Not paired"}</TitanTableCell>
                 <TitanTableCell>
                   <Badge variant={profile.isActive ? "default" : "secondary"}>{profile.isActive ? "Active" : "Inactive"}</Badge>
                 </TitanTableCell>

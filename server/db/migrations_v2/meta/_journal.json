@@ -1604,6 +1604,13 @@
       "when": 1792886400000,
       "tag": "0235_ups_selected_rate_option",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1792972800000,
+      "tag": "0236_print_agent_queue_inventory",
+      "breakpoints": true
     }
   ]
 }

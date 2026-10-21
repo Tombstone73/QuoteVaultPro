@@ -17,7 +17,7 @@ record Job(string id, string? orderId, string? documentType, JsonElement? printC
 record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.27";
+  const string AgentVersion = "1.0.28";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -71,7 +71,8 @@ static class Program {
   // paired token scopes the version update to this Windows agent alone.
   static async Task ReportAgentPresenceAsync() {
     try {
-      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion });
+      var windowsQueues = PrinterSettings.InstalledPrinters.Cast<string>().ToArray();
+      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues });
       Log($"Agent version {AgentVersion} registered with PrintersHero.");
     } catch (Exception ex) { Log($"Agent version registration failed: {ex.Message}"); }
   }
@@ -249,7 +250,7 @@ static class Program {
     Log($"Queue job claimed: {job.id} ({claim.documentType}).");
     try {
       if (claim.id != job.id) throw new InvalidOperationException("Claim does not match the requested print job.");
-      if (string.IsNullOrWhiteSpace(claim.queueName) || !string.Equals(claim.queueName, TravelerPrinter, StringComparison.OrdinalIgnoreCase) || !QueueExists(claim.queueName)) throw new InvalidOperationException("The configured Traveler printer is unavailable or does not match the assigned destination.");
+      if (string.IsNullOrWhiteSpace(claim.queueName) || !QueueExists(claim.queueName)) throw new InvalidOperationException("The assigned Windows printer queue is unavailable on this workstation. Check the paired profile and installed driver.");
       Log($"Spooling job {job.id} to {claim.queueName}.");
       switch (claim.documentType) {
         case "traveler":

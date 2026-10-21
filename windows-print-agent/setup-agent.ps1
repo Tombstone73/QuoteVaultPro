@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.26'
+$script:SetupVersion = '1.0.28'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
@@ -147,7 +147,7 @@ function Invoke-AgentCheck {
   $configuredPrinter = [Environment]::GetEnvironmentVariable('PRINTERSHERO_TRAVELER_PRINTER', 'User')
   $printers = Get-InstalledTravelerPrinters
   $printerFound = $configuredPrinter -and ($printers -contains $configuredPrinter)
-  $ok = (Write-Check 'Traveler printer' $printerFound $(if ($configuredPrinter) { $configuredPrinter } else { 'not configured' })) -and $ok
+  $ok = (Write-Check 'Initial Traveler printer queue' $printerFound $(if ($configuredPrinter) { $configuredPrinter } else { 'not configured' })) -and $ok
   $baseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
   $token = [Environment]::GetEnvironmentVariable('PRINTERSHERO_AGENT_TOKEN', 'User')
   $supabaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_SUPABASE_URL', 'User')
@@ -173,14 +173,14 @@ function Invoke-AgentCheck {
 
 function Select-TravelerPrinter([string]$RequestedPrinter) {
   $printers = Get-InstalledTravelerPrinters
-  if ($printers.Count -eq 0) { throw 'No Windows printers were found. Install the Epson Windows driver, then run setup again.' }
+  if ($printers.Count -eq 0) { throw 'No Windows printers were found. Install the required Windows printer driver, then run setup again.' }
   if ($RequestedPrinter) {
-    if ($printers -notcontains $RequestedPrinter) { throw "The selected Traveler printer was not found: $RequestedPrinter" }
+    if ($printers -notcontains $RequestedPrinter) { throw "The selected initial Traveler printer queue was not found: $RequestedPrinter" }
     return $RequestedPrinter
   }
   for ($index = 0; $index -lt $printers.Count; $index++) { Write-Host ("{0}. {1}" -f ($index + 1), $printers[$index]) }
   do {
-    $selection = Read-Host 'Select Traveler printer'
+    $selection = Read-Host 'Select the initial Traveler printer queue (additional queues are mapped in PrintersHero)'
     $number = 0
   } until ([int]::TryParse($selection, [ref]$number) -and $number -ge 1 -and $number -le $printers.Count)
   return $printers[$number - 1]
@@ -203,7 +203,7 @@ if ($Uninstall) {
   $shouldRemove = $RemoveConfiguration
   if (-not $shouldRemove -and -not $NonInteractive) { $shouldRemove = (Read-Host 'Remove saved local PrintersHero configuration too? [Y/N]') -match '^[Yy]$' }
   if ($shouldRemove) { Remove-AgentConfiguration; Write-Host 'Local PrintersHero configuration removed.' }
-  Write-Host 'PrintersHero Traveler Print Agent uninstalled. Server pairing credentials were not revoked.'
+  Write-Host 'PrintersHero Print Agent uninstalled. Server pairing credentials were not revoked.'
   exit 0
 }
 
@@ -213,7 +213,7 @@ if (-not (Test-Path -LiteralPath $script:AgentPath -PathType Leaf)) { throw "Age
 if (-not (Test-Path -LiteralPath $script:TaskScript -PathType Leaf)) { throw 'The task-management script is missing from this package.' }
 
 $webViewVersion = Get-WebView2RuntimeVersion
-Write-Host "PrintersHero Traveler Print Agent Setup $script:SetupVersion"
+Write-Host "PrintersHero Print Agent Setup $script:SetupVersion"
 if ($webViewVersion) {
   Write-Host "Microsoft WebView2 Runtime: Installed ($webViewVersion)"
 } else {
@@ -279,7 +279,7 @@ $AgentToken = $null
 & $script:TaskScript -Action start
 Start-Sleep -Seconds 2
 Write-Host ''
-Write-Host 'PrintersHero Traveler Print Agent'
+Write-Host 'PrintersHero Print Agent'
 if (-not (Invoke-AgentCheck)) { throw 'Installation checks did not all pass. Review the failed items above.' }
 
 $serverAgentVersion = $null
