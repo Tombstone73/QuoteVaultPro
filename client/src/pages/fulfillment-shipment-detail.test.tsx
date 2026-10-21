@@ -34,13 +34,14 @@ const persistDraft = async (payload: any) => {
 };
 const save = jest.fn(persistDraft);
 const mark = jest.fn(async () => ({ status: 'SHIPPED' }));
-type MockUpsRateResponse = { rates: Array<{ serviceCode: string; serviceName: string; currency: string; total: string;
+type MockUpsRateResponse = { rates: Array<{ optionId: string; serviceCode: string; serviceName: string; currency: string; total: string;
   negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test'; expiresAt?: string };
 const upsRateCall = jest.fn(async (_path: string, _init?: RequestInit): Promise<MockUpsRateResponse> => ({ rates: [
-  { serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
+  { optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
 const upsPurchaseCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ environment: 'live', carrierCostCents: 1875,
   carrierCurrency: 'USD', mappingRequired: false, labels: [{ trackingNumber: '1ZTEST' }] }));
 const upsChargeCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ applied: false, reason: 'Existing customer shipping charge preserved.' }));
+const readyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ success: true }));
 const upsVerifyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ status: 'suggested', message: 'UPS suggests a correction.',
   normalized: destination, candidates: [{ ...destination, address1: '123 SAVED ST', postalCode: '78701-1234' }] }));
 jest.mock('react-router-dom', () => ({ useLocation: () => location, useParams: () => ({ shipmentId: 'shipment-1' }) }));
@@ -54,6 +55,7 @@ jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ Shippi
 jest.mock('@/hooks/useFulfillment', () => ({
   apiCall: (path: string, init?: RequestInit) => /\/ups-(?:customer-charges|labels)$/.test(path)
     ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' })
+      : path.endsWith('/ready-quantities') ? readyCall(path, init)
       : path.endsWith('/ups-customer-charge') ? upsChargeCall(path, init)
         : path.endsWith('/ups-labels/purchase') ? upsPurchaseCall(path, init)
           : path.endsWith('/ups-verify-address') ? upsVerifyCall(path, init) : upsRateCall(path, init),
@@ -84,7 +86,7 @@ test('UPS estimates remain read-only, clear when package type changes, and retai
     act(() => Simulate.change(type, { target: { value: '21' } } as any));
     expect(container.textContent).toContain('USD 18.75');
     expect(container.textContent).toContain('Previous UPS rates are for different shipping details');
-    expect((container.querySelector('input[aria-label="Select UPS Ground estimate"]') as HTMLInputElement).disabled).toBe(true);
+    expect((container.querySelector('input[aria-label="Select UPS Ground USD 18.75 estimate"]') as HTMLInputElement).disabled).toBe(true);
     upsRateCall.mockRejectedValueOnce(new Error('UPS temporarily unavailable'));
     await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
     expect(container.textContent).toContain('UPS temporarily unavailable');
@@ -93,10 +95,10 @@ test('UPS estimates remain read-only, clear when package type changes, and retai
     expect((weightLabel?.querySelector('input') as HTMLInputElement).value).toBe('2');
   } finally { act(() => root.unmount()); container.remove(); shipment.packages = originalPackages; upsRateCall.mockClear(); }
 });
-const { FulfillmentShipmentEditor } = require('./fulfillment-shipment-detail');
+const { FulfillmentShipmentEditor, matchRefreshedUpsOption } = require('./fulfillment-shipment-detail');
 function button(container: HTMLElement, text: string) { return Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === text)!; }
 function packageInput(container: HTMLElement, label: string) { return Array.from(container.querySelectorAll('label')).find(element => element.textContent?.includes(label))?.querySelector('input') as HTMLInputElement; }
-afterEach(() => { Object.assign(shipment, JSON.parse(JSON.stringify(initialShipment))); save.mockImplementation(persistDraft); upsRateCall.mockImplementation(async () => ({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] })); jest.clearAllMocks(); fulfillmentByOrder = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });
+afterEach(() => { Object.assign(shipment, JSON.parse(JSON.stringify(initialShipment))); save.mockImplementation(persistDraft); upsRateCall.mockImplementation(async () => ({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] })); jest.clearAllMocks(); fulfillmentByOrder = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });
 async function blurAndSave(input: Element) { await act(async () => { Simulate.blur(input); }); }
 
 test('simple packing exposes quantity and saves the reduced package allocation before marking shipped', async () => {
@@ -534,7 +536,7 @@ test('late UPS responses are discarded after package type changes', async () => 
     act(() => Simulate.click(button(container, 'Get UPS Rates')));
     await act(async () => { await Promise.resolve(); });
     act(() => Simulate.change(container.querySelector('select[aria-label^="UPS package type"]')!, { target: { value: '21' } } as any));
-    await act(async () => finishRate({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '99.00', negotiated: false, estimatedArrival: null }] }));
+    await act(async () => finishRate({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '99.00', negotiated: false, estimatedArrival: null }] }));
     expect(container.textContent).not.toContain('USD 99.00');
     expect(button(container, 'Get UPS Rates').disabled).toBe(false);
   } finally { act(() => root.unmount()); }
@@ -543,7 +545,7 @@ test('late UPS responses are discarded after package type changes', async () => 
 test('shows a provider delivery date and clears it when the planned ship date changes', async () => {
   shipment.shipDate = '2026-10-23';
   shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
-  upsRateCall.mockResolvedValueOnce({ rates: [{ serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75',
+  upsRateCall.mockResolvedValueOnce({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75',
     negotiated: false, estimatedArrival: '2026-10-27', estimatedDeliveryTime: '1600' }], quoteId: 'quote-1', environment: 'live' });
   const container = document.createElement('div'); const root = createRoot(container);
   try {
@@ -558,13 +560,88 @@ test('shows a provider delivery date and clears it when the planned ship date ch
 });
 
 const quotedGround = (total = '18.75', estimatedArrival: string | null = '2026-10-27') => ({
-  serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total, negotiated: false, estimatedArrival,
+  optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total, negotiated: false, estimatedArrival,
 });
 
 async function selectGroundRate(container: HTMLElement) {
   await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
-  await act(async () => Simulate.change(container.querySelector('input[aria-label="Select UPS Ground estimate"]')!));
+  await act(async () => Simulate.change(container.querySelector('input[name="ups-rate"]')!));
 }
+
+test('two Ground options keep the clicked price and option identity through charge and purchase', async () => {
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [
+    { ...quotedGround('19.77', '2026-10-26'), optionId: '0' },
+    { ...quotedGround('23.77', '2026-10-27'), optionId: '1' },
+  ], quoteId: 'quote-two-ground', environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
+    const radios = Array.from(container.querySelectorAll('input[name="ups-rate"]')) as HTMLInputElement[];
+    expect(radios).toHaveLength(2);
+    await act(async () => Simulate.change(radios[1]));
+    expect(radios[0].checked).toBe(false);
+    expect(radios[1].checked).toBe(true);
+    expect(container.textContent).toContain('Estimated UPS carrier cost: USD 23.77');
+    expect(JSON.parse((upsChargeCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toMatchObject({
+      quoteId: 'quote-two-ground', optionId: '1',
+    });
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(JSON.parse((upsPurchaseCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
+      quoteId: 'quote-two-ground', optionId: '1',
+    });
+  } finally { act(() => root.unmount()); }
+});
+
+test('refresh never substitutes an ambiguous Ground option with a different date', () => {
+  const selected = { ...quotedGround('19.77', '2026-10-26'), optionId: '0' };
+  expect(matchRefreshedUpsOption(selected, [
+    { ...quotedGround('23.77', '2026-10-27'), optionId: '0' },
+    { ...quotedGround('25.77', '2026-10-28'), optionId: '1' },
+  ])).toBeNull();
+  expect(matchRefreshedUpsOption(selected, [
+    { ...quotedGround('23.77', '2026-10-27'), optionId: '0' },
+    { ...quotedGround('21.50', '2026-10-26'), optionId: '1' },
+  ])?.optionId).toBe('1');
+});
+
+test('zero quantity can be replaced naturally and an incomplete entry is not reported saved', async () => {
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    const quantity = container.querySelector('input[aria-label="Qty in this shipment: Magnetic"]') as HTMLInputElement;
+    await act(async () => Simulate.change(quantity, { target: { value: '01' } } as any));
+    expect(quantity.value).toBe('1');
+    await act(async () => Simulate.change(quantity, { target: { value: '' } } as any));
+    expect(quantity.value).toBe('');
+    expect(container.textContent).toContain('Unsaved changes');
+    expect(container.textContent).toContain('Enter a whole quantity');
+  } finally { act(() => root.unmount()); }
+});
+
+test('missing production owner has an Order recovery link and an audited readiness action', async () => {
+  const previousAvailability = shipment.lineAvailability;
+  shipment.lineAvailability = [{ orderLineItemId: 'line-1', orderedQuantity: 2, readyQuantity: 0,
+    shippedQuantity: 0, remainingQuantity: 2, reservedHere: 0, reservedElsewhere: 0 }];
+  fulfillmentByOrder['order-1'] = { ...fulfillment, permissions: { canConfirmPhysicalReadiness: true },
+    lineItems: [{ ...fulfillment.lineItems[0], production: { ...fulfillment.lineItems[0].production,
+      orderedQuantity: 2, productionCompleteQuantity: 0, remainingQuantity: 2, jobId: null, label: 'Awaiting production' } }] };
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).toContain('No active production job is assigned');
+    expect(container.querySelector('a[href="/orders/order-1"]')?.textContent).toContain('Save & Route Jobs');
+    const quantity = container.querySelector('input[aria-label="Ready quantity for Magnetic"]')!;
+    const reason = container.querySelector('input[aria-label="Physical readiness reason for Magnetic"]')!;
+    act(() => Simulate.change(quantity, { target: { value: '1' } } as any));
+    act(() => Simulate.change(reason, { target: { value: 'Inspected finished unit at packing bench' } } as any));
+    await act(async () => Simulate.click(button(container, 'Confirm items ready')));
+    expect(JSON.parse((readyCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
+      items: [{ orderLineItemId: 'line-1', quantityDelta: 1 }], reason: 'Inspected finished unit at packing bench',
+    });
+  } finally { act(() => root.unmount()); shipment.lineAvailability = previousAvailability; }
+});
 
 test('expired quote remains visible and refreshes without a second selection when the UPS result is unchanged', async () => {
   shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
@@ -582,7 +659,7 @@ test('expired quote remains visible and refreshes without a second selection whe
     await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
     expect(upsRateCall).toHaveBeenCalledTimes(2);
     expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
-    expect(JSON.parse((upsPurchaseCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ quoteId: 'fresh-quote', serviceCode: '03' });
+    expect(JSON.parse((upsPurchaseCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ quoteId: 'fresh-quote', optionId: '0' });
   } finally { act(() => root.unmount()); }
 });
 
@@ -599,7 +676,7 @@ test('changed UPS price requires confirmation before purchase and preserves the 
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('New: USD 21.50'));
     expect(upsPurchaseCall).not.toHaveBeenCalled();
     expect(container.textContent).toContain('USD 21.50');
-    expect((container.querySelector('input[aria-label="Select UPS Ground estimate"]') as HTMLInputElement).checked).toBe(true);
+    expect((container.querySelector('input[name="ups-rate"]') as HTMLInputElement).checked).toBe(true);
     await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
     expect(upsRateCall).toHaveBeenCalledTimes(2);
     expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
@@ -635,7 +712,7 @@ test('saving an unrelated package note keeps the existing UPS rate and selected 
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ packages: [expect.objectContaining({ notes: 'Leave at receiving dock' })] }));
     expect(container.textContent).toContain('USD 18.75');
     expect(container.textContent).not.toContain('Previous UPS rates are for different shipping details');
-    expect((container.querySelector('input[aria-label="Select UPS Ground estimate"]') as HTMLInputElement).checked).toBe(true);
+    expect((container.querySelector('input[name="ups-rate"]') as HTMLInputElement).checked).toBe(true);
   } finally { act(() => root.unmount()); }
 });
 

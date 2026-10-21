@@ -10,7 +10,7 @@ jest.unstable_mockModule('../db', () => ({ db: dbMock }));
 jest.unstable_mockModule('../services/fulfillment/canonicalFulfillmentOperations', () => ({ canonicalFulfillmentOperations: { getShipment } }));
 jest.unstable_mockModule('../services/ups/upsConnection', () => ({ upsRateCredentials, markUpsAccountVerified }));
 
-const { buildUpsRateRequest, normalizeUpsRates, getUpsRates, upsProviderRateError,
+const { buildUpsRateRequest, normalizeUpsRates, selectedUpsQuoteRate, getUpsRates, upsProviderRateError,
   upsShippingFingerprint, upsQuoteLifetimeMs } = await import('../services/ups/upsRates');
 const party = { name: 'Receiver', company: 'Custom Destination', address1: '10 QA Street', address2: null,
   city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US', phone: null, email: null };
@@ -80,6 +80,19 @@ describe('UPS rating boundary', () => {
       { serviceName: 'UPS 2nd Day Air', total: '31.25', negotiated: true },
     ]);
     expect(normalizeUpsRates({ RateResponse: { RatedShipment: [] } })).toEqual([]);
+  });
+
+  test('preserves separate option identities for two Ground prices and rejects old unkeyed quotes', () => {
+    const rates = normalizeUpsRates({ RateResponse: { RatedShipment: [
+      { Service: { Code: '03' }, TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '19.77' } },
+      { Service: { Code: '03' }, TotalCharges: { CurrencyCode: 'USD', MonetaryValue: '23.77' } },
+    ] } });
+    expect(rates.map(rate => [rate.optionId, rate.serviceCode, rate.total])).toEqual([
+      ['0', '03', '19.77'], ['1', '03', '23.77'],
+    ]);
+    expect(selectedUpsQuoteRate(rates, '1')?.total).toBe('23.77');
+    expect(selectedUpsQuoteRate(rates, '2')).toBeNull();
+    expect(selectedUpsQuoteRate([{ ...rates[0], optionId: undefined }], '0')).toBeNull();
   });
 
   test('uses the planned ship date and only a provider calendar date for delivery display', () => {

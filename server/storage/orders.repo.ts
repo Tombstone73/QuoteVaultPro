@@ -2141,7 +2141,7 @@ export class OrdersRepository {
             ...(shippingAmountChanged
                 ? { shippingChargeDecision: Number(orderData.shippingCents) === 0
                     ? orderData.shippingMethod === 'pickup' ? 'unset' : 'free' : 'manual',
-                    shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null }
+                    shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null, shippingChargeRateOptionId: null }
                 : {}),
             updatedAt: new Date(),
         };

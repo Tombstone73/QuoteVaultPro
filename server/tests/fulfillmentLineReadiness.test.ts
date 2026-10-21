@@ -1,5 +1,28 @@
 import { describe, expect, test } from "@jest/globals";
-import { resolveFulfillmentAllocatableQuantity, resolveFulfillmentLineQuantity, resolveFulfillmentLineReadiness, summarizeFulfillmentOrderQuantities } from "@shared/fulfillmentReadiness";
+import { planPhysicalReadyAdjustment, resolveFulfillmentAllocatableQuantity, resolveFulfillmentLineQuantity, resolveFulfillmentLineReadiness, summarizeFulfillmentOrderQuantities } from "@shared/fulfillmentReadiness";
+
+describe('physical readiness confirmation limits', () => {
+  test('permits partial readiness without completing production and protects other draft reservations', () => {
+    expect(planPhysicalReadyAdjustment({ orderedQuantity: 60, fulfilledQuantity: 0, currentReadyQuantity: 0,
+      reservedQuantity: 0, quantityDelta: 20 })).toEqual({ previous: 0, next: 20 });
+    expect(planPhysicalReadyAdjustment({ orderedQuantity: 60, fulfilledQuantity: 0, currentReadyQuantity: 20,
+      reservedQuantity: 15, quantityDelta: -6 })).toEqual({ code: 'QTY_RESERVED' });
+  });
+  test('later production completion never adds to an already confirmed ready pool', () => {
+    const before = resolveFulfillmentLineQuantity({ orderedQuantity: 60, productionCompleteQuantity: 0, readyWaitingQuantity: 20 });
+    const after = resolveFulfillmentLineQuantity({ orderedQuantity: 60, productionCompleteQuantity: 60, readyWaitingQuantity: 20 });
+    expect(before.readyWaitingQuantity).toBe(20);
+    expect(after.readyWaitingQuantity).toBe(20);
+  });
+  test('shipment and reversal retain ordered and already-fulfilled bounds', () => {
+    expect(planPhysicalReadyAdjustment({ orderedQuantity: 60, fulfilledQuantity: 40, currentReadyQuantity: 60,
+      reservedQuantity: 10, quantityDelta: -11 })).toEqual({ code: 'QTY_RESERVED' });
+    expect(planPhysicalReadyAdjustment({ orderedQuantity: 60, fulfilledQuantity: 40, currentReadyQuantity: 60,
+      reservedQuantity: 10, quantityDelta: -10 })).toEqual({ previous: 20, next: 10 });
+    expect(planPhysicalReadyAdjustment({ orderedQuantity: 60, fulfilledQuantity: 0, currentReadyQuantity: 10,
+      reservedQuantity: 0, quantityDelta: 51 })).toEqual({ code: 'QTY_EXCEEDS_ORDER' });
+  });
+});
 
 describe("canonical fulfillment line readiness", () => {
   test("treats a queued fulfillment handoff after completed production as eligible", () => {

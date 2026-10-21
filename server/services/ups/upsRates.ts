@@ -11,7 +11,7 @@ import { verifyUpsAddress } from './upsAddressVerification';
 
 export type UpsPackageType = '02' | '21';
 export type UpsRatePackage = { id: string; packagingType: UpsPackageType; weightLbs: number; lengthIn: number; widthIn: number; heightIn: number };
-export type UpsRate = { serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' };
+export type UpsRate = { optionId: string; serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' };
 const names: Record<string, string> = { '01': 'UPS Next Day Air', '02': 'UPS 2nd Day Air', '03': 'UPS Ground', '07': 'UPS Worldwide Express', '08': 'UPS Worldwide Expedited', '11': 'UPS Standard', '12': 'UPS 3 Day Select', '13': 'UPS Next Day Air Saver', '14': 'UPS Next Day Air Early', '54': 'UPS Worldwide Express Plus', '59': 'UPS 2nd Day Air A.M.', '65': 'UPS Worldwide Saver' };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
@@ -79,7 +79,7 @@ export class UpsRateRejection extends FulfillmentHttpError {
 }
 
 export function normalizeUpsRates(payload: unknown): UpsRate[] {
-  return list(object(object(payload).RateResponse).RatedShipment).flatMap(value => {
+  return list(object(object(payload).RateResponse).RatedShipment).flatMap((value, index) => {
     const row = object(value);
     const code = text(object(row.Service).Code);
     const negotiated = object(object(row.NegotiatedRateCharges).TotalCharge);
@@ -92,10 +92,15 @@ export function normalizeUpsRates(payload: unknown): UpsRate[] {
     const arrival = object(object(object(transit.ServiceSummary).EstimatedArrival).Arrival);
     const estimatedArrival = providerDate(arrival.Date);
     const estimatedDeliveryTime = /^\d{4}(?:\d{2})?$/.test(text(arrival.Time)) ? text(arrival.Time) : null;
-    return [{ serviceCode: code, serviceName: names[code] ?? `UPS service ${code}`, currency, total, negotiated: charge === negotiated,
+    return [{ optionId: String(index), serviceCode: code, serviceName: names[code] ?? `UPS service ${code}`, currency, total, negotiated: charge === negotiated,
       estimatedArrival, estimatedDeliveryTime: estimatedArrival ? estimatedDeliveryTime : null,
       deliveryCommitment: 'estimated' as const }];
   });
+}
+
+/** An option is unique only within its stored quote. Older quotes have no option identity and must be rerated. */
+export function selectedUpsQuoteRate(rates: UpsRate[], optionId: string): UpsRate | null {
+  return rates.find(rate => rate.optionId === optionId) ?? null;
 }
 
 type SavedPackage = { id: string; upsPackagingType: string; weightLbs: string | null; dimLengthIn: string | null; dimWidthIn: string | null; dimHeightIn: string | null };

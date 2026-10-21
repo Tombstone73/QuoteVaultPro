@@ -3908,6 +3908,7 @@ export const orders = pgTable("orders", {
   shippingChargeDecision: varchar("shipping_charge_decision", { length: 16 }).notNull().default('unset'),
   shippingChargeRateQuoteId: varchar("shipping_charge_rate_quote_id", { length: 64 }),
   shippingChargeRateServiceCode: varchar("shipping_charge_rate_service_code", { length: 8 }),
+  shippingChargeRateOptionId: varchar("shipping_charge_rate_option_id", { length: 32 }),
   trackingNumber: text("tracking_number"),
   shippedAt: timestamp("shipped_at", { withTimezone: true, mode: "string" }),
   
@@ -3994,6 +3995,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   shippingChargeDecision: z.enum(['unset', 'manual', 'free', 'ups_rate', 'legacy']).optional(),
   shippingChargeRateQuoteId: z.string().max(64).optional().nullable(),
   shippingChargeRateServiceCode: z.string().max(8).optional().nullable(),
+  shippingChargeRateOptionId: z.string().max(32).optional().nullable(),
   shippingMode: z.enum(['single_shipment', 'multi_shipment']).optional().nullable(),
   shippingAddress: z.object({
     name: z.string().optional(),
@@ -6031,7 +6033,7 @@ export const upsShipmentRateQuotes = pgTable("ups_shipment_rate_quotes", {
   shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
   environment: varchar("environment", { length: 8 }).notNull().default('unknown').$type<'unknown' | 'test' | 'live'>(),
   requestFingerprint: varchar("request_fingerprint", { length: 64 }).notNull(),
-  rates: jsonb("rates").$type<Array<{ serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' }>>().notNull(),
+  rates: jsonb("rates").$type<Array<{ optionId: string; serviceCode: string; serviceName: string; currency: string; total: string; negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null; deliveryCommitment?: 'estimated' | 'guaranteed' }>>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 }, table => [index("ups_rate_quotes_org_shipment_idx").on(table.organizationId, table.shipmentId)]);

@@ -168,7 +168,7 @@ export function registerFulfillmentRoutes(
   });
   app.post('/api/fulfillment/shipments/:shipmentId/ups-customer-charge', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const input = z.object({ quoteId: z.string().uuid(), serviceCode: z.string().min(2).max(8),
+      const input = z.object({ quoteId: z.string().uuid(), optionId: z.string().min(1).max(12),
         intent: z.enum(['default_if_unset', 'use_ups_rate']) }).strict().parse(req.body);
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
@@ -181,7 +181,7 @@ export function registerFulfillmentRoutes(
       return upsFailure(res, error, 'Could not change the customer shipping charge.');
     }
   });
-  const upsPurchaseBody = z.object({ quoteId: z.string().uuid(), serviceCode: z.string().min(2).max(8) }).strict();
+  const upsPurchaseBody = z.object({ quoteId: z.string().uuid(), optionId: z.string().min(1).max(12) }).strict();
   const upsFailure = (res: any, error: unknown, fallback: string) => {
     if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: 'UPS_INVALID_REQUEST', message: 'Select a current UPS rate.' });
     if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message });

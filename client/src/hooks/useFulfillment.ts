@@ -57,6 +57,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     revertPermission: string;
     canReverseTerminalFulfillment?: boolean;
     canEditHistoryNotes?: boolean;
+    canConfirmPhysicalReadiness?: boolean;
     canEditPickupDate?: boolean;
   };
   billingAutomation?: {
@@ -92,6 +93,8 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     };
     production: {
       jobId: string | null;
+      activeOwnerJobId?: string | null;
+      activeOwnerStatus?: string | null;
       stationKey: string | null;
       stationLabel: string | null;
       status: string | null;
@@ -432,7 +435,7 @@ export function useMarkFulfillmentReadyMutation(orderId: string) {
 export function useAdjustFulfillmentReadyQuantitiesMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { items: Array<{ orderLineItemId: string; quantityDelta: number }> }) =>
+    mutationFn: (payload: { items: Array<{ orderLineItemId: string; quantityDelta: number }>; reason: string }) =>
       apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/ready-quantities`, {
         method: "POST",
         body: JSON.stringify(payload),

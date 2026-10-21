@@ -61,6 +61,21 @@ export type FulfillmentOrderQuantitySummary = {
   status: "NOT_READY" | "PARTIALLY_READY" | "READY" | "PARTIALLY_SHIPPED" | "SHIPPED";
 };
 
+/** Draft reservations must remain backed by ready units. Terminal reversals do not
+ * silently increase the operator-confirmed pool after a prior correction. */
+export function planPhysicalReadyAdjustment(input: {
+  orderedQuantity: number; fulfilledQuantity: number; currentReadyQuantity: number;
+  reservedQuantity: number; quantityDelta: number;
+}): { previous: number; next: number } | { code: 'QTY_BELOW_FULFILLED' | 'QTY_EXCEEDS_ORDER' | 'QTY_RESERVED' } {
+  const remaining = Math.max(0, input.orderedQuantity - input.fulfilledQuantity);
+  const previous = Math.min(remaining, input.currentReadyQuantity);
+  const next = previous + input.quantityDelta;
+  if (next < 0) return { code: 'QTY_BELOW_FULFILLED' };
+  if (next > remaining) return { code: 'QTY_EXCEEDS_ORDER' };
+  if (next < input.reservedQuantity) return { code: 'QTY_RESERVED' };
+  return { previous, next };
+}
+
 function normalize(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
 }

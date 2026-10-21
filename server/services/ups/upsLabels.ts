@@ -141,8 +141,10 @@ export async function retireUpsSampleLabel(orgId: string, shipmentId: string, pu
 }
 
 async function markUncertain(orgId: string, purchaseId: string, errorCode: string, evidence?: Record<string, unknown>) {
+  const [purchase] = evidence ? await db.select({ providerEvidence: upsLabelPurchases.providerEvidence }).from(upsLabelPurchases)
+    .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId))).limit(1) : [];
   await db.update(upsLabelPurchases).set({ status: 'UNCERTAIN', errorCode,
-    ...(evidence ? { providerEvidence: evidence } : {}), updatedAt: new Date() })
+    ...(evidence ? { providerEvidence: { ...object(purchase?.providerEvidence), ...evidence } } : {}), updatedAt: new Date() })
     .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId),
       eq(upsLabelPurchases.status, 'REQUESTING')));
 }
@@ -185,7 +187,8 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
       carrierCostCents: normalized.carrierCostCents,
       carrierCurrency: normalized.carrierCurrency, providerShipmentId: normalized.providerShipmentId,
       errorCode: null,
-      providerEvidence: { providerShipmentId: normalized.providerShipmentId, trackingNumbers: normalized.labels.map(label => label.trackingNumber) },
+      providerEvidence: { ...object(attempt.providerEvidence), providerShipmentId: normalized.providerShipmentId,
+        trackingNumbers: normalized.labels.map(label => label.trackingNumber) },
       purchasedAt: new Date(), updatedAt: new Date() }).where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, attempt.id)));
     await tx.update(shipments).set({ carrier: 'UPS', serviceLevel: attempt.serviceName,
       trackingNumber: mappingRequired ? null : normalized.labels[0].trackingNumber,
@@ -198,7 +201,7 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
   });
 }
 
-export async function buyUpsLabel(orgId: string, shipmentId: string, input: { quoteId: string; serviceCode: string }, actorUserId?: string | null) {
+export async function buyUpsLabel(orgId: string, shipmentId: string, input: { quoteId: string; optionId: string }, actorUserId?: string | null) {
   const credentials = await upsRateCredentials(orgId);
   const details = await resolveUpsShippingContext(orgId, shipmentId);
   if (details.packages.length > 1 && !supportsUpsPackageReference(details.origin.country, details.destination.country))
@@ -219,7 +222,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     if (active) throw new FulfillmentHttpError(409, 'A UPS label exists or its outcome needs investigation. Review the purchase history before another purchase.', 'UPS_PURCHASE_EXISTS');
     const [quote] = await tx.select().from(upsShipmentRateQuotes).where(and(eq(upsShipmentRateQuotes.id, input.quoteId),
       eq(upsShipmentRateQuotes.organizationId, orgId), eq(upsShipmentRateQuotes.shipmentId, shipmentId))).limit(1);
-    const rate = quote?.rates.find(item => item.serviceCode === input.serviceCode);
+    const rate = quote?.rates.find(item => item.optionId === input.optionId);
     if (!quote || quote.environment !== credentials.row.mode || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint) throw new FulfillmentHttpError(409,
         'UPS rates expired or shipment details changed. Get fresh rates before buying.', 'UPS_RATE_STALE');
     const [packages, links, items] = await Promise.all([
@@ -269,6 +272,9 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     const [created] = await tx.insert(upsLabelPurchases).values({ organizationId: orgId, shipmentId, quoteId: quote.id,
       environment: credentials.row.mode,
       serviceCode: rate.serviceCode, serviceName: rate.serviceName, estimateCents, estimateCurrency: rate.currency,
+      providerEvidence: { selectedQuoteOptionId: rate.optionId, selectedEstimatedArrival: rate.estimatedArrival,
+        selectedEstimatedDeliveryTime: rate.estimatedDeliveryTime ?? null, selectedQuotedTotal: rate.total,
+        selectedQuoteCurrency: rate.currency },
       providerTransactionId: randomUUID().replace(/-/g, ''), requestFingerprint: fingerprint,
       createdByUserId: actorUserId ?? null }).returning();
     return created;
@@ -280,7 +286,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
       headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json', Accept: 'application/json',
         transId: attempt.providerTransactionId, transactionSrc: 'PrintersHero' },
       body: JSON.stringify(buildUpsLabelRequest({ origin: details.origin, sender: details.sender, destination: details.destination,
-        accountNumber: credentials.accountNumber, serviceCode: input.serviceCode,
+        accountNumber: credentials.accountNumber, serviceCode: attempt.serviceCode,
         packages: details.packages.map(pkg => ({ ...pkg,
           packageReference: details.shipment.packages.find(saved => saved.id === pkg.id)?.packageReference })) })) });
   } catch {

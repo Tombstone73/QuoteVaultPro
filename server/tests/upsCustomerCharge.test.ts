@@ -12,15 +12,17 @@ jest.unstable_mockModule('../db', () => ({ db }));
 jest.unstable_mockModule('../services/orders/canonicalOrderOperations', () => ({ canonicalOrderOperations: { updateEditableHeader } }));
 jest.unstable_mockModule('../services/ups/upsConnection', () => ({ upsRateCredentials }));
 jest.unstable_mockModule('../services/ups/upsRates', () => ({ resolveUpsShippingContext,
-  upsShippingFingerprint: () => 'current-fingerprint' }));
+  upsShippingFingerprint: () => 'current-fingerprint',
+  selectedUpsQuoteRate: (rates: Array<{ optionId: string }>, optionId: string) => rates.find(rate => rate.optionId === optionId) ?? null }));
 const { applyUpsRateToCustomerCharge } = await import('../services/ups/upsCharges');
 
 const order = { orderId: 'order-1', orderNumber: 'QA-1', shippingCents: 0, shippingChargeDecision: 'unset',
-  shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null, updatedAt: new Date('2026-10-19T12:00:00Z') };
+  shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null, shippingChargeRateOptionId: null,
+  updatedAt: new Date('2026-10-19T12:00:00Z') };
 const quote = { id: 'quote-1', environment: 'test', requestFingerprint: 'current-fingerprint', expiresAt: new Date('2099-01-01'),
-  rates: [{ serviceCode: '03', serviceName: 'UPS Ground', total: '18.40', currency: 'USD' }] };
+  rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', total: '18.40', currency: 'USD' }] };
 const input = { organizationId: 'tenant-a', shipmentId: 'shipment-1', quoteId: 'quote-1',
-  serviceCode: '03', intent: 'default_if_unset' as const, actorUserId: 'staff-1' };
+  optionId: '0', intent: 'default_if_unset' as const, actorUserId: 'staff-1' };
 
 beforeEach(() => {
   db.select.mockClear(); selectRows.mockReset(); updateEditableHeader.mockReset();
@@ -40,8 +42,18 @@ describe('UPS customer charge policy', () => {
       organizationId: 'tenant-a', orderId: 'order-1', requireInvoiceParity: true,
       expectedUpdatedAt: order.updatedAt,
       changes: { shippingCents: 1840, shippingChargeDecision: 'ups_rate',
-        shippingChargeRateQuoteId: 'quote-1', shippingChargeRateServiceCode: '03' },
+        shippingChargeRateQuoteId: 'quote-1', shippingChargeRateServiceCode: '03', shippingChargeRateOptionId: '0' },
     }));
+  });
+
+  test('uses the chosen Ground option rather than the first rate with the same service code', async () => {
+    selectRows.mockReset().mockReturnValueOnce([order]).mockReturnValueOnce([{ ...quote, rates: [
+      { ...quote.rates[0], optionId: '0', total: '19.77', estimatedArrival: '2026-10-26' },
+      { ...quote.rates[0], optionId: '1', total: '23.77', estimatedArrival: '2026-10-27' },
+    ] }]);
+    await applyUpsRateToCustomerCharge({ ...input, optionId: '1' });
+    expect(updateEditableHeader).toHaveBeenCalledWith(expect.objectContaining({ changes: expect.objectContaining({
+      shippingCents: 2377, shippingChargeRateOptionId: '1' }) }));
   });
 
   test('does not apply a quote from another UPS environment', async () => {

@@ -51,7 +51,7 @@ import { buildFulfillmentArtworkProjection } from '../artwork/FulfillmentArtwork
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 import { isDispatchableUpsLabel, isUpsPlaceholderTracking } from '../ups/upsLabelEnvironment';
 import { resolveActiveProductionOwners } from '../productionOwnership';
-import { resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
+import { planPhysicalReadyAdjustment, resolveFulfillmentLineQuantity, summarizeFulfillmentOrderQuantities, type FulfillmentLineQuantityProjection } from '@shared/fulfillmentReadiness';
 import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from '@shared/fulfillmentTerminalReversal';
 import { isProvenLegacyCloseJobOverrideEvidence } from './legacyCloseJobOverrideEvidence';
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
@@ -907,6 +907,18 @@ export class ShipmentRepo {
         }
       }
 
+      // A reversal restores fulfillment availability, not physical readiness.
+      // Keep only the ready units that were available before this reversal;
+      // previously shipped units require a new operator confirmation.
+      const readinessBeforeReversal = await new FulfillmentDashboardRepo(tx as unknown as DbExecutor)
+        .listLineEligibility(orgId, { lineItemIds: lineIds });
+      for (const line of readinessBeforeReversal) {
+        await tx.update(fulfillmentReadyQuantities).set({
+          readyWaitingQuantity: line.projection.readyWaitingQuantity, updatedAt: new Date(),
+        }).where(and(eq(fulfillmentReadyQuantities.organizationId, orgId),
+          eq(fulfillmentReadyQuantities.orderId, orderId), eq(fulfillmentReadyQuantities.orderLineItemId, line.id)));
+      }
+
       const safeActorUserId = await resolveExistingActorUserId(tx, input.actorUserId);
       const reversalItems = Array.from(requested, ([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
 
@@ -916,7 +928,9 @@ export class ShipmentRepo {
         entityType: eventEntityType,
         entityId: eventEntityId,
         eventType: reversalEventType,
-        payloadJson: { sourceType: input.sourceType, sourceId: input.sourceId, orderId, reason: cleanText(input.reason), clientRequestId: requestId || null, items: reversalItems },
+        payloadJson: { sourceType: input.sourceType, sourceId: input.sourceId, orderId, reason: cleanText(input.reason), clientRequestId: requestId || null, items: reversalItems,
+          readinessAfterReversal: 'requires_new_confirmation', readinessBeforeReversal: readinessBeforeReversal.map(line => ({
+            orderLineItemId: line.id, readyWaitingQuantity: line.projection.readyWaitingQuantity })) },
       });
       return { ok: true as const, replayed: false, orderId, pickupTicketId };
     });
@@ -1753,8 +1767,10 @@ export class FulfillmentDashboardRepo {
 
   /** Adjust Fulfillment's mutable ready pool. Handoffs and shipments are
    * deliberately not touched here: they are immutable evidence of fulfillment. */
-  async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId?: string | null) {
+  async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string) {
     return this.dbInstance.transaction(async (tx) => {
+      if (reason.trim().length < 10 || reason.trim().length > 500) return {
+        ok: false as const, code: 'READY_REASON_REQUIRED', message: 'Explain the physical-readiness confirmation or correction.' };
       const [order] = await tx.select({
         id: orders.id,
         shippingMethod: orders.shippingMethod,
@@ -1772,7 +1788,8 @@ export class FulfillmentDashboardRepo {
       }
 
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${orderId} FOR UPDATE`);
-      const lines = await tx.select({ id: orderLineItems.id, quantity: orderLineItems.quantity })
+      const lines = await tx.select({ id: orderLineItems.id, quantity: orderLineItems.quantity,
+        workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status })
         .from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
       const lineById = new Map(lines.map((line) => [line.id, line]));
       if (Array.from(requested.keys()).some((lineItemId) => !lineById.has(lineItemId))) {
@@ -1780,7 +1797,7 @@ export class FulfillmentDashboardRepo {
       }
 
       const lineIds = lines.map((line) => line.id);
-      const [readyRows, shippedRows, pickedRows, administrativeRows] = await Promise.all([
+      const [readyRows, shippedRows, pickedRows, administrativeRows, draftRows, productionOwners] = await Promise.all([
         tx.select().from(fulfillmentReadyQuantities).where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderId, orderId))),
         tx.select({ lineItemId: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
           .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
@@ -1791,6 +1808,12 @@ export class FulfillmentDashboardRepo {
         tx.select({ lineItemId: fulfillmentAdministrativeReconciliations.lineItemId, quantity: sql<number>`COALESCE(SUM(${fulfillmentAdministrativeReconciliations.reconciledQuantity}), 0)::int` })
           .from(fulfillmentAdministrativeReconciliations)
           .where(and(eq(fulfillmentAdministrativeReconciliations.organizationId, orgId), inArray(fulfillmentAdministrativeReconciliations.lineItemId, lineIds))).groupBy(fulfillmentAdministrativeReconciliations.lineItemId),
+        tx.select({ lineItemId: shipmentItems.orderLineItemId, quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
+          .from(shipmentItems).innerJoin(shipments, eq(shipments.id, shipmentItems.shipmentId))
+          .where(and(eq(shipmentItems.organizationId, orgId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
+            inArray(shipmentItems.orderLineItemId, lineIds))).groupBy(shipmentItems.orderLineItemId),
+        resolveActiveProductionOwners(tx, { organizationId: orgId, lineItemIds: lineIds,
+          debugLabel: 'FulfillmentDashboardRepo.adjustReadyQuantities' }),
       ]);
       const readyByLine = new Map(readyRows.map((row) => [row.orderLineItemId, Number(row.readyWaitingQuantity || 0)]));
       const reversalQuantities = await readTerminalReversalQuantities(tx, orgId, lineIds);
@@ -1799,16 +1822,21 @@ export class FulfillmentDashboardRepo {
       const shippedByLine = new Map(shippedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedShipmentByLine.get(row.lineItemId) ?? 0))]));
       const pickedByLine = new Map(pickedRows.map((row) => [row.lineItemId, Math.max(0, Number(row.quantity || 0) - (reversedPickupByLine.get(row.lineItemId) ?? 0))]));
       const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversalQuantities.administrative.get(row.lineItemId) ?? 0)]));
-      const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number }> = [];
+      const reservedByLine = new Map(draftRows.map(row => [row.lineItemId, Number(row.quantity || 0)]));
+      const adjustments: Array<{ lineItemId: string; quantityDelta: number; next: number; previous: number; productionState: object }> = [];
       for (const [lineItemId, quantityDelta] of Array.from(requested)) {
         const line = lineById.get(lineItemId)!;
-        const current = readyByLine.get(lineItemId) ?? 0;
         const fulfilled = (shippedByLine.get(lineItemId) ?? 0) + (pickedByLine.get(lineItemId) ?? 0) + (administrativelyReconciledByLine.get(lineItemId) ?? 0);
-        const next = current + quantityDelta;
-        const remaining = Math.max(0, Number(line.quantity || 0) - fulfilled);
-        if (next < 0) return { ok: false as const, code: 'QTY_BELOW_FULFILLED', message: 'Cannot un-ready quantity that has already been picked up or shipped.' };
-        if (next > remaining) return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Ready quantity exceeds the remaining order quantity.' };
-        adjustments.push({ lineItemId, quantityDelta, next });
+        const plan = planPhysicalReadyAdjustment({ orderedQuantity: Number(line.quantity || 0), fulfilledQuantity: fulfilled,
+          currentReadyQuantity: readyByLine.get(lineItemId) ?? 0, reservedQuantity: reservedByLine.get(lineItemId) ?? 0, quantityDelta });
+        if ('code' in plan) return { ok: false as const, code: plan.code,
+          message: plan.code === 'QTY_RESERVED' ? 'Ready quantity cannot be reduced below units reserved in DRAFT shipments. Correct those drafts first.'
+            : plan.code === 'QTY_EXCEEDS_ORDER' ? 'Ready quantity exceeds the remaining order quantity.'
+              : 'Cannot un-ready quantity that has already been picked up or shipped.' };
+        const owner = productionOwners.get(lineItemId);
+        adjustments.push({ lineItemId, quantityDelta, next: plan.next, previous: plan.previous,
+          productionState: { workflowState: line.workflowState, lifecycleStatus: line.lifecycleStatus,
+            ownerJobId: owner?.id ?? null, ownerStationKey: owner?.stationKey ?? null, ownerStatus: owner?.status ?? null } });
       }
 
       // Validate every requested line before touching the mutable pool. Returning a
@@ -1831,7 +1859,10 @@ export class FulfillmentDashboardRepo {
         entityType: 'ORDER',
         entityId: orderId,
         eventType: 'FULFILLMENT_READY',
-        payloadJson: { adjustments: Array.from(requested, ([orderLineItemId, quantityDelta]) => ({ orderLineItemId, quantityDelta })) },
+        payloadJson: { source: 'operator_physical_confirmation', reason,
+          operatorUserId: actorUserId ?? null, confirmedAt: now.toISOString(),
+          adjustments: adjustments.map(({ lineItemId, quantityDelta, previous, next, productionState }) => ({
+            orderLineItemId: lineItemId, quantityDelta, previousReadyQuantity: previous, nextReadyQuantity: next, productionState })) },
       });
       return { ok: true as const, shippingMethod: order.shippingMethod };
     });
@@ -3008,6 +3039,8 @@ export class FulfillmentDashboardRepo {
         },
         production: {
           jobId: activeOwner?.id ?? productionByLineItemId.get(item.id)?.id ?? null,
+          activeOwnerJobId: activeOwner?.id ?? null,
+          activeOwnerStatus: activeOwner?.status ?? null,
           stationKey: activeOwner?.stationKey ?? productionByLineItemId.get(item.id)?.stationKey ?? null,
           stationLabel: stationLabel(activeOwner?.stationKey ?? productionByLineItemId.get(item.id)?.stationKey),
           status: readiness.status,

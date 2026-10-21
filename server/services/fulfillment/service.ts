@@ -379,6 +379,7 @@ export class FulfillmentService {
       ...detail,
       permissions: {
         canEditHistoryNotes: canEditFulfillmentHistoryNotes(actorOrgRole),
+        canConfirmPhysicalReadiness: canEditFulfillmentHistoryNotes(actorOrgRole),
         canEditPickupDate: ['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase()),
         canRevertStatus: canRevertFulfillmentStatus(actorOrgRole),
         revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION,
@@ -437,8 +438,11 @@ export class FulfillmentService {
 
   async adjustReadyQuantities(orgId: string, orderId: string, payload: {
     items: Array<{ orderLineItemId: string; quantityDelta: number }>;
+    reason: string;
   }, actorUserId?: string | null, actorOrgRole?: string | null) {
-    const result = await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId);
+    if (!actorUserId || !canEditFulfillmentHistoryNotes(actorOrgRole)) throw new FulfillmentHttpError(403,
+      'Only authorized fulfillment operators may confirm or correct physical readiness.', 'READY_PERMISSION_DENIED');
+    const result = await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId, payload.reason);
     if (!result.ok) {
       const status = result.code === 'NOT_FOUND' ? 404 : 409;
       throw new FulfillmentHttpError(status, result.message, result.code);

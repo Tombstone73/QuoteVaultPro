@@ -11,6 +11,22 @@ const { orderShippingContext } = await import('../services/fulfillment/shippingC
 const { FulfillmentHttpError } = await import('../services/fulfillment/types');
 const { FulfillmentDashboardRepo, ShipmentRepo } = await import('../services/fulfillment/repository');
 const { FulfillmentService } = await import('../services/fulfillment/service');
+const { fulfillmentReadyQuantityAdjustmentSchema } = await import('../services/fulfillment/schemas');
+
+test('physical readiness requires an authorized operator and a reason before the canonical pool is changed', async () => {
+  expect(fulfillmentReadyQuantityAdjustmentSchema.safeParse({ items: [{ orderLineItemId: 'line-1', quantityDelta: 1 }] }).success).toBe(false);
+  const repo = { adjustReadyQuantities: jest.fn(async () => ({ ok: true })) };
+  const service = new FulfillmentService({ dashboardRepo: repo as any, shipmentRepo: {} as any,
+    pickupRepo: {} as any, dbInstance: {} as any });
+  jest.spyOn(service, 'getOrderDetail').mockResolvedValue({ orderId: 'order-1' } as any);
+  const payload = { items: [{ orderLineItemId: 'line-1', quantityDelta: 1 }], reason: 'Inspected completed physical goods' };
+  await expect(service.adjustReadyQuantities('org-1', 'order-1', payload, 'user-1', 'member'))
+    .rejects.toMatchObject({ status: 403, code: 'READY_PERMISSION_DENIED' });
+  expect(repo.adjustReadyQuantities).not.toHaveBeenCalled();
+  await expect(service.adjustReadyQuantities('org-1', 'order-1', payload, 'user-1', 'employee'))
+    .resolves.toMatchObject({ orderId: 'order-1' });
+  expect(repo.adjustReadyQuantities).toHaveBeenCalledWith('org-1', 'order-1', payload.items, 'user-1', payload.reason);
+});
 
 afterEach(() => { jest.restoreAllMocks(); capture.mockReset(); });
 function fixture(quantity: number, packageId: string | null = 'package-1', shipDate: Date | null = null, transactionErrors: unknown[] = []) {

@@ -112,7 +112,8 @@ export const fulfillmentReadyQuantityAdjustmentSchema = z.object({
     orderLineItemId: z.string().min(1),
     quantityDelta: z.coerce.number().int().refine((value) => value !== 0, 'Quantity adjustment cannot be zero'),
   })).min(1),
-});
+  reason: z.string().trim().min(10).max(500),
+}).strict();
 
 export const fulfillmentNoteSchema = z.object({
   note: z.string().trim().min(1).max(2000),
