@@ -2,6 +2,7 @@ import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
+import { clearNotificationSession } from "@/hooks/use-toast";
 
 type SessionResponse = {
   authenticated: boolean;
@@ -113,6 +114,7 @@ export function useLogout() {
   const queryClient = useQueryClient();
 
   const logout = async () => {
+    clearNotificationSession();
     try {
       await apiFetch(getApiUrl("/api/auth/logout"), {
         method: "POST",

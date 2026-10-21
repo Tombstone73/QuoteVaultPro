@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useLocation } from "react-router-dom";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
-import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X, Bug, StickyNote } from "lucide-react";
+import { Search, Menu, User, ChevronRight, LogOut, Settings, X, Bug, StickyNote } from "lucide-react";
 import { BugReportModal } from "@/components/bug-report/BugReportModal";
 import { cn } from "@/lib/utils";
 import { useAuth, useLogout } from "@/hooks/useAuth";
@@ -23,6 +23,8 @@ import { isProd, getEnvLabel } from "@/lib/appEnv";
 import { RuntimeEnvironmentBadge } from "@/components/runtime/RuntimeEnvironmentBadge";
 import { AssistantLauncher } from "@/features/assistant";
 import { QuickNotePrintDialog } from "@/components/production/QuickNotePrintDialog";
+import { NotificationArea } from "./NotificationArea";
+import { setNotificationScope } from "@/hooks/use-toast";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -114,6 +116,9 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const { guardedNavigate } = useNavigationGuard();
   const { user } = useAuth();
   const logout = useLogout();
+  React.useEffect(() => {
+    if (user?.id) setNotificationScope(`staff:${user.id}:${user.lastActiveOrgId ?? "none"}`);
+  }, [user?.id, user?.lastActiveOrgId]);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [showSearchResults, setShowSearchResults] = React.useState(false);
   const [bugReportOpen, setBugReportOpen] = React.useState(false);
@@ -223,7 +228,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
     <div className="contents">
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur-md md:px-6">
       {/* Left side - Menu button (mobile) + Breadcrumbs/Title */}
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         {showMenuButton && (
           <Button
             variant="ghost"
@@ -264,13 +269,13 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         </div>
 
         {/* Mobile title */}
-        <span className="font-semibold text-foreground md:hidden">{pageTitle}</span>
-        <RuntimeEnvironmentBadge />
+        <span className="max-w-[8rem] truncate font-semibold text-foreground md:hidden">{pageTitle}</span>
+        <span className="hidden sm:inline-flex"><RuntimeEnvironmentBadge /></span>
 
       </div>
 
       {/* Center - Search (hidden on mobile) */}
-      <div className="hidden flex-1 max-w-md mx-8 lg:block">
+      <div className="hidden min-w-0 flex-1 max-w-md mx-4 lg:block">
         <div className="relative" ref={searchContainerRef}>
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none z-10" />
           <Input
@@ -307,11 +312,12 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
       </div>
 
       {/* Right side - Actions + User */}
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 shrink-0 items-center gap-2">
+        <NotificationArea />
         {/* Org Switcher (multi-org users only) */}
         <OrgSwitcher />
 
-        <Button variant="ghost" size="icon" className="h-9 w-9 text-muted-foreground hover:text-foreground" title="Quick Note" aria-label="Quick Note" onClick={() => setQuickNoteOpen(true)}>
+        <Button variant="ghost" size="icon" className="hidden h-9 w-9 text-muted-foreground hover:text-foreground sm:inline-flex" title="Quick Note" aria-label="Quick Note" onClick={() => setQuickNoteOpen(true)}>
           <StickyNote className="h-4 w-4" />
         </Button>
 
@@ -319,20 +325,11 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 text-muted-foreground hover:text-foreground"
+          className="hidden h-9 w-9 text-muted-foreground hover:text-foreground sm:inline-flex"
           title="Send feedback"
           onClick={() => setBugReportOpen(true)}
         >
           <Bug className="h-4 w-4" />
-        </Button>
-
-        {/* Notifications */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 text-muted-foreground hover:text-foreground"
-        >
-          <Bell className="h-4 w-4" />
         </Button>
 
         <AssistantLauncher />
@@ -368,6 +365,14 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
               )}
             </div>
             <DropdownMenuSeparator />
+            <DropdownMenuItem className="sm:hidden" onClick={() => setQuickNoteOpen(true)}>
+              <StickyNote className="mr-2 h-4 w-4" />
+              Quick Note
+            </DropdownMenuItem>
+            <DropdownMenuItem className="sm:hidden" onClick={() => setBugReportOpen(true)}>
+              <Bug className="mr-2 h-4 w-4" />
+              Send feedback
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => guardedNavigate(ROUTES.settings.root)}>
               <Settings className="mr-2 h-4 w-4" />
               Settings

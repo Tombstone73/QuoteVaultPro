@@ -1,191 +1,139 @@
-import * as React from "react"
+import * as React from "react";
+import type { ToastActionElement, ToastProps } from "@/components/ui/toast";
 
-import type {
-  ToastActionElement,
-  ToastProps,
-} from "@/components/ui/toast"
+export const NOTIFICATION_HISTORY_LIMIT = 40;
+type Severity = "success" | "info" | "warning" | "error";
 
-const TOAST_LIMIT = 3
-const TOAST_REMOVE_DELAY = 1000000
+export type AppNotification = ToastProps & {
+  id: string;
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+  action?: ToastActionElement;
+  path?: string;
+  severity: Severity;
+  createdAt: number;
+  count: number;
+  read: boolean;
+};
 
-type ToasterToast = ToastProps & {
-  id: string
-  title?: React.ReactNode
-  description?: React.ReactNode
-  action?: ToastActionElement
+type NotificationInput = Omit<Partial<AppNotification>, "id" | "createdAt" | "count" | "read">;
+type State = { toasts: AppNotification[]; scope: string | null; announcement: { id: number; text: string; error: boolean } | null };
+type StoredNotification = Pick<AppNotification, "id" | "severity" | "createdAt" | "count" | "read" | "path"> & { title?: string; description?: string };
+
+let state: State = { toasts: [], scope: null, announcement: null };
+const listeners = new Set<() => void>();
+let nextId = 0;
+const storageKey = (scope: string) => `printershero:notifications:${scope}`;
+const textOf = (node: React.ReactNode): string => typeof node === "string" || typeof node === "number" ? String(node) : "";
+const severityOf = (input: NotificationInput): Severity => {
+  if (input.severity) return input.severity;
+  if (input.variant === "destructive") return "error";
+  const title = textOf(input.title);
+  if (/error|failed|unable|could not|cannot|not saved/i.test(title)) return "error";
+  if (/warning|pending|blocked|requires/i.test(title)) return "warning";
+  if (/success|saved|created|updated|recorded|sent|complete|approved|downloaded|copied|logged in/i.test(title)) return "success";
+  return "info";
+};
+
+function persist() {
+  if (!state.scope || typeof sessionStorage === "undefined") return;
+  try {
+    const stored: StoredNotification[] = state.toasts.map(({ id, title, description, severity, createdAt, count, read, path }) => ({
+      id, title: textOf(title), description: textOf(description), severity, createdAt, count, read, path,
+    }));
+    sessionStorage.setItem(storageKey(state.scope), JSON.stringify(stored));
+  } catch { /* Browsers may deny storage; in-memory history still works. */ }
 }
 
-const actionTypes = {
-  ADD_TOAST: "ADD_TOAST",
-  UPDATE_TOAST: "UPDATE_TOAST",
-  DISMISS_TOAST: "DISMISS_TOAST",
-  REMOVE_TOAST: "REMOVE_TOAST",
-} as const
-
-let count = 0
-
-function genId() {
-  count = (count + 1) % Number.MAX_SAFE_INTEGER
-  return count.toString()
+function publish(next: State) {
+  state = next;
+  persist();
+  listeners.forEach((listener) => listener());
 }
 
-type ActionType = typeof actionTypes
-
-type Action =
-  | {
-      type: ActionType["ADD_TOAST"]
-      toast: ToasterToast
-    }
-  | {
-      type: ActionType["UPDATE_TOAST"]
-      toast: Partial<ToasterToast>
-    }
-  | {
-      type: ActionType["DISMISS_TOAST"]
-      toastId?: ToasterToast["id"]
-    }
-  | {
-      type: ActionType["REMOVE_TOAST"]
-      toastId?: ToasterToast["id"]
-    }
-
-interface State {
-  toasts: ToasterToast[]
-}
-
-const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
-
-const addToRemoveQueue = (toastId: string) => {
-  if (toastTimeouts.has(toastId)) {
-    return
+export function setNotificationScope(scope: string) {
+  if (state.scope === scope) return;
+  // An identity change must never expose the preceding user's or tenant's feedback.
+  if (state.scope) {
+    try { sessionStorage.removeItem(storageKey(state.scope)); } catch { /* Storage may be unavailable. */ }
   }
-
-  const timeout = setTimeout(() => {
-    toastTimeouts.delete(toastId)
-    dispatch({
-      type: "REMOVE_TOAST",
-      toastId: toastId,
-    })
-  }, TOAST_REMOVE_DELAY)
-
-  toastTimeouts.set(toastId, timeout)
-}
-
-export const reducer = (state: State, action: Action): State => {
-  switch (action.type) {
-    case "ADD_TOAST":
-      return {
-        ...state,
-        toasts: [action.toast, ...state.toasts].slice(0, TOAST_LIMIT),
-      }
-
-    case "UPDATE_TOAST":
-      return {
-        ...state,
-        toasts: state.toasts.map((t) =>
-          t.id === action.toast.id ? { ...t, ...action.toast } : t
-        ),
-      }
-
-    case "DISMISS_TOAST": {
-      const { toastId } = action
-
-      // ! Side effects ! - This could be extracted into a dismissToast() action,
-      // but I'll keep it here for simplicity
-      if (toastId) {
-        addToRemoveQueue(toastId)
-      } else {
-        state.toasts.forEach((toast) => {
-          addToRemoveQueue(toast.id)
-        })
-      }
-
-      return {
-        ...state,
-        toasts: state.toasts.map((t) =>
-          t.id === toastId || toastId === undefined
-            ? {
-                ...t,
-                open: false,
-              }
-            : t
-        ),
-      }
+  let restored: AppNotification[] = [];
+  try {
+    const raw = sessionStorage.getItem(storageKey(scope));
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) restored = parsed.filter((item): item is StoredNotification =>
+        typeof item?.id === "string" && typeof item?.createdAt === "number" &&
+        ["success", "info", "warning", "error"].includes(item?.severity) &&
+        typeof item?.count === "number" && typeof item?.read === "boolean" &&
+        (item?.title === undefined || typeof item.title === "string") &&
+        (item?.description === undefined || typeof item.description === "string")
+      ).slice(0, NOTIFICATION_HISTORY_LIMIT);
     }
-    case "REMOVE_TOAST":
-      if (action.toastId === undefined) {
-        return {
-          ...state,
-          toasts: [],
-        }
-      }
-      return {
-        ...state,
-        toasts: state.toasts.filter((t) => t.id !== action.toastId),
-      }
+  } catch { /* Ignore malformed or unavailable session storage. */ }
+  publish({ toasts: restored, scope, announcement: null });
+}
+
+export function clearNotificationSession() {
+  if (state.scope) {
+    try { sessionStorage.removeItem(storageKey(state.scope)); } catch { /* Storage may be unavailable. */ }
   }
+  state = { toasts: [], scope: null, announcement: null };
+  listeners.forEach((listener) => listener());
 }
 
-const listeners: Array<(state: State) => void> = []
-
-let memoryState: State = { toasts: [] }
-
-function dispatch(action: Action) {
-  memoryState = reducer(memoryState, action)
-  listeners.forEach((listener) => {
-    listener(memoryState)
-  })
-}
-
-type Toast = Omit<ToasterToast, "id">
-
-function toast({ ...props }: Toast) {
-  const id = genId()
-
-  const update = (props: ToasterToast) =>
-    dispatch({
-      type: "UPDATE_TOAST",
-      toast: { ...props, id },
-    })
-  const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id })
-
-  dispatch({
-    type: "ADD_TOAST",
-    toast: {
-      ...props,
-      id,
-      open: true,
-      onOpenChange: (open) => {
-        if (!open) dismiss()
-      },
-    },
-  })
-
-  return {
-    id: id,
-    dismiss,
-    update,
-  }
-}
-
-function useToast() {
-  const [state, setState] = React.useState<State>(memoryState)
-
-  React.useEffect(() => {
-    listeners.push(setState)
-    return () => {
-      const index = listeners.indexOf(setState)
-      if (index > -1) {
-        listeners.splice(index, 1)
-      }
-    }
-  }, [state])
-
-  return {
+export function addNotification(input: NotificationInput) {
+  const id = `notification-${Date.now()}-${++nextId}`;
+  const severity = severityOf(input);
+  const createdAt = Date.now();
+  const path = input.path ?? (typeof window !== "undefined" ? window.location.pathname + window.location.search : undefined);
+  const duplicate = input.action ? undefined : state.toasts.find((item) =>
+    !item.action && item.severity === severity && textOf(item.title) === textOf(input.title) &&
+    textOf(item.description) === textOf(input.description)
+  );
+  const notification: AppNotification = duplicate
+    ? { ...duplicate, ...input, path, severity, createdAt, count: duplicate.count + 1, read: false }
+    : { ...input, id, path, severity, createdAt, count: 1, read: false };
+  publish({
     ...state,
-    toast,
-    dismiss: (toastId?: string) => dispatch({ type: "DISMISS_TOAST", toastId }),
-  }
+    toasts: [notification, ...state.toasts.filter((item) => item.id !== duplicate?.id)].slice(0, NOTIFICATION_HISTORY_LIMIT),
+    announcement: { id: nextId, text: [textOf(input.title), textOf(input.description)].filter(Boolean).join(". "), error: severity === "error" },
+  });
+  return duplicate?.id ?? id;
 }
 
-export { useToast, toast }
+export function updateNotification(id: string, input: NotificationInput) {
+  const existing = state.toasts.find((item) => item.id === id);
+  if (!existing) return;
+  const next = { ...existing, ...input, severity: input.severity ?? (input.title || input.variant ? severityOf(input) : existing.severity), createdAt: Date.now(), read: false };
+  publish({
+    ...state,
+    toasts: [next, ...state.toasts.filter((item) => item.id !== id)],
+    announcement: { id: ++nextId, text: [textOf(next.title), textOf(next.description)].filter(Boolean).join(". "), error: next.severity === "error" },
+  });
+}
+
+export function dismissNotification(id?: string) {
+  publish({ ...state, toasts: id ? state.toasts.filter((item) => item.id !== id) : [] });
+}
+
+export function markNotificationRead(id?: string) {
+  publish({ ...state, toasts: state.toasts.map((item) => !id || item.id === id ? { ...item, read: true } : item) });
+}
+
+function subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
+export function getNotificationSnapshot() { return state; }
+
+export function toast(input: NotificationInput) {
+  const id = addNotification(input);
+  return {
+    id,
+    dismiss: () => dismissNotification(id),
+    update: (props: NotificationInput) => updateNotification(id, props),
+  };
+}
+
+export function useToast() {
+  const snapshot = React.useSyncExternalStore(subscribe, getNotificationSnapshot, getNotificationSnapshot);
+  return { ...snapshot, toast, dismiss: dismissNotification, markRead: markNotificationRead, clearHistory: () => dismissNotification() };
+}

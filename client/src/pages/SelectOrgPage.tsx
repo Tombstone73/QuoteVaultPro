@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { fetchMyOrgs, setActiveOrg, type OrgSummary } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
+import { clearNotificationSession } from "@/hooks/use-toast";
 
 export default function SelectOrgPage() {
   const navigate = useNavigate();
@@ -33,6 +34,7 @@ export default function SelectOrgPage() {
     mutationFn: (orgId: string) => setActiveOrg(orgId),
     onSuccess: async (result) => {
       if (!result.success) return;
+      clearNotificationSession();
       await queryClient.cancelQueries();
       queryClient.clear();
       navigate("/dashboard", { replace: true });

@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { fetchMyOrgs, setActiveOrg } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
+import { clearNotificationSession } from "@/hooks/use-toast";
 
 /**
  * OrgSwitcher
@@ -35,6 +36,7 @@ export function OrgSwitcher() {
     mutationFn: (orgId: string) => setActiveOrg(orgId),
     onSuccess: async (result) => {
       if (!result.success) return;
+      clearNotificationSession();
       // Permission and tenant data must not render from the previous active org.
       await queryClient.cancelQueries();
       queryClient.clear();

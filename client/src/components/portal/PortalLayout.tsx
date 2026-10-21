@@ -38,6 +38,8 @@ import {
 import { getApiUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
 import { apiRequest } from "@/lib/queryClient";
+import { NotificationArea } from "@/components/layout/NotificationArea";
+import { clearNotificationSession, setNotificationScope } from "@/hooks/use-toast";
 
 const NAV_ICONS = {
   home: Home,
@@ -98,6 +100,11 @@ export function PortalLayout() {
   const queryClient = useQueryClient();
   const { theme: appTheme } = useTheme();
   const staffPreview = session?.staffPreview?.active ? session.staffPreview : null;
+  React.useEffect(() => {
+    if (session?.userId && session.customerId) {
+      setNotificationScope(`portal:${session.userId}:${session.customerId}`);
+    }
+  }, [session?.userId, session?.customerId]);
   const [portalAuthState, setPortalAuthState] = React.useState<PortalAuthSessionState>("authenticated_active");
   const [portalTheme, setPortalTheme] = React.useState<PortalThemeId>(() => getInitialPortalTheme(appTheme));
   const appThemeRef = React.useRef(appTheme);
@@ -122,6 +129,7 @@ export function PortalLayout() {
       return response.json() as Promise<{ success: boolean; data?: { returnTo?: string } }>;
     },
     onSuccess: (payload) => {
+      clearNotificationSession();
       queryClient.removeQueries({ queryKey: ["portal", "me"] });
       window.location.href = payload.data?.returnTo || staffPreview?.returnTo || "/customers";
     },
@@ -138,6 +146,7 @@ export function PortalLayout() {
       setPortalAuthState((state) => getNextPortalAuthSessionState(state, "logout_requested"));
     },
     onSettled: () => {
+      clearNotificationSession();
       setPortalAuthState((state) => getNextPortalAuthSessionState(state, "logout_completed"));
       queryClient.clear();
       window.location.href = portalLogoutRedirectPath;
@@ -203,6 +212,9 @@ export function PortalLayout() {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
+          <div className="hidden h-14 items-center justify-end border-b border-border/80 bg-card/95 px-4 md:flex">
+            <NotificationArea />
+          </div>
           {staffPreview && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-300 bg-amber-100 px-4 py-2 text-sm text-amber-950">
               <div className="font-medium">
@@ -228,6 +240,7 @@ export function PortalLayout() {
                 <p className="truncate text-xs text-muted-foreground">{session?.customerName || "Account"}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                <NotificationArea />
                 <PortalThemeToggle theme={portalTheme} onThemeChange={handlePortalThemeChange} />
                 {renderLogoutButton()}
               </div>

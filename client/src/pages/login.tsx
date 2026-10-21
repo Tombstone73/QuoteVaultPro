@@ -11,6 +11,7 @@ import { useAuth, verifyLoginSession } from "@/hooks/useAuth";
 import { apiFetch } from "@/lib/queryClient";
 import { HERO_LOGO_SRC, SHIELD_LOGO_SRC, SPLASH_STATIC_SRC } from "@/lib/branding";
 import { sanitizePortalReturnTarget } from "@shared/portalReturnTarget";
+import { NotificationArea } from "@/components/layout/NotificationArea";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -104,6 +105,7 @@ export default function Login() {
           <p className="text-sm font-medium text-slate-300">Print shop workflow software</p>
         </div>
 
+        <div className="flex justify-end"><NotificationArea /></div>
         <Card className="border-white/[0.12] bg-[#0b1018]/88 text-white shadow-[0_24px_90px_rgba(0,0,0,0.55),0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur-xl">
           <CardHeader className="space-y-3 pb-6 text-center">
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.06] shadow-[0_0_35px_rgba(0,169,224,0.18)]">

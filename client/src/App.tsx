@@ -7,7 +7,6 @@ import EmailSettings from "@/pages/settings/email";
 import UsersSettings from "@/pages/settings/users";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
 import { ThemeProvider } from "@/hooks/useTheme";
@@ -103,7 +102,7 @@ import QBInvoiceInspectorPage from "@/pages/admin/QBInvoiceInspectorPage";
 import QBCustomerInspectorPage from "@/pages/admin/QBCustomerInspectorPage";
 import CustomerContactMigrationPage from "@/pages/admin/CustomerContactMigrationPage";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
-import { useToast } from "@/hooks/use-toast";
+import { clearNotificationSession, useToast } from "@/hooks/use-toast";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
@@ -482,6 +481,7 @@ function SessionExpiredRedirector() {
       }
 
       handledRef.current = true;
+      clearNotificationSession();
       toast({
         title: "Session expired",
         description: SESSION_EXPIRED_MESSAGE,
@@ -508,7 +508,6 @@ function App() {
       <ThemeProvider>
         <TooltipProvider>
           <NavigationGuardProvider>
-            <Toaster />
             <SessionExpiredRedirector />
             <Router />
           </NavigationGuardProvider>
