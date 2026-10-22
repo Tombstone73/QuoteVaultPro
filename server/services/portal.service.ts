@@ -7,6 +7,7 @@ import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 import { hasEstablishedInvoiceDate, hasFirstApprovalInvoiceDateAnchor } from '@shared/invoicePaymentTerms';
 import { invoiceDocumentDatePart } from '../lib/invoiceDocumentDate';
 import { withInvoicePaymentContext } from './invoicePaymentSession.service';
+import { canPortalPlaceOrder } from './portalStorefrontCheckout.policy';
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
 import { z } from "zod";
@@ -90,6 +91,7 @@ export type PortalSessionDto = {
     canPayInvoices: boolean;
     canViewOrders: boolean;
     canViewQuotes: boolean;
+    canPlaceOrders: boolean;
   };
 };
 
@@ -1327,6 +1329,7 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
       canPayInvoices: !staffPreview || canExecutePreviewPayments,
       canViewOrders: true,
       canViewQuotes: true,
+      canPlaceOrders: canPortalPlaceOrder((req as any).portalAccess?.accessRole, Boolean(staffPreview)),
     },
   };
 }

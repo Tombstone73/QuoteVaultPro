@@ -57,7 +57,7 @@ export type StorefrontOption = {
   step: number | null;
 };
 
-type StorefrontProduct = {
+export type StorefrontProduct = {
   id: string;
   name: string;
   description: string;
@@ -66,6 +66,11 @@ type StorefrontProduct = {
   measurementMode: string;
   pricingProfileConfig: unknown;
   pbv2ActiveTreeVersionId: string | null;
+  portalOrderable: boolean;
+  artworkPolicy: 'not_required' | 'required';
+  isTaxable: boolean;
+  productTypeId: string | null;
+  requiresProofApproval: boolean;
   activeTreeStatus: string | null;
   treeJson: Record<string, unknown> | null;
 };
@@ -168,7 +173,7 @@ export function projectStorefrontOptions(tree: OptionTreeV2, selections: Record<
   return { options, effectiveSelections, entries, runtime };
 }
 
-function decodeSelections(tree: OptionTreeV2, raw: unknown): Record<string, unknown> {
+export function decodeSelections(tree: OptionTreeV2, raw: unknown): Record<string, unknown> {
   if (raw == null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) throw new PortalAccessError(400, 'Invalid product options');
   const incoming = raw as Record<string, unknown>;
@@ -231,11 +236,11 @@ function decodeSelections(tree: OptionTreeV2, raw: unknown): Record<string, unkn
   return decoded;
 }
 
-function card(product: Pick<StorefrontProduct, 'id' | 'name' | 'description' | 'category' | 'thumbnailUrls' | 'pricingProfileConfig' | 'pbv2ActiveTreeVersionId' | 'activeTreeStatus'>) {
-  return { id: product.id, name: product.name, description: product.description.slice(0, 300), category: product.category, imageUrl: safeImageUrl(product.thumbnailUrls), pricingAvailable: hasStorefrontPricing(product) };
+function card(product: Pick<StorefrontProduct, 'id' | 'name' | 'description' | 'category' | 'thumbnailUrls' | 'pricingProfileConfig' | 'pbv2ActiveTreeVersionId' | 'activeTreeStatus' | 'portalOrderable'>) {
+  return { id: product.id, name: product.name, description: product.description.slice(0, 300), category: product.category, imageUrl: safeImageUrl(product.thumbnailUrls), pricingAvailable: hasStorefrontPricing(product), orderable: product.portalOrderable && hasStorefrontPricing(product) };
 }
 
-async function loadVisibleProduct(req: Request, productId: string) {
+export async function loadVisibleProduct(req: Request, productId: string) {
   const scope = getPortalScope(req);
   if (!scope.userId) throw new PortalAccessError(403, 'Portal customer scope is required');
   const linkedOnly = scope.customer.productVisibilityMode === 'linked-only';
@@ -243,7 +248,9 @@ async function loadVisibleProduct(req: Request, productId: string) {
     id: products.id, name: products.name, description: products.description, category: products.category,
     thumbnailUrls: products.thumbnailUrls, measurementMode: products.measurementMode,
     pricingProfileConfig: products.pricingProfileConfig, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
-    isActive: products.isActive, storefrontVisible: products.storefrontVisible,
+    isActive: products.isActive, storefrontVisible: products.storefrontVisible, portalOrderable: products.portalOrderable,
+    artworkPolicy: products.artworkPolicy, isTaxable: products.isTaxable, productTypeId: products.productTypeId,
+    requiresProofApproval: products.requiresProofApproval,
     activeTreeStatus: pbv2TreeVersions.status, treeJson: pbv2TreeVersions.treeJson,
   }).from(products).leftJoin(pbv2TreeVersions, and(
     eq(pbv2TreeVersions.id, products.pbv2ActiveTreeVersionId),
@@ -300,7 +307,7 @@ export async function listPortalStorefrontProducts(req: Request) {
     id: products.id, name: products.name, description: products.description, category: products.category,
     thumbnailUrls: products.thumbnailUrls, pricingProfileConfig: products.pricingProfileConfig,
     pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, isActive: products.isActive,
-    storefrontVisible: products.storefrontVisible, activeTreeStatus: pbv2TreeVersions.status,
+    storefrontVisible: products.storefrontVisible, portalOrderable: products.portalOrderable, activeTreeStatus: pbv2TreeVersions.status,
   }).from(products).leftJoin(pbv2TreeVersions, treeJoin).where(and(
     eligible,
     ...(search ? [or(ilike(products.name, `%${search}%`), ilike(products.description, `%${search}%`), ilike(products.category, `%${search}%`))] : []),
@@ -320,7 +327,7 @@ export async function getPortalStorefrontProduct(req: Request, productId: string
   const product = await loadVisibleProduct(req, productId);
   if (!product) return null;
   if (!hasStorefrontPricing(product)) return {
-    ...card(product), imageUrls: safeImageUrls(product.thumbnailUrls), measurementMode: null, dimensionsRequired: false,
+    ...card(product), treeVersionId: null, artworkRequired: product.artworkPolicy === 'required', imageUrls: safeImageUrls(product.thumbnailUrls), measurementMode: null, dimensionsRequired: false,
     fixedDimensions: null, defaults: { quantity: 1, widthIn: null, heightIn: null, selections: {} }, options: [],
   };
   const tree = product.treeJson as OptionTreeV2;
@@ -329,6 +336,8 @@ export async function getPortalStorefrontProduct(req: Request, productId: string
   const dimensionsRequired = product.measurementMode !== 'quantity_only' && !fixedDimensions;
   return {
     ...card(product),
+    treeVersionId: product.pbv2ActiveTreeVersionId,
+    artworkRequired: product.artworkPolicy === 'required',
     imageUrls: safeImageUrls(product.thumbnailUrls),
     measurementMode: product.measurementMode,
     dimensionsRequired,
@@ -339,6 +348,11 @@ export async function getPortalStorefrontProduct(req: Request, productId: string
 }
 
 export async function previewPortalStorefrontPrice(req: Request, productId: string) {
+  return pricePortalStorefrontConfiguration(req, productId, req.body);
+}
+
+/** Shared public-option validation and canonical pricing for preview and checkout. */
+export async function pricePortalStorefrontConfiguration(req: Request, productId: string, rawConfiguration: unknown) {
   const scope = getPortalScope(req);
   const product = await loadVisibleProduct(req, productId);
   if (!product) return null;
@@ -350,9 +364,9 @@ export async function previewPortalStorefrontPrice(req: Request, productId: stri
     || Number(customer.defaultDiscountPercent || 0) !== 0
     || Number(customer.defaultMarkupPercent || 0) !== 0
     || Number(customer.defaultMarginPercent || 0) !== 0) {
-    throw new PortalProductPriceError(422, 'ACCOUNT_PRICING_UNAVAILABLE', 'Pricing is unavailable for this account.');
+    throw new PortalProductPriceError(422, 'ACCOUNT_PRICING_UNAVAILABLE', 'Pricing is unavailable for this account. Contact the shop for a Quote.');
   }
-  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
+  const body = rawConfiguration && typeof rawConfiguration === 'object' && !Array.isArray(rawConfiguration) ? rawConfiguration as Record<string, unknown> : {};
   const quantity = Number(body.quantity);
   if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100000) throw new PortalAccessError(400, 'Enter a valid quantity.');
   const tree = product.treeJson as OptionTreeV2;

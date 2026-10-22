@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ImageOff, Info, Loader2, Ruler, ShoppingBag } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,13 +13,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   PortalApiError,
+  portalCartRequest,
+  usePortalCart,
+  usePortalSession,
   usePortalStorePrice,
   usePortalStoreProduct,
   type PortalStoreOptionDto,
   type PortalStoreOptionValue,
   type PortalStorePriceRequest,
   type PortalStoreProductDto,
+  type PortalCartLineDto,
 } from "@/hooks/usePortal";
+import { useQueryClient } from "@tanstack/react-query";
 
 function currency(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
@@ -31,7 +36,7 @@ function pricingErrorPresentation(error: unknown): { message: string; retryable:
     if (error.code === 'STAFF_PORTAL_PREVIEW_REQUIRED') return { message: 'Open this portal from a customer record to preview pricing.', retryable: false };
     if (error.status === 403) return { message: 'Pricing is unavailable in this portal session. Reopen the customer portal or contact the shop.', retryable: false };
     if (error.code === 'PRODUCT_PRICING_NOT_CONFIGURED') return { message: 'Product pricing is not configured.', retryable: false };
-    if (error.code === 'ACCOUNT_PRICING_UNAVAILABLE') return { message: 'Pricing is unavailable for this account.', retryable: false };
+    if (error.code === 'ACCOUNT_PRICING_UNAVAILABLE') return { message: 'Pricing is unavailable for this account. Contact the shop for a Quote.', retryable: false };
     if (error.code === 'CONFIGURATION_CANNOT_BE_PRICED' || error.status === 400) return { message: 'This configuration cannot be priced.', retryable: false };
   }
   return { message: 'Pricing is temporarily unavailable. Please try again.', retryable: true };
@@ -135,11 +140,15 @@ function ProductOption({
   );
 }
 
-function Configuration({ product }: { product: PortalStoreProductDto }) {
-  const [quantity, setQuantity] = useState(String(product.defaults.quantity || 1));
-  const [width, setWidth] = useState(product.defaults.widthIn == null ? "" : String(product.defaults.widthIn));
-  const [height, setHeight] = useState(product.defaults.heightIn == null ? "" : String(product.defaults.heightIn));
-  const [selections, setSelections] = useState<Record<string, PortalStoreOptionValue>>({ ...product.defaults.selections });
+function Configuration({ product, cartLine, canOrder }: { product: PortalStoreProductDto; cartLine?: PortalCartLineDto; canOrder: boolean }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [cartError, setCartError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [quantity, setQuantity] = useState(String(cartLine?.quantity ?? product.defaults.quantity ?? 1));
+  const [width, setWidth] = useState((cartLine?.widthIn ?? product.defaults.widthIn) == null ? "" : String(cartLine?.widthIn ?? product.defaults.widthIn));
+  const [height, setHeight] = useState((cartLine?.heightIn ?? product.defaults.heightIn) == null ? "" : String(cartLine?.heightIn ?? product.defaults.heightIn));
+  const [selections, setSelections] = useState<Record<string, PortalStoreOptionValue>>({ ...(cartLine?.selections ?? product.defaults.selections) });
   const [visibleOptions, setVisibleOptions] = useState(product.options);
   const parsedQuantity = positiveNumber(quantity);
   const parsedWidth = positiveNumber(width);
@@ -179,6 +188,22 @@ function Configuration({ product }: { product: PortalStoreProductDto }) {
       return Object.keys(newlyVisibleDefaults).length ? { ...current, ...newlyVisibleDefaults } : current;
     });
   }, [price, configurationKey]);
+
+  async function saveToCart() {
+    if (!configuration || !product.treeVersionId || !price?.priceAvailable || !canOrder || adding) return;
+    setAdding(true);
+    setCartError(null);
+    try {
+      await portalCartRequest(cartLine ? `/items/${encodeURIComponent(cartLine.id)}` : '/items', cartLine ? 'PUT' : 'POST', {
+        productId: product.id, treeVersionId: product.treeVersionId, ...configuration,
+        widthIn: configuration.widthIn ?? null, heightIn: configuration.heightIn ?? null,
+      });
+      await queryClient.invalidateQueries({ queryKey: ['/api/portal/cart'] });
+      navigate('/portal/cart');
+    } catch (error) {
+      setCartError(error instanceof Error ? error.message : 'Could not save this cart item. Please retry.');
+    } finally { setAdding(false); }
+  }
 
   return (
     <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -229,9 +254,15 @@ function Configuration({ product }: { product: PortalStoreProductDto }) {
           ) : price && !price.priceAvailable ? (
             <p className="text-sm text-muted-foreground">Choose the remaining required options to see an estimate.</p>
           ) : null}
+          {product.orderable && canOrder ? <div className="space-y-2 border-t border-border/70 pt-4">
+            <Button type="button" disabled={!price?.priceAvailable || !isCurrent || adding} onClick={() => void saveToCart()} className="w-full">
+              {adding ? 'Saving item…' : cartLine ? 'Update cart item' : 'Add to cart'}
+            </Button>
+            {cartError ? <p role="alert" className="text-sm text-destructive">{cartError}</p> : null}
+            <p className="text-xs text-muted-foreground">Pickup only. Artwork and tax are reviewed in the cart.</p>
+          </div> : <p className="text-xs text-muted-foreground">{product.orderable ? 'Ordering requires a Buyer or Company Admin account.' : 'This Product is available for pricing preview. Contact the shop to order.'}</p>}
           <div className="border-t border-border/70 pt-4 text-xs leading-relaxed text-muted-foreground">
-            <p>Pricing preview is available. Online ordering is not yet enabled.</p>
-            <p className="mt-2">Tax and shipping are calculated separately.</p>
+            <p>Tax is calculated at checkout. Shipping is not available for portal Orders yet.</p>
           </div>
         </CardContent>
       </Card>
@@ -258,8 +289,17 @@ function ProductGallery({ product }: { product: PortalStoreProductDto }) {
 
 export default function PortalStoreProductPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const cartQuery = usePortalCart();
+  const sessionQuery = usePortalSession();
   const productQuery = usePortalStoreProduct(id);
   const product = productQuery.data;
+  const editingLineId = searchParams.get('cartLine');
+  const editingLine = cartQuery.data?.lines.find(line => line.id === editingLineId && line.productId === id);
+
+  if (editingLineId && cartQuery.isPending) return <div role="status" className="p-6">Loading cart item…</div>;
+  if (editingLineId && cartQuery.isError) return <div className="mx-auto max-w-4xl space-y-3"><p role="alert">Could not load this cart item.</p><Button onClick={() => void cartQuery.refetch()}>Retry</Button></div>;
+  if (editingLineId && !editingLine) return <div className="mx-auto max-w-4xl space-y-3"><p role="alert">This cart item is no longer available to edit.</p><Button asChild><Link to="/portal/cart">Return to cart</Link></Button></div>;
 
   if (productQuery.isPending) return <div className="flex min-h-64 items-center justify-center" role="status" aria-label="Loading product"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
 
@@ -280,7 +320,7 @@ export default function PortalStoreProductPage() {
           </div>
         </div>
       </header>
-      {product.pricingAvailable ? <Configuration key={product.id} product={product} /> : (
+      {product.pricingAvailable ? <Configuration key={`${product.id}:${editingLine?.id ?? 'new'}`} product={product} cartLine={editingLine} canOrder={sessionQuery.data?.permissions.canPlaceOrders === true} /> : (
         <Card><CardContent className="py-8"><p className="font-medium">Product pricing is not configured</p><p className="mt-1 text-sm text-muted-foreground">This product is available to browse. Contact us for a quote.</p></CardContent></Card>
       )}
     </div>

@@ -2,13 +2,18 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TextDecoder, TextEncoder } from "node:util";
 
-import { PortalApiError, usePortalStorePrice, usePortalStoreProduct, usePortalStoreProducts } from "@/hooks/usePortal";
+import { PortalApiError, portalCartRequest, usePortalCart, usePortalSession, usePortalStorePrice, usePortalStoreProduct, usePortalStoreProducts } from "@/hooks/usePortal";
+
+jest.mock('@tanstack/react-query', () => ({ ...jest.requireActual('@tanstack/react-query'), useQueryClient: () => ({ invalidateQueries: jest.fn() }) }));
 
 jest.mock("@/hooks/usePortal", () => ({
   PortalApiError: jest.requireActual<typeof import("@/hooks/usePortal")>("@/hooks/usePortal").PortalApiError,
   usePortalStoreProducts: jest.fn(),
   usePortalStoreProduct: jest.fn(),
   usePortalStorePrice: jest.fn(),
+  usePortalCart: jest.fn(),
+  usePortalSession: jest.fn(),
+  portalCartRequest: jest.fn(),
 }));
 
 Object.assign(globalThis, { TextDecoder, TextEncoder });
@@ -20,6 +25,9 @@ const { default: PortalStoreProductPage } = jest.requireActual<typeof import("./
 const catalogHook = usePortalStoreProducts as jest.Mock;
 const productHook = usePortalStoreProduct as jest.Mock;
 const priceHook = usePortalStorePrice as jest.Mock;
+const cartHook = usePortalCart as jest.Mock;
+const sessionHook = usePortalSession as jest.Mock;
+const cartRequest = portalCartRequest as jest.Mock;
 let host: HTMLDivElement;
 let root: Root;
 
@@ -47,6 +55,9 @@ beforeEach(() => {
   catalogHook.mockReset();
   productHook.mockReset();
   priceHook.mockReset();
+  cartHook.mockReturnValue({ data: { lines: [], files: [] } });
+  sessionHook.mockReturnValue({ data: { permissions: { canPlaceOrders: false } } });
+  cartRequest.mockReset();
 });
 
 afterEach(() => {
@@ -55,7 +66,7 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-test("catalog renders a read-only product browse path", () => {
+test("catalog keeps pricing preview separate from ordering permission", () => {
   catalogHook.mockReturnValue({
     data: { items: [{ id: "product-1", name: "Custom Signs", description: "Printed for your space", category: "Signs", imageUrl: null }], categories: ["Signs"], hasMore: false, page: 0 },
     isPending: false,
@@ -65,10 +76,10 @@ test("catalog renders a read-only product browse path", () => {
   render("/portal/store");
 
   expect(host.textContent).toContain("Custom Signs");
-  expect(host.textContent).toContain("Product Calculator");
+  expect(host.textContent).toContain("Products");
   expect(host.querySelector('a[href="/portal/store/product-1"]')).not.toBeNull();
-  expect(host.textContent).toContain("Online ordering is not yet enabled");
-  expect(host.textContent).not.toMatch(/add to cart|checkout|place order/i);
+  expect(host.textContent).toContain("pickup");
+  expect(host.textContent).not.toMatch(/add to cart|place order/i);
 });
 
 test("assigned primary image uses the authenticated same-origin object path", () => {
@@ -147,7 +158,7 @@ test("detail previews cents from the pricing API and keeps its read-only boundar
   expect(priceHook).toHaveBeenCalledWith("product-1", { quantity: 20, selections: {} });
   expect(host.textContent).toContain("$5.50");
   expect(host.textContent).toContain("$110.00");
-  expect(host.textContent).toContain("Tax and shipping are calculated separately");
+  expect(host.textContent).toContain("Tax is calculated at checkout");
   expect(host.querySelector("button[type=submit]")).toBeNull();
 });
 
@@ -165,6 +176,27 @@ test("product without published pricing remains browsable without requesting a p
   expect(host.textContent).toContain("Product pricing is not configured");
   expect(priceHook).not.toHaveBeenCalled();
   expect(host.textContent).not.toContain("$0.00");
+});
+
+test('approved product can add its current priced configuration to the cart for a Buyer', async () => {
+  jest.useFakeTimers();
+  sessionHook.mockReturnValue({ data: { permissions: { canPlaceOrders: true } } });
+  productHook.mockReturnValue({ data: {
+    id: 'product-1', name: 'Signs', description: '', category: 'Signs', imageUrl: null,
+    pricingAvailable: true, orderable: true, treeVersionId: 'tree-1', artworkRequired: false,
+    measurementMode: 'quantity_only', dimensionsRequired: false, fixedDimensions: null,
+    defaults: { quantity: 2, widthIn: null, heightIn: null, selections: {} }, options: [],
+  }, isPending: false, isError: false });
+  priceHook.mockImplementation((_id, configuration) => configuration ? { isSuccess: true, isPending: false, isFetching: false, isError: false,
+    data: { priceAvailable: true, unitPriceCents: 500, totalCents: 1000, options: [], effectiveSelections: {} } }
+    : { isSuccess: false, isPending: false, isFetching: false, isError: false });
+  cartRequest.mockResolvedValue({ lines: [] });
+  render('/portal/store/product-1');
+  act(() => jest.advanceTimersByTime(400));
+  await act(async () => { Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Add to cart')?.click(); });
+  expect(cartRequest).toHaveBeenCalledWith('/items', 'POST', {
+    productId: 'product-1', treeVersionId: 'tree-1', quantity: 2, selections: {}, widthIn: null, heightIn: null,
+  });
 });
 
 test.each([

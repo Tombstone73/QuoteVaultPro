@@ -1,4 +1,5 @@
 import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
+import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRetention';
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -412,6 +413,14 @@ process.on('uncaughtException', (error) => {
       const lineReceiptTimer = setInterval(cleanLineReceipts, 60 * 60 * 1000);
       lineReceiptTimer.unref?.();
       void cleanLineReceipts();
+
+      // Keep staged customer artwork only while a cart is active or within the
+      // documented removal grace period. Physical cleanup is reference-guarded.
+      const cleanPortalCarts = () => cleanupAbandonedPortalCarts()
+        .catch(error => console.error('[PortalCartRetention] Failed', error));
+      const portalCartRetentionTimer = setInterval(cleanPortalCarts, 60 * 60 * 1000);
+      portalCartRetentionTimer.unref?.();
+      void cleanPortalCarts();
 
       const paymentReconciliationEnabled = isWorkerEnabled('PAYMENT_RECONCILIATION', true);
       const paymentReconciliationInterval = getWorkerIntervalOverride(

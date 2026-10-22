@@ -51,6 +51,11 @@ import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { isStaffPortalPreviewReadMethod } from "../services/staffPortalPreviewService";
 import { authorizeStaffPreviewPayment } from "../middleware/authorizeStaffPreviewPayment";
 import { getPortalStorefrontProduct, listPortalStorefrontProducts, PortalProductPriceError, previewPortalStorefrontPrice } from "../services/portalStorefront.service";
+import {
+  addPortalStorefrontCartLine, getPortalStorefrontCart, removePortalStorefrontCartFile,
+  removePortalStorefrontCartLine, reviewPortalStorefrontCart, submitPortalStorefrontCart,
+  updatePortalStorefrontCartLine, uploadPortalStorefrontCartFile,
+} from "../services/portalStorefrontCheckout.service";
 
 type PortalHandler<T> = (req: Request) => Promise<T>;
 
@@ -382,6 +387,18 @@ export function registerPortalRoutes(
   app.get("/api/portal/products", ...portalMiddlewares, portalGet(listPortalStorefrontProducts));
   app.get("/api/portal/products/:id", ...portalMiddlewares, portalGetById("id", getPortalStorefrontProduct));
   app.post("/api/portal/products/:id/price", ...portalPricingPreviewMiddlewares, portalPostById("id", previewPortalStorefrontPrice));
+  app.get("/api/portal/cart", ...portalMiddlewares, portalGet(getPortalStorefrontCart));
+  app.post("/api/portal/cart/items", ...portalMiddlewares, portalPost(addPortalStorefrontCartLine));
+  app.put("/api/portal/cart/items/:lineId", ...portalMiddlewares,
+    portalPostById("lineId", updatePortalStorefrontCartLine));
+  app.delete("/api/portal/cart/items/:lineId", ...portalMiddlewares,
+    portalPostById("lineId", removePortalStorefrontCartLine));
+  app.post("/api/portal/cart/items/:lineId/files", ...portalMiddlewares,
+    portalPostById("lineId", uploadPortalStorefrontCartFile));
+  app.delete("/api/portal/cart/files/:fileId", ...portalMiddlewares,
+    portalPostById("fileId", removePortalStorefrontCartFile));
+  app.post("/api/portal/cart/review", ...portalMiddlewares, portalPost(reviewPortalStorefrontCart));
+  app.post("/api/portal/cart/submit", ...portalMiddlewares, portalPost(submitPortalStorefrontCart));
   app.get("/api/portal/debug/customer-quotes", isAuthenticated, tenantContext, requireNonProductionStaff, async (req: Request, res: Response) => {
     try {
       const customerId = String(req.query.customerId || "").trim();

@@ -35,6 +35,7 @@ export type PortalSessionDto = {
     canPayInvoices: boolean;
     canViewOrders: boolean;
     canViewQuotes: boolean;
+    canPlaceOrders: boolean;
   };
 };
 
@@ -45,6 +46,7 @@ export type PortalStoreProductSummaryDto = {
   category: string | null;
   imageUrl: string | null;
   pricingAvailable: boolean;
+  orderable: boolean;
 };
 
 export type PortalStoreCatalogDto = {
@@ -71,6 +73,8 @@ export type PortalStoreOptionDto = {
 };
 
 export type PortalStoreProductDto = PortalStoreProductSummaryDto & {
+  treeVersionId: string | null;
+  artworkRequired: boolean;
   imageUrls: string[];
   measurementMode: string | null;
   dimensionsRequired: boolean;
@@ -98,6 +102,47 @@ export type PortalStorePriceDto = {
   options: PortalStoreOptionDto[];
   effectiveSelections: Record<string, PortalStoreOptionValue>;
 };
+
+export type PortalCartLineDto = PortalStorePriceRequest & {
+  id: string;
+  productId: string;
+  productName: string;
+  treeVersionId: string;
+  widthIn: number | null;
+  heightIn: number | null;
+};
+export type PortalCartDto = {
+  id: string | null;
+  version: number;
+  canOrder: boolean;
+  lines: PortalCartLineDto[];
+  files: Array<{ id: string; lineId: string; fileName: string; sizeBytes: number }>;
+};
+export type PortalCartReviewDto = {
+  cartVersion: number;
+  reviewToken: string;
+  currency: string;
+  fulfillmentMethod: 'pickup';
+  pickupLocation: { name: string; line1: string; line2: string | null; city: string; state: string; postalCode: string; country: string };
+  lines: Array<{ id: string; productName: string; quantity: number; totalCents: number }>;
+  subtotalCents: number;
+  taxCents: number;
+  shippingCents: number;
+  totalCents: number;
+};
+export type PortalCartSubmitDto =
+  | { status: 'placed'; orderId: string; orderNumber: string | number; totalCents: number; currency: string; artworkStatus: string }
+  | { status: 'changed'; review: PortalCartReviewDto };
+
+export function usePortalCart() {
+  return useQuery({ queryKey: ['/api/portal/cart'], queryFn: () => portalFetch<PortalCartDto>('/api/portal/cart') });
+}
+
+export function portalCartRequest<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown) {
+  return portalFetch<T>(`/api/portal/cart${path}`, {
+    method, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
 
 export type PortalInvoiceDto = {
   paymentEligibility?: { payable: boolean; blockedReason: string | null };

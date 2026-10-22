@@ -58,10 +58,10 @@ export default function PortalStorePage() {
             <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Customer Portal</span>
             <Badge variant="secondary" className="text-[11px]">Beta</Badge>
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Product Calculator</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Configure products and preview pricing where available.</p>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Products</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Configure products, preview pricing, and order approved items for pickup.</p>
         </div>
-        <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">Online ordering is not yet enabled.</p>
+        <Button asChild variant="outline"><Link to="/portal/cart">View cart</Link></Button>
       </header>
 
       <section aria-label="Find products" className="grid gap-3 rounded-lg border border-border/80 bg-card p-4 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-end">
@@ -118,7 +118,7 @@ export default function PortalStorePage() {
                   {product.category ? <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{product.category}</p> : null}
                   <h2 className="font-semibold leading-snug group-hover:text-primary">{product.name}</h2>
                   <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-muted-foreground">{product.description || "Explore this product."}</p>
-                  {!product.pricingAvailable ? <p className="mt-2 text-xs text-muted-foreground">Pricing not available</p> : null}
+                  {!product.pricingAvailable ? <p className="mt-2 text-xs text-muted-foreground">Pricing not available</p> : product.orderable ? <p className="mt-2 text-xs text-primary">Available for pickup ordering</p> : <p className="mt-2 text-xs text-muted-foreground">Pricing preview only</p>}
                   <span className="mt-auto flex items-center gap-1 pt-4 text-sm font-medium text-primary">View product <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" /></span>
                 </div>
               </Link>

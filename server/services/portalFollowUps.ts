@@ -51,6 +51,7 @@ export type RecordPortalFollowUpInput = {
 };
 
 export const PORTAL_FOLLOW_UP_EVENT_LABELS: Record<PortalFollowUpEventType, string> = {
+  ORDER_SUBMITTED: "Storefront Order Received",
   QUOTE_APPROVED: "Quote Approved",
   QUOTE_DECLINED: "Quote Declined",
   QUOTE_REVISION_REQUESTED: "Quote Revision Requested",
@@ -69,6 +70,7 @@ export function buildPortalFollowUpIdempotencyKey(
 }
 
 export function defaultPortalFollowUpArea(eventType: PortalFollowUpEventType): string {
+  if (eventType === "ORDER_SUBMITTED") return "Order Review";
   if (eventType === "QUOTE_REVISION_REQUESTED") return "Estimating";
   if (eventType === "QUOTE_APPROVED") return "Order Review";
   if (eventType === "QUOTE_DECLINED") return "Sales";

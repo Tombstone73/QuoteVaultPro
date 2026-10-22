@@ -16,6 +16,7 @@ import { getInvoiceBillingOwnerTransitionBlocker } from "./invoiceBillingOwnerTr
 
 type CreateOrderPayload = Parameters<typeof storage.createOrder>[1];
 type UpdateOrderPayload = Parameters<typeof storage.updateOrder>[2];
+type OrderTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type CanonicalQuoteConversionOptions = Parameters<typeof storage.convertQuoteToOrder>[3];
 
 export class CanonicalOrderOperationError extends Error {
@@ -25,6 +26,19 @@ export class CanonicalOrderOperationError extends Error {
 /** Shared boundary for Order header/create/conversion writes. */
 class CanonicalOrderOperations {
   async normalizeOwnerIdentity(input: { organizationId: string; customerId?: string | null; contactId?: string | null; preserveExplicitCustomerClear?: boolean }) { return resolveOrderCustomerContactIds(input); }
+
+  /** Checkout composes canonical Order/Invoice creation with artwork and cart state in one transaction. */
+  async createInTransaction(tx: OrderTransaction, input: { organizationId: string; actorUserId: string; payload: CreateOrderPayload; auditDescription?: string }) {
+    const identity = await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId });
+    if (identity.customerId !== input.payload.customerId || identity.contactId !== input.payload.contactId) {
+      throw new CanonicalOrderOperationError('ORDER_IDENTITY_REQUIRED', 'Customer or Contact access changed. Refresh checkout and try again.', undefined, 409);
+    }
+    const order = await new OrdersRepository(tx, true).createOrder(input.organizationId, {
+      ...input.payload, createdByUserId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId,
+    });
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Created order ${order.displayNumber || order.orderNumber}.` });
+    return order;
+  }
 
   async create(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; payload: CreateOrderPayload; auditDescription?: string }) {
     const identity = await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId, preserveExplicitCustomerClear: input.payload.customerId === null });

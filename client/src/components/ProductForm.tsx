@@ -284,6 +284,21 @@ export const ProductForm = ({
             </FormItem>
           )}
         />
+        <FormField
+          control={form.control}
+          name="portalOrderable"
+          render={({ field }) => (
+            <FormItem className="flex items-center justify-between gap-4 rounded-md border border-slate-700 bg-slate-800/50 px-3 py-2">
+              <div>
+                <FormLabel className="text-sm text-slate-100">Allow customer portal Orders</FormLabel>
+                <FormDescription className="text-xs text-slate-400">
+                  Approved customers may order this active, portal-visible Product with published pricing. New Products start with ordering off.
+                </FormDescription>
+              </div>
+              <FormControl><Switch checked={field.value === true} onCheckedChange={field.onChange} aria-label="Allow customer portal Orders" /></FormControl>
+            </FormItem>
+          )}
+        />
 
         <FormField
           control={form.control}

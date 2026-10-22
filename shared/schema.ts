@@ -780,6 +780,8 @@ export const products = pgTable("products", {
   showStoreLink: boolean("show_store_link").default(true).notNull(),
   // Customer Portal Storefront visibility; external store links are unrelated.
   storefrontVisible: boolean("storefront_visible").default(true).notNull(),
+  // Explicit customer ordering approval; calculator visibility alone is insufficient.
+  portalOrderable: boolean("portal_orderable").default(false).notNull(),
   thumbnailUrls: text("thumbnail_urls").array().default(sql`'{}'::text[]`).notNull(),
   priceBreaks: jsonb("price_breaks").$type<{
     enabled: boolean;
@@ -2458,6 +2460,7 @@ export const inkMasterSavedSpecs = pgTable("ink_master_saved_specs", {
 ]);
 
 export type PortalFollowUpEventType =
+  | "ORDER_SUBMITTED"
   | "QUOTE_APPROVED"
   | "QUOTE_DECLINED"
   | "QUOTE_REVISION_REQUESTED"
@@ -3279,6 +3282,58 @@ export const customerPortalAccess = pgTable("customer_portal_access", {
   uniqueIndex("customer_portal_access_user_uidx")
     .on(table.userId)
     .where(sql`user_id IS NOT NULL`),
+]);
+
+export type PortalStorefrontCartLine = {
+  id: string;
+  productId: string;
+  treeVersionId: string;
+  quantity: number;
+  widthIn: number | null;
+  heightIn: number | null;
+  selections: Record<string, string | number | boolean | string[]>;
+};
+
+/** One independent, durable cart per active portal access (not per company). */
+export const portalStorefrontCarts = pgTable("portal_storefront_carts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: "cascade" }),
+  accessId: varchar("access_id").notNull().references(() => customerPortalAccess.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 16 }).$type<"open" | "submitted" | "abandoned">().notNull().default("open"),
+  version: integer("version").notNull().default(0),
+  lines: jsonb("lines").$type<PortalStorefrontCartLine[]>().notNull().default(sql`'[]'::jsonb`),
+  review: jsonb("review").$type<Record<string, unknown> | null>(),
+  submissionKey: varchar("submission_key", { length: 64 }),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: "restrict" }),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("portal_storefront_carts_one_open_uidx").on(table.organizationId, table.accessId).where(sql`${table.status} = 'open'`),
+  uniqueIndex("portal_storefront_carts_submission_uidx").on(table.organizationId, table.submissionKey).where(sql`${table.submissionKey} IS NOT NULL`),
+  index("portal_storefront_carts_customer_idx").on(table.organizationId, table.customerId),
+]);
+
+export const portalStorefrontCartFiles = pgTable("portal_storefront_cart_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  cartId: varchar("cart_id").notNull().references(() => portalStorefrontCarts.id, { onDelete: "cascade" }),
+  lineId: varchar("line_id").notNull(),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "restrict" }),
+  originalFilename: text("original_filename").notNull(),
+  storedFilename: text("stored_filename"),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum"),
+  extension: text("extension"),
+  note: text("note"),
+  removedAt: timestamp("removed_at", { withTimezone: true }),
+  orderAttachmentId: varchar("order_attachment_id").references(() => orderAttachments.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("portal_storefront_cart_files_cart_line_idx").on(table.organizationId, table.cartId, table.lineId),
+  index("portal_storefront_cart_files_retention_idx").on(table.removedAt),
 ]);
 
 export const customerPortalInviteTokens = pgTable("customer_portal_invite_tokens", {

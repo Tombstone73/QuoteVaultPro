@@ -76,7 +76,8 @@ function product(overrides: Record<string, unknown> = {}) {
   return {
     id: 'product-a', name: 'Yard Sign', description: 'A printed sign', category: 'Signs', thumbnailUrls: ['https://example.com/sign.png'],
     measurementMode: 'dimensions_required', pricingProfileConfig: null, pbv2ActiveTreeVersionId: 'tree-a',
-    isActive: true, storefrontVisible: true, activeTreeStatus: 'ACTIVE', treeJson: tree,
+    isActive: true, storefrontVisible: true, portalOrderable: false, artworkPolicy: 'not_required',
+    isTaxable: true, productTypeId: null, requiresProofApproval: false, activeTreeStatus: 'ACTIVE', treeJson: tree,
     ...overrides,
   };
 }
@@ -99,6 +100,13 @@ test('catalog visibility is active and explicit while pricing readiness is indep
     expect(mayShowStorefrontProduct(product(patch))).toBe(true);
     expect(hasStorefrontPricing(product(patch))).toBe(false);
   }
+});
+
+test('ordering approval is separate from catalog visibility and pricing', async () => {
+  rows = [product()];
+  expect((await listPortalStorefrontProducts({ query: {} } as any)).items[0]).toMatchObject({ pricingAvailable: true, orderable: false });
+  rows = [product({ portalOrderable: true })];
+  expect((await listPortalStorefrontProducts({ query: {} } as any)).items[0]).toMatchObject({ pricingAvailable: true, orderable: true });
 });
 
 test('customer-safe DTO omits PBV2 rules, price impacts, and internal nodes', () => {
@@ -141,7 +149,7 @@ test('portal image access requires an assigned image on a visible product in the
 
 test('catalog and detail reads are organization-scoped and return only projected fields', async () => {
   const catalog = await listPortalStorefrontProducts({ query: {} } as any);
-  expect(catalog.items).toEqual([{ id: 'product-a', name: 'Yard Sign', description: 'A printed sign', category: 'Signs', imageUrl: 'https://example.com/sign.png', pricingAvailable: true }]);
+  expect(catalog.items).toEqual([{ id: 'product-a', name: 'Yard Sign', description: 'A printed sign', category: 'Signs', imageUrl: 'https://example.com/sign.png', pricingAvailable: true, orderable: false }]);
   expect(catalog).toMatchObject({ categories: ['Signs'], hasMore: false, page: 0 });
   expect(reads[0].params).toContain('org-a');
   expect(reads[0].sql).toContain('storefront_visible');

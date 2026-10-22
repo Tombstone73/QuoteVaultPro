@@ -22,6 +22,8 @@ describe("Storage reference guard contract", () => {
     expect(guard).toContain("inboundOrderFiles");
     expect(guard).toContain("lineItemProofVersions");
     expect(guard).toContain("sharedStoragePlacements");
+    expect(guard).toContain("portalStorefrontCartFiles");
+    expect(guard).toContain("eq(portalStorefrontCarts.status, 'open')");
   });
 
   test("physical storage deletion is blocked while live references remain and fails closed", () => {

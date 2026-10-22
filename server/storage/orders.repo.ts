@@ -388,7 +388,7 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     updatedAt: orderAttachments.updatedAt,
 } as const;
 
-export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'requiresProofApproval' | 'status' | 'workflowState' | 'designStatus' | 'width' | 'height' | 'sqft' | 'unitPrice' | 'totalPrice' | 'flatFeeAmountSnapshot' | 'hourlyRateSnapshot' | 'overageRateSnapshot' | 'internalLaborRateSnapshot' | 'taxAmount'> &
+export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'optionSelectionsJson' | 'requiresDesign' | 'requiresProofApproval' | 'status' | 'workflowState' | 'designStatus' | 'width' | 'height' | 'sqft' | 'unitPrice' | 'totalPrice' | 'flatFeeAmountSnapshot' | 'hourlyRateSnapshot' | 'overageRateSnapshot' | 'internalLaborRateSnapshot' | 'taxAmount'> &
     Partial<Pick<InsertOrderLineItem, 'status' | 'workflowState' | 'designStatus'>> & {
     width?: number | string | null;
     height?: number | string | null;
@@ -401,6 +401,9 @@ export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 're
     internalLaborRateSnapshot?: number | string | null;
     taxAmount?: number | string;
     requiresProofApproval?: boolean;
+    /** Omission inherits the Product design configuration in createOrder. */
+    requiresDesign?: boolean;
+    optionSelectionsJson?: Record<string, unknown> | null;
     variantId?: string | null;
     productName?: string | null;
     unit_price?: number | string | null;

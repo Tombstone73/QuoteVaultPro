@@ -12,6 +12,7 @@ import {
   ReceiptText,
   ScrollText,
   ShoppingBag,
+  ShoppingCart,
   Store,
   Sun,
   UserCircle,
@@ -44,6 +45,7 @@ import { clearNotificationSession, setNotificationScope } from "@/hooks/use-toas
 const NAV_ICONS = {
   home: Home,
   store: Store,
+  cart: ShoppingCart,
   quotes: FileText,
   orders: ShoppingBag,
   proofs: FileCheck,
