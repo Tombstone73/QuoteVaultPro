@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { Request } from 'express';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -329,7 +330,7 @@ export async function submitPortalStorefrontCart(req: Request) {
       throw new PortalAccessError(409, 'Cart changed after review. Check the current items and totals before placing the Order.');
     }
     const priced = await calculateReview(req, cart, scope);
-    if (JSON.stringify(priced.summary) !== JSON.stringify(review.summary)) {
+    if (!isDeepStrictEqual(priced.summary, review.summary)) {
       const nextToken = randomUUID();
       await tx.update(portalStorefrontCarts).set({ review: { token: nextToken, version: cart.version, summary: priced.summary }, updatedAt: new Date() })
         .where(eq(portalStorefrontCarts.id, cart.id));
