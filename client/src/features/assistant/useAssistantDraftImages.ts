@@ -123,5 +123,12 @@ export function useAssistantDraftImages(ensureConversation: () => Promise<string
     uploadRequests.current.forEach(xhr => xhr.abort());
   }, []);
 
-  return { images, add, remove, clear, retry: uploadOne };
+  const markForResend = React.useCallback((attachmentIds: readonly string[]) => {
+    change(rows => rows.map(row => row.attachment && attachmentIds.includes(row.attachment.id)
+      ? { ...row, attachment: null, conversationId: null, state: "failed" as const, progress: 0,
+          error: "This message was saved, but the assistant failed. Retry this image upload before sending again." }
+      : row));
+  }, [change]);
+
+  return { images, add, remove, clear, retry: uploadOne, markForResend };
 }

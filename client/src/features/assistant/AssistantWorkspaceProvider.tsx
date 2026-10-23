@@ -108,7 +108,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     }
     return creatingConversationRef.current;
   }, [activeConversationId, createConversationForTurn]);
-  const { images: draftImages, add: addDraftImages, remove: removeDraftImage, retry: retryDraftImage, clear: clearDraftImages } = useAssistantDraftImages(ensureConversation);
+  const { images: draftImages, add: addDraftImages, remove: removeDraftImage, retry: retryDraftImage, clear: clearDraftImages, markForResend: markDraftImagesForResend } = useAssistantDraftImages(ensureConversation);
   React.useEffect(() => { if (!isAuthenticated) clearDraftImages(); }, [isAuthenticated, clearDraftImages]);
   React.useEffect(() => {
     if (draftImages.some(image => image.conversationId && image.conversationId !== activeConversationId)) clearDraftImages();
@@ -154,6 +154,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
       completed = true;
       retryTurnRef.current = null;
       if (response.data.status === "failed") {
+        if (attachmentIds.length) markDraftImagesForResend(attachmentIds);
         setDraft(current => current || message);
         setTurnNotice({ conversationId, message: "The message was saved, but the assistant could not finish. Your draft and images are still here." });
         return;
