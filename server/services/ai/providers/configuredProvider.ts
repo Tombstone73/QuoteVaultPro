@@ -1,3 +1,4 @@
+import { buildAssistantVisionMessages } from "./assistantVisionPayload";
 import {
   AiProviderResponseError,
   AiProviderTimeoutError,
@@ -252,8 +253,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         temperature: 0.1,
         messages: [
           { role: "system", content: request.system },
-          ...(request.conversationMessages ?? []),
-          { role: "user", content: request.user },
+          ...buildAssistantVisionMessages({ surface: "chat", history: request.conversationMessages, currentText: request.user, currentImages: request.currentImages }),
         ],
         response_format: { type: "json_object" },
         max_tokens: maxTokens,
@@ -463,8 +463,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           model: config.model,
           input: [
             { role: "system", content: request.system },
-            ...(request.conversationMessages ?? []),
-            { role: "user", content: request.user },
+            ...buildAssistantVisionMessages({ surface: "responses", history: request.conversationMessages, currentText: request.user, currentImages: request.currentImages }),
             ...(request.responseContinuation ?? []),
           ],
           tools: [

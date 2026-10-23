@@ -29,6 +29,8 @@ import { MATERIAL_REVIEW_KEY, handleMaterialReply, isAffirmativeMaterialReply, m
 import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import type { AiConversationMessage } from "../ai/providers/AiProviderAdapter";
+import { getAssistantImageRows, loadAssistantProviderImages } from "../assistantImageAttachments";
+import type { AssistantImageAttachment } from "@shared/assistantContracts";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
@@ -110,6 +112,7 @@ export interface AssistantMessageRecord {
   turnId: string | null;
   role: "user" | "assistant" | "system";
   content: string;
+  attachments?: AssistantImageAttachment[];
   presentation?: AssistantResponsePresentation;
   structuredCards?: unknown[];
   provider?: string | null;
@@ -152,6 +155,7 @@ export interface AssistantRepository {
     conversationId: string;
     actor: AssistantActor;
     message: string;
+    attachmentIds?: string[];
     context: AssistantContextEnvelope;
     clientRequestId?: string;
     response: string;
@@ -224,10 +228,10 @@ function operatorConversationHistory(messages: AssistantMessageRecord[]): AiConv
   // Keep a recent chronological suffix without rewriting persisted messages.
   // No age cutoff: reopening or pausing a conversation does not change its topic.
   for (let index = messages.length - 1; index >= 0 && history.length < 40; index--) {
-    const { role, content } = messages[index]!;
+    const { role, content, attachments } = messages[index]!;
     if (role !== "user" && role !== "assistant") continue;
     if (characters + content.length > 64_000) break;
-    history.push({ role, content });
+    history.push({ role, content, ...(role === "user" && attachments?.length ? { attachmentIds: attachments.map(item => item.id) } : {}) });
     characters += content.length;
   }
   return history.reverse();
@@ -869,10 +873,14 @@ export class AssistantService {
         503,
       );
     }
+    if (request.attachmentIds.length) await getAssistantImageRows({ ...scope, conversationId }, request.attachmentIds);
     if (request.clientRequestId && this.repo.getTurnByClientRequestId) {
       const existing = await this.repo.getTurnByClientRequestId({ ...scope, conversationId, clientRequestId: request.clientRequestId });
       if (existing) {
-        if (existing.userMessage.content !== request.message) throw new AssistantServiceError("ASSISTANT_REQUEST_ID_CONFLICT", "This request ID belongs to a different message. Refresh the conversation.", 409);
+        if (existing.userMessage.content !== request.message ||
+          JSON.stringify((existing.userMessage.attachments ?? []).map(item => item.id).sort()) !== JSON.stringify([...request.attachmentIds].sort())) {
+          throw new AssistantServiceError("ASSISTANT_REQUEST_ID_CONFLICT", "This request ID belongs to a different message. Refresh the conversation.", 409);
+        }
         return existing;
       }
     }
@@ -896,6 +904,15 @@ export class AssistantService {
     const conversation = await this.repo.getConversation({ ...scope, conversationId });
     if (!conversation) throw this.notFound();
     const conversationMessages = operatorConversationHistory(conversation.messages);
+    const scopeForImages = { ...scope, conversationId };
+    const currentImages = request.attachmentIds.length ? await loadAssistantProviderImages(scopeForImages, request.attachmentIds) : [];
+    let remainingHistoryImages = 4 - currentImages.length;
+    const recentImageMessages = conversationMessages.filter(item => item.role === "user" && item.attachmentIds?.length).slice(-2).reverse();
+    for (const item of recentImageMessages) {
+      const ids = (item.attachmentIds ?? []).slice(0, remainingHistoryImages);
+      if (ids.length) item.images = await loadAssistantProviderImages(scopeForImages, ids);
+      remainingHistoryImages -= ids.length;
+    }
     const staffRoleDiscussion = isStaffRoleDiscussion(request.message, conversationMessages);
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
@@ -1256,8 +1273,9 @@ export class AssistantService {
     const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, turnSemanticTools));
     const run = await runtime.run({
       signal: input.signal,
-      goal: request.message,
+      goal: request.message || "Please describe or analyze the attached image.",
       conversationMessages,
+      currentImages,
       taskId: task.id,
       initialWorkingSummary: staffRoleDiscussion || existingProduct ? null : task.workingSummary,
       trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: {
@@ -1560,7 +1578,7 @@ export class AssistantService {
     }
     const persisted = await this.persistFoundationTurn({
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
-      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      clientRequestId: input.request.clientRequestId, attachmentIds: input.request.attachmentIds, response: result.response, correlationId: input.correlationId, status: result.status,
       structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: "operator_runtime", model: null,
       mode: "ai_operator_runtime", promptVersion: "ai-operator-runtime-v1", errorCode: result.errorCode,
       errorMessage: result.status === "failed" ? result.response : null,
@@ -1580,7 +1598,7 @@ export class AssistantService {
   private async persistAiFirstResponse(input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string }, result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; provider?: string | null; model?: string | null }): Promise<AssistantTurnResult> {
     const persisted = await this.persistFoundationTurn({
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
-      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      clientRequestId: input.request.clientRequestId, attachmentIds: input.request.attachmentIds, response: result.response, correlationId: input.correlationId, status: result.status,
       structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: result.provider ?? null, model: result.model ?? null,
       mode: "ai_first_typed_intent_planner", promptVersion: "ai-first-intent-planner-v1", errorCode: result.errorCode,
       errorMessage: result.status === "failed" ? result.response : null,

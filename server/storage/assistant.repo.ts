@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   aiAuditEvents,
   aiContextSnapshots,
   aiConversations,
   aiMessages,
+  aiMessageAttachments,
   aiOperatorTasks,
   aiReportEntityResolutions,
   aiToolExecutions,
@@ -20,6 +21,7 @@ import type {
   AssistantScope,
   AssistantTurnResult,
 } from "../services/assistant/assistantService";
+import { assistantImageDto } from "../services/assistantImageAttachments";
 import { hasCanonicalProposalCard, replaceCanonicalProposalCards } from "../services/assistant/canonicalProductIntentCardPersistence";
 import { MATERIAL_REVIEW_KEY } from "../services/assistant/materialPendingReview";
 import type { MaterialTaskTransition } from "../services/assistant/operatorTaskContext";
@@ -42,13 +44,14 @@ function toConversation(row: typeof aiConversations.$inferSelect): AssistantConv
   };
 }
 
-function toMessage(row: typeof aiMessages.$inferSelect): AssistantMessageRecord {
+function toMessage(row: typeof aiMessages.$inferSelect, attachments: AssistantMessageRecord["attachments"] = []): AssistantMessageRecord {
   return {
     id: row.id,
     conversationId: row.conversationId,
     turnId: row.turnId,
     role: row.role,
     content: row.content,
+    attachments,
     structuredCards: row.structuredCards,
     provider: row.provider,
     model: row.model,
@@ -81,7 +84,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     if (!userMessage || !assistantMessage || !conversation) return null;
     return { turnId: row.turn.id, correlationId: row.turn.correlationId,
       status: row.turn.status === "failed" ? "failed" : "responded", conversation,
-      userMessage: toMessage(userMessage), assistantMessage: toMessage(assistantMessage) };
+      userMessage: conversation.messages.find(message => message.id === userMessage.id) ?? toMessage(userMessage), assistantMessage: toMessage(assistantMessage) };
   }
 
   async recordTurnPersistenceFailure(input: AssistantScope & { conversationId: string; correlationId: string;
@@ -135,7 +138,16 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       .orderBy(desc(aiMessages.sequence))
       .limit(500);
 
-    return { ...toConversation(conversation), messages: messages.reverse().map(toMessage) };
+    const attachments = messages.length ? await db.select().from(aiMessageAttachments).where(and(
+      eq(aiMessageAttachments.orgId, scope.organizationId), eq(aiMessageAttachments.conversationId, conversation.id),
+      isNull(aiMessageAttachments.removedAt), inArray(aiMessageAttachments.messageId, messages.map(message => message.id)),
+    )) : [];
+    const byMessage = new Map<string, AssistantMessageRecord["attachments"]>();
+    for (const row of attachments) {
+      if (!row.messageId) continue;
+      byMessage.set(row.messageId, [...(byMessage.get(row.messageId) ?? []), assistantImageDto(row)]);
+    }
+    return { ...toConversation(conversation), messages: messages.reverse().map(row => toMessage(row, byMessage.get(row.id) ?? [])) };
   }
 
   async getLatestAssistantMessage(scope: AssistantScope & { conversationId: string }): Promise<AssistantMessageRecord | null> {
@@ -199,6 +211,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     conversationId: string;
     actor: { userId: string; email: string | null; ipAddress: string | null; userAgent: string | null };
     message: string;
+    attachmentIds?: string[];
     context: AssistantContextEnvelope;
     clientRequestId?: string;
     response: string;
@@ -339,6 +352,15 @@ export class DrizzleAssistantRepository implements AssistantRepository {
         })
         .returning();
       if (!userMessage || !assistantMessage) throw new Error("Failed to create assistant messages.");
+      if (input.attachmentIds?.length) {
+        persistenceStage = "bind_image_attachments";
+        const bound = await tx.update(aiMessageAttachments).set({ messageId: userMessage.id }).where(and(
+          eq(aiMessageAttachments.orgId, input.organizationId), eq(aiMessageAttachments.conversationId, conversation.id),
+          eq(aiMessageAttachments.uploadedByUserId, input.userId), isNull(aiMessageAttachments.messageId),
+          isNull(aiMessageAttachments.removedAt), inArray(aiMessageAttachments.id, input.attachmentIds),
+        )).returning({ id: aiMessageAttachments.id });
+        if (bound.length !== input.attachmentIds.length) throw new Error("An image changed before the turn was saved.");
+      }
 
       const contextJson = JSON.stringify(input.context);
       persistenceStage = "insert_context_snapshot";
@@ -449,7 +471,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       correlationId: created.correlationId,
       status: created.status,
       conversation,
-      userMessage: toMessage(created.userMessage),
+      userMessage: conversation.messages.find(message => message.id === created.userMessage.id) ?? toMessage(created.userMessage),
       assistantMessage: toMessage(created.assistantMessage),
     };
   }

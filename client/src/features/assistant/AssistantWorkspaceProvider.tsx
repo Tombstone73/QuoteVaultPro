@@ -5,6 +5,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { assistantTurnFailureMessage, useAssistantCapabilities, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
 import { ApiRequestError } from "@/lib/queryClient";
 import type { AssistantMessage } from "@shared/assistantContracts";
+import { useAssistantDraftImages, type AssistantDraftImage } from "./useAssistantDraftImages";
 import type { AssistantCapabilities, AssistantContextEnvelope, AssistantLayoutPreferences, AssistantPresentation } from "./types";
 import { buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, resolveAssistantPresentation, shouldEnableAssistantForRoute } from "./assistantWorkspaceCore";
 
@@ -57,7 +58,12 @@ type WorkspaceContextValue = {
   optimisticUserMessage: AssistantMessage | null;
   optimisticConversationId: string | null;
   turnNotice: { conversationId: string | null; message: string } | null;
-  sendOrdinaryTurn: (message: string, clearDraftOnSuccess: boolean) => Promise<void>;
+  draftImages: AssistantDraftImage[];
+  addDraftImages: (files: FileList | readonly File[]) => string | null;
+  removeDraftImage: (key: string) => Promise<void>;
+  retryDraftImage: (key: string) => Promise<void>;
+  clearDraftImages: () => void;
+  sendOrdinaryTurn: (message: string, clearDraftOnSuccess: boolean, attachmentIds?: string[]) => Promise<void>;
   stopTurn: (visibleTurn?: ActiveAssistantTurn | null) => void;
   clearOptimisticMessage: () => void;
   executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
@@ -91,11 +97,27 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   const [draft, setDraft] = React.useState("");
   const sendTurn = useSendAssistantTurn();
   const createConversationForTurn = useCreateAssistantConversation();
+  const creatingConversationRef = React.useRef<Promise<string> | null>(null);
+  const ensureConversation = React.useCallback(async () => {
+    if (activeConversationId) return activeConversationId;
+    if (!creatingConversationRef.current) {
+      creatingConversationRef.current = createConversationForTurn.mutateAsync().then(conversation => {
+        setActiveConversationId(conversation.id);
+        return conversation.id;
+      }).finally(() => { creatingConversationRef.current = null; });
+    }
+    return creatingConversationRef.current;
+  }, [activeConversationId, createConversationForTurn]);
+  const { images: draftImages, add: addDraftImages, remove: removeDraftImage, retry: retryDraftImage, clear: clearDraftImages } = useAssistantDraftImages(ensureConversation);
+  React.useEffect(() => { if (!isAuthenticated) clearDraftImages(); }, [isAuthenticated, clearDraftImages]);
+  React.useEffect(() => {
+    if (draftImages.some(image => image.conversationId && image.conversationId !== activeConversationId)) clearDraftImages();
+  }, [activeConversationId, draftImages, clearDraftImages]);
   const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
   const [optimisticConversationId, setOptimisticConversationId] = React.useState<string | null>(null);
   const activeTurnRef = React.useRef<ActiveAssistantTurn | null>(null);
   const startingTurnRef = React.useRef(false);
-  const retryTurnRef = React.useRef<{ conversationId: string; message: string; clientRequestId: string } | null>(null);
+  const retryTurnRef = React.useRef<{ conversationId: string; message: string; imageIds: string; clientRequestId: string } | null>(null);
   const [activeTurn, setActiveTurn] = React.useState<ActiveAssistantTurn | null>(null);
   const [turnNotice, setTurnNotice] = React.useState<{ conversationId: string | null; message: string } | null>(null);
   React.useEffect(() => () => { activeTurnRef.current?.controller.abort(); }, []);
@@ -105,7 +127,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     setOptimisticConversationId(null);
   }, []);
 
-  const sendOrdinaryTurn = async (message: string, clearDraftOnSuccess: boolean) => {
+  const sendOrdinaryTurn = async (message: string, clearDraftOnSuccess: boolean, attachmentIds: string[] = []) => {
     if (activeTurnRef.current || startingTurnRef.current) return;
     startingTurnRef.current = true;
     let conversationId = activeConversationId;
@@ -113,14 +135,13 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     let completed = false;
     try {
       if (!conversationId) {
-        const conversation = await createConversationForTurn.mutateAsync();
-        conversationId = conversation.id;
-        setActiveConversationId(conversationId);
+        conversationId = await ensureConversation();
       }
       const prior = retryTurnRef.current;
-      const id = prior?.conversationId === conversationId && prior.message === message
+      const imageIds = [...attachmentIds].sort().join(",");
+      const id = prior?.conversationId === conversationId && prior.message === message && prior.imageIds === imageIds
         ? prior.clientRequestId : crypto.randomUUID();
-      retryTurnRef.current = { conversationId, message, clientRequestId: id };
+      retryTurnRef.current = { conversationId, message, imageIds, clientRequestId: id };
       turnId = id;
       const controller = new AbortController();
       const turn = { id, controller, conversationId };
@@ -128,14 +149,19 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
       setActiveTurn(turn);
       setTurnNotice(null);
       setOptimisticConversationId(conversationId);
-      setOptimisticUserMessage({ id: `pending-${id}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
-      const response = await sendTurn.mutateAsync({ conversationId, message, context, signal: controller.signal, clientRequestId: id });
+      setOptimisticUserMessage({ id: `pending-${id}`, role: "user", content: message, structuredCards: [], attachments: draftImages.filter(image => image.attachment && attachmentIds.includes(image.attachment.id)).map(image => image.attachment!), provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
+      const response = await sendTurn.mutateAsync({ conversationId, message, context, signal: controller.signal, clientRequestId: id, attachmentIds });
       completed = true;
       retryTurnRef.current = null;
+      if (response.data.status === "failed") {
+        setDraft(current => current || message);
+        setTurnNotice({ conversationId, message: "The message was saved, but the assistant could not finish. Your draft and images are still here." });
+        return;
+      }
       const persistedCorrelationId = typeof response?.data?.correlationId === "string" ? response.data.correlationId : null;
       if (persistedCorrelationId) setOptimisticUserMessage((current) => current?.id === `pending-${id}` ? { ...current, correlationId: persistedCorrelationId } : current);
       if (activeTurnRef.current?.id === id) {
-        if (clearDraftOnSuccess) setDraft("");
+        if (clearDraftOnSuccess) { setDraft(""); if (attachmentIds.length) clearDraftImages(); }
         setTurnNotice(null);
       }
     } catch (error) {
@@ -275,6 +301,11 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     setActiveConversationId,
     draft,
     setDraft,
+    draftImages,
+    addDraftImages,
+    removeDraftImage,
+    retryDraftImage,
+    clearDraftImages,
     activeTurn,
     optimisticUserMessage,
     optimisticConversationId,
@@ -285,7 +316,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     executionPlans,
     saveExecutionPlan,
     updateExecutionPlan,
-  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setInvoicePageContext, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
+  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, draftImages, addDraftImages, removeDraftImage, retryDraftImage, clearDraftImages, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setInvoicePageContext, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
 
   return <AssistantWorkspaceContext.Provider value={value}>{children}</AssistantWorkspaceContext.Provider>;
 }

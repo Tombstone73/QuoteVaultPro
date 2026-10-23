@@ -1,5 +1,6 @@
 import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
 import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRetention';
+import { cleanupAssistantPendingImages } from './services/assistantImageAttachments';
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -421,6 +422,11 @@ process.on('uncaughtException', (error) => {
       const portalCartRetentionTimer = setInterval(cleanPortalCarts, 60 * 60 * 1000);
       portalCartRetentionTimer.unref?.();
       void cleanPortalCarts();
+      const cleanAssistantImages = () => cleanupAssistantPendingImages()
+        .catch(error => console.error("[AssistantImageRetention] Failed", error));
+      const assistantImageTimer = setInterval(cleanAssistantImages, 60 * 60 * 1000);
+      assistantImageTimer.unref?.();
+      void cleanAssistantImages();
 
       const paymentReconciliationEnabled = isWorkerEnabled('PAYMENT_RECONCILIATION', true);
       const paymentReconciliationInterval = getWorkerIntervalOverride(

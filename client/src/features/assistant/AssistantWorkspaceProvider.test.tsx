@@ -7,6 +7,7 @@ const mockSendTurn = jest.fn<(input: { signal: AbortSignal; clientRequestId: str
 jest.mock("react-router-dom", () => ({ useLocation: () => ({ pathname: "/products" }) }));
 jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ isAuthenticated: true, isPortalCustomer: false }) }));
 jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
+jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path, resolveCanonicalApiRequestUrl: (path: string) => path }));
 jest.mock("@/lib/queryClient", () => ({ ApiRequestError: class ApiRequestError extends Error { code?: string; constructor(message: string, code?: string) { super(message); this.code = code; } } }));
 jest.mock("@/hooks/useAssistantApi", () => ({
   assistantTurnFailureMessage: () => "Turn failed",
@@ -80,4 +81,20 @@ test("failed persistence preserves the draft and explicit retry reuses the reque
   expect(workspace.draft).toBe("");
   await act(async () => root.unmount());
   container.remove();
+});
+
+
+test("a persisted assistant failure keeps the editable draft", async () => {
+  Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: jest.fn(() => "request_failed_response") });
+  mockSendTurn.mockReset().mockResolvedValue({ data: { status: "failed", correlationId: "failed_ref" } });
+  let workspace!: ReturnType<typeof useAssistantWorkspace>;
+  function Harness() { workspace = useAssistantWorkspace(); return null; }
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  await act(async () => root.render(<AssistantWorkspaceProvider><Harness /></AssistantWorkspaceProvider>));
+  await act(async () => workspace.setDraft("Describe my photo"));
+  await act(async () => workspace.sendOrdinaryTurn("Describe my photo", true));
+  expect(workspace.draft).toBe("Describe my photo");
+  expect(workspace.turnNotice?.message).toContain("message was saved");
+  await act(async () => root.unmount());
 });

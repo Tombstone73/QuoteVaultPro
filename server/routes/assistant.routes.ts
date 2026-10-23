@@ -1,5 +1,6 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
+import Busboy from "busboy";
 import {
   assistantCreateConversationRequestSchema,
   assistantBulkArchiveConversationsRequestSchema,
@@ -35,6 +36,7 @@ import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
 import { legacyChatPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
 import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
 import { hasCanonicalProposalCard } from "../services/assistant/canonicalProductIntentCardPersistence";
+import { ASSISTANT_IMAGE_MAX_BYTES, AssistantImageError, readAssistantImage, removeAssistantImage, uploadAssistantImage } from "../services/assistantImageAttachments";
 
 const canonicalInteractionRequestSchema = z.object({
   proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
@@ -95,6 +97,7 @@ function messageDto(message: any, turnId = message.turnId) {
     presentation: responsePresentationForCards(rawCards),
     responseState: responseStateForCards(rawCards),
     structuredCards: withTurnBoundProposals(rawCards.filter((card: any) => card?.kind !== "response_presentation"), turnId),
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
     provider: message.provider ?? null,
     model: message.model ?? null,
     correlationId: message.correlationId ?? null,
@@ -113,6 +116,7 @@ function withTurnBoundProposals(cards: unknown, turnId: string | null) {
 }
 
 function sendError(res: Response, error: unknown) {
+  if (error instanceof AssistantImageError) return res.status(error.statusCode).json({ error: { code: "assistant_image_error", message: error.message, retryable: error.statusCode >= 500 } });
   if (error instanceof AssistantServiceError) {
     const code = error.code === "ASSISTANT_CONVERSATION_NOT_FOUND"
       ? "conversation_not_found"
@@ -361,6 +365,50 @@ export function registerAssistantRoutes(
     }
   });
 
+  app.post("/api/assistant/conversations/:conversationId/images", ...guarded, async (req, res) => {
+    try {
+      const scope = { ...resolveScope(req), conversationId: req.params.conversationId };
+      if (!String(req.headers["content-type"] ?? "").startsWith("multipart/form-data")) throw new AssistantImageError(400, "Select an image to upload.");
+      const image = await new Promise<{ fileName: string; buffer: Buffer }>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let fileName = "";
+        let fileCount = 0;
+        let rejected = false;
+        const fail = (error: Error) => { rejected = true; reject(error); };
+        const parser = Busboy({ headers: req.headers, limits: { fileSize: ASSISTANT_IMAGE_MAX_BYTES, files: 1, fields: 0, parts: 1 } });
+        parser.on("file", (_field, stream, info) => {
+          fileCount += 1;
+          fileName = info.filename;
+          stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+          stream.on("limit", () => fail(new AssistantImageError(413, "Choose an image up to 5 MB.")));
+        });
+        parser.on("filesLimit", () => fail(new AssistantImageError(400, "Upload one image at a time.")));
+        parser.on("partsLimit", () => fail(new AssistantImageError(400, "Upload one image at a time.")));
+        parser.on("error", fail);
+        parser.on("close", () => { if (!rejected) fileCount === 1 ? resolve({ fileName, buffer: Buffer.concat(chunks) }) : reject(new AssistantImageError(400, "Select one image.")); });
+        req.pipe(parser);
+      });
+      const attachment = await uploadAssistantImage(scope, image);
+      return res.status(201).json({ success: true, data: attachment });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.get("/api/assistant/conversations/:conversationId/images/:imageId", ...guarded, async (req, res) => {
+    try {
+      const image = await readAssistantImage({ ...resolveScope(req), conversationId: req.params.conversationId }, req.params.imageId);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.type(image.mimeType);
+      return res.send(image.buffer);
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.delete("/api/assistant/conversations/:conversationId/images/:imageId", ...guarded, async (req, res) => {
+    try {
+      await removeAssistantImage({ ...resolveScope(req), conversationId: req.params.conversationId }, req.params.imageId);
+      return res.json({ success: true });
+    } catch (error) { return sendError(res, error); }
+  });
   app.post("/api/assistant/conversations/:conversationId/turns", ...guarded, async (req, res) => {
     const controller = new AbortController();
     const onClose = () => { if (!res.writableEnded) controller.abort(); };

@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import {
   assets,
+  aiMessageAttachments,
   fileDerivatives,
   fileRecords,
   inboundOrderFiles,
@@ -25,6 +26,7 @@ export type StorageReferenceCounts = {
   lineItemFiles: number;
   orderAttachments: number;
   portalCartFiles: number;
+  assistantImages: number;
   quoteAttachments: number;
   assets: number;
   fileDerivatives: number;
@@ -104,6 +106,15 @@ async function countPortalCartFiles(organizationId: string, fileRecordId: string
       eq(portalStorefrontCarts.status, 'open'), isNull(portalStorefrontCartFiles.removedAt),
       eq(portalStorefrontCartFiles.fileRecordId, fileRecordId)));
   return Number(count);
+}
+
+async function countAssistantImages(organizationId: string, fileRecordId: string | null): Promise<number> {
+  if (!fileRecordId) return 0;
+  return countRows(
+    db.select({ count: sql<number>`count(*)` }).from(aiMessageAttachments),
+    and(eq(aiMessageAttachments.orgId, organizationId), isNull(aiMessageAttachments.removedAt),
+      eq(aiMessageAttachments.fileRecordId, fileRecordId)),
+  );
 }
 
 async function countQuoteAttachments(organizationId: string, fileRecordId: string | null, storageKeys: string[]): Promise<number> {
@@ -240,6 +251,7 @@ export async function countLiveStorageReferences(args: {
       lineItemFileCount,
       orderAttachmentCount,
       portalCartFileCount,
+      assistantImageCount,
       quoteAttachmentCount,
       assetCount,
       derivativeCount,
@@ -251,6 +263,7 @@ export async function countLiveStorageReferences(args: {
       countLineItemFiles(args.organizationId, fileRecordId, storageKeys),
       countOrderAttachments(args.organizationId, fileRecordId, storageKeys),
       countPortalCartFiles(args.organizationId, fileRecordId),
+      countAssistantImages(args.organizationId, fileRecordId),
       countQuoteAttachments(args.organizationId, fileRecordId, storageKeys),
       countAssets(args.organizationId, fileRecordId, storageKeys, args.exclusions),
       countFileDerivatives(args.organizationId, fileRecordId, sourcePlacementId, storageKeys),
@@ -264,6 +277,7 @@ export async function countLiveStorageReferences(args: {
       lineItemFileCount +
       orderAttachmentCount +
       portalCartFileCount +
+      assistantImageCount +
       quoteAttachmentCount +
       assetCount +
       derivativeCount +
@@ -276,6 +290,7 @@ export async function countLiveStorageReferences(args: {
       lineItemFiles: lineItemFileCount,
       orderAttachments: orderAttachmentCount,
       portalCartFiles: portalCartFileCount,
+      assistantImages: assistantImageCount,
       quoteAttachments: quoteAttachmentCount,
       assets: assetCount,
       fileDerivatives: derivativeCount,
@@ -298,6 +313,7 @@ export async function countLiveStorageReferences(args: {
       lineItemFiles: 0,
       orderAttachments: 0,
       portalCartFiles: 0,
+      assistantImages: 0,
       quoteAttachments: 0,
       assets: 0,
       fileDerivatives: 0,

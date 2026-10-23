@@ -151,14 +151,15 @@ export function useArchiveAssistantConversations() {
 export function useSendAssistantTurn() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ conversationId, message, context, signal, clientRequestId }: {
+    mutationFn: async ({ conversationId, message, context, signal, clientRequestId, attachmentIds }: {
       conversationId: string;
       message: string;
       context: AssistantContextEnvelope;
       signal?: AbortSignal;
       clientRequestId?: string;
+      attachmentIds?: string[];
     }) => {
-      const response = await apiRequest("POST", `/api/assistant/conversations/${conversationId}/turns`, assistantTurnRequestBody(message, context, clientRequestId), { signal });
+      const response = await apiRequest("POST", `/api/assistant/conversations/${conversationId}/turns`, assistantTurnRequestBody(message, context, clientRequestId, attachmentIds), { signal });
       return response.json();
     },
     onSettled: (_result, _error, variables) => {
@@ -193,8 +194,8 @@ export function useSubmitAssistantOrderOptionSelections() {
 
 /** The assistant turn body deliberately keeps all internal whitespace intact;
  * Markdown tables and CSV-style messages depend on their original newlines. */
-export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope, clientRequestId?: string) {
-  return { message, context, ...(clientRequestId ? { clientRequestId } : {}) };
+export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope, clientRequestId?: string, attachmentIds: string[] = []) {
+  return { message, context, attachmentIds, ...(clientRequestId ? { clientRequestId } : {}) };
 }
 
 /** Selects an opaque candidate from a server-persisted report-resolution set.

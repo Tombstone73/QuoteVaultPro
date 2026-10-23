@@ -8702,6 +8702,23 @@ export const aiMessages = pgTable("ai_messages", {
   index("ai_messages_turn_id_idx").on(table.turnId),
 ]);
 
+export const aiMessageAttachments = pgTable("ai_message_attachments", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  uploadedByUserId: varchar("uploaded_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "restrict" }),
+  messageId: varchar("message_id").references(() => aiMessages.id, { onDelete: "cascade" }),
+  originalFilename: text("original_filename").notNull(),
+  mimeType: varchar("mime_type", { length: 32 }).notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  removedAt: timestamp("removed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_message_attachments_conversation_idx").on(table.orgId, table.conversationId, table.messageId),
+  index("ai_message_attachments_retention_idx").on(table.messageId, table.removedAt, table.createdAt),
+]);
+
 export const aiContextSnapshots = pgTable("ai_context_snapshots", {
   id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),

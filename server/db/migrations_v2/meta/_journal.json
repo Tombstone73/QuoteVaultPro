@@ -1618,6 +1618,13 @@
       "when": 1793059200000,
       "tag": "0237_portal_storefront_checkout",
       "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "7",
+      "when": 1793145600000,
+      "tag": "0238_assistant_image_attachments",
+      "breakpoints": true
     }
   ]
 }

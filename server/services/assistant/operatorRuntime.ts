@@ -187,6 +187,7 @@ export interface AssistantOperatorDecisionProvider {
     signal?: AbortSignal;
     goal: string;
     conversationMessages?: readonly AiConversationMessage[];
+    currentImages?: readonly { mimeType: string; dataUrl: string }[];
     taskId: string;
     step: number;
     remainingSteps: number;
@@ -303,7 +304,7 @@ export class AssistantOperatorRuntime {
     private readonly maxSteps = resolveAiOperatorMaxSteps(),
   ) {}
 
-  async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null; conversationMessages?: readonly AiConversationMessage[]; signal?: AbortSignal }): Promise<AssistantOperatorRunResult> {
+  async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null; conversationMessages?: readonly AiConversationMessage[]; currentImages?: readonly { mimeType: string; dataUrl: string }[]; signal?: AbortSignal }): Promise<AssistantOperatorRunResult> {
     input.signal?.throwIfAborted();
     const observations: AssistantOperatorObservation[] = [];
     let safeWorkingSummary = input.initialWorkingSummary ?? null;
@@ -330,6 +331,7 @@ export class AssistantOperatorRuntime {
           signal: input.signal,
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
           conversationMessages: input.conversationMessages,
+          currentImages: input.currentImages,
           toolCatalog: this.tools.catalog(input.trustedContext), observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations),
         });
         input.signal?.throwIfAborted();
@@ -472,6 +474,7 @@ export class AssistantOperatorRuntime {
         signal: input.signal,
         goal: input.goal, taskId: input.taskId, step: boundedSteps + 1, remainingSteps: 0,
         conversationMessages: input.conversationMessages,
+        currentImages: input.currentImages,
         toolCatalog: [], observations, safeWorkingSummary: productEvidence.attempted ? null : safeWorkingSummary, task: taskForCurrentProductEvidence(input.trustedContext.task, observations), finalSynthesis: true,
       }));
       input.signal?.throwIfAborted();

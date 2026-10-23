@@ -1083,6 +1083,14 @@ export type AssistantUsageCorrelation = z.infer<typeof assistantUsageCorrelation
 
 export const ASSISTANT_MESSAGE_MAX_CONTENT_CHARS = 32_000;
 
+export const assistantImageAttachmentSchema = z.object({
+  id: assistantSafeIdentifierSchema,
+  fileName: z.string().min(1).max(255),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
+  sizeBytes: z.number().int().positive().max(5 * 1024 * 1024),
+}).strict();
+export type AssistantImageAttachment = z.infer<typeof assistantImageAttachmentSchema>;
+
 export const assistantMessageSchema = z.object({
   id: assistantSafeIdentifierSchema,
   role: z.enum(assistantMessageRoleValues),
@@ -1092,6 +1100,7 @@ export const assistantMessageSchema = z.object({
   /** Server-derived interaction state; never infer this from card titles. */
   responseState: assistantResponseStateSchema.optional(),
   structuredCards: z.array(assistantStructuredCardSchema).max(20).default([]),
+  attachments: z.array(assistantImageAttachmentSchema).max(4).default([]),
   provider: z.string().trim().min(1).max(80).nullable(),
   model: z.string().trim().min(1).max(160).nullable(),
   correlationId: assistantSafeIdentifierSchema.nullable(),
@@ -1157,10 +1166,13 @@ export const assistantBulkArchiveConversationsRequestSchema = z.object({
 export type AssistantBulkArchiveConversationsRequest = z.infer<typeof assistantBulkArchiveConversationsRequestSchema>;
 
 export const assistantTurnRequestSchema = z.object({
-  message: z.string().trim().min(1).max(8_000),
+  message: z.string().trim().max(8_000),
+  attachmentIds: z.array(assistantSafeIdentifierSchema).max(4).default([]),
   context: assistantContextEnvelopeSchema,
   clientRequestId: assistantSafeIdentifierSchema.optional(),
-}).strict();
+}).strict().refine(value => value.message.length > 0 || value.attachmentIds.length > 0, {
+  message: "Enter a message or attach an image.",
+});
 export type AssistantTurnRequest = z.infer<typeof assistantTurnRequestSchema>;
 
 export const assistantTurnResponseSchema = z.object({

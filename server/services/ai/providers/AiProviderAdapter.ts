@@ -3,6 +3,8 @@ import type { AiFeature } from "@shared/aiFoundationContracts";
 export interface AiConversationMessage {
   role: "user" | "assistant";
   content: string;
+  attachmentIds?: string[];
+  images?: readonly { mimeType: string; dataUrl: string }[];
 }
 
 export interface AiProviderRequest {
@@ -14,6 +16,7 @@ export interface AiProviderRequest {
   user: string;
   /** Persisted conversational text only, never authority or provider reasoning. */
   conversationMessages?: readonly AiConversationMessage[];
+  currentImages?: readonly { mimeType: string; dataUrl: string }[];
   promptVersion: string;
   repairAttempt?: boolean;
   timeoutMs?: number;

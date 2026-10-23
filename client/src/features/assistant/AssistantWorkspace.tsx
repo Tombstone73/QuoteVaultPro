@@ -20,6 +20,8 @@ import { assistantComposerHelper, assistantConversationLabel, visibleAssistantCo
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
 import { AssistantWorkingIndicator, resolveAssistantWorkingState } from "./AssistantWorkingIndicator";
+import { AssistantComposerInputs, AssistantImagePreviews } from "./AssistantComposerInputs";
+import type { AssistantDraftImage } from "./useAssistantDraftImages";
 import type { AssistantResponseState } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
@@ -654,54 +656,59 @@ function PresentationControls() {
 }
 
 export function AssistantComposer({
-  value,
-  onChange,
-  onRequestSend,
-  onStop,
-  turnPending = false,
-  disabled,
-  placeholder,
+  value, onChange, onRequestSend, onStop, turnPending = false, disabled, placeholder,
+  images = [], onAddImages, onRemoveImage, onRetryImage,
 }: {
-  value: string;
-  onChange: (value: string) => void;
-  onRequestSend: () => void;
-  onStop?: () => void;
-  turnPending?: boolean;
-  disabled: boolean;
-  placeholder: string;
+  value: string; onChange: (value: string) => void; onRequestSend: () => void;
+  onStop?: () => void; turnPending?: boolean; disabled: boolean; placeholder: string;
+  images?: AssistantDraftImage[];
+  onAddImages?: (files: FileList | readonly File[]) => string | null;
+  onRemoveImage?: (key: string) => void; onRetryImage?: (key: string) => void;
 }) {
-  const canSend = Boolean(value.trim()) && !disabled;
-  return <div className="flex items-end gap-2">
-    <Textarea
-      id="assistant-message"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter") return;
-        if (event.shiftKey) {
+  const [fileError, setFileError] = React.useState<string | null>(null);
+  const addImages = (files: FileList | readonly File[]) => {
+    const error = onAddImages?.(files) ?? null;
+    setFileError(error);
+    return error;
+  };
+  const readyImages = images.filter(image => image.state === "ready" && image.attachment);
+  const canSend = Boolean(value.trim() || readyImages.length) && !images.some(image => image.state !== "ready") && !disabled;
+  return <div onDragOver={event => { if (onAddImages && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+    onDrop={event => { if (!onAddImages || !event.dataTransfer.files.length) return; event.preventDefault(); addImages(event.dataTransfer.files); }}>
+    <div className="flex items-end gap-2">
+      <Textarea id="assistant-message" value={value} onChange={event => onChange(event.target.value)}
+        onPaste={event => {
+          const files = Array.from(event.clipboardData.items).filter(item => item.kind === "file").map(item => item.getAsFile()).filter((file): file is File => Boolean(file));
+          if (!files.length || !onAddImages) return;
           event.preventDefault();
-          const start = event.currentTarget.selectionStart ?? value.length;
-          const end = event.currentTarget.selectionEnd ?? start;
-          onChange(`${value.slice(0, start)}\n${value.slice(end)}`);
-          return;
-        }
-        if (!event.nativeEvent.isComposing) {
-          event.preventDefault();
-          if (canSend) onRequestSend();
-        }
-      }}
-      placeholder={placeholder}
-      maxLength={8_000}
-      rows={2}
-      disabled={disabled}
-      className="!min-h-12 max-h-48 resize-y py-2 text-sm leading-5"
-      aria-label="Message the assistant"
-    />
-    {turnPending ? <Button key="stop" type="button" size="icon" variant="outline" aria-label="Stop generating" title="Stop generating" onPointerDown={(event) => { if (event.button === 0) onStop?.(); }} onClick={onStop}><Square className="h-4 w-4 fill-current" /></Button>
-      : <Button key="send" type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>}
+          const text = event.clipboardData.getData("text/plain");
+          if (text) {
+            const start = event.currentTarget.selectionStart ?? value.length;
+            const end = event.currentTarget.selectionEnd ?? start;
+            onChange(value.slice(0, start) + text + value.slice(end));
+          }
+          addImages(files);
+        }}
+        onKeyDown={event => {
+          if (event.key !== "Enter") return;
+          if (event.shiftKey) {
+            event.preventDefault();
+            const start = event.currentTarget.selectionStart ?? value.length;
+            const end = event.currentTarget.selectionEnd ?? start;
+            onChange(value.slice(0, start) + "\n" + value.slice(end));
+            return;
+          }
+          if (!event.nativeEvent.isComposing) { event.preventDefault(); if (canSend) onRequestSend(); }
+        }}
+        placeholder={placeholder} maxLength={8_000} rows={2} disabled={disabled}
+        className="!min-h-12 max-h-48 resize-y py-2 text-sm leading-5" aria-label="Message the assistant" />
+      {turnPending ? <Button key="stop" type="button" size="icon" variant="outline" aria-label="Stop generating" title="Stop generating" onPointerDown={event => { if (event.button === 0) onStop?.(); }} onClick={onStop}><Square className="h-4 w-4 fill-current" /></Button>
+        : <Button key="send" type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>}
+    </div>
+    <AssistantComposerInputs value={value} onChange={onChange} disabled={disabled} images={images}
+      onAddImages={addImages} onRemoveImage={onRemoveImage} onRetryImage={onRetryImage} fileError={fileError} />
   </div>;
 }
-
 /** Assistant content is trusted text from the server, not raw HTML. Preserve
  * intentional provider line breaks while leaving the existing text-only
  * rendering boundary intact. */
@@ -710,7 +717,7 @@ export function AssistantMessageContent({ content }: { content: string }) {
 }
 
 function ConversationContent() {
-  const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan, activeTurn, optimisticUserMessage, optimisticConversationId, turnNotice, sendOrdinaryTurn, stopTurn, clearOptimisticMessage } = useAssistantWorkspace();
+  const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, draftImages, addDraftImages, removeDraftImage, retryDraftImage, clearDraftImages, executionPlans, saveExecutionPlan, updateExecutionPlan, activeTurn, optimisticUserMessage, optimisticConversationId, turnNotice, sendOrdinaryTurn, stopTurn, clearOptimisticMessage } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
   const toolsEnabled = Boolean(capabilities?.toolsEnabled);
   const conversations = useAssistantConversations(enabled);
@@ -731,13 +738,15 @@ function ConversationContent() {
     const conversation = await createConversation.mutateAsync();
     setActiveConversationId(conversation.id);
     setDraft("");
+    clearDraftImages();
   };
 
   const submitCurrentDraft = async () => {
     const message = draft.trim();
-    if (!message || activeTurn || !toolsEnabled) return;
+    const attachmentIds = draftImages.filter(image => image.state === "ready" && image.attachment).map(image => image.attachment!.id);
+    if ((!message && !attachmentIds.length) || draftImages.some(image => image.state !== "ready") || activeTurn || !toolsEnabled) return;
     const pickupConfirmation = pendingPickupConfirmationForReply(message, executionPlans);
-    if (pickupConfirmation) {
+    if (pickupConfirmation && !attachmentIds.length) {
       try {
         await confirmQuoteNotePlan({ ...pickupConfirmation, context });
         setDraft("");
@@ -747,7 +756,7 @@ function ConversationContent() {
       }
       return;
     }
-    await sendOrdinaryTurn(message, true);
+    await sendOrdinaryTurn(message, true, attachmentIds);
   };
 
   const submit = (event: React.FormEvent) => {
@@ -869,7 +878,7 @@ function ConversationContent() {
             </div>
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
-            if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content || "Image attached"}{activeConversationId && message.attachments?.length ? <AssistantImagePreviews conversationId={activeConversationId} attachments={message.attachments} /> : null}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
             return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           <AssistantWorkingIndicator active={assistantWorking.active} label={assistantWorking.label} />
@@ -879,7 +888,7 @@ function ConversationContent() {
         </div>
         <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
-          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={() => stopTurn(activeTurn)} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
+          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={() => stopTurn(activeTurn)} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} images={draftImages} onAddImages={addDraftImages} onRemoveImage={key => { void removeDraftImage(key); }} onRetryImage={key => { void retryDraftImage(key); }} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
         </form>
       </section>
