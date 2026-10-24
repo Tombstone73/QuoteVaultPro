@@ -1,6 +1,5 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
-import Busboy from "busboy";
 import {
   assistantCreateConversationRequestSchema,
   assistantBulkArchiveConversationsRequestSchema,
@@ -36,7 +35,8 @@ import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
 import { legacyChatPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
 import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
 import { hasCanonicalProposalCard } from "../services/assistant/canonicalProductIntentCardPersistence";
-import { ASSISTANT_IMAGE_MAX_BYTES, AssistantImageError, readAssistantImage, removeAssistantImage, uploadAssistantImage } from "../services/assistantImageAttachments";
+import { AssistantImageError, readAssistantImage, removeAssistantImage, uploadAssistantImage } from "../services/assistantImageAttachments";
+import { parseAssistantImageUpload } from "../services/assistantImageMultipart";
 
 const canonicalInteractionRequestSchema = z.object({
   proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
@@ -369,25 +369,7 @@ export function registerAssistantRoutes(
     try {
       const scope = { ...resolveScope(req), conversationId: req.params.conversationId };
       if (!String(req.headers["content-type"] ?? "").startsWith("multipart/form-data")) throw new AssistantImageError(400, "Select an image to upload.");
-      const image = await new Promise<{ fileName: string; buffer: Buffer }>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        let fileName = "";
-        let fileCount = 0;
-        let rejected = false;
-        const fail = (error: Error) => { rejected = true; reject(error); };
-        const parser = Busboy({ headers: req.headers, limits: { fileSize: ASSISTANT_IMAGE_MAX_BYTES, files: 1, fields: 0, parts: 1 } });
-        parser.on("file", (_field, stream, info) => {
-          fileCount += 1;
-          fileName = info.filename;
-          stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-          stream.on("limit", () => fail(new AssistantImageError(413, "Choose an image up to 5 MB.")));
-        });
-        parser.on("filesLimit", () => fail(new AssistantImageError(400, "Upload one image at a time.")));
-        parser.on("partsLimit", () => fail(new AssistantImageError(400, "Upload one image at a time.")));
-        parser.on("error", fail);
-        parser.on("close", () => { if (!rejected) fileCount === 1 ? resolve({ fileName, buffer: Buffer.concat(chunks) }) : reject(new AssistantImageError(400, "Select one image.")); });
-        req.pipe(parser);
-      });
+      const image = await parseAssistantImageUpload(req);
       const attachment = await uploadAssistantImage(scope, image);
       return res.status(201).json({ success: true, data: attachment });
     } catch (error) { return sendError(res, error); }

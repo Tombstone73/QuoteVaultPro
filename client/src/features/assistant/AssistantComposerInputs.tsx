@@ -68,7 +68,7 @@ export function AssistantComposerInputs({ value, onChange, disabled, images = []
       </div>)}
     </div> : null}
     <div className="flex items-center gap-1">
-      <input ref={input} type="file" multiple accept={ASSISTANT_IMAGE_ACCEPT} className="sr-only"
+      <input ref={input} type="file" multiple accept={ASSISTANT_IMAGE_ACCEPT} className="sr-only" disabled={disabled || !onAddImages}
         aria-label="Choose assistant images" onChange={event => {
           if (event.target.files) onAddImages?.(event.target.files);
           event.target.value = "";

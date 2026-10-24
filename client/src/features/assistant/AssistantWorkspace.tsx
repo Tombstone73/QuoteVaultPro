@@ -888,7 +888,7 @@ function ConversationContent() {
         </div>
         <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
-          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={() => stopTurn(activeTurn)} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} images={draftImages} onAddImages={addDraftImages} onRemoveImage={key => { void removeDraftImage(key); }} onRetryImage={key => { void retryDraftImage(key); }} />
+          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={() => stopTurn(activeTurn)} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled || createConversation.isPending} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} images={draftImages} onAddImages={createConversation.isPending ? undefined : addDraftImages} onRemoveImage={key => { void removeDraftImage(key); }} onRetryImage={key => { void retryDraftImage(key); }} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
         </form>
       </section>
