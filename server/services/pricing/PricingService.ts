@@ -59,6 +59,7 @@ import {
 import { getProductAllowRotation, parseProductPricingBoolean } from '../../../shared/pbv2/productPricingRotation';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
 import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
+import { blankCoroplastRate, isUnprintedCoroplast, readBlankCoroplastPricing } from '../../../shared/blankCoroplast';
 import { skipsRequiredPrintOptionValidation } from '../../../shared/productPricingValidation';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import { bindCommercialQuantityToFormulaVariables } from '../../../shared/pbv2/commercialQuantityFormulaVariables';
@@ -1624,6 +1625,12 @@ function resolvePricingMatrixVariablesForPricing(
   tree: any,
   selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined
 ): ProductOptionPricingMatrixResolution {
+  // This matrix determines the printed base rate. Blank Coroplast has an
+  // explicitly configured base rate; requiring or applying a printed row here
+  // would make the blank quote depend on an irrelevant print-only selection.
+  if (isUnprintedCoroplast(tree, toSelectionEntryMap(selections))) {
+    return { variables: {}, ignoredVariables: [], errors: [] };
+  }
   const pricingMatrix = extractProductOptionPricingMatrix(tree);
   const matrixDimensions = pricingMatrix?.dimensions ?? [];
   const treeOptionKeys = new Set(collectTreeOptionGroupKeys(tree));
@@ -2833,6 +2840,7 @@ function calculateBasePriceDetails(
   tierResolution: Pbv2TierResolution;
   sheetYieldMetrics: SheetYieldMetrics;
   nestingDetails?: unknown;
+  blankCoroplastMode?: boolean;
 } {
   const meta = tree?.meta;
   if (!meta || typeof meta !== 'object') {
@@ -2898,7 +2906,7 @@ function calculateBasePriceDetails(
     const finding = quantityOnlyTierValidation.errors[0]!;
     throw Object.assign(new Error(finding.message), { code: finding.code, details: quantityOnlyTierValidation.errors });
   }
-  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !isHourlyCommercialFormula && !isRollCommercialFormula && !quantityOnlyTierValidation?.ok) {
+  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !isHourlyCommercialFormula && !isRollCommercialFormula && !quantityOnlyTierValidation?.ok && !isUnprintedCoroplast(tree, pricingContext?.explicitSelections)) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -3362,7 +3370,7 @@ function calculateBasePriceDetails(
     };
   }
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only" && !isHourlyCommercialFormula && !isRollCommercialFormula) {
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only" && !isHourlyCommercialFormula && !isRollCommercialFormula && !isUnprintedCoroplast(tree, pricingContext?.explicitSelections)) {
     throw new Error(
       'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
     );
@@ -3374,6 +3382,33 @@ function calculateBasePriceDetails(
   const pieceComponent = perPieceCents * quantity;
   const lineBaseCents = sqftComponent + pieceComponent;
   const linearFeet = orderedWidthIn > 0 ? orderedWidthIn / 12 : 0;
+
+  if (isUnprintedCoroplast(tree, pricingContext?.explicitSelections)) {
+    const blank = readBlankCoroplastPricing(tree)!;
+    const sheetWidth = sheetYieldMetrics.tierSheetWidth;
+    const sheetLength = sheetYieldMetrics.tierSheetLength;
+    if (typeof sheetWidth === "number" && sheetWidth > 0 && typeof sheetLength === "number" && sheetLength > 0) {
+      const normalFit = orderedWidthIn <= sheetWidth && orderedHeightIn <= sheetLength;
+      const rotatedFit = sheetYieldMetrics.allowRotation === true && orderedWidthIn <= sheetLength && orderedHeightIn <= sheetWidth;
+      if (!normalFit && !rotatedFit) throw new Error("Unprinted Coroplast dimensions do not fit the configured sheet, including the allowed rotation setting.");
+    }
+    const rateCents = blankCoroplastRate(blank, quantity);
+    const blankSqftCents = blank.unit === "per_square_foot" ? rateCents : 0;
+    const blankPieceCents = blank.unit === "per_piece" ? rateCents : 0;
+    const blankPreMinimumCents = Math.round(blankSqftCents * totalSqft + blankPieceCents * quantity);
+    const blankTotalCents = Math.max(blankPreMinimumCents, blank.minimumChargeCents);
+    return {
+      totalCents: blankTotalCents, perSqftCents: blankSqftCents, perPieceCents: blankPieceCents,
+      minimumChargeCents: blank.minimumChargeCents, pricingProfileKey: activePricingProfileKey,
+      orderedWidthIn, orderedHeightIn, trimAllowanceX, trimAllowanceY, finishedWidthIn, finishedHeightIn,
+      sqftPerItem, totalSqft, linearFeet, preMinimumCents: blankPreMinimumCents,
+      minimumApplied: blank.minimumChargeCents > blankPreMinimumCents,
+      basePriceSource: "blankCoroplastPricing", rateUsedSource: "blankCoroplastPricing",
+      tierResolution: { ...tierResolution, basePriceFinal: blankSqftCents / 100, finalBaseRateUsed: rateCents / 100,
+        basePriceSource: "blankCoroplastPricing" },
+      sheetYieldMetrics, blankCoroplastMode: true,
+    };
+  }
 
   if (activePricingProfileKey === 'flat_goods') {
     const flatGoodsAllowRotation = pricingContext?.allowRotation ?? activeProfileConfig?.allowRotation ?? false;
@@ -4105,7 +4140,7 @@ function calculateFormulaAwareBasePrice(input: {
     formulaFromProfile,
   });
   const formulaCandidate = sourceResolution.formula;
-  const shouldEvaluateFormula = Boolean(formulaCandidate);
+  const shouldEvaluateFormula = Boolean(formulaCandidate) && !baseDetails.blankCoroplastMode;
   const formulaToUse = shouldEvaluateFormula ? formulaCandidate : "";
   const formulaOutputMeaningResolution = resolveFormulaOutputMeaning({
     source: sourceResolution.source,
@@ -4197,7 +4232,7 @@ function calculateFormulaAwareBasePrice(input: {
     !shouldEvaluateFormula;
 
   if (!shouldEvaluateFormula || usePbv2BaseForPerPieceMatrix || usePbv2BaseForQuantityOnlyProfile) {
-    if (profileUsesFormula) {
+    if (profileUsesFormula && !baseDetails.blankCoroplastMode) {
       if (usePbv2BaseForPerPieceMatrix || usePbv2BaseForQuantityOnlyProfile) {
         formulaDebug.errors = [
           ...(formulaDebug.errors ?? []),

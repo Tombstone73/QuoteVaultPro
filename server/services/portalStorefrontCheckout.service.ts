@@ -15,6 +15,7 @@ import { canonicalOrderOperations, CanonicalOrderOperationError } from './orders
 import { PortalAccessError, getPortalScope, parsePortalFileSubmissionPayload } from './portal.service';
 import { decodeSelections, hasStorefrontPricing, loadVisibleProduct, pricePortalStorefrontConfiguration } from './portalStorefront.service';
 import { priceLineItem } from './pricing/PricingService';
+import { isUnprintedCoroplast } from '@shared/blankCoroplast';
 import { recordPortalFollowUpItem } from './portalFollowUps';
 import { storageApplicationService } from './storage/StorageApplicationService';
 import { canPortalPlaceOrder, isCurrentCartReview } from './portalStorefrontCheckout.policy';
@@ -110,10 +111,12 @@ async function checkedLine(req: Request, raw: unknown): Promise<PortalStorefront
   }
   const price = await pricePortalStorefrontConfiguration(req, product.id, parsed.data);
   if (!price?.priceAvailable) throw new PortalAccessError(409, 'Choose all required Product options before adding it to the cart.');
+  const visibleKeys = new Set(price.options.map((option) => option.key));
+  const currentSelections = Object.fromEntries(Object.entries(parsed.data.selections).filter(([key]) => visibleKeys.has(key)));
   return {
     id: randomUUID(), productId: product.id, treeVersionId: parsed.data.treeVersionId,
     quantity: parsed.data.quantity, widthIn: parsed.data.widthIn ?? null,
-    heightIn: parsed.data.heightIn ?? null, selections: parsed.data.selections,
+    heightIn: parsed.data.heightIn ?? null, selections: currentSelections,
   };
 }
 
@@ -241,25 +244,26 @@ async function calculateReview(req: Request, cart: CartRow, scope: AccessScope) 
     if (product.pbv2ActiveTreeVersionId !== line.treeVersionId) {
       throw new PortalAccessError(409, `${product.name} changed. Reopen and update this cart item before checkout.`);
     }
-    if (product.artworkPolicy === 'required' && !files.some(file => file.lineId === line.id)) {
+    const tree = product.treeJson as OptionTreeV2;
+    const selected = decodeSelections(tree, line.selections);
+    const blankCoroplast = isUnprintedCoroplast(tree, selected);
+    if (product.artworkPolicy === 'required' && !blankCoroplast && !files.some(file => file.lineId === line.id)) {
       throw new PortalAccessError(409, `${product.name} requires artwork. Upload a file to this cart item before checkout.`);
     }
     const preview = await pricePortalStorefrontConfiguration(req, line.productId, line);
     if (!preview?.priceAvailable || preview.totalCents === null) throw new PortalAccessError(409, `Complete all required options for ${product.name}.`);
-    const tree = product.treeJson as OptionTreeV2;
     const fixed = getPbv2FixedDimensions(tree);
     const widthIn = fixed?.widthIn ?? line.widthIn ?? undefined;
     const heightIn = fixed?.heightIn ?? line.heightIn ?? undefined;
-    const selected = decodeSelections(tree, line.selections);
     const price = await priceLineItem({ organizationId: scope.organizationId, productId: product.id,
       quantity: line.quantity, widthIn, heightIn, pbv2ExplicitSelections: selected,
       pbv2TreeVersionIdOverride: line.treeVersionId });
     if (price.lineTotalCents !== preview.totalCents) throw new PortalAccessError(409, `Pricing changed for ${product.name}. Review the cart again.`);
     const [productType] = product.productTypeId ? await db.select({ name: productTypes.name, requiresPrepressOverride: productTypes.requiresPrepressOverride })
       .from(productTypes).where(and(eq(productTypes.id, product.productTypeId), eq(productTypes.organizationId, scope.organizationId))).limit(1) : [];
-    const requiresPrepress = productType?.requiresPrepressOverride ?? organization.prepressDefaultEnabled ?? true;
+    const requiresPrepress = blankCoroplast ? false : productType?.requiresPrepressOverride ?? organization.prepressDefaultEnabled ?? true;
     pricedLines.push({ line, product, price, widthIn, heightIn, selections: selected,
-      requiresPrepress, productTypeName: productType?.name ?? 'wide_roll' });
+      blankCoroplast, requiresPrepress, productTypeName: productType?.name ?? 'wide_roll' });
   }
   const totals = await calculateQuoteOrderTotals(pricedLines.map(({ product, price }) => ({
     productId: product.id, linePrice: price.lineTotalCents / 100, isTaxable: product.isTaxable,
@@ -344,15 +348,16 @@ export async function submitPortalStorefrontCart(req: Request) {
         shippingMethod: 'pickup', shippingCents: 0, shippingChargeDecision: 'unset',
         productionIntakePolicy: 'deferred', taxRate: priced.totals.taxRate,
         taxAmount: priced.totals.taxAmount, taxableSubtotal: priced.totals.taxableSubtotal,
-        lineItems: priced.pricedLines.map(({ line, product, price, widthIn, heightIn, selections, requiresPrepress, productTypeName }, index) => ({
+        lineItems: priced.pricedLines.map(({ line, product, price, widthIn, heightIn, selections, blankCoroplast, requiresPrepress, productTypeName }, index) => ({
           productId: product.id, productType: productTypeName, description: product.name,
           width: widthIn ?? 0, height: heightIn ?? 0, quantity: line.quantity,
           unitPrice: price.lineTotalCents / 100 / line.quantity, totalPrice: price.lineTotalCents / 100,
           selectedOptions: price.pbv2SnapshotJson.selectedOptions ?? [], optionSelectionsJson: selections,
           pbv2TreeVersionId: price.pbv2TreeVersionId, pbv2SnapshotJson: price.pbv2SnapshotJson,
           pricedAt: new Date(), sortOrder: index, taxAmount: priced.totals.lineItemsWithTax[index]?.taxAmount ?? 0,
-          isTaxableSnapshot: product.isTaxable, requiresProofApproval: product.requiresProofApproval,
+          isTaxableSnapshot: product.isTaxable, requiresProofApproval: blankCoroplast ? false : product.requiresProofApproval,
           requiresPrepress,
+          ...(blankCoroplast ? { productionNotes: 'Unprinted Coroplast: do not print or require artwork. Review any selected cutting and finishing before releasing production.' } : {}),
         })),
       },
     }).catch(error => {

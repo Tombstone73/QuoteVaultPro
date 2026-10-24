@@ -3,6 +3,23 @@ import { deepSeekFunctionParameters } from "../services/ai/providers/configuredP
 import { existingProductEditOperationsSchema, existingProductEditProviderInputSchema, existingProductEditValidationDetails } from "../services/assistant/existingProductEditContract";
 
 describe("existing Product provider transport contract", () => {
+  test("exposes one complete blank Coroplast selling proposal and rejects missing commercial terms", () => {
+    const schema = existingProductEditProviderInputSchema as any;
+    expect(schema.properties.operations.items.oneOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({ properties: expect.objectContaining({ op: { const: "configure_blank_coroplast" } }) }),
+    ]));
+    const payload = { operations: [{ op: "configure_blank_coroplast", pricing: {
+      unit: "per_square_foot", rateCents: 200, minimumChargeCents: 2500,
+    } }] };
+    expect(existingProductEditOperationsSchema.parse(payload)).toEqual(payload);
+    expect(existingProductEditOperationsSchema.safeParse({ operations: [{ op: "configure_blank_coroplast", pricing: {
+      unit: "per_square_foot", rateCents: 200,
+    } }] }).success).toBe(false);
+    expect(existingProductEditOperationsSchema.safeParse({ operations: [...payload.operations, {
+      op: "update_product_lifecycle", isActive: true,
+    }] }).success).toBe(false);
+  });
+
   test("projects the canonical Pricing Engine rotation operation through provider transport and runtime validation", () => {
     const providerSchema = existingProductEditProviderInputSchema as any;
     expect(providerSchema.properties.operations.items.oneOf).toEqual(expect.arrayContaining([

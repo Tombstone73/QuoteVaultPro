@@ -12,7 +12,9 @@ type Input = z.infer<typeof inputSchema>;
 function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildProposal"]>>): ExecutionPlanPreview {
   const publishSummary = proposal.publishProposal
     ? ` It will publish PBV2 configuration ${proposal.publishProposal.treeVersionId}${proposal.publishProposal.activateAfterPublish ? " and activate the Product atomically" : ""}.`
-    : " It will not publish or change an active-tree pointer.";
+    : proposal.blankCoroplastPricing
+      ? " It will save a new active PBV2 configuration version after GO."
+      : " It will not publish or change an active-tree pointer.";
   const warningSummary = proposal.publishProposal?.warnings.length ? ` Publish warnings acknowledged by GO: ${proposal.publishProposal.warnings.map((item) => item.message).join("; ")}.` : "";
   const changeSummary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
   return {
@@ -26,7 +28,7 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
 export function createExistingProductEditCommandDefinition(service: ExistingProductEditService): AssistantCommandDefinition<Input, unknown, unknown> {
   return {
     name: existingProductEditCommandName, version: "v1", domain: "products", mode: "write",
-    description: "Apply a confirmed existing-product edit through shared canonical Product configuration, lifecycle, publication, pricing-engine, material, or PBV2 option-configuration operations.",
+    description: "Apply a confirmed existing-product edit through shared canonical Product configuration, lifecycle, publication, pricing-engine, material, blank Coroplast, or PBV2 option-configuration operations.",
     risk: "high", requiredCapability: "assistant.products.update_existing_product", allowedRoles: ["owner", "admin"],
     inputSchema, previewSchema: z.unknown(), resultSchema: z.unknown(), maxAffectedRecords: 1, bulkAllowed: false,
     confirmationRequired: true, reauthenticationRequired: true, confirmationExpiresInMs: 10 * 60_000,
@@ -73,6 +75,8 @@ export function createExistingProductEditExecutionCommand(service: ExistingProdu
             ? "Applied the shared canonical Product PBV2 publication operation after GO."
           : result.canonicalOperationReference === "products.update_pricing_engine_configuration.v1"
             ? "Applied the shared canonical Product Pricing Engine configuration operation after GO."
+          : result.canonicalOperationReference === "products.save_live_editor_configuration.v1"
+            ? "Saved and read back the live Coroplast Print Mode pricing after GO."
           : "Applied the shared canonical Product configuration operation after GO.";
       return { status: "succeeded", summary: `Updated existing product ${result.productName}.`, details: { existingProductEdit: { productId: result.productId, changes: result.changes, canonicalOperationReference: result.canonicalOperationReference ?? null } } as any, steps: [{ commandName: `${existingProductEditCommandName}@v1`, status: "succeeded", summary: operationSummary }] };
     },

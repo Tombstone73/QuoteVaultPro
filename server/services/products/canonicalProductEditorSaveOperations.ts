@@ -53,6 +53,7 @@ export async function saveActiveProductEditorConfiguration(input: {
   actorUserId: string;
   request: unknown;
   database?: typeof ProductDatabase;
+  auditContext?: { source: "assistant_go"; reference: string; before: Record<string, unknown>; after: Record<string, unknown> };
 }) {
   const request = saveRequestSchema.parse(input.request);
   const rawProduct = (input.request as { product?: Record<string, unknown> }).product ?? {};
@@ -219,9 +220,9 @@ export async function saveActiveProductEditorConfiguration(input: {
       organizationId: input.organizationId, userId: input.actorUserId,
       entityType: "product", entityId: input.productId,
       actionType: "product_configuration_published",
-      description: `Saved and published Product ${publishedProduct.name} configuration ${newTree.id}.`,
-      oldValues: { activeTreeVersionId: active.id, productUpdatedAt: current.updatedAt },
-      newValues: { activeTreeVersionId: newTree.id, operationReference: "products.save_live_editor_configuration.v1" },
+      description: `Saved and published Product ${publishedProduct.name} configuration ${newTree.id}${input.auditContext ? ` via ${input.auditContext.source}` : ""}.`,
+      oldValues: { activeTreeVersionId: active.id, productUpdatedAt: current.updatedAt, ...(input.auditContext ? { configuration: input.auditContext.before } : {}) },
+      newValues: { activeTreeVersionId: newTree.id, operationReference: "products.save_live_editor_configuration.v1", ...(input.auditContext ? { configuration: input.auditContext.after, operationId: input.auditContext.reference } : {}) },
     });
     return { product: publishedProduct, activeTreeVersionId: newTree.id, unchanged: false };
   });

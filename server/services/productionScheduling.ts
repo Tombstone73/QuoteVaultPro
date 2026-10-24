@@ -7,6 +7,7 @@ import { isCanceledOrder } from "@shared/operationalState";
 import { syncParentOrderForOperationalChildren } from "./orderWorkflowSyncService";
 import { resolveLineItemProofReleaseGate } from "./proofGateService";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
+import { isUnprintedCoroplastOrderSnapshot } from "@shared/blankCoroplast";
 
 type SchedulingCandidateLineItem = {
   lineItemId: string;
@@ -23,6 +24,7 @@ type SchedulingCandidateLineItem = {
   workflowIntent: string | null;
   lineItemRole?: string | null;
   productionBypassed?: boolean | null;
+  pbv2SnapshotJson?: unknown;
 };
 
 type ScheduledItem = {
@@ -216,6 +218,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
         workflowIntent: products.workflowIntent,
         lineItemRole: orderLineItems.lineItemRole,
         productionBypassed: orderLineItems.productionBypassed,
+        pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
@@ -314,6 +317,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
           typeof item.lineItemRequiresPrepressSnapshot === "boolean"
             ? item.lineItemRequiresPrepressSnapshot
             : undefined,
+        lineItemIsUnprintedCoroplast: isUnprintedCoroplastOrderSnapshot(item.pbv2SnapshotJson),
       });
 
       const targetWorkflowState =

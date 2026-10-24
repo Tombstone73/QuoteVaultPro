@@ -7,6 +7,26 @@ const input = { productId: "product_1", operations: [{ op: "set_option_default",
 const scope = { organizationId: "org_1", userId: "user_1", permissions: ["assistant.products.update_existing_product"], environment: "test" } as const;
 
 describe("existing product edit execution command", () => {
+  test("reviews blank selling terms and active version before applying through GO", async () => {
+    const blankInput = { productId: "product_1", operations: [{ op: "configure_blank_coroplast", pricing: {
+      unit: "per_square_foot", rateCents: 200, minimumChargeCents: 2500,
+    } }], proposalFingerprint: fingerprint };
+    const blankProposal = { ...proposal, productName: "4mm Coroplast", sourceLifecycle: "ACTIVE",
+      canonicalOperationReference: "products.save_live_editor_configuration.v1",
+      blankCoroplastPricing: blankInput.operations[0].pricing,
+      changes: [{ field: "Unprinted selling rate", before: "unavailable", after: "$2.00 per square foot" },
+        { field: "Unprinted minimum", before: "unavailable", after: "$25.00" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: blankProposal })),
+      execute: jest.fn(async () => blankProposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: blankInput, context: {} as any });
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(built.preview.summary).toContain("$2.00 per square foot");
+    expect(built.preview.summary).toContain("save a new active PBV2 configuration version after GO");
+    const result = await command.execute({ plan: { sanitizedArguments: blankInput } as any, scope });
+    expect(result.steps[0]?.summary).toContain("Saved and read back the live Coroplast Print Mode pricing");
+  });
+
   test("creates a targeted preview, revalidates stale state, and makes no mutation before GO", async () => {
     const service = {
       revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal })),

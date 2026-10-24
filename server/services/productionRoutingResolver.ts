@@ -152,8 +152,19 @@ export async function resolveInitialProductionRoute(args: {
   productTypeId?: string | null;
   lineItemRequiresDesignSnapshot?: boolean;
   lineItemRequiresPrepressSnapshot?: boolean;
+  lineItemIsUnprintedCoroplast?: boolean;
 }): Promise<InitialProductionRoute> {
-  const { organizationId, productTypeId, lineItemRequiresDesignSnapshot, lineItemRequiresPrepressSnapshot } = args;
+  const { organizationId, productTypeId, lineItemRequiresDesignSnapshot, lineItemRequiresPrepressSnapshot, lineItemIsUnprintedCoroplast } = args;
+
+  if (lineItemRequiresDesignSnapshot === true) {
+    return { stationKey: "design", stepKey: "design", reason: "line_item_requires_design_snapshot_true" };
+  }
+
+  // Blank Coroplast still needs Flatbed cutting work. Its immutable priced
+  // selection must not inherit the printed Product Type's prepress override.
+  if (lineItemIsUnprintedCoroplast) {
+    return { stationKey: "flatbed", stepKey: DEFAULT_ROUTE_STEP_KEY, reason: "unprinted_coroplast_flatbed" };
+  }
 
   const [org] = await db
     .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
@@ -177,14 +188,6 @@ export async function resolveInitialProductionRoute(args: {
     : [];
 
   const override = productType?.requiresPrepressOverride;
-
-  if (lineItemRequiresDesignSnapshot === true) {
-    return {
-      stationKey: "design",
-      stepKey: "design",
-      reason: "line_item_requires_design_snapshot_true",
-    };
-  }
 
   const requiresPrepressEffective =
     override === true

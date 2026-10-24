@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import * as schema from '@shared/schema';
 import { safeTestDatabaseUrl } from './helpers/safeTestDatabase';
 import { createPbv2BannerProductTreeJson } from '@shared/pbv2/starterTree';
+import { COROPLAST_FLUTE_KEY, COROPLAST_PRINT_MODE_KEY, withBlankCoroplastPricing } from '@shared/blankCoroplast';
 
 // Database evidence is opt-in. The guard rejects shared/production targets;
 // ordinary unit-test runs without TEST_DATABASE_URL skip this suite.
@@ -249,6 +250,59 @@ databaseTest('canonical two-line checkout persists exactly one Order, linked Inv
       totalCents: review.totalCents });
   }
   expect(await orderCounts()).toEqual(counts);
+});
+
+databaseTest('blank Coroplast checkout persists its priced mode, flute, totals, and deferred Flatbed instructions without artwork', async () => {
+  const buyer = await additionalAccess();
+  const blankProductId = randomUUID();
+  const blankTreeId = randomUUID();
+  const { makeCoroplastGoldenTree } = await import('../services/pricing/tests/fixtures/pbv2GoldenPricing.fixtures');
+  const baseTree = makeCoroplastGoldenTree();
+  (baseTree.nodes.rate as { input: Record<string, unknown> }).input.valueType = 'ENUM';
+  const blankTree = withBlankCoroplastPricing(baseTree as never, {
+    unit: 'per_square_foot', rateCents: 200, minimumChargeCents: 2500,
+    quantityTiers: [{ minQuantity: 1, rateCents: 200 }, { minQuantity: 10, rateCents: 150 }],
+  });
+  await pool.query(`insert into products
+    (id, organization_id, name, description, is_active, storefront_visible, portal_orderable, is_taxable)
+    values ($1, $2, '4mm Coroplast checkout QA', 'Disposable blank Product', true, true, true, true)`,
+  [blankProductId, organizationId]);
+  await pool.query(`insert into pbv2_tree_versions
+    (id, organization_id, product_id, status, schema_version, tree_json)
+    values ($1, $2, $3, 'ACTIVE', 2, $4::jsonb)`,
+  [blankTreeId, organizationId, blankProductId, JSON.stringify(blankTree)]);
+  await pool.query('update products set pbv2_active_tree_version_id = $1 where id = $2', [blankTreeId, blankProductId]);
+
+  const modeKey = storefront.projectStorefrontOptions(blankTree).options.find((option) => option.label === 'Print Mode')?.key;
+  const fluteKey = storefront.projectStorefrontOptions(blankTree, { [COROPLAST_PRINT_MODE_KEY]: 'unprinted' })
+    .options.find((option) => option.label === 'Flute Direction')?.key;
+  expect(modeKey).toBeDefined();
+  expect(fluteKey).toBeDefined();
+  const selections = { [modeKey!]: 'unprinted', [fluteKey!]: 'vertical' };
+  await checkout.addPortalStorefrontCartLine(buyer({
+    productId: blankProductId, treeVersionId: blankTreeId, quantity: 10, widthIn: 24, heightIn: 18, selections,
+  }));
+  const review = await checkout.reviewPortalStorefrontCart(buyer());
+  expect(review.subtotalCents).toBe(4500);
+  const placed = await checkout.submitPortalStorefrontCart(buyer({
+    reviewToken: review.reviewToken, submissionKey: randomUUID(),
+  }));
+  expect(placed.status).toBe('placed');
+  if (placed.status !== 'placed') throw new Error('Blank checkout was not placed');
+  const persisted = await pool.query(`select l.option_selections_json, l.pbv2_snapshot_json, l.requires_prepress,
+      l.requires_proof_approval, l.production_notes, l.total_price, i.total_cents,
+      (select count(*)::int from production_jobs where order_id = $1) as jobs,
+      (select count(*)::int from portal_follow_up_items where related_order_id = $1 and event_type = 'ORDER_SUBMITTED') as intake
+    from order_line_items l join invoices i on i.order_id = l.order_id
+    where l.order_id = $1`, [placed.orderId]);
+  expect(persisted.rows).toHaveLength(1);
+  const line = persisted.rows[0];
+  expect(line.option_selections_json).toMatchObject({ [COROPLAST_PRINT_MODE_KEY]: 'unprinted', [COROPLAST_FLUTE_KEY]: 'vertical' });
+  expect(line.pbv2_snapshot_json.selections[COROPLAST_PRINT_MODE_KEY].value).toBe('unprinted');
+  expect(line).toMatchObject({ requires_prepress: false, requires_proof_approval: false, jobs: 0, intake: 1 });
+  expect(line.production_notes).toMatch(/Unprinted Coroplast.*do not print/i);
+  expect(Math.round(Number(line.total_price) * 100)).toBe(4500);
+  expect(line.total_cents).toBe(review.totalCents);
 });
 
 databaseTest('simultaneous same-key submissions commit one Order and Invoice', async () => {

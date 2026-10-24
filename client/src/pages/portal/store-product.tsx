@@ -182,10 +182,13 @@ function Configuration({ product, cartLine, canOrder }: { product: PortalStorePr
     appliedPriceKey.current = configurationKey;
     setVisibleOptions(price.options);
     setSelections((current) => {
+      const visibleKeys = new Set(price.options.map((option) => option.key));
+      const retained = Object.fromEntries(Object.entries(current).filter(([key]) => visibleKeys.has(key))) as Record<string, PortalStoreOptionValue>;
       const newlyVisibleDefaults = Object.fromEntries(
-        Object.entries(price.effectiveSelections).filter(([key]) => current[key] === undefined),
+        Object.entries(price.effectiveSelections).filter(([key]) => retained[key] === undefined),
       ) as Record<string, PortalStoreOptionValue>;
-      return Object.keys(newlyVisibleDefaults).length ? { ...current, ...newlyVisibleDefaults } : current;
+      return Object.keys(newlyVisibleDefaults).length || Object.keys(retained).length !== Object.keys(current).length
+        ? { ...retained, ...newlyVisibleDefaults } : current;
     });
   }, [price, configurationKey]);
 

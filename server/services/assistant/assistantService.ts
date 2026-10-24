@@ -1094,7 +1094,7 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. Lifecycle activation may transparently propose publishing its current valid PBV2 DRAFT first; publish warnings are displayed in the protected plan and acknowledged by GO. Pricing Engine rotation is separate from customer options. Nothing changes before GO, and the server revalidates state at GO.",
+      description: "Prepare a protected edit to one trusted existing persisted product. For requests to add unprinted or blank Coroplast, use configure_blank_coroplast with the customer's selling rate and minimum in integer cents ($2.00 = 200 cents, not supplier cost); choose per_square_foot or per_piece. Ask for missing selling terms, never invent a markup. The proposal previews example prices and production effects. Lifecycle activation may propose publishing a valid PBV2 DRAFT first. Nothing changes before GO; the server revalidates state at GO.",
       inputSchema: existingProductEditProviderInputSchema,
       execute: async ({ arguments: args, context }) => {
         if (isStaffRoleDiscussion(context.goal, conversationMessages)) return { status: "rejected" as const, warning: "A staff-role discussion cannot prepare a Product edit.", failureCategory: "intent_mismatch", failureCode: "unrelated_product_preview", failingStep: "existing_product_intent" };

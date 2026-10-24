@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { orderLineItems, orders, products, productionJobs } from "@shared/schema";
+import { isUnprintedCoroplastOrderSnapshot } from "@shared/blankCoroplast";
 
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -337,6 +338,7 @@ export function registerProductionConfigRoutes(
             requiresDesign: orderLineItems.requiresDesign,
             requiresProofApproval: orderLineItems.requiresProofApproval,
             requiresPrepress: orderLineItems.requiresPrepress,
+            pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
           })
           .from(orderLineItems)
           .leftJoin(products, eq(orderLineItems.productId, products.id))
@@ -353,6 +355,7 @@ export function registerProductionConfigRoutes(
             typeof lineItem.requiresDesign === "boolean" ? lineItem.requiresDesign : undefined,
           lineItemRequiresPrepressSnapshot:
             typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : undefined,
+          lineItemIsUnprintedCoroplast: isUnprintedCoroplastOrderSnapshot(lineItem.pbv2SnapshotJson),
         });
 
         const stationKey = String(resolvedRoute.stationKey ?? "").trim();

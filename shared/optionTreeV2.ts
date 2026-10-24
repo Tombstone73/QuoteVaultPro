@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { blankCoroplastPricingSchema, type BlankCoroplastPricing } from "./blankCoroplast";
 
 // ------------------------------------------------------------
 // Option Tree v2 (schemaVersion=2)
@@ -190,6 +191,7 @@ export type OptionNodeV2 = {
       number?: { min?: number; max?: number; step?: number; integerOnly?: boolean };
       text?: { minLen?: number; maxLen?: number; pattern?: string };
       select?: { allowEmpty?: boolean; emptyLabel?: string };
+      enum?: { options: Array<{ value: string }> };
     };
   };
   choices?: Array<{ 
@@ -257,6 +259,7 @@ export type OptionTreeV2 = {
     formulaVariables?: Record<string, number | boolean>;
     pricingFormulaVariables?: Record<string, number | boolean>;
     pricingV2?: PricingV2;
+    blankCoroplastPricing?: BlankCoroplastPricing;
     shippingConfig?: ShippingConfig;
     productImages?: ProductImage[];
     requiresDimensions?: boolean; // Default true if missing (product requires W x H)
@@ -676,6 +679,7 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
             .object({ minLen: z.number().int().optional(), maxLen: z.number().int().optional(), pattern: z.string().optional() })
             .optional(),
           select: z.object({ allowEmpty: z.boolean().optional(), emptyLabel: z.string().optional() }).optional(),
+          enum: z.object({ options: z.array(z.object({ value: z.string() })) }).optional(),
         })
         .optional(),
     })
@@ -754,6 +758,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       pricingFormulaVariables: z.record(z.union([z.number(), z.boolean()])).optional(),
       billingUnit: z.object({ kind: z.literal("hour"), selectionKey: z.string().min(1), step: z.number().positive() }).optional(),
       pricingV2: pricingV2Schema.optional(),
+      blankCoroplastPricing: blankCoroplastPricingSchema.optional(),
       shippingConfig: shippingConfigSchema.optional(),
       productImages: z.array(productImageSchema).optional(),
       requiresDimensions: z.boolean().optional(),

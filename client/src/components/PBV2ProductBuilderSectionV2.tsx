@@ -154,6 +154,8 @@ function applyTreeUpdate(
 }
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
 import { ProductImagesSection } from "@/components/pbv2/builder-v2/ProductImagesSection";
+import { BlankCoroplastPricingEditor } from "@/components/pbv2/builder-v2/BlankCoroplastPricingEditor";
+import type { OptionTreeV2 } from "@shared/optionTreeV2";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
 import { SaveOptionGroupTemplateDialog, TemplateLibraryDialog } from "@/components/pbv2/builder-v2/OptionGroupTemplateDialogs";
 import {
@@ -1671,6 +1673,8 @@ export default function PBV2ProductBuilderSectionV2({
         </div>
       )}
       <ProductIntakeDraftContextPanel treeJson={localTreeJson} />
+      {localTreeJson ? <BlankCoroplastPricingEditor tree={localTreeJson as OptionTreeV2} productName={editorModel.productMeta.name}
+        onUpdate={(tree) => applyTreeUpdate(tree, "blankCoroplastPricing", setLocalTreeJson, setHasLocalChanges, setIsLocalDirty)} /> : null}
 
       {/* Product Images — full-width section above options builder */}
       <div>

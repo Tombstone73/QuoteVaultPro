@@ -8,6 +8,8 @@ import { CanonicalProductMaterialError, canonicalProductMaterialOperations, cano
 import { CanonicalProductLifecycleError, canonicalProductLifecycleOperations } from "../products/canonicalProductLifecycleOperations";
 import { CanonicalProductPublishError, canonicalProductPublishOperations } from "../products/canonicalProductPublishOperations";
 import { CanonicalProductPricingEngineConfigurationError, canonicalProductPricingEngineConfigurationOperations, type ProductPricingEngineConfigurationChanges } from "../products/canonicalProductPricingEngineConfigurationOperations";
+import { BlankCoroplastOperationError, canonicalBlankCoroplastOperations } from "../products/canonicalBlankCoroplastOperations";
+import { readBlankCoroplastPricing, type BlankCoroplastPricing } from "@shared/blankCoroplast";
 export { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 
 /**
@@ -23,10 +25,11 @@ export type ExistingProductEditProposal = {
   treeId?: string;
   treeUpdatedAt?: string;
   sourceLifecycle: "DRAFT" | "ACTIVE" | "PRODUCT";
-  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1" | "products.update_lifecycle.v1" | "products.publish_configuration.v1" | "products.update_pricing_engine_configuration.v1";
+  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1" | "products.update_lifecycle.v1" | "products.publish_configuration.v1" | "products.update_pricing_engine_configuration.v1" | "products.save_live_editor_configuration.v1";
   expectedProductUpdatedAt?: string;
   materialProposal?: CanonicalProductMaterialProposal;
   publishProposal?: { treeVersionId: string; expectedProductUpdatedAt: string; expectedTreeUpdatedAt: string; activateAfterPublish: boolean; confirmWarnings: boolean; warnings: Array<{ code: string; message: string }> };
+  blankCoroplastPricing?: BlankCoroplastPricing;
   changes: Array<{ field: string; before: string; after: string }>;
   fingerprint: string;
 };
@@ -38,6 +41,7 @@ export type TrustedExistingProductEditContext = {
   primaryMaterial: { label: string; active: boolean } | null;
   availableMaterials: string[];
   optionGroups: Array<{ label: string; selectionKey?: string; inputType?: string; required?: boolean; defaultValue: string | null; values: string[]; choices?: Array<{ value: string; label: string }> }>;
+  blankCoroplastPricing?: BlankCoroplastPricing | null;
 };
 
 export class ExistingProductEditError extends Error {
@@ -92,12 +96,36 @@ export class ExistingProductEditService {
       const choices = node.choices.flatMap((choice: any) => typeof choice?.value === "string" && choice.value.trim() ? [{ value: choice.value, label: typeof choice?.label === "string" && choice.label.trim() ? choice.label : choice.value }] : []);
       return [{ label, selectionKey: String(node.input?.selectionKey ?? node.key ?? node.id), inputType: String(node.input?.type ?? "unknown"), required: Boolean(node.input?.required), defaultValue: displayDefault(node) === "(none)" ? null : displayDefault(node), values: choices.map((choice: any) => choice.label), choices }];
     }).slice(0, 24);
-    return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree?.status === "DRAFT" ? "DRAFT" : tree?.status === "ACTIVE" ? "ACTIVE" : "UNAVAILABLE", primaryMaterial: currentMaterialRows[0] ? { label: currentMaterialRows[0].name, active: currentMaterialRows[0].isActive } : null, availableMaterials: materialRows.map((row) => row.name), optionGroups };
+    return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree?.status === "DRAFT" ? "DRAFT" : tree?.status === "ACTIVE" ? "ACTIVE" : "UNAVAILABLE", primaryMaterial: currentMaterialRows[0] ? { label: currentMaterialRows[0].name, active: currentMaterialRows[0].isActive } : null, availableMaterials: materialRows.map((row) => row.name), optionGroups, blankCoroplastPricing: tree ? readBlankCoroplastPricing(tree.treeJson) : null };
   }
 
   async buildProposal(input: { organizationId: string; productId: string; operations: unknown }): Promise<ExistingProductEditProposal> {
     const { db } = await import("../../db");
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const blankOperation = operations.operations.find((operation) => operation.op === "configure_blank_coroplast");
+    if (blankOperation) {
+      try {
+        const proposal = await canonicalBlankCoroplastOperations.propose({ organizationId: input.organizationId, productId: input.productId, pricing: blankOperation.pricing });
+        const price = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+        const unitLabel = (unit: BlankCoroplastPricing["unit"]) => unit === "per_piece" ? "per piece" : "per square foot";
+        const tiersLabel = (value: BlankCoroplastPricing | null) => value?.quantityTiers?.length
+          ? value.quantityTiers.map((tier) => `${tier.minQuantity}+ pieces: ${price(tier.rateCents)} ${unitLabel(value.unit)}`).join("; ")
+          : "none";
+        return { productId: proposal.productId, productName: proposal.productName, productActive: true, sourceLifecycle: "ACTIVE",
+          canonicalOperationReference: "products.save_live_editor_configuration.v1", expectedProductUpdatedAt: proposal.expectedProductUpdatedAt,
+          treeId: proposal.expectedActiveTreeVersionId, blankCoroplastPricing: proposal.after, fingerprint: proposal.fingerprint,
+          changes: [
+            { field: "Print Mode", before: proposal.before ? "Printed and Unprinted" : "Printed only", after: "Printed and Unprinted / blank substrate" },
+            { field: "Unprinted selling rate", before: proposal.before ? `${price(proposal.before.rateCents)} ${unitLabel(proposal.before.unit)}` : "unavailable", after: `${price(proposal.after.rateCents)} ${unitLabel(proposal.after.unit)}` },
+            { field: "Unprinted minimum", before: proposal.before ? price(proposal.before.minimumChargeCents) : "unavailable", after: price(proposal.after.minimumChargeCents) },
+            { field: "Unprinted quantity tiers", before: tiersLabel(proposal.before), after: tiersLabel(proposal.after) },
+            { field: "Production and artwork", before: "printed Product defaults", after: "blank selection skips print-only inputs, artwork, proof and prepress; cutting and finishing remain selectable; staff intake defers release, then Flatbed owns cutting work" },
+            { field: "Print-only controls hidden for blank", before: "visible", after: proposal.hiddenPrintOnlyOptions.join(", ") || "none" },
+            ...proposal.warnings.map((warning) => ({ field: `Product warning ${warning.code}`, before: "not acknowledged", after: warning.message })),
+            ...proposal.examples.map((example) => ({ field: `Example ${example.dimensions}, quantity ${example.quantity}`, before: "not available", after: price(example.totalCents) })),
+          ] };
+      } catch (error) { if (error instanceof BlankCoroplastOperationError) throw new ExistingProductEditError(error.code, error.message); throw error; }
+    }
     const lifecycleOperation = operations.operations.find((operation) => operation.op === "update_product_lifecycle");
     if (lifecycleOperation) {
       try { const proposal = await canonicalProductLifecycleOperations.propose({ organizationId: input.organizationId, productId: input.productId, isActive: lifecycleOperation.isActive }); return { productId: proposal.productId, productName: proposal.productName, productActive: !lifecycleOperation.isActive, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: "Lifecycle", before: change.before ? "active" : "inactive", after: change.after ? "active" : "inactive" })), fingerprint: proposal.fingerprint }; } catch (error) {
@@ -165,6 +193,15 @@ export class ExistingProductEditService {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const blankOperation = operations.operations.find((operation) => operation.op === "configure_blank_coroplast");
+    if (blankOperation) {
+      try {
+        const result = await canonicalBlankCoroplastOperations.execute({ organizationId: input.organizationId, productId: input.productId,
+          actorUserId: input.userId, pricing: blankOperation.pricing, expectedFingerprint: input.expectedFingerprint,
+          operationId: `assistant-plan:${input.expectedFingerprint}` });
+        return { ...validation.proposal, treeId: result.resultingActiveTreeVersionId, canonicalOperationReference: "products.save_live_editor_configuration.v1" as const };
+      } catch (error) { if (error instanceof BlankCoroplastOperationError) throw new ExistingProductEditError(error.code === "PRODUCT_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message); throw error; }
+    }
     if (validation.proposal.publishProposal) {
       const publish = validation.proposal.publishProposal;
       try { const result = await canonicalProductPublishOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, confirmWarnings: publish.confirmWarnings, activateProduct: publish.activateAfterPublish, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } }); return { ...validation.proposal, canonicalOperationReference: result.operationReference }; } catch (error) { if (error instanceof CanonicalProductPublishError) throw new ExistingProductEditError(error.code === "PBV2_PUBLISH_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message); throw error; }
