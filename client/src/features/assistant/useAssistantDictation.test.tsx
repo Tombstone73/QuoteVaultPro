@@ -8,6 +8,7 @@ import { appendDictation, useAssistantDictation } from "./useAssistantDictation"
 
 test("dictation appends to typed text only after stop and leaves send explicit", async () => {
   const spoken: string[] = [];
+  let aborts = 0;
   let instance!: FakeRecognition;
   class FakeRecognition {
     lang = ""; continuous = false; interimResults = false;
@@ -18,7 +19,7 @@ test("dictation appends to typed text only after stop and leaves send explicit",
     constructor() { instance = this; }
     start() { this.onstart?.(); }
     stop() { this.onend?.(); }
-    abort() { this.onend?.(); }
+    abort() { aborts += 1; this.onend?.(); }
   }
   Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeRecognition });
   let dictation!: ReturnType<typeof useAssistantDictation>;
@@ -36,6 +37,10 @@ test("dictation appends to typed text only after stop and leaves send explicit",
   await act(async () => instance.onresult?.({ results: [{ isFinal: true, 0: { transcript: "discard me" } }] }));
   await act(async () => dictation.cancel());
   expect(spoken).toHaveLength(1);
+  expect(aborts).toBe(1);
+  await act(async () => dictation.start());
   await act(async () => root.unmount());
+  expect(aborts).toBe(2);
+  expect(spoken).toHaveLength(1);
   Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: undefined });
 });
