@@ -84,7 +84,7 @@ test("failed persistence preserves the draft and explicit retry reuses the reque
 });
 
 
-test("a persisted assistant failure keeps the editable draft", async () => {
+test("a persisted assistant failure keeps the saved message in history without prompting duplicate upload", async () => {
   Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: jest.fn(() => "request_failed_response") });
   mockSendTurn.mockReset().mockResolvedValue({ data: { status: "failed", correlationId: "failed_ref" } });
   let workspace!: ReturnType<typeof useAssistantWorkspace>;
@@ -94,7 +94,8 @@ test("a persisted assistant failure keeps the editable draft", async () => {
   await act(async () => root.render(<AssistantWorkspaceProvider><Harness /></AssistantWorkspaceProvider>));
   await act(async () => workspace.setDraft("Describe my photo"));
   await act(async () => workspace.sendOrdinaryTurn("Describe my photo", true));
-  expect(workspace.draft).toBe("Describe my photo");
+  expect(workspace.draft).toBe("");
   expect(workspace.turnNotice?.message).toContain("message was saved");
+  expect(workspace.turnNotice?.message).toContain("without resending it");
   await act(async () => root.unmount());
 });

@@ -6,7 +6,7 @@ jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path, resolveCan
 import { useAssistantDraftImages } from "./useAssistantDraftImages";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-test("a saved failed turn retains the local image and requires explicit reupload before resend", async () => {
+test("clearing a saved image revokes its preview without uploading another copy", async () => {
   Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: jest.fn(() => "local_image") });
   Object.defineProperty(URL, "createObjectURL", { configurable: true, value: jest.fn(() => "blob:local-image") });
   Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: jest.fn() });
@@ -34,9 +34,9 @@ test("a saved failed turn retains the local image and requires explicit reupload
   await act(async () => root.render(<Harness />));
   await act(async () => { images.add([new File(["png"], "proof.png", { type: "image/png" })]); await new Promise(resolve => setTimeout(resolve, 0)); });
   expect(images.images[0]).toMatchObject({ state: "ready", attachment: { id: "image_1" } });
-  await act(async () => images.markForResend(["image_1"]));
-  expect(images.images[0]).toMatchObject({ state: "failed", attachment: null, previewUrl: "blob:local-image" });
-  await act(async () => { await images.retry("local_image"); await new Promise(resolve => setTimeout(resolve, 0)); });
-  expect(images.images[0]).toMatchObject({ state: "ready", attachment: { id: "image_2" } });
+  await act(async () => images.clear());
+  expect(images.images).toHaveLength(0);
+  expect(upload).toBe(1);
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:local-image");
   await act(async () => root.unmount());
 });

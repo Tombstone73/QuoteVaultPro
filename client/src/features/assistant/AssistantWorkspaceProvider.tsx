@@ -108,7 +108,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     }
     return creatingConversationRef.current;
   }, [activeConversationId, createConversationForTurn]);
-  const { images: draftImages, add: addDraftImages, remove: removeDraftImage, retry: retryDraftImage, clear: clearDraftImages, markForResend: markDraftImagesForResend } = useAssistantDraftImages(ensureConversation);
+  const { images: draftImages, add: addDraftImages, remove: removeDraftImage, retry: retryDraftImage, clear: clearDraftImages } = useAssistantDraftImages(ensureConversation);
   React.useEffect(() => { if (!isAuthenticated) clearDraftImages(); }, [isAuthenticated, clearDraftImages]);
   React.useEffect(() => {
     if (draftImages.some(image => image.conversationId && image.conversationId !== activeConversationId)) clearDraftImages();
@@ -154,9 +154,13 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
       completed = true;
       retryTurnRef.current = null;
       if (response.data.status === "failed") {
-        if (attachmentIds.length) markDraftImagesForResend(attachmentIds);
-        setDraft(current => current || message);
-        setTurnNotice({ conversationId, message: "The message was saved, but the assistant could not finish. Your draft and images are still here." });
+        if (clearDraftOnSuccess) {
+          setDraft("");
+          if (attachmentIds.length) clearDraftImages();
+        }
+        setTurnNotice({ conversationId, message: attachmentIds.length
+          ? "The message and images were saved, but the assistant could not answer. You can ask a follow-up about the saved images without uploading them again."
+          : "The message was saved, but the assistant could not answer. You can ask a follow-up without resending it." });
         return;
       }
       const persistedCorrelationId = typeof response?.data?.correlationId === "string" ? response.data.correlationId : null;
