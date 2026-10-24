@@ -8,6 +8,7 @@ import type { AssistantMessage } from "@shared/assistantContracts";
 import { useAssistantDraftImages, type AssistantDraftImage } from "./useAssistantDraftImages";
 import type { AssistantCapabilities, AssistantContextEnvelope, AssistantLayoutPreferences, AssistantPresentation } from "./types";
 import { buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, resolveAssistantPresentation, shouldEnableAssistantForRoute } from "./assistantWorkspaceCore";
+import { clampFloatingBounds, floatingViewport } from "./assistantFloatingBounds";
 
 const DEFAULT_LAYOUT: AssistantLayoutPreferences = {
   presentation: "floating",
@@ -21,14 +22,7 @@ export function buildAssistantContext(pathname: string, pageTitle = document.tit
 
 function clampBounds(bounds: AssistantLayoutPreferences["floatingBounds"]) {
   if (typeof window === "undefined") return bounds;
-  const width = Math.min(Math.max(bounds.width, 320), Math.max(320, window.innerWidth - 24));
-  const height = Math.min(Math.max(bounds.height, 360), Math.max(360, window.innerHeight - 24));
-  return {
-    width,
-    height,
-    x: Math.min(Math.max(bounds.x, 12), Math.max(12, window.innerWidth - width - 12)),
-    y: Math.min(Math.max(bounds.y, 12), Math.max(12, window.innerHeight - height - 12)),
-  };
+  return clampFloatingBounds(bounds, floatingViewport());
 }
 
 type ActiveAssistantTurn = { id: string; controller: AbortController; conversationId: string };
@@ -87,6 +81,8 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   const capabilityQuery = useAssistantCapabilities(isInternal);
   const storageKey = getAssistantPreferenceKey(capabilityQuery.data);
   const [layout, setLayout] = React.useState<AssistantLayoutPreferences>(DEFAULT_LAYOUT);
+  const layoutRef = React.useRef(layout);
+  layoutRef.current = layout;
   const [presentation, setPresentationState] = React.useState<AssistantPresentation>("minimized");
   const [priorPresentation, setPriorPresentation] = React.useState<Exclude<AssistantPresentation, "minimized" | "fullscreen">>("floating");
   const [context, setContext] = React.useState(() => buildAssistantContext(location.pathname));
@@ -227,13 +223,21 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     if (!storageKey || typeof window === "undefined") return;
     try {
       const stored = JSON.parse(window.localStorage.getItem(storageKey) || "null") as Partial<AssistantLayoutPreferences> | null;
-      if (!stored) return;
+      if (!stored) {
+        const defaults = { ...DEFAULT_LAYOUT, floatingBounds: clampBounds(DEFAULT_LAYOUT.floatingBounds) };
+        layoutRef.current = defaults;
+        setLayout(defaults);
+        setPriorPresentation(DEFAULT_LAYOUT.presentation);
+        return;
+      }
       const savedPresentation = stored.presentation || DEFAULT_LAYOUT.presentation;
-      setLayout({
+      const restored = {
         presentation: savedPresentation,
         floatingBounds: clampBounds({ ...DEFAULT_LAYOUT.floatingBounds, ...stored.floatingBounds }),
         dockSize: Math.min(Math.max(Number(stored.dockSize) || DEFAULT_LAYOUT.dockSize, 300), 760),
-      });
+      };
+      layoutRef.current = restored;
+      setLayout(restored);
       setPriorPresentation(savedPresentation);
     } catch {
       // Invalid local preference data must never prevent the app shell from rendering.
@@ -243,11 +247,24 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   const persistLayout = React.useCallback(() => {
     if (!storageKey || typeof window === "undefined") return;
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify({ ...layout, floatingBounds: clampBounds(layout.floatingBounds) }));
+      const latest = layoutRef.current;
+      window.localStorage.setItem(storageKey, JSON.stringify({ ...latest, floatingBounds: clampBounds(latest.floatingBounds) }));
     } catch {
       // Local storage is optional for Stage 1.
     }
-  }, [layout, storageKey]);
+  }, [storageKey]);
+
+  const setFloatingBounds = React.useCallback((bounds: AssistantLayoutPreferences["floatingBounds"]) => {
+    const next = clampBounds(bounds);
+    layoutRef.current = { ...layoutRef.current, floatingBounds: next };
+    setLayout(current => ({ ...current, floatingBounds: next }));
+  }, []);
+
+  React.useEffect(() => {
+    const keepReachable = () => setFloatingBounds(layoutRef.current.floatingBounds);
+    window.addEventListener("resize", keepReachable);
+    return () => window.removeEventListener("resize", keepReachable);
+  }, [setFloatingBounds]);
 
   const setPresentation = React.useCallback((next: AssistantPresentation) => {
     const normalized = resolveAssistantPresentation(isMobile, next);
@@ -297,7 +314,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     setPresentation,
     minimize,
     toggle,
-    setFloatingBounds: (bounds) => setLayout((current) => ({ ...current, floatingBounds: clampBounds(bounds) })),
+    setFloatingBounds,
     setDockSize: (dockSize) => setLayout((current) => ({ ...current, dockSize: Math.min(Math.max(dockSize, 300), 760) })),
     persistLayout,
     refreshContext: () => setContext(current => current.route === location.pathname ? current : buildAssistantContext(location.pathname)),
@@ -321,7 +338,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     executionPlans,
     saveExecutionPlan,
     updateExecutionPlan,
-  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, draftImages, addDraftImages, removeDraftImage, retryDraftImage, clearDraftImages, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setInvoicePageContext, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
+  }), [activeConversationId, activeTurn, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, clearOptimisticMessage, context, draft, draftImages, addDraftImages, removeDraftImage, retryDraftImage, clearDraftImages, executionPlans, isMobile, layout, minimize, optimisticConversationId, optimisticUserMessage, persistLayout, presentation, priorPresentation, saveExecutionPlan, sendOrdinaryTurn, setFloatingBounds, setInvoicePageContext, setPresentation, stopTurn, toggle, turnNotice, updateExecutionPlan, location.pathname]);
 
   return <AssistantWorkspaceContext.Provider value={value}>{children}</AssistantWorkspaceContext.Provider>;
 }

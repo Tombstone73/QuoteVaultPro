@@ -17,6 +17,7 @@ import { ConfigurableProductConfirmationCardView, toConfigurableProductConfirmat
 import { CanonicalProductIntentCardView, CanonicalProductIntentReviewProposalCard, toCanonicalProductIntentCard, toCanonicalProductIntentProposal } from "./AssistantCanonicalProductIntentCard";
 import { AssistantGenericActionProposalCard, toGenericActionProposal } from "./AssistantGenericActionProposalCard";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
+import { AssistantFloatingFrame } from "./AssistantFloatingFrame";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
 import { AssistantWorkingIndicator, resolveAssistantWorkingState } from "./AssistantWorkingIndicator";
@@ -930,31 +931,9 @@ export function AssistantDock({ side }: { side: "left" | "right" | "bottom" }) {
 export function AssistantOverlay() {
   const { capabilities, capabilityLoading, presentation, layout, setFloatingBounds, persistLayout, isMobile } = useAssistantWorkspace();
   const enabled = capabilities?.enabled && capabilities.conversationsEnabled;
-  const [dragging, setDragging] = React.useState(false);
-  const panelRef = React.useRef<HTMLElement>(null);
-  React.useEffect(() => {
-    const handleResize = () => setFloatingBounds(layout.floatingBounds);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [layout.floatingBounds, setFloatingBounds]);
   if (capabilityLoading || !enabled || presentation === "minimized" || ["dock_left", "dock_right", "dock_bottom"].includes(presentation)) return null;
   if (presentation === "fullscreen" || isMobile) return <div className="fixed inset-0 z-[70] bg-background"><WorkspacePanel className="h-full border-0 shadow-none" /></div>;
-  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button")) return;
-    const pointerOrigin = { x: event.clientX, y: event.clientY };
-    const boundsOrigin = { ...layout.floatingBounds };
-    setDragging(true);
-    const move = (moveEvent: PointerEvent) => setFloatingBounds({
-      ...boundsOrigin,
-      x: boundsOrigin.x + moveEvent.clientX - pointerOrigin.x,
-      y: boundsOrigin.y + moveEvent.clientY - pointerOrigin.y,
-    });
-    const finish = () => { setDragging(false); persistLayout(); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", finish, { once: true });
-  };
-  return <section ref={panelRef} className={cn("fixed z-[70] flex min-h-0 flex-col overflow-hidden rounded-lg border bg-background shadow-2xl", dragging && "select-none")} style={{ left: layout.floatingBounds.x, top: layout.floatingBounds.y, width: layout.floatingBounds.width, height: layout.floatingBounds.height }} aria-label="PrintersHero assistant workspace">
-    <div className="flex h-11 shrink-0 cursor-move items-center justify-between border-b px-3" onPointerDown={startDrag}><div className="flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-primary" /> Assistant</div><PresentationControls /></div>
+  return <AssistantFloatingFrame bounds={layout.floatingBounds} onBoundsChange={setFloatingBounds} onPersist={persistLayout} controls={<PresentationControls />}>
     <ConversationContent />
-    <div className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize" onPointerDown={(event) => { event.stopPropagation(); const pointerOrigin = { x: event.clientX, y: event.clientY }; const boundsOrigin = { ...layout.floatingBounds }; const move = (moveEvent: PointerEvent) => setFloatingBounds({ ...boundsOrigin, width: boundsOrigin.width + moveEvent.clientX - pointerOrigin.x, height: boundsOrigin.height + moveEvent.clientY - pointerOrigin.y }); const finish = () => { persistLayout(); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); }; window.addEventListener("pointermove", move); window.addEventListener("pointerup", finish, { once: true }); }} />
-  </section>;
+  </AssistantFloatingFrame>;
 }
