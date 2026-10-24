@@ -101,6 +101,32 @@ describe("AI provider resolver", () => {
     expect(resolved.apiKey).toBe("managed-deepseek-key");
   });
 
+  test("keeps managed credentials, endpoint, provider, and model together despite stale tenant preferences", async () => {
+    process.env.PRINTERSHERO_MANAGED_AI_PROVIDER = "openai_compatible";
+    process.env.PRINTERSHERO_MANAGED_AI_ENDPOINT = "https://api.deepseek.com/chat/completions";
+    process.env.PRINTERSHERO_MANAGED_AI_MODEL = "deepseek-v4-flash";
+    process.env.PRINTERSHERO_MANAGED_AI_API_KEY = "managed-deepseek-key";
+    const resolver = new AiProviderResolver(makeRepo({
+      id: "settings_stale_model",
+      orgId: "org_1",
+      mode: "printershero_managed",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      encryptedApiKey: null,
+      isEnabled: true,
+      assistantEnabled: true,
+    }) as any);
+
+    const resolved = await resolver.resolveProvider({ orgId: "org_1", feature: "assistant" });
+
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.source).toBe("printershero_managed_env");
+    expect(resolved.endpoint).toBe("https://api.deepseek.com/chat/completions");
+    expect(resolved.apiKey).toBe("managed-deepseek-key");
+    expect(resolved.provider).toBe("openai_compatible");
+    expect(resolved.model).toBe("deepseek-v4-flash");
+  });
+
   test("normalizes legacy managed settings rows to Printers Hero managed mode", async () => {
     const resolver = new AiProviderResolver(makeRepo({
       id: "settings_legacy",

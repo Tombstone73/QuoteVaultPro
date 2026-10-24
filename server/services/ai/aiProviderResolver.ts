@@ -138,8 +138,6 @@ export class AiProviderResolver {
         ...managed,
         feature: input.feature,
         settings,
-        model: settings.model || managed.model,
-        provider: settings.provider || managed.provider,
       };
     }
 
