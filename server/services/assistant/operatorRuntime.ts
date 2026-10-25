@@ -225,16 +225,16 @@ function runtimeDiagnostics(input: AssistantOperatorRunResult["diagnostics"]) { 
 function safeFailureResponse(observations: readonly AssistantOperatorObservation[]): string {
   const last = observations.at(-1);
   if (last?.status === "permission_denied") return "I don't have permission to inspect the information needed to complete that request.";
-  if (last?.status === "rejected") return "I couldn't complete that request because the needed business lookup is unavailable or invalid.";
+  if (last?.status === "rejected") return `I couldn't complete the requested operation${last.failureCode ? ` (${last.failureCode})` : ""}. Review the validation result before retrying.`;
   const retainedEvidence = observations.some((observation) => observation.status === "succeeded" || observation.status === "partial" || observation.status === "not_found");
   if (last?.status === "failed" || last?.status === "timed_out") {
     return retainedEvidence
-      ? "I completed part of the investigation, but a later lookup was unavailable. The completed results remain available above."
-      : "I couldn't complete the requested business lookup because it was unavailable.";
+      ? "I completed part of the request, but a later operation was unavailable. The completed results remain available above."
+      : "I couldn't complete the requested operation because it was unavailable.";
   }
   return retainedEvidence
-    ? "I completed part of the investigation, but the Operator could not finish a later step. The completed results remain available above."
-    : "I couldn't complete the request because the AI Operator could not complete its investigation.";
+    ? "I completed part of the request, but could not finish a later step. The completed results remain available above."
+    : "I couldn't complete the request because the assistant could not finish its next step.";
 }
 
 function repeatsPriorClarification(previous: readonly string[], next: readonly string[]): boolean {
@@ -486,7 +486,7 @@ export class AssistantOperatorRuntime {
       // The completed observations remain persisted and available in cards.
     }
     return { status: "step_limit", response: observations.length
-      ? "I completed the available investigation steps, but could not safely produce a final synthesis from the evidence gathered. The completed results remain available above."
-      : "I could not complete the investigation within the configured safety limit.", observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
+      ? "I completed the available steps but could not safely summarize the results. The completed results remain available above."
+      : "I could not complete the request within the configured step limit.", observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
   }
 }

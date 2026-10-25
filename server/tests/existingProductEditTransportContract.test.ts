@@ -11,7 +11,12 @@ describe("existing Product provider transport contract", () => {
     const payload = { operations: [{ op: "configure_blank_coroplast", pricing: {
       unit: "per_square_foot", rateCents: 200, minimumChargeCents: 2500,
     } }] };
-    expect(existingProductEditOperationsSchema.parse(payload)).toEqual(payload);
+    expect(existingProductEditOperationsSchema.parse(payload)).toEqual({ operations: [{ ...payload.operations[0], confirmWarnings: false }] });
+    const optionPayload = { operations: [{ op: "configure_blank_coroplast", pricing: { unit: "per_square_foot", minimumChargeCents: 0,
+      optionRates: { selectionKey: "thickness", choices: [{ value: "4mm", rateCents: 75 }, { value: "10mm", rateCents: 125 }] } } }] };
+    expect(existingProductEditOperationsSchema.parse(optionPayload).operations[0]).toMatchObject(optionPayload.operations[0]);
+    expect((schema.properties.operations.items.oneOf[0] as any).properties.pricing.properties.optionRates).toBeDefined();
+    expect((schema.properties.operations.items.oneOf[0] as any).properties.confirmWarnings).toEqual({ type: "boolean" });
     expect(existingProductEditOperationsSchema.safeParse({ operations: [{ op: "configure_blank_coroplast", pricing: {
       unit: "per_square_foot", rateCents: 200,
     } }] }).success).toBe(false);

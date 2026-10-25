@@ -79,8 +79,8 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "PrintersHero is not read-only: the permission-aware catalog may support authorized investigation, public research, analysis, protected change planning, and GO-gated execution. Describe those capabilities accurately without implying that a protected change runs before its required confirmation.",
       "Never ask the user about PrintersHero tools, APIs, database access, or whether a capability exists. Inspect the registered catalog and use the relevant authorized read. If no registered capability can establish a requested fact, complete with an accurate system limitation instead of presenting that gap as missing user information.",
       "The registered catalog is permission-aware. Questions about what the assistant can do are informational: answer directly from that catalog without invoking an underlying planning or action capability. Invoke a planning capability only when the user is actually requesting the work.",
-      "User role changes, including promoting anyone to Owner, are deliberately AI-ineligible for every actor. Do not expose, prepare, or attempt role mutations. Explain that the Assistant has no role-change capability, not that an integration is missing or that the user is necessarily unauthorized. Existing user administration remains subject to its normal UI authorization.",
-      "A staff user's Owner role is distinct from transferring organization ownership and from Product review/GO. Explain separately: an unavailable provider is an AI availability failure; staff role changes are an intentional AI eligibility exclusion (therefore no Assistant capability); user authorization is determined by normal administration rules, not inferred from that exclusion. Never suggest Product GO or a Product edit to overcome a staff role restriction.",
+      "For staff role changes, check the registered application capabilities. The current assistant has no canonical role-change adapter; report that integration gap without implying the signed-in user lacks application permission. Never use Product GO or a Product edit as a substitute.",
+      "A staff user's Owner role is distinct from transferring organization ownership. Explain provider availability, application authorization, and missing assistant adapters separately.",
       "For current customer balance, use analytics.customer_balance with the exact customer name or trusted id and no date range. Its authoritative amount is invoice outstanding, including qualifying reconciled historical A/R, not uninvoiced value or net statement amount due after unapplied credits. Never sum dated or truncated invoice_activity or bounded order rows as current balance. If the capability is absent, say this session cannot access the finance read; if execution fails, identify the unavailable A/R evidence without inventing a zero.",
       "Use the canonical order status pill as the user-facing operational status, not the separate lifecycle state. Explain lifecycle only when meaningful to the question. Zero production jobs does not mean zero production-ready line items; preserve item descriptions, quantities and workflow states from authoritative reads. Never infer activity, completed or remaining quantities from a status pill or readiness.",
       "Product pricing configuration is not a calculated quote. Preserve canonical base rates, matrix rate units and selections, option impacts, and minimum charge separately. A missing rate or minimum is unknown, not zero; do not substitute a base rate for a matrix selection or imply that retrieved configuration was edited.",
@@ -166,7 +166,8 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       this.responseContinuation = Array.isArray(continuation?.items) ? [...this.responseContinuation, ...continuation.items] : this.responseContinuation;
       this.pendingFunctionCalls = Array.isArray(continuation?.functionCalls) ? continuation.functionCalls : [];
       this.pendingObservationStart = input.observations.length;
-      const decision = parseAssistantOperatorDecisionText(response.rawText);
+      const decision = parseAssistantOperatorDecisionText(response.rawText)
+        ?? (!this.pendingFunctionCalls.length ? ordinaryOperatorResponse(response.rawText) : null);
       if (!decision) {
         console.warn("[AI_PROVIDER] DeepSeek Responses Operator decision could not be parsed.", {
           requestSequence: response.requestMetadata.requestSequence ?? null,
@@ -180,7 +181,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
           requestSequence: response.requestMetadata.requestSequence ?? null,
           succeeded: false, reason: "provider_operator_decision_json",
         });
-        return { kind: "fail", response: "The AI provider returned an unusable investigation result.", providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) };
+        return { kind: "fail", response: "The AI provider returned an unusable response. No application action was completed by this response.", providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) };
       }
       if (hasProviderControlProtocol(decision)) {
         console.warn("[AI_PROVIDER] Blocking provider control protocol from Operator terminal output.", { requestSequence: response.requestMetadata.requestSequence ?? null, apiSurface: response.requestMetadata.apiSurface ?? null, outputItemTypes: response.requestMetadata.outputItemTypes ?? [] });
@@ -189,7 +190,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
           requestSequence: response.requestMetadata.requestSequence ?? null,
           succeeded: false, reason: "provider_control_protocol",
         });
-        return { kind: "fail", response: "The AI provider returned an unusable investigation result.", providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) };
+        return { kind: "fail", response: "The AI provider returned an unusable response. No application action was completed by this response.", providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) };
       }
       if (decision.kind === "complete") {
         console.info("[AI_OPERATOR_TRACE]", { stage: "direct_answer_decision", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: true, toolCallRequested: false, mutationRequested: false, revisionCreated: false, ...contextTrace });
@@ -212,9 +213,9 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       conversationMessages: input.conversationMessages,
       currentImages: input.currentImages,
     });
-    const decision = parseAssistantOperatorDecisionText(response.rawText);
+    const decision = parseAssistantOperatorDecisionText(response.rawText) ?? ordinaryOperatorResponse(response.rawText);
     if (!decision) throw new Error("ASSISTANT_OPERATOR_INVALID_JSON");
-    return hasProviderControlProtocol(decision) ? { kind: "fail", response: "The AI provider returned an unusable investigation result." } : decision;
+    return hasProviderControlProtocol(decision) ? { kind: "fail", response: "The AI provider returned an unusable response." } : decision;
   }
 
   private appendFunctionOutputs(observations: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]["observations"]): void {
@@ -265,6 +266,13 @@ function hasProviderControlProtocol(decision: unknown): boolean {
   return typeof response === "string" && /DSML|<think\b|<\/?[|｜][^>]*(?:thinking|tool_calls|invoke|parameter)|<\/?[|｜]/i.test(response);
 }
 
+function ordinaryOperatorResponse(raw: string): { kind: "complete"; response: string } | null {
+  const response = raw.trim();
+  if (!response || response.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS || /^[{[]/.test(response)) return null;
+  const decision = { kind: "complete" as const, response };
+  return hasProviderControlProtocol(decision) ? null : decision;
+}
+
 function trustedContextTrace(input: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]): { authoritativeBusinessContextAvailable: boolean; activeProductDraftAvailable: boolean; relevantTrustedFactsFound: boolean } {
   const active = input.task?.activeSemanticProductDraft;
   const labels = active ? [
@@ -284,13 +292,13 @@ function trustedContextTrace(input: Parameters<AssistantOperatorDecisionProvider
 }
 
 function providerFailureDecision(error: unknown, context: { taskId: string; authoritativeBusinessContextAvailable: boolean; activeProductDraftAvailable: boolean; relevantTrustedFactsFound: boolean }): { kind: "fail"; response: string; providerDecisionShape?: ProviderDecisionShape } {
-  if (error instanceof AiProviderTimeoutError) return { kind: "fail", response: "The AI provider did not finish the investigation before the request timed out." };
+  if (error instanceof AiProviderTimeoutError) return { kind: "fail", response: "The AI provider timed out before completing this request. Check any previously returned operation result before retrying." };
   if (error instanceof AiProviderResponseError) {
     console.warn("[AI_OPERATOR_TRACE]", { stage: "provider_response_failure", ...context, providerFailureKind: error.kind, providerStatus: error.status, toolCallRequested: false, directAnswerDecision: false, finalAnswerAccepted: false });
     const providerDecisionShape = error.responseMetadata ? safeProviderDecisionShape(error.responseMetadata) : undefined;
-    if (error.kind === "truncated_output") return { kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
-    if (error.kind === "rate_limit") return { kind: "fail", response: "The AI provider is temporarily busy and could not complete the investigation.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
-    return { kind: "fail", response: "The AI provider did not return a usable investigation result.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
+    if (error.kind === "truncated_output") return { kind: "fail", response: "The AI provider reached its output limit before completing this request.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
+    if (error.kind === "rate_limit") return { kind: "fail", response: "The AI provider is temporarily busy. Check any previously returned operation result before retrying.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
+    return { kind: "fail", response: "The AI provider did not return a usable response. Check any previously returned operation result before retrying.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
   }
   throw error;
 }

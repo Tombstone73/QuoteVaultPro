@@ -604,10 +604,10 @@ function mergeTrustedOperatorObservations(
 }
 
 function operatorFailureKind(response: string): string {
-  if (/provider did not return (?:a )?usable investigation result/i.test(response)) return "provider_result_unusable";
-  if (/provider returned an unusable investigation result/i.test(response)) return "provider_operator_result_invalid";
-  if (/provider did not finish.*timed out/i.test(response)) return "provider_timeout";
-  if (/could not complete.*Operator could not complete its investigation/i.test(response)) return "operator_decision_unavailable";
+  if (/provider did not return (?:a )?usable (?:investigation result|response)/i.test(response)) return "provider_result_unusable";
+  if (/provider returned an unusable (?:investigation result|response)/i.test(response)) return "provider_operator_result_invalid";
+  if (/provider (?:did not finish.*timed out|timed out)/i.test(response)) return "provider_timeout";
+  if (/could not complete.*(?:Operator could not complete its investigation|assistant could not finish its next step)/i.test(response)) return "operator_decision_unavailable";
   if (/within the configured safety limit/i.test(response)) return "operator_step_limit";
   return "operator_failed";
 }
@@ -1102,7 +1102,7 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. For requests to add unprinted or blank Coroplast, use configure_blank_coroplast with the customer's selling rate and minimum in integer cents ($2.00 = 200 cents, not supplier cost); choose per_square_foot or per_piece. Ask for missing selling terms, never invent a markup. The proposal previews example prices and production effects. Lifecycle activation may propose publishing a valid PBV2 DRAFT first. Nothing changes before GO; the server revalidates state at GO.",
+      description: "Prepare a protected edit to one trusted existing persisted product. For blank Coroplast, use configure_blank_coroplast with owner selling prices in integer cents and the explicit minimum (zero means none). If the Product has multiple thickness choices, set optionRates with the exact existing selectionKey and every choice value and its own rateCents; never represent thicknesses as quantityTiers or silently omit a requested price. Use one global rateCents only when there is no multi-thickness choice. Quantity tiers, if requested, belong to a rate and vary by quantity. Ask for missing terms; never invent a markup. Newly introduced PBV2 warnings require explicit owner review before setting confirmWarnings or confirmPublishWarnings true. The proposal previews prices and production effects. Nothing changes before GO; the server revalidates at GO.",
       inputSchema: existingProductEditProviderInputSchema,
       execute: async ({ arguments: args, context }) => {
         if (isStaffRoleDiscussion(context.goal, conversationMessages)) return { status: "rejected" as const, warning: "A staff-role discussion cannot prepare a Product edit.", failureCategory: "intent_mismatch", failureCode: "unrelated_product_preview", failingStep: "existing_product_intent" };
@@ -1275,11 +1275,9 @@ export class AssistantService {
           : { kind: "fail", response: "The Material review could not be prepared. No Material was created. Please start a new review before attempting it again." }
         : { kind: "call_tools", calls: [{ toolName: "materials.prepare_action", arguments: materialReply.action }] } }
       : this.operatorDecisionProvider(scope.organizationId);
-    // A role request or its explanatory follow-up cannot prepare an unrelated
-    // Product, Material, Fulfillment, or note preview, regardless of model output.
-    const turnSemanticTools = staffRoleDiscussion
-      ? semanticTools.filter((tool) => ["materials.lookup", "analysis.run", "web.search", "web.open"].includes(tool.name))
-      : semanticTools;
+    // The operator can still discover and inspect registered application
+    // capabilities for a staff-role request; absent adapters cannot execute.
+    const turnSemanticTools = semanticTools;
     const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, turnSemanticTools));
     const run = await runtime.run({
       signal: input.signal,
@@ -1379,7 +1377,7 @@ export class AssistantService {
             };
           })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
-          decisionType: run.status === "completed" ? "complete" : run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
+          decisionType: run.status === "completed" ? "complete" : run.response === "I couldn't complete the request because the assistant could not finish its next step." ? null : "fail",
           toolName: run.observations.at(-1)?.toolName ?? null,
           argumentValidationSucceeded: run.observations.length > 0 && !run.observations.some((observation) => observation.failureCategory === "argument_validation"),
           handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
@@ -1397,7 +1395,8 @@ export class AssistantService {
     input.signal?.throwIfAborted();
     if (!materialTaskTransition) await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: taskPatch });
     input.signal?.throwIfAborted();
-    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
+    return this.persistOperatorResponse(input, { response: run.status === "failed" ? `${response} Support reference: ${correlationId}. Check completed operation results before retrying.` : response,
+      status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
   }
 
   /**

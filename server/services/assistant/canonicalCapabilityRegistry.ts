@@ -1,5 +1,4 @@
 import type { OrganizationRole } from "@shared/organizationRoleAuthority";
-import { resolveOrganizationRoleAuthority } from "@shared/organizationRoleAuthority";
 import { assistantProductionCommandAllowlist } from "./execution/commandRegistry";
 import { operatorIndex, type OperatorDomain } from "./operatorIndex";
 import { operatorSkillManifests, validateOperatorSkillManifests } from "./operatorSkillManifests";
@@ -169,15 +168,19 @@ const commandCapabilities: readonly CanonicalCapabilityDescriptor[] = assistantP
 const ineligibleCapabilities: readonly CanonicalCapabilityDescriptor[] = [
   { id: "capability.ui.settings.organization_preferences", domain: "settings_permissions", version: "v1", purpose: "Update organization preferences through settings UI.", mode: "administrative", source: "ui_compatibility", sourceId: "organization.preferences.update", inputSchemaReference: "server/routes/organization.routes.ts", outputSchemaReference: "unknown", requiredGrant: "organization.settings.update", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "high", lifecycleValidationReference: "not_applicable", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Organization Settings", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "ui_only_not_migrated", aiEligibility: "ineligible", hardDenyReason: null, skillId: "settings.permissions" },
   { id: "capability.ui.products.pricing_formula_profile", domain: "products", version: "v1", purpose: "Edit coupled pricing formulas, profiles, library selections, and advanced Product pricing metadata.", mode: "mutation", source: "ui_compatibility", sourceId: "products.pricing_formula_profile", inputSchemaReference: "client/src/components/ProductForm.tsx", outputSchemaReference: "shared/schema.ts", requiredGrant: "assistant.products.update_existing_product", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "go_required", idempotency: "not_required", risk: "high", lifecycleValidationReference: "Product Editor pricing/PBV2 save orchestration", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Product Editor Pricing Engine", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "products.update_pricing.v1 (UI metadata only)", parityStatus: "ai_integration_pending", aiEligibility: "ineligible", hardDenyReason: null, skillId: "products.pbv2" },
-  { id: "capability.ui.products.delete", domain: "products", version: "v1", purpose: "Delete a Product from Product administration.", mode: "administrative", source: "ui_compatibility", sourceId: "products.delete", inputSchemaReference: "server/routes/products.routes.ts", outputSchemaReference: "unknown", requiredGrant: "product.delete", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "critical", lifecycleValidationReference: "Product route policy", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Product administration", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "deliberately_ai_ineligible", aiEligibility: "ineligible", hardDenyReason: null, skillId: "products.pbv2" },
+  { id: "capability.ui.products.delete", domain: "products", version: "v1", purpose: "Delete a Product from Product administration. A canonical assistant adapter is still missing.", mode: "administrative", source: "ui_compatibility", sourceId: "products.delete", inputSchemaReference: "server/routes/products.routes.ts", outputSchemaReference: "unknown", requiredGrant: "product.delete", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "critical", lifecycleValidationReference: "Product route policy", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Product administration", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "ai_integration_pending", aiEligibility: "ineligible", hardDenyReason: null, skillId: "products.pbv2" },
   { id: "capability.ui.products.advanced_pbv2_override", domain: "products", version: "v1", purpose: "Use temporary advanced PBV2 override and bypass administration.", mode: "administrative", source: "ui_compatibility", sourceId: "products.advanced_pbv2_override", inputSchemaReference: "server/routes/products.routes.ts", outputSchemaReference: "unknown", requiredGrant: "product.update", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "critical", lifecycleValidationReference: "PBV2 override route policy", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Advanced Product administration", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "deliberately_ai_ineligible", aiEligibility: "ineligible", hardDenyReason: null, skillId: "products.pbv2" },
+  ...(["organization.change_user_role", "organization.delete", "organization.transfer_ownership", "organization.destroy_tenant"] as const).map((sourceId): CanonicalCapabilityDescriptor => ({
+    id: `capability.ui.${sourceId}`, domain: "settings_permissions", version: "v1", purpose: `${sourceId} through the signed-in user's existing application authority; canonical assistant adapter pending.`,
+    mode: "administrative", source: "ui_compatibility", sourceId, inputSchemaReference: "server/routes/users.routes.ts", outputSchemaReference: "unknown",
+    requiredGrant: null, allowedOrganizationRoles: ["owner"], tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "critical",
+    lifecycleValidationReference: "Application route policy", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Organization administration",
+    aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "ai_integration_pending",
+    aiEligibility: "ineligible", hardDenyReason: null, skillId: "settings.permissions",
+  })),
 ];
 
 const hardDeniedCapabilities: readonly CanonicalCapabilityDescriptor[] = [
-  ["organization.change_user_role", "Change user roles, including promoting a user to Owner.", "Role changes are deliberately AI-ineligible; use normally authorized user administration, never an AI mutation."],
-  ["organization.delete", "Delete an organization and its owned data.", "Owner-only destructive organization action."],
-  ["organization.destroy_tenant", "Destroy or tear down a tenant.", "Tenant destruction is never an AI capability."],
-  ["organization.transfer_ownership", "Irreversibly transfer or destroy organization ownership.", "Owner-only irreversible organization control."],
   ["platform.developer_operations", "Run developer-only repair, debug, or maintenance operations.", "Developer and internal operations are permanently excluded."],
   ["platform.infrastructure_administration", "Change infrastructure, deployment, environment, or server controls.", "Infrastructure and system administration are permanently excluded."],
   ["platform.cross_tenant_mutation", "Mutate another tenant or platform-wide state.", "Cross-tenant mutation is permanently excluded."],
@@ -224,10 +227,6 @@ function availability(capability: CanonicalCapabilityDescriptor, input: AiCapabi
   if (capability.aiEligibility !== "eligible") return "ai_ineligible";
   if (input.targetOrganizationId && input.targetOrganizationId !== input.authority.organizationId) return "tenant_mismatch";
   if (input.authority.status !== "resolved" || !input.authority.organizationRole) return "unknown_authority";
-  // Admin capability eligibility is the permanent AI ceiling. A future
-  // owner-only/developer grant cannot leak through an eligible descriptor.
-  const adminAuthority = resolveOrganizationRoleAuthority("admin");
-  if ((capability.requiredGrant && !adminAuthority.grants.includes(capability.requiredGrant)) || !capability.allowedOrganizationRoles.includes("admin")) return "exceeds_ai_privilege_ceiling";
   if (capability.requiredGrant && !input.authority.grants.includes(capability.requiredGrant)) return "actor_not_authorized";
   if (!capability.allowedOrganizationRoles.includes(input.authority.organizationRole as OrganizationRole)) return "actor_not_authorized";
   return null;
@@ -263,8 +262,6 @@ export function validateCanonicalCapabilityRegistry(): void {
       commands.add(capability.sourceId!);
       if (capability.aiEligibility === "eligible") {
         if (!capability.requiredGrant || !capability.allowedOrganizationRoles.length || capability.confirmation !== "go_required" || capability.tenantScope !== "organization") throw new Error(`Eligible mutation lacks authority/GO/tenant metadata: ${capability.id}`);
-        const adminAuthority = resolveOrganizationRoleAuthority("admin");
-        if (!capability.allowedOrganizationRoles.includes("admin") || !adminAuthority.grants.includes(capability.requiredGrant)) throw new Error(`Eligible capability exceeds Admin AI ceiling: ${capability.id}`);
       }
       if (capability.migrationStatus === "shared_canonical" && (capability.canonicalOperationReference === "not_applicable" || capability.uiSurfaceReference === "unknown" || capability.lifecycleValidationReference === "not_applicable" || capability.auditReference === "not_applicable")) throw new Error(`Shared canonical command lacks operation/UI/lifecycle/audit metadata: ${capability.id}`);
     }

@@ -20,14 +20,14 @@ export type BlankCoroplastProposal = {
   fingerprint: string;
   before: BlankCoroplastPricing | null;
   after: BlankCoroplastPricing;
-  examples: Array<{ dimensions: string; quantity: number; totalCents: number }>;
+  examples: Array<{ dimensions: string; quantity: number; totalCents: number; optionLabel?: string }>;
   hiddenPrintOnlyOptions: string[];
   warnings: Array<{ code: string; message: string }>;
   treeJson: OptionTreeV2;
 };
 
 export class CanonicalBlankCoroplastOperations {
-  async propose(input: { organizationId: string; productId: string; pricing: unknown }): Promise<BlankCoroplastProposal> {
+  async propose(input: { organizationId: string; productId: string; pricing: unknown; confirmWarnings?: boolean }): Promise<BlankCoroplastProposal> {
     const { db } = await import("../../db");
     const pricing = blankCoroplastPricingSchema.parse(input.pricing);
     const [product] = await db.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
@@ -37,7 +37,9 @@ export class CanonicalBlankCoroplastOperations {
     if (!tree) throw new BlankCoroplastOperationError("PRODUCT_STALE", "The Product's active pricing version is unavailable. Reload it.");
     const previousTree = tree.treeJson as OptionTreeV2;
     const before = readBlankCoroplastPricing(previousTree);
-    const treeJson = withBlankCoroplastPricing(previousTree, pricing);
+    let treeJson: OptionTreeV2;
+    try { treeJson = withBlankCoroplastPricing(previousTree, pricing); }
+    catch (error) { throw new BlankCoroplastOperationError("BLANK_PRICING_INCOMPLETE", error instanceof Error ? error.message : "Review every blank thickness price."); }
     const materialIds = collectPbv2MaterialValidationIds({ treeJson, productPrimaryMaterialId: product.primaryMaterialId });
     const materialRows = materialIds.length
       ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis })
@@ -56,26 +58,44 @@ export class CanonicalBlankCoroplastOperations {
     });
     if (review.errors.length) throw new BlankCoroplastOperationError("PRODUCT_SAVE_INVALID",
       `The Product configuration needs review: ${review.errors.map((finding) => finding.message).join(" ")}`);
+    const existingReview = validateCanonicalProductPublishTarget({
+      product: { id: product.id, organizationId: input.organizationId, name: product.name, isActive: product.isActive,
+        primaryMaterialId: product.primaryMaterialId, pbv2ActiveTreeVersionId: tree.id, updatedAt: product.updatedAt,
+        pricingEngine: product.pricingEngine, pricingFormulaId: product.pricingFormulaId },
+      tree: { ...tree, status: "DRAFT", treeJson: { ...previousTree, status: "DRAFT" } },
+      materials: materialRows, pricingFormula: formula ?? null,
+    });
+    const warningKey = (finding: { code: string; path?: string }) => `${finding.code}:${finding.path ?? ""}`;
+    const existingWarnings = new Set(existingReview.warnings.map(warningKey));
+    const newWarnings = review.warnings.filter((finding) => !existingWarnings.has(warningKey(finding)));
+    if (newWarnings.length && input.confirmWarnings !== true) throw new BlankCoroplastOperationError("PRODUCT_WARNINGS_REVIEW_REQUIRED",
+      `Review these newly introduced PBV2 warnings explicitly before proposing blank pricing: ${newWarnings.map((finding) => `${finding.code}: ${finding.message}`).join("; ")}`);
     const warnings = review.warnings.map((finding) => ({ code: finding.code, message: finding.message }));
     const hiddenPrintOnlyOptions = Object.values(treeJson.nodes).filter((node) => node?.visibility?.rules?.some((rule) => rule.type === "notEquals" && rule.selectionKey === COROPLAST_PRINT_MODE_KEY && rule.value === "unprinted")).map((node) => node.label);
-    const examples = [
+    const scenarios = [
       { widthIn: 12, heightIn: 12, quantity: 1 },
       { widthIn: 24, heightIn: 18, quantity: 10 },
-    ].map((scenario) => {
+    ];
+    const options = pricing.optionRates?.choices.map((choice) => ({ value: choice.value, label: Object.values(treeJson.nodes)
+      .find((node) => node.input?.selectionKey === pricing.optionRates?.selectionKey)?.choices?.find((entry) => entry.value === choice.value)?.label ?? choice.value })) ?? [{ value: "", label: "" }];
+    const examples = options.flatMap((option) => scenarios.map((scenario) => {
       const preview = evaluatePricingPreviewFromTree({ treeJson, ...scenario,
-        pbv2ExplicitSelections: { [COROPLAST_PRINT_MODE_KEY]: "unprinted", [COROPLAST_FLUTE_KEY]: "vertical" },
+        pbv2ExplicitSelections: { [COROPLAST_PRINT_MODE_KEY]: "unprinted", [COROPLAST_FLUTE_KEY]: "vertical",
+          ...(pricing.optionRates ? { [pricing.optionRates.selectionKey]: option.value } : {}) },
         pricingProfileKey: product.pricingProfileKey,
         pricingProfileConfig: product.pricingProfileConfig,
         measurementMode: product.measurementMode });
-      return { dimensions: `${scenario.widthIn} × ${scenario.heightIn} in`, quantity: scenario.quantity, totalCents: Math.round(preview.totalPrice * 100) };
-    });
+      return { dimensions: `${scenario.widthIn} × ${scenario.heightIn} in`, quantity: scenario.quantity, totalCents: Math.round(preview.totalPrice * 100),
+        ...(option.label ? { optionLabel: option.label } : {}) };
+    }));
     const fingerprint = createHash("sha256").update(JSON.stringify({ organizationId: input.organizationId, productId: product.id,
-      productUpdatedAt: product.updatedAt.toISOString(), treeId: tree.id, treeUpdatedAt: tree.updatedAt.toISOString(), pricing, warnings })).digest("hex");
+      contractVersion: 2, productUpdatedAt: product.updatedAt.toISOString(), treeId: tree.id, treeUpdatedAt: tree.updatedAt.toISOString(), pricing, warnings,
+      confirmWarnings: input.confirmWarnings === true })).digest("hex");
     return { productId: product.id, productName: product.name, expectedProductUpdatedAt: product.updatedAt.toISOString(),
       expectedActiveTreeVersionId: tree.id, fingerprint, before, after: pricing, examples, hiddenPrintOnlyOptions, warnings, treeJson };
   }
 
-  async execute(input: { organizationId: string; productId: string; actorUserId: string; pricing: unknown; expectedFingerprint: string; operationId: string }) {
+  async execute(input: { organizationId: string; productId: string; actorUserId: string; pricing: unknown; confirmWarnings?: boolean; expectedFingerprint: string; operationId: string }) {
     const proposal = await this.propose(input);
     if (proposal.fingerprint !== input.expectedFingerprint) throw new BlankCoroplastOperationError("PRODUCT_STALE", "The Product changed after review. Prepare a fresh proposal.");
     const result = await saveActiveProductEditorConfiguration({ organizationId: input.organizationId, productId: input.productId,

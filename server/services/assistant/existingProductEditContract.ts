@@ -11,7 +11,7 @@ const materialOperationSchema = z.object({ op: z.literal("update_product_materia
 const lifecycleOperationSchema = z.object({ op: z.literal("update_product_lifecycle"), isActive: z.boolean(), confirmPublishWarnings: z.boolean().optional().default(false) }).strict();
 const publishOperationSchema = z.object({ op: z.literal("publish_product_configuration"), confirmPublishWarnings: z.boolean().optional().default(false) }).strict();
 const pricingEngineConfigurationOperationSchema = z.object({ op: z.literal("update_product_pricing_engine_configuration"), changes: productPricingEngineConfigurationChangesSchema }).strict();
-const blankCoroplastOperationSchema = z.object({ op: z.literal("configure_blank_coroplast"), pricing: blankCoroplastPricingSchema }).strict();
+const blankCoroplastOperationSchema = z.object({ op: z.literal("configure_blank_coroplast"), pricing: blankCoroplastPricingSchema, confirmWarnings: z.boolean().optional().default(false) }).strict();
 
 /** Shared DTO only: it contains no database or execution dependency, so command
  * registration can validate a proposal without importing a Product service. */
@@ -65,11 +65,23 @@ export const existingProductEditProviderInputSchema: Record<string, unknown> = {
     operations: {
       type: "array", minItems: 1, maxItems: 12,
       items: { oneOf: [
-        { type: "object", additionalProperties: false, required: ["op", "pricing"], properties: { op: { const: "configure_blank_coroplast" }, pricing: { type: "object", additionalProperties: false, required: ["unit", "rateCents", "minimumChargeCents"], properties: { unit: { enum: ["per_square_foot", "per_piece"] }, rateCents: { type: "integer", minimum: 1 }, minimumChargeCents: { type: "integer", minimum: 0 }, quantityTiers: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["minQuantity", "rateCents"], properties: { minQuantity: { type: "integer", minimum: 1 }, rateCents: { type: "integer", minimum: 1 } } } } } } } },
+        { type: "object", additionalProperties: false, required: ["op", "pricing"], properties: {
+          op: { const: "configure_blank_coroplast" }, confirmWarnings: { type: "boolean" },
+          pricing: { type: "object", additionalProperties: false, required: ["unit", "minimumChargeCents"], properties: {
+            unit: { enum: ["per_square_foot", "per_piece"] }, rateCents: { type: "integer", minimum: 1 }, minimumChargeCents: { type: "integer", minimum: 0 },
+            quantityTiers: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["minQuantity", "rateCents"], properties: { minQuantity: { type: "integer", minimum: 1 }, rateCents: { type: "integer", minimum: 1 } } } },
+            optionRates: { type: "object", additionalProperties: false, required: ["selectionKey", "choices"], properties: {
+              selectionKey: { type: "string", minLength: 1 }, choices: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["value", "rateCents"], properties: {
+                value: { type: "string", minLength: 1 }, rateCents: { type: "integer", minimum: 1 },
+                quantityTiers: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["minQuantity", "rateCents"], properties: { minQuantity: { type: "integer", minimum: 1 }, rateCents: { type: "integer", minimum: 1 } } } },
+              } } },
+            } },
+          } },
+        } },
         { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
         { type: "object", additionalProperties: false, required: ["op", "materialLabel"], properties: { op: { const: "update_product_material" }, materialLabel: { type: ["string", "null"] } } },
-        { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" } } },
-        { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "publish_product_configuration" } } },
+        { type: "object", additionalProperties: false, required: ["op", "isActive"], properties: { op: { const: "update_product_lifecycle" }, isActive: { type: "boolean" }, confirmPublishWarnings: { type: "boolean" } } },
+        { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "publish_product_configuration" }, confirmPublishWarnings: { type: "boolean" } } },
         { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_pricing_engine_configuration" }, changes: { type: "object", additionalProperties: false, required: ["allowRotation"], properties: { allowRotation: { type: "boolean" } } } } },
         { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
           kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },

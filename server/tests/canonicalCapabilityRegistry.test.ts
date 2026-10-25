@@ -7,11 +7,11 @@ import { assistantToolRegistry } from "../services/assistant/toolRegistry";
 
 const authority = (role: unknown, organizationId = "org_1") => resolveAssistantActorAuthority({ actorUserId: "user_1", organizationId, organizationRole: role, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
 
-describe("canonical AI capability registry and privilege ceiling", () => {
-  it("classifies promoting Zayne to Owner as AI-ineligible for owner and admin, not actor authorization or pending integration", () => {
+describe("canonical application capability registry", () => {
+  it("reports role changes as a missing adapter without inventing an actor denial", () => {
     for (const role of ["owner", "admin", "employee"]) {
       const discovery = getCapabilitiesForActor({ authority: authority(role) });
-      expect(discovery.diagnostics.find((item) => item.capabilityId === "capability.hard_deny.organization.change_user_role")).toMatchObject({ available: false, reason: "ai_hard_denied" });
+      expect(discovery.diagnostics.find((item) => item.capabilityId === "capability.ui.organization.change_user_role")).toMatchObject({ available: false, reason: "ai_ineligible" });
       expect(discovery.modelFacing.some((item) => item.sourceId === "organization.change_user_role")).toBe(false);
     }
     expect(getCanonicalCapabilityForCommand("organization.change_user_role")).toBeUndefined();
@@ -28,7 +28,7 @@ describe("canonical AI capability registry and privilege ceiling", () => {
       const discovery = getCapabilitiesForActor({ authority: authority(role) });
       expect(discovery.modelFacing.map((capability) => capability.sourceId)).toContain("billing.send_invoice");
       expect(discovery.modelFacing.some((capability) => capability.aiEligibility === "hard_denied")).toBe(false);
-      expect(discovery.diagnostics.find((item) => item.capabilityId === "capability.hard_deny.organization.delete")).toMatchObject({ available: false, reason: "ai_hard_denied" });
+      expect(discovery.diagnostics.find((item) => item.capabilityId === "capability.ui.organization.delete")).toMatchObject({ available: false, reason: "ai_ineligible" });
     }
   });
 
@@ -44,8 +44,8 @@ describe("canonical AI capability registry and privilege ceiling", () => {
 
   it("distinguishes pending, deliberately ineligible, and hard-denied Product capabilities", () => {
     expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.ui.products.pricing_formula_profile")).toMatchObject({ parityStatus: "ai_integration_pending", aiEligibility: "ineligible", aiExposure: "not_exposed" });
-    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.ui.products.delete")).toMatchObject({ parityStatus: "deliberately_ai_ineligible", aiEligibility: "ineligible" });
-    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.hard_deny.organization.delete")).toMatchObject({ aiEligibility: "hard_denied" });
+    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.ui.products.delete")).toMatchObject({ parityStatus: "ai_integration_pending", aiEligibility: "ineligible" });
+    expect(canonicalCapabilityRegistry.find((item) => item.id === "capability.hard_deny.platform.arbitrary_database_or_api_execution")).toMatchObject({ aiEligibility: "hard_denied" });
   });
 
   it("keeps members below prior synthetic execution privileges", () => {
@@ -60,13 +60,13 @@ describe("canonical AI capability registry and privilege ceiling", () => {
     expect(discovery.diagnostics.some((item) => item.reason === "unknown_authority")).toBe(true);
   });
 
-  it("prevents future elevated grants and metadata errors from bypassing the admin AI ceiling or hard denies", () => {
+  it("keeps unsupported platform operations unavailable even for an owner", () => {
     const owner = authority("owner");
     const elevated = { ...owner, grants: [...owner.grants, "owner.delete_organization", "developer.database.maintenance"] };
     const discovery = getCapabilitiesForActor({ authority: elevated });
     expect(discovery.modelFacing.some((capability) => capability.id.includes("hard_deny"))).toBe(false);
     expect(discovery.diagnostics.find((item) => item.capabilityId === "capability.hard_deny.platform.developer_operations")).toMatchObject({ reason: "ai_hard_denied" });
-    expect(isAiExecutableCanonicalCapability(canonicalCapabilityRegistry.find((capability) => capability.id === "capability.hard_deny.organization.delete"))).toBe(false);
+    expect(isAiExecutableCanonicalCapability(canonicalCapabilityRegistry.find((capability) => capability.id === "capability.hard_deny.platform.arbitrary_database_or_api_execution"))).toBe(false);
     expect(isAiExecutableCanonicalCapability(getCanonicalCapabilityForCommand("billing.send_invoice"))).toBe(true);
   });
 

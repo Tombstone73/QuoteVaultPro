@@ -5,19 +5,63 @@ export const COROPLAST_PRINT_MODE_KEY = "coroplast_print_mode";
 export const COROPLAST_FLUTE_KEY = "coroplast_flute_direction";
 
 const tierSchema = z.object({ minQuantity: z.number().int().positive(), rateCents: z.number().int().positive() }).strict();
+const optionRatesSchema = z.object({
+  selectionKey: z.string().trim().min(1),
+  choices: z.array(z.object({ value: z.string().trim().min(1), rateCents: z.number().int().positive(), quantityTiers: z.array(tierSchema).max(20).optional() }).strict()).min(1),
+}).strict();
 export const blankCoroplastPricingSchema = z.object({
   unit: z.enum(["per_square_foot", "per_piece"]),
-  rateCents: z.number().int().positive(),
+  rateCents: z.number().int().positive().optional(),
   minimumChargeCents: z.number().int().min(0),
   quantityTiers: z.array(tierSchema).max(20).optional(),
+  optionRates: optionRatesSchema.optional(),
 }).strict().superRefine((value, ctx) => {
-  const tiers = value.quantityTiers ?? [];
-  if (tiers.length && tiers[0].minQuantity !== 1) ctx.addIssue({ code: "custom", path: ["quantityTiers", 0], message: "The first quantity tier must start at 1." });
-  tiers.forEach((tier, index) => {
-    if (index && tier.minQuantity <= tiers[index - 1].minQuantity) ctx.addIssue({ code: "custom", path: ["quantityTiers", index], message: "Quantity tiers must increase." });
+  if ((value.rateCents == null) === (value.optionRates == null)) ctx.addIssue({ code: "custom", message: "Specify either one global rate or complete option rates, never both." });
+  if (value.optionRates && value.quantityTiers?.length) ctx.addIssue({ code: "custom", path: ["quantityTiers"], message: "Quantity tiers for option pricing belong to each option choice." });
+  const validateTiers = (tiers: typeof value.quantityTiers, path: (string | number)[]) => {
+    if (tiers?.length && tiers[0].minQuantity !== 1) ctx.addIssue({ code: "custom", path, message: "The first quantity tier must start at 1." });
+    tiers?.forEach((tier, index) => { if (index && tier.minQuantity <= tiers[index - 1].minQuantity) ctx.addIssue({ code: "custom", path: [...path, index], message: "Quantity tiers must increase." }); });
+  };
+  validateTiers(value.quantityTiers, ["quantityTiers"]);
+  const seen = new Set<string>();
+  value.optionRates?.choices.forEach((choice, index) => {
+    if (seen.has(choice.value)) ctx.addIssue({ code: "custom", path: ["optionRates", "choices", index], message: "Duplicate option choice." });
+    seen.add(choice.value);
+    validateTiers(choice.quantityTiers, ["optionRates", "choices", index, "quantityTiers"]);
   });
 });
 export type BlankCoroplastPricing = z.infer<typeof blankCoroplastPricingSchema>;
+
+function thicknessInputs(tree: OptionTreeV2) {
+  return Object.values(tree.nodes).filter((node) => node?.input?.selectionKey && node.choices?.length &&
+    (/thickness/i.test(`${node.label} ${node.input.selectionKey}`) || node.choices.filter((choice) => /\b\d+\s*mm\b/i.test(`${choice.label} ${choice.value}`)).length > 1));
+}
+
+export function blankCoroplastThicknessInput(tree: OptionTreeV2) {
+  const node = thicknessInputs(tree)[0];
+  return node?.input?.selectionKey ? { selectionKey: node.input.selectionKey,
+    choices: node.choices?.map((choice) => ({ value: choice.value, label: choice.label })) ?? [] } : null;
+}
+
+export function validateBlankCoroplastRateCoverage(tree: OptionTreeV2, pricing: BlankCoroplastPricing): void {
+  const inputs = thicknessInputs(tree);
+  if (inputs.length > 1) throw new Error("Multiple thickness inputs need review before blank pricing can be configured.");
+  const thickness = inputs[0];
+  if (!thickness) {
+    if (pricing.optionRates) throw new Error("The requested thickness input is unavailable on this Product.");
+    return;
+  }
+  const choices = thickness.choices?.map((choice) => choice.value) ?? [];
+  if (!pricing.optionRates) {
+    if (choices.length > 1) throw new Error("This Product has multiple thickness choices. Supply a separate blank selling rate for every thickness; quantity tiers are not thickness choices.");
+    return;
+  }
+  if (pricing.optionRates.selectionKey !== thickness.input?.selectionKey ||
+    choices.length !== pricing.optionRates.choices.length ||
+    choices.some((choice) => !pricing.optionRates!.choices.some((rate) => rate.value === choice))) {
+    throw new Error("Blank pricing must include every existing thickness choice with its exact selection key and value.");
+  }
+}
 
 export function readBlankCoroplastPricing(tree: unknown): BlankCoroplastPricing | null {
   const candidate = (tree as { meta?: { blankCoroplastPricing?: unknown } } | null)?.meta?.blankCoroplastPricing;
@@ -40,8 +84,29 @@ export function isUnprintedCoroplastOrderSnapshot(snapshot: unknown): boolean {
       ? value.selections as Record<string, unknown> : undefined);
 }
 
-export function blankCoroplastRate(pricing: BlankCoroplastPricing, quantity: number): number {
-  return [...(pricing.quantityTiers ?? [])].reverse().find((tier) => quantity >= tier.minQuantity)?.rateCents ?? pricing.rateCents;
+export function blankCoroplastRate(pricing: BlankCoroplastPricing, quantity: number, selections: Record<string, unknown> = {}): number {
+  const key = pricing.optionRates?.selectionKey;
+  const raw = key ? selections[key] : undefined;
+  const value = raw && typeof raw === "object" && "value" in raw ? (raw as { value: unknown }).value : raw;
+  const choice = pricing.optionRates?.choices.find((entry) => entry.value === value);
+  if (pricing.optionRates && !choice) throw new Error("Select a configured thickness before pricing unprinted Coroplast.");
+  const source = choice ?? pricing;
+  return [...(source.quantityTiers ?? [])].reverse().find((tier) => quantity >= tier.minQuantity)?.rateCents ?? source.rateCents!;
+}
+
+/** Price the selected blank substrate once; other visible finishing choices remain billable. */
+export function blankCoroplastOptionEvaluationTree(tree: OptionTreeV2, selections: Record<string, unknown>): OptionTreeV2 {
+  if (!isUnprintedCoroplast(tree, selections)) return tree;
+  const next = structuredClone(tree);
+  const pricing = readBlankCoroplastPricing(next)!;
+  const key = pricing.optionRates?.selectionKey ?? thicknessInputs(next)[0]?.input?.selectionKey;
+  if (!key) return next;
+  const node = Object.values(next.nodes).find((entry) => entry?.input?.selectionKey === key);
+  if (node) {
+    delete node.pricingImpact;
+    node.choices?.forEach((choice) => { delete choice.priceDeltaCents; delete choice.pricingImpact; delete choice.pricingOverride; });
+  }
+  return next;
 }
 
 export function withBlankCoroplastPricing(tree: OptionTreeV2, pricing: BlankCoroplastPricing): OptionTreeV2 {
@@ -50,6 +115,7 @@ export function withBlankCoroplastPricing(tree: OptionTreeV2, pricing: BlankCoro
   if (Array.isArray(next.nodes)) {
     next.nodes = Object.fromEntries((next.nodes as unknown as Array<{ id: string }>).map((node) => [node.id, node])) as OptionTreeV2["nodes"];
   }
+  validateBlankCoroplastRateCoverage(next, parsed);
   const inputs = Object.values(next.nodes).filter((node) => node?.input?.selectionKey === COROPLAST_PRINT_MODE_KEY);
   if (inputs.length > 1) throw new Error("The Product has conflicting Print Mode inputs.");
   const node = inputs[0];

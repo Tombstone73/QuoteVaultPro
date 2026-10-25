@@ -723,7 +723,7 @@ describe("AssistantService Operator Runtime integration", () => {
     await service.createTurn(scope, "conversation_1", actor, { message: "Continue the unfinished product draft.", context });
 
     expect(tasks.updates.at(-1).patch.status).toBe("active");
-    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", response: "The AI provider returned an unusable investigation result." }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", response: expect.stringContaining("Support reference:") }));
   });
 
   test("answers active-draft configuration reads directly from authoritative context without a tool or revision", async () => {

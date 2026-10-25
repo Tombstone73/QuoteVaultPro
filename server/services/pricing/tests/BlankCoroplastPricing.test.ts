@@ -24,6 +24,36 @@ function preview(mode: "printed" | "unprinted", quantity: number, widthIn = 12, 
 }
 
 describe("unprinted Coroplast canonical pricing", () => {
+  test("each thickness has its own blank rate, without printed minimum or thickness surcharge", () => {
+    const source = makeCoroplastGoldenTree({ allowRotationDefault: true }) as OptionTreeV2;
+    source.rootNodeIds.push("thickness", "cutting", "finishing");
+    source.nodes.thickness = { id: "thickness", kind: "question", label: "Thickness", input: { type: "select", selectionKey: "thickness" },
+      choices: [{ value: "4mm", label: "4mm", pricingImpact: [{ mode: "addCents", cents: 700 }] },
+        { value: "10mm", label: "10mm", pricingImpact: [{ mode: "addCents", cents: 1200 }] }] };
+    source.nodes.cutting = { id: "cutting", kind: "question", label: "Cutting", input: { type: "select", selectionKey: "cutting" },
+      choices: [{ value: "cut", label: "Cut", pricingImpact: [{ mode: "addCents", cents: 500 }] }] };
+    source.nodes.finishing = { id: "finishing", kind: "question", label: "Finishing", input: { type: "select", selectionKey: "finishing" },
+      choices: [{ value: "finish", label: "Finish", pricingImpact: [{ mode: "addCents", cents: 200 }] }] };
+    const pricing = { unit: "per_square_foot" as const, minimumChargeCents: 0,
+      optionRates: { selectionKey: "thickness", choices: [{ value: "4mm", rateCents: 75 }, { value: "10mm", rateCents: 125 }] } };
+    expect(() => withBlankCoroplastPricing(source, { unit: "per_square_foot", rateCents: 75, minimumChargeCents: 0 })).toThrow(/separate blank selling rate/i);
+    expect(() => withBlankCoroplastPricing(source, { ...pricing, optionRates: { ...pricing.optionRates, choices: pricing.optionRates.choices.slice(0, 1) } })).toThrow(/every existing thickness choice/i);
+    const configured = withBlankCoroplastPricing(source, pricing);
+    const calculate = (thickness: string, widthIn: number, heightIn: number, quantity: number, extra = false) => evaluatePricingPreviewFromTree({
+      treeJson: configured, widthIn, heightIn, quantity,
+      pbv2ExplicitSelections: { rate: "standard", thickness, [COROPLAST_PRINT_MODE_KEY]: "unprinted", [COROPLAST_FLUTE_KEY]: "vertical",
+        ...(extra ? { cutting: "cut", finishing: "finish" } : {}) },
+      formulaSourceMode: "library", pricingFormulaLibrary: { id: "golden", expression: COROPLAST_4X8_FORMULA, config: COROPLAST_4X8_FORMULA_CONFIG },
+    });
+    expect(calculate("4mm", 12, 12, 1).totalPrice).toBe(0.75);
+    expect(calculate("10mm", 12, 12, 1).totalPrice).toBe(1.25);
+    expect(calculate("4mm", 24, 18, 10).totalPrice).toBe(22.50);
+    expect(calculate("10mm", 24, 18, 10).totalPrice).toBe(37.50);
+    expect(calculate("4mm", 12, 12, 1, true).totalPrice).toBe(7.75);
+    expect(calculate("10mm", 12, 12, 1, true).totalPrice).toBe(8.25);
+    expect(calculate("10mm", 12, 12, 1).breakdown.basePrice).toBe(1.25);
+    expect(calculate("10mm", 12, 12, 1).breakdown.optionsPrice).toBe(0);
+  });
   test("saved blank selection retains Flatbed cutting intake without printed prepress", async () => {
     const snapshot = { treeJson: tree(), selections: { [COROPLAST_PRINT_MODE_KEY]: "unprinted" } };
     expect(isUnprintedCoroplastOrderSnapshot(snapshot)).toBe(true);

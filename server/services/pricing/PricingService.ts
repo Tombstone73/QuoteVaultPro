@@ -59,7 +59,7 @@ import {
 import { getProductAllowRotation, parseProductPricingBoolean } from '../../../shared/pbv2/productPricingRotation';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
 import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
-import { blankCoroplastRate, isUnprintedCoroplast, readBlankCoroplastPricing } from '../../../shared/blankCoroplast';
+import { blankCoroplastOptionEvaluationTree, blankCoroplastRate, isUnprintedCoroplast, readBlankCoroplastPricing } from '../../../shared/blankCoroplast';
 import { skipsRequiredPrintOptionValidation } from '../../../shared/productPricingValidation';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import { bindCommercialQuantityToFormulaVariables } from '../../../shared/pbv2/commercialQuantityFormulaVariables';
@@ -990,7 +990,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 6: Evaluate PBV2 options
   const evalResult = await evaluateOptionTreeV2({
-    tree: treeVersion.treeJson,
+    tree: blankCoroplastOptionEvaluationTree(treeVersion.treeJson as OptionTreeV2, ruleValidatedSelections.selected),
     selections: selectionsV2,
     width: widthIn ?? 0,
     height: heightIn ?? 0,
@@ -1289,7 +1289,7 @@ export function evaluatePricingPreviewFromTree(input: {
     quantity,
   });
   const evalResult = evaluateOptionTreeV2({
-    tree: input.treeJson,
+    tree: blankCoroplastOptionEvaluationTree(input.treeJson as OptionTreeV2, ruleValidatedSelections.selected),
     selections: {
       schemaVersion: 2,
       selected: ruleValidatedSelections.selected,
@@ -3392,7 +3392,7 @@ function calculateBasePriceDetails(
       const rotatedFit = sheetYieldMetrics.allowRotation === true && orderedWidthIn <= sheetLength && orderedHeightIn <= sheetWidth;
       if (!normalFit && !rotatedFit) throw new Error("Unprinted Coroplast dimensions do not fit the configured sheet, including the allowed rotation setting.");
     }
-    const rateCents = blankCoroplastRate(blank, quantity);
+    const rateCents = blankCoroplastRate(blank, quantity, pricingContext?.explicitSelections);
     const blankSqftCents = blank.unit === "per_square_foot" ? rateCents : 0;
     const blankPieceCents = blank.unit === "per_piece" ? rateCents : 0;
     const blankPreMinimumCents = Math.round(blankSqftCents * totalSqft + blankPieceCents * quantity);

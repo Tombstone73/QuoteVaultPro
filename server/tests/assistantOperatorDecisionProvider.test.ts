@@ -4,6 +4,16 @@ import { AiProviderResponseError } from "../services/ai/providers/AiProviderAdap
 process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
 
 describe("ConfiguredAssistantOperatorDecisionProvider", () => {
+  test("accepts an ordinary provider answer without interpreting malformed control JSON as prose", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const generateJson = jest.fn().mockResolvedValueOnce({ rawText: "The five Quotes total $125.00." })
+      .mockResolvedValueOnce({ rawText: '{"kind":"complete","response":' });
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson } as any,
+      { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://provider.test", apiKey: "test", model: "test" })) } as any);
+    const input = { goal: "Summarize the Quotes", taskId: "task_1", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null };
+    await expect(provider.decide(input)).resolves.toEqual({ kind: "complete", response: "The five Quotes total $125.00." });
+    await expect(provider.decide(input)).rejects.toThrow("ASSISTANT_OPERATOR_INVALID_JSON");
+  });
   test.each([false, true])("transports latest persisted role refusal across provider recreation (Responses=%s)", async (responses) => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const conversationMessages = [
@@ -38,8 +48,8 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect(request.system).toContain("standalone request naming one product and asking for its current pricing");
       expect(request.system).toContain("'do not apply/change it yet' means prepare the protected products.apply_existing_operations preview now");
       expect(request.system).toContain("recentCompletedTurn is the bounded result");
-      expect(request.system).toContain("promoting anyone to Owner");
-      expect(request.system).toContain("deliberately AI-ineligible for every actor");
+      expect(request.system).toContain("canonical role-change adapter");
+      expect(request.system).toContain("application authorization");
       expect(request.system).toContain("analytics.customer_balance");
       expect(request.system).toContain("Zero production jobs does not mean zero production-ready line items");
       const body = JSON.parse(request.user);
@@ -184,7 +194,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     );
 
     await expect(provider.decide({ goal: "Research sidewalk vinyl.", taskId: "task_failure", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null }))
-      .resolves.toEqual({ kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit." });
+      .resolves.toEqual({ kind: "fail", response: "The AI provider reached its output limit before completing this request." });
   });
 
   test("retries one DeepSeek transport-protocol failure without exposing its control text", async () => {
@@ -211,13 +221,13 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     );
 
     await expect(provider.decide({ goal: "Verify the active draft", taskId: "task_empty_provider", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null }))
-      .resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider did not return a usable investigation result.", providerDecisionShape: expect.objectContaining({ responseItemTypes: ["provider_metadata"], functionCallItemCount: 0, outputTextItemCount: 0, decisionParseStage: "operator_decision_parse" }) }));
+      .resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider did not return a usable response. Check any previously returned operation result before retrying.", providerDecisionShape: expect.objectContaining({ responseItemTypes: ["provider_metadata"], functionCallItemCount: 0, outputTextItemCount: 0, decisionParseStage: "operator_decision_parse" }) }));
   });
 
   test("never returns provider control protocol as terminal assistant text", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => ({ rawText: JSON.stringify({ kind: "complete", response: "<｜DSML｜tool_calls>" }), requestMetadata: {}, operatorContinuation: { items: [], functionCalls: [] } })) } as any, { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any);
-    await expect(provider.decide({ goal: "Create product", taskId: "task_protocol", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null })).resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider returned an unusable investigation result.", providerDecisionShape: expect.objectContaining({ decisionParseStage: "operator_decision_parse" }) }));
+    await expect(provider.decide({ goal: "Create product", taskId: "task_protocol", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null })).resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider returned an unusable response. No application action was completed by this response.", providerDecisionShape: expect.objectContaining({ decisionParseStage: "operator_decision_parse" }) }));
   });
 
   test("accepts a bounded six-call pricing decision from a native provider", async () => {

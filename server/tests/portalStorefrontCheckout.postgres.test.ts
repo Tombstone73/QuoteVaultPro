@@ -259,13 +259,18 @@ databaseTest('blank Coroplast checkout persists its priced mode, flute, totals, 
   const { makeCoroplastGoldenTree } = await import('../services/pricing/tests/fixtures/pbv2GoldenPricing.fixtures');
   const baseTree = makeCoroplastGoldenTree();
   (baseTree.nodes.rate as { input: Record<string, unknown> }).input.valueType = 'ENUM';
+  baseTree.rootNodeIds.push('thickness');
+  (baseTree.nodes as Record<string, unknown>).thickness = { id: 'thickness', kind: 'question', label: 'Thickness',
+    input: { type: 'select', valueType: 'ENUM', selectionKey: 'thickness', required: true },
+    choices: [{ value: '4mm', label: '4mm', pricingImpact: [{ mode: 'addCents', cents: 700 }] },
+      { value: '10mm', label: '10mm', pricingImpact: [{ mode: 'addCents', cents: 1200 }] }] };
   const blankTree = withBlankCoroplastPricing(baseTree as never, {
-    unit: 'per_square_foot', rateCents: 200, minimumChargeCents: 2500,
-    quantityTiers: [{ minQuantity: 1, rateCents: 200 }, { minQuantity: 10, rateCents: 150 }],
+    unit: 'per_square_foot', minimumChargeCents: 0,
+    optionRates: { selectionKey: 'thickness', choices: [{ value: '4mm', rateCents: 75 }, { value: '10mm', rateCents: 125 }] },
   });
   await pool.query(`insert into products
     (id, organization_id, name, description, is_active, storefront_visible, portal_orderable, is_taxable)
-    values ($1, $2, '4mm Coroplast checkout QA', 'Disposable blank Product', true, true, true, true)`,
+    values ($1, $2, '4mm and 10mm Coroplast checkout QA', 'Disposable blank Product', true, true, true, true)`,
   [blankProductId, organizationId]);
   await pool.query(`insert into pbv2_tree_versions
     (id, organization_id, product_id, status, schema_version, tree_json)
@@ -278,12 +283,20 @@ databaseTest('blank Coroplast checkout persists its priced mode, flute, totals, 
     .options.find((option) => option.label === 'Flute Direction')?.key;
   expect(modeKey).toBeDefined();
   expect(fluteKey).toBeDefined();
+  const thicknessKey = storefront.projectStorefrontOptions(blankTree, { [COROPLAST_PRINT_MODE_KEY]: 'unprinted' })
+    .options.find((option) => option.label === 'Thickness')?.key;
+  expect(thicknessKey).toBeDefined();
   const selections = { [modeKey!]: 'unprinted', [fluteKey!]: 'vertical' };
   await checkout.addPortalStorefrontCartLine(buyer({
-    productId: blankProductId, treeVersionId: blankTreeId, quantity: 10, widthIn: 24, heightIn: 18, selections,
+    productId: blankProductId, treeVersionId: blankTreeId, quantity: 1, widthIn: 12, heightIn: 12,
+    selections: { ...selections, [thicknessKey!]: '4mm' },
+  }));
+  await checkout.addPortalStorefrontCartLine(buyer({
+    productId: blankProductId, treeVersionId: blankTreeId, quantity: 10, widthIn: 24, heightIn: 18,
+    selections: { ...selections, [thicknessKey!]: '10mm' },
   }));
   const review = await checkout.reviewPortalStorefrontCart(buyer());
-  expect(review.subtotalCents).toBe(4500);
+  expect(review.subtotalCents).toBe(3825);
   const placed = await checkout.submitPortalStorefrontCart(buyer({
     reviewToken: review.reviewToken, submissionKey: randomUUID(),
   }));
@@ -294,15 +307,17 @@ databaseTest('blank Coroplast checkout persists its priced mode, flute, totals, 
       (select count(*)::int from production_jobs where order_id = $1) as jobs,
       (select count(*)::int from portal_follow_up_items where related_order_id = $1 and event_type = 'ORDER_SUBMITTED') as intake
     from order_line_items l join invoices i on i.order_id = l.order_id
-    where l.order_id = $1`, [placed.orderId]);
-  expect(persisted.rows).toHaveLength(1);
-  const line = persisted.rows[0];
-  expect(line.option_selections_json).toMatchObject({ [COROPLAST_PRINT_MODE_KEY]: 'unprinted', [COROPLAST_FLUTE_KEY]: 'vertical' });
-  expect(line.pbv2_snapshot_json.selections[COROPLAST_PRINT_MODE_KEY].value).toBe('unprinted');
-  expect(line).toMatchObject({ requires_prepress: false, requires_proof_approval: false, jobs: 0, intake: 1 });
-  expect(line.production_notes).toMatch(/Unprinted Coroplast.*do not print/i);
-  expect(Math.round(Number(line.total_price) * 100)).toBe(4500);
-  expect(line.total_cents).toBe(review.totalCents);
+    where l.order_id = $1 order by l.total_price`, [placed.orderId]);
+  expect(persisted.rows).toHaveLength(2);
+  expect(persisted.rows.map((line) => Math.round(Number(line.total_price) * 100))).toEqual([75, 3750]);
+  for (const [index, line] of persisted.rows.entries()) {
+    expect(line.option_selections_json).toMatchObject({ [COROPLAST_PRINT_MODE_KEY]: 'unprinted', [COROPLAST_FLUTE_KEY]: 'vertical', thickness: index ? '10mm' : '4mm' });
+    expect(line.pbv2_snapshot_json.selections[COROPLAST_PRINT_MODE_KEY].value).toBe('unprinted');
+    expect(line.pbv2_snapshot_json.treeJson.meta.blankCoroplastPricing.optionRates.choices).toEqual([{ value: '4mm', rateCents: 75 }, { value: '10mm', rateCents: 125 }]);
+    expect(line).toMatchObject({ requires_prepress: false, requires_proof_approval: false, jobs: 0, intake: 1 });
+    expect(line.production_notes).toMatch(/Unprinted Coroplast.*do not print/i);
+    expect(line.total_cents).toBe(review.totalCents);
+  }
 });
 
 databaseTest('simultaneous same-key submissions commit one Order and Invoice', async () => {

@@ -143,7 +143,7 @@ describe("AssistantOperatorRuntime", () => {
       execute: async ({ toolName }) => ({ toolName, status: "rejected", warning: "The requested business tool is not available." }),
     };
     const result = await new AssistantOperatorRuntime(provider, tools).run({ goal: "Show open quotes", taskId: "task_3", trustedContext });
-    expect(result).toMatchObject({ status: "failed", response: "I couldn't complete that request because the needed business lookup is unavailable or invalid." });
+    expect(result).toMatchObject({ status: "failed", response: "I couldn't complete the requested operation. Review the validation result before retrying." });
   });
 
   test("continues after provider-native web activity that has no final content yet", async () => {

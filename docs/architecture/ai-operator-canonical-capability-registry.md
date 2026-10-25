@@ -4,12 +4,12 @@
 
 ## Counts
 
-- Registered: 78
-- Read: 23
+- Registered: 79
+- Read: 24
 - Mutation: 44
-- Eligible: 66
-- Ineligible: 4
-- Hard denied: 8
+- Eligible: 67
+- Ineligible: 8
+- Hard denied: 4
 
 ## Registry
 
@@ -37,6 +37,7 @@
 | capability.read.analytics.customer_product_sales | customers_contacts | read | read_tool | analytics.customer_product_sales | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.analytics.customer_uninvoiced_orders | customers_contacts | read | read_tool | analytics.customer_uninvoiced_orders | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.analytics.invoice_activity | customers_contacts | read | read_tool | analytics.invoice_activity | finance.read | eligible | — | customers.contacts | wrapped_existing |
+| capability.read.analytics.invoice_filter_total | customers_contacts | read | read_tool | analytics.invoice_filter_total | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.analytics.customer_balance | customers_contacts | read | read_tool | analytics.customer_balance | finance.read | eligible | — | customers.contacts | wrapped_existing |
 | capability.command.quotes.add_internal_note | quotes | mutation | command | quotes.add_internal_note | assistant.quotes.add_internal_note | eligible | — | quotes.operations | wrapped_existing |
 | capability.command.products.create_inactive_draft | products | mutation | command | products.create_inactive_draft | assistant.products.create_inactive_draft | eligible | — | products.pbv2 | wrapped_existing |
@@ -85,10 +86,10 @@
 | capability.ui.products.pricing_formula_profile | products | mutation | ui_compatibility | products.pricing_formula_profile | assistant.products.update_existing_product | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.products.delete | products | administrative | ui_compatibility | products.delete | product.delete | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.products.advanced_pbv2_override | products | administrative | ui_compatibility | products.advanced_pbv2_override | product.update | ineligible | — | products.pbv2 | compatibility_only |
-| capability.hard_deny.organization.change_user_role | security | administrative | security_policy | organization.change_user_role | — | hard_denied | Role changes are deliberately AI-ineligible; use normally authorized user administration, never an AI mutation. | — | security_policy |
-| capability.hard_deny.organization.delete | security | administrative | security_policy | organization.delete | — | hard_denied | Owner-only destructive organization action. | — | security_policy |
-| capability.hard_deny.organization.destroy_tenant | security | administrative | security_policy | organization.destroy_tenant | — | hard_denied | Tenant destruction is never an AI capability. | — | security_policy |
-| capability.hard_deny.organization.transfer_ownership | security | administrative | security_policy | organization.transfer_ownership | — | hard_denied | Owner-only irreversible organization control. | — | security_policy |
+| capability.ui.organization.change_user_role | settings_permissions | administrative | ui_compatibility | organization.change_user_role | — | ineligible | — | settings.permissions | compatibility_only |
+| capability.ui.organization.delete | settings_permissions | administrative | ui_compatibility | organization.delete | — | ineligible | — | settings.permissions | compatibility_only |
+| capability.ui.organization.transfer_ownership | settings_permissions | administrative | ui_compatibility | organization.transfer_ownership | — | ineligible | — | settings.permissions | compatibility_only |
+| capability.ui.organization.destroy_tenant | settings_permissions | administrative | ui_compatibility | organization.destroy_tenant | — | ineligible | — | settings.permissions | compatibility_only |
 | capability.hard_deny.platform.developer_operations | security | administrative | security_policy | platform.developer_operations | — | hard_denied | Developer and internal operations are permanently excluded. | — | security_policy |
 | capability.hard_deny.platform.infrastructure_administration | security | administrative | security_policy | platform.infrastructure_administration | — | hard_denied | Infrastructure and system administration are permanently excluded. | — | security_policy |
 | capability.hard_deny.platform.cross_tenant_mutation | security | administrative | security_policy | platform.cross_tenant_mutation | — | hard_denied | Cross-tenant mutation is permanently excluded. | — | security_policy |
