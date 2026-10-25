@@ -1086,8 +1086,8 @@ export const ASSISTANT_MESSAGE_MAX_CONTENT_CHARS = 32_000;
 export const assistantImageAttachmentSchema = z.object({
   id: assistantSafeIdentifierSchema,
   fileName: z.string().min(1).max(255),
-  mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
-  sizeBytes: z.number().int().positive().max(5 * 1024 * 1024),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf", "text/csv", "text/tab-separated-values", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"]),
+  sizeBytes: z.number().int().positive().max(10 * 1024 * 1024),
 }).strict();
 export type AssistantImageAttachment = z.infer<typeof assistantImageAttachmentSchema>;
 
@@ -1171,7 +1171,7 @@ export const assistantTurnRequestSchema = z.object({
   context: assistantContextEnvelopeSchema,
   clientRequestId: assistantSafeIdentifierSchema.optional(),
 }).strict().refine(value => value.message.length > 0 || value.attachmentIds.length > 0, {
-  message: "Enter a message or attach an image.",
+  message: "Enter a message or attach a file.",
 });
 export type AssistantTurnRequest = z.infer<typeof assistantTurnRequestSchema>;
 

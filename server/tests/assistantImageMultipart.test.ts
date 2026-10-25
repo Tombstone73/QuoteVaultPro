@@ -28,16 +28,16 @@ describe("assistant single-image multipart parser", () => {
     const multiple = await request(app()).post("/image")
       .attach("image", Buffer.from("first"), "first.png")
       .attach("image", Buffer.from("second"), "second.png").expect(400);
-    expect(multiple.body.message).toBe("Upload one image at a time.");
+    expect(multiple.body.message).toBe("Upload one file at a time.");
     const field = await request(app()).post("/image")
       .field("extra", "value")
       .attach("image", Buffer.from("first"), "first.png").expect(400);
-    expect(field.body.message).toBe("Upload one image at a time.");
+    expect(field.body.message).toBe("Upload one file at a time.");
   });
 
   test("requires the image field", async () => {
     const response = await request(app()).post("/image")
       .attach("other", Buffer.from("first"), "first.png").expect(400);
-    expect(response.body.message).toBe("Upload one image at a time.");
+    expect(response.body.message).toBe("Upload one file at a time.");
   });
 });

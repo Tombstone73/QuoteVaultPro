@@ -63,7 +63,7 @@ export function createDeferredOrderExecutionCommand(name: typeof assistantOrderC
       const preview: ExecutionPlanPreview = {
         title: conversion ? "Convert quote to order" : `Create order for ${p.customerName}`,
         summary: `${p.summary} No production job, production scheduling, material reservation, fulfillment record, invoice, or payment will be created.`,
-        sideEffects: [p.summary, ...(p.lines ?? []).map((line: any) => `${line.quantity} × ${line.productName}: $${(line.totalCents / 100).toFixed(2)}.`)],
+        sideEffects: [p.summary, ...(p.purchaseOrder ? [`Customer PO ${p.purchaseOrder.poNumber} from ${p.purchaseOrder.fileName} is a reference document only; it will not become approved production artwork.`, ...(p.purchaseOrder.address ? [`PO address for review: ${p.purchaseOrder.address}`] : []), ...(p.purchaseOrder.instructions ? [`PO instructions for review: ${p.purchaseOrder.instructions}`] : [])] : []), ...(p.lines ?? []).map((line: any) => `${line.quantity} × ${line.productName}: canonical $${(line.totalCents / 100).toFixed(2)}${line.poUnitPriceCents == null ? " (PO selling price unavailable or ambiguous)" : `; PO $${(line.poUnitPriceCents / 100).toFixed(2)} per unit, difference $${(line.poPriceDifferenceCents / 100).toFixed(2)} per unit`}.`), ...(p.warnings ?? [])],
         affectedRecords: [{ entityType: "assistant_order_intake_session", entityId: p.orderIntakeSessionId, fingerprint: p.proposalFingerprint }],
         ...(orderCreate ? { orderCreate } : {}),
       };
@@ -79,7 +79,7 @@ export function createDeferredOrderExecutionCommand(name: typeof assistantOrderC
       const result = resultSchema.parse(await command.adapter.execute(inputSchema.parse(plan.sanitizedArguments), { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal }));
       const isUpdate = name === assistantOrderUpdateEditableCommandName;
       const isConversion = name === assistantQuoteConvertOrderCommandName;
-      return { status: "succeeded", summary: isUpdate ? `Updated editable order ${result.displayNumber}.` : `${isConversion ? "Quote converted to" : "Created"} order ${result.displayNumber}. Production remains deferred.`, steps: [{ commandName: `${name}@v1`, status: "succeeded", summary: isUpdate ? `Updated editable order ${result.displayNumber}.` : `Created order ${result.displayNumber} with deferred production intake.` }] };
+      return { status: "succeeded", summary: isUpdate ? `Updated editable order ${result.displayNumber}. Open ${result.sourceLink}.` : `${isConversion ? "Quote converted to" : "Created"} order ${result.displayNumber}. Open ${result.sourceLink}. Production remains deferred.`, details: { order: { id: result.id, displayNumber: result.displayNumber, sourceLink: result.sourceLink } }, steps: [{ commandName: `${name}@v1`, status: "succeeded", summary: isUpdate ? `Updated editable order ${result.displayNumber}.` : `Created order ${result.displayNumber} with deferred production intake.` }] };
     },
   };
 }

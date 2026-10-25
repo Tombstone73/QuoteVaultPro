@@ -49,6 +49,36 @@ describe("assistant deferred-production order commands", () => {
     expect(prepared.arguments).not.toHaveProperty("productionIntakePolicy");
   });
 
+  it("shows source PO, selling-price difference, and address review before GO", async () => {
+    const poService = {
+      ...service,
+      revalidateCreateProposal: async () => ({ valid: true as const, proposal: {
+        ...(await service.revalidateCreateProposal()).proposal,
+        purchaseOrder: { poNumber: "00042", fileName: "customer-po.pdf", address: "123 Main St", instructions: "Deliver Friday" },
+        lines: [{ ...(await service.revalidateCreateProposal()).proposal.lines[0], poUnitPriceCents: 5_900, poPriceDifferenceCents: 350 }],
+        warnings: ["Confirm shipping destination in Order editor."],
+      } }),
+    };
+    const command = createDeferredOrderExecutionCommand(assistantOrderCreateCommandName, poService);
+    const prepared = await command.buildPreview({
+      scope: { organizationId: "org_1", userId: "user_1", permissions: ["assistant.orders.create"], environment: "test" },
+      context: { version: "v1", route: "/orders", entity: null, selection: [], filters: {}, capturedAt: new Date().toISOString() },
+      arguments: { orderIntakeSessionId: "order_intake_1", proposalFingerprint: fingerprint },
+    });
+    expect(prepared.preview.sideEffects.join(" ")).toContain("Customer PO 00042");
+    expect(prepared.preview.sideEffects.join(" ")).toContain("PO $59.00 per unit, difference $3.50");
+    expect(prepared.preview.sideEffects.join(" ")).toContain("Confirm shipping destination");
+  });
+
+  it("returns the persisted Order number and link from GO execution", async () => {
+    const command = createDeferredOrderExecutionCommand(assistantOrderCreateCommandName, service);
+    const executed = await command.execute({
+      plan: { id: "plan_42", idempotencyKey: "operation_42", correlationId: "correlation_42", sanitizedArguments: { orderIntakeSessionId: "order_intake_1", proposalFingerprint: fingerprint } } as any,
+      scope: { organizationId: "org_1", userId: "user_1", permissions: ["assistant.orders.create"], environment: "test" },
+    });
+    expect(executed.details?.order).toEqual({ id: "order_1", displayNumber: "O-20015", sourceLink: "/orders/order_1" });
+  });
+
   it("post-GO conversion retries preserve the canonical same-Order result", async () => {
     const conversionService = {
       ...service,

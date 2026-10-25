@@ -365,27 +365,28 @@ export function registerAssistantRoutes(
     }
   });
 
-  app.post("/api/assistant/conversations/:conversationId/images", ...guarded, async (req, res) => {
+  app.post(["/api/assistant/conversations/:conversationId/attachments", "/api/assistant/conversations/:conversationId/images"], ...guarded, async (req, res) => {
     try {
       const scope = { ...resolveScope(req), conversationId: req.params.conversationId };
-      if (!String(req.headers["content-type"] ?? "").startsWith("multipart/form-data")) throw new AssistantImageError(400, "Select an image to upload.");
+      if (!String(req.headers["content-type"] ?? "").startsWith("multipart/form-data")) throw new AssistantImageError(400, "Select a file to upload.");
       const image = await parseAssistantImageUpload(req);
       const attachment = await uploadAssistantImage(scope, image);
       return res.status(201).json({ success: true, data: attachment });
     } catch (error) { return sendError(res, error); }
   });
 
-  app.get("/api/assistant/conversations/:conversationId/images/:imageId", ...guarded, async (req, res) => {
+  app.get(["/api/assistant/conversations/:conversationId/attachments/:imageId", "/api/assistant/conversations/:conversationId/images/:imageId"], ...guarded, async (req, res) => {
     try {
       const image = await readAssistantImage({ ...resolveScope(req), conversationId: req.params.conversationId }, req.params.imageId);
       res.setHeader("Cache-Control", "private, no-store");
       res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Disposition", `${image.mimeType.startsWith("image/") ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(image.fileName)}`);
       res.type(image.mimeType);
       return res.send(image.buffer);
     } catch (error) { return sendError(res, error); }
   });
 
-  app.delete("/api/assistant/conversations/:conversationId/images/:imageId", ...guarded, async (req, res) => {
+  app.delete(["/api/assistant/conversations/:conversationId/attachments/:imageId", "/api/assistant/conversations/:conversationId/images/:imageId"], ...guarded, async (req, res) => {
     try {
       await removeAssistantImage({ ...resolveScope(req), conversationId: req.params.conversationId }, req.params.imageId);
       return res.json({ success: true });

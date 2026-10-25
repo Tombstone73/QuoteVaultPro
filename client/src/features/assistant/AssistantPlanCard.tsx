@@ -83,6 +83,7 @@ export type AssistantPlanCardModel = {
   steps: Array<{ id: string; label: string; status: string; detail: string | null }>;
   partialFailureSummary: string | null;
   productDraftResult: { name: string; href: string | null } | null;
+  orderResult: { displayNumber: string; href: string } | null;
   configurableProduct: ConfigurableProductConfirmationCard | null;
   configurableProductResult: ConfigurableProductResultCard | null;
   cloneInactiveDraft: { sourceName: string | null; productName: string | null; beforePricing: UnknownRecord | null; afterPricing: UnknownRecord | null; category: string | null; measurementMode: string | null; productionRoute: string | null; sheetSettings: string | null; rotation: boolean | null; options: string | null; resultPath: string | null } | null;
@@ -490,6 +491,8 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
   const productDraft = asRecord(asRecord(plan.executionResult)?.details)?.productDraft;
   const productDraftRecord = asRecord(productDraft);
   const executionDetails = asRecord(asRecord(plan.executionResult)?.details);
+  const completedOrder = asRecord(executionDetails?.order);
+  const completedOrderPath = asText(completedOrder?.sourceLink);
   return {
     id,
     title: asText(cardRecord.title) ?? asText(plan.title) ?? "Proposed action",
@@ -525,6 +528,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     steps: toSteps(plan.steps ?? cardRecord.steps ?? cardRecord.executionSteps),
     partialFailureSummary: asText(plan.partialFailureSummary) ?? asText(plan.failureSummary) ?? asText(cardRecord.partialFailureSummary) ?? asText(cardRecord.failureSummary),
     productDraftResult: productDraftRecord ? { name: asText(productDraftRecord.name) ?? "Inactive product draft", href: (() => { const href = asText(productDraftRecord.sourceLink) ?? asText(productDraftRecord.editorPath) ?? asText(productDraftRecord.reviewUrl); return href?.startsWith("/") ? href : null; })() } : null,
+    orderResult: completedOrderPath && /^\/orders\/[^/\s]+$/.test(completedOrderPath) ? { displayNumber: asText(completedOrder?.displayNumber) ?? "Order", href: completedOrderPath } : null,
     configurableProduct: action === "products.create_configurable_draft" ? toConfigurableProductConfirmation(previewRecord?.configurableProduct) : null,
     configurableProductResult: toConfigurableProductResult(executionDetails?.configurableProduct),
     cloneInactiveDraft: toCloneInactiveDraft(action, previewRecord, executionDetails),
@@ -786,6 +790,7 @@ export function AssistantPlanCard({
     {genericPlan && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Action completed successfully.</p> : null}
     {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}
     {isProductDraft && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Inactive product draft {isProductDraftUpdate ? "updated" : "created"}. {plan.productDraftResult?.href ? <a className="text-primary underline-offset-2 hover:underline" href={plan.productDraftResult.href}>Open {plan.productDraftResult.name} in the existing editor</a> : "Activation and publication remain unavailable in the assistant."}</p> : null}
+    {plan.status === "succeeded" && plan.orderResult ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /><a className="text-primary underline-offset-2 hover:underline" href={plan.orderResult.href}>Open Order {plan.orderResult.displayNumber}</a></p> : null}
     {staleForContext || plan.staleReason ? <p className="mt-2 flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-foreground"><CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.staleReason || "This preview is stale for the page you are viewing. The server must revalidate it before any future action."}</p> : null}
     {plan.missingInformation.length ? <div className="mt-2"><p className="font-medium">Information still needed</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{plan.missingInformation.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
     {plan.affectedEntities.length ? <div className="mt-2"><p className="font-medium">Affected records</p><ul className="mt-1 space-y-1">{plan.affectedEntities.map((entity) => <li key={`${entity.type}-${entity.id}`}>{entity.href ? <a className="text-primary underline-offset-2 hover:underline" href={entity.href}>{entity.label}</a> : entity.label} <span className="text-muted-foreground">({entity.type})</span></li>)}</ul></div> : null}

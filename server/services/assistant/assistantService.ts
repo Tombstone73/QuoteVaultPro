@@ -19,6 +19,8 @@ import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorBusinessContext, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
+import { createAssistantAttachmentAnalysisTools } from "./attachmentAnalysisTools";
+import { createPurchaseOrderAttachmentTool } from "./purchaseOrderAttachmentTool";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore, type MaterialTaskTransition } from "./operatorTaskContext";
@@ -29,7 +31,7 @@ import { MATERIAL_REVIEW_KEY, handleMaterialReply, isAffirmativeMaterialReply, m
 import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import type { AiConversationMessage } from "../ai/providers/AiProviderAdapter";
-import { getAssistantImageRows, loadAssistantProviderImages } from "../assistantImageAttachments";
+import { getAssistantImageRows, loadAssistantProviderAttachmentContext } from "../assistantImageAttachments";
 import type { AssistantImageAttachment } from "@shared/assistantContracts";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
@@ -905,13 +907,19 @@ export class AssistantService {
     if (!conversation) throw this.notFound();
     const conversationMessages = operatorConversationHistory(conversation.messages);
     const scopeForImages = { ...scope, conversationId };
-    const currentImages = request.attachmentIds.length ? await loadAssistantProviderImages(scopeForImages, request.attachmentIds) : [];
+    const currentAttachments = request.attachmentIds.length
+      ? await loadAssistantProviderAttachmentContext(scopeForImages, request.attachmentIds)
+      : { images: [], documents: [] };
+    const currentImages = currentAttachments.images;
+    if (currentImages.length > 4) throw new AssistantServiceError("ASSISTANT_VISUAL_PAGE_LIMIT", "Attach at most four images or scanned PDF pages in one message.", 413);
     let remainingHistoryImages = 4 - currentImages.length;
     const recentImageMessages = conversationMessages.filter(item => item.role === "user" && item.attachmentIds?.length).slice(-2).reverse();
     for (const item of recentImageMessages) {
-      const ids = (item.attachmentIds ?? []).slice(0, remainingHistoryImages);
-      if (ids.length) item.images = await loadAssistantProviderImages(scopeForImages, ids);
-      remainingHistoryImages -= ids.length;
+      const previous = await loadAssistantProviderAttachmentContext(scopeForImages, item.attachmentIds ?? []);
+      if (previous.documents.length) item.content += `\n\n${previous.documents.join("\n\n")}`;
+      item.images = previous.images.slice(0, remainingHistoryImages);
+      if (previous.images.length > remainingHistoryImages) item.content += "\nSome older visual pages were omitted from this model request. Reinspect the attachment before claiming visual coverage.";
+      remainingHistoryImages -= item.images.length;
     }
     const staffRoleDiscussion = isStaffRoleDiscussion(request.message, conversationMessages);
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
@@ -1211,7 +1219,9 @@ export class AssistantService {
         }
       },
     }] : [];
-    const semanticTools: AssistantOperatorSemanticTool[] = [...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const explicitPoRequest = /\b(?:purchase\s+order|PO)\b/i.test(request.message) || /\b(?:order|prepare|create)\b/i.test(request.message) && /\b(?:attach\w*|file|document)\b/i.test(request.message);
+    const continuingPoReview = task.domain === "purchase_orders" && task.status === "active";
+    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...(explicitPoRequest || continuingPoReview ? [createPurchaseOrderAttachmentTool(request.message, { allowFollowUp: continuingPoReview })] : []), ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
@@ -1273,7 +1283,7 @@ export class AssistantService {
     const runtime = new AssistantOperatorRuntime(decisionProvider, this.createOperatorToolExecutor((audit) => { audits.push(audit); }, turnSemanticTools));
     const run = await runtime.run({
       signal: input.signal,
-      goal: request.message || "Please describe or analyze the attached image.",
+      goal: [request.message || "Please describe or analyze the attached file.", ...currentAttachments.documents].join("\n\n"),
       conversationMessages,
       currentImages,
       taskId: task.id,
@@ -1312,17 +1322,19 @@ export class AssistantService {
       updatedResourceContext,
     );
     const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
+    const poReview = run.observations.some((observation) => observation.toolName === "orders.prepare_from_attachment" && observation.status === "succeeded" && observation.presentation?.cards.some((card) => card.kind === "missing_information" || card.kind === "action_proposal"));
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
     const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.toolName === "products.apply_existing_operations" && observation.presentation?.cards.some((card) => card.kind === "action_proposal"));
     const recentCompletedTurn = run.status === "completed" && !hasPendingProtectedProductProposal ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
-    const activeStatus = newMaterialReview || run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
+    const activeStatus = newMaterialReview || run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || poReview || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     const taskPatch: MaterialTaskTransition["patch"] = {
       ...(explicitProductIntent ? { domain: "products" }
         : materialCreationRequest ? { domain: "materials" }
+        : poReview ? { domain: "purchase_orders" }
         : typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain }
         : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: hasPendingProtectedProductProposal ? null : run.safeWorkingSummary,

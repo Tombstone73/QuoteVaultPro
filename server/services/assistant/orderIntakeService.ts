@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   assistantOrderIntakeSessions,
   auditLogs,
@@ -35,7 +35,8 @@ type DirectLine = {
   pbv2Selections: LineItemOptionSelectionsV2;
   pbv2SelectionSources?: Record<string, AssistantOrderSelectionSource>;
 };
-type DirectIntake = { kind: "direct"; customerId: string | null; customerName: string; contactId: string | null; dueDate: string | null; lines: DirectLine[] };
+type PurchaseOrderSource = { attachmentId: string; fileName: string; poNumber: string; requestedDate: string | null; address: string | null; instructions: string | null; extractedFieldsVerified: boolean; warnings: string[]; linePricesCents: Array<number | null> };
+type DirectIntake = { kind: "direct"; customerId: string | null; customerName: string; contactId: string | null; dueDate: string | null; lines: DirectLine[]; purchaseOrder?: PurchaseOrderSource };
 type ConversionIntake = { kind: "conversion"; quoteId: string; quoteNumber: string; dueDate: string | null };
 type UpdateIntake = { kind: "update"; orderId: string; orderNumber: string; dueDate: string };
 type Intake = DirectIntake | ConversionIntake | UpdateIntake;
@@ -88,6 +89,49 @@ export type AssistantOrderCard = { kind: "order_intake_summary" | "missing_infor
  * explicit deferred-production policy are recalculated at planning/execution.
  */
 export class OrderIntakeService {
+  async prepareFromPurchaseOrder(input: {
+    organizationId: string; userId: string; conversationId: string;
+    source: PurchaseOrderSource; customerName: string;
+    lines: Array<{ productName: string; quantity: number; width: number; height: number; options: string }>;
+    dueDate: string | null;
+  }): Promise<{ handled: true; response: string; cards: AssistantOrderCard[] }> {
+    const missing = (summary: string, details: Record<string, unknown> = {}) => ({ handled: true as const, response: summary, cards: [{ kind: "missing_information" as const, title: "Purchase order review needed", summary, sourceLinks: [], details }] });
+    if (!input.source.poNumber.trim() || input.source.poNumber.length > 64) return missing("Confirm a PO number of at most 64 characters.");
+    if (input.lines.length < 1 || input.lines.length > 10) return missing("A PO proposal needs 1 to 10 requested items. Identify the items to continue.");
+    if (input.dueDate && Number.isNaN(Date.parse(input.dueDate))) return missing("Confirm the requested due date in YYYY-MM-DD format.");
+    const [customerRows, productRows, existing] = await Promise.all([
+      db.select({ id: customers.id, companyName: customers.companyName }).from(customers).where(eq(customers.organizationId, input.organizationId)),
+      db.select({ id: products.id, name: products.name }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.isActive, true))),
+      db.select({ id: orders.id, displayNumber: orders.displayNumber }).from(orders).where(and(eq(orders.organizationId, input.organizationId), sql`lower(btrim(${orders.poNumber})) = ${input.source.poNumber.toLowerCase()}`)).limit(5),
+    ]);
+    if (existing.length) return missing(`Customer PO ${input.source.poNumber} already appears on ${existing.length} Order(s). Review the existing Order before creating another.`, { existingOrders: existing.map(row => ({ id: row.id, displayNumber: row.displayNumber })) });
+    const customerMatches = customerRows.filter(row => normalized(row.companyName ?? "") === normalized(input.customerName));
+    if (customerMatches.length !== 1) return missing(`Confirm the customer for PO ${input.source.poNumber}; ${customerMatches.length ? "multiple customers match" : "no exact customer matches"}.`, { customerName: input.customerName, matchCount: customerMatches.length });
+    const directLines: DirectLine[] = [];
+    for (let index = 0; index < input.lines.length; index++) {
+      const item = input.lines[index]!;
+      if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 100_000 || !Number.isFinite(item.width) || !Number.isFinite(item.height) || item.width <= 0 || item.height <= 0) return missing(`Confirm quantity and finished dimensions for PO line ${index + 1}.`);
+      const matches = productRows.filter(row => normalized(row.name ?? "") === normalized(item.productName));
+      if (matches.length !== 1) return missing(`Confirm the product for PO line ${index + 1}: ${item.productName}.`, { line: index + 1, matchCount: matches.length });
+      let line = await this.newDirectLine(input.organizationId, matches[0]!.id, matches[0]!.name ?? item.productName, item.quantity, item.width, item.height);
+      const snapshot = await this.loadDirectSnapshot(input.organizationId, line);
+      const choice = resolveAssistantOrderSelections({ tree: snapshot.tree, existingSelections: line.pbv2Selections, message: item.options });
+      if (!choice.ok) return missing(`Confirm product options for PO line ${index + 1}: ${choice.summary}`, { line: index + 1, groups: choice.groups });
+      line = { ...line, pbv2Selections: choice.selections, pbv2SelectionSources: Object.fromEntries(choice.resolvedSelectionKeys.map(key => [key, "explicit" as const])) };
+      const unresolved = unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: line.pbv2Selections, selectionSources: line.pbv2SelectionSources });
+      if (unresolved.length) return missing(`Choose the missing product options for PO line ${index + 1}.`, { line: index + 1, groups: unresolved });
+      directLines.push(line);
+    }
+    const intake: DirectIntake = { kind: "direct", customerId: customerMatches[0]!.id, customerName: customerMatches[0]!.companyName ?? input.customerName, contactId: null, dueDate: input.dueDate, lines: directLines, purchaseOrder: input.source };
+    const session = await this.createSession(input, intake);
+    const validation = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
+    if (!validation.valid) {
+      await db.update(assistantOrderIntakeSessions).set({ status: "abandoned", updatedAt: new Date() }).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId)));
+      return missing(validation.summary, { code: validation.code });
+    }
+    return this.directPreview(session.id, validation.proposal);
+  }
+
   async respond(input: { organizationId: string; userId: string; conversationId: string; message: string; pendingRequest?: string | null }): Promise<{ handled: boolean; response: string; cards: AssistantOrderCard[] }> {
     if (/\b(?:update|change|edit)\b[\s\S]{0,40}\border\b/i.test(input.message)) return this.prepareUpdate(input);
     if (/\b(?:convert|turn)\b[\s\S]{0,40}\bquote\b[\s\S]{0,40}\b(?:order|into)\b|\bconvert\s+quote\s+\S+\s+(?:to|into)\s+order\b/i.test(input.message)) return this.prepareConversion(input);
@@ -335,6 +379,10 @@ export class OrderIntakeService {
       if (input.expectedProposalFingerprint && input.expectedProposalFingerprint !== proposalFingerprint) return { valid: false, code: "ORDER_PROPOSAL_STALE", summary: "The order changed. Review a fresh update preview." };
       return { valid: true, proposal: { orderIntakeSessionId: session.id, proposalFingerprint, kind: intake.kind, orderId: intake.orderId, customerName: null, totalCents: Math.round(Number((order as any).total) * 100), lines: [], warnings: [], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Update due date on order ${intake.orderNumber} to ${intake.dueDate.slice(0, 10)}.` } };
     }
+    if (intake.purchaseOrder) {
+      const otherOrders = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, input.organizationId), sql`lower(btrim(${orders.poNumber})) = ${intake.purchaseOrder.poNumber.toLowerCase()}`)).limit(2);
+      if (otherOrders.some(row => row.id !== session.orderId)) return { valid: false, code: "CUSTOMER_PO_DUPLICATE", summary: `An Order with customer PO ${intake.purchaseOrder.poNumber} already exists. Review it before creating another.` };
+    }
     const [org, customer, contact] = await Promise.all([
       db.select().from(organizations).where(eq(organizations.id, input.organizationId)).limit(1).then((rows) => rows[0]),
       intake.customerId ? db.select().from(customers).where(and(eq(customers.id, intake.customerId), eq(customers.organizationId, input.organizationId))).limit(1).then((rows) => rows[0]) : Promise.resolve(null),
@@ -364,19 +412,33 @@ export class OrderIntakeService {
     const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
     const fingerprint = fingerprintDirectOrderProposal({ intake, organization: org, customer, contact, priced, totals });
     if (input.expectedProposalFingerprint && input.expectedProposalFingerprint !== fingerprint) return { valid: false, code: "ORDER_PROPOSAL_STALE", summary: "Order pricing or selected records changed." };
-    return { valid: true, proposal: { orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, product, result, widthIn, heightIn }) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, measurementMode: product.measurementMode ?? null, dimensions: product.measurementMode === "quantity_only" ? null : { widthIn, heightIn, unit: "in" }, pbv2TreeVersionId: result.pbv2TreeVersionId, selections: configuredSelectionsForPlan(result, line), unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents, minimumChargeApplied: (result.pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.minimumApplied === true, warnings: [] })), warnings: intake.contactId ? [] : ["No contact is selected."], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}, totaling $${totals.total.toFixed(2)}. Production remains deferred.` } };
+    return { valid: true, proposal: { orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, purchaseOrder: intake.purchaseOrder ? { fileName: intake.purchaseOrder.fileName, poNumber: intake.purchaseOrder.poNumber, requestedDate: intake.purchaseOrder.requestedDate, address: intake.purchaseOrder.address, instructions: intake.purchaseOrder.instructions, sourceAttachmentId: intake.purchaseOrder.attachmentId, referenceOnly: true } : null, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, product, result, widthIn, heightIn }, index) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, measurementMode: product.measurementMode ?? null, dimensions: product.measurementMode === "quantity_only" ? null : { widthIn, heightIn, unit: "in" }, pbv2TreeVersionId: result.pbv2TreeVersionId, selections: configuredSelectionsForPlan(result, line), unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents, poUnitPriceCents: intake.purchaseOrder?.linePricesCents[index] ?? null, poPriceDifferenceCents: intake.purchaseOrder?.linePricesCents[index] == null ? null : Math.round(result.lineTotalCents / line.quantity) - intake.purchaseOrder.linePricesCents[index]!, minimumChargeApplied: (result.pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.minimumApplied === true, warnings: [] })), warnings: [...(intake.contactId ? [] : ["No contact is selected."]), ...(intake.purchaseOrder?.warnings ?? []), ...(intake.purchaseOrder?.address ? ["PO address is an internal review note. Confirm the structured shipping destination in the Order editor."] : []), ...(intake.purchaseOrder && !intake.purchaseOrder.extractedFieldsVerified ? ["Some PO fields could not be verified against extractable text. Review the source document before GO."] : [])], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}${intake.purchaseOrder ? ` from PO ${intake.purchaseOrder.poNumber}` : ""}, totaling $${totals.total.toFixed(2)}. Production remains deferred.` } };
   }
 
   async createConfirmedOrder(input: { organizationId: string; actorUserId: string; orderIntakeSessionId: string; proposalFingerprint: string }) {
     const session = await this.load(input.organizationId, input.orderIntakeSessionId);
     if (session.userId !== input.actorUserId) throw new AssistantOrderIntakeError("SESSION_FORBIDDEN", "Order proposal is not available to this user.");
+    if (session.proposalFingerprint !== input.proposalFingerprint) throw new AssistantOrderIntakeError("ORDER_PROPOSAL_STALE", "The Order proposal changed. Review it again before GO.");
     if (session.status === "created" && session.orderId) {
       const order = await storage.getOrderById(input.organizationId, session.orderId);
       if (order) return { id: order.id, displayNumber: order.displayNumber ?? String(order.orderNumber), totalCents: Math.round(Number(order.total) * 100), sourceLink: `/orders/${order.id}` };
     }
     const validation = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: input.proposalFingerprint });
-    if (!validation.valid) throw new AssistantOrderIntakeError(validation.code, validation.summary);
+    if (!validation.valid) {
+      const latest = await this.load(input.organizationId, session.id);
+      if (latest.userId === input.actorUserId && latest.proposalFingerprint === input.proposalFingerprint && latest.status === "created" && latest.orderId) {
+        const saved = await storage.getOrderById(input.organizationId, latest.orderId);
+        if (saved) return { id: saved.id, displayNumber: saved.displayNumber ?? String(saved.orderNumber), totalCents: Math.round(Number(saved.total) * 100), sourceLink: `/orders/${saved.id}` };
+      }
+      throw new AssistantOrderIntakeError(validation.code, validation.summary);
+    }
     const intake = session.intakeJson as Intake;
+    if (intake.kind === "direct" && intake.purchaseOrder) {
+      const order = await this.createPurchaseOrderDirect(input, session, intake, validation.proposal);
+      const saved = await storage.getOrderById(input.organizationId, order.id);
+      if (!saved) throw new AssistantOrderIntakeError("ORDER_READBACK_FAILED", "The Order was created but could not be read back. Review the Orders list before retrying.");
+      return { id: saved.id, displayNumber: saved.displayNumber ?? String(saved.orderNumber), totalCents: Math.round(Number(saved.total) * 100), sourceLink: `/orders/${saved.id}` };
+    }
     const order = intake.kind === "update"
       ? await canonicalOrderOperations.updateEditableHeader({ organizationId: input.organizationId, actorUserId: input.actorUserId, orderId: intake.orderId, changes: { dueDate: intake.dueDate } as any, expectedUpdatedAt: (validation as any).orderUpdatedAt ?? undefined, auditDescription: `Assistant updated due date from confirmed intake ${session.id}.` })
       : intake.kind === "conversion"
@@ -389,7 +451,27 @@ export class OrderIntakeService {
     return { id: order.id, displayNumber: order.displayNumber ?? String(order.orderNumber), totalCents: Math.round(Number(order.total) * 100), sourceLink: `/orders/${order.id}` };
   }
 
-  private async createDirect(organizationId: string, actorUserId: string, intake: DirectIntake, proposal: any) {
+  private async createPurchaseOrderDirect(input: { organizationId: string; actorUserId: string; orderIntakeSessionId: string; proposalFingerprint: string }, session: AssistantOrderIntakeSessionRow, intake: DirectIntake, proposal: any) {
+    return this.createDirect(input.organizationId, input.actorUserId, intake, proposal, async (payload) => db.transaction(async (tx) => {
+      const poNumber = intake.purchaseOrder!.poNumber;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.organizationId}), hashtext(${poNumber.toLowerCase()}))`);
+      await tx.execute(sql`select id from ${assistantOrderIntakeSessions} where ${assistantOrderIntakeSessions.id} = ${session.id} and ${assistantOrderIntakeSessions.organizationId} = ${input.organizationId} for update`);
+      const [locked] = await tx.select().from(assistantOrderIntakeSessions).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId))).limit(1);
+      if (locked?.status === "created" && locked.orderId) {
+        const [created] = await tx.select().from(orders).where(and(eq(orders.id, locked.orderId), eq(orders.organizationId, input.organizationId))).limit(1);
+        if (created) return created;
+      }
+      if (!locked || locked.status !== "preview_ready" || locked.userId !== input.actorUserId || locked.proposalFingerprint !== input.proposalFingerprint) throw new AssistantOrderIntakeError("ORDER_PROPOSAL_STALE", "The PO proposal changed. Review it again before GO.");
+      const duplicate = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, input.organizationId), sql`lower(btrim(${orders.poNumber})) = ${poNumber.toLowerCase()}`)).limit(1);
+      if (duplicate.length) throw new AssistantOrderIntakeError("CUSTOMER_PO_DUPLICATE", `An Order with customer PO ${poNumber} already exists. Review it before creating another.`);
+      const order = await canonicalOrderOperations.createInTransaction(tx, { organizationId: input.organizationId, actorUserId: input.actorUserId, payload, auditDescription: `Assistant created Order from confirmed PO ${poNumber}; production deferred.` });
+      await tx.update(assistantOrderIntakeSessions).set({ status: "created", orderId: order.id, updatedAt: new Date() }).where(eq(assistantOrderIntakeSessions.id, session.id));
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "order", entityId: order.id, actionType: "assistant_order_created", description: `Assistant confirmed PO ${poNumber} with deferred production intake.`, newValues: { productionIntakePolicy: "deferred", assistantOrderIntakeSessionId: session.id, sourceAttachmentId: intake.purchaseOrder!.attachmentId, poNumber } });
+      return order;
+    }));
+  }
+
+  private async createDirect(organizationId: string, actorUserId: string, intake: DirectIntake, proposal: any, create?: (payload: any) => Promise<any>) {
     const priced = await Promise.all(intake.lines.map(async (line, index) => {
       const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
       if (!product) throw new AssistantOrderIntakeError("ORDER_PRODUCT_NOT_FOUND", `Product ${line.productName} is unavailable.`);
@@ -405,7 +487,12 @@ export class OrderIntakeService {
     ]);
     if (!org || (intake.customerId && !customer) || (intake.contactId && !contact) || (!customer && !contact)) throw new AssistantOrderIntakeError("ORDER_IDENTITY_REQUIRED", "The selected customer or contact is unavailable.");
     const totals = await calculateQuoteOrderTotals(priced.map(({ product, line, result }) => ({ productId: product.id, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
-    return canonicalOrderOperations.create({ organizationId, actorUserId, payload: { customerId: intake.customerId, contactId: intake.contactId, status: "new", dueDate: intake.dueDate, createdByUserId: actorUserId, taxRate: totals.taxRate, taxAmount: totals.taxAmount, taxableSubtotal: totals.taxableSubtotal, productionIntakePolicy: "deferred", lineItems: priced.map(({ product, line, result, index, size }) => ({ productId: product.id, productType: product.productTypeId ?? "wide_roll", description: product.name, width: size.widthIn, height: size.heightIn, quantity: line.quantity, unitPrice: result.lineTotalCents / 100 / line.quantity, totalPrice: result.lineTotalCents / 100, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], optionSelectionsJson: line.pbv2Selections, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), sortOrder: index, taxAmount: totals.lineItemsWithTax[index]?.taxAmount ?? 0, isTaxableSnapshot: Boolean(product.isTaxable), requiresPrepress: Boolean((product as any).requiresPrepress), requiresProofApproval: Boolean((product as any).requiresProofApproval) })) } as any });
+    if (intake.purchaseOrder && (Math.round(totals.total * 100) !== proposal.totalCents || Math.round(totals.taxAmount * 100) !== proposal.taxCents || priced.some(({ result }, index) => result.lineTotalCents !== proposal.lines?.[index]?.totalCents))) {
+      throw new AssistantOrderIntakeError("ORDER_PROPOSAL_STALE", "The canonical Order price changed after PO review. Prepare a fresh proposal before GO.");
+    }
+    const poNotes = intake.purchaseOrder ? [`Customer PO ${intake.purchaseOrder.poNumber} (${intake.purchaseOrder.fileName}; assistant conversation reference).`, ...(intake.purchaseOrder.requestedDate ? [`PO requested date: ${intake.purchaseOrder.requestedDate}.`] : []), ...(intake.purchaseOrder.address ? [`PO address for staff review: ${intake.purchaseOrder.address}`] : []), ...(intake.purchaseOrder.instructions ? [`PO instructions for staff review: ${intake.purchaseOrder.instructions}`] : [])].join("\n") : null;
+    const payload = { customerId: intake.customerId, contactId: intake.contactId, status: "new", dueDate: intake.dueDate, poNumber: intake.purchaseOrder?.poNumber ?? null, notesInternal: poNotes, createdByUserId: actorUserId, taxRate: totals.taxRate, taxAmount: totals.taxAmount, taxableSubtotal: totals.taxableSubtotal, productionIntakePolicy: "deferred", lineItems: priced.map(({ product, line, result, index, size }) => ({ productId: product.id, productType: product.productTypeId ?? "wide_roll", description: product.name, width: size.widthIn, height: size.heightIn, quantity: line.quantity, unitPrice: result.lineTotalCents / 100 / line.quantity, totalPrice: result.lineTotalCents / 100, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], optionSelectionsJson: line.pbv2Selections, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), sortOrder: index, taxAmount: totals.lineItemsWithTax[index]?.taxAmount ?? 0, isTaxableSnapshot: Boolean(product.isTaxable), requiresPrepress: Boolean((product as any).requiresPrepress), requiresProofApproval: Boolean((product as any).requiresProofApproval) })) } as any;
+    return create ? create(payload) : canonicalOrderOperations.create({ organizationId, actorUserId, payload });
   }
 
   private async priceDirectLines(organizationId: string, lines: DirectLine[]) {

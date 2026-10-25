@@ -155,7 +155,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
           if (attachmentIds.length) clearDraftImages();
         }
         setTurnNotice({ conversationId, message: attachmentIds.length
-          ? "The message and images were saved, but the assistant could not answer. You can ask a follow-up about the saved images without uploading them again."
+          ? "The message and files were saved, but the assistant could not answer. You can ask a follow-up about the saved files without uploading them again."
           : "The message was saved, but the assistant could not answer. You can ask a follow-up without resending it." });
         return;
       }

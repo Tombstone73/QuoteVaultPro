@@ -8710,7 +8710,7 @@ export const aiMessageAttachments = pgTable("ai_message_attachments", {
   fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "restrict" }),
   messageId: varchar("message_id").references(() => aiMessages.id, { onDelete: "cascade" }),
   originalFilename: text("original_filename").notNull(),
-  mimeType: varchar("mime_type", { length: 32 }).notNull(),
+  mimeType: varchar("mime_type", { length: 128 }).notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   removedAt: timestamp("removed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

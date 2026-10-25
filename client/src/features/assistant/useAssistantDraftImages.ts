@@ -2,9 +2,12 @@ import * as React from "react";
 import { apiUrl, resolveCanonicalApiRequestUrl } from "@/lib/apiConfig";
 import type { AssistantImageAttachment } from "@shared/assistantContracts";
 
-export const ASSISTANT_IMAGE_ACCEPT = "image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif";
+export const ASSISTANT_IMAGE_ACCEPT = "image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.pdf,.csv,.tsv,.xlsx,.docx,.txt";
 export const ASSISTANT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+export const ASSISTANT_FILE_MAX_BYTES = 10 * 1024 * 1024;
 export const ASSISTANT_IMAGE_MAX_COUNT = 4;
+export const isAssistantImageFile = (file: Pick<File, "type" | "name">) => file.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(file.name);
+const acceptedExtension = /\.(jpe?g|png|gif|webp|heic|heif|pdf|csv|tsv|xlsx|docx|txt)$/i;
 
 export type AssistantDraftImage = {
   key: string;
@@ -12,13 +15,13 @@ export type AssistantDraftImage = {
   previewUrl: string;
   conversationId: string | null;
   attachment: AssistantImageAttachment | null;
-  state: "uploading" | "ready" | "failed";
+  state: "uploading" | "processing" | "ready" | "failed";
   progress: number;
   error: string | null;
 };
 
 export function assistantImageUrl(conversationId: string, id: string) {
-  return apiUrl("/api/assistant/conversations/" + encodeURIComponent(conversationId) + "/images/" + encodeURIComponent(id));
+  return apiUrl("/api/assistant/conversations/" + encodeURIComponent(conversationId) + "/attachments/" + encodeURIComponent(id));
 }
 
 export function useAssistantDraftImages(ensureConversation: () => Promise<string>) {
@@ -41,23 +44,24 @@ export function useAssistantDraftImages(ensureConversation: () => Promise<string
       const conversationId = await ensureConversation();
       if (!imagesRef.current.some(item => item.key === key)) return;
       const body = new FormData();
-      body.append("image", row.file, row.file.name);
+      body.append("file", row.file, row.file.name);
       const attachment = await new Promise<AssistantImageAttachment>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         uploadRequests.current.set(key, xhr);
-        xhr.open("POST", resolveCanonicalApiRequestUrl("/api/assistant/conversations/" + encodeURIComponent(conversationId) + "/images"));
+        xhr.open("POST", resolveCanonicalApiRequestUrl("/api/assistant/conversations/" + encodeURIComponent(conversationId) + "/attachments"));
         xhr.withCredentials = true;
         xhr.upload.onprogress = event => {
           if (event.lengthComputable) update(key, { progress: Math.round(event.loaded / event.total * 100) });
         };
+        xhr.upload.onload = () => update(key, { state: "processing", progress: 100 });
         xhr.onload = () => {
           let payload: { data?: AssistantImageAttachment; error?: { message?: string } } = {};
           try { payload = JSON.parse(xhr.responseText); } catch { /* safe fallback below */ }
           if (xhr.status >= 200 && xhr.status < 300 && payload.data) resolve(payload.data);
-          else reject(new Error(payload.error?.message || "Image upload failed. Retry."));
+          else reject(new Error(payload.error?.message || "File upload failed. Retry."));
         };
-        xhr.onerror = () => reject(new Error("Image upload failed. Check the connection and retry."));
-        xhr.onabort = () => reject(new Error("Image upload was interrupted. Retry."));
+        xhr.onerror = () => reject(new Error("File upload failed. Check the connection and retry."));
+        xhr.onabort = () => reject(new Error("File upload was interrupted. Retry."));
         xhr.send(body);
       });
       uploadRequests.current.delete(key);
@@ -68,7 +72,7 @@ export function useAssistantDraftImages(ensureConversation: () => Promise<string
       update(key, { state: "ready", progress: 100, attachment, conversationId });
     } catch (error) {
       uploadRequests.current.delete(key);
-      update(key, { state: "failed", error: error instanceof Error ? error.message : "Image upload failed. Retry." });
+      update(key, { state: "failed", error: error instanceof Error ? error.message : "File upload failed. Retry." });
     }
   }, [ensureConversation, update]);
 
@@ -82,13 +86,15 @@ export function useAssistantDraftImages(ensureConversation: () => Promise<string
     }));
     change(rows => [...rows, ...added]);
     for (const item of added) {
-      if (!item.file.size || item.file.size > ASSISTANT_IMAGE_MAX_BYTES) {
-        update(item.key, { state: "failed", error: "Choose an image up to 5 MB." });
+      if (!acceptedExtension.test(item.file.name)) {
+        update(item.key, { state: "failed", error: "Use PDF, CSV, TSV, XLSX, DOCX, TXT, or a supported image." });
+      } else if (!item.file.size || item.file.size > (isAssistantImageFile(item.file) ? ASSISTANT_IMAGE_MAX_BYTES : ASSISTANT_FILE_MAX_BYTES)) {
+        update(item.key, { state: "failed", error: isAssistantImageFile(item.file) ? "Choose an image up to 5 MB." : "Choose a document up to 10 MB." });
       } else {
         void uploadOne(item.key);
       }
     }
-    return candidates.length > available ? "Attach at most four images per message." : null;
+    return candidates.length > available ? "Attach at most four files per message." : null;
   }, [change, update, uploadOne]);
 
   const remove = React.useCallback(async (key: string) => {
@@ -100,9 +106,9 @@ export function useAssistantDraftImages(ensureConversation: () => Promise<string
         const response = await fetch(assistantImageUrl(row.conversationId, row.attachment.id), {
           method: "DELETE", credentials: "include",
         });
-        if (!response.ok) throw new Error("Could not remove the image. Retry.");
+        if (!response.ok) throw new Error("Could not remove the file. Retry.");
       } catch (error) {
-        update(key, { error: error instanceof Error ? error.message : "Could not remove the image." });
+        update(key, { error: error instanceof Error ? error.message : "Could not remove the file." });
         return;
       }
     }

@@ -40,12 +40,12 @@ export async function normalizeAssistantImageSource(source: { fileName: string; 
 export function assertAssistantImageOwnership<T extends { id: string; orgId: string; conversationId: string; uploadedByUserId: string; removedAt: Date | null }>(
   scope: { organizationId: string; conversationId: string; userId: string }, ids: readonly string[], rows: readonly T[],
 ): T[] {
-  if (ids.length > 4 || new Set(ids).size !== ids.length) throw new AssistantImageError(400, "Attach at most four different images.");
+  if (ids.length > 4 || new Set(ids).size !== ids.length) throw new AssistantImageError(400, "Attach at most four different files.");
   const byId = new Map(rows.map(row => [row.id, row]));
   const authorized = ids.map(id => byId.get(id));
   if (authorized.some(row => !row || row.orgId !== scope.organizationId || row.conversationId !== scope.conversationId ||
     row.uploadedByUserId !== scope.userId || row.removedAt !== null)) {
-    throw new AssistantImageError(404, "One or more images are unavailable in this conversation.");
+    throw new AssistantImageError(404, "One or more files are unavailable in this conversation.");
   }
   return authorized as T[];
 }

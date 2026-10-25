@@ -314,6 +314,16 @@ describe("AssistantPlanCard", () => {
     expect(container.querySelector('a[href="/products/banner_1/edit?draftTreeVersionId=tree_1"]')?.textContent).toContain("Open Banner");
   });
 
+  it("links to the real Order returned by the confirmed PO command", () => {
+    const completed = { kind: "action_plan", title: "Create Order from PO", plan: {
+      id: "plan-po-result", action: "orders.create", status: "succeeded", planVersion: 2,
+      riskLevel: "high", confirmationAvailable: false, missingInformation: [], steps: [],
+      executionResult: { details: { order: { id: "order_42", displayNumber: "O-20042", sourceLink: "/orders/order_42" } } },
+    } };
+    act(() => root.render(<AssistantPlanCard card={completed} context={buildSafeAssistantContext("/orders", "Orders")} onConfirm={() => undefined} />));
+    expect(container.querySelector('a[href="/orders/order_42"]')?.textContent).toContain("Open Order O-20042");
+  });
+
   it("renders only the dedicated configurable-product GO control for a complete typed preview", () => {
     const configurablePlan = {
       kind: "action_plan", title: "Create PVC configurable draft",
@@ -333,7 +343,7 @@ describe("AssistantPlanCard", () => {
     const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };
     act(() => root.render(<AssistantPlanCard card={configurablePlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={onConfirm} />));
     expect(container.textContent).toContain("PVC Panel");
-    expect(container.textContent).toContain("Per-square-foot pricing matrix");
+    expect(container.textContent).toContain("Per square foot pricing matrix");
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create configurable inactive product draft']");
     expect(go).not.toBeNull();
     act(() => go?.click());

@@ -131,6 +131,7 @@
     "express": "^4.21.2",
     "express-rate-limit": "^8.2.1",
     "express-session": "^1.18.1",
+    "fast-xml-parser": "^4.5.3",
     "framer-motion": "^11.13.1",
     "google-auth-library": "^10.5.0",
     "googleapis": "^166.0.0",
@@ -168,6 +169,7 @@
     "word-extractor": "^1.0.4",
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
+    "yauzl": "^2.10.0",
     "zod": "^3.24.2",
     "zod-validation-error": "^3.4.0"
   },
