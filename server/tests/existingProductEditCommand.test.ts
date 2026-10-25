@@ -8,7 +8,7 @@ const scope = { organizationId: "org_1", userId: "user_1", permissions: ["assist
 
 describe("existing product edit execution command", () => {
   test("reviews blank selling terms and active version before applying through GO", async () => {
-    const blankInput = { productId: "product_1", operations: [{ op: "configure_blank_coroplast", pricing: {
+    const blankInput = { productId: "product_1", operations: [{ op: "configure_product_option_rates", context: "unprinted_substrate", pricing: {
       unit: "per_square_foot", rateCents: 200, minimumChargeCents: 2500,
     } }], proposalFingerprint: fingerprint };
     const blankProposal = { ...proposal, productName: "4mm Coroplast", sourceLifecycle: "ACTIVE",

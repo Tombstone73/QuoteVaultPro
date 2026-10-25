@@ -102,7 +102,7 @@ export class ExistingProductEditService {
   async buildProposal(input: { organizationId: string; productId: string; operations: unknown }): Promise<ExistingProductEditProposal> {
     const { db } = await import("../../db");
     const operations = existingProductEditOperationsSchema.parse(input.operations);
-    const blankOperation = operations.operations.find((operation) => operation.op === "configure_blank_coroplast");
+    const blankOperation = operations.operations.find((operation) => operation.op === "configure_product_option_rates");
     if (blankOperation) {
       try {
         const proposal = await canonicalBlankCoroplastOperations.propose({ organizationId: input.organizationId, productId: input.productId, pricing: blankOperation.pricing });
@@ -119,7 +119,7 @@ export class ExistingProductEditService {
           treeId: proposal.expectedActiveTreeVersionId, blankCoroplastPricing: proposal.after, fingerprint: proposal.fingerprint,
           changes: [
             { field: "Print Mode", before: proposal.before ? "Printed and Unprinted" : "Printed only", after: "Printed and Unprinted / blank substrate" },
-            { field: "Unprinted selling rates by thickness", before: ratesLabel(proposal.before), after: ratesLabel(proposal.after) },
+            { field: `Unprinted selling rates${proposal.after.optionRates ? ` by ${proposal.after.optionRates.selectionKey}` : ""}`, before: ratesLabel(proposal.before), after: ratesLabel(proposal.after) },
             { field: "Unprinted minimum", before: proposal.before ? price(proposal.before.minimumChargeCents) : "unavailable", after: price(proposal.after.minimumChargeCents) },
             { field: "Unprinted quantity tiers", before: tiersLabel(proposal.before), after: tiersLabel(proposal.after) },
             { field: "Production and artwork", before: "printed Product defaults", after: "blank selection skips print-only inputs, artwork, proof and prepress; cutting and finishing remain selectable; staff intake defers release, then Flatbed owns cutting work" },
@@ -201,7 +201,7 @@ export class ExistingProductEditService {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
-    const blankOperation = operations.operations.find((operation) => operation.op === "configure_blank_coroplast");
+    const blankOperation = operations.operations.find((operation) => operation.op === "configure_product_option_rates");
     if (blankOperation) {
       try {
         const result = await canonicalBlankCoroplastOperations.execute({ organizationId: input.organizationId, productId: input.productId,

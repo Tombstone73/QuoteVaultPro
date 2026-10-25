@@ -14,7 +14,7 @@ describe("existing Product warning review", () => {
     jest.spyOn(service, "revalidateProposal").mockResolvedValue({ valid: true, proposal } as never);
     const save = jest.spyOn(canonicalBlankCoroplastOperations, "execute").mockResolvedValue({ resultingActiveTreeVersionId: "tree_new" } as never);
     await service.execute({ organizationId: "org_1", productId: "product_1", userId: "user_1", expectedFingerprint: proposal.fingerprint,
-      operations: { operations: [{ op: "configure_blank_coroplast", pricing, confirmWarnings: false }] } });
+      operations: { operations: [{ op: "configure_product_option_rates", context: "unprinted_substrate", pricing }] } });
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ pricing, confirmWarnings: true, expectedFingerprint: proposal.fingerprint }));
   });
 });
