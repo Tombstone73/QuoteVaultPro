@@ -45,11 +45,14 @@ class CanonicalQuoteOperations {
     return resolveOrderCustomerContactIds(input);
   }
 
-  async createDraft(input: { organizationId: string; actorUserId: string; payload: CreateQuotePayload; auditDescription?: string }) {
+  async createDraft(input: { organizationId: string; actorUserId: string; payload: CreateQuotePayload; auditDescription?: string; transaction?: QuoteTransaction }) {
     const identity = await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId });
-    const quote = await storage.createQuote(input.organizationId, { ...input.payload, userId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId, status: "draft" });
-    await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "quote", entityId: quote.id, entityName: quote.displayNumber || quote.quoteNumber?.toString() || quote.id, description: input.auditDescription ?? `Created draft quote ${quote.displayNumber || quote.quoteNumber}.` });
-    return quote;
+    const create = async (tx: QuoteTransaction) => {
+      const quote = await new QuotesRepository(tx).createQuote(input.organizationId, { ...input.payload, userId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId, status: "draft" });
+      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "quote", entityId: quote.id, entityName: quote.displayNumber || quote.quoteNumber?.toString() || quote.id, description: input.auditDescription ?? `Created draft quote ${quote.displayNumber || quote.quoteNumber}.` });
+      return quote;
+    };
+    return input.transaction ? create(input.transaction) : db.transaction(create);
   }
 
   async updateEditableHeader(input: { organizationId: string; actorUserId: string; quoteId: string; changes: UpdateQuotePayload; expectedRevision?: number; requireDraft?: boolean; auditDescription?: string }) {

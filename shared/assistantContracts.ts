@@ -958,6 +958,7 @@ export const assistantStage2CardKindValues = [
   "execution_result",
   "stale_plan",
   "action_proposal",
+  "quote_intake_summary",
   "order_option_selection",
   "product_intake_summary",
   "product_missing_information",

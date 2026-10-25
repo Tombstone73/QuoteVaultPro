@@ -87,7 +87,8 @@ None.
 | ai.command.quotes.create_draft | mutation | unknown | command_plan_only | quotes.create_draft | assistant.quotes.create_draft | partial_or_indirect |
 | ai.command.quotes.update_draft | mutation | unknown | command_plan_only | quotes.update_draft | assistant.quotes.update_draft | partial_or_indirect |
 | ai.command.quotes.convert_to_order | mutation | unknown | command_plan_only | quotes.convert_to_order | assistant.quotes.convert_to_order | partial_or_indirect |
-| ui.quotes.manage_quote | mutation | page_and_route | none | — | authenticated_tenant_user | ui_supported_ai_adapter_missing |
+| ui.quotes.create_draft | mutation | page_and_route | operator_semantic_tool | quotes.create_draft | assistant.quotes.create_draft and assistant.internal_staff | shared_canonical_today |
+| ui.quotes.edit_and_lifecycle | mutation | page_and_route | command_plan_only | quotes.update_draft | staff role and tenant | partial_or_indirect |
 
 ### orders
 

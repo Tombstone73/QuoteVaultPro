@@ -4,12 +4,12 @@
 
 ## Counts
 
-- shared_canonical: 35
+- shared_canonical: 36
 - compatibility_only: 31
 - ui_only_reviewed: 1
-- ai_integration_pending: 1
-- deliberately_ai_ineligible: 2
-- hard_denied: 8
+- ai_integration_pending: 6
+- deliberately_ai_ineligible: 1
+- hard_denied: 4
 - underlying_model_unsupported: 2
 
 ## customers_contacts
@@ -21,6 +21,7 @@
 | capability.read.analytics.customer_product_sales | compatibility_only | unknown | existing | not_applicable | analytics.customer_product_sales | finance.read | not_required | not_applicable |
 | capability.read.analytics.customer_uninvoiced_orders | compatibility_only | unknown | existing | not_applicable | analytics.customer_uninvoiced_orders | finance.read | not_required | not_applicable |
 | capability.read.analytics.invoice_activity | compatibility_only | unknown | existing | not_applicable | analytics.invoice_activity | finance.read | not_required | not_applicable |
+| capability.read.analytics.invoice_filter_total | compatibility_only | unknown | existing | not_applicable | analytics.invoice_filter_total | finance.read | not_required | not_applicable |
 | capability.read.analytics.customer_balance | compatibility_only | unknown | existing | not_applicable | analytics.customer_balance | finance.read | not_required | not_applicable |
 | capability.command.customers.create | shared_canonical | Customer and Contact routes | existing | customers.create.v1 | customers.create | assistant.customers.create | go_required | CanonicalCustomerContactOperations |
 | capability.command.customers.update_profile | shared_canonical | Customer and Contact routes | existing | customers.update.v1 | customers.update_profile | assistant.customers.update_profile | go_required | CanonicalCustomerContactOperations |
@@ -113,7 +114,7 @@
 | capability.command.products.clone_to_inactive_draft | compatibility_only | unknown | existing | not_applicable | products.clone_to_inactive_draft | assistant.products.clone_to_inactive_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 | capability.command.products.update_existing_product | shared_canonical | Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft; POST /api/pbv2/tree-versions/:id/publish | existing | products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1; products.update_lifecycle.v1; products.publish_configuration.v1; products.update_pricing_engine_configuration.v1 | products.update_existing_product | assistant.products.update_existing_product | go_required | CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations + CanonicalProductLifecycleOperations + CanonicalProductPublishOperations + CanonicalProductPricingEngineConfigurationOperations |
 | capability.ui.products.pricing_formula_profile | ai_integration_pending | Product Editor Pricing Engine | not_exposed | products.update_pricing.v1 (UI metadata only) | products.pricing_formula_profile | assistant.products.update_existing_product | go_required | Product Editor pricing/PBV2 save orchestration |
-| capability.ui.products.delete | deliberately_ai_ineligible | Product administration | not_exposed | not_applicable | products.delete | product.delete | not_required | Product route policy |
+| capability.ui.products.delete | ai_integration_pending | Product administration | not_exposed | not_applicable | products.delete | product.delete | not_required | Product route policy |
 | capability.ui.products.advanced_pbv2_override | deliberately_ai_ineligible | Advanced Product administration | not_exposed | not_applicable | products.advanced_pbv2_override | product.update | not_required | PBV2 override route policy |
 | product.products.customer_specific | underlying_model_unsupported | unknown | not_exposed | not_applicable | — | — | not_applicable | Proposal contract preserves this as unsupported without poisoning independent supported work. |
 | product.products.grommet_quantity | underlying_model_unsupported | unknown | not_exposed | not_applicable | — | — | not_applicable | Preserved as unresolved; no phrase-specific choice repair remains active. |
@@ -125,7 +126,7 @@
 | capability.read.quotes.search | compatibility_only | unknown | existing | not_applicable | quotes.search | assistant.internal_staff | not_required | not_applicable |
 | capability.read.quotes.get_detail | compatibility_only | unknown | existing | not_applicable | quotes.get_detail | assistant.internal_staff | not_required | not_applicable |
 | capability.command.quotes.add_internal_note | compatibility_only | unknown | existing | not_applicable | quotes.add_internal_note | assistant.quotes.add_internal_note | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
-| capability.command.quotes.create_draft | compatibility_only | unknown | existing | not_applicable | quotes.create_draft | assistant.quotes.create_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
+| capability.command.quotes.create_draft | shared_canonical | Quote editor POST /api/quotes | existing | quotes.create_draft.v1 | quotes.create_draft | assistant.quotes.create_draft | go_required | CanonicalQuoteOperations / QuotesRepository |
 | capability.command.quotes.update_draft | compatibility_only | unknown | existing | not_applicable | quotes.update_draft | assistant.quotes.update_draft | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 | capability.command.quotes.convert_to_order | compatibility_only | unknown | existing | not_applicable | quotes.convert_to_order | assistant.quotes.convert_to_order | go_required | server/services/assistant/execution/*ExecutionCommand.ts |
 
@@ -133,10 +134,6 @@
 
 | Capability | Classification | UI exposure | AI exposure | Canonical operation | Adapter/tool | Authority | GO | Lifecycle/state owner |
 |---|---|---|---|---|---|---|---|---|
-| capability.hard_deny.organization.change_user_role | hard_denied | unknown | not_exposed | not_applicable | organization.change_user_role | — | not_required | not_applicable |
-| capability.hard_deny.organization.delete | hard_denied | unknown | not_exposed | not_applicable | organization.delete | — | not_required | not_applicable |
-| capability.hard_deny.organization.destroy_tenant | hard_denied | unknown | not_exposed | not_applicable | organization.destroy_tenant | — | not_required | not_applicable |
-| capability.hard_deny.organization.transfer_ownership | hard_denied | unknown | not_exposed | not_applicable | organization.transfer_ownership | — | not_required | not_applicable |
 | capability.hard_deny.platform.developer_operations | hard_denied | unknown | not_exposed | not_applicable | platform.developer_operations | — | not_required | not_applicable |
 | capability.hard_deny.platform.infrastructure_administration | hard_denied | unknown | not_exposed | not_applicable | platform.infrastructure_administration | — | not_required | not_applicable |
 | capability.hard_deny.platform.cross_tenant_mutation | hard_denied | unknown | not_exposed | not_applicable | platform.cross_tenant_mutation | — | not_required | not_applicable |
@@ -151,3 +148,7 @@
 | capability.read.navigation.get_current_context | compatibility_only | unknown | existing | not_applicable | navigation.get_current_context | assistant.internal_staff | not_required | not_applicable |
 | capability.read.operations.get_attention_summary | compatibility_only | unknown | existing | not_applicable | operations.get_attention_summary | assistant.internal_staff | not_required | not_applicable |
 | capability.ui.settings.organization_preferences | ui_only_reviewed | Organization Settings | not_exposed | not_applicable | organization.preferences.update | organization.settings.update | not_required | not_applicable |
+| capability.ui.organization.change_user_role | ai_integration_pending | Organization administration | not_exposed | not_applicable | organization.change_user_role | — | not_required | Application route policy |
+| capability.ui.organization.delete | ai_integration_pending | Organization administration | not_exposed | not_applicable | organization.delete | — | not_required | Application route policy |
+| capability.ui.organization.transfer_ownership | ai_integration_pending | Organization administration | not_exposed | not_applicable | organization.transfer_ownership | — | not_required | Application route policy |
+| capability.ui.organization.destroy_tenant | ai_integration_pending | Organization administration | not_exposed | not_applicable | organization.destroy_tenant | — | not_required | Application route policy |

@@ -16,11 +16,14 @@ import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quo
 import { normalizeQuoteCreateLineItem } from "../../lib/quoteCreateLineItemNormalizer";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
+import { calculateQuoteAggregateTotals } from "../../routes/helpers/quoteTotals.helpers";
+import { snapshotCustomerData } from "../../routes/quotes.routes";
+import type { QuoteCreateRequest } from "./quoteApplicationContract";
 import type { QuoteDraftCreateCanonicalService, QuoteDraftCreateCommandResult } from "./execution/quoteDraftCreateCommand";
 import type { QuoteDraftUpdateCanonicalService, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
 
-type IntakeLine = { productId: string; productName: string; quantity: number; width: number; height: number; optionSelections: Record<string, unknown>; parentClientKey?: string | null };
-type Intake = { customerId: string; customerName: string; contactId: string | null; requestedDueDate: string | null; internalNote: string | null; lines: IntakeLine[] };
+type IntakeLine = { productId: string; productName: string; quantity: number; width: number; height: number; optionSelections: Record<string, unknown>; parentClientKey?: string | null; description?: string | null; productionNotes?: string | null; overridePriceCents?: number; overrideReason?: string };
+type Intake = { customerId: string; customerName: string; contactId: string | null; requestedDueDate: string | null; internalNote: string | null; lines: IntakeLine[]; poReference?: string; label?: string | null; customerNotes?: string | null; validUntil?: string | null; shippingMethod?: string | null; shippingInstructions?: string | null; shippingCents?: number | null; discountAmountCents?: number };
 
 export class QuoteDraftIntakeError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
@@ -73,6 +76,37 @@ export type QuoteDraftAssistantCard = { kind: "quote_intake_summary" | "missing_
 /** The only place conversational text becomes a normalized quote request. It
  * resolves tenant-owned records first and refuses to guess a customer/product. */
 export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService, QuoteDraftUpdateCanonicalService {
+  async prepareStructuredCreate(input: { organizationId: string; userId: string; conversationId: string; request: QuoteCreateRequest }): Promise<{ response: string; cards: QuoteDraftAssistantCard[] }> {
+    const request = input.request;
+    const [customer] = await db.select({ id: customers.id, companyName: customers.companyName }).from(customers).where(and(eq(customers.id, request.customerId), eq(customers.organizationId, input.organizationId))).limit(1);
+    if (!customer) throw new QuoteDraftIntakeError("CUSTOMER_NOT_FOUND", "Resolve a customer in this organization before preparing the Quote.");
+    const contact = request.contactId ? (await db.select({ id: customerContacts.id }).from(customerContacts).where(and(eq(customerContacts.id, request.contactId), eq(customerContacts.customerId, customer.id), eq(customerContacts.organizationId, input.organizationId))).limit(1))[0] : null;
+    if (request.contactId && !contact) throw new QuoteDraftIntakeError("CONTACT_NOT_FOUND", "The selected contact does not belong to this customer.");
+    const resolvedLines = await Promise.all(request.lines.map(async (line, index): Promise<IntakeLine> => {
+      const [product] = await db.select({ id: products.id, name: products.name }).from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, input.organizationId), eq(products.isActive, true))).limit(1);
+      if (!product) throw new QuoteDraftIntakeError("PRODUCT_NOT_FOUND", `Line ${index + 1} needs an active Product from this organization.`);
+      return { ...line, productName: product.name, optionSelections: line.optionSelections ?? {} };
+    }));
+    const intake: Intake = { customerId: customer.id, customerName: customer.companyName ?? "Customer", contactId: contact?.id ?? null, requestedDueDate: request.requestedDueDate ?? null, internalNote: null,
+      poReference: request.poReference, label: request.poReference ? `PO ${request.poReference}${request.label ? ` — ${request.label}` : ""}` : request.label ?? null, customerNotes: request.customerNotes ?? null, validUntil: request.validUntil ?? null,
+      shippingMethod: request.shippingMethod ?? null, shippingInstructions: request.shippingInstructions ?? null, shippingCents: request.shippingCents ?? null, discountAmountCents: request.discountAmountCents ?? 0, lines: resolvedLines };
+    const [session] = await db.insert(assistantQuoteIntakeSessions).values({ organizationId: input.organizationId, userId: input.userId, conversationId: input.conversationId, createdByUserId: input.userId, intakeJson: intake }).returning();
+    if (!session) throw new QuoteDraftIntakeError("SESSION_CREATE_FAILED", "Unable to store the Quote proposal.");
+    try {
+      const proposal = await this.buildCreateProposal(input.organizationId, session);
+      await db.transaction(async (tx) => {
+        await tx.update(assistantQuoteIntakeSessions).set({ status: "abandoned", updatedAt: new Date() }).where(and(eq(assistantQuoteIntakeSessions.organizationId, input.organizationId), eq(assistantQuoteIntakeSessions.userId, input.userId), eq(assistantQuoteIntakeSessions.conversationId, input.conversationId), eq(assistantQuoteIntakeSessions.status, "preview_ready")));
+        await tx.update(assistantQuoteIntakeSessions).set({ status: "preview_ready", proposalFingerprint: proposal.fingerprint, updatedAt: new Date() }).where(eq(assistantQuoteIntakeSessions.id, session.id));
+      });
+      return { response: `I prepared a new draft Quote for ${intake.customerName} with ${resolvedLines.length} priced lines. Review the exact fields and totals, then use GO to create it.`, cards: [
+        { kind: "quote_intake_summary", title: "New Quote preview", summary: proposal.summary, sourceLinks: [], details: proposal.preview },
+        { kind: "action_proposal", title: "Create new draft Quote", summary: proposal.summary, sourceLinks: [], plan: { action: "quotes.create_draft", quoteIntakeSessionId: session.id, proposalFingerprint: proposal.fingerprint } },
+      ] };
+    } catch (error) {
+      await db.update(assistantQuoteIntakeSessions).set({ status: "abandoned", updatedAt: new Date() }).where(eq(assistantQuoteIntakeSessions.id, session.id));
+      throw error;
+    }
+  }
   async respond(input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: QuoteDraftAssistantCard[] }> {
     if (/\b(?:update|change|edit)\b[\s\S]{0,80}\bquote\b/i.test(input.message)) {
       return this.prepareUpdate(input);
@@ -135,11 +169,14 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
   private async buildCreateProposal(organizationId: string, session: AssistantQuoteIntakeSessionRow) {
     const intake = session.intakeJson as Intake;
     if (!intake?.customerId || !Array.isArray(intake.lines) || !intake.lines.length) throw new QuoteDraftIntakeError("INTAKE_INVALID", "Quote intake is incomplete.");
-    const [org, customer] = await Promise.all([
+    const [org, customer, contact] = await Promise.all([
       db.select().from(organizations).where(eq(organizations.id, organizationId)).limit(1).then((rows) => rows[0]),
       db.select().from(customers).where(and(eq(customers.id, intake.customerId), eq(customers.organizationId, organizationId))).limit(1).then((rows) => rows[0]),
+      intake.contactId ? db.select({ firstName: customerContacts.firstName, lastName: customerContacts.lastName }).from(customerContacts).where(and(eq(customerContacts.id, intake.contactId), eq(customerContacts.customerId, intake.customerId), eq(customerContacts.organizationId, organizationId))).limit(1).then((rows) => rows[0]) : Promise.resolve(null),
     ]);
     if (!org || !customer) throw new QuoteDraftIntakeError("CUSTOMER_NOT_FOUND", "The selected customer is no longer available.");
+    if (intake.contactId && !contact) throw new QuoteDraftIntakeError("CONTACT_NOT_FOUND", "The selected contact is no longer available for this customer.");
+    const customerSnapshot = await snapshotCustomerData(organizationId, intake.customerId, intake.contactId, intake.shippingMethod);
     const priced = await Promise.all(intake.lines.map(async (line) => {
       const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
       if (!product) throw new QuoteDraftIntakeError("PRODUCT_NOT_FOUND", `Product ${line.productName} is no longer active.`);
@@ -147,14 +184,23 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       const result = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: line.optionSelections });
       return { line, product, result, widthIn: size.widthIn, heightIn: size.heightIn };
     }));
-    const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
+    const staffCustomerAddress = customer as typeof customer & { country?: string; state?: string; city?: string; postalCode?: string };
+    const shipTo = { country: staffCustomerAddress.country || "US", state: staffCustomerAddress.state || (org.settings as any)?.timezone?.split("/")[0] || "CA", city: staffCustomerAddress.city ?? undefined, postalCode: staffCustomerAddress.postalCode ?? undefined };
+    // Match the staff POST path: resolve the tax rate and line snapshots before
+    // discount, then let the Quote aggregate apply the document discount.
+    const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: (line.overridePriceCents ?? result.lineTotalCents) / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, shipTo);
+    const aggregate = calculateQuoteAggregateTotals({ lineItems: priced.map(({ line, product, result }) => ({ linePrice: result.lineTotalCents / 100, quantity: line.quantity, isTaxableSnapshot: product.isTaxable ?? true, overridePriceCents: line.overridePriceCents ?? null, specsJson: line.overridePriceCents === undefined ? null : { priceOverride: { mode: "override_total_after_margin", valueCents: line.overridePriceCents } } })), taxRate: totals.taxRate, discountAmount: (intake.discountAmountCents ?? 0) / 100, shippingCents: intake.shippingCents ?? 0 });
     const preview = {
-      quoteIntakeSessionId: session.id, customerName: intake.customerName, contactName: intake.contactId ? "Selected contact" : null, quoteTitle: null,
-      lineItems: priced.map(({ line, result }, index) => ({ clientKey: `line-${index + 1}`, productName: line.productName, quantity: line.quantity, dimensions: { width: line.width, height: line.height, unit: "in" }, parentClientKey: line.parentClientKey ?? null, lineSubtotalCents: result.lineTotalCents, taxCents: Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100), totalCents: result.lineTotalCents + Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100) })),
-      subtotalCents: Math.round(totals.subtotal * 100), taxCents: Math.round(totals.taxAmount * 100), totalCents: Math.round(totals.total * 100), validationErrors: [], warnings: intake.contactId ? [] : ["No contact was selected; the draft remains internal."], affectedQuoteCount: 1,
+      quoteIntakeSessionId: session.id, customerName: customer.companyName, contactName: contact ? `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim() : null, quoteTitle: intake.label ?? (intake.poReference ? `PO ${intake.poReference}` : null),
+      customerId: intake.customerId, contactId: intake.contactId, poReference: intake.poReference ?? null, customerNotes: intake.customerNotes ?? null, requestedDueDate: intake.requestedDueDate, validUntil: intake.validUntil ?? null, shippingMethod: customerSnapshot.shippingMethod, shippingInstructions: intake.shippingInstructions ?? null,
+      billTo: { name: customerSnapshot.billToName, company: customerSnapshot.billToCompany, address1: customerSnapshot.billToAddress1, address2: customerSnapshot.billToAddress2, city: customerSnapshot.billToCity, state: customerSnapshot.billToState, postalCode: customerSnapshot.billToPostalCode, country: customerSnapshot.billToCountry },
+      shipTo: { name: customerSnapshot.shipToName, company: customerSnapshot.shipToCompany, address1: customerSnapshot.shipToAddress1, address2: customerSnapshot.shipToAddress2, city: customerSnapshot.shipToCity, state: customerSnapshot.shipToState, postalCode: customerSnapshot.shipToPostalCode, country: customerSnapshot.shipToCountry },
+      shippingCents: intake.shippingCents ?? 0, discountAmountCents: intake.discountAmountCents ?? 0,
+      lineItems: priced.map(({ line, result }, index) => ({ clientKey: `line-${index + 1}`, productName: line.productName, productId: line.productId, quantity: line.quantity, dimensions: { width: line.width, height: line.height, unit: "in" }, optionSelections: line.optionSelections, description: line.description ?? null, productionNotes: line.productionNotes ?? null, manualPriceReason: line.overrideReason ?? null, parentClientKey: line.parentClientKey ?? null, calculatedCents: result.lineTotalCents, lineSubtotalCents: line.overridePriceCents ?? result.lineTotalCents, taxCents: Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100), totalCents: (line.overridePriceCents ?? result.lineTotalCents) + Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100) })),
+      subtotalCents: Math.round(aggregate.subtotal * 100), taxCents: Math.round(aggregate.taxAmount * 100), totalCents: Math.round(aggregate.totalPrice * 100), validationErrors: [], warnings: [...(intake.contactId ? [] : ["No contact was selected; the draft remains internal."]), ...((intake.discountAmountCents ?? 0) > 0 ? ["Line tax is shown before the Quote discount; the total tax reflects that discount."] : [])], affectedQuoteCount: 1,
       downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] as const,
     };
-    return { fingerprint: hash({ intake, prices: priced.map((row) => ({ productId: row.product.id, updatedAt: row.product.updatedAt, snapshot: row.result.pbv2SnapshotJson })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents } }), preview, priced, totals, summary: `${intake.customerName}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
+    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ productId: row.product.id, updatedAt: row.product.updatedAt, snapshot: row.result.pbv2SnapshotJson })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, PO ${intake.poReference}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
   }
 
   async revalidateCreateProposal(input: { organizationId: string; quoteIntakeSessionId: string; expectedProposalFingerprint: string }) {
@@ -188,16 +234,25 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       const existing = await storage.getQuoteById(input.organizationId, session.quoteId);
       if (existing) return { quote: { id: existing.id, displayNumber: existing.displayNumber ?? String(existing.quoteNumber), status: "draft", totalCents: Math.round(Number(existing.totalPrice) * 100), sourceLink: `/quotes/${existing.id}` } };
     }
+    if (session.status !== "preview_ready") throw new QuoteDraftIntakeError("QUOTE_INTAKE_NOT_READY", "This Quote proposal was superseded or is not ready for GO.");
     const proposal = await this.buildCreateProposal(input.organizationId, session);
     if (proposal.fingerprint !== input.proposalFingerprint || session.proposalFingerprint !== input.proposalFingerprint) throw new QuoteDraftIntakeError("PROPOSAL_STALE", "The draft quote inputs or pricing changed. Review a new preview before confirming.");
     const intake = session.intakeJson as Intake;
-    const lineItems = proposal.priced.map(({ line, product, result, widthIn, heightIn }, index) => normalizeQuoteCreateLineItem({ productId: line.productId, productName: line.productName, productType: product.productTypeId ?? "wide_roll", width: product.measurementMode === "quantity_only" ? 1 : widthIn, height: product.measurementMode === "quantity_only" ? 1 : heightIn, quantity: line.quantity, optionSelectionsJson: { selected: line.optionSelections }, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], linePrice: result.lineTotalCents / 100, priceBreakdown: { basePrice: result.breakdown.baseCents / 100, optionsPrice: result.breakdown.optionsCents / 100, total: result.lineTotalCents / 100, formula: "" }, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), displayOrder: index }, index, proposal.totals.lineItemsWithTax[index] ?? { taxAmount: 0, isTaxableSnapshot: Boolean(product.isTaxable) }).lineItem);
-    const quote = await canonicalQuoteOperations.createDraft({ organizationId: input.organizationId, actorUserId: input.actorUserId, payload: { userId: input.actorUserId, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, source: "internal", status: "draft", requestedDueDate: intake.requestedDueDate, lineItems: lineItems as any, taxRate: proposal.totals.taxRate, taxAmount: proposal.totals.taxAmount, taxableSubtotal: proposal.totals.taxableSubtotal }, auditDescription: `Assistant created draft quote from confirmed intake ${session.id}.` });
-    await db.transaction(async (tx) => {
-      await tx.update(assistantQuoteIntakeSessions).set({ status: "created", quoteId: quote.id, updatedAt: new Date() }).where(and(eq(assistantQuoteIntakeSessions.id, session.id), eq(assistantQuoteIntakeSessions.organizationId, input.organizationId)));
+    const lineItems = proposal.priced.map(({ line, product, result, widthIn, heightIn }, index) => normalizeQuoteCreateLineItem({ productId: line.productId, productName: line.productName, productType: product.productTypeId ?? "wide_roll", width: product.measurementMode === "quantity_only" ? 1 : widthIn, height: product.measurementMode === "quantity_only" ? 1 : heightIn, quantity: line.quantity, optionSelectionsJson: { selected: line.optionSelections }, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], linePrice: result.lineTotalCents / 100, priceBreakdown: { basePrice: result.breakdown.baseCents / 100, optionsPrice: result.breakdown.optionsCents / 100, total: result.lineTotalCents / 100, formula: "" }, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), displayOrder: index, description: line.description ?? null, productionNotes: line.productionNotes ?? null, overridePriceCents: line.overridePriceCents ?? null, overrideReason: line.overrideReason ?? null, priceOverride: line.overridePriceCents === undefined ? null : { mode: "override_total_after_margin", valueCents: line.overridePriceCents } }, index, proposal.totals.lineItemsWithTax[index] ?? { taxAmount: 0, isTaxableSnapshot: Boolean(product.isTaxable) }).lineItem);
+    const quoteId = await db.transaction(async (tx) => {
+      const [locked] = await tx.select().from(assistantQuoteIntakeSessions).where(and(eq(assistantQuoteIntakeSessions.id, session.id), eq(assistantQuoteIntakeSessions.organizationId, input.organizationId))).for("update").limit(1);
+      if (!locked || locked.userId !== input.actorUserId) throw new QuoteDraftIntakeError("SESSION_FORBIDDEN", "Quote intake is not available to this user.");
+      if (locked.status === "created" && locked.quoteId) return locked.quoteId;
+      if (locked.status !== "preview_ready" || locked.proposalFingerprint !== input.proposalFingerprint) throw new QuoteDraftIntakeError("PROPOSAL_STALE", "The Quote proposal changed or was superseded. Review a new preview.");
+      const quote = await canonicalQuoteOperations.createDraft({ organizationId: input.organizationId, actorUserId: input.actorUserId, transaction: tx, payload: { userId: input.actorUserId, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, source: "internal", status: "draft", label: intake.label ?? (intake.poReference ? `PO ${intake.poReference}` : null), customerNotes: intake.customerNotes ?? null, requestedDueDate: intake.requestedDueDate, validUntil: intake.validUntil ?? null, shippingMethod: intake.shippingMethod ?? null, shippingInstructions: intake.shippingInstructions ?? null, shippingCents: intake.shippingCents ?? null, discountAmount: (intake.discountAmountCents ?? 0) / 100, lineItems: lineItems as any, taxRate: proposal.totals.taxRate, taxAmount: proposal.totals.taxAmount, taxableSubtotal: proposal.totals.taxableSubtotal, ...proposal.customerSnapshot }, auditDescription: `Assistant created draft quote from confirmed intake ${session.id}.` });
+      await tx.update(assistantQuoteIntakeSessions).set({ status: "created", quoteId: quote.id, updatedAt: new Date() }).where(eq(assistantQuoteIntakeSessions.id, session.id));
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "quote", entityId: quote.id, actionType: "assistant_quote_draft_created", description: `Assistant created draft quote ${quote.displayNumber ?? quote.quoteNumber} from confirmed intake ${session.id}.` });
+      return quote.id;
     });
-    return { quote: { id: quote.id, displayNumber: quote.displayNumber ?? String(quote.quoteNumber), status: "draft", totalCents: Math.round(Number(quote.totalPrice) * 100), sourceLink: `/quotes/${quote.id}` } };
+    const actual = await storage.getQuoteById(input.organizationId, quoteId);
+    if (!actual) throw new QuoteDraftIntakeError("QUOTE_READBACK_FAILED", "The Quote was saved but could not be read back. Check the saved result before retrying GO.");
+    if (Math.round(Number(actual.totalPrice) * 100) !== proposal.preview.totalCents || actual.lineItems.length !== proposal.preview.lineItems.length) throw new QuoteDraftIntakeError("QUOTE_READBACK_MISMATCH", "The saved Quote differs from its review. Open the saved Quote before retrying GO.");
+    return { quote: { id: actual.id, displayNumber: actual.displayNumber ?? String(actual.quoteNumber), status: "draft", totalCents: Math.round(Number(actual.totalPrice) * 100), sourceLink: `/quotes/${actual.id}` } };
   }
 
   async updateDraft(input: Parameters<QuoteDraftUpdateCanonicalService["updateDraft"]>[0]): Promise<QuoteDraftUpdateCommandResult> {

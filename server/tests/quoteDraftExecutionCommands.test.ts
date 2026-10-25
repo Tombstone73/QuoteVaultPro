@@ -60,6 +60,7 @@ describe("draft quote execution command bridges", () => {
     });
     expect(writes).toBe(1);
     expect(result.status).toBe("succeeded");
+    expect(result.details?.quote).toEqual({ id: "quote_1", displayNumber: "Q-1042", totalCents: 10500, sourceLink: "/quotes/quote_1" });
   });
 
   it("does not build or execute invalid create proposals", async () => {

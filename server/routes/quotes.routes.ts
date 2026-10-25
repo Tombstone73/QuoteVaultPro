@@ -381,7 +381,7 @@ function explicitQuoteShipTo(input: Record<string, unknown>): Record<string, unk
   return fields;
 }
 
-async function snapshotCustomerData(
+export async function snapshotCustomerData(
   organizationId: string,
   customerId: string,
   contactId?: string | null,
@@ -884,23 +884,15 @@ export function registerQuoteRoutes(
       // Load products for each line item to get isTaxable flag
       const rawLineItems = Array.isArray(lineItems) ? lineItems : [];
       const productIds = Array.from(new Set(rawLineItems.map((item: any) => item.productId)));
-      const loadedProducts = productIds.length > 0
-        ? await db
-          .select()
-          .from(products)
-          .where(eq(products.id, productIds[0])) // Load all products we need
-        : [];
-
       const productMap = new Map<string, typeof products.$inferSelect>();
       for (const productId of productIds) {
         const [product] = await db
           .select()
           .from(products)
-          .where(eq(products.id, productId))
+          .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
           .limit(1);
-        if (product) {
-          productMap.set(productId, product);
-        }
+        if (!product) return res.status(422).json({ success: false, code: "QUOTE_PRODUCT_NOT_FOUND", message: "A Quote line Product is unavailable in this organization." });
+        productMap.set(productId, product);
       }
 
       // Prepare line items with tax info (including tax category for SaaS tax)

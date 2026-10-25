@@ -324,6 +324,16 @@ describe("AssistantPlanCard", () => {
     expect(container.querySelector('a[href="/orders/order_42"]')?.textContent).toContain("Open Order O-20042");
   });
 
+  it("links to the actual new Quote returned by the confirmed create command", () => {
+    const completed = { kind: "action_plan", title: "Create Quote from PO", plan: {
+      id: "plan-quote-result", action: "quotes.create_draft", status: "succeeded", planVersion: 2,
+      riskLevel: "high", confirmationAvailable: false, missingInformation: [], steps: [],
+      executionResult: { details: { quote: { id: "quote_42", displayNumber: "20042", totalCents: 12345, sourceLink: "/quotes/quote_42" } } },
+    } };
+    act(() => root.render(<AssistantPlanCard card={completed} context={buildSafeAssistantContext("/quotes", "Quotes")} onConfirm={() => undefined} />));
+    expect(container.querySelector('a[href="/quotes/quote_42"]')?.textContent).toContain("Open Quote 20042");
+  });
+
   it("renders only the dedicated configurable-product GO control for a complete typed preview", () => {
     const configurablePlan = {
       kind: "action_plan", title: "Create PVC configurable draft",

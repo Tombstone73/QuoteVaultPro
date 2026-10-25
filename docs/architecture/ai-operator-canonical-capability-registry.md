@@ -52,7 +52,7 @@
 | capability.command.products.replace_inactive_matrix | pricing | mutation | command | products.replace_inactive_matrix | assistant.products.replace_inactive_matrix | eligible | — | pricing.pbv2 | shared_canonical |
 | capability.command.products.replace_inactive_quantity_tiers | pricing | mutation | command | products.replace_inactive_quantity_tiers | assistant.products.replace_inactive_quantity_tiers | eligible | — | pricing.pbv2 | shared_canonical |
 | capability.command.products.update_existing_product | products | mutation | command | products.update_existing_product | assistant.products.update_existing_product | eligible | — | products.pbv2 | shared_canonical |
-| capability.command.quotes.create_draft | quotes | mutation | command | quotes.create_draft | assistant.quotes.create_draft | eligible | — | quotes.operations | wrapped_existing |
+| capability.command.quotes.create_draft | quotes | mutation | command | quotes.create_draft | assistant.quotes.create_draft | eligible | — | quotes.operations | shared_canonical |
 | capability.command.quotes.update_draft | quotes | mutation | command | quotes.update_draft | assistant.quotes.update_draft | eligible | — | quotes.operations | wrapped_existing |
 | capability.command.orders.create | orders | mutation | command | orders.create | assistant.orders.create | eligible | — | orders.operations | wrapped_existing |
 | capability.command.orders.update_editable | orders | mutation | command | orders.update_editable | assistant.orders.update_editable | eligible | — | orders.operations | wrapped_existing |

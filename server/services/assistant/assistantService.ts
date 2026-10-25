@@ -49,6 +49,7 @@ import {
   type PendingOperatorActionContext,
 } from "./operatorConversationContext";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
+import { createQuoteApplicationTools } from "./quoteApplicationTools";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
@@ -1223,11 +1224,14 @@ export class AssistantService {
     }] : [];
     const purchaseOrderTools = hasPermission(actor, "assistant.orders.create") && hasPermission(actor, "assistant.internal_staff")
       ? [createPurchaseOrderAttachmentTool(request.message)] : [];
+    const quoteApplicationTools = !staffRoleDiscussion && hasPermission(actor, "assistant.quotes.create_draft") && hasPermission(actor, "assistant.internal_staff")
+      ? createQuoteApplicationTools() : [];
     const applicationOperations = createApplicationOperationTools([
       ...existingProductEditTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools,
+      ...quoteApplicationTools.filter((tool) => tool.name === "quotes.prepare_create"),
       ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
     ]);
-    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...quoteApplicationTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
@@ -1405,8 +1409,9 @@ export class AssistantService {
     input.signal?.throwIfAborted();
     if (!materialTaskTransition) await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: taskPatch });
     input.signal?.throwIfAborted();
-    return this.persistOperatorResponse(input, { response: run.status === "failed" ? `${response} Support reference: ${correlationId}. Check completed operation results before retrying.` : response,
-      status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
+    const diagnosticCards: AssistantStructuredCard[] = diagnostic ? [...cards, { kind: "tool_warning", title: "Technical diagnostic available", summary: "A sanitized technical diagnostic was saved for this turn.", sourceLinks: [], details: { diagnosticReference: diagnostic.referenceId } }] : cards;
+    return this.persistOperatorResponse(input, { response: run.status === "failed" ? `${response} ${diagnostic ? `Support reference: ${diagnostic.referenceId}.` : "Diagnostic persistence failed; no lookup record is available."} Check completed operation results before retrying.` : response,
+      status, cards: diagnosticCards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
   }
 
   /**
@@ -1516,8 +1521,8 @@ export class AssistantService {
       try {
         specialist = await this.dispatchAiFirstSpecialist(plannedCapability, { organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, message: request.message });
       } catch {
-        await persistAiDiagnostic({ version: 1, referenceId: correlationId, correlationId, diagnosticType: "specialist_dispatch", tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model, providerRequestId: null, stage: "specialist_exception", errorCode: "specialist_dispatch_failed", providerResponseState: "accepted", parseMethod: "none", repairAttempted: false, repairResult: "not_attempted", validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: plan.operation, selectedCapability: plannedCapability, specialistName: plannedCapability, optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() }).catch(() => undefined);
-        specialist = { handled: true, response: "That planned workflow could not be completed. Nothing was changed.", cards: [{ kind: "tool_warning", title: "Workflow unavailable", summary: "That planned workflow could not be completed. Nothing was changed.", sourceLinks: [], toolStatus: "failed" }] };
+        const diagnostic = await persistAiDiagnostic({ version: 1, referenceId: correlationId, correlationId, diagnosticType: "specialist_dispatch", tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model, providerRequestId: null, stage: "specialist_exception", errorCode: "specialist_dispatch_failed", providerResponseState: "accepted", parseMethod: "none", repairAttempted: false, repairResult: "not_attempted", validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: plan.operation, selectedCapability: plannedCapability, specialistName: plannedCapability, optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() }).catch(() => null);
+        specialist = { handled: true, response: diagnostic ? `That planned workflow could not be completed. Nothing was changed. Support reference: ${diagnostic.referenceId}.` : "That planned workflow could not be completed. Nothing was changed. Diagnostic persistence failed; no lookup record is available.", cards: [{ kind: "tool_warning", title: "Workflow unavailable", summary: "That planned workflow could not be completed. Nothing was changed.", sourceLinks: [], toolStatus: "failed", ...(diagnostic ? { details: { diagnosticReference: diagnostic.referenceId } } : {}) }] };
       }
       if (specialist) {
         response = specialist.response;

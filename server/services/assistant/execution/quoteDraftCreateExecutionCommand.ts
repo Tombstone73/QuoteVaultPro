@@ -13,8 +13,20 @@ export interface QuoteDraftCreatePlanningProposal {
   proposalFingerprint: string;
   customerName: string;
   contactName: string | null;
+  poReference?: string | null;
+  requestedDueDate?: string | null;
+  validUntil?: string | null;
+  shippingMethod?: string | null;
+  shippingInstructions?: string | null;
+  customerNotes?: string | null;
+  billTo?: { name?: string | null; address1?: string | null; city?: string | null; state?: string | null; postalCode?: string | null };
+  shipTo?: { name?: string | null; address1?: string | null; city?: string | null; state?: string | null; postalCode?: string | null };
+  shippingCents?: number;
+  discountAmountCents?: number;
+  subtotalCents?: number;
+  taxCents?: number;
   totalCents: number;
-  lineItems: readonly { productName: string; quantity: number; dimensions: { width: number; height: number; unit: string } | null; totalCents: number }[];
+  lineItems: readonly { productName: string; quantity: number; dimensions: { width: number; height: number; unit: string } | null; optionSelections?: Record<string, unknown>; lineSubtotalCents?: number; taxCents?: number; totalCents: number }[];
   validationErrors: readonly string[];
   warnings: readonly string[];
   downstreamActionsExcluded: readonly string[];
@@ -63,7 +75,13 @@ export function createQuoteDraftCreateExecutionCommand(service: QuoteDraftCreate
         summary: `Create one draft quote for ${proposal.customerName}. No order, production job, inventory reservation, invoice, email, acceptance, or conversion will occur.`,
         sideEffects: [
           `Create exactly one draft quote totaling $${(proposal.totalCents / 100).toFixed(2)} with server-validated tax and pricing snapshots.`,
-          ...proposal.lineItems.map((line) => `${line.quantity} × ${line.productName}${line.dimensions ? ` (${line.dimensions.width} × ${line.dimensions.height} ${line.dimensions.unit})` : ""}: $${(line.totalCents / 100).toFixed(2)}.`),
+          `Customer: ${proposal.customerName}${proposal.contactName ? `; contact: ${proposal.contactName}` : ""}${proposal.poReference ? `; PO: ${proposal.poReference}` : ""}.`,
+          `Requested due: ${proposal.requestedDueDate ?? "not specified"}; valid until: ${proposal.validUntil ?? "not specified"}; delivery: ${proposal.shippingMethod ?? "not specified"}.`,
+          `Bill to: ${[proposal.billTo?.name, proposal.billTo?.address1, proposal.billTo?.city, proposal.billTo?.state, proposal.billTo?.postalCode].filter(Boolean).join(", ") || "not specified"}; ship to: ${[proposal.shipTo?.name, proposal.shipTo?.address1, proposal.shipTo?.city, proposal.shipTo?.state, proposal.shipTo?.postalCode].filter(Boolean).join(", ") || "not specified"}.`,
+          ...(proposal.customerNotes ? [`Customer notes: ${proposal.customerNotes}.`] : []),
+          ...(proposal.shippingInstructions ? [`Shipping instructions: ${proposal.shippingInstructions}.`] : []),
+          ...proposal.lineItems.map((line, index) => `${index + 1}. ${line.quantity} × ${line.productName}${line.dimensions ? ` (${line.dimensions.width} × ${line.dimensions.height} ${line.dimensions.unit})` : ""}${line.optionSelections && Object.keys(line.optionSelections).length ? `; options: ${Object.entries(line.optionSelections).map(([key, value]) => `${key}=${String(value)}`).join(", ")}` : ""}: $${((line.lineSubtotalCents ?? line.totalCents) / 100).toFixed(2)}${line.taxCents ? ` + $${(line.taxCents / 100).toFixed(2)} tax` : ""}.`),
+          `Subtotal $${((proposal.subtotalCents ?? proposal.totalCents) / 100).toFixed(2)}; discount $${((proposal.discountAmountCents ?? 0) / 100).toFixed(2)}; tax $${((proposal.taxCents ?? 0) / 100).toFixed(2)}; shipping $${((proposal.shippingCents ?? 0) / 100).toFixed(2)}; total $${(proposal.totalCents / 100).toFixed(2)}.`,
         ],
         affectedRecords: [{ entityType: "quote_intake_session", entityId: proposal.quoteIntakeSessionId, fingerprint: proposal.proposalFingerprint }],
         quoteDraftCreate: {
@@ -109,6 +127,7 @@ export function createQuoteDraftCreateExecutionCommand(service: QuoteDraftCreate
       return {
         status: "succeeded",
         summary: `Draft quote ${result.quote.displayNumber} was created. It has not been sent, accepted, converted, or routed to production.`,
+        details: { quote: { id: result.quote.id, displayNumber: result.quote.displayNumber, totalCents: result.quote.totalCents, sourceLink: result.quote.sourceLink } },
         steps: [{ commandName: `${quoteDraftCreateCommandName}@${command.version}`, status: "succeeded", summary: `Created draft quote ${result.quote.displayNumber}.`, ...(result.domainAuditReference ? { domainAuditReference: result.domainAuditReference } : {}) }],
       };
     },

@@ -59,6 +59,7 @@ const sharedPricingCommands = new Set([
   "products.replace_inactive_quantity_tiers",
 ]);
 const sharedOperationalCommands = new Set([
+  "quotes.create_draft",
   "production.intake_line_items", "production.send_to_prepress", "production.update_job_status", "production.add_job_note",
   "fulfillment.create_shipment", "fulfillment.update_shipment_details", "fulfillment.mark_shipped", "fulfillment.create_pickup_ticket", "fulfillment.record_pickup", "fulfillment.add_note",
   "customers.create", "customers.update_profile", "customers.update_commercial_terms", "contacts.create", "contacts.update",
@@ -66,6 +67,7 @@ const sharedOperationalCommands = new Set([
   "payments.record_manual_payment", "payments.add_payment_note",
 ]);
 function sharedOperationalReference(command: string): string | null {
+  if (command === "quotes.create_draft") return "CanonicalQuoteOperations / QuotesRepository";
   if (command.startsWith("production.")) return "CanonicalProductionOperations / CanonicalPrepressOperations";
   if (command.startsWith("fulfillment.")) return "CanonicalFulfillmentOperations / FulfillmentService";
   if (command.startsWith("customers.") || command.startsWith("contacts.")) return "CanonicalCustomerContactOperations";
@@ -75,6 +77,7 @@ function sharedOperationalReference(command: string): string | null {
 }
 
 function sharedOperationalUiSurface(command: string): string {
+  if (command === "quotes.create_draft") return "Quote editor POST /api/quotes";
   if (command.startsWith("production.")) return "Production board routes";
   if (command.startsWith("fulfillment.")) return "Fulfillment routes";
   if (command.startsWith("customers.") || command.startsWith("contacts.")) return "Customer and Contact routes";
@@ -85,6 +88,7 @@ function sharedOperationalUiSurface(command: string): string {
 }
 
 function sharedOperationalCanonicalName(command: string): string {
+  if (command === "quotes.create_draft") return "quotes.create_draft.v1";
   if (command === "customers.create") return "customers.create.v1";
   if (command.startsWith("customers.")) return "customers.update.v1";
   if (command === "contacts.create") return "contacts.create.v1";
