@@ -16,7 +16,8 @@ describe("existing Product provider transport contract", () => {
       optionRates: { selectionKey: "thickness", choices: [{ value: "4mm", rateCents: 75 }, { value: "10mm", rateCents: 125 }] } } }] };
     expect(existingProductEditOperationsSchema.parse(optionPayload).operations[0]).toMatchObject(optionPayload.operations[0]);
     expect((schema.properties.operations.items.oneOf[0] as any).properties.pricing.properties.optionRates).toBeDefined();
-    expect((schema.properties.operations.items.oneOf[0] as any).properties.confirmWarnings).toEqual({ type: "boolean" });
+    expect((schema.properties.operations.items.oneOf[0] as any).properties).not.toHaveProperty("confirmWarnings");
+    expect(schema.properties.operations.items.oneOf.find((entry: any) => entry.properties.op?.const === "publish_product_configuration").properties).not.toHaveProperty("confirmPublishWarnings");
     expect(existingProductEditOperationsSchema.safeParse({ operations: [{ op: "configure_blank_coroplast", pricing: {
       unit: "per_square_foot", rateCents: 200,
     } }] }).success).toBe(false);

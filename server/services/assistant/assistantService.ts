@@ -22,6 +22,7 @@ import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
 import { createAssistantAttachmentAnalysisTools } from "./attachmentAnalysisTools";
 import { createPurchaseOrderAttachmentTool } from "./purchaseOrderAttachmentTool";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
+import { createApplicationOperationTools } from "./applicationOperationTools";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore, type MaterialTaskTransition } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
@@ -556,7 +557,7 @@ function operatorBusinessContext(input: {
     trustedSelections: product?.trustedSelections ?? [],
     readiness: product ? (product.readyForReview ? "ready" : product.outstandingDecisions.length ? "needs_input" : "in_progress") : unresolvedDecisions.length ? "needs_input" : "unknown",
     constraints: input.existingProduct
-      ? ["This is an existing persisted product, not a new Product Builder draft.", "Use products.apply_existing_operations for a requested edit; it creates a protected preview and requires GO.", "Use products.begin_draft only when the user intends to create a new product, including a new product based on this one."]
+      ? ["This is an existing persisted product, not a new Product Builder draft.", "Discover its supported change operation with application.operations, then use application.prepare_change for a concrete review that requires GO.", "Use products.begin_draft only when the user intends to create a new product, including a new product based on this one."]
       : product
       ? ["Use only products.apply_operations for a draft edit.", "Do not regenerate the product or expose canonical persistence data.", "Product creation remains review/GO-gated."]
       : ["Use registered, permission-aware tools only.", "Trusted observations are not authorization or freshness authority."],
@@ -564,7 +565,7 @@ function operatorBusinessContext(input: {
       ...(input.canBeginProductDraft ? ["products.begin_draft"] : []),
       ...(input.canApplyProductOperations ? ["products.apply_operations"] : []),
       ...(input.canApplyProductOperations ? ["products.preview_draft_pricing"] : []),
-      ...(input.canEditExistingProduct && input.existingProduct ? ["products.apply_existing_operations"] : []),
+      ...(input.canEditExistingProduct && input.existingProduct ? ["application.operations", "application.prepare_change"] : []),
     ],
     existingProduct: input.existingProduct,
   };
@@ -990,7 +991,7 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include every understood supported business change as initialOperations so the new draft is populated in this call. Preserve enumerated unsupported details with record_unsupported_detail instead of dropping supported work. Do not use if an unfinished new-product draft is already active.",
+      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; discover and prepare its supported Product change operation instead. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include every understood supported business change as initialOperations so the new draft is populated in this call. Preserve enumerated unsupported details with record_unsupported_detail instead of dropping supported work. Do not use if an unfinished new-product draft is already active.",
       inputSchema: beginProductDraftToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const resolvedExistingProductId = existingProductIdForMutation(context);
@@ -1102,7 +1103,7 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. For blank Coroplast, use configure_blank_coroplast with owner selling prices in integer cents and the explicit minimum (zero means none). If the Product has multiple thickness choices, set optionRates with the exact existing selectionKey and every choice value and its own rateCents; never represent thicknesses as quantityTiers or silently omit a requested price. Use one global rateCents only when there is no multi-thickness choice. Quantity tiers, if requested, belong to a rate and vary by quantity. Ask for missing terms; never invent a markup. Newly introduced PBV2 warnings require explicit owner review before setting confirmWarnings or confirmPublishWarnings true. The proposal previews prices and production effects. Nothing changes before GO; the server revalidates at GO.",
+      description: "Prepare a protected edit to one trusted existing persisted product. For blank Coroplast, use configure_blank_coroplast with owner selling prices in integer cents and the explicit minimum (zero means none). If the Product has multiple thickness choices, set optionRates with the exact existing selectionKey and every choice value and its own rateCents; never represent thicknesses as quantityTiers or silently omit a requested price. Use one global rateCents only when there is no multi-thickness choice. Quantity tiers, if requested, belong to a rate and vary by quantity. Ask for missing terms; never invent a markup. The proposal previews prices, production effects, and Product warnings. Only the user's GO on that concrete preview acknowledges newly introduced warnings and executes the change; the server revalidates at GO.",
       inputSchema: existingProductEditProviderInputSchema,
       execute: async ({ arguments: args, context }) => {
         if (isStaffRoleDiscussion(context.goal, conversationMessages)) return { status: "rejected" as const, warning: "A staff-role discussion cannot prepare a Product edit.", failureCategory: "intent_mismatch", failureCode: "unrelated_product_preview", failingStep: "existing_product_intent" };
@@ -1186,7 +1187,7 @@ export class AssistantService {
         }
       },
     }] : [];
-    const materialProposalTools: AssistantOperatorSemanticTool[] = materialCreationRequest && hasPermission(actor, "assistant.materials.create") ? [{
+    const materialProposalTools: AssistantOperatorSemanticTool[] = hasPermission(actor, "assistant.materials.create") ? [{
       name: "materials.lookup",
       description: "Resolve an exact current-tenant Material and/or Material Family before preparing a Material action. Use this for an existing Family variant or assignment. It is read-only and returns only canonical identifiers, active state, dimensions, and concrete variant labels.",
       inputSchema: { type: "object", additionalProperties: false, properties: { materialName: { type: "string" }, familyName: { type: "string" } } },
@@ -1204,6 +1205,7 @@ export class AssistantService {
         family: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, dimensions: { type: "array", description: "Dynamic Family dimensions as { key, displayName }; do not hard-code a fixed set." } } }, familyId: { type: "string" }, materialId: { type: "string" }, values: { type: "array" }, variants: { type: "array", description: "For family creation, each item has canonical material fields plus values keyed by the submitted Family dimension key." },
       } },
       execute: async ({ arguments: args, context }) => {
+        if (isStaffRoleDiscussion(context.goal, conversationMessages)) return { status: "rejected" as const, warning: "A staff-role discussion cannot prepare an unrelated Material change.", failureCategory: "intent_mismatch", failureCode: "unrelated_material_preview" };
         try {
           const prepared = await assistantMaterialActionService.prepare(context.scope.organizationId, args);
           const fingerprint = assistantMaterialActionService.fingerprint(prepared);
@@ -1219,9 +1221,13 @@ export class AssistantService {
         }
       },
     }] : [];
-    const explicitPoRequest = /\b(?:purchase\s+order|PO)\b/i.test(request.message) || /\b(?:order|prepare|create)\b/i.test(request.message) && /\b(?:attach\w*|file|document)\b/i.test(request.message);
-    const continuingPoReview = task.domain === "purchase_orders" && task.status === "active";
-    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...(explicitPoRequest || continuingPoReview ? [createPurchaseOrderAttachmentTool(request.message, { allowFollowUp: continuingPoReview })] : []), ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const purchaseOrderTools = hasPermission(actor, "assistant.orders.create") && hasPermission(actor, "assistant.internal_staff")
+      ? [createPurchaseOrderAttachmentTool(request.message)] : [];
+    const applicationOperations = createApplicationOperationTools([
+      ...existingProductEditTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools,
+      ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
+    ]);
+    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
@@ -1298,7 +1304,7 @@ export class AssistantService {
       } },
     });
     input.signal?.throwIfAborted();
-    const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
+    const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations" || item.toolName === "application.prepare_change" && (item.result?.data as { taskDomain?: unknown } | undefined)?.taskDomain === "products") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
     const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
     const cards = Array.isArray(productObservation?.presentation?.cards)
@@ -1320,11 +1326,15 @@ export class AssistantService {
       updatedResourceContext,
     );
     const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
-    const poReview = run.observations.some((observation) => observation.toolName === "orders.prepare_from_attachment" && observation.status === "succeeded" && observation.presentation?.cards.some((card) => card.kind === "missing_information" || card.kind === "action_proposal"));
+    const poReview = run.observations.some((observation) => observation.status === "succeeded"
+      && (observation.toolName === "orders.prepare_from_attachment" || observation.toolName === "application.prepare_change" && Boolean((observation.result?.data as { sourceAttachmentId?: unknown } | undefined)?.sourceAttachmentId))
+      && observation.presentation?.cards.some((card) => card.kind === "missing_information" || card.kind === "action_proposal"));
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
-    const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.toolName === "products.apply_existing_operations" && observation.presentation?.cards.some((card) => card.kind === "action_proposal"));
+    const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.presentation?.cards.some((card) => card.kind === "action_proposal" && (card as { plan?: { action?: string } }).plan?.action === "products.update_existing_product"));
+    const preparedTaskDomain = [...run.observations].reverse().map((observation) => (observation.result?.data as { taskDomain?: unknown } | undefined)?.taskDomain)
+      .find((domain): domain is string => domain === "products" || domain === "materials" || domain === "fulfillment" || domain === "purchase_orders") ?? null;
     const recentCompletedTurn = run.status === "completed" && !hasPendingProtectedProductProposal ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
     const activeStatus = newMaterialReview || run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || poReview || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
@@ -1333,7 +1343,7 @@ export class AssistantService {
       ...(explicitProductIntent ? { domain: "products" }
         : materialCreationRequest ? { domain: "materials" }
         : poReview ? { domain: "purchase_orders" }
-        : typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain }
+        : preparedTaskDomain ? { domain: preparedTaskDomain }
         : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: hasPendingProtectedProductProposal ? null : run.safeWorkingSummary,
       entityReferences,

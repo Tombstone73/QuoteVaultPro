@@ -47,7 +47,7 @@ describe("assistant provider planning", () => {
     expect(system).toContain("analytics.invoice_activity {dateRange:{start,end},statuses?,customerId?,limit?}");
     expect(system).toContain("analytics.customer_balance {customer:{id?,name?}}");
     expect(system).toContain("without asking for dates");
-    expect(system).toContain("Role changes and promotion to Owner are deliberately AI-ineligible");
+    expect(system).toContain("This legacy read-only planner has no role-change adapter");
   });
   test("resolves a bounded assistant-planning timeout from the environment", () => {
     expect(resolveAssistantPlanningTimeoutMs({} as NodeJS.ProcessEnv)).toBe(20_000);

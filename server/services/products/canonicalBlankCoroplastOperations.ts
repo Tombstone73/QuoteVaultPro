@@ -22,12 +22,13 @@ export type BlankCoroplastProposal = {
   after: BlankCoroplastPricing;
   examples: Array<{ dimensions: string; quantity: number; totalCents: number; optionLabel?: string }>;
   hiddenPrintOnlyOptions: string[];
-  warnings: Array<{ code: string; message: string }>;
+  warnings: Array<{ code: string; message: string; path?: string }>;
+  newWarnings: Array<{ code: string; message: string; path?: string }>;
   treeJson: OptionTreeV2;
 };
 
 export class CanonicalBlankCoroplastOperations {
-  async propose(input: { organizationId: string; productId: string; pricing: unknown; confirmWarnings?: boolean }): Promise<BlankCoroplastProposal> {
+  async propose(input: { organizationId: string; productId: string; pricing: unknown }): Promise<BlankCoroplastProposal> {
     const { db } = await import("../../db");
     const pricing = blankCoroplastPricingSchema.parse(input.pricing);
     const [product] = await db.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
@@ -68,9 +69,7 @@ export class CanonicalBlankCoroplastOperations {
     const warningKey = (finding: { code: string; path?: string }) => `${finding.code}:${finding.path ?? ""}`;
     const existingWarnings = new Set(existingReview.warnings.map(warningKey));
     const newWarnings = review.warnings.filter((finding) => !existingWarnings.has(warningKey(finding)));
-    if (newWarnings.length && input.confirmWarnings !== true) throw new BlankCoroplastOperationError("PRODUCT_WARNINGS_REVIEW_REQUIRED",
-      `Review these newly introduced PBV2 warnings explicitly before proposing blank pricing: ${newWarnings.map((finding) => `${finding.code}: ${finding.message}`).join("; ")}`);
-    const warnings = review.warnings.map((finding) => ({ code: finding.code, message: finding.message }));
+    const warnings = review.warnings.map((finding) => ({ code: finding.code, message: finding.message, path: finding.path }));
     const hiddenPrintOnlyOptions = Object.values(treeJson.nodes).filter((node) => node?.visibility?.rules?.some((rule) => rule.type === "notEquals" && rule.selectionKey === COROPLAST_PRINT_MODE_KEY && rule.value === "unprinted")).map((node) => node.label);
     const scenarios = [
       { widthIn: 12, heightIn: 12, quantity: 1 },
@@ -89,15 +88,16 @@ export class CanonicalBlankCoroplastOperations {
         ...(option.label ? { optionLabel: option.label } : {}) };
     }));
     const fingerprint = createHash("sha256").update(JSON.stringify({ organizationId: input.organizationId, productId: product.id,
-      contractVersion: 2, productUpdatedAt: product.updatedAt.toISOString(), treeId: tree.id, treeUpdatedAt: tree.updatedAt.toISOString(), pricing, warnings,
-      confirmWarnings: input.confirmWarnings === true })).digest("hex");
+      contractVersion: 3, productUpdatedAt: product.updatedAt.toISOString(), treeId: tree.id, treeUpdatedAt: tree.updatedAt.toISOString(), pricing, warnings })).digest("hex");
     return { productId: product.id, productName: product.name, expectedProductUpdatedAt: product.updatedAt.toISOString(),
-      expectedActiveTreeVersionId: tree.id, fingerprint, before, after: pricing, examples, hiddenPrintOnlyOptions, warnings, treeJson };
+      expectedActiveTreeVersionId: tree.id, fingerprint, before, after: pricing, examples, hiddenPrintOnlyOptions, warnings,
+      newWarnings: newWarnings.map((finding) => ({ code: finding.code, message: finding.message, path: finding.path })), treeJson };
   }
 
   async execute(input: { organizationId: string; productId: string; actorUserId: string; pricing: unknown; confirmWarnings?: boolean; expectedFingerprint: string; operationId: string }) {
     const proposal = await this.propose(input);
     if (proposal.fingerprint !== input.expectedFingerprint) throw new BlankCoroplastOperationError("PRODUCT_STALE", "The Product changed after review. Prepare a fresh proposal.");
+    if (proposal.newWarnings.length && input.confirmWarnings !== true) throw new BlankCoroplastOperationError("PRODUCT_WARNINGS_REVIEW_REQUIRED", "New Product warnings require GO on the concrete proposal before they can be acknowledged.");
     const result = await saveActiveProductEditorConfiguration({ organizationId: input.organizationId, productId: input.productId,
       actorUserId: input.actorUserId,
       request: { expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedActiveTreeVersionId: proposal.expectedActiveTreeVersionId,

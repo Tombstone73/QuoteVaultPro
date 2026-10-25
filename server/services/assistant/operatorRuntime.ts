@@ -255,12 +255,17 @@ function equivalentToolCallKey(toolName: string, argumentsValue: Record<string, 
     if (!value || typeof value !== "object") return value;
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, normalize(child)]));
   };
-  const canonicalArguments = toolName === "products.apply_existing_operations"
+  const existingProductCall = toolName === "products.apply_existing_operations"
+    || toolName === "application.prepare_change" && argumentsValue.operation === "products.apply_existing_operations";
+  const businessArguments = existingProductCall && toolName === "application.prepare_change" && argumentsValue.arguments
+    && typeof argumentsValue.arguments === "object" && !Array.isArray(argumentsValue.arguments)
+    ? argumentsValue.arguments as Record<string, unknown> : argumentsValue;
+  const canonicalArguments = existingProductCall
     ? (() => {
-      const parsed = existingProductEditOperationsSchema.safeParse({ operations: argumentsValue.operations });
-      return parsed.success ? parsed.data : argumentsValue;
+      const parsed = existingProductEditOperationsSchema.safeParse({ operations: businessArguments.operations });
+      return parsed.success ? parsed.data : businessArguments;
     })()
-    : argumentsValue;
+    : businessArguments;
   return `${productResolutionEpoch}:${toolName}:${JSON.stringify(normalize(canonicalArguments))}`;
 }
 
@@ -436,7 +441,8 @@ export class AssistantOperatorRuntime {
           const prior = [...observations].reverse().find((observation) => observation.toolName === call.toolName && isDeterministicToolFailure(observation));
           observations.push({ step, toolName: call.toolName, status: "rejected", warning: "This equivalent operation already failed deterministically; it was not attempted again.", failureCategory: prior?.failureCategory ?? "deterministic_rejection", failureCode: prior?.failureCode ?? "equivalent_operation_rejected", failingStep: prior?.failingStep });
           console.warn("[AI_OPERATOR_TRACE]", { stage: "duplicate_deterministic_tool_failure_blocked", taskId: input.taskId, step, toolName: call.toolName });
-          if (call.toolName !== "products.apply_existing_operations") continue;
+          if (call.toolName !== "products.apply_existing_operations"
+            && !(call.toolName === "application.prepare_change" && call.arguments.operation === "products.apply_existing_operations")) continue;
           return {
             status: "failed",
             response: prior?.warning ?? "The requested business operation was rejected and was not retried without new evidence or a changed proposal.",

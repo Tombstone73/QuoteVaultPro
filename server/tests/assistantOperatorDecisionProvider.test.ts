@@ -46,7 +46,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect(request.system).toContain("If multiple records share the extreme value");
       expect(request.system).toContain("PrintersHero is not read-only");
       expect(request.system).toContain("standalone request naming one product and asking for its current pricing");
-      expect(request.system).toContain("'do not apply/change it yet' means prepare the protected products.apply_existing_operations preview now");
+      expect(request.system).toContain("discover the available operation and its business argument schema with application.operations, then call application.prepare_change");
       expect(request.system).toContain("recentCompletedTurn is the bounded result");
       expect(request.system).toContain("canonical role-change adapter");
       expect(request.system).toContain("application authorization");

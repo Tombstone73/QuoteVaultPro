@@ -1,0 +1,23 @@
+# Assistant application operations
+
+The signed-in user's request starts an investigation. Reads, calculations, record resolution, and proposal preparation do not require GO. A change does: the assistant presents the exact server-generated plan, the user confirms that plan with GO, and the execution service rechecks the actor, tenant, command arguments, record fingerprint, and confirmation token before calling a canonical service. A changed proposal needs a new GO. A replay returns the persisted result rather than executing a second write.
+
+## Discover and prepare
+
+`application.capabilities` lists the permission-filtered read and semantic tools available in the current session. `application.operations` describes the currently connected change adapters and their business argument schemas. It also identifies known staff-application operations whose assistant adapter is missing when the actor has the corresponding grant. An absent entry is not evidence that the underlying application lacks the operation. `application.prepare_change` invokes a connected adapter to **prepare** a proposal. It cannot execute a write. These interfaces are bounded tool calls; they do not expose SQL, source editing, shell commands, or arbitrary HTTP. File contents and model text cannot add an operation or grant permission.
+
+The first shared preparation adapters are the existing Product edit, Material action, fulfillment pickup, and purchase-order attachment intake adapters. They retain their canonical validators and reviewed execution commands. Product configuration accepts an option-rate table keyed by the Product's actual selection values, so 4 mm and 10 mm are data choices, not separate assistant tools or quantity tiers. The Coroplast blank-mode helper still supplies its Product-specific print/production behavior. The assistant must inspect the Product's actual options and obtain a complete rate table; an incomplete table fails validation. The general PBV2 Product editor and pricing matrix remain separate canonical configuration surfaces.
+
+The older specialized semantic names remain callable during migration, but new provider guidance uses discovery and the shared preparation interface. A provider can continue an investigation after validation feedback. The server, rather than the provider, binds the resulting proposal to a GO token.
+
+Product publish and blank-pricing warnings are shown in the reviewed plan. Model-facing schemas do not contain warning-acknowledgement switches. GO on that exact plan is the acknowledgement; the canonical save receives it only in the GO execution path. Existing warnings are retained, and a changed warning set changes the proposal fingerprint or fails revalidation.
+
+## Current coverage and gaps
+
+The generated [canonical capability registry](ai-operator-canonical-capability-registry.md) enumerates existing reads and reviewed commands across customers/contacts, products/pricing, Quotes, Orders, production, fulfillment, Invoices, payments, Materials, and reporting. Its `eligible` count describes registered reads and commands, **not** complete UI parity or a guarantee that every operation can be prepared through `application.prepare_change` yet. The shared preparation bridge currently connects the four adapters above. Other supported commands still have their established proposal paths.
+
+Art and file-record mutations, organization settings and role administration, Product deletion, and some advanced Product pricing controls lack canonical assistant adapters. These are integration gaps where the application has a staff operation. The registry's platform-level SQL, infrastructure, source-code, and cross-tenant entries are excluded because they are outside signed-in application authority. An assistant response must say which kind of gap it encountered; it must not present an unconnected UI operation as an inherent application limitation.
+
+## Verification boundary
+
+Unit and mocked service tests can verify schema discovery, permission-filtered exposure, multi-step behavior, plan binding, replay protection, and pricing examples. Transaction behavior requires disposable records in a configured PostgreSQL test database. A real provider/browser run and a DEV readback are separate evidence. Neither a model statement nor a successful proposal proves a record was saved.

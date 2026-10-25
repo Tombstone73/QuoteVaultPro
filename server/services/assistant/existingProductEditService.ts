@@ -105,7 +105,7 @@ export class ExistingProductEditService {
     const blankOperation = operations.operations.find((operation) => operation.op === "configure_blank_coroplast");
     if (blankOperation) {
       try {
-        const proposal = await canonicalBlankCoroplastOperations.propose({ organizationId: input.organizationId, productId: input.productId, pricing: blankOperation.pricing, confirmWarnings: blankOperation.confirmWarnings });
+        const proposal = await canonicalBlankCoroplastOperations.propose({ organizationId: input.organizationId, productId: input.productId, pricing: blankOperation.pricing });
         const price = (cents: number) => `$${(cents / 100).toFixed(2)}`;
         const unitLabel = (unit: BlankCoroplastPricing["unit"]) => unit === "per_piece" ? "per piece" : "per square foot";
         const tiersLabel = (value: BlankCoroplastPricing | null) => value?.quantityTiers?.length
@@ -124,7 +124,7 @@ export class ExistingProductEditService {
             { field: "Unprinted quantity tiers", before: tiersLabel(proposal.before), after: tiersLabel(proposal.after) },
             { field: "Production and artwork", before: "printed Product defaults", after: "blank selection skips print-only inputs, artwork, proof and prepress; cutting and finishing remain selectable; staff intake defers release, then Flatbed owns cutting work" },
             { field: "Print-only controls hidden for blank", before: "visible", after: proposal.hiddenPrintOnlyOptions.join(", ") || "none" },
-            ...proposal.warnings.map((warning) => ({ field: `Product warning ${warning.code}`, before: "already present or explicitly reviewed", after: warning.message })),
+            ...proposal.warnings.map((warning) => ({ field: `Product warning ${warning.code}${warning.path ? ` at ${warning.path}` : ""}`, before: proposal.newWarnings.some((item) => item.code === warning.code && item.path === warning.path) ? "requires review in GO" : "already present", after: warning.message })),
             ...proposal.examples.map((example) => ({ field: `Example ${example.optionLabel ? `${example.optionLabel}, ` : ""}${example.dimensions}, quantity ${example.quantity}`, before: "not available", after: price(example.totalCents) })),
           ] };
       } catch (error) { if (error instanceof BlankCoroplastOperationError) throw new ExistingProductEditError(error.code, error.message); throw error; }
@@ -136,8 +136,7 @@ export class ExistingProductEditService {
           try {
             const publish = await canonicalProductPublishOperations.propose({ organizationId: input.organizationId, productId: input.productId });
             const warnings = publish.warnings.map((item) => ({ code: item.code, message: item.message }));
-            if (warnings.length && lifecycleOperation.confirmPublishWarnings !== true) throw new ExistingProductEditError("PRODUCT_WARNINGS_REVIEW_REQUIRED", `Review PBV2 publish warnings explicitly: ${warnings.map((item) => `${item.code}: ${item.message}`).join("; ")}`);
-            return { productId: publish.productId, productName: publish.productName, productActive: false, treeId: publish.treeVersionId, treeUpdatedAt: publish.expectedTreeUpdatedAt, sourceLifecycle: "DRAFT", canonicalOperationReference: publish.operationReference, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, publishProposal: { treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, activateAfterPublish: true, confirmWarnings: lifecycleOperation.confirmPublishWarnings, warnings }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, { field: "Lifecycle", before: "inactive", after: "active" }], fingerprint: publish.fingerprint };
+            return { productId: publish.productId, productName: publish.productName, productActive: false, treeId: publish.treeVersionId, treeUpdatedAt: publish.expectedTreeUpdatedAt, sourceLifecycle: "DRAFT", canonicalOperationReference: publish.operationReference, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, publishProposal: { treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, activateAfterPublish: true, confirmWarnings: warnings.length > 0, warnings }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }, { field: "Lifecycle", before: "inactive", after: "active" }], fingerprint: publish.fingerprint };
           } catch (publishError) { if (publishError instanceof ExistingProductEditError) throw publishError; if (publishError instanceof CanonicalProductPublishError) throw new ExistingProductEditError(publishError.code, publishError.message); throw publishError; }
         }
         if (error instanceof CanonicalProductLifecycleError) throw new ExistingProductEditError(error.code, error.message); throw error;
@@ -148,8 +147,7 @@ export class ExistingProductEditService {
       try {
         const publish = await canonicalProductPublishOperations.propose({ organizationId: input.organizationId, productId: input.productId });
         const warnings = publish.warnings.map((item) => ({ code: item.code, message: item.message }));
-        if (warnings.length && publishOperation.confirmPublishWarnings !== true) throw new ExistingProductEditError("PRODUCT_WARNINGS_REVIEW_REQUIRED", `Review PBV2 publish warnings explicitly: ${warnings.map((item) => `${item.code}: ${item.message}`).join("; ")}`);
-        return { productId: publish.productId, productName: publish.productName, productActive: false, treeId: publish.treeVersionId, treeUpdatedAt: publish.expectedTreeUpdatedAt, sourceLifecycle: "DRAFT", canonicalOperationReference: publish.operationReference, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, publishProposal: { treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, activateAfterPublish: false, confirmWarnings: publishOperation.confirmPublishWarnings, warnings }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }], fingerprint: publish.fingerprint };
+        return { productId: publish.productId, productName: publish.productName, productActive: false, treeId: publish.treeVersionId, treeUpdatedAt: publish.expectedTreeUpdatedAt, sourceLifecycle: "DRAFT", canonicalOperationReference: publish.operationReference, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, publishProposal: { treeVersionId: publish.treeVersionId, expectedProductUpdatedAt: publish.expectedProductUpdatedAt, expectedTreeUpdatedAt: publish.expectedTreeUpdatedAt, activateAfterPublish: false, confirmWarnings: warnings.length > 0, warnings }, changes: [{ field: "PBV2 configuration", before: "DRAFT", after: "ACTIVE" }], fingerprint: publish.fingerprint };
       } catch (error) { if (error instanceof ExistingProductEditError) throw error; if (error instanceof CanonicalProductPublishError) throw new ExistingProductEditError(error.code, error.message); throw error; }
     }
     const pricingEngineOperation = operations.operations.find((operation): operation is { op: "update_product_pricing_engine_configuration"; changes: ProductPricingEngineConfigurationChanges } => operation.op === "update_product_pricing_engine_configuration");
@@ -207,7 +205,7 @@ export class ExistingProductEditService {
     if (blankOperation) {
       try {
         const result = await canonicalBlankCoroplastOperations.execute({ organizationId: input.organizationId, productId: input.productId,
-          actorUserId: input.userId, pricing: blankOperation.pricing, confirmWarnings: blankOperation.confirmWarnings, expectedFingerprint: input.expectedFingerprint,
+          actorUserId: input.userId, pricing: blankOperation.pricing, confirmWarnings: true, expectedFingerprint: input.expectedFingerprint,
           operationId: `assistant-plan:${input.expectedFingerprint}` });
         return { ...validation.proposal, treeId: result.resultingActiveTreeVersionId, canonicalOperationReference: "products.save_live_editor_configuration.v1" as const };
       } catch (error) { if (error instanceof BlankCoroplastOperationError) throw new ExistingProductEditError(error.code === "PRODUCT_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message); throw error; }

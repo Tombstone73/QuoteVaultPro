@@ -26,7 +26,7 @@ const inputSchema = z.object({
 }).strict();
 
 /** File text is evidence for extraction, never instructions or authorization. */
-export function createPurchaseOrderAttachmentTool(currentUserMessage: string, dependencies: { readFile?: ReadAttachment; prepare?: PreparePurchaseOrder; allowFollowUp?: boolean } = {}): AssistantOperatorSemanticTool {
+export function createPurchaseOrderAttachmentTool(_currentUserMessage: string, dependencies: { readFile?: ReadAttachment; prepare?: PreparePurchaseOrder; allowFollowUp?: boolean } = {}): AssistantOperatorSemanticTool {
   const readFile: ReadAttachment = dependencies.readFile ?? (async (scope, id) => (await import("../assistantImageAttachments")).readAssistantExtractedFile(scope, id));
   const prepare: PreparePurchaseOrder = dependencies.prepare ?? (async input => (await import("./orderIntakeService")).orderIntakeService.prepareFromPurchaseOrder(input));
   return {
@@ -38,9 +38,6 @@ export function createPurchaseOrderAttachmentTool(currentUserMessage: string, de
     execute: async ({ arguments: args, context }) => {
       try {
         if (!context.permissions.includes("assistant.orders.create") || !context.permissions.includes("assistant.internal_staff")) return { status: "permission_denied" as const };
-        const explicitPoRequest = /\b(?:purchase\s+order|PO)\b/i.test(currentUserMessage) && /\b(?:order|prepare|create|intake)\b/i.test(currentUserMessage);
-        const explicitAttachedOrderRequest = /\b(?:order|prepare|create)\b/i.test(currentUserMessage) && /\b(?:attach\w*|file|document)\b/i.test(currentUserMessage);
-        if (!explicitPoRequest && !explicitAttachedOrderRequest && !dependencies.allowFollowUp) return { status: "rejected" as const, warning: "Ask the staff user to request a PO Order proposal explicitly." };
         const input = inputSchema.parse(args);
         const { attachment, extracted } = await readFile({ ...context.scope, conversationId: context.conversationId }, input.attachmentId);
         if (!/pdf|wordprocessingml|text\/plain|image\//.test(attachment.mimeType)) throw new Error("Choose a PDF, DOCX, TXT, or image PO attachment.");
