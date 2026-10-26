@@ -14,9 +14,8 @@ import {
   type CompanyDocumentBrandingInput,
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
-import { projectCommercialDocumentLines } from '@shared/commercialDocumentLines';
+import { projectDocumentLineGroups } from '@shared/documentLinePresentation';
 import { isCommerciallyRemovedLine } from '../services/lineItemBundles';
-import { resolveInvoiceLinePresentation } from '../../shared/invoiceLinePresentation';
 import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';
 
 type CompanySettingsLike = CompanyDocumentBrandingInput & {
@@ -95,6 +94,9 @@ type InvoiceLineItemLike = {
   lineItemRole?: "standalone" | "parent" | "child" | null;
   childDisplayMode?: "hidden" | "visible_summary" | "visible_detail" | null;
   pbv2SnapshotJson?: Record<string, any> | null;
+  specsJson?: Record<string, any> | null;
+  optionSelectionsJson?: unknown;
+  selectedOptions?: unknown;
 } | null;
 
 type InvoicePdfParams = {
@@ -236,6 +238,17 @@ function wrapText(params: {
 
     let current = '';
     for (const w of words) {
+      if (params.font.widthOfTextAtSize(w, params.fontSize) > params.maxWidth) {
+        if (current) { pushLine(current); current = ''; }
+        let piece = '';
+        for (const char of w) {
+          if (piece && params.font.widthOfTextAtSize(piece + char, params.fontSize) > params.maxWidth) { pushLine(piece); piece = char; }
+          else piece += char;
+        }
+        current = piece;
+        if (params.maxLines && lines.length >= params.maxLines) break;
+        continue;
+      }
       const next = current ? `${current} ${w}` : w;
       const width = params.font.widthOfTextAtSize(next, params.fontSize);
       if (width <= params.maxWidth) {
@@ -796,48 +809,41 @@ export async function generateInvoicePdfBytes(
 
   drawTableHeader();
 
-  const lineItems = projectCommercialDocumentLines(
+  const lineGroups = projectDocumentLineGroups(
     (params.lineItems || []).filter((line): line is NonNullable<InvoiceLineItemLike> => Boolean(line) && !isCommerciallyRemovedLine(line!)),
-    (line) => line.lineTotalCents != null ? toSafeCents(line.lineTotalCents) : toCentsFromDecimal(line.totalPrice),
-    { identity: "invoice" },
+    "invoice",
   );
-  for (const { line: li, totalCents, memberCount } of lineItems) {
-    ensureSpace(bottomSafeY + 170);
-
+  const layoutFor = (row: (typeof lineGroups)[number]["rows"][number]) => {
+    const li = row.line;
     const hourlyTerms = resolveHourlyServiceCommercialTerms(li as Record<string, any>);
     const qty = hourlyTerms?.quantity ?? Math.max(0, Math.round(Number(li?.quantity ?? 0) || 0));
-    const unitCents = memberCount > 1 && qty > 0 ? Math.round(totalCents / qty)
-      : hourlyTerms?.rateCents ?? (li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice));
-
-    const presentation = resolveInvoiceLinePresentation(li);
-    const sku = (li?.sku || '').toString().trim();
-
-    const unitLine = unitCents > 0 ? `${hourlyTerms ? "Rate" : "Unit"}: ${fmtMoney(unitCents, currency)}${hourlyTerms ? "/hr" : ""}` : '';
-    const detailLines = [presentation.secondaryLabel, presentation.dimensionsLabel, sku ? `SKU: ${sku}` : null, unitLine]
-      .filter((line): line is string => Boolean(line));
-    const baseDesc = [presentation.primaryLabel, ...detailLines].join('\n');
-
-    const childIndent = 0;
-    const descriptionX = xDesc + childIndent;
-    const descriptionWidth = Math.max(24, descW - childIndent);
-    const descLines = wrapText({
-      text: baseDesc,
-      maxWidth: descriptionWidth,
-      font,
-      fontSize: theme.fontSizes.body,
-      maxLines: 3,
-    });
-
-    const lineH = 13;
-    const contentH = descLines.length * lineH;
+    const totalCents = li.lineTotalCents != null ? toSafeCents(li.lineTotalCents) : toCentsFromDecimal(li.totalPrice);
+    const unitCents = hourlyTerms?.rateCents ?? (li.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li.unitPrice));
+    const sku = (li.sku || '').toString().trim();
+    const unitLine = unitCents > 0 ? `${hourlyTerms ? "Rate" : "Unit"}: ${fmtMoney(unitCents, currency)}${hourlyTerms ? "/hr" : ""}` : null;
+    const parts = [row.name, row.depth ? "Child item - runs with above" : null,
+      row.description, row.dimensions, ...row.customerOptions, sku ? `SKU: ${sku}` : null, unitLine]
+      .filter((part): part is string => Boolean(part));
+    const indent = Math.min(row.depth, 2) * 12;
+    const lines = parts.flatMap((part) => wrapText({ text: part, maxWidth: Math.max(24, descW - indent), font, fontSize: theme.fontSizes.body }));
+    return { li, qty, totalCents, hourlyTerms, indent, lines, height: Math.max(44, lines.length * 13 + 12) + 6 };
+  };
+  for (const group of lineGroups) {
+    const groupHeight = group.rows.reduce((sum, row) => sum + layoutFor(row).height, 0);
+    if (groupHeight <= height - margin * 2 - 100 && y - groupHeight < bottomSafeY + 16) {
+      newPage();
+      drawTableHeader();
+    }
+    for (const row of group.rows) {
+    const { li, qty, totalCents, hourlyTerms, indent, lines } = layoutFor(row);
+    ensureSpace(bottomSafeY + 52);
+    let rowTopY = y;
+    const descriptionX = xDesc + indent;
     const thumbH = 36;
-    const rowH = Math.max(thumbH + 8, contentH + 6);
-
-    const rowTopY = y;
 
     if (thumbW) {
       const boxX = xThumb;
-      const boxY = rowTopY - rowH + 8;
+      const boxY = rowTopY - 44 + 8;
       const boxSize = Math.min(thumbW, thumbH);
       const dataUrl = (li as any)?.thumbnailDataUrl ? String((li as any).thumbnailDataUrl) : '';
       const decoded = dataUrl ? tryDecodeDataUrl(dataUrl) : null;
@@ -852,7 +858,7 @@ export async function generateInvoicePdfBytes(
           const drawH = img.height * scale;
           page.drawRectangle({
             x: boxX,
-            y: boxY + (rowH - boxSize) / 2,
+            y: boxY,
             width: boxSize,
             height: boxSize,
             color: toRgb(theme.colors.thumbPlaceholderBg),
@@ -861,7 +867,7 @@ export async function generateInvoicePdfBytes(
           });
           page.drawImage(img, {
             x: boxX + (boxSize - drawW) / 2,
-            y: boxY + (rowH - boxSize) / 2 + (boxSize - drawH) / 2,
+            y: boxY + (boxSize - drawH) / 2,
             width: drawW,
             height: drawH,
           });
@@ -872,43 +878,44 @@ export async function generateInvoicePdfBytes(
       }
     }
 
-    // description
-    let descY = rowTopY - 11;
-    for (let i = 0; i < descLines.length; i++) {
-      const line = descLines[i];
-      const isMeta = line !== presentation.primaryLabel;
-      drawText(line, {
+    drawTextRight(`${qty}${hourlyTerms ? " hr" : ""}`, {
+      rightX: xQty + qtyW, y: rowTopY - 11, size: theme.fontSizes.body,
+    });
+    drawTextRight(fmtMoney(totalCents, currency), {
+      rightX: xPrice + priceW, y: rowTopY - 11, size: theme.fontSizes.body, bold: true,
+    });
+
+    // All saved description and configuration lines remain visible. A long row
+    // continues on the next page instead of clipping at a fixed line limit.
+    for (let i = 0; i < lines.length; i++) {
+      if (y < bottomSafeY + 25) {
+        newPage();
+        drawTableHeader();
+        rowTopY = y;
+        drawText(`${row.name} (continued)`, { x: descriptionX, y: y - 11, size: theme.fontSizes.small, bold: true });
+        y -= 15;
+      }
+      const isMeta = i > 0;
+      drawText(lines[i], {
         x: descriptionX,
-        y: descY,
+        y: y - 11,
         size: isMeta ? theme.fontSizes.small : theme.fontSizes.body,
         color: isMeta ? theme.colors.mutedText : theme.colors.text,
       });
-      descY -= lineH;
+      y -= 13;
     }
 
-    // qty and price (right-aligned)
-    drawTextRight(`${qty}${hourlyTerms ? " hr" : ""}`, {
-      rightX: xQty + qtyW,
-      y: rowTopY - 11,
-      size: theme.fontSizes.body,
-    });
-
-    drawTextRight(fmtMoney(totalCents, currency), {
-      rightX: xPrice + priceW,
-      y: rowTopY - 11,
-      size: theme.fontSizes.body,
-      bold: true,
-    });
-
+    y = Math.min(y - 6, rowTopY - 44);
     // row divider
     page.drawLine({
-      start: { x: margin, y: rowTopY - rowH },
-      end: { x: width - margin, y: rowTopY - rowH },
+      start: { x: margin, y },
+      end: { x: width - margin, y },
       thickness: 1,
       color: toRgb(theme.colors.border),
     });
 
-    y -= rowH + 6;
+    y -= 6;
+    }
   }
 
   y -= 6;

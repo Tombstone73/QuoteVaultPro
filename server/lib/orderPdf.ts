@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
-import { getCustomerVisibleBundleLines } from "../services/lineItemBundles";
+import { isCommerciallyRemovedLine } from "../services/lineItemBundles";
+import { projectDocumentLineGroups } from "@shared/documentLinePresentation";
 
 export class OrderPdfEligibilityError extends Error {
   statusCode: number;
@@ -33,6 +34,9 @@ type OrderPdfLineItem = {
   parentLineItemId?: string | null;
   lineItemRole?: "standalone" | "parent" | "child" | null;
   childDisplayMode?: "hidden" | "visible_summary" | "visible_detail" | null;
+  sortOrder?: number | null;
+  pbv2SnapshotJson?: unknown;
+  productionNotes?: string | null;
 };
 
 type OrderPdfInput = {
@@ -41,6 +45,7 @@ type OrderPdfInput = {
     orderNumber?: string | number | null;
     displayNumber?: string | null;
     poNumber?: string | null;
+    label?: string | null;
     createdAt?: string | Date | null;
     dueDate?: string | Date | null;
     promisedDate?: string | Date | null;
@@ -59,6 +64,7 @@ type OrderPdfInput = {
     billToEmail?: string | null;
     lineItems?: OrderPdfLineItem[] | null;
   };
+  artworkRefs?: Array<{ orderLineItemId?: string | null; filename: string; role?: string | null }>;
   organization?: {
     name?: string | null;
     settings?: { currency?: string | null } | null;
@@ -130,7 +136,7 @@ function isValidPdfLineItem(lineItem: OrderPdfLineItem): boolean {
 
 export function getOrderPdfEligibility(order: OrderPdfInput["order"]): OrderPdfEligibility {
   const lineItems = Array.isArray(order.lineItems)
-    ? getCustomerVisibleBundleLines(order.lineItems).filter((lineItem) => lineItem.status !== "canceled")
+    ? order.lineItems.filter((lineItem) => !isCommerciallyRemovedLine(lineItem))
     : [];
 
   if (!hasText(order.id)) {
@@ -152,6 +158,16 @@ function wrapText(text: string, maxWidth: number, font: PDFFont, fontSize: numbe
   let current = "";
 
   for (const word of words) {
+    if (font.widthOfTextAtSize(word, fontSize) > maxWidth) {
+      if (current) { lines.push(current); current = ""; }
+      let piece = "";
+      for (const char of word) {
+        if (piece && font.widthOfTextAtSize(piece + char, fontSize) > maxWidth) { lines.push(piece); piece = char; }
+        else piece += char;
+      }
+      current = piece;
+      continue;
+    }
     const next = current ? `${current} ${word}` : word;
     if (font.widthOfTextAtSize(next, fontSize) <= maxWidth) {
       current = next;
@@ -173,34 +189,6 @@ function drawRight(page: PDFPage, text: string, rightX: number, y: number, font:
   drawText(page, text, rightX - width, y, font, size);
 }
 
-function lineItemName(lineItem: OrderPdfLineItem): string {
-  const productName = lineItem.product?.name || lineItem.productName || null;
-  const variantName = lineItem.productVariant?.name || lineItem.variantName || null;
-  return [productName, variantName].filter((value) => hasText(value)).join(" - ") || lineItem.description || "Line item";
-}
-
-function lineItemMaterials(lineItem: OrderPdfLineItem): string | null {
-  const materialUsages = Array.isArray(lineItem.materialUsages) ? lineItem.materialUsages : [];
-  const legacyUsages = Array.isArray(lineItem.materialUsageJson) ? lineItem.materialUsageJson : [];
-  const names = [...materialUsages, ...legacyUsages]
-    .map((usage: any) => usage.materialName || usage.materialLabel || usage.name)
-    .filter((value: unknown): value is string => hasText(value));
-  return names.length ? Array.from(new Set(names)).join(", ") : null;
-}
-
-function lineItemOptionNotes(lineItem: OrderPdfLineItem): string[] {
-  const selected = Array.isArray(lineItem.selectedOptions) ? lineItem.selectedOptions : [];
-  return selected
-    .map((option) => {
-      const name = String(option.optionName || "").trim();
-      const value = option.value == null ? "" : String(option.value).trim();
-      const note = String(option.note || "").trim();
-      return [name && value ? `${name}: ${value}` : name || value, note].filter(Boolean).join(" - ");
-    })
-    .filter(Boolean)
-    .slice(0, 4);
-}
-
 export async function generateOrderPdfBytes(input: OrderPdfInput): Promise<Uint8Array> {
   const eligibility = getOrderPdfEligibility(input.order);
   if (!eligibility.eligible) {
@@ -213,6 +201,7 @@ export async function generateOrderPdfBytes(input: OrderPdfInput): Promise<Uint8
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const currency = String(input.organization?.settings?.currency || "USD").toUpperCase();
   const orderNumber = displayOrderNumber(input.order);
+  const groups = projectDocumentLineGroups(eligibility.lineItems, "order");
 
   let y = PAGE_HEIGHT - MARGIN;
   drawText(page, input.organization?.name || "Order", MARGIN, y, bold, 18);
@@ -225,6 +214,10 @@ export async function generateOrderPdfBytes(input: OrderPdfInput): Promise<Uint8
   if (dueDate) drawRight(page, `Due: ${dueDate}`, PAGE_WIDTH - MARGIN, y, regular, 10);
 
   y -= 16;
+  if (hasText(input.order.label)) {
+    drawText(page, `Job: ${input.order.label}`, MARGIN, y, regular, 10);
+    y -= 15;
+  }
   if (hasText(input.order.poNumber)) {
     drawText(page, `PO: ${input.order.poNumber}`, MARGIN, y, regular, 10);
   }
@@ -260,40 +253,60 @@ export async function generateOrderPdfBytes(input: OrderPdfInput): Promise<Uint8
   page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
 
-  for (const lineItem of eligibility.lineItems) {
-    if (y < 150) {
-      page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-      y = PAGE_HEIGHT - MARGIN;
-    }
-
-    const nameLines = wrapText(lineItemName(lineItem), 265, regular, 10).slice(0, 2);
-    for (let index = 0; index < nameLines.length; index += 1) {
-      drawText(page, nameLines[index], MARGIN, y - index * 12, index === 0 ? bold : regular, 10);
-    }
-
-    const detailLines = [
-      lineItemMaterials(lineItem) ? `Material: ${lineItemMaterials(lineItem)}` : null,
-      ...lineItemOptionNotes(lineItem),
-    ].filter((value): value is string => hasText(value));
-
-    let detailY = y - nameLines.length * 12;
-    for (const detail of detailLines.slice(0, 4)) {
-      for (const wrapped of wrapText(detail, 275, regular, 8).slice(0, 2)) {
-        drawText(page, wrapped, MARGIN, detailY, regular, 8, rgb(0.32, 0.36, 0.42));
-        detailY -= 10;
+  const newItemPage = () => {
+    page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    y = PAGE_HEIGHT - MARGIN;
+    drawText(page, `Order ${orderNumber} - continued`, MARGIN, y, bold, 11);
+    y -= 28;
+  };
+  const artworkByLine = new Map<string, string[]>();
+  for (const artwork of input.artworkRefs ?? []) {
+    if (!artwork.orderLineItemId || !hasText(artwork.filename)) continue;
+    const prior = artworkByLine.get(artwork.orderLineItemId) ?? [];
+    const reference = `${artwork.role === "artwork" ? "Artwork" : "File"}: ${artwork.filename}`;
+    if (!prior.includes(reference)) artworkByLine.set(artwork.orderLineItemId, [...prior, reference]);
+  }
+  const detailText = (row: (typeof groups)[number]["rows"][number]) => [
+    row.description ? `Description: ${row.description}` : null,
+    row.material ? `Material: ${row.material}` : null,
+    ...row.productionOptions,
+    row.productionNotes ? `Production instructions: ${row.productionNotes}` : null,
+    ...(row.line.id ? artworkByLine.get(row.line.id) ?? [] : []),
+  ].filter((value): value is string => !!value);
+  const rowHeight = (row: (typeof groups)[number]["rows"][number]) => {
+    const titleHeight = wrapText(row.name, row.depth ? 245 : 260, bold, 10).length * 12;
+    const detailHeight = detailText(row).flatMap((part) => wrapText(part, 480 - Math.min(row.depth, 2) * 12, regular, 8)).length * 10;
+    return Math.max(34, titleHeight + detailHeight + 14);
+  };
+  for (const group of groups) {
+    const groupHeight = group.rows.reduce((sum, row) => sum + rowHeight(row), 0);
+    if (groupHeight <= PAGE_HEIGHT - 2 * MARGIN - 55 && y - groupHeight < 118) newItemPage();
+    for (const row of group.rows) {
+      const indent = Math.min(row.depth, 2) * 12;
+      const titleLines = wrapText(row.name, 260 - indent, bold, 10);
+      if (y - titleLines.length * 12 - (row.depth ? 11 : 0) < 105) newItemPage();
+      if (row.depth) drawText(page, "Child item - runs with above", MARGIN + indent, y, regular, 8, rgb(0.32, 0.36, 0.42));
+      const titleY = row.depth ? y - 11 : y;
+      titleLines.forEach((title, index) => {
+        drawText(page, title, MARGIN + indent, titleY - index * 12, bold, 10);
+      });
+      drawRight(page, String(toNumber(row.line.quantity)), 380, titleY, regular, 10);
+      if (row.dimensions) drawRight(page, row.dimensions, 475, titleY, regular, 9);
+      drawRight(page, formatMoney(toCentsFromDecimal(row.line.totalPrice), currency), PAGE_WIDTH - MARGIN, titleY, regular, 10);
+      y = titleY - titleLines.length * 12;
+      for (const detail of detailText(row)) {
+        for (const wrapped of wrapText(detail, 480 - indent, regular, 8)) {
+          if (y < 105) newItemPage();
+          drawText(page, wrapped, MARGIN + indent, y, regular, 8, rgb(0.32, 0.36, 0.42));
+          y -= 10;
+        }
       }
+      y -= 14;
     }
-
-    drawRight(page, String(toNumber(lineItem.quantity)), 380, y, regular, 10);
-    const size = toNumber(lineItem.width) > 0 && toNumber(lineItem.height) > 0
-      ? `${toNumber(lineItem.width)} x ${toNumber(lineItem.height)}`
-      : "";
-    drawRight(page, size, 452, y, regular, 10);
-    drawRight(page, formatMoney(toCentsFromDecimal(lineItem.totalPrice), currency), PAGE_WIDTH - MARGIN, y, regular, 10);
-    y -= Math.max(34, nameLines.length * 12 + detailLines.length * 10 + 14);
   }
 
-  y = Math.max(y - 8, 98);
+  if (y < 152) newItemPage();
+  y -= 8;
   page.drawLine({ start: { x: 350, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
 

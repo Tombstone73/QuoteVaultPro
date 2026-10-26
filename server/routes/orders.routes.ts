@@ -2149,7 +2149,11 @@ export async function registerOrderRoutes(
                 .where(eq(organizations.id, organizationId))
                 .limit(1);
 
-            const pdfBytes = await generateOrderPdfBytes({ order: order as any, organization });
+            const artworkRows = await db.select({ orderLineItemId: orderAttachments.orderLineItemId, originalFilename: orderAttachments.originalFilename, fileName: orderAttachments.fileName, role: orderAttachments.role })
+                .from(orderAttachments)
+                .where(eq(orderAttachments.orderId, order.id));
+            const artworkRefs = artworkRows.map((row) => ({ orderLineItemId: row.orderLineItemId, filename: row.originalFilename || row.fileName, role: row.role }));
+            const pdfBytes = await generateOrderPdfBytes({ order: order as any, organization, artworkRefs });
             await db.insert(auditLogs).values({
                 organizationId,
                 userId: getUserId(req.user) ?? null,

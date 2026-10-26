@@ -1,5 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { inflateSync } from "node:zlib";
+import { PDFDocument } from "pdf-lib";
 import { generateQuotePdfBytes } from "../lib/quotePdf";
 import { generateInvoicePdfBytes } from "../lib/invoicePdf";
 import { readFileSync } from "node:fs";
@@ -62,8 +63,8 @@ describe("shared customer document rendering", () => {
     };
     const before = structuredClone(params);
     const content = text(await generateInvoicePdfBytes(params));
-    for (const amount of ["$328.44", "$96.13", "$424.57", "$10.00", "$334.57"]) expect(content).toContain(amount);
-    expect(content).not.toContain("Hidden child");
+    for (const amount of ["$220.44", "$108.00", "$30.00", "$66.13", "$424.57", "$10.00", "$334.57"]) expect(content).toContain(amount);
+    expect(content).toContain("Hidden child");
     expect(params).toEqual(before);
   });
   test("historical Invoice rows without trustworthy lineage remain visible", async () => {
@@ -73,6 +74,35 @@ describe("shared customer document rendering", () => {
     }));
     expect(content).toContain("Hidden child");
     expect(content).toContain("$108.00");
+  });
+  test("Invoice PDF renders each saved billable child with dimensions, options, and its own price across pages", async () => {
+    const parentPrices = [860, 480, 500, 500, 500, 500, 500];
+    const childPrices = [2020, 1128, 1300, 1300, 1300, 1300, 1345];
+    const invoiceLines = Array.from({ length: 7 }, (_, index) => [
+      { id: `invoice-parent-${index}`, orderLineItemId: `order-parent-${index}`, sortOrder: index * 2,
+        productName: "Translucent vinyl - Avery 2050", description: `Three-layer translucent print with UV overlaminate mounted to polycarbonate. ${"Keep color consistent across every print panel. ".repeat(index === 6 ? 35 : 1)}END-INVOICE-${index}`,
+        width: index === 0 ? 144 : 120, height: index === 0 ? 71.63 : 48, quantity: 2, lineTotalCents: parentPrices[index] * 100,
+        unitPriceCents: parentPrices[index] * 50,
+        selectedOptions: [{ optionId: "lamination", optionName: "Lamination", value: "UV overlaminate" }, { optionId: "machine", optionName: "Machine Routing", value: "Flatbed 2" }] },
+      { id: `invoice-child-${index}`, orderLineItemId: `order-child-${index}`, parentLineItemId: `order-parent-${index}`, sortOrder: index * 2 + 1,
+        productName: "Polycarbonate Backer", description: "Clear .177 inch backer", width: index === 0 ? 144 : 120, height: index === 0 ? 71.63 : 48,
+        quantity: 2, lineTotalCents: childPrices[index] * 100, unitPriceCents: childPrices[index] * 50 },
+    ]).flat();
+    const params = { invoice: { invoiceNumber: 20727, subtotalCents: 1353300, shippingCents: 104000, taxCents: 0, totalCents: 1457300 },
+      customer: { companyName: "Lloyd Waters" }, companySettings: { companyName: "Printer" },
+      paymentSummary: { totalCents: 1457300, amountPaidCents: 0, amountDueCents: 1457300 }, lineItems: invoiceLines };
+    const before = structuredClone(params);
+    const bytes = await generateInvoicePdfBytes(params);
+    const content = text(bytes);
+    expect((await PDFDocument.load(bytes)).getPageCount()).toBeGreaterThan(1);
+    expect(content.indexOf("Translucent vinyl - Avery 2050")).toBeLessThan(content.indexOf("Polycarbonate Backer"));
+    for (let index = 0; index < 7; index += 1) expect(content).toContain(`END-INVOICE-${index}`);
+    expect(content).toContain("144 x 71.63 in");
+    expect(content).toContain("120 x 48 in");
+    expect(content).toContain("Lamination: UV overlaminate");
+    expect(content).not.toContain("Machine Routing: Flatbed 2");
+    for (const amount of ["$860.00", "$2,020.00", "$480.00", "$1,128.00", "$13,533.00", "$1,040.00", "$14,573.00"]) expect(content).toContain(amount);
+    expect(params).toEqual(before);
   });
   test("preview/download, emailed attachments/reminders and portal Invoice all delegate to the same renderer", () => {
     for (const file of ["server/routes/mvpInvoicing.routes.ts", "server/invoiceReminderJob.ts", "server/services/portal.service.ts"]) {
