@@ -612,13 +612,15 @@ export function ResultCards({
         </section>;
       }
       const address = (value: any) => value && typeof value === "object" ? [value.name, value.company, value.address1, value.address2, [value.city, value.state, value.postalCode].filter(Boolean).join(" "), value.country].filter(Boolean).join(", ") : "Not available";
+      const calendarDate = (value: string) => new Date(value).toLocaleDateString(undefined, { timeZone: "UTC" });
       const rows = Array.isArray(preview.lineItems) ? preview.lineItems : [];
       return <section key={`${card.kind}-${index}`} className="rounded-xl border border-border/70 bg-card px-3 py-3 text-sm shadow-sm">
         <p className="font-semibold text-foreground">{card.title}</p>
+        {preview.savedQuote?.id ? <a className="mt-1 inline-block text-xs font-medium text-primary underline-offset-2 hover:underline" href={`/quotes/${encodeURIComponent(preview.savedQuote.id)}`}>Open saved Quote {preview.savedQuote.displayNumber}</a> : null}
         <div className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
           <p>Customer: {preview.customerName ?? "Unresolved"}</p><p>Contact: {preview.contactName ?? "None selected"}</p>
-          <p>Reference: {preview.poReference ? `PO ${preview.poReference}` : preview.quoteTitle ?? "None"}</p><p>Requested due: {preview.requestedDueDate ? new Date(preview.requestedDueDate).toLocaleDateString() : "Not specified"}</p>
-          <p>Valid until: {preview.validUntil ? new Date(preview.validUntil).toLocaleDateString() : "Not specified"}</p><p>Delivery: {preview.shippingMethod ?? "Not specified"}</p>
+          <p>Reference: {preview.poReference ? `PO ${preview.poReference}` : preview.quoteTitle ?? "None"}</p><p>Requested due: {preview.requestedDueDate ? calendarDate(preview.requestedDueDate) : "Not specified"}</p>
+          <p>Valid until: {preview.validUntil ? calendarDate(preview.validUntil) : "Not specified"}</p><p>Delivery: {preview.shippingMethod ?? "Not specified"}</p>
         </div>
         <div className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2"><p>Bill to: {address(preview.billTo)}</p><p>Ship to: {address(preview.shipTo)}</p></div>
         {preview.customerNotes ? <p className="mt-2">Customer notes: {preview.customerNotes}</p> : null}

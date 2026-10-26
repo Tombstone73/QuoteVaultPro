@@ -30,13 +30,14 @@ import { assistantReportEntityResolutionsRepository } from "../storage/assistant
 import { canonicalProductIntentCards, ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
 import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { aiAuditEvents } from "@shared/schema";
+import { aiAuditEvents, assistantQuoteIntakeSessions, quotes } from "@shared/schema";
 import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
 import { legacyChatPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
 import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
 import { hasCanonicalProposalCard } from "../services/assistant/canonicalProductIntentCardPersistence";
 import { AssistantImageError, readAssistantImage, removeAssistantImage, uploadAssistantImage } from "../services/assistantImageAttachments";
 import { parseAssistantImageUpload } from "../services/assistantImageMultipart";
+import { attachSavedQuoteLinks } from "../services/assistant/savedQuoteConversationLinks";
 
 const canonicalInteractionRequestSchema = z.object({
   proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
@@ -348,8 +349,16 @@ export function registerAssistantRoutes(
 
   app.get("/api/assistant/conversations/:conversationId", ...guarded, async (req, res) => {
     try {
-      const conversation = await service.getConversation(resolveScope(req), req.params.conversationId);
-      return res.json({ success: true, data: conversationDetail(conversation) });
+      const scope = resolveScope(req);
+      const conversation = await service.getConversation(scope, req.params.conversationId);
+      const detail = conversationDetail(conversation);
+      // A confirmed plan's in-memory result disappears on refresh. Resolve saved
+      // Quotes from server-owned intake sessions under the same user and tenant.
+      const savedRows = await db.select({ sessionId: assistantQuoteIntakeSessions.id, quoteId: quotes.id, displayNumber: quotes.displayNumber, quoteNumber: quotes.quoteNumber })
+        .from(assistantQuoteIntakeSessions)
+        .innerJoin(quotes, and(eq(quotes.id, assistantQuoteIntakeSessions.quoteId), eq(quotes.organizationId, scope.organizationId)))
+        .where(and(eq(assistantQuoteIntakeSessions.organizationId, scope.organizationId), eq(assistantQuoteIntakeSessions.userId, scope.userId), eq(assistantQuoteIntakeSessions.conversationId, req.params.conversationId), eq(assistantQuoteIntakeSessions.status, "created")));
+      return res.json({ success: true, data: attachSavedQuoteLinks(detail, savedRows) });
     } catch (error) {
       return sendError(res, error);
     }

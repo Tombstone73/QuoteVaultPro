@@ -19,7 +19,7 @@ import { priceLineItem } from "../pricing/PricingService";
 import { calculateQuoteAggregateTotals } from "../../routes/helpers/quoteTotals.helpers";
 import { snapshotCustomerData } from "../../routes/quotes.routes";
 import type { QuoteCreateRequest } from "./quoteApplicationContract";
-import { quotePricingSnapshotForFingerprint } from "./quoteProposalFingerprint";
+import { quotePricingSnapshotForFingerprint, quoteProductPricingInputsForFingerprint } from "./quoteProposalFingerprint";
 import { quoteEditorOperationService } from "./quoteEditorOperationService";
 import type { QuoteDraftCreateCanonicalService, QuoteDraftCreateCommandResult } from "./execution/quoteDraftCreateCommand";
 import type { QuoteDraftUpdateCanonicalService, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
@@ -89,8 +89,11 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       if (!product) throw new QuoteDraftIntakeError("PRODUCT_NOT_FOUND", `Line ${index + 1} needs an active Product from this organization.`);
       return { ...line, productName: product.name, optionSelections: line.optionSelections ?? {} };
     }));
+    const poReference = request.poReference?.trim();
+    const requestedLabel = request.label?.trim();
+    const labelRepeatsPo = !!poReference && !!requestedLabel && [poReference, `PO ${poReference}`].some((value) => value.toLocaleLowerCase() === requestedLabel.toLocaleLowerCase());
     const intake: Intake = { customerId: customer.id, customerName: customer.companyName ?? "Customer", contactId: contact?.id ?? null, requestedDueDate: request.requestedDueDate ?? null, internalNote: null,
-      poReference: request.poReference, label: request.poReference ? `PO ${request.poReference}${request.label ? ` — ${request.label}` : ""}` : request.label ?? null, customerNotes: request.customerNotes ?? null, validUntil: request.validUntil ?? null,
+      poReference, label: poReference ? `PO ${poReference}${requestedLabel && !labelRepeatsPo ? ` — ${requestedLabel}` : ""}` : requestedLabel ?? null, customerNotes: request.customerNotes ?? null, validUntil: request.validUntil ?? null,
       shippingMethod: request.shippingMethod ?? null, shippingInstructions: request.shippingInstructions ?? null, shippingCents: request.shippingCents ?? null, discountAmountCents: request.discountAmountCents ?? 0, lines: resolvedLines };
     const [session] = await db.insert(assistantQuoteIntakeSessions).values({ organizationId: input.organizationId, userId: input.userId, conversationId: input.conversationId, createdByUserId: input.userId, intakeJson: intake }).returning();
     if (!session) throw new QuoteDraftIntakeError("SESSION_CREATE_FAILED", "Unable to store the Quote proposal.");
@@ -202,7 +205,7 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       subtotalCents: Math.round(aggregate.subtotal * 100), taxCents: Math.round(aggregate.taxAmount * 100), totalCents: Math.round(aggregate.totalPrice * 100), validationErrors: [], warnings: [...(intake.contactId ? [] : ["No contact was selected; the draft remains internal."]), ...((intake.discountAmountCents ?? 0) > 0 ? ["Line tax is shown before the Quote discount; the total tax reflects that discount."] : [])], affectedQuoteCount: 1,
       downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] as const,
     };
-    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ productId: row.product.id, updatedAt: row.product.updatedAt, snapshot: quotePricingSnapshotForFingerprint(row.result.pbv2SnapshotJson) })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, PO ${intake.poReference}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
+    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ product: quoteProductPricingInputsForFingerprint(row.product), snapshot: quotePricingSnapshotForFingerprint(row.result.pbv2SnapshotJson) })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, PO ${intake.poReference}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
   }
 
   async revalidateCreateProposal(input: { organizationId: string; quoteIntakeSessionId: string; expectedProposalFingerprint: string }) {
