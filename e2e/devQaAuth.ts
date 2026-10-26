@@ -209,14 +209,14 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
   const orgs = await jsonRequest(page, config.apiBaseUrl, "/api/me/orgs");
   const orgBody = orgs.body as {
     success?: unknown;
-    data?: { lastActiveOrgId?: unknown; orgs?: Array<{ id?: unknown; slug?: unknown }> };
+    data?: { lastActiveOrgId?: unknown; orgs?: Array<{ id?: unknown; slug?: unknown; role?: unknown }> };
   } | null;
   const memberships = orgBody?.data?.orgs ?? [];
   const expectedMembership = memberships.find(
     (org) => org.id === config.expectedOrganizationId && typeof org.slug === "string" && org.slug.toLowerCase() === config.expectedOrganizationSlug,
   );
-  if (orgs.status !== 200 || orgBody?.success !== true || memberships.length !== 1 || !expectedMembership) {
-    throw new Error("[DEV QA auth] QA identity must have exactly one membership: the configured DEV organization.");
+  if (orgs.status !== 200 || orgBody?.success !== true || memberships.length !== 1 || !expectedMembership || expectedMembership.role !== "admin") {
+    throw new Error("[DEV QA auth] QA identity must have one admin membership in the configured DEV organization.");
   }
 
   if (orgBody.data?.lastActiveOrgId !== config.expectedOrganizationId) {
@@ -240,6 +240,7 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     throw new Error("[DEV QA auth] Authenticated runtime verification did not confirm deployed DEV.");
   }
 
-  await page.goto(new URL("/dashboard", config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
+  // The login redirect may still be navigating to /dashboard. A second goto
+  // races that navigation even after the session and DEV checks have passed.
   await expect(page).not.toHaveURL(/\/login/, { timeout: 10_000 });
 }

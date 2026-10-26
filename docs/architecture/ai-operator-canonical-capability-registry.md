@@ -4,11 +4,11 @@
 
 ## Counts
 
-- Registered: 79
+- Registered: 80
 - Read: 24
-- Mutation: 44
+- Mutation: 45
 - Eligible: 67
-- Ineligible: 8
+- Ineligible: 9
 - Hard denied: 4
 
 ## Registry
@@ -82,6 +82,7 @@
 | capability.command.materials.create_family | materials | mutation | command | materials.create_family | assistant.materials.create_family | eligible | — | materials.operations | shared_canonical |
 | capability.command.materials.create_variant | materials | mutation | command | materials.create_variant | assistant.materials.create_variant | eligible | — | materials.operations | shared_canonical |
 | capability.command.materials.assign_family | materials | mutation | command | materials.assign_family | assistant.materials.assign_family | eligible | — | materials.operations | shared_canonical |
+| capability.ui.quotes.editor_save | quotes | mutation | ui_compatibility | quotes.editor_save | assistant.quotes.update_draft | ineligible | — | quotes.operations | compatibility_only |
 | capability.ui.settings.organization_preferences | settings_permissions | administrative | ui_compatibility | organization.preferences.update | organization.settings.update | ineligible | — | settings.permissions | compatibility_only |
 | capability.ui.products.pricing_formula_profile | products | mutation | ui_compatibility | products.pricing_formula_profile | assistant.products.update_existing_product | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.products.delete | products | administrative | ui_compatibility | products.delete | product.delete | ineligible | — | products.pbv2 | compatibility_only |

@@ -19,6 +19,7 @@ import { priceLineItem } from "../pricing/PricingService";
 import { calculateQuoteAggregateTotals } from "../../routes/helpers/quoteTotals.helpers";
 import { snapshotCustomerData } from "../../routes/quotes.routes";
 import type { QuoteCreateRequest } from "./quoteApplicationContract";
+import { quotePricingSnapshotForFingerprint } from "./quoteProposalFingerprint";
 import type { QuoteDraftCreateCanonicalService, QuoteDraftCreateCommandResult } from "./execution/quoteDraftCreateCommand";
 import type { QuoteDraftUpdateCanonicalService, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
 
@@ -200,7 +201,7 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       subtotalCents: Math.round(aggregate.subtotal * 100), taxCents: Math.round(aggregate.taxAmount * 100), totalCents: Math.round(aggregate.totalPrice * 100), validationErrors: [], warnings: [...(intake.contactId ? [] : ["No contact was selected; the draft remains internal."]), ...((intake.discountAmountCents ?? 0) > 0 ? ["Line tax is shown before the Quote discount; the total tax reflects that discount."] : [])], affectedQuoteCount: 1,
       downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] as const,
     };
-    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ productId: row.product.id, updatedAt: row.product.updatedAt, snapshot: row.result.pbv2SnapshotJson })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, PO ${intake.poReference}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
+    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ productId: row.product.id, updatedAt: row.product.updatedAt, snapshot: quotePricingSnapshotForFingerprint(row.result.pbv2SnapshotJson) })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, PO ${intake.poReference}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
   }
 
   async revalidateCreateProposal(input: { organizationId: string; quoteIntakeSessionId: string; expectedProposalFingerprint: string }) {

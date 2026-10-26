@@ -91,3 +91,25 @@ The setup plus `login.spec.ts` exercise two independent fresh browser logins.
 `dev-qa-smoke.spec.ts` then checks that the authenticated user can reach Products,
 Orders, and open the AI Operator. QA mutations must use disposable DEV records
 with a `QA` or `Test` prefix and should clean up reversible data when practical.
+
+## Reusing the authenticated assistant Quote QA session
+
+In the DEV checkout, run `npx playwright test e2e/dev-qa-quote-capability.spec.ts --reporter=line`.
+The Playwright setup project performs a fresh normal password login from the ignored
+`.env.playwright` fixture, confirms the configured QA identity has exactly one
+admin membership in the expected DEV organization, verifies the deployed DEV
+runtime, and writes the ignored `e2e/.auth/user.json` state for that run. The
+Quote check verifies that the authenticated assistant has tools, diagnostics,
+and the `quotes.create_draft` grant. This procedure does not require access to
+someone else's browser tab. Never print the fixture values or commit the state
+file.
+
+Run `npx playwright test --project=setup e2e/auth.setup.ts --reporter=line` to
+refresh the supported QA state independently. The login's own redirect may
+still be completing after the session and organization checks, so callers
+should wait for the authenticated page rather than start a competing navigation
+to `/dashboard`. If a setting is missing or the login expires, refresh the
+dedicated QA secret in the supported local/CI secret store and rerun setup.
+Reprovision the account only after the guarded DEV identity preflight above
+shows that it is absent. The browser tests use disposable `QA` or `Test`
+records for mutation; the capability check performs reads only.
