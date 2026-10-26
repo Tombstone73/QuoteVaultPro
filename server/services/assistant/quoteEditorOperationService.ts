@@ -10,7 +10,7 @@ import { quoteEditorSaveBodySchema, saveQuoteEditor } from "../../routes/quotes.
 import { buildQuoteLineItemPriceOverridePersistencePatch, haveLineItemPricingDriversChanged } from "../../lib/lineItemPricingPersistence";
 import { priceLineItem } from "../pricing/PricingService";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quoteOrderPricing";
-import { quotePricingSnapshotForFingerprint } from "./quoteProposalFingerprint";
+import { quotePricingSnapshotForFingerprint, quoteProductPricingInputsForFingerprint } from "./quoteProposalFingerprint";
 import type { QuoteDraftUpdatePreview, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
 
 const id = z.string().min(1).max(128);
@@ -139,7 +139,7 @@ export class QuoteEditorOperationService {
       }
       const override = buildQuoteLineItemPriceOverridePersistencePatch({ existingLineItem: { ...previous, ...data, linePrice: baseCents / 100, pbv2SnapshotJson: pricedSnapshot }, incomingUpdate: data, baseCalculatedTotalCents: pricingChanged ? baseCents : null });
       const nextCents = cents(override.linePrice);
-      priceSnapshots.push({ id: previous.id, productId: product.id, productUpdatedAt: product.updatedAt, snapshot });
+      priceSnapshots.push({ id: previous.id, product: quoteProductPricingInputsForFingerprint(product), snapshot });
       updates.push({ id: change.id, data });
       const next = nextLines.find((line) => line.id === change.id)!;
       Object.assign(next, data, { specsJson: override.specsJson, pbv2SnapshotJson: pricedSnapshot, linePrice: nextCents / 100, effectiveTotalCents: nextCents,
@@ -153,7 +153,7 @@ export class QuoteEditorOperationService {
       const size = dimensionsForProductPricing(product, line.width, line.height);
       const priced = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: line.optionSelections ?? {} });
       const nextCents = line.manualTotalCents ?? priced.lineTotalCents;
-      priceSnapshots.push({ clientKey: `new-${index + 1}`, productId: product.id, productUpdatedAt: product.updatedAt, snapshot: quotePricingSnapshotForFingerprint(priced.pbv2SnapshotJson) });
+      priceSnapshots.push({ clientKey: `new-${index + 1}`, product: quoteProductPricingInputsForFingerprint(product), snapshot: quotePricingSnapshotForFingerprint(priced.pbv2SnapshotJson) });
       creates.push({ clientKey: `new-${index + 1}`, data: { productId: line.productId, productName: product.name, productType: product.productTypeId ?? "wide_roll", width: line.width, height: line.height, quantity: line.quantity, optionSelectionsJson: { selected: line.optionSelections ?? {} }, description: line.description ?? null, productionNotes: line.productionNotes ?? null, requiresDesign: line.requiresDesign, requiresPrepress: line.requiresPrepress, requiresProofApproval: line.requiresProofApproval, displayOrder: line.displayOrder ?? current.length + index, ...(line.manualTotalCents === undefined ? {} : { priceOverride: { mode: "override_total_after_margin", valueCents: line.manualTotalCents }, overrideReason: line.manualPriceReason }) } });
       nextLines.push({ ...creates[creates.length - 1].data, linePrice: nextCents / 100, effectiveTotalCents: nextCents,
         hasPriceOverride: line.manualTotalCents !== undefined, overridePriceCents: line.manualTotalCents ?? null,

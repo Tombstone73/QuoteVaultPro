@@ -12,3 +12,14 @@ export function quotePricingSnapshotForFingerprint(value: unknown): unknown {
   const { capturedAt: _tierCapturedAt, ...tier } = tierResolution as Record<string, unknown>;
   return { ...snapshot, pbv2PricingSnapshot: { ...runtime, tierResolution: tier } };
 }
+
+/** Bind review to Product inputs that can affect the line or its tax treatment.
+ * A non-pricing metadata save may advance updatedAt without changing these inputs. */
+export function quoteProductPricingInputsForFingerprint(product: object) {
+  const row = product as Record<string, unknown>;
+  const fields = ["id", "name", "productTypeId", "pricingMode", "measurementMode", "allowZeroPrice", "priceBreaks",
+    "primaryMaterialId", "optionsJson", "optionTreeJson", "pbv2ActiveTreeVersionId", "pricingProfileKey",
+    "pricingProfileConfig", "pricingEngine", "pricingFormula", "pricingFormulaId", "useNestingCalculator",
+    "sheetWidth", "sheetHeight", "materialType", "minPricePerItem", "nestingVolumePricing", "isTaxable", "isActive"] as const;
+  return Object.fromEntries(fields.map((field) => [field, row[field]]));
+}
