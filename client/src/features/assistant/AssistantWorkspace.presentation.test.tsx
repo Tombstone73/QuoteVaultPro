@@ -45,6 +45,7 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).toContain("QA revised");
     expect(container.textContent).toContain("product: QA Sign");
     expect(container.textContent).toContain("Total: $1.07 → $2.14");
+    expect(container.querySelector('a[href="/quotes/quote-1"]')?.textContent).toBe("Open current Quote QT-1205");
     expect(container.textContent).not.toContain("Unresolved");
     act(() => root.unmount());
   });
