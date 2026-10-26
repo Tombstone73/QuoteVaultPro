@@ -1410,7 +1410,10 @@ export class AssistantService {
     if (!materialTaskTransition) await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: taskPatch });
     input.signal?.throwIfAborted();
     const diagnosticCards: AssistantStructuredCard[] = diagnostic ? [...cards, { kind: "tool_warning", title: "Technical diagnostic available", summary: "A sanitized technical diagnostic was saved for this turn.", sourceLinks: [], details: { diagnosticReference: diagnostic.referenceId } }] : cards;
-    return this.persistOperatorResponse(input, { response: run.status === "failed" ? `${response} ${diagnostic ? `Support reference: ${diagnostic.referenceId}.` : "Diagnostic persistence failed; no lookup record is available."} Check completed operation results before retrying.` : response,
+    const responseWithDiagnostic = run.status === "failed"
+      ? `${response} ${diagnostic ? `Support reference: ${diagnostic.referenceId}.` : "Diagnostic persistence failed; no lookup record is available."} Check completed operation results before retrying.`
+      : diagnostic ? `${response}\n\nA server diagnostic was saved for this tool result. Support reference: ${diagnostic.referenceId}.` : response;
+    return this.persistOperatorResponse(input, { response: responseWithDiagnostic,
       status, cards: diagnosticCards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);
   }
 
