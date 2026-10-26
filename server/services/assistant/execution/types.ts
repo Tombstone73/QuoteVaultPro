@@ -291,6 +291,7 @@ export interface ExecutionCommandRegistry {
 export interface ExecutionPlanRepository {
   create(plan: ExecutionPlanRecord): Promise<ExecutionPlanRecord>;
   get(scope: Pick<ExecutionActorScope, "organizationId" | "userId">, planId: string): Promise<ExecutionPlanRecord | null>;
+  listForConversation?(scope: Pick<ExecutionActorScope, "organizationId" | "userId">, conversationId: string): Promise<ExecutionPlanRecord[]>;
   /** Implement as a compare-and-swap update on plan version in durable storage. */
   update(plan: ExecutionPlanRecord, expectedVersion: number): Promise<ExecutionPlanRecord | null>;
   /** Optional durable lookup used by fingerprint-bound proposal commands to avoid duplicate GO plans. */
@@ -299,6 +300,7 @@ export interface ExecutionPlanRepository {
     conversationId: string;
     commandName: string;
     arguments: Record<string, unknown>;
+    contextHash: string;
     now: Date;
   }): Promise<ExecutionPlanRecord | null>;
   /** Invalidates older awaiting plans for one proposal when its fingerprint changes. */

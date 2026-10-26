@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { db } from "../db";
 import { aiAuditEvents, aiConfirmations, aiExecutionPlans, aiExecutionSteps, aiIdempotencyRecords } from "@shared/schema";
 import type {
@@ -62,6 +62,14 @@ export class DrizzleAssistantExecutionRepository implements ExecutionPlanReposit
     return row ? toPlan(row) : null;
   }
 
+  async listForConversation(scope: { organizationId: string; userId: string }, conversationId: string): Promise<ExecutionPlanRecord[]> {
+    const rows = await db.select().from(aiExecutionPlans).where(and(
+      eq(aiExecutionPlans.orgId, scope.organizationId), eq(aiExecutionPlans.userId, scope.userId),
+      eq(aiExecutionPlans.conversationId, conversationId),
+    )).orderBy(desc(aiExecutionPlans.createdAt)).limit(100);
+    return rows.map(toPlan);
+  }
+
   async update(plan: ExecutionPlanRecord, expectedVersion: number): Promise<ExecutionPlanRecord | null> {
     const now = plan.updatedAt;
     const timestamps = {
@@ -85,6 +93,7 @@ export class DrizzleAssistantExecutionRepository implements ExecutionPlanReposit
     conversationId: string;
     commandName: string;
     arguments: Record<string, unknown>;
+    contextHash: string;
     now: Date;
   }): Promise<ExecutionPlanRecord | null> {
     const rows = await db.select().from(aiExecutionPlans).where(and(
@@ -95,7 +104,7 @@ export class DrizzleAssistantExecutionRepository implements ExecutionPlanReposit
       eq(aiExecutionPlans.status, "awaiting_confirmation"),
     ));
     const expected = JSON.stringify(input.arguments);
-    const row = rows.find((candidate) => candidate.expiresAt > input.now && JSON.stringify(candidate.sanitizedArguments) === expected);
+    const row = rows.find((candidate) => candidate.expiresAt > input.now && candidate.contextHash === input.contextHash && JSON.stringify(candidate.sanitizedArguments) === expected);
     return row ? toPlan(row) : null;
   }
 
@@ -117,7 +126,7 @@ export class DrizzleAssistantExecutionRepository implements ExecutionPlanReposit
     let superseded = 0;
     for (const row of rows) {
       const argumentsRecord = row.sanitizedArguments as Record<string, unknown>;
-      const proposalId = argumentsRecord.proposalId ?? argumentsRecord.productId;
+      const proposalId = argumentsRecord.proposalId ?? argumentsRecord.productId ?? argumentsRecord.quoteIntakeSessionId;
       const fingerprint = argumentsRecord.fingerprint ?? argumentsRecord.proposalFingerprint;
       if (proposalId !== input.proposalId || fingerprint === input.fingerprint) continue;
       const updated = await db.update(aiExecutionPlans).set({

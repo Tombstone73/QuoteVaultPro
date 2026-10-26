@@ -42,16 +42,18 @@ function repository(): ExecutionPlanRepository & { plans: Map<string, any>; conf
       const plan = plans.get(id);
       return plan && plan.organizationId === requestedScope.organizationId && plan.userId === requestedScope.userId ? plan : null;
     }),
+    listForConversation: jest.fn(async (requestedScope, conversationId) => [...plans.values()].filter((plan) =>
+      plan.organizationId === requestedScope.organizationId && plan.userId === requestedScope.userId && plan.conversationId === conversationId)),
     update: jest.fn(async (plan, expectedVersion) => {
       const current = plans.get(plan.id);
       if (!current || current.version !== expectedVersion) return null;
       plans.set(plan.id, plan); return plan;
     }),
-    findAwaitingPlan: jest.fn(async ({ scope: requestedScope, conversationId, commandName, arguments: expectedArguments, now: requestedNow }) => {
+    findAwaitingPlan: jest.fn(async ({ scope: requestedScope, conversationId, commandName, arguments: expectedArguments, contextHash: expectedContextHash, now: requestedNow }) => {
       for (const plan of plans.values()) {
         if (plan.organizationId === requestedScope.organizationId && plan.userId === requestedScope.userId
           && plan.conversationId === conversationId && plan.commandName === commandName
-          && plan.status === "awaiting_confirmation" && plan.expiresAt > requestedNow
+          && plan.status === "awaiting_confirmation" && plan.expiresAt > requestedNow && plan.contextHash === expectedContextHash
           && JSON.stringify(plan.sanitizedArguments) === JSON.stringify(expectedArguments)) return plan;
       }
       return null;
@@ -262,6 +264,17 @@ describe("Stage 3 execution planning service", () => {
     const service = new ExecutionPlanningService(repo, registry([command()]), { now: () => now, allowTestOnlyExecution: true });
     const plan = await planReady(service);
     await expect(service.getPlan({ ...scope, organizationId: "org_other" }, plan.id)).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
+  });
+
+  test("restores only plans still authorized for the signed-in actor", async () => {
+    const repo = repository();
+    const registered = command();
+    const service = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true });
+    const own = await planReady(service);
+    expect((await service.listConversationPlans(scope, "conversation_1")).map((plan) => plan.id)).toEqual([own.id]);
+    expect(await service.listConversationPlans({ ...scope, permissions: [] }, "conversation_1")).toEqual([]);
+    expect(await service.listConversationPlans({ ...scope, organizationId: "org_other" }, "conversation_1")).toEqual([]);
+    expect(await service.listConversationPlans(scope, "other_conversation")).toEqual([]);
   });
 
   test("rejects impossible state transitions", async () => {

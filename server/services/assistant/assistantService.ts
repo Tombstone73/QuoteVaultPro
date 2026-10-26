@@ -20,6 +20,7 @@ import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type Assi
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
 import { createAssistantAttachmentAnalysisTools } from "./attachmentAnalysisTools";
+import { activeDocumentContext } from "./activeDocumentContext";
 import { createPurchaseOrderAttachmentTool } from "./purchaseOrderAttachmentTool";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import { createApplicationOperationTools } from "./applicationOperationTools";
@@ -907,7 +908,8 @@ export class AssistantService {
     }
     const conversation = await this.repo.getConversation({ ...scope, conversationId });
     if (!conversation) throw this.notFound();
-    const conversationMessages = operatorConversationHistory(conversation.messages);
+    const attachmentContext = activeDocumentContext(operatorConversationHistory(conversation.messages), request.attachmentIds);
+    const conversationMessages = attachmentContext.history;
     const scopeForImages = { ...scope, conversationId };
     const currentAttachments = request.attachmentIds.length
       ? await loadAssistantProviderAttachmentContext(scopeForImages, request.attachmentIds)
@@ -915,17 +917,28 @@ export class AssistantService {
     const currentImages = currentAttachments.images;
     if (currentImages.length > 4) throw new AssistantServiceError("ASSISTANT_VISUAL_PAGE_LIMIT", "Attach at most four images or scanned PDF pages in one message.", 413);
     let remainingHistoryImages = 4 - currentImages.length;
-    const recentImageMessages = conversationMessages.filter(item => item.role === "user" && item.attachmentIds?.length).slice(-2).reverse();
-    for (const item of recentImageMessages) {
-      const previous = await loadAssistantProviderAttachmentContext(scopeForImages, item.attachmentIds ?? []);
-      if (previous.documents.length) item.content += `\n\n${previous.documents.join("\n\n")}`;
-      item.images = previous.images.slice(0, remainingHistoryImages);
-      if (previous.images.length > remainingHistoryImages) item.content += "\nSome older visual pages were omitted from this model request. Reinspect the attachment before claiming visual coverage.";
-      remainingHistoryImages -= item.images.length;
+    const activePriorMessage = [...conversationMessages].reverse().find(item => item.role === "user" && item.attachmentIds?.length);
+    if (activePriorMessage && attachmentContext.priorAttachmentIds.length) {
+      const previous = await loadAssistantProviderAttachmentContext(scopeForImages, attachmentContext.priorAttachmentIds);
+      if (previous.documents.length) activePriorMessage.content += `\n\n${previous.documents.join("\n\n")}`;
+      activePriorMessage.images = previous.images.slice(0, remainingHistoryImages);
+      if (previous.images.length > remainingHistoryImages) activePriorMessage.content += "\nSome older visual pages were omitted from this model request. Reinspect the attachment before claiming visual coverage.";
+      remainingHistoryImages -= activePriorMessage.images.length;
     }
     const staffRoleDiscussion = isStaffRoleDiscussion(request.message, conversationMessages);
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
+    const activeDocumentSource = [...attachmentContext.activeAttachmentIds].sort().join(",");
+    const storedDocumentSource = typeof task.semanticChanges.activeDocumentSource === "string" ? task.semanticChanges.activeDocumentSource : null;
+    const sourceReplaced = attachmentContext.replacesPrior
+      || Boolean(activeDocumentSource && storedDocumentSource && storedDocumentSource !== activeDocumentSource)
+      || (attachmentContext.priorSourceChanged && storedDocumentSource !== activeDocumentSource);
+    if (sourceReplaced) {
+      // The bounded message history may no longer contain the older upload,
+      // but its conclusions can still be present in recent text turns.
+      if (request.attachmentIds.length) conversationMessages.length = 0;
+      task = { ...task, domain: null, goal: request.message, workingSummary: null, entityReferences: [], missingInformation: [], semanticChanges: {}, canonicalProductIntentProposalId: null, lastObservationSummary: null };
+    }
     const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
     const resumesProductDraft = Boolean(task.canonicalProductIntentProposalId)
       && /^(?:please\s+)?(?:continue|resume|update|edit)\s+(?:(?:the|this|my|our|current|existing)\s+){0,2}(?:product\s+draft|draft\s+product)\b/i.test(request.message.trim());
@@ -1349,6 +1362,7 @@ export class AssistantService {
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     const taskPatch: MaterialTaskTransition["patch"] = {
+      ...(sourceReplaced ? { domain: null } : {}),
       ...(explicitProductIntent ? { domain: "products" }
         : materialCreationRequest ? { domain: "materials" }
         : poReview ? { domain: "purchase_orders" }
@@ -1358,11 +1372,13 @@ export class AssistantService {
       entityReferences,
       semanticChanges: {
         ...mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn, hasPendingProtectedProductProposal),
+        activeDocumentSource,
         [activeResourceContextStorageKey]: updatedResourceContext,
         [pendingActionContextStorageKey]: newMaterialReview ? null : updatedPendingAction,
         [MATERIAL_REVIEW_KEY]: newMaterialReview ? { ...newMaterialReview, question: response } : materialReply?.kind === "ready" ? null : pendingMaterialReview,
       },
       missingInformation: run.missingInformation,
+      ...(sourceReplaced ? { canonicalProductIntentProposalId: null } : {}),
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,
       status: activeStatus,

@@ -6,7 +6,7 @@ import request from "supertest";
 // connect to a database. A syntactically valid inert URL keeps this test local.
 process.env.DATABASE_URL ??= "postgresql://assistant_registry_test:assistant_registry_test@127.0.0.1:5432/assistant_registry_test";
 
-jest.unstable_mockModule("../tenantContext", () => ({ getRequestOrganizationId: (req: any) => req.organizationId }));
+jest.unstable_mockModule("../tenantContext", () => ({ DEFAULT_ORGANIZATION_ID: "org_titan_001", getRequestOrganizationId: (req: any) => req.organizationId }));
 
 let registerAssistantExecutionRoutes: any;
 let ExecutionPlanError: any;
@@ -109,6 +109,31 @@ describe("assistant execution-plan routes", () => {
       supersedeAwaitingProposal: { proposalId: "product_1", fingerprint },
     }));
     expect(fake.issueConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  test("reuses the exact reviewed Quote plan and restores its status without exposing a token", async () => {
+    const fingerprint = "b".repeat(64);
+    const quotePlan = { ...plan, turnId: "turn_quote", commandName: "quotes.create_draft", normalizedAction: "quotes.create_draft" };
+    const fake = service({
+      createPlan: jest.fn(async () => quotePlan),
+      issueConfirmation: jest.fn(async () => ({ plan: quotePlan, token: "server_confirmation_token", expiresAt: quotePlan.expiresAt })),
+      listConversationPlans: jest.fn(async () => [quotePlan]),
+    });
+    const conversationRepository = { getConversation: jest.fn(async ({ organizationId, userId }: any) => organizationId === "org_1" && userId === "user_1" ? { messages: [
+      { turnId: "turn_quote", role: "user", content: "Prepare a QA Quote" },
+      { turnId: "turn_quote", role: "assistant", content: "Review", structuredCards: [{ kind: "action_proposal", plan: { action: "quotes.create_draft", quoteIntakeSessionId: "session_qa", proposalFingerprint: fingerprint } }] },
+    ] } : null) };
+    const instance = app(fake, { conversationRepository });
+    const created = await request(instance).post("/api/assistant/conversations/conversation_1/plans").send({ turnId: "turn_quote", context }).expect(201);
+    expect(created.body.data.confirmationToken).toBe("server_confirmation_token");
+    expect(fake.createPlan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      commandName: "quotes.create_draft", reuseAwaitingPlan: true,
+      supersedeAwaitingProposal: { proposalId: "session_qa", fingerprint },
+    }));
+    const restored = await request(instance).get("/api/assistant/conversations/conversation_1/plans").expect(200);
+    expect(restored.body.data).toEqual([expect.objectContaining({ id: quotePlan.id, turnId: "turn_quote", action: "quotes.create_draft", status: "awaiting_confirmation" })]);
+    expect(restored.body.data[0]).not.toHaveProperty("confirmationToken");
+    await request(app(fake, { conversationRepository, orgId: "other_org" })).get("/api/assistant/conversations/conversation_1/plans").expect(404);
   });
 
   test("uses the same safe not-found response for other user and organization plans", async () => {

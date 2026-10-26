@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, ApiRequestError } from "@/lib/queryClient";
+import type { AssistantExecutionPlan } from "@shared/assistantContracts";
 import type {
   AssistantCapabilities,
   AssistantContextEnvelope,
@@ -75,6 +76,19 @@ export function useAssistantConversation(conversationId: string | null, enabled:
     queryFn: async (): Promise<AssistantConversationDetail> => {
       const response = await apiRequest("GET", `/api/assistant/conversations/${conversationId}`);
       return unwrap<AssistantConversationDetail>(await response.json());
+    },
+  });
+}
+
+/** Server-owned review state; confirmation tokens are deliberately excluded. */
+export function useAssistantConversationPlans(conversationId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: [...conversationsKey, conversationId, "plans"],
+    enabled: enabled && Boolean(conversationId),
+    retry: false,
+    queryFn: async (): Promise<AssistantExecutionPlan[]> => {
+      const response = await apiRequest("GET", `/api/assistant/conversations/${encodeURIComponent(conversationId!)}/plans`);
+      return unwrap<AssistantExecutionPlan[]>(await response.json());
     },
   });
 }

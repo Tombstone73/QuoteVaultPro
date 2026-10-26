@@ -125,7 +125,7 @@ export async function loadAssistantProviderAttachmentContext(scope: AssistantIma
     }
     const extracted = await extractAssistantAttachment(file.buffer, row.originalFilename);
     if (extracted.mimeType !== row.mimeType) throw new AssistantImageError(409, "An attached file no longer matches its recorded type.");
-    documents.push(assistantFileModelContext(row.id, row.originalFilename, extracted, 8_000));
+    documents.push(assistantFileModelContext(row.id, row.originalFilename, extracted, 16_000));
     if (extracted.mimeType === "application/pdf" && extracted.scannedPageNumbers.length) {
       const { renderAssistantPdfPages } = await import("./assistantPdfVision");
       const pages = await renderAssistantPdfPages(file.buffer, extracted.scannedPageNumbers);

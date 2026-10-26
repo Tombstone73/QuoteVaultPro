@@ -376,12 +376,12 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
       if (quoteDraftUpdateProposal && typeof quoteDraftUpdateProposal.quoteId === "string" && typeof quoteDraftUpdateProposal.quoteIntakeSessionId === "string" && typeof quoteDraftUpdateProposal.proposalFingerprint === "string" && typeof quoteDraftUpdateProposal.expectedQuoteFingerprint === "string") {
-        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftUpdateCommandName, arguments: { quoteId: quoteDraftUpdateProposal.quoteId, quoteIntakeSessionId: quoteDraftUpdateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftUpdateProposal.proposalFingerprint, expectedQuoteFingerprint: quoteDraftUpdateProposal.expectedQuoteFingerprint }, context: input.context });
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftUpdateCommandName, arguments: { quoteId: quoteDraftUpdateProposal.quoteId, quoteIntakeSessionId: quoteDraftUpdateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftUpdateProposal.proposalFingerprint, expectedQuoteFingerprint: quoteDraftUpdateProposal.expectedQuoteFingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: quoteDraftUpdateProposal.quoteIntakeSessionId, fingerprint: quoteDraftUpdateProposal.proposalFingerprint } });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
       if (quoteDraftCreateProposal && typeof quoteDraftCreateProposal.quoteIntakeSessionId === "string" && typeof quoteDraftCreateProposal.proposalFingerprint === "string") {
-        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftCreateCommandName, arguments: { quoteIntakeSessionId: quoteDraftCreateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftCreateProposal.proposalFingerprint }, context: input.context });
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftCreateCommandName, arguments: { quoteIntakeSessionId: quoteDraftCreateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftCreateProposal.proposalFingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: quoteDraftCreateProposal.quoteIntakeSessionId, fingerprint: quoteDraftCreateProposal.proposalFingerprint } });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
@@ -473,6 +473,15 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
     } catch (error) { return safeError(res, error); }
   });
 
+  app.get("/api/assistant/conversations/:conversationId/plans", ...guarded, async (req, res) => {
+    try {
+      const actor = scope(req);
+      const conversation = await conversationRepository.getConversation({ organizationId: actor.organizationId, userId: actor.userId, conversationId: req.params.conversationId });
+      if (!conversation) throw new ExecutionPlanError("PLAN_NOT_FOUND", "Conversation plans are not available.");
+      const plans = await service.listConversationPlans(actor, req.params.conversationId);
+      return res.json({ success: true, data: plans.filter((plan) => plan.commandName === quoteDraftCreateCommandName || plan.commandName === quoteDraftUpdateCommandName).map((plan) => planDto(plan)) });
+    } catch (error) { return safeError(res, error); }
+  });
   app.get("/api/assistant/plans/:planId", ...guarded, async (req, res) => {
     try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
     catch (error) { if (error instanceof ExecutionPlanError && error.code === "PLAN_NOT_FOUND") { try { return res.json({ success: true, data: compositePlanDto(await compositeService.getPlan(scope(req), req.params.planId)) }); } catch (compositeError) { return safeError(res, compositeError); } } return safeError(res, error); }

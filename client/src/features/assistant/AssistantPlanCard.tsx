@@ -702,13 +702,14 @@ export function AssistantProductPricingProposalCard({ proposal, onCreatePlan, cr
   </section>;
 }
 
-export function AssistantQuoteDraftProposalCard({ proposal, onCreatePlan, creating }: { proposal: AssistantQuoteDraftProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean }) {
+export function AssistantQuoteDraftProposalCard({ proposal, onCreatePlan, creating, error }: { proposal: AssistantQuoteDraftProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean; error?: string | null }) {
   const updating = proposal.action === "quotes.update_draft";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Quote draft proposal: ${proposal.title}`}>
     <p className="font-semibold">{proposal.title}</p>
     {proposal.summary ? <p className="mt-1 text-muted-foreground">{proposal.summary}</p> : null}
     <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">The server will revalidate customer, product, PBV2 pricing, taxes, and editable draft state before the dedicated GO confirmation. This cannot send, accept, convert, schedule, reserve inventory, invoice, or email.</p>
     <div className="mt-2"><Button type="button" size="sm" disabled={creating} onClick={() => void onCreatePlan(proposal.turnId)}>{creating ? "Preparing plan…" : updating ? "Review draft-update plan" : "Review draft quote plan"}</Button></div>
+    {error ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="alert">Plan review could not advance: {error}</p> : null}
   </section>;
 }
 
@@ -717,8 +718,10 @@ export function AssistantPlanCard({
   context,
   onCancel,
   onConfirm,
+  onResume,
   cancelling,
   confirming,
+  resuming,
   allowGenericConfirmation = false,
   genericActionLabel,
   confirmationError,
@@ -727,8 +730,10 @@ export function AssistantPlanCard({
   context: AssistantContextEnvelope;
   onCancel?: (planId: string, expectedPlanVersion: number) => Promise<unknown> | void;
   onConfirm?: (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => Promise<unknown> | void;
+  onResume?: () => Promise<unknown> | void;
   cancelling?: boolean;
   confirming?: boolean;
+  resuming?: boolean;
   /** Only the turn-bound generic proposal adapter may opt into this path. */
   allowGenericConfirmation?: boolean;
   genericActionLabel?: string;
@@ -806,7 +811,8 @@ export function AssistantPlanCard({
     {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : isConfigurableProduct ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan creates exactly one inactive, unpublished product with a PBV2 DRAFT tree. It cannot activate, publish, or make the product live-quotable.</p> : isProductPricingRollback ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">The rollback restores only exact scalar fields that have not been changed since the original execution. It cannot alter lifecycle, publication, visibility, or historical transactions.</p> : isProductPricingChangeSet ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Effective immediately for future pricing calculations only. The exact persisted rows can be rolled back later if their values remain unchanged.</p> : isQuoteDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isQuoteDraftUpdate ? "updates" : "creates"} exactly one internal draft quote. It cannot send, accept, convert, schedule production, reserve inventory, invoice, collect payment, fulfill, or email.</p> : isProductDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isProductDraftUpdate ? "updates" : "creates"} one inactive product draft only. It cannot activate, publish, or modify an active product.</p> : genericPlan ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">The server binds this plan to its proposal, tenant, actor, fingerprint, confirmation token, revalidation, and idempotency record.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
     {isProductDraftUpdate && plan.productDraftUpdate?.validationErrors.length ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="status">Resolve validation errors before this draft update can be confirmed.</p> : null}
     {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isPbv2PricingEdit ? (plan.pbv2PricingEdit?.kind === "matrix" ? "GO: replace inactive matrix" : "GO: replace inactive quantity tiers") : isCloneInactiveDraft ? "GO: clone to inactive product draft" : isConfigurableProduct ? "GO: create configurable inactive product draft" : isProductPricingRollback ? "GO: roll back product pricing" : isProductPricingChangeSet ? "GO: adjust product pricing" : isQuoteDraftUpdate ? "GO: update draft quote" : isQuoteDraft ? "GO: create draft quote" : isProductDraftUpdate ? "GO: update inactive product draft" : isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : goLabel}</Button></div> : null}
-    {confirmationError ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="alert">Confirmation was not completed: {confirmationError}</p> : null}
+    {isQuoteDraft && plan.status === "awaiting_confirmation" && !plan.confirmationToken && onResume ? <div className="mt-2"><Button type="button" size="sm" disabled={resuming} onClick={() => void onResume()}>{resuming ? "Restoring GO review…" : "Resume GO review"}</Button></div> : null}
+    {confirmationError ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="alert">Plan review or confirmation did not complete: {confirmationError}</p> : null}
     {canConfirmGeneric ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={`GO: ${actionLabel}`}>{confirming ? "Confirming…" : `GO — ${actionLabel}`}</Button></div> : null}
     {plan.quoteInternalNote && plan.confirmationAvailable && !plan.confirmationToken && plan.status === "awaiting_confirmation" ? <p className="mt-2 text-muted-foreground" role="status">Confirmation is not ready. Reload this plan before continuing.</p> : null}
     {canCancel ? <div className="mt-2"><Button type="button" size="sm" variant="outline" disabled={cancelling} onClick={cancel}>{cancelling ? "Cancelling plan…" : "Cancel plan"}</Button></div> : null}

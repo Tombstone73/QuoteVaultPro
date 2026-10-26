@@ -5,7 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { useArchiveAssistantConversations, useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
+import { useArchiveAssistantConversations, useAssistantConversation, useAssistantConversationPlans, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -563,9 +563,9 @@ export function ResultCards({
       if (created) {
         const planCard = { kind: "action_plan", title: quoteDraftProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
         const plan = toAssistantPlanCardModel(planCard);
-        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} onResume={() => createGenericPlan(quoteDraftProposal.turnId)} resuming={genericCreatingTurns[quoteDraftProposal.turnId]} confirmationError={genericCreateErrors[quoteDraftProposal.turnId]} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
       }
-      return <AssistantQuoteDraftProposalCard key={`proposal-${quoteDraftProposal.turnId}-${index}`} proposal={quoteDraftProposal} onCreatePlan={onCreatePlan} />;
+      return <AssistantQuoteDraftProposalCard key={`proposal-${quoteDraftProposal.turnId}-${index}`} proposal={quoteDraftProposal} onCreatePlan={createGenericPlan} creating={genericCreatingTurns[quoteDraftProposal.turnId]} error={genericCreateErrors[quoteDraftProposal.turnId]} />;
     }
     const proposal = toAssistantQuoteNoteProposal(card);
     if (proposal) {
@@ -769,9 +769,23 @@ function ConversationContent() {
   const updateConversation = useUpdateAssistantConversation();
   const archiveConversations = useArchiveAssistantConversations();
   const detail = useAssistantConversation(activeConversationId, enabled);
+  const persistedPlans = useAssistantConversationPlans(activeConversationId, enabled);
   const cancelPlan = useCancelAssistantPlan();
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
+  const restoredExecutionPlans = React.useMemo(() => {
+    const restored: typeof executionPlans = {};
+    for (const plan of persistedPlans.data ?? []) {
+      if (plan.turnId && !restored[plan.turnId]) restored[plan.turnId] = { turnId: plan.turnId, plan, confirmationToken: null };
+    }
+    for (const [turnId, entry] of Object.entries(executionPlans)) {
+      const current = restored[turnId]?.plan as { id?: unknown; status?: unknown } | undefined;
+      const local = entry.plan as { id?: unknown; status?: unknown } | undefined;
+      if (current?.id === local?.id && ["succeeded", "failed", "cancelled", "expired", "invalidated"].includes(String(current?.status))) continue;
+      restored[turnId] = entry;
+    }
+    return restored;
+  }, [executionPlans, persistedPlans.data]);
   const canonicalInteraction = useCanonicalProductIntentInteraction();
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
@@ -922,7 +936,7 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content || "File attached"}{activeConversationId && message.attachments?.length ? <AssistantImagePreviews conversationId={activeConversationId} attachments={message.attachments} /> : null}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={restoredExecutionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           <AssistantWorkingIndicator active={assistantWorking.active} label={assistantWorking.label} />
           {visibleTurnNotice ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{visibleTurnNotice}</p> : null}

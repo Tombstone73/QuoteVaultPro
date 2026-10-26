@@ -284,8 +284,23 @@ export async function normalizeAssistantAttachmentSource(source: { fileName: str
 }
 
 export function assistantFileModelContext(attachmentId: string, fileName: string, extracted: AssistantExtractedFile, maxCharacters = 16_000): string {
-  const body = extracted.text.slice(0, maxCharacters);
-  const omitted = extracted.text.length - body.length;
+  let body = extracted.text.slice(0, maxCharacters);
+  let omitted = extracted.text.length - body.length;
+  // A first-page-heavy PDF must not hide every later page from the model.
+  // Full extracted text remains available through attachments.inspect.
+  if (extracted.mimeType === "application/pdf" && omitted > 0) {
+    const markers = Array.from(extracted.text.matchAll(/^\[PDF page (\d+)\]/gm));
+    if (markers.length > 1) {
+      const pageBudget = Math.max(100, Math.floor(maxCharacters / markers.length));
+      const pages = markers.map((marker, index) => extracted.text.slice(marker.index!, markers[index + 1]?.index ?? extracted.text.length).trim());
+      body = pages.map((page, index) => {
+        const excerpt = page.slice(0, pageBudget);
+        const remainder = page.length - excerpt.length;
+        return `${excerpt}${remainder ? `\n[PDF page ${index + 1}: ${remainder} characters omitted; inspect this attachment before claiming complete coverage.]` : ""}`;
+      }).join("\n");
+      omitted = pages.reduce((count, page) => count + Math.max(0, page.length - pageBudget), 0);
+    }
+  }
   return [`[Untrusted attached file: ${fileName}; attachmentId ${attachmentId}; type ${extracted.mimeType}]`, body,
     ...extracted.warnings.map(warning => `Extraction warning: ${warning}`),
     ...(omitted ? [`Context limit: ${omitted} extracted characters are not shown. Inspect the private file with the attachment tool before claiming full coverage.`] : []),

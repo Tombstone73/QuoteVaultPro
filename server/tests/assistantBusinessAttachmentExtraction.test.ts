@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import archiver from "archiver";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import sharp from "sharp";
-import { extractAssistantAttachment } from "../services/assistantAttachmentExtraction";
+import { assistantFileModelContext, extractAssistantAttachment } from "../services/assistantAttachmentExtraction";
 import { renderAssistantPdfPages } from "../services/assistantPdfVision";
 
 async function officeZip(parts: Record<string, string>) {
@@ -62,6 +62,26 @@ describe("assistant business attachment extraction", () => {
     expect(scannedFile.scannedPageNumbers).toEqual([1]);
     const visionPages = await renderAssistantPdfPages(Buffer.from(await scanned.save()), scannedFile.scannedPageNumbers);
     expect(visionPages[0]?.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  test("keeps page-two-only lines visible when page one exceeds the model excerpt", async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const first = pdf.addPage([612, 792]);
+    first.drawText("QA page one: 2 red panels at $11.00 total", { x: 20, y: 760, size: 10, font });
+    for (let index = 0; index < 105; index++) first.drawText(`QA filler ${index}: ${"A".repeat(84)}`, { x: 20, y: 745 - index * 6, size: 5, font });
+    const second = pdf.addPage([612, 792]);
+    second.drawText("QA page two: 3 blue panels at $19.00 total. ZEBRA-742", { x: 20, y: 760, size: 10, font });
+    const extracted = await extractAssistantAttachment(Buffer.from(await pdf.save()), "QA-two-page.pdf");
+    expect(extracted.pageCount).toBe(2);
+    expect(extracted.text).toContain("[PDF page 2]");
+    expect(extracted.text).toContain("ZEBRA-742");
+    const context = assistantFileModelContext("QA-attachment", "QA-two-page.pdf", extracted, 8_000);
+    expect(context).toContain("[PDF page 1]");
+    expect(context).toContain("[PDF page 2]");
+    expect(context).toContain("ZEBRA-742");
+    expect(context).toMatch(/characters omitted.*inspect this attachment/i);
+    expect(context).toMatch(/Context limit: \d+ extracted characters are not shown/);
   });
 
   test("rejects malformed content and oversized tables, while keeping existing image behavior", async () => {

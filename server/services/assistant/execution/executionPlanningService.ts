@@ -56,6 +56,16 @@ export class ExecutionPlanningService {
     return this.requirePlan(scope, planId);
   }
 
+  async listConversationPlans(scope: ExecutionActorScope, conversationId: string): Promise<ExecutionPlanRecord[]> {
+    const plans = await this.repository.listForConversation?.(scope, conversationId) ?? [];
+    return plans.filter((plan) => {
+      const command = this.registry.get(plan.commandName);
+      if (!command) return false;
+      try { this.assertCommandAuthorized(scope, command, "You are not allowed to read this plan."); return true; }
+      catch { return false; }
+    });
+  }
+
   async createPlan(scope: ExecutionActorScope, request: CreateExecutionPlanRequest): Promise<ExecutionPlanRecord> {
     const command = this.registry.get(request.commandName);
     if (!command) throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
@@ -81,6 +91,7 @@ export class ExecutionPlanningService {
         conversationId: request.conversationId,
         commandName: command.name,
         arguments: prepared.arguments,
+        contextHash: contextHash(request.context),
         now,
       });
       if (existing && !isExpired(existing, now)) return existing;

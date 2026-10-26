@@ -52,6 +52,24 @@ describe("Assistant workspace presentation", () => {
     act(() => root.unmount());
   });
 
+  test("restores a reviewed Quote plan after refresh and advances to one GO control", () => {
+    const proposal = { kind: "action_proposal", title: "Create draft Quote", summary: "QA Quote preview", sourceLinks: [], plan: { action: "quotes.create_draft", quoteIntakeSessionId: "session_qa", proposalFingerprint: "a".repeat(64) }, proposal: { action: "quotes.create_draft", quoteIntakeSessionId: "session_qa", proposalFingerprint: "a".repeat(64), turnId: "turn_qa" } };
+    const plan = { id: "plan_qa", turnId: "turn_qa", action: "quotes.create_draft", status: "awaiting_confirmation", planVersion: 2, riskLevel: "high", confirmationAvailable: true, preview: { summary: "One QA draft Quote", sideEffects: [{ description: "Create one draft Quote" }] }, missingInformation: [], cancellationAvailable: true };
+    const onCreatePlan = jest.fn(async () => undefined);
+    const restored = render([proposal], { executionPlans: { turn_qa: { turnId: "turn_qa", plan, confirmationToken: null } }, onCreatePlan });
+    expect(restored.container.textContent).toContain("Status: awaiting_confirmation");
+    expect(restored.container.textContent).toContain("Resume GO review");
+    expect(restored.container.textContent).not.toContain("Review draft quote plan");
+    act(() => restored.container.querySelector("button")?.click());
+    expect(onCreatePlan).toHaveBeenCalledWith("turn_qa");
+    act(() => restored.root.unmount());
+
+    const ready = render([proposal], { executionPlans: { turn_qa: { turnId: "turn_qa", plan, confirmationToken: "server-only-token" } } });
+    expect(ready.container.textContent).toContain("GO create draft quote");
+    expect(ready.container.textContent).not.toContain("Review draft quote plan");
+    act(() => ready.root.unmount());
+  });
+
   test("shows Quote edit before/after fields and totals before GO", () => {
     const { container, root } = render([{ kind: "quote_intake_summary", title: "Quote edit preview", summary: "Review changes", sourceLinks: [], details: {
       quote: { id: "quote-1", displayNumber: "QT-1205" }, expectedRevision: 4,
