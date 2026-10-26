@@ -593,6 +593,23 @@ export function ResultCards({
     if (card.kind === "quote_intake_summary") {
       const preview = (card.details ?? {}) as Record<string, any>;
       const money = (cents: unknown) => typeof cents === "number" ? `$${(cents / 100).toFixed(2)}` : "Unavailable";
+      if (preview.quote?.id && Array.isArray(preview.changes)) {
+        const showChange = (value: unknown) => {
+          if (value === null || value === undefined) return "—";
+          if (typeof value !== "string" || !value.startsWith("{")) return String(value);
+          try {
+            const parsed = JSON.parse(value) as Record<string, unknown>;
+            return Object.entries(parsed).map(([field, item]) => `${field}: ${typeof item === "object" ? JSON.stringify(item) : String(item)}`).join("; ");
+          } catch { return value; }
+        };
+        return <section key={`${card.kind}-${index}`} className="rounded-xl border border-border/70 bg-card px-3 py-3 text-sm shadow-sm">
+          <p className="font-semibold text-foreground">{card.title}: {preview.quote.displayNumber}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Draft Quote revision {preview.expectedRevision}. Only the fields and lines below will change.</p>
+          <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-border"><th className="py-1 pr-2">Field</th><th className="py-1 pr-2">Before</th><th className="py-1">After</th></tr></thead><tbody>{preview.changes.map((change: any, changeIndex: number) => <tr key={`${change.field}-${changeIndex}`} className="border-b border-border/50 align-top"><td className="py-1 pr-2 font-medium">{change.field}</td><td className="py-1 pr-2 break-words">{showChange(change.before)}</td><td className="py-1 break-words">{showChange(change.after)}</td></tr>)}</tbody></table></div>
+          <div className="mt-3 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2"><p>Subtotal: {money(preview.subtotalCentsBefore)} → {money(preview.subtotalCentsAfter)}</p><p>Tax: {money(preview.taxCentsBefore)} → {money(preview.taxCentsAfter)}</p><p className="font-semibold text-foreground">Total: {money(preview.totalCentsBefore)} → {money(preview.totalCentsAfter)}</p></div>
+          {Array.isArray(preview.warnings) && preview.warnings.length ? <p className="mt-2 text-muted-foreground">{preview.warnings.join(" ")}</p> : null}
+        </section>;
+      }
       const address = (value: any) => value && typeof value === "object" ? [value.name, value.company, value.address1, value.address2, [value.city, value.state, value.postalCode].filter(Boolean).join(" "), value.country].filter(Boolean).join(", ") : "Not available";
       const rows = Array.isArray(preview.lineItems) ? preview.lineItems : [];
       return <section key={`${card.kind}-${index}`} className="rounded-xl border border-border/70 bg-card px-3 py-3 text-sm shadow-sm">

@@ -144,7 +144,7 @@ export class QuoteEditorOperationService {
       const next = nextLines.find((line) => line.id === change.id)!;
       Object.assign(next, data, { specsJson: override.specsJson, pbv2SnapshotJson: pricedSnapshot, linePrice: nextCents / 100, effectiveTotalCents: nextCents,
         hasPriceOverride: override.pricing.hasPriceOverride, overridePriceCents: override.overridePriceCents, isTaxableSnapshot: product.isTaxable ?? true });
-      lineChanges.push({ field: `Line ${change.id}`, before: JSON.stringify({ product: previous.productName, quantity: previous.quantity, width: previous.width, height: previous.height, totalCents: cents(previous.linePrice) }), after: JSON.stringify({ product: product.name, quantity: data.quantity, width: data.width, height: data.height, totalCents: nextCents }) });
+      lineChanges.push({ field: `Line ${change.id}`, before: JSON.stringify({ product: previous.productName, quantity: previous.quantity, width: previous.width, height: previous.height, options: (previous.optionSelectionsJson as any)?.selected ?? {}, description: previous.description ?? null, manualPriceReason: previous.overrideReason ?? null, totalCents: cents(previous.linePrice) }), after: JSON.stringify({ product: product.name, quantity: data.quantity, width: data.width, height: data.height, options: (data.optionSelectionsJson as any)?.selected ?? {}, description: data.description ?? null, manualPriceReason: data.overrideReason ?? null, totalCents: nextCents }) });
     }
     for (let index = 0; index < request.lines.create.length; index++) {
       const line = request.lines.create[index];
@@ -158,7 +158,7 @@ export class QuoteEditorOperationService {
       nextLines.push({ ...creates[creates.length - 1].data, linePrice: nextCents / 100, effectiveTotalCents: nextCents,
         hasPriceOverride: line.manualTotalCents !== undefined, overridePriceCents: line.manualTotalCents ?? null,
         status: "active", isTaxableSnapshot: product.isTaxable ?? true });
-      lineChanges.push({ field: `New line ${index + 1}`, before: null, after: JSON.stringify({ product: product.name, quantity: line.quantity, width: line.width, height: line.height, totalCents: nextCents }) });
+      lineChanges.push({ field: `New line ${index + 1}`, before: null, after: JSON.stringify({ product: product.name, quantity: line.quantity, width: line.width, height: line.height, options: line.optionSelections ?? {}, description: line.description ?? null, manualPriceReason: line.manualPriceReason ?? null, totalCents: nextCents }) });
     }
     for (const lineId of request.lines.delete) { const old = byId.get(lineId)!; lineChanges.push({ field: `Removed line ${lineId}`, before: JSON.stringify({ product: old.productName, totalCents: cents(old.linePrice) }), after: null }); }
     const header: Record<string, unknown> = { ...request.header };

@@ -34,6 +34,21 @@ test("a plain yes binds only one awaiting governed pickup plan", () => {
 describe("Assistant workspace presentation", () => {
   afterEach(() => document.body.innerHTML = "");
 
+  test("shows Quote edit before/after fields and totals before GO", () => {
+    const { container, root } = render([{ kind: "quote_intake_summary", title: "Quote edit preview", summary: "Review changes", sourceLinks: [], details: {
+      quote: { id: "quote-1", displayNumber: "QT-1205" }, expectedRevision: 4,
+      changes: [{ field: "label", before: "QA draft", after: "QA revised" }, { field: "Line line-1", before: '{"product":"QA Sign","quantity":1,"totalCents":100}', after: '{"product":"QA Sign","quantity":2,"totalCents":200}' }],
+      subtotalCentsBefore: 100, subtotalCentsAfter: 200, taxCentsBefore: 7, taxCentsAfter: 14, totalCentsBefore: 107, totalCentsAfter: 214,
+    } }]);
+    expect(container.textContent).toContain("QT-1205");
+    expect(container.textContent).toContain("QA draft");
+    expect(container.textContent).toContain("QA revised");
+    expect(container.textContent).toContain("product: QA Sign");
+    expect(container.textContent).toContain("Total: $1.07 → $2.14");
+    expect(container.textContent).not.toContain("Unresolved");
+    act(() => root.unmount());
+  });
+
   test("renders intentional multi-record line breaks without interpreting assistant text as HTML", () => {
     const content = "**QT-910322**\nCustomer: Test customer\n\n**QT-910321**\nCustomer: 55 Twin Lane";
     const container = document.createElement("div");

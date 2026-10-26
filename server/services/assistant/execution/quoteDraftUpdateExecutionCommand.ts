@@ -79,6 +79,7 @@ export function createQuoteDraftUpdateExecutionCommand(service: QuoteDraftUpdate
         status: "succeeded",
         summary: `Draft quote ${result.quote.displayNumber} was updated. It has not been sent, accepted, converted, or routed to production.`,
         steps: [{ commandName: `${quoteDraftUpdateCommandName}@${command.version}`, status: "succeeded", summary: `Updated draft quote ${result.quote.displayNumber}.`, ...(result.domainAuditReference ? { domainAuditReference: result.domainAuditReference } : {}) }],
+        details: { quote: { id: result.quote.id, displayNumber: result.quote.displayNumber, totalCents: result.quote.totalCents, sourceLink: result.quote.sourceLink } },
       };
     },
   };

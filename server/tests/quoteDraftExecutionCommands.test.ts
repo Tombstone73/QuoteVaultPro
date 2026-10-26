@@ -80,5 +80,7 @@ describe("draft quote execution command bridges", () => {
     expect(built.preview.quoteDraftUpdate).toMatchObject({ quoteId: "quote_1", totalCentsAfter: 12600 });
     const revalidation = await command.revalidate({ plan: { sanitizedArguments: built.arguments, affectedRecords: built.preview.affectedRecords } as any, scope });
     expect(revalidation).toEqual({ valid: true });
+    const result = await command.execute({ plan: { id: "plan_2", idempotencyKey: "aicmd_123e4567-e89b-12d3-a456-426614174000", correlationId: "corr_2", sanitizedArguments: built.arguments } as any, scope });
+    expect(result.details?.quote).toEqual({ id: "quote_1", displayNumber: "Q-1042", totalCents: 12600, sourceLink: "/quotes/quote_1" });
   });
 });
