@@ -30,7 +30,7 @@ describe("shared application change operations", () => {
       .toMatchObject({ adapterGaps: [{ operation: "products.delete", classification: "application_operation_missing_assistant_adapter" }] });
     expect((await discover!.execute({ arguments: { query: "products.delete" }, context })).result?.data).toMatchObject({ adapterGaps: [] });
     expect((await discover!.execute({ arguments: { query: "quotes" }, context: { ...context, permissions: ["assistant.quotes.update_draft"] } })).result?.data)
-      .toMatchObject({ adapterGaps: [{ operation: "quotes.editor_save", classification: "application_operation_missing_assistant_adapter" }] });
+      .toMatchObject({ adapterGaps: [] });
     expect((await discover!.execute({ arguments: { query: "quotes" }, context })).result?.data).toMatchObject({ adapterGaps: [] });
     expect((await prepare!.execute({ arguments: { operation: "products.apply_existing_operations", arguments: {} }, context })).status).toBe("rejected");
   });

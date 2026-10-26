@@ -49,7 +49,7 @@ import {
   type PendingOperatorActionContext,
 } from "./operatorConversationContext";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
-import { createQuoteApplicationTools } from "./quoteApplicationTools";
+import { createQuoteApplicationTools, createQuoteEditorApplicationTools } from "./quoteApplicationTools";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
@@ -1224,14 +1224,19 @@ export class AssistantService {
     }] : [];
     const purchaseOrderTools = hasPermission(actor, "assistant.orders.create") && hasPermission(actor, "assistant.internal_staff")
       ? [createPurchaseOrderAttachmentTool(request.message)] : [];
-    const quoteApplicationTools = !staffRoleDiscussion && hasPermission(actor, "assistant.quotes.create_draft") && hasPermission(actor, "assistant.internal_staff")
-      ? createQuoteApplicationTools() : [];
+    const mayCreateQuote = hasPermission(actor, "assistant.quotes.create_draft");
+    const mayEditQuote = hasPermission(actor, "assistant.quotes.update_draft");
+    const quoteApplicationTools = !staffRoleDiscussion && hasPermission(actor, "assistant.internal_staff") && (mayCreateQuote || mayEditQuote)
+      ? createQuoteApplicationTools().filter((tool) => mayCreateQuote || tool.name === "quotes.inspect_configuration") : [];
+    const quoteEditorTools = !staffRoleDiscussion && mayEditQuote && hasPermission(actor, "assistant.internal_staff")
+      ? createQuoteEditorApplicationTools() : [];
     const applicationOperations = createApplicationOperationTools([
       ...existingProductEditTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools,
       ...quoteApplicationTools.filter((tool) => tool.name === "quotes.prepare_create"),
+      ...quoteEditorTools.filter((tool) => tool.name === "quotes.editor_save"),
       ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
     ]);
-    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...quoteApplicationTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {

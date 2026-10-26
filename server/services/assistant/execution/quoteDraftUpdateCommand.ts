@@ -42,6 +42,7 @@ export const quoteDraftUpdatePreviewSchema = z.object({
   quoteIntakeSessionId: z.string().min(1),
   proposalFingerprint: fingerprintSchema,
   expectedQuoteFingerprint: fingerprintSchema,
+  expectedRevision: z.number().int().positive(),
   changes: z.array(quoteChangePreviewSchema).min(1).max(200),
   subtotalCentsBefore: z.number().int().min(0),
   subtotalCentsAfter: z.number().int().min(0),

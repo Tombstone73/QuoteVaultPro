@@ -165,7 +165,7 @@ function hasQuoteLineItemOverridePatch(value: any): boolean {
   );
 }
 
-class QuoteEditorSaveError extends Error {
+export class QuoteEditorSaveError extends Error {
   constructor(readonly code: "QUOTE_LINE_STALE" | "QUOTE_LINE_DUPLICATE" | "QUOTE_LINE_REQUIRED" | "QUOTE_LINE_PRODUCT_NOT_FOUND" | "QUOTE_LINE_DIMENSIONS_INVALID", message: string, readonly statusCode: number) {
     super(message);
   }
@@ -552,6 +552,193 @@ async function validateQuoteIdentity(
   if (associatedCustomerIds.size > 0 && !associatedCustomerIds.has(normalizedCustomerId)) {
     throw new QuoteIdentityError("CONTACT_CUSTOMER_CONFLICT", "Contact is not linked to the selected customer.", 409);
   }
+}
+
+export const quoteEditorHeaderSchema = z.object({
+  customerId: z.string().nullable().optional(), contactId: z.string().nullable().optional(),
+  customerName: z.string().nullable().optional(), label: z.string().nullable().optional(),
+  requestedDueDate: z.string().nullable().optional(), shippingMethod: z.enum(["pickup", "ship", "deliver"]).optional(),
+  shippingCents: z.number().int().nonnegative().nullable().optional(),
+  shippingInstructions: z.string().nullable().optional(), customerNotes: z.string().nullable().optional(),
+  discountAmount: z.number().nonnegative().optional(), taxRate: z.number().min(0).max(1).optional(),
+  visibleInCustomerPortal: z.boolean().optional(), tags: z.array(z.string()).optional(),
+  shipToCompany: z.string().nullable().optional(), shipToName: z.string().nullable().optional(),
+  shipToEmail: z.string().nullable().optional(), shipToPhone: z.string().nullable().optional(),
+  shipToAddress1: z.string().nullable().optional(), shipToAddress2: z.string().nullable().optional(),
+  shipToCity: z.string().nullable().optional(), shipToState: z.string().nullable().optional(),
+  shipToPostalCode: z.string().nullable().optional(), shipToCountry: z.string().nullable().optional(),
+}).strip();
+export const quoteEditorLineSchema = z.object({
+  productId: z.string().min(1), productName: z.string().optional(),
+  variantId: z.string().nullable().optional(), variantName: z.string().nullable().optional(),
+  productType: z.string().optional(), width: z.coerce.number().nonnegative(),
+  height: z.coerce.number().nonnegative(), quantity: z.coerce.number().int().positive(),
+  specsJson: z.record(z.unknown()).nullable().optional(), optionSelectionsJson: z.unknown().optional(),
+  description: z.string().nullable().optional(), productionNotes: z.string().nullable().optional(),
+  status: z.enum(["draft", "active", "canceled"]).optional(),
+  requiresDesign: z.boolean().optional(), requiresPrepress: z.boolean().nullable().optional(),
+  requiresProofApproval: z.boolean().nullable().optional(), displayOrder: z.number().int().optional(),
+  priceOverride: z.unknown().optional(), priceOverrideMode: z.string().nullable().optional(),
+  priceOverrideValueCents: z.number().nullable().optional(), priceOverrideValuePercent: z.number().nullable().optional(),
+  overridePriceCents: z.number().int().nullable().optional(), overrideReason: z.string().nullable().optional(),
+  overrideAt: z.union([z.string(), z.number(), z.null()]).optional(), overrideByUserId: z.string().nullable().optional(),
+}).strip();
+export const quoteEditorSaveBodySchema = z.object({
+  expectedRevision: z.number().int().positive(), header: quoteEditorHeaderSchema,
+  lines: z.object({
+    create: z.array(z.object({ clientKey: z.string().min(1), data: quoteEditorLineSchema })).default([]),
+    update: z.array(z.object({ id: z.string().min(1), data: quoteEditorLineSchema })).default([]),
+    delete: z.array(z.string().min(1)).default([]),
+  }).strict(),
+}).strict();
+
+export async function saveQuoteEditor(input: { organizationId: string; actorUserId: string; quoteId: string; body: z.infer<typeof quoteEditorSaveBodySchema>; onSaved?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], result: { quote: typeof quotes.$inferSelect; created: Array<{ clientKey: string; id: string }>; changed: boolean }) => Promise<void> }) {
+  const { organizationId, actorUserId, quoteId } = input;
+  const { header, lines, expectedRevision } = input.body;
+  return await canonicalQuoteOperations.runEditableTransaction({
+    organizationId, actorUserId, quoteId, expectedRevision,
+    auditDescription: "Saved Quote header and line changes.",
+    apply: async (tx, existing) => {
+      const repo = new QuotesRepository(tx);
+      const currentLines = await tx.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
+      const byId = new Map(currentLines.map((line) => [line.id, line]));
+      const touchedIds = [...lines.delete, ...lines.update.map((line) => line.id)];
+      if (new Set(touchedIds).size !== touchedIds.length || touchedIds.some((id) => !byId.has(id))) {
+        throw new QuoteEditorSaveError("QUOTE_LINE_STALE", "A line item changed or does not belong to this Quote. Reload before saving.", 409);
+      }
+      if (new Set(lines.create.map((line) => line.clientKey)).size !== lines.create.length) {
+        throw new QuoteEditorSaveError("QUOTE_LINE_DUPLICATE", "Duplicate new line identities are not allowed.", 400);
+      }
+      if (currentLines.length - lines.delete.length + lines.create.length < 1) {
+        throw new QuoteEditorSaveError("QUOTE_LINE_REQUIRED", "At least one line item is required to save a Quote.", 400);
+      }
+      const ownerChanged = (header.customerId !== undefined && header.customerId !== existing.customerId) ||
+        (header.contactId !== undefined && header.contactId !== existing.contactId);
+      if (ownerChanged) await validateQuoteIdentity(organizationId, header.customerId ?? existing.customerId, header.contactId ?? existing.contactId, tx);
+      const { tags, ...headerFields } = header;
+      if (!ownerChanged) delete headerFields.customerName;
+      const nextHeader: Record<string, unknown> = {};
+      if (ownerChanged && (header.customerId ?? existing.customerId)) {
+        const snapshot = await snapshotCustomerData(organizationId, header.customerId ?? existing.customerId!, header.contactId ?? existing.contactId, header.shippingMethod ?? existing.shippingMethod, existing.shippingMode, tx);
+        Object.assign(nextHeader, snapshot);
+        if (quoteShipToFields.some((field) => Boolean(existing[field]))) {
+          // A saved destination is one snapshot; never mix its components
+          // with a newly selected customer's defaults.
+          for (const field of quoteShipToFields) nextHeader[field] = existing[field];
+        }
+      }
+      Object.assign(nextHeader, headerFields);
+      // Submitted destination values always win over a refreshed customer snapshot.
+      Object.assign(nextHeader, explicitQuoteShipTo(header));
+      const changes: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(nextHeader)) {
+        if (value === undefined) continue;
+        const before = existing[key as keyof typeof existing];
+        const comparable = (item: unknown) => key === "requestedDueDate" && item
+          ? new Date(String(item)).toISOString().slice(0, 10)
+          : ["discountAmount", "taxRate", "shippingCents"].includes(key) && item !== null
+            ? Number(item) : item;
+        if (JSON.stringify(comparable(before)) !== JSON.stringify(comparable(value))) changes[key] = value;
+      }
+      let changed = Object.keys(changes).length > 0;
+      if (changed) await repo.updateQuote(organizationId, quoteId, changes as Parameters<typeof repo.updateQuote>[2]);
+      const affectedBundleParents = new Set(touchedIds.map((id) => byId.get(id)?.parentLineItemId).filter((id): id is string => Boolean(id)));
+      for (const id of lines.delete) {
+        await repo.deleteLineItem(id);
+        changed = true;
+      }
+      const { priceLineItem } = await import("../services/pricing/PricingService");
+      const created: Array<{ clientKey: string; id: string }> = [];
+      for (const item of lines.update) {
+        const previous = byId.get(item.id)!;
+        const incoming = item.data;
+        const pricingChanged = haveLineItemPricingDriversChanged({ existingLineItem: previous, incomingUpdate: incoming, pbv2ExplicitSelections: (incoming.optionSelectionsJson as any)?.selected });
+        const update: Record<string, unknown> = {
+          productId: incoming.productId, productName: incoming.productName,
+          variantId: incoming.variantId, variantName: incoming.variantName,
+          productType: incoming.productType, width: incoming.width, height: incoming.height,
+          quantity: incoming.quantity, optionSelectionsJson: incoming.optionSelectionsJson,
+          specsJson: incoming.specsJson,
+          description: incoming.description, productionNotes: incoming.productionNotes,
+          status: incoming.status, requiresDesign: incoming.requiresDesign,
+          requiresPrepress: incoming.requiresPrepress, requiresProofApproval: incoming.requiresProofApproval,
+          overrideReason: incoming.overrideReason,
+        };
+        if (pricingChanged) {
+          const product = await storage.getProductById(organizationId, incoming.productId);
+          if (!product) throw new QuoteEditorSaveError("QUOTE_LINE_PRODUCT_NOT_FOUND", "Line product was not found for this organization.", 404);
+          const dimensions = dimensionsForProductPricing(product, incoming.width, incoming.height);
+          if (dimensions.widthIn <= 0 || dimensions.heightIn <= 0) throw new QuoteEditorSaveError("QUOTE_LINE_DIMENSIONS_INVALID", "Line dimensions must be positive.", 400);
+          const priced = await priceLineItem({ organizationId, productId: incoming.productId, quantity: incoming.quantity, widthIn: dimensions.widthIn, heightIn: dimensions.heightIn, pbv2ExplicitSelections: (incoming.optionSelectionsJson as any)?.selected || {}, pbv2TreeVersionIdOverride: undefined });
+          Object.assign(update, { pbv2TreeVersionId: priced.pbv2TreeVersionId, pbv2SnapshotJson: priced.pbv2SnapshotJson, pricedAt: new Date(), selectedOptions: priced.pbv2SnapshotJson.selectedOptions || [], isTaxableSnapshot: product.isTaxable ?? true, linePrice: priced.lineTotalCents / 100, priceBreakdown: { basePrice: priced.breakdown.baseCents / 100, optionsPrice: priced.breakdown.optionsCents / 100, total: priced.lineTotalCents / 100, formula: "", nestingDetails: priced.breakdown.nestingDetails ?? null, pricingMethod: priced.breakdown.pricingMethod }, formulaLinePrice: null, overridePriceCents: null, overrideAt: null, overrideByUserId: null });
+        }
+        const clearsOverride = incoming.priceOverride === null || incoming.priceOverrideMode === null || incoming.overridePriceCents === null;
+        const explicitOverride = hasExplicitPriceOverrideMetadata(incoming);
+        if (hasQuoteLineItemOverridePatch(incoming) && !clearsOverride && !explicitOverride) {
+          throw new LineItemPriceOverrideValidationError("Invalid price override payload");
+        }
+        if (clearsOverride || explicitOverride) {
+          const baseLine = { ...previous, ...update };
+          const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
+            existingLineItem: baseLine,
+            incomingUpdate: incoming,
+            baseCalculatedTotalCents: pricingChanged ? Math.round(Number(update.linePrice) * 100) : null,
+          });
+          Object.assign(update, {
+            specsJson: overridePatch.specsJson, linePrice: overridePatch.linePrice,
+            formulaLinePrice: overridePatch.formulaLinePrice, overridePriceCents: overridePatch.overridePriceCents,
+            priceBreakdown: { ...overridePatch.priceBreakdown, total: overridePatch.linePrice },
+            overrideAt: explicitOverride ? coerceLineItemOverrideAt(incoming.overrideAt) ?? new Date() : null,
+            overrideByUserId: explicitOverride ? incoming.overrideByUserId ?? actorUserId : null,
+          });
+        }
+        await repo.updateLineItem(item.id, Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as Parameters<typeof repo.updateLineItem>[1]);
+        changed = true;
+      }
+      for (const item of lines.create) {
+        const incoming = item.data;
+        const product = await storage.getProductById(organizationId, incoming.productId);
+        if (!product) throw new QuoteEditorSaveError("QUOTE_LINE_PRODUCT_NOT_FOUND", "Line product was not found for this organization.", 404);
+        const dimensions = dimensionsForProductPricing(product, incoming.width, incoming.height);
+        if (dimensions.widthIn <= 0 || dimensions.heightIn <= 0) throw new QuoteEditorSaveError("QUOTE_LINE_DIMENSIONS_INVALID", "Line dimensions must be positive.", 400);
+        const priced = await priceLineItem({ organizationId, productId: incoming.productId, quantity: incoming.quantity, widthIn: dimensions.widthIn, heightIn: dimensions.heightIn, pbv2ExplicitSelections: (incoming.optionSelectionsJson as any)?.selected || {}, pbv2TreeVersionIdOverride: undefined });
+        const clearsOverride = incoming.priceOverride === null || incoming.priceOverrideMode === null || incoming.overridePriceCents === null;
+        const explicitOverride = hasExplicitPriceOverrideMetadata(incoming);
+        if (hasQuoteLineItemOverridePatch(incoming) && !clearsOverride && !explicitOverride) {
+          throw new LineItemPriceOverrideValidationError("Invalid price override payload");
+        }
+        const baseBreakdown = { basePrice: priced.breakdown.baseCents / 100, optionsPrice: priced.breakdown.optionsCents / 100, total: priced.lineTotalCents / 100, formula: "" };
+        const overridePatch = explicitOverride
+          ? buildQuoteLineItemPriceOverridePersistencePatch({
+              existingLineItem: { linePrice: priced.lineTotalCents / 100, priceBreakdown: baseBreakdown, specsJson: incoming.specsJson ?? {}, quantity: incoming.quantity, pbv2SnapshotJson: priced.pbv2SnapshotJson },
+              incomingUpdate: incoming,
+              baseCalculatedTotalCents: priced.lineTotalCents,
+            })
+          : null;
+        const selectedOptions = Array.isArray(priced.pbv2SnapshotJson.selectedOptions) ? priced.pbv2SnapshotJson.selectedOptions : [];
+          const createdLine = await repo.addLineItem(quoteId, { productId: incoming.productId, productName: incoming.productName || product.name, variantId: incoming.variantId ?? null, variantName: incoming.variantName ?? null, productType: incoming.productType || "wide_roll", width: incoming.width, height: incoming.height, quantity: incoming.quantity, specsJson: (overridePatch?.specsJson ?? incoming.specsJson ?? {}) as Parameters<typeof repo.addLineItem>[1]["specsJson"], optionSelectionsJson: (incoming.optionSelectionsJson ?? null) as Parameters<typeof repo.addLineItem>[1]["optionSelectionsJson"], selectedOptions: selectedOptions as Parameters<typeof repo.addLineItem>[1]["selectedOptions"], linePrice: overridePatch?.linePrice ?? priced.lineTotalCents / 100, priceBreakdown: (overridePatch?.priceBreakdown ?? baseBreakdown) as Parameters<typeof repo.addLineItem>[1]["priceBreakdown"], isTaxableSnapshot: product.isTaxable ?? true, overridePriceCents: overridePatch?.overridePriceCents ?? null, overrideReason: incoming.overrideReason ?? null, displayOrder: incoming.displayOrder ?? 0, pbv2TreeVersionId: priced.pbv2TreeVersionId, pbv2SnapshotJson: priced.pbv2SnapshotJson, pricedAt: new Date(), status: incoming.status ?? "active", description: incoming.description ?? null, requiresDesign: incoming.requiresDesign ?? false, requiresPrepress: incoming.requiresPrepress ?? null, requiresProofApproval: incoming.requiresProofApproval ?? null });
+        created.push({ clientKey: item.clientKey, id: createdLine.id });
+        changed = true;
+      }
+      for (const parentId of Array.from(affectedBundleParents)) await recalculateQuoteBundleParent(parentId, tx);
+      const commercialChanged = changed;
+      const normalizedTags = tags ? tags.map((tag) => tag.trim()).filter(Boolean).join(", ") || null : null;
+      if (tags !== undefined) {
+        const [note] = await tx.select({ listLabel: quoteListNotes.listLabel }).from(quoteListNotes).where(and(eq(quoteListNotes.organizationId, organizationId), eq(quoteListNotes.quoteId, quoteId))).limit(1);
+        if ((note?.listLabel ?? null) !== normalizedTags) {
+          await tx.insert(quoteListNotes).values({ organizationId, quoteId, listLabel: normalizedTags, updatedByUserId: actorUserId }).onConflictDoUpdate({ target: [quoteListNotes.organizationId, quoteListNotes.quoteId], set: { listLabel: normalizedTags, updatedByUserId: actorUserId, updatedAt: new Date() } });
+          if (!commercialChanged) await tx.update(quotes).set({ updatedAt: new Date() }).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+          changed = true;
+        }
+      }
+      if (changed) await refreshQuoteAggregateTotals(organizationId, quoteId, tx);
+      const persisted = await repo.getQuoteById(organizationId, quoteId);
+      if (!persisted) throw new Error("Quote disappeared during save.");
+      const value = { quote: persisted, created, changed };
+      if (input.onSaved) await input.onSaved(tx, value);
+      return { changed, value };
+    },
+  });
 }
 
 export function registerQuoteRoutes(
@@ -1492,44 +1679,7 @@ export function registerQuoteRoutes(
   // Normal editor Save is one commercial transaction. Independent line routes
   // remain available for explicit line actions, uploads, and older clients.
   app.patch("/api/quotes/:id/editor-save", isAuthenticated, tenantContext, async (req: any, res) => {
-    const headerSchema = z.object({
-      customerId: z.string().nullable().optional(), contactId: z.string().nullable().optional(),
-      customerName: z.string().nullable().optional(), label: z.string().nullable().optional(),
-      requestedDueDate: z.string().nullable().optional(), shippingMethod: z.enum(["pickup", "ship", "deliver"]).optional(),
-      shippingCents: z.number().int().nonnegative().nullable().optional(),
-      shippingInstructions: z.string().nullable().optional(), customerNotes: z.string().nullable().optional(),
-      discountAmount: z.number().nonnegative().optional(), taxRate: z.number().min(0).max(1).optional(),
-      visibleInCustomerPortal: z.boolean().optional(), tags: z.array(z.string()).optional(),
-      shipToCompany: z.string().nullable().optional(), shipToName: z.string().nullable().optional(),
-      shipToEmail: z.string().nullable().optional(), shipToPhone: z.string().nullable().optional(),
-      shipToAddress1: z.string().nullable().optional(), shipToAddress2: z.string().nullable().optional(),
-      shipToCity: z.string().nullable().optional(), shipToState: z.string().nullable().optional(),
-      shipToPostalCode: z.string().nullable().optional(), shipToCountry: z.string().nullable().optional(),
-    }).strip();
-    const lineSchema = z.object({
-      productId: z.string().min(1), productName: z.string().optional(),
-      variantId: z.string().nullable().optional(), variantName: z.string().nullable().optional(),
-      productType: z.string().optional(), width: z.coerce.number().nonnegative(),
-      height: z.coerce.number().nonnegative(), quantity: z.coerce.number().int().positive(),
-      specsJson: z.record(z.unknown()).nullable().optional(), optionSelectionsJson: z.unknown().optional(),
-      description: z.string().nullable().optional(), productionNotes: z.string().nullable().optional(),
-      status: z.enum(["draft", "active", "canceled"]).optional(),
-      requiresDesign: z.boolean().optional(), requiresPrepress: z.boolean().nullable().optional(),
-      requiresProofApproval: z.boolean().nullable().optional(), displayOrder: z.number().int().optional(),
-      priceOverride: z.unknown().optional(), priceOverrideMode: z.string().nullable().optional(),
-      priceOverrideValueCents: z.number().nullable().optional(), priceOverrideValuePercent: z.number().nullable().optional(),
-      overridePriceCents: z.number().int().nullable().optional(), overrideReason: z.string().nullable().optional(),
-      overrideAt: z.union([z.string(), z.number(), z.null()]).optional(), overrideByUserId: z.string().nullable().optional(),
-    }).strip();
-    const bodySchema = z.object({
-      expectedRevision: z.number().int().positive(), header: headerSchema,
-      lines: z.object({
-        create: z.array(z.object({ clientKey: z.string().min(1), data: lineSchema })).default([]),
-        update: z.array(z.object({ id: z.string().min(1), data: lineSchema })).default([]),
-        delete: z.array(z.string().min(1)).default([]),
-      }).strict(),
-    }).strict();
-    const parsed = bodySchema.safeParse(req.body);
+    const parsed = quoteEditorSaveBodySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ code: "QUOTE_EDITOR_SAVE_INVALID", message: "Invalid Quote save payload.", details: parsed.error.flatten() });
     const organizationId = getRequestOrganizationId(req);
     const actorUserId = getUserId(req.user);
@@ -1538,150 +1688,8 @@ export function registerQuoteRoutes(
       return res.status(403).json({ message: "Staff permission is required to save this Quote." });
     }
     const quoteId = String(req.params.id);
-    const { header, lines, expectedRevision } = parsed.data;
     try {
-      const result = await canonicalQuoteOperations.runEditableTransaction({
-        organizationId, actorUserId, quoteId, expectedRevision,
-        auditDescription: "Saved Quote header and line changes.",
-        apply: async (tx, existing) => {
-          const repo = new QuotesRepository(tx);
-          const currentLines = await tx.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
-          const byId = new Map(currentLines.map((line) => [line.id, line]));
-          const touchedIds = [...lines.delete, ...lines.update.map((line) => line.id)];
-          if (new Set(touchedIds).size !== touchedIds.length || touchedIds.some((id) => !byId.has(id))) {
-            throw new QuoteEditorSaveError("QUOTE_LINE_STALE", "A line item changed or does not belong to this Quote. Reload before saving.", 409);
-          }
-          if (new Set(lines.create.map((line) => line.clientKey)).size !== lines.create.length) {
-            throw new QuoteEditorSaveError("QUOTE_LINE_DUPLICATE", "Duplicate new line identities are not allowed.", 400);
-          }
-          if (currentLines.length - lines.delete.length + lines.create.length < 1) {
-            throw new QuoteEditorSaveError("QUOTE_LINE_REQUIRED", "At least one line item is required to save a Quote.", 400);
-          }
-          const ownerChanged = (header.customerId !== undefined && header.customerId !== existing.customerId) ||
-            (header.contactId !== undefined && header.contactId !== existing.contactId);
-          if (ownerChanged) await validateQuoteIdentity(organizationId, header.customerId ?? existing.customerId, header.contactId ?? existing.contactId, tx);
-          const { tags, ...headerFields } = header;
-          if (!ownerChanged) delete headerFields.customerName;
-          const nextHeader: Record<string, unknown> = {};
-          if (ownerChanged && (header.customerId ?? existing.customerId)) {
-            const snapshot = await snapshotCustomerData(organizationId, header.customerId ?? existing.customerId!, header.contactId ?? existing.contactId, header.shippingMethod ?? existing.shippingMethod, existing.shippingMode, tx);
-            Object.assign(nextHeader, snapshot);
-            if (quoteShipToFields.some((field) => Boolean(existing[field]))) {
-              // A saved destination is one snapshot; never mix its components
-              // with a newly selected customer's defaults.
-              for (const field of quoteShipToFields) nextHeader[field] = existing[field];
-            }
-          }
-          Object.assign(nextHeader, headerFields);
-          // Submitted destination values always win over a refreshed customer snapshot.
-          Object.assign(nextHeader, explicitQuoteShipTo(header));
-          const changes: Record<string, unknown> = {};
-          for (const [key, value] of Object.entries(nextHeader)) {
-            if (value === undefined) continue;
-            const before = existing[key as keyof typeof existing];
-            const comparable = (item: unknown) => key === "requestedDueDate" && item
-              ? new Date(String(item)).toISOString().slice(0, 10)
-              : ["discountAmount", "taxRate", "shippingCents"].includes(key) && item !== null
-                ? Number(item) : item;
-            if (JSON.stringify(comparable(before)) !== JSON.stringify(comparable(value))) changes[key] = value;
-          }
-          let changed = Object.keys(changes).length > 0;
-          if (changed) await repo.updateQuote(organizationId, quoteId, changes as Parameters<typeof repo.updateQuote>[2]);
-          const affectedBundleParents = new Set(touchedIds.map((id) => byId.get(id)?.parentLineItemId).filter((id): id is string => Boolean(id)));
-          for (const id of lines.delete) {
-            await repo.deleteLineItem(id);
-            changed = true;
-          }
-          const { priceLineItem } = await import("../services/pricing/PricingService");
-          const created: Array<{ clientKey: string; id: string }> = [];
-          for (const item of lines.update) {
-            const previous = byId.get(item.id)!;
-            const incoming = item.data;
-            const pricingChanged = haveLineItemPricingDriversChanged({ existingLineItem: previous, incomingUpdate: incoming, pbv2ExplicitSelections: (incoming.optionSelectionsJson as any)?.selected });
-            const update: Record<string, unknown> = {
-              productId: incoming.productId, productName: incoming.productName,
-              variantId: incoming.variantId, variantName: incoming.variantName,
-              productType: incoming.productType, width: incoming.width, height: incoming.height,
-              quantity: incoming.quantity, optionSelectionsJson: incoming.optionSelectionsJson,
-              specsJson: incoming.specsJson,
-              description: incoming.description, productionNotes: incoming.productionNotes,
-              status: incoming.status, requiresDesign: incoming.requiresDesign,
-              requiresPrepress: incoming.requiresPrepress, requiresProofApproval: incoming.requiresProofApproval,
-              overrideReason: incoming.overrideReason,
-            };
-            if (pricingChanged) {
-              const product = await storage.getProductById(organizationId, incoming.productId);
-              if (!product) throw new QuoteEditorSaveError("QUOTE_LINE_PRODUCT_NOT_FOUND", "Line product was not found for this organization.", 404);
-              const dimensions = dimensionsForProductPricing(product, incoming.width, incoming.height);
-              if (dimensions.widthIn <= 0 || dimensions.heightIn <= 0) throw new QuoteEditorSaveError("QUOTE_LINE_DIMENSIONS_INVALID", "Line dimensions must be positive.", 400);
-              const priced = await priceLineItem({ organizationId, productId: incoming.productId, quantity: incoming.quantity, widthIn: dimensions.widthIn, heightIn: dimensions.heightIn, pbv2ExplicitSelections: (incoming.optionSelectionsJson as any)?.selected || {}, pbv2TreeVersionIdOverride: undefined });
-              Object.assign(update, { pbv2TreeVersionId: priced.pbv2TreeVersionId, pbv2SnapshotJson: priced.pbv2SnapshotJson, pricedAt: new Date(), selectedOptions: priced.pbv2SnapshotJson.selectedOptions || [], linePrice: priced.lineTotalCents / 100, priceBreakdown: { basePrice: priced.breakdown.baseCents / 100, optionsPrice: priced.breakdown.optionsCents / 100, total: priced.lineTotalCents / 100, formula: "", nestingDetails: priced.breakdown.nestingDetails ?? null, pricingMethod: priced.breakdown.pricingMethod }, formulaLinePrice: null, overridePriceCents: null, overrideAt: null, overrideByUserId: null });
-            }
-            const clearsOverride = incoming.priceOverride === null || incoming.priceOverrideMode === null || incoming.overridePriceCents === null;
-            const explicitOverride = hasExplicitPriceOverrideMetadata(incoming);
-            if (hasQuoteLineItemOverridePatch(incoming) && !clearsOverride && !explicitOverride) {
-              throw new LineItemPriceOverrideValidationError("Invalid price override payload");
-            }
-            if (clearsOverride || explicitOverride) {
-              const baseLine = { ...previous, ...update };
-              const overridePatch = buildQuoteLineItemPriceOverridePersistencePatch({
-                existingLineItem: baseLine,
-                incomingUpdate: incoming,
-                baseCalculatedTotalCents: pricingChanged ? Math.round(Number(update.linePrice) * 100) : null,
-              });
-              Object.assign(update, {
-                specsJson: overridePatch.specsJson, linePrice: overridePatch.linePrice,
-                formulaLinePrice: overridePatch.formulaLinePrice, overridePriceCents: overridePatch.overridePriceCents,
-                priceBreakdown: { ...overridePatch.priceBreakdown, total: overridePatch.linePrice },
-                overrideAt: explicitOverride ? coerceLineItemOverrideAt(incoming.overrideAt) ?? new Date() : null,
-                overrideByUserId: explicitOverride ? incoming.overrideByUserId ?? actorUserId : null,
-              });
-            }
-            await repo.updateLineItem(item.id, Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as Parameters<typeof repo.updateLineItem>[1]);
-            changed = true;
-          }
-          for (const item of lines.create) {
-            const incoming = item.data;
-            const product = await storage.getProductById(organizationId, incoming.productId);
-            if (!product) throw new QuoteEditorSaveError("QUOTE_LINE_PRODUCT_NOT_FOUND", "Line product was not found for this organization.", 404);
-            const dimensions = dimensionsForProductPricing(product, incoming.width, incoming.height);
-            if (dimensions.widthIn <= 0 || dimensions.heightIn <= 0) throw new QuoteEditorSaveError("QUOTE_LINE_DIMENSIONS_INVALID", "Line dimensions must be positive.", 400);
-            const priced = await priceLineItem({ organizationId, productId: incoming.productId, quantity: incoming.quantity, widthIn: dimensions.widthIn, heightIn: dimensions.heightIn, pbv2ExplicitSelections: (incoming.optionSelectionsJson as any)?.selected || {}, pbv2TreeVersionIdOverride: undefined });
-            const clearsOverride = incoming.priceOverride === null || incoming.priceOverrideMode === null || incoming.overridePriceCents === null;
-            const explicitOverride = hasExplicitPriceOverrideMetadata(incoming);
-            if (hasQuoteLineItemOverridePatch(incoming) && !clearsOverride && !explicitOverride) {
-              throw new LineItemPriceOverrideValidationError("Invalid price override payload");
-            }
-            const baseBreakdown = { basePrice: priced.breakdown.baseCents / 100, optionsPrice: priced.breakdown.optionsCents / 100, total: priced.lineTotalCents / 100, formula: "" };
-            const overridePatch = explicitOverride
-              ? buildQuoteLineItemPriceOverridePersistencePatch({
-                  existingLineItem: { linePrice: priced.lineTotalCents / 100, priceBreakdown: baseBreakdown, specsJson: incoming.specsJson ?? {}, quantity: incoming.quantity, pbv2SnapshotJson: priced.pbv2SnapshotJson },
-                  incomingUpdate: incoming,
-                  baseCalculatedTotalCents: priced.lineTotalCents,
-                })
-              : null;
-            const selectedOptions = Array.isArray(priced.pbv2SnapshotJson.selectedOptions) ? priced.pbv2SnapshotJson.selectedOptions : [];
-            const createdLine = await repo.addLineItem(quoteId, { productId: incoming.productId, productName: incoming.productName || product.name, variantId: incoming.variantId ?? null, variantName: incoming.variantName ?? null, productType: incoming.productType || "wide_roll", width: incoming.width, height: incoming.height, quantity: incoming.quantity, specsJson: (overridePatch?.specsJson ?? incoming.specsJson ?? {}) as Parameters<typeof repo.addLineItem>[1]["specsJson"], optionSelectionsJson: (incoming.optionSelectionsJson ?? null) as Parameters<typeof repo.addLineItem>[1]["optionSelectionsJson"], selectedOptions: selectedOptions as Parameters<typeof repo.addLineItem>[1]["selectedOptions"], linePrice: overridePatch?.linePrice ?? priced.lineTotalCents / 100, priceBreakdown: (overridePatch?.priceBreakdown ?? baseBreakdown) as Parameters<typeof repo.addLineItem>[1]["priceBreakdown"], overridePriceCents: overridePatch?.overridePriceCents ?? null, overrideReason: incoming.overrideReason ?? null, displayOrder: incoming.displayOrder ?? 0, pbv2TreeVersionId: priced.pbv2TreeVersionId, pbv2SnapshotJson: priced.pbv2SnapshotJson, pricedAt: new Date(), status: incoming.status ?? "active", description: incoming.description ?? null, requiresDesign: incoming.requiresDesign ?? false, requiresPrepress: incoming.requiresPrepress ?? null, requiresProofApproval: incoming.requiresProofApproval ?? null });
-            created.push({ clientKey: item.clientKey, id: createdLine.id });
-            changed = true;
-          }
-          for (const parentId of Array.from(affectedBundleParents)) await recalculateQuoteBundleParent(parentId, tx);
-          const commercialChanged = changed;
-          const normalizedTags = tags ? tags.map((tag) => tag.trim()).filter(Boolean).join(", ") || null : null;
-          if (tags !== undefined) {
-            const [note] = await tx.select({ listLabel: quoteListNotes.listLabel }).from(quoteListNotes).where(and(eq(quoteListNotes.organizationId, organizationId), eq(quoteListNotes.quoteId, quoteId))).limit(1);
-            if ((note?.listLabel ?? null) !== normalizedTags) {
-              await tx.insert(quoteListNotes).values({ organizationId, quoteId, listLabel: normalizedTags, updatedByUserId: actorUserId }).onConflictDoUpdate({ target: [quoteListNotes.organizationId, quoteListNotes.quoteId], set: { listLabel: normalizedTags, updatedByUserId: actorUserId, updatedAt: new Date() } });
-              if (!commercialChanged) await tx.update(quotes).set({ updatedAt: new Date() }).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
-              changed = true;
-            }
-          }
-          if (changed) await refreshQuoteAggregateTotals(organizationId, quoteId, tx);
-          const persisted = await repo.getQuoteById(organizationId, quoteId);
-          if (!persisted) throw new Error("Quote disappeared during save.");
-          return { changed, value: { quote: persisted, created, changed } };
-        },
-      });
+      const result = await saveQuoteEditor({ organizationId, actorUserId, quoteId, body: parsed.data });
       return res.json(result);
     } catch (error) {
       if (error instanceof CanonicalQuoteOperationError) return res.status(error.code === "QUOTE_NOT_FOUND" ? 404 : 409).json({ code: error.code, message: error.message });

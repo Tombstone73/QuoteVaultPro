@@ -20,6 +20,7 @@ import { calculateQuoteAggregateTotals } from "../../routes/helpers/quoteTotals.
 import { snapshotCustomerData } from "../../routes/quotes.routes";
 import type { QuoteCreateRequest } from "./quoteApplicationContract";
 import { quotePricingSnapshotForFingerprint } from "./quoteProposalFingerprint";
+import { quoteEditorOperationService } from "./quoteEditorOperationService";
 import type { QuoteDraftCreateCanonicalService, QuoteDraftCreateCommandResult } from "./execution/quoteDraftCreateCommand";
 import type { QuoteDraftUpdateCanonicalService, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
 
@@ -216,6 +217,7 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
 
   async revalidateUpdateProposal(input: { organizationId: string; quoteId: string; quoteIntakeSessionId: string; expectedProposalFingerprint: string; expectedQuoteFingerprint: string }) {
     const session = await this.load(input.organizationId, input.quoteIntakeSessionId);
+    if ((session.intakeJson as Record<string, unknown>).kind === "editor_save") return quoteEditorOperationService.revalidate(input);
     if (session.quoteId !== input.quoteId) return { valid: false as const, code: "QUOTE_SESSION_MISMATCH", summary: "The quote update proposal does not belong to this quote." };
     const quote = await storage.getQuoteById(input.organizationId, input.quoteId);
     if (!quote || quote.status !== "draft") return { valid: false as const, code: "QUOTE_NOT_EDITABLE", summary: "Only canonical draft quotes can be edited through the assistant." };
@@ -259,6 +261,7 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
   async updateDraft(input: Parameters<QuoteDraftUpdateCanonicalService["updateDraft"]>[0]): Promise<QuoteDraftUpdateCommandResult> {
     const session = await this.load(input.organizationId, input.quoteIntakeSessionId);
     if (session.userId !== input.actorUserId) throw new QuoteDraftIntakeError("SESSION_FORBIDDEN", "Quote intake is not available to this user.");
+    if ((session.intakeJson as Record<string, unknown>).kind === "editor_save") return quoteEditorOperationService.execute(input);
     const validation = await this.revalidateUpdateProposal({ organizationId: input.organizationId, quoteId: input.quoteId, quoteIntakeSessionId: input.quoteIntakeSessionId, expectedProposalFingerprint: input.proposalFingerprint, expectedQuoteFingerprint: input.expectedQuoteFingerprint });
     if (!validation.valid) throw new QuoteDraftIntakeError(validation.code, validation.summary);
     const dueDate = (session.intakeJson as Intake).requestedDueDate;

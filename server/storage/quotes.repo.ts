@@ -1217,6 +1217,7 @@ export class QuotesRepository {
             pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
             pricedAt: (lineItem as any).pricedAt || new Date(),
             overridePriceCents: getExplicitOverridePriceCents(lineItem),
+            isTaxableSnapshot: (lineItem as any).isTaxableSnapshot ?? null,
             overrideReason: (lineItem as any).overrideReason ?? null,
             // Canonical routing intent (migration 0015)
             requiresDesign: designSnapshot.effectiveRequiresDesign,
