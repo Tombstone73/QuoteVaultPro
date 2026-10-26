@@ -51,7 +51,7 @@ export const quoteDraftUpdatePreviewSchema = z.object({
   totalCentsBefore: z.number().int().min(0),
   totalCentsAfter: z.number().int().min(0),
   validationErrors: z.array(z.string().min(1).max(1_000)).max(50),
-  warnings: z.array(z.string().min(1).max(1_000)).max(50),
+  warnings: z.array(z.string().min(1).max(1_000)).max(201),
   affectedQuoteCount: z.literal(1),
   downstreamActionsExcluded: z.tuple([
     z.literal("order_creation"),

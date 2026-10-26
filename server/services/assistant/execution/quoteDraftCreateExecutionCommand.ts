@@ -1,5 +1,6 @@
 import { ExecutionPlanError } from "./types";
 import type { ExecutionCommandDefinition, ExecutionCommandResult, ExecutionPlanPreview } from "./types";
+import { formatCustomerPoReference, type QuoteOptionDisplay, type QuotePriceComparison } from "@shared/quoteProposalPresentation";
 import {
   createQuoteDraftCreateCommandDefinition,
   quoteDraftCreateCommandInputSchema,
@@ -26,7 +27,9 @@ export interface QuoteDraftCreatePlanningProposal {
   subtotalCents?: number;
   taxCents?: number;
   totalCents: number;
-  lineItems: readonly { productName: string; quantity: number; dimensions: { width: number; height: number; unit: string } | null; optionSelections?: Record<string, unknown>; lineSubtotalCents?: number; taxCents?: number; totalCents: number }[];
+  pricingDifferenceTotalCents?: number;
+  pricingComparisonUnavailable?: boolean;
+  lineItems: readonly { productName: string; quantity: number; dimensions: { width: number; height: number; unit: string } | null; displayOptions?: QuoteOptionDisplay[]; priceComparison?: QuotePriceComparison | null; lineSubtotalCents?: number; taxCents?: number; totalCents: number }[];
   validationErrors: readonly string[];
   warnings: readonly string[];
   downstreamActionsExcluded: readonly string[];
@@ -75,12 +78,13 @@ export function createQuoteDraftCreateExecutionCommand(service: QuoteDraftCreate
         summary: `Create one draft quote for ${proposal.customerName}. No order, production job, inventory reservation, invoice, email, acceptance, or conversion will occur.`,
         sideEffects: [
           `Create exactly one draft quote totaling $${(proposal.totalCents / 100).toFixed(2)} with server-validated tax and pricing snapshots.`,
-          `Customer: ${proposal.customerName}${proposal.contactName ? `; contact: ${proposal.contactName}` : ""}${proposal.poReference ? `; PO: ${proposal.poReference}` : ""}.`,
+          `Customer: ${proposal.customerName}${proposal.contactName ? `; contact: ${proposal.contactName}` : ""}${proposal.poReference ? `; ${formatCustomerPoReference(proposal.poReference)}` : ""}.`,
           `Requested due: ${proposal.requestedDueDate ?? "not specified"}; valid until: ${proposal.validUntil ?? "not specified"}; delivery: ${proposal.shippingMethod ?? "not specified"}.`,
           `Bill to: ${[proposal.billTo?.name, proposal.billTo?.address1, proposal.billTo?.city, proposal.billTo?.state, proposal.billTo?.postalCode].filter(Boolean).join(", ") || "not specified"}; ship to: ${[proposal.shipTo?.name, proposal.shipTo?.address1, proposal.shipTo?.city, proposal.shipTo?.state, proposal.shipTo?.postalCode].filter(Boolean).join(", ") || "not specified"}.`,
           ...(proposal.customerNotes ? [`Customer notes: ${proposal.customerNotes}.`] : []),
           ...(proposal.shippingInstructions ? [`Shipping instructions: ${proposal.shippingInstructions}.`] : []),
-          ...proposal.lineItems.map((line, index) => `${index + 1}. ${line.quantity} × ${line.productName}${line.dimensions ? ` (${line.dimensions.width} × ${line.dimensions.height} ${line.dimensions.unit})` : ""}${line.optionSelections && Object.keys(line.optionSelections).length ? `; options: ${Object.entries(line.optionSelections).map(([key, value]) => `${key}=${String(value)}`).join(", ")}` : ""}: $${((line.lineSubtotalCents ?? line.totalCents) / 100).toFixed(2)}${line.taxCents ? ` + $${(line.taxCents / 100).toFixed(2)} tax` : ""}.`),
+          ...proposal.lineItems.map((line, index) => `${index + 1}. ${line.quantity} × ${line.productName}${line.dimensions ? ` (${line.dimensions.width} × ${line.dimensions.height} ${line.dimensions.unit})` : ""}${line.displayOptions?.length ? `; options: ${line.displayOptions.map((option) => `${option.label}: ${option.choice}`).join(", ")}` : ""}: $${((line.lineSubtotalCents ?? line.totalCents) / 100).toFixed(2)} line total${line.taxCents ? ` + $${(line.taxCents / 100).toFixed(2)} tax` : ""}.${line.priceComparison ? ` ${line.priceComparison.source === "customer_or_po_supplied" ? "Customer/PO supplied" : "Manual"} override; system price ${line.priceComparison.systemTotalCents === null ? "comparison unavailable" : `$${(line.priceComparison.systemTotalCents / 100).toFixed(2)} line total`}${line.priceComparison.status === "different" ? `; difference $${(Math.abs(line.priceComparison.differenceCents ?? 0) / 100).toFixed(2)} ${line.priceComparison.differenceCents! > 0 ? "above" : "below"} system price` : line.priceComparison.status === "matches" ? "; matches system price" : ""}.` : ""}`),
+          ...(proposal.lineItems.some((line) => line.priceComparison?.status === "different") ? [`Total customer/PO pricing difference: $${(Math.abs(proposal.pricingDifferenceTotalCents ?? 0) / 100).toFixed(2)} ${Number(proposal.pricingDifferenceTotalCents) > 0 ? "above" : Number(proposal.pricingDifferenceTotalCents) < 0 ? "below" : "net difference from"} system pricing${proposal.pricingComparisonUnavailable ? " for comparable lines; other comparisons unavailable" : ""}.`] : []),
           `Subtotal $${((proposal.subtotalCents ?? proposal.totalCents) / 100).toFixed(2)}; discount $${((proposal.discountAmountCents ?? 0) / 100).toFixed(2)}; tax $${((proposal.taxCents ?? 0) / 100).toFixed(2)}; shipping $${((proposal.shippingCents ?? 0) / 100).toFixed(2)}; total $${(proposal.totalCents / 100).toFixed(2)}.`,
         ],
         affectedRecords: [{ entityType: "quote_intake_session", entityId: proposal.quoteIntakeSessionId, fingerprint: proposal.proposalFingerprint }],

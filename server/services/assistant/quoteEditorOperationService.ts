@@ -11,6 +11,7 @@ import { buildQuoteLineItemPriceOverridePersistencePatch, haveLineItemPricingDri
 import { priceLineItem } from "../pricing/PricingService";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quoteOrderPricing";
 import { quotePricingSnapshotForFingerprint, quoteProductPricingInputsForFingerprint } from "./quoteProposalFingerprint";
+import { compareCustomerQuoteLinePrice, presentQuoteOptionSelections, quotePriceComparisonReviewText, type QuotePriceComparison } from "@shared/quoteProposalPresentation";
 import type { QuoteDraftUpdatePreview, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
 
 const id = z.string().min(1).max(128);
@@ -120,6 +121,8 @@ export class QuoteEditorOperationService {
     const updates: Array<{ id: string; data: any }> = [];
     const creates: Array<{ clientKey: string; data: any }> = [];
     const lineChanges: QuoteDraftUpdatePreview["changes"] = [];
+    const priceComparisons: QuotePriceComparison[] = [];
+    const priceReviewWarnings: string[] = [];
     for (const change of request.lines.update) {
       const previous = byId.get(change.id)!;
       const data = changedLineData(previous, change.changes);
@@ -130,35 +133,73 @@ export class QuoteEditorOperationService {
       let baseCents = cents(previous.linePrice);
       let snapshot: unknown = null;
       let pricedSnapshot: unknown = previous.pbv2SnapshotJson;
+      let systemTotalCents: number | null = null;
+      const size = dimensionsForProductPricing(product, data.width, data.height);
+      const pricingInput = { organizationId, productId: product.id, quantity: data.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: (data.optionSelectionsJson as any)?.selected ?? {} };
       if (pricingChanged) {
-        const size = dimensionsForProductPricing(product, data.width, data.height);
-        const priced = await priceLineItem({ organizationId, productId: product.id, quantity: data.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: (data.optionSelectionsJson as any)?.selected ?? {} });
+        let priced: Awaited<ReturnType<typeof priceLineItem>>;
+        try {
+          priced = await priceLineItem(pricingInput);
+          if (!Number.isSafeInteger(priced.lineTotalCents) || priced.lineTotalCents < 0) throw new QuoteEditorOperationError("SYSTEM_PRICE_UNAVAILABLE", "The system price was not a valid line total.");
+          systemTotalCents = priced.lineTotalCents;
+        } catch (error) {
+          if (change.changes.manualTotalCents === undefined) throw error;
+          priced = await priceLineItem({ ...pricingInput, overridePriceCents: change.changes.manualTotalCents });
+          if (priced.lineTotalCents !== change.changes.manualTotalCents) throw new QuoteEditorOperationError("MANUAL_PRICE_INVALID", "The canonical pricing service did not preserve the reviewed manual line total.");
+        }
         baseCents = priced.lineTotalCents;
         pricedSnapshot = priced.pbv2SnapshotJson;
         snapshot = quotePricingSnapshotForFingerprint(priced.pbv2SnapshotJson);
       }
+      if (change.changes.manualTotalCents !== undefined && !pricingChanged) {
+        try {
+          const compared = await priceLineItem(pricingInput);
+          systemTotalCents = Number.isSafeInteger(compared.lineTotalCents) && compared.lineTotalCents >= 0 ? compared.lineTotalCents : null;
+        } catch { systemTotalCents = null; }
+      }
       const override = buildQuoteLineItemPriceOverridePersistencePatch({ existingLineItem: { ...previous, ...data, linePrice: baseCents / 100, pbv2SnapshotJson: pricedSnapshot }, incomingUpdate: data, baseCalculatedTotalCents: pricingChanged ? baseCents : null });
       const nextCents = cents(override.linePrice);
-      priceSnapshots.push({ id: previous.id, product: quoteProductPricingInputsForFingerprint(product), snapshot });
+      priceSnapshots.push({ id: previous.id, product: quoteProductPricingInputsForFingerprint(product), snapshot, manualComparisonCents: change.changes.manualTotalCents === undefined ? undefined : systemTotalCents });
+      if (change.changes.manualTotalCents !== undefined) {
+        const comparison = compareCustomerQuoteLinePrice(change.changes.manualTotalCents, systemTotalCents, change.changes.manualPriceReason);
+        priceComparisons.push(comparison);
+        priceReviewWarnings.push(`${product.name}: ${quotePriceComparisonReviewText(comparison, data.quantity)}`);
+      }
       updates.push({ id: change.id, data });
       const next = nextLines.find((line) => line.id === change.id)!;
       Object.assign(next, data, { specsJson: override.specsJson, pbv2SnapshotJson: pricedSnapshot, linePrice: nextCents / 100, effectiveTotalCents: nextCents,
         hasPriceOverride: override.pricing.hasPriceOverride, overridePriceCents: override.overridePriceCents, isTaxableSnapshot: product.isTaxable ?? true });
-      lineChanges.push({ field: `Line ${change.id}`, before: JSON.stringify({ product: previous.productName, quantity: previous.quantity, width: previous.width, height: previous.height, options: (previous.optionSelectionsJson as any)?.selected ?? {}, description: previous.description ?? null, manualPriceReason: previous.overrideReason ?? null, totalCents: cents(previous.linePrice) }), after: JSON.stringify({ product: product.name, quantity: data.quantity, width: data.width, height: data.height, options: (data.optionSelectionsJson as any)?.selected ?? {}, description: data.description ?? null, manualPriceReason: data.overrideReason ?? null, totalCents: nextCents }) });
+      lineChanges.push({ field: `Line ${change.id}`, before: JSON.stringify({ product: previous.productName, quantity: previous.quantity, width: previous.width, height: previous.height, options: presentQuoteOptionSelections((previous.optionSelectionsJson as any)?.selected ?? {}, previous.pbv2SnapshotJson).map((option) => `${option.label}: ${option.choice}`), description: previous.description ?? null, manualPriceReason: previous.overrideReason ?? null, totalCents: cents(previous.linePrice) }), after: JSON.stringify({ product: product.name, quantity: data.quantity, width: data.width, height: data.height, options: presentQuoteOptionSelections((data.optionSelectionsJson as any)?.selected ?? {}, pricedSnapshot).map((option) => `${option.label}: ${option.choice}`), description: data.description ?? null, manualPriceReason: data.overrideReason ?? null, totalCents: nextCents }) });
     }
     for (let index = 0; index < request.lines.create.length; index++) {
       const line = request.lines.create[index];
       const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
       if (!product) throw new QuoteEditorOperationError("PRODUCT_NOT_FOUND", `New line ${index + 1} needs an active Product in this organization.`);
       const size = dimensionsForProductPricing(product, line.width, line.height);
-      const priced = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: line.optionSelections ?? {} });
+      const pricingInput = { organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: line.optionSelections ?? {} };
+      let priced: Awaited<ReturnType<typeof priceLineItem>>;
+      let systemTotalCents: number | null = null;
+      try {
+        priced = await priceLineItem(pricingInput);
+        if (!Number.isSafeInteger(priced.lineTotalCents) || priced.lineTotalCents < 0) throw new QuoteEditorOperationError("SYSTEM_PRICE_UNAVAILABLE", "The system price was not a valid line total.");
+        systemTotalCents = priced.lineTotalCents;
+      } catch (error) {
+        if (line.manualTotalCents === undefined) throw error;
+        priced = await priceLineItem({ ...pricingInput, overridePriceCents: line.manualTotalCents });
+        if (priced.lineTotalCents !== line.manualTotalCents) throw new QuoteEditorOperationError("MANUAL_PRICE_INVALID", "The canonical pricing service did not preserve the reviewed manual line total.");
+      }
       const nextCents = line.manualTotalCents ?? priced.lineTotalCents;
-      priceSnapshots.push({ clientKey: `new-${index + 1}`, product: quoteProductPricingInputsForFingerprint(product), snapshot: quotePricingSnapshotForFingerprint(priced.pbv2SnapshotJson) });
+      priceSnapshots.push({ clientKey: `new-${index + 1}`, product: quoteProductPricingInputsForFingerprint(product), snapshot: quotePricingSnapshotForFingerprint(priced.pbv2SnapshotJson), manualComparisonCents: line.manualTotalCents === undefined ? undefined : systemTotalCents });
+      if (line.manualTotalCents !== undefined) {
+        const comparison = compareCustomerQuoteLinePrice(line.manualTotalCents, systemTotalCents, line.manualPriceReason);
+        priceComparisons.push(comparison);
+        priceReviewWarnings.push(`${product.name}: ${quotePriceComparisonReviewText(comparison, line.quantity)}`);
+      }
       creates.push({ clientKey: `new-${index + 1}`, data: { productId: line.productId, productName: product.name, productType: product.productTypeId ?? "wide_roll", width: line.width, height: line.height, quantity: line.quantity, optionSelectionsJson: { selected: line.optionSelections ?? {} }, description: line.description ?? null, productionNotes: line.productionNotes ?? null, requiresDesign: line.requiresDesign, requiresPrepress: line.requiresPrepress, requiresProofApproval: line.requiresProofApproval, displayOrder: line.displayOrder ?? current.length + index, ...(line.manualTotalCents === undefined ? {} : { priceOverride: { mode: "override_total_after_margin", valueCents: line.manualTotalCents }, overrideReason: line.manualPriceReason }) } });
       nextLines.push({ ...creates[creates.length - 1].data, linePrice: nextCents / 100, effectiveTotalCents: nextCents,
         hasPriceOverride: line.manualTotalCents !== undefined, overridePriceCents: line.manualTotalCents ?? null,
         status: "active", isTaxableSnapshot: product.isTaxable ?? true });
-      lineChanges.push({ field: `New line ${index + 1}`, before: null, after: JSON.stringify({ product: product.name, quantity: line.quantity, width: line.width, height: line.height, options: line.optionSelections ?? {}, description: line.description ?? null, manualPriceReason: line.manualPriceReason ?? null, totalCents: nextCents }) });
+      lineChanges.push({ field: `New line ${index + 1}`, before: null, after: JSON.stringify({ product: product.name, quantity: line.quantity, width: line.width, height: line.height, options: presentQuoteOptionSelections(line.optionSelections ?? {}, priced.pbv2SnapshotJson).map((option) => `${option.label}: ${option.choice}`), description: line.description ?? null, manualPriceReason: line.manualPriceReason ?? null, totalCents: nextCents }) });
     }
     for (const lineId of request.lines.delete) { const old = byId.get(lineId)!; lineChanges.push({ field: `Removed line ${lineId}`, before: JSON.stringify({ product: old.productName, totalCents: cents(old.linePrice) }), after: null }); }
     const header: Record<string, unknown> = { ...request.header };
@@ -178,7 +219,11 @@ export class QuoteEditorOperationService {
     const payload = quoteEditorSaveBodySchema.parse({ expectedRevision: quote.revision, header, lines: { update: updates, create: creates, delete: request.lines.delete } });
     const expectedQuoteFingerprint = hash({ id: quote.id, revision: quote.revision, status: quote.status, customerId: quote.customerId, contactId: quote.contactId, lines: current.map((line) => ({ id: line.id, productId: line.productId, price: line.linePrice, quantity: line.quantity })) });
     const proposalFingerprint = hash({ sessionId: session.id, request, expectedQuoteFingerprint, priceSnapshots, totals });
-    const preview: QuoteDraftUpdatePreview = { quote: { id: quote.id, displayNumber: quote.displayNumber ?? String(quote.quoteNumber), status: "draft", sourceLink: `/quotes/${quote.id}` }, quoteIntakeSessionId: session.id, proposalFingerprint, expectedQuoteFingerprint, expectedRevision: quote.revision, changes, subtotalCentsBefore: cents(quote.subtotal), subtotalCentsAfter: cents(totals.subtotal), taxCentsBefore: cents(quote.taxAmount), taxCentsAfter: cents(totals.taxAmount), totalCentsBefore: cents(quote.totalPrice), totalCentsAfter: cents(totals.totalPrice), validationErrors: [], warnings: [], affectedQuoteCount: 1, downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] };
+    if (priceComparisons.some((comparison) => comparison.status === "different")) {
+      const difference = priceComparisons.reduce((sum, comparison) => sum + (comparison.differenceCents ?? 0), 0);
+      priceReviewWarnings.push(`Total manual/customer pricing difference for comparable lines: $${(Math.abs(difference) / 100).toFixed(2)} ${difference > 0 ? "above" : difference < 0 ? "below" : "net difference from"} system pricing${priceComparisons.some((comparison) => comparison.status === "unavailable") ? "; other comparisons unavailable" : ""}.`);
+    }
+    const preview: QuoteDraftUpdatePreview = { quote: { id: quote.id, displayNumber: quote.displayNumber ?? String(quote.quoteNumber), status: "draft", sourceLink: `/quotes/${quote.id}` }, quoteIntakeSessionId: session.id, proposalFingerprint, expectedQuoteFingerprint, expectedRevision: quote.revision, changes, subtotalCentsBefore: cents(quote.subtotal), subtotalCentsAfter: cents(totals.subtotal), taxCentsBefore: cents(quote.taxAmount), taxCentsAfter: cents(totals.taxAmount), totalCentsBefore: cents(quote.totalPrice), totalCentsAfter: cents(totals.totalPrice), validationErrors: [], warnings: priceReviewWarnings, affectedQuoteCount: 1, downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] };
     return { preview, payload };
   }
 

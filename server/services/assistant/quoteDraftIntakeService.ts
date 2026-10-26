@@ -21,6 +21,7 @@ import { snapshotCustomerData } from "../../routes/quotes.routes";
 import type { QuoteCreateRequest } from "./quoteApplicationContract";
 import { quotePricingSnapshotForFingerprint, quoteProductPricingInputsForFingerprint } from "./quoteProposalFingerprint";
 import { quoteEditorOperationService } from "./quoteEditorOperationService";
+import { compareCustomerQuoteLinePrice, formatCustomerPoReference, presentQuoteOptionSelections, savedQuoteLineTotalsMatch } from "@shared/quoteProposalPresentation";
 import type { QuoteDraftCreateCanonicalService, QuoteDraftCreateCommandResult } from "./execution/quoteDraftCreateCommand";
 import type { QuoteDraftUpdateCanonicalService, QuoteDraftUpdateCommandResult } from "./execution/quoteDraftUpdateCommand";
 
@@ -91,9 +92,10 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
     }));
     const poReference = request.poReference?.trim();
     const requestedLabel = request.label?.trim();
-    const labelRepeatsPo = !!poReference && !!requestedLabel && [poReference, `PO ${poReference}`].some((value) => value.toLocaleLowerCase() === requestedLabel.toLocaleLowerCase());
+    const formattedPo = formatCustomerPoReference(poReference);
+    const labelRepeatsPo = !!formattedPo && !!requestedLabel && (formattedPo.toLocaleLowerCase() === formatCustomerPoReference(requestedLabel)?.toLocaleLowerCase());
     const intake: Intake = { customerId: customer.id, customerName: customer.companyName ?? "Customer", contactId: contact?.id ?? null, requestedDueDate: request.requestedDueDate ?? null, internalNote: null,
-      poReference, label: poReference ? `PO ${poReference}${requestedLabel && !labelRepeatsPo ? ` — ${requestedLabel}` : ""}` : requestedLabel ?? null, customerNotes: request.customerNotes ?? null, validUntil: request.validUntil ?? null,
+      poReference, label: formattedPo ? `${formattedPo}${requestedLabel && !labelRepeatsPo ? ` — ${requestedLabel}` : ""}` : requestedLabel ?? null, customerNotes: request.customerNotes ?? null, validUntil: request.validUntil ?? null,
       shippingMethod: request.shippingMethod ?? null, shippingInstructions: request.shippingInstructions ?? null, shippingCents: request.shippingCents ?? null, discountAmountCents: request.discountAmountCents ?? 0, lines: resolvedLines };
     const [session] = await db.insert(assistantQuoteIntakeSessions).values({ organizationId: input.organizationId, userId: input.userId, conversationId: input.conversationId, createdByUserId: input.userId, intakeJson: intake }).returning();
     if (!session) throw new QuoteDraftIntakeError("SESSION_CREATE_FAILED", "Unable to store the Quote proposal.");
@@ -186,26 +188,44 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
       if (!product) throw new QuoteDraftIntakeError("PRODUCT_NOT_FOUND", `Product ${line.productName} is no longer active.`);
       const size = dimensionsForProductPricing(product, line.width, line.height);
-      const result = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: line.optionSelections });
-      return { line, product, result, widthIn: size.widthIn, heightIn: size.heightIn };
+      const pricingInput = { organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: line.optionSelections };
+      let result: Awaited<ReturnType<typeof priceLineItem>>;
+      let systemTotalCents: number | null = null;
+      try {
+        result = await priceLineItem(pricingInput);
+        if (!Number.isSafeInteger(result.lineTotalCents) || result.lineTotalCents < 0) throw new QuoteDraftIntakeError("SYSTEM_PRICE_UNAVAILABLE", "The system price was not a valid line total.");
+        systemTotalCents = result.lineTotalCents;
+      } catch (error) {
+        if (line.overridePriceCents === undefined) throw error;
+        // PricingService still validates the configuration and supplies the
+        // canonical snapshot when only its normal price calculation fails.
+        result = await priceLineItem({ ...pricingInput, overridePriceCents: line.overridePriceCents });
+        if (!Number.isSafeInteger(result.lineTotalCents) || result.lineTotalCents !== line.overridePriceCents) throw new QuoteDraftIntakeError("MANUAL_PRICE_INVALID", "The canonical pricing service did not preserve the reviewed manual line total.");
+      }
+      return { line, product, result, systemTotalCents, widthIn: size.widthIn, heightIn: size.heightIn };
     }));
+    const quoteTitle = intake.label && /^PO(?:\s*#\s*|\s+)/i.test(intake.label)
+      ? formatCustomerPoReference(intake.label) : intake.label ?? formatCustomerPoReference(intake.poReference);
     const staffCustomerAddress = customer as typeof customer & { country?: string; state?: string; city?: string; postalCode?: string };
     const shipTo = { country: staffCustomerAddress.country || "US", state: staffCustomerAddress.state || (org.settings as any)?.timezone?.split("/")[0] || "CA", city: staffCustomerAddress.city ?? undefined, postalCode: staffCustomerAddress.postalCode ?? undefined };
     // Match the staff POST path: resolve the tax rate and line snapshots before
     // discount, then let the Quote aggregate apply the document discount.
     const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: (line.overridePriceCents ?? result.lineTotalCents) / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, shipTo);
     const aggregate = calculateQuoteAggregateTotals({ lineItems: priced.map(({ line, product, result }) => ({ linePrice: result.lineTotalCents / 100, quantity: line.quantity, isTaxableSnapshot: product.isTaxable ?? true, overridePriceCents: line.overridePriceCents ?? null, specsJson: line.overridePriceCents === undefined ? null : { priceOverride: { mode: "override_total_after_margin", valueCents: line.overridePriceCents } } })), taxRate: totals.taxRate, discountAmount: (intake.discountAmountCents ?? 0) / 100, shippingCents: intake.shippingCents ?? 0 });
+    const priceComparisons = priced.filter(({ line }) => line.overridePriceCents !== undefined)
+      .map(({ line, systemTotalCents }) => compareCustomerQuoteLinePrice(line.overridePriceCents!, systemTotalCents, line.overrideReason));
     const preview = {
-      quoteIntakeSessionId: session.id, customerName: customer.companyName, contactName: contact ? `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim() : null, quoteTitle: intake.label ?? (intake.poReference ? `PO ${intake.poReference}` : null),
+      quoteIntakeSessionId: session.id, customerName: customer.companyName, contactName: contact ? `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim() : null, quoteTitle,
       customerId: intake.customerId, contactId: intake.contactId, poReference: intake.poReference ?? null, customerNotes: intake.customerNotes ?? null, requestedDueDate: intake.requestedDueDate, validUntil: intake.validUntil ?? null, shippingMethod: customerSnapshot.shippingMethod, shippingInstructions: intake.shippingInstructions ?? null,
       billTo: { name: customerSnapshot.billToName, company: customerSnapshot.billToCompany, address1: customerSnapshot.billToAddress1, address2: customerSnapshot.billToAddress2, city: customerSnapshot.billToCity, state: customerSnapshot.billToState, postalCode: customerSnapshot.billToPostalCode, country: customerSnapshot.billToCountry },
       shipTo: { name: customerSnapshot.shipToName, company: customerSnapshot.shipToCompany, address1: customerSnapshot.shipToAddress1, address2: customerSnapshot.shipToAddress2, city: customerSnapshot.shipToCity, state: customerSnapshot.shipToState, postalCode: customerSnapshot.shipToPostalCode, country: customerSnapshot.shipToCountry },
       shippingCents: intake.shippingCents ?? 0, discountAmountCents: intake.discountAmountCents ?? 0,
-      lineItems: priced.map(({ line, result }, index) => ({ clientKey: `line-${index + 1}`, productName: line.productName, productId: line.productId, quantity: line.quantity, dimensions: { width: line.width, height: line.height, unit: "in" }, optionSelections: line.optionSelections, description: line.description ?? null, productionNotes: line.productionNotes ?? null, manualPriceReason: line.overrideReason ?? null, parentClientKey: line.parentClientKey ?? null, calculatedCents: result.lineTotalCents, lineSubtotalCents: line.overridePriceCents ?? result.lineTotalCents, taxCents: Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100), totalCents: (line.overridePriceCents ?? result.lineTotalCents) + Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100) })),
+      lineItems: priced.map(({ line, result, systemTotalCents }, index) => ({ clientKey: `line-${index + 1}`, productName: line.productName, productId: line.productId, quantity: line.quantity, dimensions: { width: line.width, height: line.height, unit: "in" }, displayOptions: presentQuoteOptionSelections(line.optionSelections, result.pbv2SnapshotJson), description: line.description ?? null, productionNotes: line.productionNotes ?? null, manualPriceReason: line.overrideReason ?? null, parentClientKey: line.parentClientKey ?? null, calculatedCents: systemTotalCents, priceComparison: line.overridePriceCents === undefined ? null : compareCustomerQuoteLinePrice(line.overridePriceCents, systemTotalCents, line.overrideReason), lineSubtotalCents: line.overridePriceCents ?? result.lineTotalCents, taxCents: Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100), totalCents: (line.overridePriceCents ?? result.lineTotalCents) + Math.round((totals.lineItemsWithTax[index]?.taxAmount ?? 0) * 100) })),
+      pricingDifferenceTotalCents: priceComparisons.reduce((sum, comparison) => sum + (comparison.differenceCents ?? 0), 0), pricingComparisonUnavailable: priceComparisons.some((comparison) => comparison.status === "unavailable"),
       subtotalCents: Math.round(aggregate.subtotal * 100), taxCents: Math.round(aggregate.taxAmount * 100), totalCents: Math.round(aggregate.totalPrice * 100), validationErrors: [], warnings: [...(intake.contactId ? [] : ["No contact was selected; the draft remains internal."]), ...((intake.discountAmountCents ?? 0) > 0 ? ["Line tax is shown before the Quote discount; the total tax reflects that discount."] : [])], affectedQuoteCount: 1,
       downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] as const,
     };
-    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ product: quoteProductPricingInputsForFingerprint(row.product), snapshot: quotePricingSnapshotForFingerprint(row.result.pbv2SnapshotJson) })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, PO ${intake.poReference}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
+    return { fingerprint: hash({ intake, customerSnapshot, prices: priced.map((row) => ({ product: quoteProductPricingInputsForFingerprint(row.product), snapshot: quotePricingSnapshotForFingerprint(row.result.pbv2SnapshotJson) })), totals: { subtotal: preview.subtotalCents, tax: preview.taxCents, total: preview.totalCents } }), preview, priced, totals, customerSnapshot, summary: `${intake.customerName}${intake.poReference ? `, ${formatCustomerPoReference(intake.poReference)}` : ""}: ${preview.lineItems.length} line item${preview.lineItems.length === 1 ? "" : "s"}, total $${(preview.totalCents / 100).toFixed(2)}.` };
   }
 
   async revalidateCreateProposal(input: { organizationId: string; quoteIntakeSessionId: string; expectedProposalFingerprint: string }) {
@@ -238,7 +258,15 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
     if (session.userId !== input.actorUserId) throw new QuoteDraftIntakeError("SESSION_FORBIDDEN", "Quote intake is not available to this user.");
     if (session.status === "created" && session.quoteId) {
       const existing = await storage.getQuoteById(input.organizationId, session.quoteId);
-      if (existing) return { quote: { id: existing.id, displayNumber: existing.displayNumber ?? String(existing.quoteNumber), status: "draft", totalCents: Math.round(Number(existing.totalPrice) * 100), sourceLink: `/quotes/${existing.id}` } };
+      if (existing) {
+        const intake = session.intakeJson as Intake;
+        const manualPricesMatch = intake.lines.every((line, index) => line.overridePriceCents === undefined
+          || existing.lineItems[index]?.productId === line.productId
+            && Number(existing.lineItems[index]?.quantity) === line.quantity
+            && Math.round(Number(existing.lineItems[index]?.linePrice) * 100) === line.overridePriceCents);
+        if (!manualPricesMatch) throw new QuoteDraftIntakeError("QUOTE_READBACK_MISMATCH", "The saved Quote manual line prices differ from the reviewed prices. Open the saved Quote before retrying GO.");
+        return { quote: { id: existing.id, displayNumber: existing.displayNumber ?? String(existing.quoteNumber), status: "draft", totalCents: Math.round(Number(existing.totalPrice) * 100), sourceLink: `/quotes/${existing.id}` } };
+      }
     }
     if (session.status !== "preview_ready") throw new QuoteDraftIntakeError("QUOTE_INTAKE_NOT_READY", "This Quote proposal was superseded or is not ready for GO.");
     const proposal = await this.buildCreateProposal(input.organizationId, session);
@@ -250,14 +278,14 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
       if (!locked || locked.userId !== input.actorUserId) throw new QuoteDraftIntakeError("SESSION_FORBIDDEN", "Quote intake is not available to this user.");
       if (locked.status === "created" && locked.quoteId) return locked.quoteId;
       if (locked.status !== "preview_ready" || locked.proposalFingerprint !== input.proposalFingerprint) throw new QuoteDraftIntakeError("PROPOSAL_STALE", "The Quote proposal changed or was superseded. Review a new preview.");
-      const quote = await canonicalQuoteOperations.createDraft({ organizationId: input.organizationId, actorUserId: input.actorUserId, transaction: tx, payload: { userId: input.actorUserId, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, source: "internal", status: "draft", label: intake.label ?? (intake.poReference ? `PO ${intake.poReference}` : null), customerNotes: intake.customerNotes ?? null, requestedDueDate: intake.requestedDueDate, validUntil: intake.validUntil ?? null, shippingMethod: intake.shippingMethod ?? null, shippingInstructions: intake.shippingInstructions ?? null, shippingCents: intake.shippingCents ?? null, discountAmount: (intake.discountAmountCents ?? 0) / 100, lineItems: lineItems as any, taxRate: proposal.totals.taxRate, taxAmount: proposal.totals.taxAmount, taxableSubtotal: proposal.totals.taxableSubtotal, ...proposal.customerSnapshot }, auditDescription: `Assistant created draft quote from confirmed intake ${session.id}.` });
+      const quote = await canonicalQuoteOperations.createDraft({ organizationId: input.organizationId, actorUserId: input.actorUserId, transaction: tx, payload: { userId: input.actorUserId, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, source: "internal", status: "draft", label: proposal.preview.quoteTitle, customerNotes: intake.customerNotes ?? null, requestedDueDate: intake.requestedDueDate, validUntil: intake.validUntil ?? null, shippingMethod: intake.shippingMethod ?? null, shippingInstructions: intake.shippingInstructions ?? null, shippingCents: intake.shippingCents ?? null, discountAmount: (intake.discountAmountCents ?? 0) / 100, lineItems: lineItems as any, taxRate: proposal.totals.taxRate, taxAmount: proposal.totals.taxAmount, taxableSubtotal: proposal.totals.taxableSubtotal, ...proposal.customerSnapshot }, auditDescription: `Assistant created draft quote from confirmed intake ${session.id}.` });
       await tx.update(assistantQuoteIntakeSessions).set({ status: "created", quoteId: quote.id, updatedAt: new Date() }).where(eq(assistantQuoteIntakeSessions.id, session.id));
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "quote", entityId: quote.id, actionType: "assistant_quote_draft_created", description: `Assistant created draft quote ${quote.displayNumber ?? quote.quoteNumber} from confirmed intake ${session.id}.` });
       return quote.id;
     });
     const actual = await storage.getQuoteById(input.organizationId, quoteId);
     if (!actual) throw new QuoteDraftIntakeError("QUOTE_READBACK_FAILED", "The Quote was saved but could not be read back. Check the saved result before retrying GO.");
-    if (Math.round(Number(actual.totalPrice) * 100) !== proposal.preview.totalCents || actual.lineItems.length !== proposal.preview.lineItems.length) throw new QuoteDraftIntakeError("QUOTE_READBACK_MISMATCH", "The saved Quote differs from its review. Open the saved Quote before retrying GO.");
+    if (Math.round(Number(actual.totalPrice) * 100) !== proposal.preview.totalCents || !savedQuoteLineTotalsMatch(proposal.preview.lineItems, actual.lineItems)) throw new QuoteDraftIntakeError("QUOTE_READBACK_MISMATCH", "The saved Quote lines or total differ from the reviewed prices. Open the saved Quote before retrying GO.");
     return { quote: { id: actual.id, displayNumber: actual.displayNumber ?? String(actual.quoteNumber), status: "draft", totalCents: Math.round(Number(actual.totalPrice) * 100), sourceLink: `/quotes/${actual.id}` } };
   }
 

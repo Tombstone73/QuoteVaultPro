@@ -71,13 +71,37 @@ describe("draft quote execution command bridges", () => {
     await expect(command.buildPreview({ scope, context: {} as any, arguments: { quoteIntakeSessionId: "session_1", proposalFingerprint } })).rejects.toEqual(expect.objectContaining<Partial<ExecutionPlanError>>({ code: "QUOTE_PROPOSAL_STALE" }));
   });
 
+  it("shows the customer total, system total, readable options, and normalized PO in the GO review", async () => {
+    const command = createQuoteDraftCreateExecutionCommand({
+      revalidateCreateProposal: async () => ({ valid: true as const, proposal: {
+        ...createProposal, poReference: "PO #152858", customerName: "Brainstorm Print", totalCents: 9636,
+        subtotalCents: 9636, pricingDifferenceTotalCents: -3564,
+        lineItems: [{ ...createProposal.lineItems[0], quantity: 8, lineSubtotalCents: 8436, totalCents: 8436,
+          displayOptions: [{ label: "Printing", choice: "Double-sided", available: true }],
+          priceComparison: { status: "different" as const, source: "customer_or_po_supplied" as const, customerTotalCents: 8436, systemTotalCents: 12000, differenceCents: -3564 } }],
+      } }),
+      createDraft: async () => { throw new Error("GO was not given"); },
+    });
+    const built = await command.buildPreview({ scope, context: {} as any, arguments: { quoteIntakeSessionId: "session_1", proposalFingerprint } });
+    const review = built.preview.sideEffects.join(" ");
+    expect(review).toContain("PO 152858");
+    expect(review).not.toContain("PO PO");
+    expect(review).toContain("Printing: Double-sided");
+    expect(review).toContain("8 × ACM");
+    expect(review).toContain("$84.36 line total");
+    expect(review).toContain("$120.00 line total");
+    expect(review).toContain("$35.64 below system price");
+    expect(review).not.toContain("choice_1");
+  });
+
   it("binds update plans to both the quote and proposal fingerprints", async () => {
     const command = createQuoteDraftUpdateExecutionCommand({
-      revalidateUpdateProposal: async () => ({ valid: true as const, proposal: updateProposal }),
+      revalidateUpdateProposal: async () => ({ valid: true as const, proposal: { ...updateProposal, warnings: ["Customer/PO supplied price $84.36 line total for 8 pieces; system $120.00 line total; difference $35.64 below system price; override retained."] } }),
       updateDraft: async () => ({ quote: { id: "quote_1", displayNumber: "Q-1042", status: "draft" as const, totalCents: 12600, sourceLink: "/quotes/quote_1" } }),
     });
     const built = await command.buildPreview({ scope, context: {} as any, arguments: { quoteId: "quote_1", quoteIntakeSessionId: "session_2", proposalFingerprint, expectedQuoteFingerprint: quoteFingerprint } });
     expect(built.preview.quoteDraftUpdate).toMatchObject({ quoteId: "quote_1", totalCentsAfter: 12600 });
+    expect(built.preview.sideEffects.join(" ")).toContain("$84.36 line total for 8 pieces");
     const revalidation = await command.revalidate({ plan: { sanitizedArguments: built.arguments, affectedRecords: built.preview.affectedRecords } as any, scope });
     expect(revalidation).toEqual({ valid: true });
     const result = await command.execute({ plan: { id: "plan_2", idempotencyKey: "aicmd_123e4567-e89b-12d3-a456-426614174000", correlationId: "corr_2", sanitizedArguments: built.arguments } as any, scope });

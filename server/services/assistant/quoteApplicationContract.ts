@@ -36,7 +36,7 @@ export const createInputSchema = {
     poReference: { type: "string", description: "Customer PO reference; stored in the Quote label because Quotes have no dedicated PO field." },
     label: { type: ["string", "null"] }, customerNotes: { type: ["string", "null"] },
     requestedDueDate: { type: ["string", "null"], format: "date-time" }, validUntil: { type: ["string", "null"], format: "date-time" },
-    shippingMethod: { enum: ["pickup", "ship", "deliver", null] }, shippingInstructions: { type: ["string", "null"] }, shippingCents: { type: ["integer", "null"] }, discountAmountCents: { type: "integer" },
+    shippingMethod: { enum: ["pickup", "ship", "deliver", null] }, shippingInstructions: { type: ["string", "null"], description: "Preserve customer pickup or delivery instructions, including arrival times from a PO; requestedDueDate remains a calendar date." }, shippingCents: { type: ["integer", "null"] }, discountAmountCents: { type: "integer" },
     lines: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false,
       required: ["productId", "quantity", "width", "height"], properties: {
         productId: { type: "string" }, quantity: { type: "integer", minimum: 1 }, width: { type: "number", exclusiveMinimum: 0, description: "Finished width in inches; use 1 for quantity-only products." },

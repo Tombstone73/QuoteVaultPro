@@ -31,6 +31,8 @@ const quoteLinePreviewSchema = z.object({
   dimensions: z.object({ width: z.number().positive(), height: z.number().positive(), unit: z.string().min(1).max(16) }).strict().nullable(),
   parentClientKey: z.string().min(1).max(128).nullable(),
   lineSubtotalCents: z.number().int().min(0),
+  displayOptions: z.array(z.object({ label: z.string(), choice: z.string(), available: z.boolean() }).strict()).optional(),
+  priceComparison: z.object({ status: z.enum(["matches", "different", "unavailable"]), source: z.enum(["customer_or_po_supplied", "manual"]), customerTotalCents: z.number().int().min(0), systemTotalCents: z.number().int().min(0).nullable(), differenceCents: z.number().int().nullable() }).strict().nullable().optional(),
   taxCents: z.number().int().min(0),
   totalCents: z.number().int().min(0),
 }).strict();
@@ -46,6 +48,8 @@ export const quoteDraftCreatePreviewSchema = z.object({
   subtotalCents: z.number().int().min(0),
   taxCents: z.number().int().min(0),
   totalCents: z.number().int().min(0),
+  pricingDifferenceTotalCents: z.number().int().optional(),
+  pricingComparisonUnavailable: z.boolean().optional(),
   validationErrors: z.array(z.string().min(1).max(1_000)).max(50),
   warnings: z.array(z.string().min(1).max(1_000)).max(50),
   affectedQuoteCount: z.literal(1),

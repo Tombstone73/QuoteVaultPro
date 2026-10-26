@@ -34,17 +34,37 @@ test("a plain yes binds only one awaiting governed pickup plan", () => {
 describe("Assistant workspace presentation", () => {
   afterEach(() => document.body.innerHTML = "");
 
+  test("shows human-readable Quote options and total-price comparison without duplicating PO", () => {
+    const { container, root } = render([{ kind: "quote_intake_summary", title: "New Quote preview", summary: "Review", sourceLinks: [], details: {
+      customerName: "Brainstorm Print", poReference: "PO #152858", requestedDueDate: "2026-10-26T00:00:00.000Z",
+      lineItems: [{ clientKey: "line-1", productName: "Foam Board", quantity: 8, dimensions: { width: 32, height: 24, unit: "in" },
+        optionSelections: { "opt_opt_c1857862-93e5-48ed-b197-01e3109f7b2b": "choice_1" }, displayOptions: [{ label: "Printing", choice: "Double-sided", available: true }],
+        lineSubtotalCents: 8436, taxCents: 0, priceComparison: { status: "different", customerTotalCents: 8436, systemTotalCents: 12000, differenceCents: -3564 }, manualPriceReason: "Customer PO" }],
+      pricingDifferenceTotalCents: -3564, subtotalCents: 8436, totalCents: 8436,
+    } }]);
+    expect(container.textContent).toContain("PO 152858");
+    expect(container.textContent).not.toContain("PO PO");
+    expect(container.textContent).toContain("Printing: Double-sided");
+    expect(container.textContent).toContain("$84.36 line total for 8 pieces");
+    expect(container.textContent).toContain("$120.00 line total");
+    expect(container.textContent).toContain("$35.64 below system price");
+    expect(container.textContent).not.toContain("choice_1");
+    act(() => root.unmount());
+  });
+
   test("shows Quote edit before/after fields and totals before GO", () => {
     const { container, root } = render([{ kind: "quote_intake_summary", title: "Quote edit preview", summary: "Review changes", sourceLinks: [], details: {
       quote: { id: "quote-1", displayNumber: "QT-1205" }, expectedRevision: 4,
       changes: [{ field: "label", before: "QA draft", after: "QA revised" }, { field: "Line line-1", before: '{"product":"QA Sign","quantity":1,"totalCents":100}', after: '{"product":"QA Sign","quantity":2,"totalCents":200}' }],
       subtotalCentsBefore: 100, subtotalCentsAfter: 200, taxCentsBefore: 7, taxCentsAfter: 14, totalCentsBefore: 107, totalCentsAfter: 214,
+      warnings: ["Customer/PO supplied price $84.36 line total for 8 pieces; system $120.00 line total; difference $35.64 below system price; override retained."],
     } }]);
     expect(container.textContent).toContain("QT-1205");
     expect(container.textContent).toContain("QA draft");
     expect(container.textContent).toContain("QA revised");
     expect(container.textContent).toContain("product: QA Sign");
     expect(container.textContent).toContain("Total: $1.07 → $2.14");
+    expect(container.textContent).toContain("$84.36 line total for 8 pieces");
     expect(container.querySelector('a[href="/quotes/quote-1"]')?.textContent).toBe("Open current Quote QT-1205");
     expect(container.textContent).not.toContain("Unresolved");
     act(() => root.unmount());

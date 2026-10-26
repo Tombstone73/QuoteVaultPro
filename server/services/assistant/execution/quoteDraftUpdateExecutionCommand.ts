@@ -46,6 +46,7 @@ export function createQuoteDraftUpdateExecutionCommand(service: QuoteDraftUpdate
         sideEffects: [
           "Apply the server-validated quote changes and refresh canonical pricing and tax snapshots.",
           ...proposal.changes.map((change) => `${change.field}: ${change.before ?? "not set"} → ${change.after ?? "cleared"}.`),
+          ...proposal.warnings,
         ],
         affectedRecords: [{ entityType: "quote", entityId: proposal.quote.id, fingerprint: proposal.expectedQuoteFingerprint }],
         quoteDraftUpdate: {

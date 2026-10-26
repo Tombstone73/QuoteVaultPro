@@ -17,6 +17,9 @@ describe("shared Quote application contract", () => {
     expect(parsed.poReference).toBe("152878");
     expect(parsed.requestedDueDate).toBe("2026-11-06T17:00:00.000Z");
     expect(parsed.shippingInstructions).toBe("Deliver to receiving");
+    const pickup = quoteCreateRequestSchema.parse({ customerId: "customer-1", requestedDueDate: "2026-10-26T00:00:00.000Z", shippingMethod: "pickup", shippingInstructions: "Customer requests 9 AM arrival for pickup", lines: sevenLines.slice(0, 1) });
+    expect(pickup.requestedDueDate).toBe("2026-10-26T00:00:00.000Z");
+    expect(pickup.shippingInstructions).toContain("9 AM");
   });
 
   test("rejects incomplete or silently narrowed Quote requests", () => {
@@ -37,6 +40,7 @@ describe("shared Quote application contract", () => {
     const lines = (parameters.properties as any).lines;
     expect(parameters.required).toEqual(["customerId", "lines"]);
     expect(lines.items.properties).toMatchObject({ productId: { type: "string" }, quantity: { type: "integer" }, optionSelections: { type: "object" }, overridePriceCents: { type: "integer" } });
+    expect((parameters.properties as any).shippingInstructions.description).toContain("arrival times from a PO");
   });
 
   test("the shared catalog exposes the Quote adapter and dispatches validation", async () => {
