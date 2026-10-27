@@ -56,6 +56,8 @@ export const shipmentPackageInputSchema = z.object({
 });
 
 export const patchShipmentSchema = z.object({
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+  clientRequestId: z.string().uuid().optional(),
   carrier: z.string().trim().max(100).optional().nullable(),
   serviceLevel: z.string().trim().optional().nullable(),
   trackingNumber: z.string().trim().max(255).optional().nullable(),

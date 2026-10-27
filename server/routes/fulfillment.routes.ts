@@ -623,6 +623,8 @@ export function registerFulfillmentRoutes(
       const parsed = patchFulfillmentShipmentSchema.parse(req.body || {});
 
       const shipment = await canonicalFulfillmentOperations.patchShipment(organizationId, req.params.shipmentId, {
+        expectedUpdatedAt: parsed.expectedUpdatedAt,
+        clientRequestId: parsed.clientRequestId,
         carrier: parsed.carrier,
         shippingContext: parsed.shippingContext,
         serviceLevel: parsed.serviceLevel,

@@ -651,6 +651,8 @@ export class FulfillmentService {
   }
 
   async patchShipment(orgId: string, shipmentId: string, payload: {
+    expectedUpdatedAt?: string;
+    clientRequestId?: string;
     shippingContext?: ShipmentShippingContext;
     carrier?: string | null;
     serviceLevel?: string | null;
@@ -718,6 +720,8 @@ export class FulfillmentService {
       })),
       items: payload.shipmentItems,
       actorUserId: payload.actorUserId,
+      expectedUpdatedAt: payload.expectedUpdatedAt,
+      clientRequestId: payload.clientRequestId,
     });
   }
 

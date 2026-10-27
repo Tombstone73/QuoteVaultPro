@@ -9,7 +9,8 @@ afterEach(() => jest.restoreAllMocks());
 
 function fixture(status = 'DRAFT') {
   const context = orderShippingContext({ id: 'order-a', shipToCompany: 'Recipient', shipToAddress1: '12 Main', shipToCity: 'Phoenix', shipToState: 'AZ', shipToPostalCode: '85001' });
-  let state: any = { shipment: { id: 'shipment-a', organizationId: 'org-a', status, carrier: 'Old', shippingContext: context },
+  let state: any = { shipment: { id: 'shipment-a', organizationId: 'org-a', status, carrier: 'Old', shippingContext: context,
+    updatedAt: new Date('2026-10-01T00:00:00Z') },
     packages: [{ id: 'package-a', weightLbs: '4', dimLengthIn: '10', notes: 'Keep', ordinal: 1 }],
     items: [{ id: 'item-a', orderId: 'order-a', orderLineItemId: 'line-a', packageId: 'package-a', quantity: 2 }], events: [] };
   const locks: any[] = []; const queries: any[] = []; const writes: any[] = [];
@@ -19,12 +20,14 @@ function fixture(status = 'DRAFT') {
     execute: async (query: any) => { locks.push(dialect.sqlToQuery(query)); return []; },
     select: (projection: any) => {
       let table: any;
+      let whereQuery: any;
       const rows = () => table === shipments ? [state.shipment] : table === shipmentOrders ? [{ orderId: 'order-a' }]
         : table === shipmentPackages ? projection?.count ? [{ count: state.packages.length, maxOrdinal: 1 }] : state.packages
-        : table === shipmentItems ? state.items : table === orderLineItems ? [{ id: 'line-a', orderId: 'order-a', quantity: 2 }] : [];
-      const chain: any = { from: (value: any) => { table = value; return chain; }, where: (predicate: any) => { queries.push(dialect.sqlToQuery(predicate)); return chain; },
+        : table === shipmentItems ? state.items : table === orderLineItems ? [{ id: 'line-a', orderId: 'order-a', quantity: 2 }]
+        : table === fulfillmentEvents ? state.events.filter((event: any) => whereQuery?.params.includes(event.payloadJson?.clientRequestId)) : [];
+      const chain: any = { from: (value: any) => { table = value; return chain; }, where: (predicate: any) => { whereQuery = dialect.sqlToQuery(predicate); queries.push(whereQuery); return chain; },
         for: (...args: any[]) => { locks.push({ table, args }); return chain; }, limit: async () => rows(), then: (resolve: any) => Promise.resolve(rows()).then(resolve) };
-      for (const method of ['innerJoin', 'leftJoin', 'orderBy']) chain[method] = () => chain;
+      for (const method of ['innerJoin', 'leftJoin', 'orderBy', 'groupBy']) chain[method] = () => chain;
       return chain;
     },
     update: (table: any) => ({ set: (patch: any) => ({ where: async (predicate: any) => {
@@ -52,7 +55,7 @@ function fixture(status = 'DRAFT') {
     const apply = () => update(table).set(patch).where(predicate);
     return { returning: async () => { await apply(); return [state.shipment]; }, then: (resolve: any) => apply().then(resolve) };
   } }) });
-  jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-a', orderId: 'order-a', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2 }) }]);
+  jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-a', orderId: 'order-a', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, readyWaitingQuantity: 2 }) }]);
   return { repo: new ShipmentRepo(db), get state() { return state; }, db, locks, queries, writes };
 }
 
@@ -95,6 +98,25 @@ describe('draft transaction and terminal package evidence', () => {
     await f.repo.saveDraftShipment('org-a', 'shipment-a', { patch: { internalNotes: 'Updated' }, items: [] });
     expect(f.state.items).toEqual([]);
     expect(f.state.shipment.shippingContext.destination.company).toBe('Recipient');
+    expect(f.state.events).toHaveLength(1);
+  });
+
+  test('revision rejects a stale edit; the same request can replay but cannot carry different content', async () => {
+    const f = fixture();
+    const revision = f.state.shipment.updatedAt.toISOString();
+    const request = { patch: { internalNotes: 'Saved once' }, expectedUpdatedAt: revision, clientRequestId: 'save-1' };
+    await f.repo.saveDraftShipment('org-a', 'shipment-a', request);
+    const savedRevision = f.state.shipment.updatedAt.toISOString();
+    expect(savedRevision).not.toBe(revision);
+    expect(f.state.events).toHaveLength(1);
+    await f.repo.saveDraftShipment('org-a', 'shipment-a', request);
+    expect(f.state.events).toHaveLength(1);
+    expect(f.state.shipment.updatedAt.toISOString()).toBe(savedRevision);
+    await expect(f.repo.saveDraftShipment('org-a', 'shipment-a', { ...request, patch: { internalNotes: 'Different' } }))
+      .rejects.toMatchObject({ code: 'DRAFT_REQUEST_ID_REUSED' });
+    await expect(f.repo.saveDraftShipment('org-a', 'shipment-a', { patch: { internalNotes: 'Stale' }, expectedUpdatedAt: revision,
+      clientRequestId: 'save-2' })).rejects.toMatchObject({ code: 'DRAFT_STALE' });
+    expect(f.state.shipment.internalNotes).toBe('Saved once');
     expect(f.state.events).toHaveLength(1);
   });
 

@@ -7,7 +7,7 @@ Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { rando
 const destination = { name: 'Receiving Contact', company: 'Destination Company', address1: '123 Saved Street', address2: 'Dock B', city: 'Austin', state: 'TX', postalCode: '78701', country: 'US', phone: '512-555-0100', email: 'receiving@example.test' };
 const sourceSender = { ...destination, name: 'Saved Organization Sender', address1: '456 Sender Street' };
 let documentSource: any = { data: { sender: sourceSender }, isLoading: false };
-const shipment: any = { id: 'shipment-1', status: 'DRAFT', shipmentReference: 'SH-20306-01', packingMode: 'simple_verified_packing', updatedAt: '2026-10-01T12:00:00Z', orders: [{ orderId: 'order-1', orderNumber: '20306', customerName: 'DG Graphics' }], shippingContext: { version: 1, source: 'order', sourceOrderId: 'order-1', destination, blindShipping: false, blindSender: null }, packages: [{ id: 'package-1', packageReference: 'SH-20306-01-P1', ordinal: 1, upsPackagingType: '02' }], items: [{ id: 'allocation-1', orderId: 'order-1', orderLineItemId: 'line-1', quantity: 2, packageId: 'package-1' }], events: [] };
+const shipment: any = { id: 'shipment-1', status: 'DRAFT', shipmentReference: 'SH-20306-01', packingMode: 'simple_verified_packing', updatedAt: '2026-10-01T12:00:00Z', orders: [{ orderId: 'order-1', orderNumber: '20306', customerName: 'DG Graphics' }], shippingContext: { version: 1, source: 'order', sourceOrderId: 'order-1', destination, blindShipping: false, blindSender: null }, packages: [{ id: 'package-1', packageReference: 'SH-20306-01-P1', ordinal: 1, upsPackagingType: '02' }], items: [{ id: 'allocation-1', orderId: 'order-1', orderLineItemId: 'line-1', quantity: 2, packageId: 'package-1' }], lineAvailability: [{ orderLineItemId: 'line-1', orderedQuantity: 2, readyQuantity: 2, shippedQuantity: 0, remainingQuantity: 2, reservedHere: 2, reservedElsewhere: 0 }], events: [] };
 const initialShipment = JSON.parse(JSON.stringify(shipment));
 let fulfillment: any = { lineItems: [{ id: 'line-1', productName: 'Magnetic', size: '24 x 18 in', materialName: 'Magnet', optionSummary: ['Rounded corners'], production: { orderedQuantity: 2, remainingQuantity: 2 }, artwork: [] }] };
 let fulfillmentByOrder: Record<string, any> = {};
@@ -29,7 +29,7 @@ const persistDraft = async (payload: any) => {
       dimWidthIn: patch.dims.width == null ? null : String(patch.dims.width),
       dimHeightIn: patch.dims.height == null ? null : String(patch.dims.height), notes: patch.notes } : pkg;
   });
-  shipment.items = payload.shipmentItems.map((item: any, index: number) => ({ ...item, id: `saved-${index}` }));
+  if (payload.shipmentItems) shipment.items = payload.shipmentItems.map((item: any, index: number) => ({ ...item, id: `saved-${index}` }));
   return shipment;
 };
 const save = jest.fn(persistDraft);
@@ -618,6 +618,77 @@ test('zero quantity can be replaced naturally and an incomplete entry is not rep
     expect(container.textContent).toContain('Unsaved changes');
     expect(container.textContent).toContain('Enter a whole quantity');
   } finally { act(() => root.unmount()); }
+});
+
+test('missing authoritative readiness blocks allocation instead of using remaining quantity', async () => {
+  const previousAvailability = shipment.lineAvailability;
+  shipment.lineAvailability = [];
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).toContain('Shipment readiness is unavailable. Reload before allocating this line.');
+    expect(container.textContent).toContain('Items packed: 0');
+    expect((button(container, 'MARK AS SHIPPED') as HTMLButtonElement).disabled).toBe(true);
+  } finally { act(() => root.unmount()); shipment.lineAvailability = previousAvailability; }
+});
+
+test('two unready 100-unit lines never appear packed; package measurements still autosave', async () => {
+  const previousFulfillment = fulfillment;
+  shipment.items = [];
+  shipment.lineAvailability = ['line-1', 'line-2'].map(orderLineItemId => ({ orderLineItemId,
+    orderedQuantity: 100, readyQuantity: 0, shippedQuantity: 0, remainingQuantity: 100,
+    reservedHere: 0, reservedElsewhere: 0 }));
+  fulfillment = { lineItems: ['line-1', 'line-2'].map((id, index) => ({ ...previousFulfillment.lineItems[0], id,
+    productName: `PVC ${index + 1}`, production: { orderedQuantity: 100, remainingQuantity: 100 } })) };
+  const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    const first = container.querySelector('input[aria-label="Qty in this shipment: PVC 1"]') as HTMLInputElement;
+    const second = container.querySelector('input[aria-label="Qty in this shipment: PVC 2"]') as HTMLInputElement;
+    act(() => Simulate.change(first, { target: { value: '0100' } } as any));
+    act(() => Simulate.change(second, { target: { value: '100' } } as any));
+    expect(first.value).toBe('100');
+    expect(container.textContent).toContain('No units are production-ready');
+    expect(container.textContent).toContain('0 saved eligible unit(s)');
+    expect((button(container, 'MARK AS SHIPPED') as HTMLButtonElement).disabled).toBe(true);
+    act(() => Simulate.change(packageInput(container, 'Weight (lbs)'), { target: { value: '4.5' } } as any));
+    await blurAndSave(packageInput(container, 'Weight (lbs)'));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ packages: [expect.objectContaining({ weightLbs: 4.5 })] }));
+    expect((save.mock.calls[0][0] as any).shipmentItems).toBeUndefined();
+    expect(shipment.items).toEqual([]);
+    expect(container.textContent).toContain('Package and address details saved');
+    expect(mark).not.toHaveBeenCalled();
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
+  } finally { act(() => root.unmount()); container.remove(); fulfillment = previousFulfillment; delete shipment.lineAvailability; }
+});
+
+test('ready 100-unit lines save a full and a partial allocation before showing packed totals', async () => {
+  const previousFulfillment = fulfillment;
+  shipment.items = [];
+  shipment.lineAvailability = ['line-1', 'line-2'].map(orderLineItemId => ({ orderLineItemId,
+    orderedQuantity: 100, readyQuantity: 100, shippedQuantity: 0, remainingQuantity: 100,
+    reservedHere: 0, reservedElsewhere: 0 }));
+  fulfillment = { lineItems: ['line-1', 'line-2'].map((id, index) => ({ ...previousFulfillment.lineItems[0], id,
+    productName: `PVC ${index + 1}`, production: { orderedQuantity: 100, remainingQuantity: 100 } })) };
+  const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    const first = container.querySelector('input[aria-label="Qty in this shipment: PVC 1"]') as HTMLInputElement;
+    const second = container.querySelector('input[aria-label="Qty in this shipment: PVC 2"]') as HTMLInputElement;
+    act(() => Simulate.change(first, { target: { value: '0100' } } as any));
+    act(() => Simulate.change(second, { target: { value: '50' } } as any));
+    for (const label of ['PVC 1', 'PVC 2']) act(() => Simulate.change(
+      container.querySelector(`select[aria-label="Package assignment: ${label}, Order 20306"]`)!,
+      { target: { value: 'package-1' } } as any));
+    expect(container.textContent).toContain('Items packed: 0');
+    await blurAndSave(second);
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ shipmentItems: [
+      expect.objectContaining({ orderLineItemId: 'line-1', quantity: 100 }),
+      expect.objectContaining({ orderLineItemId: 'line-2', quantity: 50 }),
+    ] }));
+    expect(container.textContent).toContain('Items packed: 150');
+    expect(container.textContent).toContain('150 saved eligible unit(s)');
+  } finally { act(() => root.unmount()); container.remove(); fulfillment = previousFulfillment; delete shipment.lineAvailability; }
 });
 
 test('missing production owner has an Order recovery link and an audited readiness action', async () => {

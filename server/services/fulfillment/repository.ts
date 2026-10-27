@@ -444,9 +444,29 @@ export class ShipmentRepo {
     packages?: Parameters<ShipmentRepo['patchDraftShipmentPackages']>[2];
     items?: Parameters<ShipmentRepo['replaceDraftShipmentItems']>[2];
     actorUserId?: string | null;
+    expectedUpdatedAt?: string;
+    clientRequestId?: string;
   }) {
     await this.dbInstance.transaction(async tx => {
       const shipment = await this.lockDraftShipment(orgId, shipmentId, tx as any);
+      const requestHash = input.clientRequestId ? createHash('sha256').update(JSON.stringify({
+        patch: input.patch, packages: input.packages, items: input.items,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+      })).digest('hex') : null;
+      if (input.clientRequestId) {
+        const [prior] = await tx.select({ payloadJson: fulfillmentEvents.payloadJson }).from(fulfillmentEvents).where(and(
+          eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'SHIPMENT'),
+          eq(fulfillmentEvents.entityId, shipmentId), eq(fulfillmentEvents.eventType, 'SHIPMENT_UPDATED'),
+          sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${input.clientRequestId}`,
+        )).limit(1);
+        if (prior) {
+          if ((prior.payloadJson as Record<string, unknown>)?.requestHash !== requestHash) throw new FulfillmentHttpError(409,
+            'This draft save identity was already used for different details. Reload the shipment.', 'DRAFT_REQUEST_ID_REUSED');
+          return;
+        }
+      }
+      if (input.expectedUpdatedAt && shipment.updatedAt.toISOString() !== input.expectedUpdatedAt) throw new FulfillmentHttpError(409,
+        'This shipment changed after you opened it. Your edits are still on this page; reload before saving over newer work.', 'DRAFT_STALE');
       const links = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
         eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
       ));
@@ -459,8 +479,14 @@ export class ShipmentRepo {
         const replacement = await this.replaceDraftShipmentItems(orgId, shipmentId, input.items, tx as any);
         if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
       }
+      // Millisecond-monotonic revision for browser compare-and-save, including
+      // rapid sequential edits that can otherwise share a Date.now() value.
+      await tx.update(shipments).set({ updatedAt: new Date(Math.max(Date.now(), shipment.updatedAt.getTime() + 1)) }).where(and(
+        eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
+      ));
       await this.insertEvent(orgId, input.actorUserId ?? null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
         hasItemsUpdate: input.items !== undefined, hasShippingContextUpdate: input.patch.shippingContext !== undefined,
+        ...(input.clientRequestId ? { clientRequestId: input.clientRequestId, requestHash } : {}),
       }, tx);
     });
     return this.getShipmentById(orgId, shipmentId);
@@ -516,7 +542,9 @@ export class ShipmentRepo {
         if (!line?.projection.requiresFulfillment) return { ok: false as const, code: 'LINE_NOT_FULFILLABLE', message: 'Shipment quantities require a physical fulfillment line item.' };
         const otherDrafts = reservedElsewhere.get(id) ?? 0;
         if (quantity + otherDrafts > line.projection.remainingQuantity) return { ok: false as const,
-          code: 'QTY_RESERVED', message: 'Another DRAFT shipment reserves some of this line. Reload quantities and choose an available amount.' };
+          code: otherDrafts > 0 ? 'QTY_RESERVED' : 'QTY_EXCEEDS_ORDER',
+          message: otherDrafts > 0 ? 'Another DRAFT shipment reserves some of this line. Reload quantities and choose an available amount.'
+            : 'Shipment quantity exceeds the remaining order quantity for this line.' };
         if (quantity + otherDrafts > line.projection.readyWaitingQuantity) return { ok: false as const,
           code: 'QTY_NOT_READY', message: 'Shipment quantity exceeds the ready, unreserved quantity for this line.' };
       }

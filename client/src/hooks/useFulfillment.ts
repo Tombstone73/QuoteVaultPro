@@ -564,6 +564,8 @@ export function useUpdateShipmentMutation(shipmentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: {
+      expectedUpdatedAt?: string;
+      clientRequestId?: string;
       carrier?: string | null;
       serviceLevel?: string | null;
       trackingNumber?: string | null;

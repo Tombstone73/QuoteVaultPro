@@ -286,7 +286,10 @@ export function FulfillmentShipmentEditor({
   const [draftSaveError, setDraftSaveError] = useState<string | null>(null);
   const saveInFlight = useRef<Promise<void> | null>(null);
   const savedDraftKey = useRef<string | null>(null);
+  const savedEditableDraftKey = useRef<string | null>(null);
   const failedDraftKey = useRef<string | null>(null);
+  const savedShipmentRevision = useRef<string | null>(null);
+  const draftMutation = useRef<{ key: string; id: string } | null>(null);
 
   const debugEnabled = useMemo(() => new URLSearchParams(location.search).get("debug") === "1", [location.search]);
 
@@ -337,7 +340,10 @@ export function FulfillmentShipmentEditor({
     if (hydratedShipmentId.current === shipment.id) return;
     hydratedShipmentId.current = shipment.id;
     savedDraftKey.current = null;
+    savedEditableDraftKey.current = null;
     failedDraftKey.current = null;
+    savedShipmentRevision.current = new Date(shipment.updatedAt).toISOString();
+    draftMutation.current = null;
     setDraftSaveState('idle');
     setDraftSaveError(null);
     setShippingContext(shipment.shippingContext ?? null);
@@ -547,7 +553,7 @@ export function FulfillmentShipmentEditor({
         const availability = availabilityByLineItemId.get(item.id);
         const availableForThisDraft = availability
           ? Math.max(0, Math.min(availability.remainingQuantity, availability.readyQuantity) - availability.reservedElsewhere)
-          : item.remainingQty;
+          : 0;
         if (!Number.isInteger(allocated) || allocated < 0 || allocated > availableForThisDraft) {
           errors.add(item.id);
         }
@@ -556,20 +562,23 @@ export function FulfillmentShipmentEditor({
     return errors;
   }, [lineItemsByOrder, draftShipmentItems, availabilityByLineItemId, allocationInputByLineItemId, splitQuantityInputs, shipment?.items, newSplitRows]);
 
-  const allocatedCount = useMemo(
-    () => draftShipmentItems.reduce((acc, item) => acc + (Number(item.quantity) > 0 ? Number(item.quantity) : 0), 0),
-    [draftShipmentItems],
-  );
+  const validDraftShipmentItems = draftShipmentItems.filter(item => !validationErrors.has(item.orderLineItemId));
+  const allocatedCount = validDraftShipmentItems.reduce((sum, item) => sum + (item.quantity > 0 ? item.quantity : 0), 0);
+  const savedTotalsByLine = new Map<string, number>();
+  for (const item of shipment?.items ?? []) savedTotalsByLine.set(item.orderLineItemId,
+    (savedTotalsByLine.get(item.orderLineItemId) ?? 0) + item.quantity);
+  const savedValidShipmentItems = (shipment?.items ?? []).filter(item => {
+    const availability = availabilityByLineItemId.get(item.orderLineItemId);
+    return availability ? (savedTotalsByLine.get(item.orderLineItemId) ?? 0) <=
+      Math.max(0, Math.min(availability.remainingQuantity, availability.readyQuantity) - availability.reservedElsewhere)
+      : shipment?.status !== 'DRAFT';
+  });
 
-  const hasUnsavedChanges = shipment?.status === "DRAFT" && (
-    Object.values(allocationInputByLineItemId).some(value => value === '') ||
-    Object.values(splitQuantityInputs).some(value => value === '') ||
+  const hasNonAllocationChanges = shipment?.status === "DRAFT" && (
     form.carrier !== (shipment.carrier ?? "") || form.serviceLevel !== (shipment.serviceLevel ?? "") ||
     form.trackingNumber !== (shipment.trackingNumber ?? "") || form.shipDate !== toDateInput(shipment.shipDate) ||
     form.internalNotes !== (shipment.internalNotes ?? "") ||
     JSON.stringify(shippingContext) !== JSON.stringify(shipment.shippingContext ?? null) ||
-    JSON.stringify(draftShipmentItems.filter(item => item.quantity > 0).map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort()) !==
-      JSON.stringify(shipment.items.map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort()) ||
     shipment.packages.some((pkg, index) => {
       const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes } : packageFieldsById[pkg.id];
       return !!fields && ((upsPackageTypes[pkg.id] ?? '02') !== (pkg.upsPackagingType ?? '02') ||
@@ -579,17 +588,24 @@ export function FulfillmentShipmentEditor({
         parseNumber(fields.height) !== parseNumber(pkg.dimHeightIn ?? "") || fields.notes !== (pkg.notes ?? ""));
     })
   );
+  const hasUnsavedChanges = shipment?.status === "DRAFT" && (
+    Object.values(allocationInputByLineItemId).some(value => value === '') ||
+    Object.values(splitQuantityInputs).some(value => value === '') ||
+    hasNonAllocationChanges ||
+    JSON.stringify(draftShipmentItems.filter(item => item.quantity > 0).map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort()) !==
+      JSON.stringify(shipment.items.map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort())
+  );
   const draftKey = JSON.stringify({ shipmentId: shipment?.id, form, shippingContext, packageFieldsById, upsPackageTypes, allocationInputByLineItemId, splitQuantityInputs,
     packageIds: shipment?.packages.map(pkg => pkg.id), items: draftShipmentItems.filter(item => item.quantity > 0) });
-  const latestDraft = useRef({ draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems, shipment, hasUnsavedChanges, loadingOrders, validationErrors, fulfillmentByOrderId });
-  latestDraft.current = { draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems, shipment, hasUnsavedChanges, loadingOrders, validationErrors, fulfillmentByOrderId };
+  const latestDraft = useRef({ draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems, shipment, hasUnsavedChanges, hasNonAllocationChanges, loadingOrders, validationErrors, fulfillmentByOrderId });
+  latestDraft.current = { draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems, shipment, hasUnsavedChanges, hasNonAllocationChanges, loadingOrders, validationErrors, fulfillmentByOrderId };
   useEffect(() => {
     if (failedDraftKey.current !== draftKey) {
       setDraftSaveError(null);
       setDraftSaveState(state => state === 'failed' ? 'idle' : state);
     }
   }, [draftKey]);
-  const documentActionsDisabled = !!hasUnsavedChanges || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
+  const documentActionsDisabled = !!hasUnsavedChanges || validationErrors.size > 0 || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
   const upsRateKey = JSON.stringify({ shipmentId: shipment?.id,
     destination: addressKey(shippingContext?.destination),
     sender: shippingContext?.blindShipping ? addressKey(shippingContext.blindSender) : null,
@@ -666,8 +682,10 @@ export function FulfillmentShipmentEditor({
 
   const buySelectedUpsLabel = async () => {
     if (!shipmentId || !upsQuoteId || !selectedUpsOptionId || !upsStateLoaded || upsRatesStale || upsActionPending || upsChargePending || upsActivePurchase) return;
-    const saved = await flushDraft();
-    if (!saved) { setUpsActionError('Save the latest draft details before buying a UPS label. No purchase request was sent.'); return; }
+    const saved = await flushDraft(true);
+    if (!saved) { setUpsActionError(latestDraft.current.validationErrors.size
+      ? 'Shipment quantities exceed the ready, unreserved amount. Correct the allocations before buying a UPS label; no purchase request was sent.'
+      : draftSaveError ?? 'The latest draft details could not be verified as saved. Review the save status and retry; no purchase request was sent.'); return; }
     if (upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')) {
       setUpsActionError('A customer shipping charge is still unset. Set it on the Order or apply the UPS rate before buying.'); return;
     }
@@ -828,36 +846,53 @@ export function FulfillmentShipmentEditor({
     (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId &&
       (row.status !== 'PURCHASED' || row.environment !== 'live' || row.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')))) ||
     validationErrors.size > 0 ||
+    draftSaveState === 'failed' ||
     allocatedCount <= 0 ||
     missingDestination.length > 0 || missingBlindSender.length > 0 ||
     markShipped.isPending ||
     updateShipment.isPending;
 
-  const flushDraft = async (): Promise<boolean> => {
-    if (upsDraftLocked) return !latestDraft.current.hasUnsavedChanges;
+  const flushDraft = async (requireAllocations = false): Promise<boolean> => {
+    if (upsDraftLocked) return !latestDraft.current.hasUnsavedChanges && (!requireAllocations || latestDraft.current.validationErrors.size === 0);
     if (saveInFlight.current) {
       try { await saveInFlight.current; } catch { return false; }
-      if (latestDraft.current.draftKey === savedDraftKey.current) return true;
-      return flushDraft();
+      if (latestDraft.current.draftKey === savedDraftKey.current) return !requireAllocations || latestDraft.current.validationErrors.size === 0;
+      return flushDraft(requireAllocations);
     }
     const snapshot = latestDraft.current;
     const currentShipment = snapshot.shipment;
-    if (!shipmentId || !currentShipment || currentShipment.status !== 'DRAFT' || snapshot.loadingOrders ||
-      currentShipment.orders.some(order => !snapshot.fulfillmentByOrderId[order.orderId])) return false;
-    if (snapshot.draftKey === savedDraftKey.current) return true;
+    if (!shipmentId || !currentShipment || currentShipment.status !== 'DRAFT') return false;
+    const allocationsReady = !snapshot.loadingOrders &&
+      currentShipment.orders.every(order => Boolean(snapshot.fulfillmentByOrderId[order.orderId])) &&
+      snapshot.validationErrors.size === 0;
+    if (snapshot.draftKey === savedDraftKey.current) return !requireAllocations || allocationsReady;
+    if (snapshot.draftKey === savedEditableDraftKey.current) return !requireAllocations;
     if (failedDraftKey.current === snapshot.draftKey) return false;
-    if (!snapshot.hasUnsavedChanges) { savedDraftKey.current = snapshot.draftKey; return true; }
+    if (!snapshot.hasUnsavedChanges) {
+      if (allocationsReady) savedDraftKey.current = snapshot.draftKey;
+      else savedEditableDraftKey.current = snapshot.draftKey;
+      return !requireAllocations || allocationsReady;
+    }
     const packageValues: PackageFields[] = currentShipment.packages.map((pkg, index) => index === 0
       ? { weight: snapshot.form.weight, length: snapshot.form.length, width: snapshot.form.width, height: snapshot.form.height, notes: snapshot.form.packageNotes }
       : snapshot.packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? '', length: pkg.dimLengthIn ?? '', width: pkg.dimWidthIn ?? '', height: pkg.dimHeightIn ?? '', notes: pkg.notes ?? '' });
-    if (snapshot.validationErrors.size || packageValues.some(fields =>
-      [fields.weight, fields.length, fields.width, fields.height].some(invalidPackageNumber))) {
-      setDraftSaveState('idle'); setDraftSaveError('Finish invalid quantities or package measurements before saving.');
+    if (packageValues.some(fields => [fields.weight, fields.length, fields.width, fields.height].some(invalidPackageNumber))) {
+      setDraftSaveState('idle'); setDraftSaveError('Correct the package measurements before saving.');
       failedDraftKey.current = snapshot.draftKey;
       return false;
     }
-    const shipmentItems = snapshot.draftShipmentItems.filter(item => item.quantity > 0);
+    if (!allocationsReady && !snapshot.hasNonAllocationChanges) {
+      savedEditableDraftKey.current = snapshot.draftKey;
+      setDraftSaveState('saved');
+      return !requireAllocations;
+    }
+    const shipmentItems = allocationsReady ? snapshot.draftShipmentItems.filter(item => item.quantity > 0) : undefined;
+    const mutationId = draftMutation.current?.key === snapshot.draftKey
+      ? draftMutation.current.id : crypto.randomUUID();
+    draftMutation.current = { key: snapshot.draftKey, id: mutationId };
     const payload: DraftPatch = {
+      expectedUpdatedAt: savedShipmentRevision.current ?? new Date(currentShipment.updatedAt).toISOString(),
+      clientRequestId: mutationId,
       carrier: snapshot.form.carrier || null, serviceLevel: snapshot.form.serviceLevel || null,
       trackingNumber: snapshot.form.trackingNumber || null, shipDate: snapshot.form.shipDate || null,
       internalNotes: snapshot.form.internalNotes || null,
@@ -866,7 +901,7 @@ export function FulfillmentShipmentEditor({
         weightLbs: parseNumber(packageValues[index].weight),
         dims: { length: parseNumber(packageValues[index].length), width: parseNumber(packageValues[index].width), height: parseNumber(packageValues[index].height) },
         notes: packageValues[index].notes || null })),
-      shipmentItems,
+      ...(shipmentItems ? { shipmentItems } : {}),
     };
     const task = (async () => {
       setDraftSaveState('saving'); setDraftSaveError(null); setLastError(null);
@@ -874,7 +909,8 @@ export function FulfillmentShipmentEditor({
       const refreshed = await shipmentQuery.refetch();
       if (!refreshed.data || refreshed.isError || !draftReadbackMatches(refreshed.data, payload))
         throw new Error('Could not verify the saved shipment draft. Your edits remain available for retry.');
-      if (latestDraft.current.draftKey === snapshot.draftKey) {
+      savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
+      if (shipmentItems && latestDraft.current.draftKey === snapshot.draftKey) {
         const savedAllocations: Record<string, number> = {};
         const savedPackages: Record<string, string> = {};
         for (const item of refreshed.data.items) {
@@ -889,7 +925,8 @@ export function FulfillmentShipmentEditor({
         setSplitQuantityInputs({});
         setSplitPackagesById({});
       }
-      savedDraftKey.current = snapshot.draftKey;
+      if (allocationsReady) savedDraftKey.current = snapshot.draftKey;
+      else savedEditableDraftKey.current = snapshot.draftKey;
       failedDraftKey.current = null;
       if (latestDraft.current.shippingContext === snapshot.shippingContext && snapshot.shippingContext === null)
         setShippingContext(refreshed.data.shippingContext ?? null);
@@ -906,16 +943,16 @@ export function FulfillmentShipmentEditor({
       setLastError({ code: parsed.code, message: parsed.message });
       return false;
     } finally { if (saveInFlight.current === task) saveInFlight.current = null; }
-    return latestDraft.current.draftKey === snapshot.draftKey ? true : flushDraft();
+    return latestDraft.current.draftKey === snapshot.draftKey ? (!requireAllocations || allocationsReady) : flushDraft(requireAllocations);
   };
 
   useEffect(() => {
-    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked || loadingOrders || shipment.orders.some(order => !fulfillmentByOrderId[order.orderId])) return;
+    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked) return;
     if (!hasUnsavedChanges) {
-      if (!saveInFlight.current && failedDraftKey.current !== draftKey) savedDraftKey.current = draftKey;
+      if (!saveInFlight.current && failedDraftKey.current !== draftKey && validationErrors.size === 0) savedDraftKey.current = draftKey;
       return;
     }
-    if (failedDraftKey.current === draftKey || saveInFlight.current) return;
+    if (failedDraftKey.current === draftKey || savedEditableDraftKey.current === draftKey || saveInFlight.current) return;
     const timer = window.setTimeout(() => { void flushDraft(); }, 500);
     return () => window.clearTimeout(timer);
   }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked]);
@@ -943,7 +980,9 @@ export function FulfillmentShipmentEditor({
         height: created.dimHeightIn ?? '', notes: created.notes ?? '',
       } }));
       setUpsPackageTypes(previous => ({ ...previous, [created.id]: created.upsPackagingType ?? '02' }));
-      await shipmentQuery.refetch();
+      const refreshed = await shipmentQuery.refetch();
+      if (!refreshed.data?.packages.some(pkg => pkg.id === created.id)) throw new Error('Could not verify the new box. Reload before continuing.');
+      savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
       await onMutationComplete?.();
       toast({ title: duplicateFromId ? 'Box duplicated' : 'Box added', description: created.packageReference });
     } catch (error) {
@@ -963,6 +1002,7 @@ export function FulfillmentShipmentEditor({
       const refreshed = await shipmentQuery.refetch();
       if (!refreshed.data || refreshed.data.packages.some(pkg => pkg.id === packageId))
         throw new Error('Could not verify that the box was removed. Reload before continuing.');
+      savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
       setPackageFieldsById(previous => { const next = { ...previous }; delete next[packageId]; return next; });
       setUpsPackageTypes(previous => { const next = { ...previous }; delete next[packageId]; return next; });
       if (shipment.packages[0]?.id === packageId) {
@@ -977,7 +1017,7 @@ export function FulfillmentShipmentEditor({
 
   const handleAddSplit = async (orderLineItemId: string) => {
     if (!shipmentId || !shipment || shipment.packages.length < 2 || upsDraftLocked) return;
-    if (!await flushDraft()) return;
+    if (!await flushDraft(true)) return;
     const refreshed = await shipmentQuery.refetch();
     const allocations = refreshed.data?.items.filter(item => item.orderLineItemId === orderLineItemId) ?? [];
     if (!allocations.length) {
@@ -995,7 +1035,7 @@ export function FulfillmentShipmentEditor({
 
   const handleMarkShipped = async () => {
     if (!shipmentId || !shipment || markShippedDisabled) return;
-    const saved = await flushDraft();
+    const saved = await flushDraft(true);
     if (!saved) return;
 
     try {
@@ -1069,7 +1109,7 @@ export function FulfillmentShipmentEditor({
   const isDraft = shipment.status === "DRAFT";
   const isSingleOrderShipment = shipment.orders.length === 1;
   const advancedPacking = shipment.packingMode === "advanced_separate_packing" || splitMode;
-  const packedCount = isDraft ? allocatedCount : shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const packedCount = (isDraft ? savedValidShipmentItems : shipment.items).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
   const returnRoute = fulfillmentReturnRoute(location.state?.referrer, [ROUTES.fulfillment.list, ...shipment.orders.map(order => ROUTES.fulfillment.order(order.orderId))]);
   const editContext = (target: "destination" | "sender") => {
@@ -1190,7 +1230,7 @@ export function FulfillmentShipmentEditor({
             {shipment.orders.map((orderRef) => {
               const order = ordersById[orderRef.orderId];
               const lineCount = order?.lineItems?.length ?? 0;
-              const allocatedForOrder = draftShipmentItems.filter(item => item.orderId === orderRef.orderId)
+              const allocatedForOrder = (isDraft ? savedValidShipmentItems : shipment.items).filter(item => item.orderId === orderRef.orderId)
                 .reduce((acc, item) => acc + Number(item.quantity || 0), 0);
 
               const addressPreview = destination ? shippingPartyAddressLines(destination).join(", ") : "Destination not recorded";
@@ -1340,7 +1380,7 @@ export function FulfillmentShipmentEditor({
                           const availability = availabilityByLineItemId.get(item.id);
                           const availableForThisDraft = availability
                             ? Math.max(0, Math.min(availability.remainingQuantity, availability.readyQuantity) - availability.reservedElsewhere)
-                            : item.remainingQty;
+                            : 0;
                           return (
                             <tr key={item.id} className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
                               {lineItemsByOrder.length > 1 && <td className="col-span-2 block text-xs font-mono text-muted-foreground sm:col-span-4">#{group.orderNumber}</td>}
@@ -1378,7 +1418,8 @@ export function FulfillmentShipmentEditor({
                                 <span className="mb-1 block text-xs font-medium text-muted-foreground">Qty in this shipment</span>
                                 <div className="inline-flex items-center gap-2">
                                   {!isSplit ? <input
-                                    type="number"
+                                    type="text"
+                                    inputMode="numeric"
                                     aria-label={`Qty in this shipment: ${item.label}`}
                                     min={0}
                                     max={availableForThisDraft}
@@ -1392,6 +1433,12 @@ export function FulfillmentShipmentEditor({
                                       setAllocationInputByLineItemId(previous => ({ ...previous, [item.id]: raw }));
                                       if (/^(0|[1-9]\d*)$/.test(raw))
                                         setAllocatedByLineItemId((prev) => ({ ...prev, [item.id]: Number(raw) }));
+                                    }}
+                                    onBlur={() => {
+                                      if (value === '') {
+                                        setAllocationInputByLineItemId(previous => ({ ...previous, [item.id]: '0' }));
+                                        setAllocatedByLineItemId(previous => ({ ...previous, [item.id]: 0 }));
+                                      }
                                     }}
                                   /> : <div className="space-y-2">{splitRows.map(allocation => <div key={allocation.id} className="flex flex-wrap items-center gap-1 text-xs">
                                     <select aria-label={`Box for ${item.label} allocation ${allocation.id}`} className="max-w-36 rounded border bg-background p-1"
@@ -1413,6 +1460,12 @@ export function FulfillmentShipmentEditor({
                                         const next = Number(raw);
                                         if (allocation.newlyAdded) setNewSplitRows(rows => rows.map(row => row.id === allocation.id ? { ...row, quantity: next } : row));
                                         else setSplitQuantities(previous => ({ ...previous, [allocation.id]: next }));
+                                      }} onBlur={() => {
+                                        if (splitQuantityInputs[allocation.id] === '') {
+                                          setSplitQuantityInputs(previous => ({ ...previous, [allocation.id]: '0' }));
+                                          if (allocation.newlyAdded) setNewSplitRows(rows => rows.map(row => row.id === allocation.id ? { ...row, quantity: 0 } : row));
+                                          else setSplitQuantities(previous => ({ ...previous, [allocation.id]: 0 }));
+                                        }
                                       }} />
                                     {isDraft && !upsDraftLocked && <button type="button" className="rounded border px-1.5 py-1 text-xs"
                                       onClick={() => allocation.newlyAdded
@@ -1422,7 +1475,15 @@ export function FulfillmentShipmentEditor({
                                 </div>
                                 {isDraft && !upsDraftLocked && shipment.packages.length > 1 && <button type="button" className="mt-2 rounded border px-2 py-1 text-xs"
                                   onClick={() => void handleAddSplit(item.id)}>Add box allocation</button>}
-                                {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">Enter a whole quantity from 0 to {availableForThisDraft} ready and unreserved</p>}
+                                {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">{!availability
+                                  ? 'Shipment readiness is unavailable. Reload before allocating this line.'
+                                  : availability.remainingQuantity === 0
+                                  ? 'No units remain available to ship on this line.'
+                                  : availability?.readyQuantity === 0 && availableForThisDraft === 0
+                                  ? 'No units are production-ready. Complete the required production work before allocating this line.'
+                                  : availability && availability.reservedElsewhere >= Math.min(availability.remainingQuantity, availability.readyQuantity) && availableForThisDraft === 0
+                                  ? 'Ready units are reserved by another shipment draft.'
+                                  : `Enter a whole quantity from 0 to ${availableForThisDraft} ready and unreserved.`}</p>}
                               </td>
                               <td className="block min-w-0">
                                 <span className="mb-1 block text-xs font-medium text-muted-foreground">Package</span>
@@ -1461,7 +1522,7 @@ export function FulfillmentShipmentEditor({
                   const updateFields = (key: keyof typeof fields, value: string) => index === 0 ? setForm(previous => ({ ...previous, [key === "notes" ? "packageNotes" : key]: value })) : setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
                   return <div key={pkg.id} className="px-6 py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3"><span className="font-semibold">Box {index + 1} · {pkg.packageReference}</span>
-                      <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? draftShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} allocated unit(s)</span>
+                      <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? savedValidShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} saved eligible unit(s)</span>
                         {isDraft && !upsDraftLocked && <><button type="button" className="rounded border px-2 py-1 text-xs" disabled={createPackage.isPending}
                           onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</button>
                           <button type="button" className="rounded border px-2 py-1 text-xs" disabled={createPackage.isPending ||
@@ -1517,7 +1578,7 @@ export function FulfillmentShipmentEditor({
                 (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateOptionId !== selectedUpsRate.optionId ||
                   row.shippingChargeRateServiceCode !== selectedUpsRate.serviceCode || row.shippingCents !== Math.round(Number(selectedUpsRate.total) * 100))) &&
                 <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
-              {selectedUpsRate && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || upsRatesStale || allocatedCount <= 0 || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
+              {selectedUpsRate && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}{validationErrors.size > 0 && <p role="status" className="mt-2 text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}{draftSaveState === 'failed' && <p role="status" className="mt-2 text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
             </section>}
             {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>
@@ -1634,7 +1695,7 @@ export function FulfillmentShipmentEditor({
             </div>
 
             {isDraft && <div className="flex flex-col gap-3">
-              <div role="status" className="text-xs text-muted-foreground">{draftSaveState === 'saving' ? 'Saving draft…' : draftSaveState === 'failed' ? 'Save failed' : hasUnsavedChanges ? 'Unsaved changes' : draftSaveState === 'saved' ? 'Saved' : 'Draft saved'}{draftSaveError && <span className="block text-destructive">{draftSaveError}</span>}{draftSaveState === 'failed' && <button type="button" className="mt-1 font-semibold underline" onClick={retryDraftSave}>Retry save</button>}</div>
+              <div role="status" className="text-xs text-muted-foreground">{draftSaveState === 'saving' ? 'Saving draft…' : draftSaveState === 'failed' ? 'Save failed' : validationErrors.size > 0 && savedEditableDraftKey.current === draftKey ? 'Package and address details saved; correct the highlighted allocation before shipping.' : hasUnsavedChanges ? 'Unsaved changes' : draftSaveState === 'saved' ? 'Saved' : 'Draft saved'}{draftSaveError && <span className="block text-destructive">{draftSaveError}</span>}{draftSaveState === 'failed' && !['DRAFT_STALE', 'DRAFT_REQUEST_ID_REUSED'].includes(lastError?.code ?? '') && <button type="button" className="mt-1 font-semibold underline" onClick={retryDraftSave}>Retry save</button>}</div>
               <button type="button" className={`flex w-full items-center justify-center gap-2 rounded-lg py-3 font-bold text-primary-foreground transition-colors ${markShippedDisabled ? "cursor-not-allowed bg-primary/50" : "bg-primary hover:bg-primary/90"}`} disabled={markShippedDisabled} onClick={() => void handleMarkShipped()}>{(markShipped.isPending || updateShipment.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}MARK AS SHIPPED</button>
             </div>}
             {lastError && <p role="alert" className="rounded border border-destructive/30 p-3 text-sm text-destructive">{lastError.message}</p>}
