@@ -62,6 +62,8 @@ describe("openAuthenticatedPdfPreview", () => {
   });
 
   test("fetches the quote PDF through the authenticated API path and opens a Blob URL", async () => {
+    const previewWindow = { closed: false, opener: window } as unknown as Window;
+    window.open = jest.fn(() => previewWindow);
     mockedApiFetch.mockResolvedValue(
       mockResponse({
         ok: true,
@@ -81,11 +83,20 @@ describe("openAuthenticatedPdfPreview", () => {
       },
     });
     expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
-    expect(window.open).toHaveBeenCalledWith("blob:quote-pdf", "_blank", "noopener,noreferrer");
+    expect(window.open).toHaveBeenCalledWith("blob:quote-pdf", "_blank", "");
     expect(window.open).not.toHaveBeenCalledWith("/api/quotes/quote_123/pdf", "_blank", "noopener,noreferrer");
-
-    jest.runOnlyPendingTimers();
+    expect(previewWindow.opener).toBeNull();
+    jest.advanceTimersByTime(60_000);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    Object.defineProperty(previewWindow, "closed", { value: true });
+    jest.advanceTimersByTime(5_000);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:quote-pdf");
+  });
+
+  test("reports expired authentication with a useful action", async () => {
+    mockedApiFetch.mockResolvedValue(mockResponse({ ok: false, status: 401, contentType: "application/json", json: { message: "Unauthorized" } }));
+    await expect(downloadAuthenticatedPdf("/api/orders/order_123/pdf?disposition=download", "Order_20727.pdf"))
+      .rejects.toThrow("Sign in and try the PDF again");
   });
 
   test("surfaces JSON error messages without opening a direct PDF URL", async () => {
@@ -98,7 +109,7 @@ describe("openAuthenticatedPdfPreview", () => {
       }),
     );
 
-    await expect(openAuthenticatedPdfPreview("/api/quotes/quote_123/pdf")).rejects.toThrow("Unauthorized");
+    await expect(openAuthenticatedPdfPreview("/api/quotes/quote_123/pdf")).rejects.toThrow("Sign in and try the PDF again");
 
     expect(window.open).not.toHaveBeenCalled();
     expect(URL.createObjectURL).not.toHaveBeenCalled();

@@ -822,11 +822,11 @@ export async function generateInvoicePdfBytes(
     const sku = (li.sku || '').toString().trim();
     const unitLine = unitCents > 0 ? `${hourlyTerms ? "Rate" : "Unit"}: ${fmtMoney(unitCents, currency)}${hourlyTerms ? "/hr" : ""}` : null;
     const parts = [row.name, row.depth ? "Child item - runs with above" : null,
-      row.description, row.dimensions, ...row.customerOptions, sku ? `SKU: ${sku}` : null, unitLine]
+      row.description, row.dimensions, ...row.customerOptions, sku ? `SKU: ${sku}` : null]
       .filter((part): part is string => Boolean(part));
     const indent = Math.min(row.depth, 2) * 12;
     const lines = parts.flatMap((part) => wrapText({ text: part, maxWidth: Math.max(24, descW - indent), font, fontSize: theme.fontSizes.body }));
-    return { li, qty, totalCents, hourlyTerms, indent, lines, height: Math.max(44, lines.length * 13 + 12) + 6 };
+    return { li, qty, totalCents, hourlyTerms, unitLine, indent, lines, height: Math.max(44, lines.length * 13 + 12) + 6 };
   };
   for (const group of lineGroups) {
     const groupHeight = group.rows.reduce((sum, row) => sum + layoutFor(row).height, 0);
@@ -835,7 +835,7 @@ export async function generateInvoicePdfBytes(
       drawTableHeader();
     }
     for (const row of group.rows) {
-    const { li, qty, totalCents, hourlyTerms, indent, lines } = layoutFor(row);
+    const { li, qty, totalCents, hourlyTerms, unitLine, indent, lines } = layoutFor(row);
     ensureSpace(bottomSafeY + 52);
     let rowTopY = y;
     const descriptionX = xDesc + indent;
@@ -883,6 +883,9 @@ export async function generateInvoicePdfBytes(
     });
     drawTextRight(fmtMoney(totalCents, currency), {
       rightX: xPrice + priceW, y: rowTopY - 11, size: theme.fontSizes.body, bold: true,
+    });
+    if (unitLine) drawTextRight(unitLine, {
+      rightX: xPrice + priceW, y: rowTopY - 23, size: theme.fontSizes.small, color: theme.colors.mutedText,
     });
 
     // All saved description and configuration lines remain visible. A long row

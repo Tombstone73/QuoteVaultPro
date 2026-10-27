@@ -104,6 +104,34 @@ describe("shared customer document rendering", () => {
     for (const amount of ["$860.00", "$2,020.00", "$480.00", "$1,128.00", "$13,533.00", "$1,040.00", "$14,573.00"]) expect(content).toContain(amount);
     expect(params).toEqual(before);
   });
+  test("seven concise Invoice pairs keep prices and payment on two legible pages", async () => {
+    const amounts = [860, 2020, 480, 1128, 500, 1300, 500, 1300, 500, 1300, 500, 1300, 500, 1345];
+    const lineItems = amounts.map((amount, index) => ({
+      id: `invoice-${index}`, orderLineItemId: `order-${index}`,
+      parentLineItemId: index % 2 ? `order-${index - 1}` : null,
+      sortOrder: index, productName: index % 2 ? "Polycarbonate Backer" : "Translucent vinyl - Avery 2050",
+      description: `${index % 2 ? "CHILD" : "PARENT"}-${Math.floor(index / 2)}`,
+      width: 144, height: 71.63, quantity: 2,
+      lineTotalCents: amount * 100, unitPriceCents: amount * 50,
+      optionSelectionsJson: index % 2 ? null : { selected: { lamination: { value: "UV overlaminate", label: "UV overlaminate" } } },
+    }));
+    const bytes = await generateInvoicePdfBytes({
+      invoice: { invoiceNumber: 20727, subtotalCents: 1353300, shippingCents: 104000, taxCents: 0, totalCents: 1457300 },
+      customer: { companyName: "Disposable QA Customer" },
+      companySettings: { companyName: "Disposable QA Printer", invoicePaymentInstructions: "Include the invoice number with payment." },
+      paymentSummary: { totalCents: 1457300, amountPaidCents: 0, amountDueCents: 1457300 },
+      lineItems,
+    });
+    expect((await PDFDocument.load(bytes)).getPageCount()).toBe(2);
+    const content = text(bytes);
+    for (let index = 0; index < 7; index += 1) {
+      expect(content.indexOf(`PARENT-${index}`)).toBeLessThan(content.indexOf(`CHILD-${index}`));
+      if (index < 6) expect(content.indexOf(`CHILD-${index}`)).toBeLessThan(content.indexOf(`PARENT-${index + 1}`));
+    }
+    for (const amount of ["$860.00", "$2,020.00", "$13,533.00", "$1,040.00", "$14,573.00"])
+      expect(content).toContain(amount);
+    expect(content).toContain("Include the invoice number with payment.");
+  });
   test("preview/download, emailed attachments/reminders and portal Invoice all delegate to the same renderer", () => {
     for (const file of ["server/routes/mvpInvoicing.routes.ts", "server/invoiceReminderJob.ts", "server/services/portal.service.ts"]) {
       expect(readFileSync(file, "utf8")).toContain("generateInvoicePdfBytes");

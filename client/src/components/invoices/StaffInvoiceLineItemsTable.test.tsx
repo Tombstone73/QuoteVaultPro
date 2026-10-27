@@ -77,3 +77,20 @@ test('historical lines without source identity display without a false relations
   expect(host.textContent).not.toContain('Group ·');
   cleanup();
 });
+
+test('seven repeated-size parent/child pairs remain grouped in saved order', () => {
+  const parents = Array.from({ length: 7 }, (_, index) => line(`invoice-parent-${index}`, `order-parent-${index}`, null, index * 2,
+    'Translucent vinyl - Avery 2050', '430.00', '860.00'));
+  const children = Array.from({ length: 7 }, (_, index) => line(`invoice-child-${index}`, `order-child-${index}`, `order-parent-${index}`, index * 2 + 1,
+    'Polycarbonate Backer', '1010.00', '2020.00'));
+  const { host, cleanup } = renderTable([...children.reverse(), ...parents.reverse()]);
+  const rendered = Array.from(host.querySelectorAll('tbody tr'));
+  expect(rendered).toHaveLength(14);
+  for (let index = 0; index < 7; index += 1) {
+    expect(rendered[index * 2].textContent).toContain('Translucent vinyl - Avery 2050');
+    expect(rendered[index * 2 + 1].textContent).toContain('Polycarbonate Backer');
+    expect(rendered[index * 2 + 1].textContent).toContain(`Runs with Line ${index * 2 + 1}`);
+    expect(rendered[index * 2 + 1].textContent).toContain('$2020.00');
+  }
+  cleanup();
+});

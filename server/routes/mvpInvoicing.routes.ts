@@ -1466,7 +1466,7 @@ export async function registerMvpInvoicingRoutes(
         .select()
         .from(invoiceLineItems)
         .where(eq(invoiceLineItems.invoiceId, inv.id))
-        .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
+        .orderBy(invoiceLineItems.sortOrder, invoiceLineItems.createdAt, invoiceLineItems.id);
 
       const paymentRows = await db
         .select()

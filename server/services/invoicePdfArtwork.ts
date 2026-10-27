@@ -30,7 +30,15 @@ export async function hydrateInvoicePdfLineItemsWithArtwork<T extends Record<str
   organizationId: string;
   lineItems: T[];
 }): Promise<Array<T & { productName: string | null; thumbnailDataUrl?: string | null }>> {
-  const identifiedLines = await hydrateInvoiceLineItemsWithProductIdentity(input);
+  let identifiedLines: Array<T & { productName: string | null }>;
+  try {
+    identifiedLines = await hydrateInvoiceLineItemsWithProductIdentity(input);
+  } catch (error) {
+    // Historical snapshots remain printable if a presentation-only source
+    // lookup is unavailable. No invoice charge or relationship is rewritten.
+    console.warn("[InvoicePdfArtwork] Invoice line enrichment unavailable; using snapshots", { organizationId: input.organizationId, error });
+    identifiedLines = input.lineItems.map((line) => ({ ...line, productName: line.productName ?? line.name ?? null }));
+  }
   const lineItemIds = Array.from(new Set(input.lineItems
     .map((line) => typeof line.orderLineItemId === "string" ? line.orderLineItemId : null)
     .filter((id): id is string => Boolean(id))));

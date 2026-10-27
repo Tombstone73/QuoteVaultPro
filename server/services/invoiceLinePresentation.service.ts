@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { orderLineItems, orders, products } from '../../shared/schema';
 import { db } from '../db';
+import { enrichInvoiceLineRelationships } from '../../shared/invoiceSnapshotPresentation';
 
 /**
  * Adds product identity to invoice-line snapshots in bounded batch queries.
@@ -17,7 +18,7 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
     .map((line) => typeof line.orderLineItemId === 'string' ? line.orderLineItemId : null)
     .filter((id): id is string => Boolean(id))));
   const sourceLines = orderLineItemIds.length
-    ? await db.select({ id: orderLineItems.id, productId: orderLineItems.productId })
+    ? await db.select({ id: orderLineItems.id, orderId: orderLineItems.orderId, productId: orderLineItems.productId, parentLineItemId: orderLineItems.parentLineItemId, sortOrder: orderLineItems.sortOrder })
       .from(orderLineItems)
       .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
       .where(and(eq(orders.organizationId, input.organizationId), inArray(orderLineItems.id, orderLineItemIds)))
@@ -33,7 +34,7 @@ export async function hydrateInvoiceLineItemsWithProductIdentity<T extends Recor
     : [];
   const productNameById = new Map(productRows.map((product) => [product.id, product.name]));
 
-  return input.lineItems.map((line) => {
+  return enrichInvoiceLineRelationships(input.lineItems, sourceLines).map((line) => {
     const sourceLine = typeof line.orderLineItemId === 'string'
       ? sourceLineById.get(line.orderLineItemId)
       : undefined;

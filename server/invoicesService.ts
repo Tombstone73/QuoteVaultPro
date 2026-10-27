@@ -1653,7 +1653,8 @@ export async function getInvoiceWithRelations(id: string) {
     invoiceId: id,
   });
   if (!customerContext) return null;
-  const storedLineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id));
+  const storedLineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id))
+    .orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.createdAt), asc(invoiceLineItems.id));
   // Product identity is presentation enrichment only. An invoice snapshot must
   // remain readable when a historical source line/product is gone or a
   // presentation query encounters a schema/runtime mismatch.

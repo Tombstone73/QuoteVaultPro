@@ -2168,7 +2168,8 @@ export async function registerOrderRoutes(
             });
 
             res.setHeader("Content-Type", "application/pdf");
-            res.setHeader("Content-Disposition", `inline; filename="${orderPdfFilename(order)}"`);
+            res.setHeader("Cache-Control", "no-store");
+            res.setHeader("Content-Disposition", `${req.query?.disposition === "download" ? "attachment" : "inline"}; filename="${orderPdfFilename(order)}"`);
             return res.status(200).send(Buffer.from(pdfBytes));
         } catch (error) {
             if (error instanceof OrderPdfEligibilityError) {
