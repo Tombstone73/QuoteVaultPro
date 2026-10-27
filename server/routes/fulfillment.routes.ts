@@ -37,6 +37,7 @@ import {
   createShipmentSchema as createFulfillmentShipmentSchema,
   fulfillmentChecklistItemSchema,
   fulfillmentReadyQuantityAdjustmentSchema,
+  fulfillmentProductionCompletionSchema,
   fulfillmentOrderIdSchema,
   fulfillmentNoteSchema,
   listQueueQuerySchema,
@@ -436,6 +437,33 @@ export function registerFulfillmentRoutes(
       if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
       console.error('[fulfillment] ready quantity error:', error);
       return res.status(500).json({ success: false, message: 'Failed to update fulfillment ready quantities', code: 'FULFILLMENT_READY_QUANTITY_FAILED' });
+    }
+  });
+
+  app.post('/api/fulfillment/orders/:orderId/lines/:lineItemId/complete-production', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'User ID not found' });
+      const parsed = fulfillmentProductionCompletionSchema.parse(req.body || {});
+      const actorOrgRole = req.orgRole || null;
+      const outcome = await canonicalFulfillmentOperations.completeProductionFromFulfillment({
+        organizationId, orderId: req.params.orderId, lineItemId: req.params.lineItemId,
+        jobId: parsed.jobId, quantity: parsed.quantity, clientRequestId: parsed.clientRequestId,
+        actorUserId, actorOrgRole, actorUserName: req.user?.email || req.user?.name || null,
+        ipAddress: req.ip || null, userAgent: req.headers['user-agent'] || null,
+      });
+      const data = await canonicalFulfillmentOperations.getOrderDetail(organizationId, req.params.orderId, actorOrgRole);
+      return res.json({ success: true, data, replayed: outcome.replayed,
+        message: outcome.replayed ? 'Production completion already recorded' : 'Production completed and ready for fulfillment' });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid production completion payload', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] production completion error:', error);
+      return res.status(error?.statusCode || 500).json({ success: false,
+        message: error?.statusCode ? error.message : 'Could not complete production from Fulfillment',
+        code: error?.code || 'FULFILLMENT_PRODUCTION_COMPLETION_FAILED' });
     }
   });
 

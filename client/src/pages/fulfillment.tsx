@@ -44,6 +44,7 @@ import { PackingSlipModal } from "@/components/PackingSlipModal";
 import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrintItemTagButton } from "@/components/production/ItemTagPrintDialog";
+import { canOfferFulfillmentProductionCompletion, FulfillmentProductionCompletion } from "@/components/fulfillment/FulfillmentProductionCompletion";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -424,8 +425,14 @@ function FulfillmentDetailPanel({
                         <div className="mt-1 text-xs text-muted-foreground">
                           Production: {item.production.stationLabel || item.production.stationKey || "No station assigned"} {item.production.status || "unknown"}
                         </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Production complete {item.production.productionCompleteQuantity} / {item.production.orderedQuantity} · Remaining production {Math.max(0, item.production.orderedQuantity - item.production.productionCompleteQuantity)} · Ready for fulfillment {item.production.readyWaitingQuantity} · Available for new allocation {item.production.availableForAllocationQuantity ?? item.production.readyWaitingQuantity}
+                        </div>
                         {item.checklist.notes ? <div className="mt-1 text-xs text-muted-foreground">Issue: {item.checklist.notes}</div> : null}
                         <div className="mt-2 flex flex-wrap gap-2">
+                          {canOfferFulfillmentProductionCompletion(item, detail.permissions?.canConfirmPhysicalReadiness === true) ? (
+                            <FulfillmentProductionCompletion orderId={detail.orderId} line={item} onCompleted={() => detailQuery.refetch().then(() => undefined)} />
+                          ) : null}
                           <PrintItemTagButton orderId={detail.orderId} lineItemId={item.id} orderedQuantity={item.quantity} />
                           <button
                             type="button"

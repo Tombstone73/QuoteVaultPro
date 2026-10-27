@@ -111,6 +111,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
       shippedQuantity: number;
       pickedUpQuantity: number;
       readyWaitingQuantity: number;
+      availableForAllocationQuantity: number;
       notReadyQuantity: number;
       remainingQuantity: number;
     };
@@ -441,6 +442,24 @@ export function useAdjustFulfillmentReadyQuantitiesMutation(orderId: string) {
         body: JSON.stringify(payload),
       }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
+  });
+}
+
+export function useCompleteProductionFromFulfillmentMutation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { lineItemId: string; jobId: string; quantity: number; clientRequestId: string }) =>
+      apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/lines/${payload.lineItemId}/complete-production`, {
+        method: "POST",
+        body: JSON.stringify({ jobId: payload.jobId, quantity: payload.quantity, clientRequestId: payload.clientRequestId }),
+      }),
+    onSuccess: (detail) => {
+      queryClient.setQueryData(["fulfillment", "order", orderId], detail);
+      invalidateFulfillment(queryClient, orderId);
+      queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs/recently-completed"] });
+    },
   });
 }
 

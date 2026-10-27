@@ -356,6 +356,8 @@ export async function completeProductionJobWorkflow(
     auditUserName?: string | null;
     ipAddress?: string | null;
     userAgent?: string | null;
+    /** Physical completion reported at Fulfillment without a recorded Production start. */
+    fulfillmentCompletion?: { quantity: number; clientRequestId: string };
   },
 ) {
   if (!args.organizationId) {
@@ -428,7 +430,7 @@ export async function completeProductionJobWorkflow(
     });
   }
 
-  if (job.status === "queued" && !effectiveSkipProduction) {
+  if (job.status === "queued" && !effectiveSkipProduction && !args.fulfillmentCompletion) {
     throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
   }
 
@@ -591,7 +593,9 @@ export async function completeProductionJobWorkflow(
     entityType: "production_job",
     entityId: args.jobId,
     entityName: args.jobId,
-    description: manualOverride
+    description: args.fulfillmentCompletion
+      ? "Production physically completed from Fulfillment"
+      : manualOverride
       ? "Production job completed by Order-level override"
       : effectiveSkipProduction ? "Production job completed (skip production)" : "Production job completed",
     oldValues: { status: job.status, stationKey: job.stationKey },
@@ -601,6 +605,7 @@ export async function completeProductionJobWorkflow(
       restoreUntil: restoreUntil.toISOString(),
       manualOverride,
       materialsConsumed: !manualOverride,
+      fulfillmentCompletion: args.fulfillmentCompletion ?? null,
     },
     ipAddress: args.ipAddress || null,
     userAgent: args.userAgent || null,
@@ -621,6 +626,7 @@ export async function completeProductionJobWorkflow(
       skipProduction: effectiveSkipProduction,
       manualOverride,
       materialsConsumed: !manualOverride,
+      fulfillmentCompletion: args.fulfillmentCompletion ?? null,
     },
   });
 

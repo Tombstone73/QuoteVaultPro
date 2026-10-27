@@ -117,6 +117,12 @@ export const fulfillmentReadyQuantityAdjustmentSchema = z.object({
   reason: z.string().trim().min(10).max(500),
 }).strict();
 
+export const fulfillmentProductionCompletionSchema = z.object({
+  jobId: z.string().min(1),
+  quantity: z.number().int().positive(),
+  clientRequestId: z.string().uuid(),
+}).strict();
+
 export const fulfillmentNoteSchema = z.object({
   note: z.string().trim().min(1).max(2000),
 });

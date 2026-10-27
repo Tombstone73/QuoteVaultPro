@@ -109,6 +109,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       shippedQuantity: number;
       pickedUpQuantity: number;
       readyWaitingQuantity: number;
+      availableForAllocationQuantity: number;
       notReadyQuantity: number;
       remainingQuantity: number;
     };

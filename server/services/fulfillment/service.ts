@@ -21,6 +21,7 @@ import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '
 import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
 import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
+import { completeProductionFromFulfillment, type FulfillmentProductionCompletionInput } from './productionCompletion';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -32,6 +33,9 @@ export function canRevertFulfillmentStatus(actorOrgRole?: string | null): boolea
 }
 
 export class FulfillmentService {
+  completeProductionFromFulfillment(input: FulfillmentProductionCompletionInput) {
+    return completeProductionFromFulfillment(input);
+  }
   private readonly shipmentRepo: ShipmentRepo;
   private readonly pickupRepo: PickupRepo;
   private readonly dashboardRepo: FulfillmentDashboardRepo;

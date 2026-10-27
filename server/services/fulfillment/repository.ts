@@ -1796,7 +1796,10 @@ export class FulfillmentDashboardRepo {
   /** Adjust Fulfillment's mutable ready pool. Handoffs and shipments are
    * deliberately not touched here: they are immutable evidence of fulfillment. */
   async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string) {
-    return this.dbInstance.transaction(async (tx) => {
+    return this.dbInstance.transaction((tx) => this.adjustReadyQuantitiesInTransaction(tx, orgId, orderId, items, actorUserId, reason));
+  }
+
+  async adjustReadyQuantitiesInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, source = 'operator_physical_confirmation') {
       if (reason.trim().length < 10 || reason.trim().length > 500) return {
         ok: false as const, code: 'READY_REASON_REQUIRED', message: 'Explain the physical-readiness confirmation or correction.' };
       const [order] = await tx.select({
@@ -1887,13 +1890,12 @@ export class FulfillmentDashboardRepo {
         entityType: 'ORDER',
         entityId: orderId,
         eventType: 'FULFILLMENT_READY',
-        payloadJson: { source: 'operator_physical_confirmation', reason,
+        payloadJson: { source, reason,
           operatorUserId: actorUserId ?? null, confirmedAt: now.toISOString(),
           adjustments: adjustments.map(({ lineItemId, quantityDelta, previous, next, productionState }) => ({
             orderLineItemId: lineItemId, quantityDelta, previousReadyQuantity: previous, nextReadyQuantity: next, productionState })) },
       });
       return { ok: true as const, shippingMethod: order.shippingMethod };
-    });
   }
 
   async listFulfillmentQueue(orgId: string, filters: {
@@ -2855,6 +2857,7 @@ export class FulfillmentDashboardRepo {
 
     const lineItemIds = lineItems.map((item) => item.id);
     const lineEligibilityRows = await this.listLineEligibility(orgId, { lineItemIds });
+    const draftReservations = await new ShipmentRepo(this.dbInstance).listDraftReservationQuantities(orgId, lineItemIds);
     const eligibilityByLineItemId = new Map(lineEligibilityRows.map((line) => [line.id, line.projection]));
     const quantitySummary = summarizeFulfillmentOrderQuantities(lineEligibilityRows.map((line) => line.projection));
     const checklistRows = await this.getChecklistItemsForOrder(orgId, orderId);
@@ -3085,6 +3088,7 @@ export class FulfillmentDashboardRepo {
           shippedQuantity: readiness.shippedQuantity,
           pickedUpQuantity: readiness.pickedUpQuantity,
           readyWaitingQuantity: readiness.readyWaitingQuantity,
+          availableForAllocationQuantity: Math.max(0, readiness.readyWaitingQuantity - (draftReservations.get(item.id) ?? 0)),
           notReadyQuantity: readiness.notReadyQuantity,
           remainingQuantity: readiness.remainingQuantity,
         },
