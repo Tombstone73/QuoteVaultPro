@@ -90,6 +90,7 @@ export async function completeAndReleasePrepress(
     }
   }
 
+  if (completionResponse?.data?.awaitingProofApproval) throw new PrepressCompleteAndReleaseError("Prepress is complete, but customer approval is still pending. Production has not been released.", true);
   return { completionResponse, skippedCompletion: input.hasCompletedSession };
 }
 
@@ -106,7 +107,7 @@ export async function markPrepressItemsPrintReady(
   const results: PrepressPrintReadyResult[] = [];
 
   for (const item of items) {
-    if (item.blockedReason) {
+    if (options.releaseToProduction && item.blockedReason) {
       results.push({ lineItemId: item.lineItemId, status: "failed", message: item.blockedReason });
       continue;
     }
@@ -116,7 +117,7 @@ export async function markPrepressItemsPrintReady(
       let completionResponse: any = null;
       if (!item.hasCompletedSession) {
         if (!sessionId) {
-          if (String(item.workflowState).toLowerCase() !== "ready_for_prepress") {
+          if (!["ready_for_prepress", "awaiting_proof_approval"].includes(String(item.workflowState).toLowerCase())) {
             throw new Error("Line item is not ready to start prepress.");
           }
           const startResponse = await requestStartPrepressSession(item.lineItemId, fetchFn);
@@ -126,10 +127,11 @@ export async function markPrepressItemsPrintReady(
         completionResponse = await requestCompletePrepressSession(sessionId, fetchFn);
       }
 
+      if (options.releaseToProduction && completionResponse?.data?.awaitingProofApproval) throw new Error("Prepress is complete, but customer approval is still pending. Production has not been released.");
       results.push({
         lineItemId: item.lineItemId,
         status: options.releaseToProduction ? "released" : "completed",
-        message: "Prepress completed, production artwork finalized, and line routed.",
+        message: completionResponse?.data?.awaitingProofApproval ? "Prepress completed. Customer approval is still pending; production has not been released." : "Prepress completed, production artwork finalized, and line routed.",
         finalFileId: completionResponse?.data?.finalFileId ?? null,
       });
     } catch (error) {

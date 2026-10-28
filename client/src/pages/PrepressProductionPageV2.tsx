@@ -334,7 +334,7 @@ function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState
       bgClass: "bg-amber-500/15",
       textClass: "text-amber-300",
       borderClass: "border-amber-500/40",
-      note: "Completion and release blocked",
+      note: "Preparation allowed; production release blocked",
     };
   }
   const workflowState = String(item?.workflowState || "ready_for_prepress").toLowerCase() as PrepressQueueWorkflowState;
@@ -1098,7 +1098,7 @@ export default function PrepressProductionPageV2() {
       ]);
       toast({
         title: "Prepress complete",
-        description: response?.data?.stationKey
+        description: response?.data?.awaitingProofApproval ? "Production artwork finalized. Customer approval is still pending; production has not been released." : response?.data?.stationKey
           ? `Production file finalized and routed to ${response.data.stationKey}.`
           : "Production artwork finalized and routed to the next production station.",
       });
@@ -1954,14 +1954,13 @@ export default function PrepressProductionPageV2() {
   const canStartPrepress =
     !!selectedItem &&
     isOwnedByPrepress &&
-    selectedWorkflowState === "ready_for_prepress" &&
+    (selectedWorkflowState === "ready_for_prepress" || (selectedWorkflowState === "awaiting_proof_approval" && selectedItem.requiresPrepress)) &&
     !selectedItem.sessionId;
   const canComplete =
     isOwnedByPrepress &&
     selectedWorkflowState === "in_prepress" &&
     (hasFinalFiles || hasUsableExistingArtwork) &&
     artworkSideReadiness.complete &&
-    !selectedItem?.productionReleaseBlockedReason &&
     !!selectedItem?.sessionId;
   const canSendToPrint =
     isOwnedByPrepress &&

@@ -1,3 +1,4 @@
+import { ProductionProofReleaseStatus } from "@/components/proofing/ProofEarlyRelease";
 import { useMemo, useState, useEffect } from "react";
 import { useNavigate, useParams, Link, useLocation } from "react-router-dom";
 import { Page, PageHeader, ContentLayout } from "@/components/titan";
@@ -339,6 +340,7 @@ export default function ProductionJobDetailPage() {
       />
 
       <ContentLayout>
+        <ProductionProofReleaseStatus lineItemId={data.lineItemId} />
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
           {/* LEFT COLUMN: Actions + Timeline */}
           <div className="space-y-4">

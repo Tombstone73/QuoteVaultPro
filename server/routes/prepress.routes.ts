@@ -977,6 +977,7 @@ export function registerPrepressQueueRoutes(
           workflowState: orderLineItems.workflowState,
           lineItemUpdatedAt: orderLineItems.updatedAt,
           requiresProofApproval: orderLineItems.requiresProofApproval,
+          requiresPrepress: orderLineItems.requiresPrepress,
           approvedProofVersionId: orderLineItems.approvedProofVersionId,
           description: orderLineItems.description,
           productFormalName: products.name,
@@ -1513,7 +1514,7 @@ export function registerPrepressQueueRoutes(
       );
 
       // Map to flat QueueItem shape the frontend expects
-      const queue = queueItems.map((item, index) => {
+      const queue = await Promise.all(queueItems.map(async (item, index) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
         const originals = customerArtworkByLineItem.get(item.lineItemId)?.length ?? 0;
         const finals = counts.find((c) => c.role === "final")?.count || 0;
@@ -1597,12 +1598,9 @@ export function registerPrepressQueueRoutes(
           ?? contactName
           ?? item.contactEmail
           ?? "Contact-only order";
-        const proofBypassed = String(item.proofApprovalPolicyOverride || "").toLowerCase() === "bypass";
-        const hasApprovedProof = Boolean(item.approvedProofVersionId);
-        const productionReleaseBlockedReason =
-          item.requiresProofApproval && !hasApprovedProof && !proofBypassed
-            ? "Cannot release to production until proof approved"
-            : null;
+        const proofGate = await resolveLineItemProofReleaseGate(db, { organizationId, lineItemId: item.lineItemId });
+        const proofBypassed = proofGate.bypassed;
+        const productionReleaseBlockedReason = proofGate.blockedReason;
         const finalArtwork = finalArtworkByLineItem.get(item.lineItemId) ?? [];
         const customerArtwork = customerArtworkByLineItem.get(item.lineItemId) ?? [];
         const artworkRelationshipIssue = artworkRelationshipIssueByLineItem.get(item.lineItemId) ?? null;
@@ -1655,6 +1653,7 @@ export function registerPrepressQueueRoutes(
           workflowState: item.workflowState,
           lineItemUpdatedAt: new Date(item.lineItemUpdatedAt).toISOString(),
           requiresProofApproval: item.requiresProofApproval,
+          requiresPrepress: item.requiresPrepress,
           approvedProofVersionId: item.approvedProofVersionId ?? null,
           proofApprovalPolicyOverride: item.proofApprovalPolicyOverride ?? "inherit_default",
           proofBypassed,
@@ -1711,7 +1710,7 @@ export function registerPrepressQueueRoutes(
           useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,
           sameArtworkFileId: artworkSideIntent.sameArtworkFileId,
         };
-      });
+      }));
 
       const matchesPrepressStatusFilter = (item: any, filterValue: string) => {
         const normalizedFilter = String(filterValue || '').trim().toLowerCase();
@@ -1722,7 +1721,7 @@ export function registerPrepressQueueRoutes(
         }
 
         if (normalizedFilter === 'ready_for_prepress') {
-          return workflowState === 'ready_for_prepress';
+          return workflowState === 'ready_for_prepress' || workflowState === 'awaiting_proof_approval';
         }
 
         if (normalizedFilter === 'in_prepress') {
@@ -2629,7 +2628,7 @@ export function registerPrepressQueueRoutes(
           };
         }
 
-        if (String(lineItem.workflowState || "").toLowerCase() !== "ready_for_prepress") {
+        if (String(lineItem.workflowState || "").toLowerCase() !== "ready_for_prepress" && !(lineItem.workflowState === "awaiting_proof_approval" && lineItem.requiresPrepress)) {
           throw Object.assign(new Error("Line item must be ready_for_prepress before starting prepress"), { statusCode: 400 });
         }
 
@@ -2901,12 +2900,7 @@ export function registerPrepressQueueRoutes(
           organizationId: orgId,
           lineItemId: session.lineItemId,
         });
-        if (!proofGate.allowed) {
-          throw Object.assign(
-            new Error(proofGate.blockedReason || "Cannot complete prepress until proof approved"),
-            { statusCode: 409, code: "PROOF_APPROVAL_REQUIRED" },
-          );
-        }
+        // Preparation may finish while customer approval remains pending.
 
         completeFailureStage = "validate_artwork_sides";
         const artworkReadiness = await loadPrepressArtworkSideReadiness(tx, {
@@ -2988,7 +2982,7 @@ export function registerPrepressQueueRoutes(
         const workflowTransition = await transitionLineItemWorkflowState(tx, {
           organizationId: orgId,
           lineItemId: session.lineItemId,
-          toState: "ready_for_production",
+          toState: proofGate.allowed ? "ready_for_production" : "awaiting_proof_approval",
           actorUserId: userId,
           metadata: {
             source: "prepress_complete",
@@ -3065,6 +3059,8 @@ export function registerPrepressQueueRoutes(
           lineItemId: session.lineItemId,
           status: "complete",
           completedAt: new Date(),
+          workflowState: workflowTransition.toState,
+          awaitingProofApproval: !proofGate.allowed,
           finalArtworkSource: finalArtwork.source,
           finalFileId: finalArtwork.file.id,
           finalFileIds: finalArtwork.files.map((file) => file.id),

@@ -10639,3 +10639,22 @@ export const lineCreateRequests = pgTable("line_create_requests", {
   uniqueIndex("line_create_requests_scope_key_uidx").on(table.organizationId, table.actorUserId, table.operationType, table.documentType, table.documentId, table.requestKey),
   index("line_create_requests_expiry_idx").on(table.expiresAt),
 ]);
+
+// A release authorizes one reviewed revision; it is never a customer approval.
+export const lineItemProofEarlyReleases = pgTable("line_item_proof_early_releases", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: "cascade" }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: "restrict" }),
+  proofFileId: varchar("proof_file_id").notNull().references(() => orderAttachments.id, { onDelete: "restrict" }),
+  artworkFingerprint: varchar("artwork_fingerprint", { length: 64 }).notNull(),
+  operationId: varchar("operation_id", { length: 128 }).notNull(),
+  reason: text("reason").notNull(),
+  actorUserId: varchar("actor_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  authorizedAt: timestamp("authorized_at", { withTimezone: true }).defaultNow().notNull(),
+  context: jsonb("context").$type<Record<string, unknown>>().notNull(),
+}, table => [
+  uniqueIndex("proof_early_release_operation_uidx").on(table.organizationId, table.operationId),
+  uniqueIndex("proof_early_release_revision_uidx").on(table.organizationId, table.lineItemId, table.proofVersionId, table.artworkFingerprint),
+]);

@@ -217,7 +217,7 @@ export type LineItemWorkflowTransitionResult = {
 
 export type DesignQueueWorkflowState = Extract<LineItemWorkflowState, "needs_design" | "in_design">;
 
-export type PrepressQueueWorkflowState = Extract<LineItemWorkflowState, "ready_for_prepress" | "in_prepress">;
+export type PrepressQueueWorkflowState = Extract<LineItemWorkflowState, "ready_for_prepress" | "in_prepress" | "awaiting_proof_approval">;
 
 export type DesignQueueItem = {
   lineItemId: string;
@@ -268,6 +268,7 @@ export type PrepressQueueItem = {
   dueDate: string | null;
   status: string;
   workflowState: PrepressQueueWorkflowState;
+  requiresPrepress?: boolean;
   requiresProofApproval?: boolean | null;
   approvedProofVersionId?: string | null;
   proofApprovalPolicyOverride?: "inherit_default" | "force_required" | "bypass";

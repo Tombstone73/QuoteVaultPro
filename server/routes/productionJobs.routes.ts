@@ -1,3 +1,5 @@
+import { assertPhysicalProductionProofGate } from "../services/proofGateService";
+import { lockWorkflowLines } from "../services/workflowMutationLock";
 import { assertProductionCredit } from "../services/orderCreditHoldService";
 import { resolveProductionStationWork } from "../services/productionStationPopulation";
 import type { Express } from "express";
@@ -661,6 +663,8 @@ export async function updateProductionJobStatusWorkflow(
     userAgent?: string | null;
   },
 ) {
+  const [reference] = await tx.select({ lineItemId: productionJobs.lineItemId }).from(productionJobs).where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId))).limit(1);
+  if (reference?.lineItemId) await lockWorkflowLines(tx, args.organizationId, [reference.lineItemId]);
   const now = new Date();
   const jobRows = await tx
     .select()
@@ -674,6 +678,9 @@ export async function updateProductionJobStatusWorkflow(
     throw Object.assign(new Error("Cannot advance a terminal production job."), { statusCode: 409 });
   }
 
+  if (args.status === "in_progress" && job.lineItemId) await assertPhysicalProductionProofGate(tx, {
+    organizationId: args.organizationId, lineItemId: job.lineItemId, stationKey: job.stationKey, stepKey: args.stepKey ?? job.stepKey,
+  });
   const stepKeyUnchanged = args.stepKey === undefined || job.stepKey === args.stepKey;
   if (job.status === args.status && stepKeyUnchanged) return job;
 

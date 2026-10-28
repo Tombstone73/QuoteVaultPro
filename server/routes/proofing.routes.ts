@@ -25,6 +25,7 @@ import { fromZodError } from "zod-validation-error";
 import { proofQueueSliceSchema } from "@shared/proofing";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
+  releaseProofToProductionEarly,
   cancelProofVersion,
   createAndSendProofVersion,
   createGeneratedDraftProofVersion,
@@ -185,7 +186,7 @@ export function registerProofingRoutes(
         lineItemId: String(req.params.lineItemId),
       });
 
-      return res.json({ success: true, data: truth });
+      return res.json({ success: true, data: { ...truth, canAuthorizeEarlyRelease: ["owner", "admin"].includes(String(req.actorOrgRole ?? req.orgRole ?? "")) } });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error resolving line-item proofing truth:", error);
@@ -1006,6 +1007,26 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error recording proof response:", error);
       return res.status(status).json({ error: error?.message || "Failed to record proof response" });
+    }
+  });
+
+  app.post("/api/proofing/line-item/:lineItemId/early-production-release", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req), actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ error: "Missing authenticated organization context" });
+      const parsed = z.object({ reason: z.string().trim().min(1).max(2000), confirmed: z.literal(true), operationId: z.string().uuid(),
+        proofVersionId: z.string().min(1), artworkFingerprint: z.string().length(64), expectedUpdatedAt: z.string().datetime({ offset: true }), expectedOwnerJobId: z.string().min(1),
+      }).strict().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+      const lineItemId = String(req.params.lineItemId);
+      const result = await db.transaction(async tx => {
+        const release = await releaseProofToProductionEarly(tx, { ...parsed.data, organizationId, actorUserId, lineItemId });
+        return { ...release, proofing: await resolveLineItemProofingTruth(tx, { organizationId, lineItemId }) };
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error.statusCode || 500).json({ error: error.message || "Early release failed", code: error.code });
     }
   });
 

@@ -1,3 +1,5 @@
+import { assertPhysicalProductionProofGate } from "./proofGateService";
+import { findActiveJobForLineItem } from "./productionOwnership";
 import { assertProductionCredit } from "./orderCreditHoldService";
 import { and, eq } from "drizzle-orm";
 
@@ -40,6 +42,9 @@ export class CanonicalProductionOperations {
       "Production was bypassed for this line. Restore or reconcile the bypass before starting work.", 409, "PRODUCTION_BYPASSED",
     );
     await assertParentOrderInProductionForJob(tx, { organizationId: input.organizationId, job, action: "start production job" });
+    const currentOwner = await findActiveJobForLineItem(tx, { organizationId: input.organizationId, lineItemId: job.lineItemId });
+    if (currentOwner?.id !== job.id) throw new CanonicalProductionOperationError("Production ownership changed. Refresh before starting work.");
+    await assertPhysicalProductionProofGate(tx, { organizationId: input.organizationId, lineItemId: job.lineItemId, stationKey: job.stationKey, stepKey: job.stepKey });
     const timerState = await getTimerStateForJob(input.organizationId, input.jobId, tx);
     if (timerState.isRunning) return job;
     await assertProductionCredit(tx, { organizationId: input.organizationId, orderId: job.orderId, stationKey: job.stationKey, stepKey: job.stepKey });

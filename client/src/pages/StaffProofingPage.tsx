@@ -1,3 +1,4 @@
+import { ProofEarlyReleaseAction } from "@/components/proofing/ProofEarlyRelease";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
@@ -1789,6 +1790,8 @@ export default function StaffProofingPage() {
               >
                 Create Combined Proof{batchSelectedRows.length > 0 ? ` (${batchSelectedRows.length} lines)` : ""}
               </Button>
+              {selectedRow ? <div className="border-b border-[#232948] p-6"><ProofEarlyReleaseAction key={selectedRow.lineItemId} lineItemId={selectedRow.lineItemId} detail={detail} canAuthorize={detail?.canAuthorizeEarlyRelease === true} onReleased={() => refreshProofing(selectedRow.lineItemId, selectedRow.orderId)} /></div> : null}
+
               {canOverride ? (
                 <Button
                   variant="outline"

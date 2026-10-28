@@ -85,11 +85,11 @@ describe("Prepress complete and release action", () => {
         blockedReason: "Awaiting proof approval",
       },
       { lineItemId: "line-safe", workflowState: "in_prepress", sessionId: "session-safe", hasCompletedSession: false },
-    ], { fetchFn });
+    ], { fetchFn, releaseToProduction: true });
 
     expect(results).toEqual(expect.arrayContaining([
       expect.objectContaining({ lineItemId: "line-proof", status: "failed", message: "Awaiting proof approval" }),
-      expect.objectContaining({ lineItemId: "line-safe", status: "completed" }),
+      expect.objectContaining({ lineItemId: "line-safe", status: "released" }),
     ]));
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
@@ -105,4 +105,18 @@ describe("Prepress complete and release action", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-1/complete", expect.any(Object));
   });
+});
+
+test("pending approval permits preparation completion without implying production release", async () => {
+  const fetchFn = jest.fn(async (url: any) => jsonResponse(true, { success: true, data: String(url).endsWith('/start') ? { id: 'pending-session' } : { awaitingProofApproval: true } })) as unknown as typeof fetch;
+  const [result] = await markPrepressItemsPrintReady([{ lineItemId: 'pending-line', workflowState: 'awaiting_proof_approval', hasCompletedSession: false, blockedReason: 'Awaiting proof approval' }], { fetchFn });
+  expect(result.status).toBe('completed'); expect(result.message).toContain('production has not been released');
+  expect(fetchFn).not.toHaveBeenCalledWith(expect.stringContaining('send-to-print'), expect.anything());
+});
+
+test("a proof change during completion cannot produce a successful release indication", async () => {
+  const fetchFn = jest.fn(async () => jsonResponse(true, { success: true, data: { awaitingProofApproval: true } })) as unknown as typeof fetch;
+  await expect(completeAndReleasePrepress({ lineItemId: 'line', sessionId: 'session', hasCompletedSession: false }, fetchFn)).rejects.toMatchObject({ prepressCompleted: true });
+  const [result] = await markPrepressItemsPrintReady([{ lineItemId: 'line', workflowState: 'in_prepress', sessionId: 'session', hasCompletedSession: false }], { fetchFn, releaseToProduction: true });
+  expect(result.status).toBe('failed'); expect(result.message).toContain('Production has not been released');
 });

@@ -66,13 +66,15 @@ test('explicit proof request in manual policy persists and creates the canonical
   expect(replay.status).toBe(200);
   expect(await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, line.id))).toHaveLength(1);
 });
-test('active production rejects added proof and preserves owner and history', async () => {
+test('adding independent proof requirement preserves physical ownership and closes the proof gate', async () => {
   const { order, line } = await fixture();
   const [job] = await db.insert(productionJobs).values({ organizationId, orderId: order.id, lineItemId: line.id, stationKey: 'flatbed', stepKey: 'queued', status: 'queued' }).returning();
   const response = await patch(line.id, { requiresProofApproval: true, expectedUpdatedAt: line.updatedAt.toISOString() });
-  expect(response.status).toBe(409); expect(response.body.message).toContain('Return for Correction');
+  expect(response.status).toBe(200);
   const [saved] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, line.id));
-  expect(saved.requiresProofApproval).toBe(false);
+  expect(saved.requiresProofApproval).toBe(true);
+  const { resolveLineItemProofReleaseGate } = await import('../services/proofGateService');
+  expect((await resolveLineItemProofReleaseGate(db, { organizationId, lineItemId: line.id })).allowed).toBe(false);
   const jobs = await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, line.id));
   expect(jobs).toHaveLength(1); expect(jobs[0].id).toBe(job.id); expect(jobs[0].status).toBe('queued');
 });

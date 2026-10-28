@@ -39,12 +39,10 @@ export function savedLineRequirementConflict(input: {
     if ((previous.prepress || previous.proof) && !next.prepress && !next.proof) {
       return "Prepress owns this line. Finish or resolve its active work before removing its last Prepress/Proofing requirement.";
     }
-    if (!previous.proof && next.proof) return "Prepress owns this line. Use Return to Proofing with a reason to start a new proof cycle.";
     return null;
   }
   if (["roll", "wide_roll", "flatbed"].includes(station)) {
     if (!previous.design && next.design) return "Production owns this line. Use Return for Correction → Design with a reason.";
-    if (!previous.proof && next.proof) return "Production owns this line. Use Return for Correction → Proofing with a reason.";
     if (!previous.prepress && next.prepress) return "Production owns this line. Use Return for Correction → Prepress with a reason.";
     return null;
   }

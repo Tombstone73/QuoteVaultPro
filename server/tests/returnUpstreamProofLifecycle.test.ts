@@ -74,7 +74,7 @@ describe("upstream proof authority", () => {
   });
   test("retiring current pointer blocks production until successor approval", async () => {
     for (const approvedProofVersionId of ["old", null, "successor"]) {
-      const f = scriptedWorkflowTx([[{ ...line, approvedProofVersionId, policyOverride: "inherit_default" }]]);
+      const f = scriptedWorkflowTx([[{ ...line, approvedProofVersionId, policyOverride: "inherit_default" }], []]);
       const gate = await resolveLineItemProofReleaseGate(f.tx, { organizationId: "tenant", lineItemId: "line" });
       expect(gate.allowed).toBe(approvedProofVersionId !== null);
     }
@@ -84,12 +84,12 @@ describe("upstream proof authority", () => {
     expect((await resolveLineItemProofReleaseGate(f.tx, input)).allowed).toBe(true); expect(f.writes).toHaveLength(0);
   });
   test("manual override cannot revive a proof retired by upstream return", async () => {
-    const f = scriptedWorkflowTx([[{ id: "line" }], [line], [{ ...proof, status: "superseded" }], [{ ...line, policyOverride: "inherit_default" }], [{ ...proof, status: "superseded" }], [{ id: "return-audit" }]]);
+    const f = scriptedWorkflowTx([[{ id: "line" }], [line], [{ ...proof, status: "superseded" }], [{ ...line, policyOverride: "inherit_default" }], [], [{ ...proof, status: "superseded" }], [{ id: "return-audit" }]]);
     await expect(recordManualProofApprovalOverride(f.tx, { organizationId: "tenant", lineItemId: "line", actorUserId: "actor", proofVersionId: "old", overrideReason: "Override" })).rejects.toThrow("retired by Return Upstream");
     expect(f.writes).toHaveLength(0);
   });
   test.each(["roll", "flatbed"])("direct %s routing also blocks retired approval", async stationKey => {
-    const f = scriptedWorkflowTx([[{ id: "line" }], [{ workflowState: "awaiting_proof_approval", designStatus: "design_complete" }], [{ ...line, policyOverride: "inherit_default" }]]);
+    const f = scriptedWorkflowTx([[{ id: "line" }], [{ workflowState: "awaiting_proof_approval", designStatus: "design_complete" }], [{ ...line, policyOverride: "inherit_default" }], []]);
     await expect(assertPhysicalProductionProofGate(f.tx, { ...input, stationKey, stepKey: "print" })).rejects.toMatchObject({ code: "PROOF_APPROVAL_REQUIRED" });
   });
   test("direct production routing cannot escape reopened Design", async () => {
@@ -101,7 +101,7 @@ describe("upstream proof authority", () => {
     await expect(assertPhysicalProductionProofGate(f.tx, { ...input, stationKey, stepKey: stationKey })).resolves.toBeUndefined(); expect(f.reads).toHaveLength(0);
   });
   test("current successor approval allows normal physical routing", async () => {
-    const f = scriptedWorkflowTx([[{ id: "line" }], [{ workflowState: "ready_for_prepress", designStatus: "design_complete" }], [{ ...line, approvedProofVersionId: "successor", policyOverride: "inherit_default" }]]);
+    const f = scriptedWorkflowTx([[{ id: "line" }], [{ workflowState: "ready_for_prepress", designStatus: "design_complete" }], [{ ...line, approvedProofVersionId: "successor", policyOverride: "inherit_default" }], []]);
     await expect(assertPhysicalProductionProofGate(f.tx, { ...input, stationKey: "flatbed", stepKey: "print" })).resolves.toBeUndefined();
   });
   test("explicit Design completion takes precedence during the forward transition", async () => {

@@ -22,7 +22,7 @@ describe("saved Order line requirement boundaries", () => {
     for (const station of ["roll", "wide_roll", "flatbed"]) {
       expect(savedLineRequirementConflict({ previous: none, next: { ...none, design: true }, activeStation: station })).toMatch(/Return for Correction → Design/);
       expect(savedLineRequirementConflict({ previous: none, next: { ...none, prepress: true }, activeStation: station })).toMatch(/Return for Correction → Prepress/);
-      expect(savedLineRequirementConflict({ previous: none, next: { ...none, proof: true }, activeStation: station })).toMatch(/Return for Correction → Proofing/);
+      expect(savedLineRequirementConflict({ previous: none, next: { ...none, proof: true }, activeStation: station })).toBeNull();
     }
   });
 
@@ -30,7 +30,7 @@ describe("saved Order line requirement boundaries", () => {
     expect(savedLineRequirementConflict({ previous: { ...none, design: true }, next: none, activeStation: "design" })).toMatch(/Design owns/);
     expect(savedLineRequirementConflict({ previous: { ...none, design: true }, next: { ...none, design: true, prepress: true }, activeStation: "design" })).toBeNull();
     expect(savedLineRequirementConflict({ previous: { ...none, prepress: true }, next: none, activeStation: "prepress" })).toMatch(/Prepress owns/);
-    expect(savedLineRequirementConflict({ previous: { ...none, prepress: true }, next: { ...none, prepress: true, proof: true }, activeStation: "prepress" })).toMatch(/Return to Proofing/);
+    expect(savedLineRequirementConflict({ previous: { ...none, prepress: true }, next: { ...none, prepress: true, proof: true }, activeStation: "prepress" })).toBeNull();
     expect(savedLineRequirementConflict({ previous: { ...none, design: true }, next: none, activeStation: "roll" })).toBeNull();
   });
 });
