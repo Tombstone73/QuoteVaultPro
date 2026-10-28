@@ -1,6 +1,6 @@
 import StripePayDialog from "@/components/payments/StripePayDialog";
 import { useQueryClient } from "@tanstack/react-query";
-import { manualPaymentMethodDefinitions, staffPaymentMethodDefinitions } from "@shared/paymentMethodCatalog";
+import { staffPaymentMethodDefinitions } from "@shared/paymentMethodCatalog";
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiFetch } from '@/lib/queryClient';
 import { useRecordCustomerInvoicePayment } from '@/hooks/useInvoices';
+import { useActiveOrganizationRole } from '@/hooks/useActiveOrganizationRole';
 import { useToast } from '@/hooks/use-toast';
 import { parseTenderedAmountCents, resolveCustomerPaymentAmounts } from '@/lib/customerPaymentTender';
 import type { CustomerPaymentAllocation, CustomerPaymentAllocationMode } from '@shared/customerPaymentAllocation';
@@ -19,12 +20,18 @@ type Preview = {
   allocations: CustomerPaymentAllocation[];
   invoices: { invoiceId: string; invoiceNumber: string | number; remainingCents: number; currency?: string }[];
 };
+type CardAvailability = {
+  key: string;
+  status: 'loading' | 'ready' | 'unavailable' | 'permission' | 'ineligible' | 'error';
+  message: string;
+};
 const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSuccess }: { open: boolean; onOpenChange(value: boolean): void; invoiceIds: string[]; onSuccess(): void }) {
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('check');
-  const [cardAvailable, setCardAvailable] = useState(false);
+  const [cardAvailability, setCardAvailability] = useState<CardAvailability | null>(null);
+  const { isAdminOrOwner } = useActiveOrganizationRole({ enabled: open });
   const [cardScope, setCardScope] = useState<{ ids: string[]; key: string; summaries: Array<{ invoiceNumber: string; amountDue: number; currency: string }> } | null>(null);
   const queryClient = useQueryClient();
   const isCard = method === 'credit_card';
@@ -46,7 +53,7 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
   const validTenderedAmount = tenderedAmountCents != null && tenderedAmountCents > 0;
 
   useEffect(() => {
-    if (open) { setCardScope(null); setCardAvailable(false); setMethod('check'); setPreviewState(null); setCustom({}); setError(''); setAmount(''); submitting.current = false; request.current = null; }
+    if (open) { setCardScope(null); setCardAvailability(null); setMethod('check'); setPreviewState(null); setCustom({}); setError(''); setAmount(''); submitting.current = false; request.current = null; }
   }, [open, selectionKey]);
   useEffect(() => {
     if (!open || !invoiceIds.length) return;
@@ -65,19 +72,50 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
   }, [open, previewKey]);
 
   const cardIdsKey = JSON.stringify(preview?.invoices.map(invoice => invoice.invoiceId) || []);
+  const cardAvailabilityKey = JSON.stringify([selectionKey, cardIdsKey, refresh]);
+  const currentCardAvailability = cardAvailability?.key === cardAvailabilityKey ? cardAvailability : null;
+  const cardAvailable = currentCardAvailability?.status === 'ready';
   useEffect(() => {
     let cancelled = false;
-    setCardAvailable(false);
     const selectedIds = JSON.parse(cardIdsKey) as string[];
     if (!open || !selectedIds.length) return;
+    const update = (status: CardAvailability['status'], message: string) => {
+      if (!cancelled) setCardAvailability({ key: cardAvailabilityKey, status, message });
+    };
+    update('loading', 'Checking card payment availability…');
     void apiFetch('/api/invoices/customer-payment/stripe/runtime-config', {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceIds: selectedIds }),
     }).then(async response => {
       const body = await response.json();
-      if (!cancelled) setCardAvailable(response.ok && body?.data?.provider === 'stripe' && body.data.readyForPayments === true);
-    }).catch(() => { if (!cancelled) setCardAvailable(false); });
+      if (cancelled) return;
+      if (response.status === 401 || response.status === 403) {
+        update('permission', response.status === 401 ? 'Your session has expired. Sign in again to take payment.'
+          : 'You do not have permission to process this payment.');
+      } else if (!response.ok) {
+        const message = typeof body?.error === 'string' ? body.error : '';
+        if (response.status === 409 && (String(body?.code || '').startsWith('STRIPE_') || body?.code === 'PAYMENT_PROVIDER_NOT_SELECTED')) {
+          update('unavailable', 'No configured card processor is currently available for this grouped payment.' + (message ? ' ' + message : ''));
+        } else if ([400, 404, 409, 422].includes(response.status)) {
+          update('ineligible', message || 'These invoices are not eligible for card payment. Refresh and review the selection.');
+        } else {
+          update('error', 'Unable to load payment configuration. Retry the availability check.');
+        }
+      } else {
+        const config = body?.data;
+        const validMode = config?.mode === 'test' || config?.mode === 'live';
+        const prefix = config?.mode === 'test' ? 'pk_test_' : 'pk_live_';
+        if (config?.provider === 'stripe' && config.readyForPayments === true && validMode
+          && typeof config.publishableKey === 'string' && config.publishableKey.startsWith(prefix)
+          && typeof config.connectedAccountId === 'string' && config.connectedAccountId.trim()) {
+          update('ready', '');
+        } else {
+          update('error', 'Payment configuration returned an invalid response. Retry the availability check.');
+        }
+      }
+    }).catch(() => update('error', 'Unable to load payment configuration. Check your connection and retry.'));
     return () => { cancelled = true; };
-  }, [open, cardIdsKey]);
+  }, [open, cardAvailabilityKey]);
+
 
   const submit = () => {
     if (isCard) {
@@ -129,7 +167,7 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
           <p>Change due / unapplied: <strong>{money(amounts.changeDueCents)}</strong></p>
           <p>Remaining balance: <strong>{money(amounts.remainingBalanceCents)}</strong></p>
         </div>}
-        <div><Label>Payment method</Label><Select disabled={mutation.isPending} value={method} onValueChange={setMethod}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(cardAvailable ? staffPaymentMethodDefinitions : manualPaymentMethodDefinitions).map(method => <SelectItem key={method.id} value={method.id}>{method.label}</SelectItem>)}</SelectContent></Select></div>
+        <div><Label>Payment method</Label><Select disabled={mutation.isPending} value={method} onValueChange={setMethod}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{staffPaymentMethodDefinitions.map(method => <SelectItem key={method.id} value={method.id}>{method.label}</SelectItem>)}</SelectContent></Select></div>
         {!isCard && <div><Label>Allocation</Label><Select disabled={mutation.isPending} value={mode} onValueChange={(value: CustomerPaymentAllocationMode) => setMode(value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="oldest_first">Oldest invoice first</SelectItem><SelectItem value="proportional">Proportional</SelectItem><SelectItem value="custom">Custom allocation</SelectItem></SelectContent></Select></div>}
         {!isCard && preview && mode !== 'custom' && validTenderedAmount && preview.allocations.length > 0 && <div className="grid gap-1" aria-label="Allocation preview">
           <p className="font-medium">Allocation preview</p>
@@ -140,7 +178,16 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
           <p className="font-medium">Full invoice balances · {money(preview.totalOutstandingCents)} total</p>
           {preview.invoices.map(row => <p key={row.invoiceId}>Invoice {row.invoiceNumber}: {money(row.remainingCents)}</p>)}
           <p className="text-sm text-muted-foreground">One Stripe transaction. Payment is complete after saved allocations are confirmed.</p>
-          {!cardAvailable && <p role="alert">Credit card payment is unavailable for this selection.</p>}
+        </div>}
+        {isCard && !cardAvailable && !error && <div className="space-y-2 rounded-md border p-3" role="status" aria-live="polite">
+          <p>{!preview ? 'Checking invoice eligibility…' : !preview.eligibleCount
+            ? 'No selected invoices have eligible open balances for card payment.'
+            : currentCardAvailability?.message || 'Checking card payment availability…'}</p>
+          {currentCardAvailability?.status === 'unavailable' && isAdminOrOwner && <Button type="button" size="sm" variant="outline" asChild>
+            <a href="/settings/integrations">Open Payment Settings</a>
+          </Button>}
+          {currentCardAvailability && ['error', 'ineligible', 'unavailable'].includes(currentCardAvailability.status) && <Button type="button" variant="link"
+            onClick={() => setRefresh(value => value + 1)}>Retry availability check</Button>}
         </div>}
         {error && <div role="alert" className="text-sm text-destructive">{error}<Button type="button" variant="link" disabled={mutation.isPending} onClick={() => { setCustom({}); setRefresh(value => value + 1); }}>Refresh preview</Button></div>}
         <div className="flex justify-end gap-2"><Button disabled={mutation.isPending} variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={mutation.isPending || !preview || (isCard ? !cardAvailable || !preview.eligibleCount : !validTenderedAmount || amounts.appliedAmountCents <= 0)} onClick={submit}>{mutation.isPending ? 'Recording…' : isCard ? 'Continue to Card Payment' : 'Record Payment'}</Button></div>
