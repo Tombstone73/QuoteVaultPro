@@ -8945,6 +8945,7 @@ export async function registerOrderRoutes(
                     proof: requestedRequiresProofApproval,
                 },
             });
+            let retireUnstartedPrepress = false;
             let proofApprovalManualOverride = false;
             let routingTargetState: ReturnType<typeof getInitialWorkflowState> | null = null;
 
@@ -8967,7 +8968,7 @@ export async function registerOrderRoutes(
                     requestedRequiresDesign: typeof requestedRequiresDesign === "boolean" ? requestedRequiresDesign : Boolean((oldLineItem as any).requiresDesign),
                     requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
                     requestedRequiresProofApproval: typeof requestedRequiresProofApproval === "boolean" ? requestedRequiresProofApproval : Boolean((oldLineItem as any).requiresProofApproval),
-                    explicitStaffProofRequest: requestedRequiresProofApproval === true,
+                    explicitStaffProofRequest: requestedRequiresProofApproval === true || (requestedRequiresProofApproval === undefined && Boolean(oldLineItem.requiresProofApproval)),
                 });
                 if (typeof requestedRequiresProofApproval === "boolean" && routing.requiresProofApproval !== requestedRequiresProofApproval) {
                     throw Object.assign(new Error("Proof approval cannot be changed because this organization requires it for the selected product."), { statusCode: 409, code: "ROUTING_PROOF_POLICY_CONFLICT" });
@@ -8990,6 +8991,14 @@ export async function registerOrderRoutes(
                         statusCode: 409, code: "PRODUCTION_BYPASS_ROUTING_CONFLICT",
                     });
                 }
+                retireUnstartedPrepress = requestedRequiresPrepress === false && Boolean(oldLineItem.requiresPrepress)
+                    && activeJob?.stationKey === "prepress"
+                    && routing.requiresDesign === Boolean(oldLineItem.requiresDesign)
+                    && routing.requiresProofApproval === Boolean(oldLineItem.requiresProofApproval)
+                    && !productIdChanged && !routing.requiresPrepress;
+                if (requestedRequiresPrepress === false && oldLineItem.requiresPrepress && activeJob && !retireUnstartedPrepress) {
+                    throw Object.assign(new Error("Resolve the existing stage before removing Prepress or changing other routing requirements together."), { statusCode: 409, code: "PREPRESS_WITHDRAWAL_BLOCKED" });
+                }
                 const conflict = savedLineRequirementConflict({
                     previous: {
                         design: Boolean((oldLineItem as any).requiresDesign),
@@ -9003,7 +9012,7 @@ export async function registerOrderRoutes(
                     },
                     activeStation: activeJob?.stationKey ?? null,
                 });
-                if (conflict) throw Object.assign(new Error(conflict), { statusCode: 409, code: "ROUTING_RETURN_REQUIRED" });
+                if (conflict && !retireUnstartedPrepress) throw Object.assign(new Error(conflict), { statusCode: 409, code: "ROUTING_RETURN_REQUIRED" });
             }
 
             if (isActiveOperationalEdit && submittedFields.length > 0) {
@@ -9170,6 +9179,7 @@ export async function registerOrderRoutes(
             // boundary.  Do not let the browser, a refresh, or a later PDF/QB
             // action repair an Invoice after an Order edit has committed.
             const lineItem = await db.transaction(async (tx) => {
+                let withdrawalWorkflow: Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | undefined;
                 if (hasRoutingChange || expectedUpdatedAt) {
                     await lockWorkflowLines(tx, organizationId, [lineItemId]);
                     const [current] = await tx.select({ updatedAt: orderLineItems.updatedAt }).from(orderLineItems)
@@ -9192,7 +9202,7 @@ export async function registerOrderRoutes(
                     }
                     const [current] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
                     if (!current) throw new Error("Order line item not found after save");
-                    return current;
+                    return { ...current, ...(withdrawalWorkflow ? { withdrawalWorkflow } : {}) };
                 };
                 if (shouldReconcileProofGateRemoval) {
                     await tx
@@ -9218,6 +9228,14 @@ export async function registerOrderRoutes(
                     });
                     await recomputeOrderBillingStatus({ organizationId, orderId: String(reconciled.orderId), executor: tx });
                     return returnCurrentLine();
+                }
+                if (retireUnstartedPrepress && routingTargetState) {
+                    withdrawalWorkflow = await transitionLineItemWorkflowState(tx, {
+                        organizationId, lineItemId, toState: routingTargetState, actorUserId: userId,
+                        retireUnstartedPrepress: true,
+                        note: "Unstarted Prepress requirement removed.",
+                        metadata: { source: "saved_order_line_requirements", outcome: "withdrawn" },
+                    });
                 }
                 await new OrdersRepository(tx).updateOrderLineItem(lineItemId, updateData);
                 if (hasRoutingChange && !activeJob && routingTargetState) {

@@ -646,3 +646,13 @@ export function buildSavedSnapshotAfterLineItemSave({
       : fallback.totalPrice,
   };
 }
+
+/** Send only deliberate stage changes, retaining full routing on Product replacement. */
+export function changedWorkflowRequirements(
+  current: { requiresDesign: boolean; requiresPrepress: boolean; requiresProofApproval: boolean },
+  baseline: { requiresDesign: boolean; requiresPrepress: boolean; requiresProofApproval: boolean } | undefined,
+  productChanged: boolean,
+): Partial<typeof current> {
+  if (!baseline || productChanged) return current;
+  return Object.fromEntries(Object.entries(current).filter(([key, value]) => value !== baseline[key as keyof typeof current]));
+}

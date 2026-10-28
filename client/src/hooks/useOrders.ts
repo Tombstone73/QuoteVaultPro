@@ -989,6 +989,13 @@ export function useUpdateOrderLineItem(
       const persisted = Array.isArray(order?.lineItems) ? order.lineItems.find((line: any) => String(line.id) === id) : undefined;
       const mismatched = failed(persisted);
       if (!persisted || mismatched.length) throw new OrderLineItemApiError('Saved line did not confirm: ' + (mismatched.length ? mismatched : requested).map(field => labels[field]).join(', ') + '. Refresh and review the line.', 'ROUTING_SAVE_UNCONFIRMED');
+      const workflow = updatedLineItem.withdrawalWorkflow;
+      if (workflow && (persisted.workflowState !== workflow.toState
+        || persisted.activeOwnerJobId !== workflow.activeOwnerJobId
+        || persisted.activeOwnerStationKey !== workflow.activeOwnerStationKey
+        || persisted.activeOwnerStepKey !== workflow.activeOwnerStepKey)) {
+        throw new OrderLineItemApiError('The requirement was saved but its workflow ownership could not be confirmed. Refresh and review the line.', 'ROUTING_SAVE_UNCONFIRMED');
+      }
       return persisted;
     },
     onSuccess: (updatedLineItem) => {

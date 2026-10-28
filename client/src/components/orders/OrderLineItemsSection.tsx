@@ -138,6 +138,7 @@ import {
   buildProductReplacementDraft,
   buildOrderLineItemDuplicatePayload,
   buildSavedSnapshotAfterLineItemSave,
+  changedWorkflowRequirements,
   hydrateExpandedOrderLineItemOptionState,
   hydratePersistedArtworkSideIntent,
   mergeArtworkSideIntentIntoSpecs,
@@ -2644,9 +2645,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           height: dimsRequired ? heightNum : null,
           quantity: qtyNum,
           description: notes || "",
-          requiresDesign: requiresDesignInput,
-          requiresPrepress: requiresPrepressInput,
-          requiresProofApproval: requiresProofApprovalInput,
+          ...changedWorkflowRequirements(
+            { requiresDesign: requiresDesignInput, requiresPrepress: requiresPrepressInput, requiresProofApproval: requiresProofApprovalInput },
+            savedForCommercialSave,
+            Boolean(savedForCommercialSave && currentDraftProductId !== savedForCommercialSave.productId),
+          ),
           unitPrice: unitPrice.toFixed(2),
           totalPrice: totalPrice.toFixed(2),
           ...(pricingForSave

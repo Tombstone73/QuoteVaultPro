@@ -45,3 +45,18 @@ test('a failed readback preserves the unconfirmed result as an error', async () 
   await act(async () => { await expect(mutate.mutateAsync(request)).rejects.toMatchObject({ code: 'ROUTING_SAVE_UNCONFIRMED' }); });
   expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
 });
+
+const workflow = { toState: 'ready_for_production', activeOwnerJobId: 'next-job', activeOwnerStationKey: 'flatbed', activeOwnerStepKey: 'queued' };
+const routed = { ...line, workflowState: workflow.toState, activeOwnerJobId: workflow.activeOwnerJobId, activeOwnerStationKey: workflow.activeOwnerStationKey, activeOwnerStepKey: workflow.activeOwnerStepKey };
+test.each(['workflowState', 'activeOwnerJobId', 'activeOwnerStationKey', 'activeOwnerStepKey'])('withdrawal requires fresh matching %s before success', async field => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ ...routed, withdrawalWorkflow: workflow }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ lineItems: [{ ...routed, [field]: 'stale' }] }) });
+  await act(async () => { await expect(mutate.mutateAsync(request)).rejects.toMatchObject({ code: 'ROUTING_SAVE_UNCONFIRMED' }); });
+  expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+});
+test('withdrawal success requires the confirmed successor on fresh readback', async () => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ ...routed, withdrawalWorkflow: workflow }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ lineItems: [routed] }) });
+  await act(async () => { await expect(mutate.mutateAsync(request)).resolves.toEqual(routed); });
+  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+});

@@ -4,6 +4,7 @@ import {
   buildOrderLineItemDuplicatePayload,
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
+  changedWorkflowRequirements,
   hydrateExpandedOrderLineItemOptionState,
   hydratePersistedOrderLineItemOptionSelections,
   hydratePersistedArtworkSideIntent,
@@ -602,5 +603,15 @@ describe("order line item edit state", () => {
     const visibleTotals = rows.map((row) => resolveLineItemDisplayPriceCents(row));
     expect(visibleTotals).toEqual([12000, 1500]);
     expect(visibleTotals.reduce((sum, cents) => sum + cents, 0)).toBe(13500);
+  });
+});
+
+describe("workflow requirement payload", () => {
+  const baseline = { requiresDesign: false, requiresPrepress: true, requiresProofApproval: false };
+  it("sends only the changed requirement", () => {
+    expect(changedWorkflowRequirements({ ...baseline, requiresPrepress: false }, baseline, false)).toEqual({ requiresPrepress: false });
+  });
+  it("sends the full selection for product changes", () => {
+    expect(changedWorkflowRequirements(baseline, baseline, true)).toEqual(baseline);
   });
 });

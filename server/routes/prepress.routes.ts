@@ -45,6 +45,7 @@ import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/material
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { lockWorkflowLines } from "../services/workflowMutationLock";
 import {
   findActiveJobForLineItem,
   isPrepressOwnershipJob,
@@ -146,7 +147,7 @@ async function loadPrepressArtworkSideReadiness(executor: any, args: {
   };
 }
 
-const insertPrepressTimelineLog = async (args: {
+const insertPrepressTimelineLog = async (tx: any, args: {
   orderId: string;
   orderLineItemId: string;
   actorUserId: string;
@@ -160,7 +161,7 @@ const insertPrepressTimelineLog = async (args: {
   reason?: string | null;
   metadata?: Record<string, unknown>;
 }) => {
-  await db.insert(orderAuditLog).values({
+  await tx.insert(orderAuditLog).values({
     orderId: args.orderId,
     orderLineItemId: args.orderLineItemId,
     userId: args.actorUserId,
@@ -249,6 +250,7 @@ const getPrepressMaterialContext = async (organizationId: string, lineItemId: st
       optionSelectionsJson: orderLineItems.optionSelectionsJson,
       pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
       pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+      updatedAt: orderLineItems.updatedAt,
     })
     .from(orderLineItems)
     .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -2002,7 +2004,12 @@ export function registerPrepressQueueRoutes(
       let updatedSpecsJson: Record<string, any> | null = null;
 
       await db.transaction(async (tx) => {
-        updatedSpecsJson = appendMaterialOverrideToSpecsJson(context.lineItem.specsJson, persistedOp);
+        await lockWorkflowLines(tx, organizationId, [lineItemId]);
+        const [current] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId));
+        if (!current || new Date(current.updatedAt).getTime() !== new Date(context.lineItem.updatedAt).getTime()) {
+          throw Object.assign(new Error("Prepress work changed. Refresh before changing materials."), { statusCode: 409 });
+        }
+        updatedSpecsJson = appendMaterialOverrideToSpecsJson(current.specsJson, persistedOp);
 
         await tx
           .update(orderLineItems)
@@ -2110,7 +2117,7 @@ export function registerPrepressQueueRoutes(
       });
     } catch (error: any) {
       console.error("[Prepress] Error applying material override:", error);
-      return res.status(500).json({ success: false, data: null, message: error?.message || "Failed to apply material override" });
+      return res.status(error?.statusCode || 500).json({ success: false, data: null, message: error?.message || "Failed to apply material override" });
     }
   });
 
@@ -2515,6 +2522,7 @@ export function registerPrepressQueueRoutes(
       lineItemId = parsed.data.lineItemId;
 
       const result = await db.transaction(async (tx) => {
+        await lockWorkflowLines(tx, orgId, [lineItemId]);
         startFailureStage = "load_line_item";
         // Get line item
         const lineItems = await tx
@@ -2664,7 +2672,7 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        await insertPrepressTimelineLog({
+        await insertPrepressTimelineLog(tx, {
           orderId: order.id,
           orderLineItemId: lineItemId,
           actorUserId: userId,
@@ -2769,51 +2777,37 @@ export function registerPrepressQueueRoutes(
         return res.status(400).json({ error: fromZodError(parsed.error).message });
       }
 
-      const [existingSession] = await db
-        .select({ updatedAt: prepressSessions.updatedAt })
-        .from(prepressSessions)
-        .where(
-          and(
-            eq(prepressSessions.id, sessionId),
-            eq(prepressSessions.organizationId, organizationId)
-          )
-        )
-        .limit(1);
-
-      if (!existingSession) {
-        return res.status(404).json({ error: "Session not found" });
-      }
-
-      if (parsed.data.ifMatchUpdatedAt) {
-        const expected = new Date(parsed.data.ifMatchUpdatedAt).getTime();
-        const actual = existingSession.updatedAt ? new Date(existingSession.updatedAt).getTime() : NaN;
-        if (Number.isFinite(expected) && Number.isFinite(actual) && expected !== actual) {
-          return res.status(409).json({ error: "Notes changed by another user; reload before saving." });
+      const [sessionRef] = await db.select({ lineItemId: prepressSessions.lineItemId })
+        .from(prepressSessions).where(and(eq(prepressSessions.id, sessionId), eq(prepressSessions.organizationId, organizationId))).limit(1);
+      if (!sessionRef) return res.status(404).json({ error: "Session not found" });
+      await db.transaction(async (tx) => {
+        await lockWorkflowLines(tx, organizationId, [sessionRef.lineItemId]);
+        const [existingSession] = await tx.select().from(prepressSessions).where(and(
+          eq(prepressSessions.id, sessionId), eq(prepressSessions.organizationId, organizationId),
+        )).limit(1).for("update");
+        if (!existingSession) throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+        if (existingSession.status !== "active") throw Object.assign(new Error("Prepress session is no longer active. Refresh before editing notes."), { statusCode: 409 });
+        if (parsed.data.ifMatchUpdatedAt) {
+          const expected = new Date(parsed.data.ifMatchUpdatedAt).getTime();
+          const actual = new Date(existingSession.updatedAt).getTime();
+          if (!Number.isFinite(expected) || expected !== actual) throw Object.assign(new Error("Notes changed by another user; reload before saving."), { statusCode: 409 });
         }
-      }
-
-      const updates: any = {};
-      if (parsed.data.note !== undefined) updates.notesText = parsed.data.note;
-      if (parsed.data.notesText !== undefined) updates.notesText = parsed.data.notesText;
-      if (parsed.data.flaggedForQc !== undefined) updates.issueFlag = parsed.data.flaggedForQc;
-      if (parsed.data.issueFlag !== undefined) updates.issueFlag = parsed.data.issueFlag;
-      if (parsed.data.issueType !== undefined) updates.issueType = parsed.data.issueType;
-      updates.updatedAt = new Date();
-
-      await db
-        .update(prepressSessions)
-        .set(updates)
-        .where(
-          and(
-            eq(prepressSessions.id, sessionId),
-            eq(prepressSessions.organizationId, organizationId)
-          )
-        );
+        const updates: any = {};
+        if (parsed.data.note !== undefined) updates.notesText = parsed.data.note;
+        if (parsed.data.notesText !== undefined) updates.notesText = parsed.data.notesText;
+        if (parsed.data.flaggedForQc !== undefined) updates.issueFlag = parsed.data.flaggedForQc;
+        if (parsed.data.issueFlag !== undefined) updates.issueFlag = parsed.data.issueFlag;
+        if (parsed.data.issueType !== undefined) updates.issueType = parsed.data.issueType;
+        updates.updatedAt = new Date();
+        await tx.update(prepressSessions).set(updates).where(and(
+          eq(prepressSessions.id, sessionId), eq(prepressSessions.organizationId, organizationId), eq(prepressSessions.status, "active"),
+        ));
+      });
 
       res.json({ success: true });
     } catch (error: any) {
       console.error("[Prepress] Error updating notes:", error);
-      res.status(500).json({ error: error?.message || "Failed to update notes" });
+      res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to update notes" });
     }
   });
 
@@ -2850,7 +2844,10 @@ export function registerPrepressQueueRoutes(
           throw Object.assign(new Error("Session not found"), { statusCode: 404 });
         }
 
-        const session = sessions[0];
+        await lockWorkflowLines(tx, orgId, [sessions[0].lineItemId]);
+        const [session] = await tx.select().from(prepressSessions).where(and(eq(prepressSessions.id, sessionId), eq(prepressSessions.organizationId, orgId))).limit(1).for("update");
+        if (!session) throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+        if (session.status !== "active" && session.status !== "complete") throw Object.assign(new Error("Prepress session was withdrawn. Refresh before continuing."), { statusCode: 409 });
         sessionLineItemId = session.lineItemId;
 
         await assertParentOrderInProduction(tx, {
@@ -3024,7 +3021,7 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        await insertPrepressTimelineLog({
+        await insertPrepressTimelineLog(tx, {
           orderId: session.orderId,
           orderLineItemId: session.lineItemId,
           actorUserId: userId,
@@ -3046,7 +3043,7 @@ export function registerPrepressQueueRoutes(
         });
 
         if (finalArtwork.created) {
-          await insertPrepressTimelineLog({
+          await insertPrepressTimelineLog(tx, {
             orderId: session.orderId,
             orderLineItemId: session.lineItemId,
             actorUserId: userId,
@@ -3376,7 +3373,7 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        await insertPrepressTimelineLog({
+        await insertPrepressTimelineLog(tx, {
           orderId: item.orderId,
           orderLineItemId: lineItemId,
           actorUserId: userId,
@@ -3575,7 +3572,7 @@ export function registerPrepressQueueRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
 
-        await insertPrepressTimelineLog({
+        await insertPrepressTimelineLog(tx, {
           orderId: lineItem.orderId,
           orderLineItemId: lineItemId,
           actorUserId: userId,
