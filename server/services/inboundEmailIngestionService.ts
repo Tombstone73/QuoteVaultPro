@@ -1442,10 +1442,22 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
     const configuredQuery = Object.prototype.hasOwnProperty.call(settingsJson, "gmailQuery")
       ? stringFromUnknown(settingsJson.gmailQuery)
       : stringFromUnknown(settingsJson.query);
-    const query = configuredQuery ?? `newer_than:${lookbackDays}d`;
+    // Intake eligibility must not change when somebody opens a message in Gmail.
+    // Preserve the rest of the mailbox query, including its grouping and other
+    // filters, while allowing either read state wherever unread was required.
+    const originalQuery = configuredQuery ?? `newer_than:${lookbackDays}d`;
+    const widenedQuery = originalQuery
+      .replace(/(^|[\s({])is:unread(?=$|[\s)}])/gi, "$1{is:read is:unread}");
     const labelIds = Array.isArray(settingsJson.labelIds)
-      ? settingsJson.labelIds.map((value) => String(value)).filter(Boolean)
+      ? settingsJson.labelIds.map((value) => String(value)).filter((value) => Boolean(value) && value.toUpperCase() !== "UNREAD")
       : undefined;
+    const widenedReadState = widenedQuery !== originalQuery
+      || (Array.isArray(settingsJson.labelIds) && settingsJson.labelIds.some((value) => String(value).toUpperCase() === "UNREAD"));
+    // Widening an unread-only mailbox must not turn it into an unbounded
+    // historical scan. Respect explicit lower date boundaries when present.
+    const query = widenedReadState && !/(?:^|[\s({])(?:after|newer|newer_than):[^\s)}]+/i.test(originalQuery)
+      ? `(${widenedQuery}) newer_than:${lookbackDays}d`
+      : widenedQuery;
     const safeLimit = Math.max(1, Math.min(100, Math.round(limit)));
     const pageSize = Math.max(1, Math.min(25, safeLimit));
     const messageIds: string[] = [];
@@ -2755,6 +2767,15 @@ export class InboundEmailIngestionService {
         reason: internalSender.reason ?? "Sender belongs to an organization/internal domain.",
       };
     }
+    const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
+    if (matchedIgnoreRule) {
+      await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
+      return {
+        status: "ignored",
+        processingOutcome: "ignored_rule",
+        reason: `Matched ignore rule ${matchedIgnoreRule.ruleType}.`,
+      };
+    }
     const idempotencyKey = inboundEmailMessageIdempotencyKey(message);
     const [existing] = await this.dbInstance
       .select({ id: inboundOrderRecords.id })
@@ -2792,40 +2813,14 @@ export class InboundEmailIngestionService {
       };
     }
 
-    const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, message);
-    if (matchedIgnoreRule) {
-      await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
-      console.info("[Inbound Email Pull] Ignored message by rule", {
-        organizationId,
-        mailboxId: mailbox.id,
-        messageId: message.messageId,
-        ruleId: matchedIgnoreRule.id,
-        ruleType: matchedIgnoreRule.ruleType,
-        ruleValue: matchedIgnoreRule.ruleValue,
-      });
-      return {
-        status: "ignored",
-        processingOutcome: "ignored_rule",
-        reason: `Matched ignore rule ${matchedIgnoreRule.ruleType}.`,
-      };
-    }
-
     const senderTrustDecision = await this.resolveSenderTrust(organizationId, message, { recordMatch: false });
     const classification = classifyInboundEmailForReview(message, {
       senderTrusted: senderTrustDecision.trusted,
       trustSource: senderTrustDecision.trustSource,
       trustReason: senderTrustDecision.reason,
     });
-    if (classification.ignored) {
-      return {
-        status: "ignored",
-        processingOutcome: "classification_skipped",
-        reason: classification.reason,
-        classificationOutcome: classification.intent,
-        classificationReason: classification.reason,
-        crmInfluence: classification.crmInfluence,
-      };
-    }
+    // The explicit ignore rules above are the blacklist. A heuristic intent
+    // classification is advisory and cannot silently dispose of a message.
 
     const receivedAt = message.receivedAt ?? new Date();
     const sourceLabel = `TEMP_INBOUND email intake - ${classification.intent}`;
@@ -3025,6 +3020,18 @@ export class InboundEmailIngestionService {
     if (!externalMessages.length) {
       return { status: "ignored", processingOutcome: "internal_sender_skipped", reason: "Thread contains no eligible external inbound message." };
     }
+    // Apply the same blacklist boundary to refreshes as to new threads. A
+    // previously imported thread must not admit newly blacklisted evidence.
+    for (const candidate of externalMessages) {
+      const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, candidate);
+      if (!matchedIgnoreRule) continue;
+      await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
+      return {
+        status: "ignored",
+        processingOutcome: "ignored_rule",
+        reason: `Thread message matched ignore rule ${matchedIgnoreRule.ruleType}.`,
+      };
+    }
     const latestMessage = externalMessages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
       if (!latest) return message;
       return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
@@ -3089,42 +3096,13 @@ export class InboundEmailIngestionService {
       };
     }
 
-    for (const candidate of externalMessages) {
-      const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, candidate);
-      if (!matchedIgnoreRule) continue;
-      await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
-      console.info("[Inbound Email Pull] Ignored Gmail thread by rule", {
-        organizationId,
-        mailboxId: mailbox.id,
-        threadId,
-        messageId: candidate.messageId,
-        ruleId: matchedIgnoreRule.id,
-        ruleType: matchedIgnoreRule.ruleType,
-        ruleValue: matchedIgnoreRule.ruleValue,
-      });
-      return {
-        status: "ignored",
-        processingOutcome: "ignored_rule",
-        reason: `Thread message matched ignore rule ${matchedIgnoreRule.ruleType}.`,
-      };
-    }
-
     const senderTrustDecision = await this.resolveClassificationTrust(organizationId, [latestMessage]);
     const classification = classifyInboundEmailForReview(latestMessage, {
       senderTrusted: senderTrustDecision.trusted,
       trustSource: senderTrustDecision.trustSource,
       trustReason: senderTrustDecision.reason,
     });
-    if (classification.ignored) {
-      return {
-        status: "ignored",
-        processingOutcome: "classification_skipped",
-        reason: classification.reason,
-        classificationOutcome: classification.intent,
-        classificationReason: classification.reason,
-        crmInfluence: classification.crmInfluence,
-      };
-    }
+    // Keep heuristic non-order classifications available for staff review.
 
     const receivedAt = firstMessage.receivedAt ?? latestMessage.receivedAt ?? new Date();
     const sourceLabel = `TEMP_INBOUND email thread intake - ${classification.intent}`;

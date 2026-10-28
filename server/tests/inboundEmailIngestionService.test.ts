@@ -809,6 +809,34 @@ describe("Gmail MIME attachment extraction", () => {
     ]);
   });
 
+  test("retains mailbox filters when unread-only Gmail criteria are widened", async () => {
+    const list = jest.fn(async () => ({ data: { messages: [] } }));
+    const adapter = new GmailInboundEmailAdapter();
+    (adapter as any).buildGmailClient = () => ({ users: { messages: { list } } });
+    await adapter.listRecentMessages(mailbox({ settingsJson: {
+      gmailQuery: "from:customer.example is:unread newer_than:30d",
+      labelIds: ["INBOX", "UNREAD"],
+    } }), 50);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      q: "from:customer.example {is:read is:unread} newer_than:30d",
+      labelIds: ["INBOX"],
+    }));
+  });
+
+  test("bounds an unread-only query and retains exclusions", async () => {
+    const list = jest.fn(async () => ({ data: { messages: [] } }));
+    const adapter = new GmailInboundEmailAdapter();
+    (adapter as any).buildGmailClient = () => ({ users: { messages: { list } } });
+    await adapter.listRecentMessages(mailbox({ settingsJson: {
+      gmailQuery: "is:unread -from:blocked.example", lookbackDays: 21,
+      labelIds: ["INBOX", "UNREAD"],
+    } }), 25);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      q: "({is:read is:unread} -from:blocked.example) newer_than:21d",
+      labelIds: ["INBOX"],
+    }));
+  });
+
   test("paginates Gmail list results up to the configured max and records safe listed-message diagnostics", async () => {
     const list = jest.fn(async (args: any) => {
       if (!args.pageToken) {

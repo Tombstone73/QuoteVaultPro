@@ -641,6 +641,17 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("a non-blacklisted message classified as marketing remains in the review queue", async () => {
+    const { repo, storage } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({ threadId: null, senderEmail: "news@example.com", subject: "Newsletter", bodyText: "Unsubscribe from our newsletter" })]),
+      downloadAttachment: jest.fn(),
+    };
+    const service = new InboundEmailIngestionService(pullLatestFreshRecordDbHarness(record) as any, { gmail: adapter }, repo as any, storage as any);
+    const result = await service.pullLatestEmails({ organizationId: "org_1", actorUserId: "user_1", limit: 1 });
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+  });
+
   test("pullLatestEmails skips internal outbound Titan senders before TEMP record creation", async () => {
     const { repo, storage } = serviceHarness();
     const adapter: InboundEmailProviderAdapter = {
@@ -2032,6 +2043,25 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerMessageId: "gmail_msg_2",
       providerAttachmentId: "att_art",
     }));
+  });
+
+  test("blacklisted thread replies do not refresh an existing inbound record", async () => {
+    const { repo, storage } = serviceHarness();
+    const dbHarness = threadExistingDbHarness(record);
+    const service = new InboundEmailIngestionService(dbHarness as any, {}, repo as any, storage as any);
+    const matched = { id: "blocked", ruleType: "sender_email_exact" };
+    jest.spyOn(service as any, "findMatchedIgnoreRule").mockResolvedValue(matched);
+    (repo as any).recordEmailIgnoreRuleMatch = jest.fn(async () => undefined);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [message()]),
+      downloadAttachment: jest.fn(),
+    };
+    const outcome = await (service as any).processMessage("org_1", "user_1", mailbox, { id: "source_1" }, message(), adapter);
+    expect(outcome).toMatchObject({ status: "ignored", processingOutcome: "ignored_rule" });
+    expect(dbHarness.select).not.toHaveBeenCalled();
+    expect(repo.updateRecordWithEvent).not.toHaveBeenCalled();
+    expect(adapter.downloadAttachment).not.toHaveBeenCalled();
   });
 
   test("later external reply in a Titan-started Gmail thread matches the earlier external message container", async () => {
