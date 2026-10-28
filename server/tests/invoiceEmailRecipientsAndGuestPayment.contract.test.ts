@@ -7,6 +7,7 @@ const source = (file: string) => readFileSync(path.join(process.cwd(), file), "u
 describe("invoice recipients and guest payment contract", () => {
   const route = source("server/routes/mvpInvoicing.routes.ts");
   const recipients = source("shared/invoiceEmailRecipients.ts");
+  const queue = source("server/services/invoiceBulkEmailQueue.service.ts");
   const contactForm = source("client/src/components/contact-form.tsx");
   const guestService = source("server/services/guestInvoicePayment.service.ts");
   const portalPayments = source("server/services/portal.service.ts");
@@ -16,14 +17,18 @@ describe("invoice recipients and guest payment contract", () => {
     expect(route).toContain("customerContactLinks.isBilling");
     expect(route).toContain('source: "billing_contact" as const');
     expect(route).toContain("billingContacts.length > 0");
-    expect(route).toContain("recipientResolution.recipients.length > 1");
+    expect(route).toContain("resolution.recipients.map((recipient) => recipient.email)");
+    expect(route).toContain("candidates: recipients.map((recipientEmail) => ({");
     expect(recipients).toContain('"billing_contact"');
     expect(contactForm).toContain("Invoice Recipient - Receives invoices and payment communications");
   });
 
   test("creates one durable send/audit path per resolved recipient", () => {
-    expect(route).toContain("for (const recipient of recipientResolution.recipients)");
-    expect(route).toContain("recipientEmails: recipientResolution.recipients.map");
+    expect(queue).toContain("for (const candidate of input.candidates)");
+    expect(queue).toContain("recipientEmail: candidate.recipientEmail");
+    expect(queue).toContain("canonicalInvoiceEmailSender!({");
+    expect(queue).toContain("toEmail: job.recipientEmail");
+    expect(route).toContain("registerCanonicalInvoiceEmailSender(sendInvoiceEmailForOperations)");
     expect(route).toContain("createInvoiceEmailLog");
     expect(route).toContain("buildInvoiceEmailSentAudit");
   });

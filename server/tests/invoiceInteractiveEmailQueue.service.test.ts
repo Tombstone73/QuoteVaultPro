@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
 const insertedValues: Array<Record<string, unknown>> = [];
-const execute = jest.fn();
+const execute = jest.fn<(...args: any[]) => Promise<any>>();
 const insert = jest.fn();
 const update = jest.fn();
 const select = jest.fn();
@@ -92,6 +92,17 @@ describe("interactive invoice email queue", () => {
     });
     expect(insertedValues[1]).not.toHaveProperty("sentAt");
     expect(insertedValues[1].availableAt).toBeInstanceOf(Date);
+  });
+
+  test("queues a distinct durable job for each resolved recipient", async () => {
+    insert.mockReturnValueOnce(valuesReturning({ id: "job-second" }));
+    const result = await enqueueInteractiveInvoiceEmailCampaign({
+      organizationId: "org-1", invoiceId: "invoice-1", idempotencyKey: "multi-recipient",
+      candidates: ["first@example.test", "second@example.test"].map((recipientEmail) => ({ invoiceId: "invoice-1", invoiceVersion: 4, recipientEmail })),
+    });
+    expect(result).toMatchObject({ queued: 2, alreadyQueued: 0 });
+    expect(insertedValues.slice(1).map((job) => job.recipientEmail)).toEqual(["first@example.test", "second@example.test"]);
+    expect(new Set(insertedValues.slice(1).map((job) => job.idempotencyKey)).size).toBe(2);
   });
 
   test("does not queue a stale recipient snapshot after billing ownership changes", async () => {
