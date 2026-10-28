@@ -35,6 +35,17 @@ describe("organization proofing policy", () => {
     }).requiresProofApproval).toBe(true);
   });
 
+  test("a deliberate staff request on a saved product-required line is honored in manual mode", () => {
+    expect(resolveLineItemProofApprovalRequirement({
+      productRequiresProofApproval: true, requestedRequiresProofApproval: true,
+      explicitStaffProofRequest: true, proofingPolicy: "manual_requested_only",
+    }).requiresProofApproval).toBe(true);
+    expect(resolveLineItemProofApprovalRequirement({
+      productRequiresProofApproval: true, requestedRequiresProofApproval: true,
+      proofingPolicy: "manual_requested_only",
+    }).requiresProofApproval).toBe(false);
+  });
+
   test("switching policies reactivates the unchanged product rule", () => {
     const product = { productRequiresProofApproval: true };
     expect(resolveLineItemProofApprovalRequirement({ ...product, proofingPolicy: "manual_requested_only" }).requiresProofApproval).toBe(false);

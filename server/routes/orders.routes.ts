@@ -629,6 +629,7 @@ async function resolveEffectiveLineItemRouting(args: {
     requestedRequiresPrepress?: boolean | null;
     requestedRequiresProofApproval?: boolean | null;
     designDefaultRequiresDesign?: boolean | null;
+    explicitStaffProofRequest?: boolean;
 }) {
     const [org] = await db
         .select({
@@ -660,6 +661,7 @@ async function resolveEffectiveLineItemRouting(args: {
     const proofApproval = resolveLineItemProofApprovalRequirement({
         productRequiresProofApproval: Boolean(productRow?.requiresProofApproval),
         requestedRequiresProofApproval: args.requestedRequiresProofApproval,
+        explicitStaffProofRequest: args.explicitStaffProofRequest,
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((org?.settings as any)?.preferences),
         proofingPolicy: resolveProofingPolicyFromOrgPreferences((org?.settings as any)?.preferences),
     });
@@ -8701,6 +8703,7 @@ export async function registerOrderRoutes(
             const parsed = updateOrderLineItemSchema.parse({ ...correction.data, id: lineItemId });
             const {
                 id: _ignoredId,
+                expectedUpdatedAt: _ignoredExpectedUpdatedAt,
                 status: _ignoredStatus,
                 workflowState: _ignoredWorkflowState,
                 requiresDesign: _ignoredRequiresDesign,
@@ -8861,7 +8864,7 @@ export async function registerOrderRoutes(
 
             const userId = getUserId(req.user);
             const parsed = updateOrderLineItemSchema.parse({ ...(req.body as any), id: req.params.id });
-            const { pbv2ExplicitSelections, pbv2Env, ...lineItemData } = parsed as any;
+            const { pbv2ExplicitSelections, pbv2Env, expectedUpdatedAt, ...lineItemData } = parsed as any;
             const {
                 id,
                 workflowState: _ignoredWorkflowState,
@@ -8964,7 +8967,11 @@ export async function registerOrderRoutes(
                     requestedRequiresDesign: typeof requestedRequiresDesign === "boolean" ? requestedRequiresDesign : Boolean((oldLineItem as any).requiresDesign),
                     requestedRequiresPrepress: typeof requestedRequiresPrepress === "boolean" ? requestedRequiresPrepress : Boolean((oldLineItem as any).requiresPrepress),
                     requestedRequiresProofApproval: typeof requestedRequiresProofApproval === "boolean" ? requestedRequiresProofApproval : Boolean((oldLineItem as any).requiresProofApproval),
+                    explicitStaffProofRequest: requestedRequiresProofApproval === true,
                 });
+                if (typeof requestedRequiresProofApproval === "boolean" && routing.requiresProofApproval !== requestedRequiresProofApproval) {
+                    throw Object.assign(new Error("Proof approval cannot be changed because this organization requires it for the selected product."), { statusCode: 409, code: "ROUTING_PROOF_POLICY_CONFLICT" });
+                }
                 proofApprovalManualOverride =
                     routing.proofApprovalManualOverride &&
                     (Boolean((oldLineItem as any).requiresProofApproval) || productIdChanged);
@@ -9163,18 +9170,30 @@ export async function registerOrderRoutes(
             // boundary.  Do not let the browser, a refresh, or a later PDF/QB
             // action repair an Invoice after an Order edit has committed.
             const lineItem = await db.transaction(async (tx) => {
-                if (hasRoutingChange) {
+                if (hasRoutingChange || expectedUpdatedAt) {
                     await lockWorkflowLines(tx, organizationId, [lineItemId]);
                     const [current] = await tx.select({ updatedAt: orderLineItems.updatedAt }).from(orderLineItems)
-                        .where(eq(orderLineItems.id, lineItemId)).limit(1);
+                        .where(eq(orderLineItems.id, lineItemId)).limit(1).for("update");
                     const currentOwner = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
                     if (!current || current.updatedAt.getTime() !== new Date((oldLineItem as any).updatedAt).getTime()
+                        || (expectedUpdatedAt && current.updatedAt.getTime() !== new Date(expectedUpdatedAt).getTime())
                         || currentOwner?.id !== activeJob?.id) {
                         throw Object.assign(new Error("This line or its production owner changed. Refresh the Order and review the current routing before saving."), {
                             statusCode: 409, code: "ROUTING_STALE_STATE",
                         });
                     }
                 }
+                // Keep the optimistic version distinct even when two saves occur in one millisecond.
+                const returnCurrentLine = async () => {
+                    if (hasRoutingChange || expectedUpdatedAt) {
+                        await tx.update(orderLineItems).set({
+                            updatedAt: new Date(Math.max(Date.now(), new Date(oldLineItem.updatedAt).getTime() + 1)),
+                        }).where(eq(orderLineItems.id, lineItemId));
+                    }
+                    const [current] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
+                    if (!current) throw new Error("Order line item not found after save");
+                    return current;
+                };
                 if (shouldReconcileProofGateRemoval) {
                     await tx
                         .update(orderLineItems)
@@ -9198,7 +9217,7 @@ export async function registerOrderRoutes(
                         actorUserId: userId ?? null,
                     });
                     await recomputeOrderBillingStatus({ organizationId, orderId: String(reconciled.orderId), executor: tx });
-                    return reconciled;
+                    return returnCurrentLine();
                 }
                 await new OrdersRepository(tx).updateOrderLineItem(lineItemId, updateData);
                 if (hasRoutingChange && !activeJob && routingTargetState) {
@@ -9256,7 +9275,7 @@ export async function registerOrderRoutes(
                     actorUserId: userId ?? null,
                 });
                 await recomputeOrderBillingStatus({ organizationId, orderId: String(authoritativeLine.orderId), executor: tx });
-                return authoritativeLine;
+                return returnCurrentLine();
             });
             const quantityChanged =
                 updateData.quantity !== undefined &&

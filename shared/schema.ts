@@ -4488,6 +4488,7 @@ export type OrderLineItemComponent = typeof orderLineItemComponents.$inferSelect
 export type InsertOrderLineItemComponent = typeof orderLineItemComponents.$inferInsert;
 
 export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().extend({
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
   id: z.string(),
 });
 

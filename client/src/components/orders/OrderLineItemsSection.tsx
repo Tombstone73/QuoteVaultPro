@@ -1642,6 +1642,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     >
   >({});
   const initializedExpandedLineItemRef = useRef<string | null>(null);
+  const workflowEditVersionRef = useRef<Record<string, string>>({});
   // Monotonic id per preview request. Incrementing it cancels older responses.
   const lastCalcKeyRef = useRef<string>("");
   const calcSeqRef = useRef(0);
@@ -1773,6 +1774,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     const itemId = expandedItem.id;
     if (initializedExpandedLineItemRef.current === expandedItemHydrationFingerprint) return;
     initializedExpandedLineItemRef.current = expandedItemHydrationFingerprint;
+    if (typeof (expandedItem as any).updatedAt === "string") workflowEditVersionRef.current[itemId] = (expandedItem as any).updatedAt;
 
     setDraftProductId(String(expandedItem.productId || ""));
     setDraftProductVariantId(normalizeVariantId(expandedItem.productVariantId));
@@ -2631,7 +2633,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             pbv2TreeVersionId: null,
           };
 
+      if (!workflowEditVersionRef.current[itemId]) {
+        throw new OrderLineItemApiError("Cannot confirm the line version. Refresh the Order before saving workflow requirements.", "ROUTING_VERSION_REQUIRED");
+      }
       correctionPayload = {
+          expectedUpdatedAt: workflowEditVersionRef.current[itemId],
           productId: currentDraftProductId,
           productVariantId: currentDraftProductVariantId,
           width: dimsRequired ? widthNum : null,
@@ -2657,6 +2663,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           ...(v2Patch as any),
       };
       const savedLineItem = await lineItemMutation.mutateAsync({ id: itemId, data: correctionPayload });
+      if (typeof (savedLineItem as any)?.updatedAt === "string") workflowEditVersionRef.current[itemId] = (savedLineItem as any).updatedAt;
       if (savedForCommercialSave && requiresProofApprovalInput && shouldWarnAfterProofRequirementSave({
         previousRequiresProof: savedForCommercialSave.requiresProofApproval,
         savedRequiresProof: (savedLineItem as any)?.requiresProofApproval,
@@ -2789,7 +2796,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   // Button handler — fire-and-forget targeted save of the open line item.
   const handleSaveItem = () => {
-    void saveExpandedLineItem();
+    const lineItemId = expandedItem?.id;
+    void saveExpandedLineItem().then((result) => {
+      if (lineItemId && !result.saved && result.error && result.error !== "Complete required product options before saving.") {
+        setRoutingSaveError({ lineItemId, message: result.error });
+      }
+    });
   };
 
   const saveCommercialPricing = async (item: OrderLineItem, pricing: PendingLineItemPriceOverride) => {
