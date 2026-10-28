@@ -95,7 +95,7 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("uses the selected-invoice workflow to manually mark invoices sent without invoking email delivery", () => {
-    expect(invoicesPageSource).toContain("Mark as Sent");
+    expect(invoicesPageSource).toContain("setMarkSelectedSentOpen(true)");
     expect(invoicesPageSource).toContain("Mark invoices as sent?");
     expect(invoicesPageSource).toContain("This will mark {selectedCount} selected invoice");
     expect(invoicesPageSource).toContain("confirmBulkMarkSent");
@@ -163,8 +163,7 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("keeps bulk actions contextual and makes preset labels Custom after any manual search change", () => {
-    expect(invoicesPageSource).toContain("selectedCount > 0 ?");
-    expect(invoicesPageSource).toContain('data-testid="invoice-selection-actions"');
+    expect(invoicesPageSource).toContain("<InvoiceBulkActions selectedCount={selectedCount}");
     expect(invoicesPageSource).toContain("normalizeInvoiceListSearchQuery(search)");
     expect(invoicesPageSource).toContain('activePresetLabel = activeBuiltinPreset?.label || activeSavedView?.name || "Custom"');
   });

@@ -2,6 +2,7 @@ import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { registerInvoiceCustomerReleaseRoutes } from './invoiceCustomerRelease.routes';
 import { getInvoiceCustomerReleaseDisplay, isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
 import { getInvoiceCustomerPaymentEligibility } from '../lib/invoiceCustomerPaymentEligibility';
+import { requireInvoiceBulkAction, resolveInvoiceBulkActionPermissions } from '../lib/invoiceBulkActionAuthority';
 import { InvoicePaymentContextError, retireInvoicePaymentSessions, withInvoicePaymentContext } from '../services/invoicePaymentSession.service';
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
@@ -1518,11 +1519,15 @@ export async function registerMvpInvoicingRoutes(
   // This route deliberately never delegates to the single-invoice payment route.
   // ------------------------------------------------------------
   const customerPaymentSchema = z.object({ expectedCustomerId: z.string().min(1).optional(), invoiceIds: z.array(z.string().min(1)).min(1).max(100), amountCents: z.coerce.number().int().positive(), allocationMode: z.enum(customerPaymentAllocationModes), customAllocations: z.array(z.object({ invoiceId: z.string().min(1), amountCents: z.coerce.number().int().nonnegative() })).optional(), method: manualPaymentMethodSchema.optional(), appliedAt: z.string().optional(), notes: z.string().max(5000).optional(), reference: z.string().max(255).optional(), expectedRemainingCents: z.record(z.string(), z.coerce.number().int().nonnegative()).optional() });
-  app.post('/api/invoices/customer-payment/preview', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/invoices/bulk-action-permissions', isAuthenticated, tenantContext, async (req: any, res) => {
+    try { return res.json({ success: true, data: await resolveInvoiceBulkActionPermissions(req) }); }
+    catch (error) { return res.status(500).json({ success: false, error: 'Unable to resolve Invoice permissions.' }); }
+  });
+  app.post('/api/invoices/customer-payment/preview', isAuthenticated, tenantContext, requireInvoiceBulkAction('payment'), async (req: any, res) => {
     try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); const body = customerPaymentSchema.omit({ method: true, appliedAt: true, notes: true, reference: true, expectedRemainingCents: true }).parse(req.body || {}); return res.json({ success: true, data: await canonicalPaymentOperations.previewCustomerPayment({ organizationId, ...body, staffSelection: true }) }); }
     catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer payment.', code: error.code }); }
   });
-  app.post('/api/invoices/customer-payment', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post('/api/invoices/customer-payment', isAuthenticated, tenantContext, requireInvoiceBulkAction('payment'), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user);
@@ -2553,9 +2558,7 @@ export async function registerMvpInvoicingRoutes(
   // Accounting approval is a hard gate for QuickBooks export. It is separate
   // from invoice payment and customer-portal availability.
   // ------------------------------------------------------------
-  const accountingApprovalMiddlewares = requireOrgOwnerAdmin
-    ? [isAuthenticated, tenantContext, requireOrgOwnerAdmin]
-    : [isAuthenticated, tenantContext];
+  const accountingApprovalMiddlewares = [isAuthenticated, tenantContext, requireInvoiceBulkAction('approve')];
 
   app.post('/api/invoices/:id/approve-for-accounting', ...accountingApprovalMiddlewares, async (req: any, res) => {
     try {
@@ -3407,7 +3410,7 @@ export async function registerMvpInvoicingRoutes(
     }
   });
 
-  app.post("/api/invoices/batch-send", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+  app.post("/api/invoices/batch-send", isAuthenticated, tenantContext, requireInvoiceBulkAction('send'), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -3531,7 +3534,7 @@ export async function registerMvpInvoicingRoutes(
   // ------------------------------------------------------------
   // Mark invoice as sent (read-only semantics; does not change financial status)
   // ------------------------------------------------------------
-  app.post("/api/invoices/mark-sent/bulk", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/invoices/mark-sent/bulk", isAuthenticated, tenantContext, requireInvoiceBulkAction('markSent'), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);

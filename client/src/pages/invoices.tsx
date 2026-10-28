@@ -3,6 +3,7 @@ import { READY_TO_FINALIZE_JOB_STATUSES, READY_TO_FINALIZE_SEND_STATUS } from "@
 import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDocumentDate";
 import { InvoiceEmailQueueDialog } from "@/components/invoices/InvoiceEmailQueueDialog";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,6 +15,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronLeft, ChevronRight, Eye, Filter, Plus, FileText, Mail, RotateCcw, Settings2, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
+import { apiFetch } from "@/lib/queryClient";
+import { InvoiceBulkActions } from "@/components/invoices/InvoiceBulkActions";
+import type { InvoiceBulkActionPermissions } from "@shared/invoiceBulkActionPermissions";
 import { useApproveInvoicesForAccounting, useBatchSendInvoices, useBulkMarkInvoicesSent, useInvoiceEmailQueue, useInvoicesPage, useResolveInvoiceEmailDeliveryReview, type InvoiceEmailStatus, type InvoiceListColumnFilterQuery, type InvoiceListItem } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { endOfMonth, format, startOfMonth, subDays, subMonths } from "date-fns";
@@ -284,6 +289,19 @@ const INVOICE_BUILTIN_PRESETS: InvoiceBuiltinPreset[] = [
 export default function InvoicesListPage() {
   const { setInvoicePageContext } = useAssistantWorkspace();
   const { user } = useAuth();
+  const activeOrganization = useActiveOrganizationRole();
+  const isAdminOrOwner = activeOrganization.isAdminOrOwner;
+  const { data: bulkPermissions } = useQuery<InvoiceBulkActionPermissions>({
+    queryKey: ["invoice-bulk-action-permissions", user?.id, activeOrganization.activeOrgId ?? user?.lastActiveOrgId],
+    enabled: Boolean(user?.id),
+    queryFn: async () => {
+      const response = await apiFetch('/api/invoices/bulk-action-permissions');
+      if (!response.ok) throw new Error('Unable to load Invoice permissions.');
+      const body = await response.json();
+      return body.data;
+    },
+    staleTime: 0,
+  });
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -436,7 +454,6 @@ export default function InvoicesListPage() {
     ...columnFilters,
   });
 
-  const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const batchSendInvoices = useBatchSendInvoices();
   const resolveEmailDeliveryReview = useResolveInvoiceEmailDeliveryReview();
   const emailQueue = useInvoiceEmailQueue(emailQueueOpen, emailQueueView, emailQueuePage);
@@ -996,30 +1013,23 @@ export default function InvoicesListPage() {
         title="Invoices"
         subtitle="Manage invoices and payments"
         actions={
-          isAdminOrOwner && (
             <div className="flex flex-wrap items-center justify-end gap-2">
-              {selectedCount > 0 ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-titan-border-subtle bg-titan-bg-card px-2 py-1.5" data-testid="invoice-selection-actions">
-                <span className="text-sm font-medium text-titan-text-primary">{selectedCount} selected</span>
-                <Button variant="outline" size="sm" onClick={handleBatchSend} disabled={batchSendInvoices.isPending}>
-                  <Mail className="mr-1.5 h-4 w-4" />{batchSendInvoices.isPending ? "Preparing..." : "Send Selected"}
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setMarkSelectedSentOpen(true)} disabled={bulkMarkInvoicesSent.isPending}>{bulkMarkInvoicesSent.isPending ? 'Marking…' : 'Mark as Sent'}</Button>
-                <Button variant="outline" size="sm" onClick={handleApproveSelected} disabled={approveInvoices.isPending}>{approveInvoices.isPending ? 'Approving…' : 'Approve Selected'}</Button>
-                <Button variant="outline" size="sm" onClick={() => setCustomerPaymentOpen(true)}>Add Payment</Button>
-              </div> : null}
-              <Button asChild>
+              <InvoiceBulkActions selectedCount={selectedCount} permissions={bulkPermissions}
+                sending={batchSendInvoices.isPending} markingSent={bulkMarkInvoicesSent.isPending} approving={approveInvoices.isPending}
+                onSend={() => void handleBatchSend()} onMarkSent={() => setMarkSelectedSentOpen(true)}
+                onApprove={() => void handleApproveSelected()} onAddPayment={() => setCustomerPaymentOpen(true)} />
+              {isAdminOrOwner && <Button asChild>
                 <Link to={ROUTES.orders.list}>
                   <Plus className="mr-2 h-4 w-4" />
                   Create from Order
                 </Link>
-              </Button>
+              </Button>}
             </div>
-          )
         }
       />
 
       <ContentLayout>
-        <MultiInvoicePaymentDialog open={customerPaymentOpen} onOpenChange={setCustomerPaymentOpen} invoiceIds={Array.from(selectedInvoiceIds)} onSuccess={() => setSelectedInvoiceIds(new Set())} />
+        <MultiInvoicePaymentDialog open={customerPaymentOpen && bulkPermissions?.payment === true} onOpenChange={setCustomerPaymentOpen} invoiceIds={Array.from(selectedInvoiceIds)} onSuccess={() => setSelectedInvoiceIds(new Set())} />
         {showTotals && (
           <div className="grid divide-y rounded-titan-lg border border-titan-border-subtle bg-titan-bg-card shadow-titan-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4" data-testid="invoice-summary-strip">
             <div className="px-3 py-2.5"><div className="text-xs font-medium text-titan-text-muted">Total Outstanding</div><div className="mt-0.5 text-lg font-bold text-titan-text-primary">{summary ? formatCurrency(summary.totalOutstandingCents / 100) : EMPTY_VALUE}</div></div>
