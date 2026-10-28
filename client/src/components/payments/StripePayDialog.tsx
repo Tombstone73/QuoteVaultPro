@@ -1,4 +1,6 @@
 import { apiFetch } from '@/lib/queryClient';
+import { checkApiConfig } from '@/lib/apiConfig';
+import { DEVELOPMENT_API_ORIGIN, expectedApiOriginForWebHost } from '@/lib/apiRouting';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 
@@ -41,6 +43,7 @@ function StripePayInner(props: {
   checkoutKey?: string;
   onRecovery?: () => void;
   developerPreviewPayment?: boolean;
+  showTestCard?: boolean;
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
@@ -207,6 +210,23 @@ function StripePayInner(props: {
       <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden overscroll-contain pr-1" data-testid="stripe-payment-scroll-body">
         {isMultiInvoice ? <div className="flex min-h-0 shrink flex-col rounded-md border text-sm"><p className="shrink-0 px-3 pb-2 pt-3 font-medium">{props.invoiceIds?.length} invoices selected</p><div className="min-h-0 max-h-[min(15rem,32dvh)] space-y-2 overflow-y-auto overscroll-contain px-3 pb-3" data-testid="stripe-invoice-scroll-region">{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex min-w-0 justify-between gap-4"><span className="min-w-0 truncate">Invoice {invoice.invoiceNumber}</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}</div><div className="flex shrink-0 justify-between gap-4 border-t px-3 py-3 font-semibold"><span>Total Due</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
         {/* Guard rendering with clientSecret in parent; onReady confirms the PaymentElement is mounted. */}
+        {props.showTestCard && <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm" aria-label="Stripe Test Card">
+          <div className="font-medium">Stripe Test Card</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span>4242 4242 4242 4242</span>
+            <Button type="button" variant="outline" size="sm" onClick={async () => {
+              try {
+                await navigator.clipboard.writeText('4242424242424242');
+                toast({ title: 'Test card number copied' });
+              } catch {
+                toast({ title: 'Unable to copy test card number', description: 'Select and copy the number shown.', variant: 'destructive' });
+              }
+            }}>Copy</Button>
+          </div>
+          <p>Expiration: Any future date</p>
+          <p>CVC: Any 3 digits</p>
+          <p>Test payments only. No real charge.</p>
+        </div>}
         <PaymentElement
           onReady={() => {
             setPaymentElementReady(true);
@@ -536,6 +556,8 @@ export default function StripePayDialog(props: {
               groupedInitiation={props.groupedInitiation}
               groupedApiBasePath={props.groupedApiBasePath}
               developerPreviewPayment={Boolean(props.previewMode && props.previewPaymentAuthorized)}
+              showTestCard={typeof window !== 'undefined' && expectedApiOriginForWebHost(window.location.hostname) === DEVELOPMENT_API_ORIGIN
+                && checkApiConfig().isValid && runtimeConfig?.mode === 'test'}
               clientSecret={frozenClientSecret!}
               apiBasePath={apiBasePath}
               onClose={close}
