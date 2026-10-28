@@ -1,4 +1,8 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { createRedoOrderSchema, type CreateRedoOrderRequest } from "@shared/orderRedo";
+import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./lineItemWorkflowService";
+import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../invoicesService";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
   auditLogs,
@@ -12,7 +16,7 @@ import { db } from "../db";
 import { OrdersRepository, type CreateOrderLineItemInput } from "../storage/orders.repo";
 
 export class OrderDuplicationError extends Error {
-  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_HAS_NO_LINE_ITEMS", message: string) {
+  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_HAS_NO_LINE_ITEMS" | "INVALID_REDO" | "STALE_SOURCE" | "REDO_KEY_CONFLICT", message: string) {
     super(message);
   }
 }
@@ -30,42 +34,96 @@ export async function duplicateOrder(input: {
   sourceOrderId: string;
   actorUserId: string;
   actorName?: string | null;
+  redo?: CreateRedoOrderRequest;
 }) {
+  const redo = input.redo ? createRedoOrderSchema.parse(input.redo) : undefined;
+  const fingerprint = redo ? createHash("sha256").update(JSON.stringify({ sourceOrderId: input.sourceOrderId, actorUserId: input.actorUserId, ...redo, lines: [...redo.lines].sort((a,b) => a.sourceLineItemId.localeCompare(b.sourceLineItemId)) })).digest("hex") : null;
   return db.transaction(async (tx) => {
+    const repository = new OrdersRepository(tx, true);
+    if (redo) {
+      // Database-scoped lock plus durable key survives retries, workers and restarts.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${input.organizationId + ":redo:" + redo.requestKey}, 0))`);
+      const [previous] = await tx.select().from(orders).where(and(eq(orders.organizationId, input.organizationId), eq(orders.redoRequestKey, redo.requestKey))).limit(1);
+      if (previous) {
+        if (previous.redoRequestFingerprint !== fingerprint) throw new OrderDuplicationError("REDO_KEY_CONFLICT", "This request was already used with different replacement details.");
+        return repository.getOrderById(input.organizationId, previous.id);
+      }
+    }
     const [sourceOrder] = await tx
       .select()
       .from(orders)
       .where(and(eq(orders.id, input.sourceOrderId), eq(orders.organizationId, input.organizationId)))
-      .limit(1);
+      .limit(1).for("update");
     if (!sourceOrder) throw new OrderDuplicationError("ORDER_NOT_FOUND", "Order not found.");
 
-    const sourceLines = await tx
+    const allSourceLines = await tx
       .select()
       .from(orderLineItems)
       .where(eq(orderLineItems.orderId, sourceOrder.id))
-      .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt);
+      .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt).for("update");
+    let sourceLines = allSourceLines;
+    if (redo) {
+      if (new Date(sourceOrder.updatedAt).getTime() !== new Date(redo.expectedUpdatedAt).getTime()) throw new OrderDuplicationError("STALE_SOURCE", "The source order changed. Refresh before creating a replacement.");
+      const requested = new Map(redo.lines.map(line => [line.sourceLineItemId, line]));
+      if (requested.size !== redo.lines.length) throw new OrderDuplicationError("INVALID_REDO", "Each source line may be selected only once.");
+      sourceLines = allSourceLines.filter(line => requested.has(line.id));
+      if (sourceLines.length !== requested.size) throw new OrderDuplicationError("INVALID_REDO", "Selected lines must belong to this source order.");
+      for (const line of sourceLines) {
+        const selection = requested.get(line.id)!;
+        if (line.updatedAt.getTime() !== new Date(selection.expectedUpdatedAt).getTime()) throw new OrderDuplicationError("STALE_SOURCE", "A selected source line changed. Refresh before creating a replacement.");
+        if (selection.quantity > line.quantity) throw new OrderDuplicationError("INVALID_REDO", "Replacement quantities cannot exceed the selected source quantity.");
+        const children = allSourceLines.filter(child => child.parentLineItemId === line.id);
+        if (children.length && line.lineItemRole !== "parent") throw new OrderDuplicationError("INVALID_REDO", "Source product group has an invalid parent role.");
+        const ancestors = new Set([line.id]);
+        let ancestorId = line.parentLineItemId;
+        while (ancestorId) {
+          if (ancestors.has(ancestorId)) throw new OrderDuplicationError("INVALID_REDO", "Source product group contains a cycle. Repair it before creating a replacement.");
+          ancestors.add(ancestorId);
+          ancestorId = allSourceLines.find(parent => parent.id === ancestorId)?.parentLineItemId ?? null;
+        }
+        if (children.some(child => !requested.has(child.id))) throw new OrderDuplicationError("INVALID_REDO", "Select the complete product group with proportionate quantities.");
+        if (line.lineItemRole === "child" && !line.parentLineItemId) throw new OrderDuplicationError("INVALID_REDO", "Source product has an orphan child. Repair the source configuration first.");
+        if (line.parentLineItemId) {
+          const parent = allSourceLines.find(parent => parent.id === line.parentLineItemId);
+          const parentSelection = requested.get(line.parentLineItemId);
+          if (!parent || !parentSelection || parent.lineItemRole !== "parent" || parentSelection.quantity * line.quantity !== selection.quantity * parent.quantity) throw new OrderDuplicationError("INVALID_REDO", "Select the parent and every component with proportionate whole-piece quantities.");
+        }
+      }
+    }
     if (sourceLines.length === 0) {
       throw new OrderDuplicationError("ORDER_HAS_NO_LINE_ITEMS", "Orders without line items cannot be duplicated.");
     }
 
-    const lineItems: CreateOrderLineItemInput[] = sourceLines.map((line, index) => ({
+    const lineItems: CreateOrderLineItemInput[] = sourceLines.map((line, index) => {
+      const quantity = redo ? redo.lines.find(item => item.sourceLineItemId === line.id)!.quantity : line.quantity;
+      const partial = !!redo && quantity !== line.quantity;
+      const capacity = Number(line.nestingConfigSnapshot?.itemsPerSheet);
+      const hasSheetPlan = Number(line.nestingConfigSnapshot?.totalSheets) > 0;
+      const needsFreshSheetPlan = partial && hasSheetPlan && !(Number.isFinite(capacity) && capacity > 0);
+      const nestingConfigSnapshot = partial && line.nestingConfigSnapshot
+        ? { ...line.nestingConfigSnapshot, totalSheets: Number.isFinite(capacity) && capacity > 0 ? Math.ceil(quantity / capacity) : undefined }
+        : line.nestingConfigSnapshot;
+      return ({
       productId: line.productId,
       productVariantId: line.productVariantId,
       productType: line.productType,
       description: line.description,
       width: line.width,
       height: line.height,
-      quantity: line.quantity,
+      quantity,
+      redoSourceLineItemId: redo ? line.id : null,
+      ...(redo ? { workflowState: "new" as const } : {}),
       sqft: line.sqft,
       unitPrice: line.unitPrice,
       totalPrice: line.totalPrice,
-      specsJson: line.specsJson,
+      specsJson: redo ? { ...(line.specsJson as Record<string, unknown> ?? {}), priceOverride: { mode: "override_total_after_margin", valueCents: 0 } } : line.specsJson,
       selectedOptions: line.selectedOptions,
       optionSelectionsJson: line.optionSelectionsJson,
-      nestingConfigSnapshot: line.nestingConfigSnapshot,
+      // Reuse saved layout capacity, never the historical run's sheet count.
+      nestingConfigSnapshot,
       materialId: line.materialId,
-      materialUsageJson: line.materialUsageJson,
-      materialUsages: line.materialUsages,
+      materialUsageJson: redo ? null : line.materialUsageJson,
+      materialUsages: redo ? [] : line.materialUsages,
       requiresInventory: line.requiresInventory,
       requiresDesignSnapshot: line.requiresDesignSnapshot,
       designBriefRequiredSnapshot: line.designBriefRequiredSnapshot,
@@ -79,43 +137,45 @@ export async function duplicateOrder(input: {
       needsDesignOverride: line.needsDesignOverride,
       requiresDesign: line.requiresDesign,
       requiresProofApproval: line.requiresProofApproval,
-      requiresPrepress: line.requiresPrepress,
-      productionNotes: line.productionNotes,
+      requiresPrepress: line.requiresPrepress || needsFreshSheetPlan,
+      productionNotes: needsFreshSheetPlan ? [line.productionNotes, "Action needed: review a fresh sheet layout for the replacement quantity in Prepress."].filter(Boolean).join("\n") : line.productionNotes,
       pbv2TreeVersionId: line.pbv2TreeVersionId,
       pbv2SnapshotJson: line.pbv2SnapshotJson,
       pricedAt: line.pricedAt,
       sortOrder: line.sortOrder ?? index,
-      overridePriceCents: line.overridePriceCents,
-      overrideReason: line.overrideReason,
+      overridePriceCents: redo ? 0 : line.overridePriceCents,
+      overrideReason: redo ? `No customer charge replacement: ${redo.reason}` : line.overrideReason,
       lineItemRole: line.lineItemRole,
       childDisplayMode: line.childDisplayMode,
       parentPriceMode: line.parentPriceMode,
-      childCalculatedTotalCents: line.childCalculatedTotalCents,
-      taxAmount: line.taxAmount,
+      childCalculatedTotalCents: redo ? 0 : line.childCalculatedTotalCents,
+      taxAmount: redo ? "0" : line.taxAmount,
       isTaxableSnapshot: line.isTaxableSnapshot,
-    }));
+      });
+    });
 
     // Use the same repository create path as normal orders: new document
     // number, new line IDs, standard draft invoice, and normal job intake.
-    const repository = new OrdersRepository(tx, true);
     const duplicated = await repository.createOrder(input.organizationId, {
+      redo: redo ? { redoRootOrderId: sourceOrder.redoRootOrderId ?? sourceOrder.id, redoSourceOrderId: sourceOrder.id, redoReason: redo.reason, redoExplanation: redo.explanation, redoDisposition: redo.disposition, redoRequestKey: redo.requestKey, redoRequestFingerprint: fingerprint } : undefined,
       customerId: sourceOrder.customerId,
       contactId: sourceOrder.contactId,
       label: sourceOrder.label,
-      // A PO and dates are transaction-specific commitments, never history.
+      // A Redo promise also sets the canonical due date used by overdue queues.
+      // Ordinary duplicates clear transaction-specific PO and date commitments.
       poNumber: null,
-      dueDate: null,
-      promisedDate: null,
+      dueDate: redo?.promisedDate ?? null,
+      promisedDate: redo?.promisedDate ?? null,
       requestedDueDate: null,
       status: "new",
       priority: sourceOrder.priority,
-      discount: Number(sourceOrder.discount ?? 0),
+      discount: redo ? 0 : Number(sourceOrder.discount ?? 0),
       notesInternal: null,
       createdByUserId: input.actorUserId,
       lineItems,
       taxRate: sourceOrder.taxRate == null ? undefined : Number(sourceOrder.taxRate),
-      taxAmount: Number(sourceOrder.taxAmount ?? sourceOrder.tax ?? 0),
-      taxableSubtotal: sourceOrder.taxableSubtotal == null ? undefined : Number(sourceOrder.taxableSubtotal),
+      taxAmount: redo ? 0 : Number(sourceOrder.taxAmount ?? sourceOrder.tax ?? 0),
+      taxableSubtotal: redo ? 0 : sourceOrder.taxableSubtotal == null ? undefined : Number(sourceOrder.taxableSubtotal),
       billToName: sourceOrder.billToName,
       billToCompany: sourceOrder.billToCompany,
       billToAddress1: sourceOrder.billToAddress1,
@@ -141,8 +201,8 @@ export async function duplicateOrder(input: {
       carrier: sourceOrder.carrier,
       carrierAccountNumber: sourceOrder.carrierAccountNumber,
       shippingInstructions: sourceOrder.shippingInstructions,
-      shippingCents: sourceOrder.shippingCents,
-      shippingChargeDecision: sourceOrder.shippingChargeDecision === 'ups_rate' ? 'manual'
+      shippingCents: redo ? 0 : sourceOrder.shippingCents,
+      shippingChargeDecision: redo ? 'free' : sourceOrder.shippingChargeDecision === 'ups_rate' ? 'manual'
         : sourceOrder.shippingChargeDecision as 'unset' | 'manual' | 'free' | 'legacy',
       invoiceAuditSource: "order_created",
     });
@@ -230,9 +290,32 @@ export async function duplicateOrder(input: {
       }
     }
 
+    const routingBlockers: Array<{ lineItemId: string; message: string }> = [];
+    if (redo) {
+      // Parent/child remapping changes invoice snapshots; synchronize through the canonical boundary.
+      await synchronizeOrderBackedInvoiceFromOrderInTransaction(tx, { organizationId: input.organizationId, orderId: duplicated.id, actorUserId: input.actorUserId });
+      for (const line of duplicated.lineItems) {
+        if (line.lineItemRole === "parent") continue;
+        // Same ownership transition used by Quote conversion; proof/design gates stay authoritative.
+        try {
+          // A savepoint keeps a legitimate intake blocker from losing the promised order.
+          await tx.transaction(routingTx => transitionLineItemWorkflowState(routingTx, {
+            organizationId: input.organizationId, lineItemId: line.id,
+            toState: getInitialWorkflowState({ requiresDesign: line.requiresDesign, requiresPrepress: line.requiresPrepress, requiresProofApproval: line.requiresProofApproval }),
+            actorUserId: input.actorUserId, metadata: { source: "redo_order_creation", sourceOrderId: sourceOrder.id },
+          }));
+        } catch (error: any) {
+          const missingStation = error.statusCode === 409 && error.lineItemId === line.id && (error.stationKey || error.targetStationKey);
+          if (!missingStation && !["PRODUCTION_CREDIT_HOLD", "PROOF_APPROVAL_REQUIRED"].includes(error.code)) throw error;
+          const message = missingStation ? "Configure production station " + (error.stationKey || error.targetStationKey) + ". Then use Save & Route Jobs." : error.message + " Resolve the hold, then use Save & Route Jobs.";
+          routingBlockers.push({ lineItemId: line.id, message });
+          await tx.update(orderLineItems).set({ productionNotes: [line.productionNotes, "Action needed: " + message].filter(Boolean).join("\n") }).where(eq(orderLineItems.id, line.id));
+        }
+      }
+    }
     const sourceNumber = sourceOrder.displayNumber || sourceOrder.orderNumber;
     const duplicateNumber = duplicated.displayNumber || duplicated.orderNumber;
-    const auditMetadata = { sourceOrderId: sourceOrder.id, sourceOrderNumber: sourceNumber, reusedArtworkCount: reusableArtwork.length };
+    const auditMetadata = { sourceOrderId: sourceOrder.id, sourceOrderNumber: sourceNumber, reusedArtworkCount: reusableArtwork.length, ...(redo ? { rootOrderId: sourceOrder.redoRootOrderId ?? sourceOrder.id, routingBlockers, redoOrderId: duplicated.id, redoOrderNumber: duplicateNumber, lines: redo.lines.map(line => ({ sourceLineItemId: line.sourceLineItemId, redoLineItemId: newLineBySourceId.get(line.sourceLineItemId), quantity: line.quantity })), reason: redo.reason, explanation: redo.explanation, promisedDate: redo.promisedDate, disposition: redo.disposition, actorUserId: input.actorUserId } : {}) };
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,
       userId: input.actorUserId,
@@ -241,20 +324,20 @@ export async function duplicateOrder(input: {
       entityType: "order",
       entityId: duplicated.id,
       entityName: duplicateNumber,
-      description: `Duplicated order ${sourceNumber} as ${duplicateNumber}.`,
+      description: `${redo ? "Created replacement for" : "Duplicated order"} ${sourceNumber} as ${duplicateNumber}.`,
       newValues: auditMetadata,
     });
     await tx.insert(orderAuditLog).values({
       orderId: duplicated.id,
       userId: input.actorUserId,
       userName: input.actorName ?? null,
-      actionType: "order_duplicated",
+      actionType: redo ? "redo_order_created" : "order_duplicated",
       fromStatus: null,
       toStatus: "new",
       note: `Duplicated from order ${sourceNumber}. Historical invoices, payments, production, fulfillment, proofs, and audit records were not copied.`,
       metadata: auditMetadata,
     });
 
-    return duplicated;
+    return redo ? repository.getOrderById(input.organizationId, duplicated.id) : duplicated;
   });
 }

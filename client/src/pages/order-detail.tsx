@@ -42,6 +42,7 @@ import { ContactSelect } from "@/components/ContactSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { RedoOrderAction, RedoOrderIdentification } from "@/components/orders/RedoOrder";
 import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderTaxTreatment, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow, useOrderCancellationEligibility } from "@/hooks/useOrders";
 import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
@@ -2404,8 +2405,10 @@ export default function OrderDetail() {
                 setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
               }}
             />
+            <RedoOrderAction key={order.id} order={order} authorized={Boolean(activeOrganization) && isAdminOrOwner} disabled={isDirty || hasDirtyLineItem || isSavingOrder || updateOrder.isPending} />
           </>} />
 
+        <RedoOrderIdentification order={order} />
         <Dialog open={orderInvoiceSelectorOpen} onOpenChange={setOrderInvoiceSelectorOpen}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>

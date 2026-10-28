@@ -3849,6 +3849,14 @@ export type InsertStorageJob = typeof storageJobs.$inferInsert;
 
 // Orders table (Job Management - derived from quotes or standalone)
 export const orders = pgTable("orders", {
+  // Immutable replacement provenance; ordinary orders have all fields null.
+  redoRootOrderId: varchar("redo_root_order_id").references((): AnyPgColumn => orders.id, { onDelete: "restrict" }),
+  redoSourceOrderId: varchar("redo_source_order_id").references((): AnyPgColumn => orders.id, { onDelete: "restrict" }),
+  redoReason: text("redo_reason"),
+  redoExplanation: text("redo_explanation"),
+  redoDisposition: text("redo_disposition"),
+  redoRequestKey: varchar("redo_request_key", { length: 36 }),
+  redoRequestFingerprint: text("redo_request_fingerprint"),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderNumber: varchar("order_number", { length: 50 }).notNull(),
@@ -4006,6 +4014,9 @@ export const orders = pgTable("orders", {
   index("orders_number_core_idx").on(table.numberCore),
   uniqueIndex("orders_org_display_number_unique").on(table.organizationId, table.displayNumber).where(sql`${table.displayNumber} IS NOT NULL`),
   uniqueIndex("orders_org_number_core_unique").on(table.organizationId, table.numberCore).where(sql`${table.numberCore} IS NOT NULL`),
+  uniqueIndex("orders_redo_request_uidx").on(table.organizationId, table.redoRequestKey).where(sql`${table.redoRequestKey} IS NOT NULL`),
+  index("orders_redo_root_idx").on(table.organizationId, table.redoRootOrderId).where(sql`${table.redoRootOrderId} IS NOT NULL`),
+  index("orders_redo_source_idx").on(table.redoSourceOrderId).where(sql`${table.redoSourceOrderId} IS NOT NULL`),
   index("orders_customer_id_idx").on(table.customerId),
   index("orders_workflow_status_id_idx").on(table.workflowStatusId),
   index("orders_canonical_state_idx").on(table.canonicalState),
@@ -4104,6 +4115,7 @@ export type Order = typeof orders.$inferSelect;
 
 // Order Line Items table
 export const orderLineItems = pgTable("order_line_items", {
+  redoSourceLineItemId: varchar("redo_source_line_item_id").references((): AnyPgColumn => orderLineItems.id, { onDelete: "restrict" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'set null' }),
@@ -4198,6 +4210,7 @@ export const orderLineItems = pgTable("order_line_items", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("order_lines_redo_source_idx").on(table.redoSourceLineItemId).where(sql`${table.redoSourceLineItemId} IS NOT NULL`),
   index("order_line_items_order_id_idx").on(table.orderId),
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),

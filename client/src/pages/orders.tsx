@@ -821,6 +821,7 @@ export default function Orders() {
         return (
           <Link to={orderDetailPath(row)} state={{ referrer: buildReferrer(location) }} className="text-sm text-blue-600 hover:underline font-medium flex items-center gap-1.5">
             <span>{displayNumber}</span>
+            {row.redoRootOrderId ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">Redo</span> : null}
             {isTest && (
               <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
             )}

@@ -1639,6 +1639,13 @@
       "when": 1793318400000,
       "tag": "0240_proof_early_production_release",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1793404800000,
+      "tag": "0241_linked_redo_orders",
+      "breakpoints": true
     }
   ]
 }

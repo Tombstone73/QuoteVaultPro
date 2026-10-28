@@ -9,8 +9,9 @@ describe('live Order-backed Invoice contract', () => {
   test('V1 creates a live billed receivable and synchronizes it from Order facts', () => {
     const source = read('server/invoicesService.ts');
 
-    expect(source).toContain("status: 'billed'");
-    expect(source).toContain('issuedAt: issueDate');
+    expect(source).toContain("status: noChargeRedo ? 'draft' : 'billed'");
+    expect(source).toContain('const noChargeRedo = order.redoDisposition === "no_customer_charge"');
+    expect(source).toContain('issuedAt: noChargeRedo ? null : issueDate');
     expect(source).toContain('computeInvoiceFinancialState(nextInvoice, paymentRows as any)');
     expect(source).toContain('actionType: "invoice_order_backed_synchronized"');
   });

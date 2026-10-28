@@ -103,6 +103,14 @@ async function parseOrderLineItemApiError(response: Response, fallback: string) 
 // ============================================================
 
 export type Order = {
+  redoRootOrderId?: string | null;
+  redoSourceOrderId?: string | null;
+  redoReason?: string | null;
+  redoExplanation?: string | null;
+  redoDisposition?: string | null;
+  redoOriginal?: import("@shared/orderRedo").RedoOrderReference | null;
+  redoSource?: import("@shared/orderRedo").RedoOrderReference | null;
+  relatedRedos?: import("@shared/orderRedo").RedoOrderReference[];
   id: string;
   orderNumber: string;
   quoteId: string | null;
