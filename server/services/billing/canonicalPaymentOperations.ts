@@ -3,8 +3,8 @@ import { appendPaymentNoteCanonical, getInvoiceWithRelations, recordManualPaymen
 import { previewCustomerPayment, recordCustomerPayment } from "./customerPaymentOperations";
 import type { CustomerPaymentAllocation, CustomerPaymentAllocationMode } from "../../../shared/customerPaymentAllocation";
 
-export const canonicalManualPaymentMethodValues = ["cash", "check", "wire", "bank_transfer", "ach", "other"] as const;
-export type CanonicalManualPaymentMethod = typeof canonicalManualPaymentMethodValues[number];
+import { canonicalManualPaymentMethodValues, type CanonicalManualPaymentMethod } from "@shared/paymentMethodCatalog";
+export { canonicalManualPaymentMethodValues, type CanonicalManualPaymentMethod } from "@shared/paymentMethodCatalog";
 export class CanonicalPaymentOperationError extends Error { constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); } }
 
 /** Shared exact-cents, tenant-scoped and idempotent manual-payment boundary. */

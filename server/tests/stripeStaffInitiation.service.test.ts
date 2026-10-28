@@ -22,9 +22,16 @@ const db: any = {
     const q: any = { returning: async () => [v], onConflictDoNothing: () => q, then: (ok: any) => Promise.resolve([v]).then(ok) }; return q; } }),
   update: () => ({ set: (v: any) => ({ where: async () => attempts.forEach(a => Object.assign(a, v)) }) }),
 };
+db.transaction = async (fn: any) => fn(db);
 jest.unstable_mockModule('../db', () => ({ db }));
-const attemptService = await import('../services/stripePaymentAttempt.service');
+// Real claim locking/races are covered by the PostgreSQL suite; isolate route behavior here.
+jest.unstable_mockModule('../services/stripeInvoicePaymentClaims.service', () => ({
+  recoverStripeInvoiceClaims: async () => {}, lockAndValidateStripeInvoices: async () => {}, assertStripeClaimAvailable: async () => {},
+  StripeInvoiceClaimError: class extends Error {},
+}));
 const create = jest.fn<any>(), retrieve = jest.fn<any>(), reconcile = jest.fn<any>();
+jest.unstable_mockModule('../lib/stripe', () => ({ getStripeClient: () => ({ paymentIntents: { create, retrieve } }) }));
+const attemptService = await import('../services/stripePaymentAttempt.service');
 const invoice = { id: 'invoice', organizationId: 'org', status: 'billed', totalCents: 25000, invoiceNumber: 123, currency: 'USD' };
 const deps = { db, payments, auditLogs, and, desc, eq, ne, ...attemptService,
   getRequestOrganizationId: () => 'org', withInvoicePaymentContext: async (_o: any, _i: any, fn: any) => fn(),
@@ -59,7 +66,7 @@ test('a declined attempt is reused instead of issuing another collectible intent
   expect(create).toHaveBeenCalledTimes(1); expect(writes).not.toContain('payments');
 });
 test('a lost response older than the idempotency window fails closed', async () => {
-  attempts.push({ id: 'old', organizationId: 'org', invoiceId: 'invoice', status: 'reserved', createdAt: new Date(Date.now() - 25 * 3600000), stripePaymentIntentId: null });
+  attempts.push({ id: 'old', organizationId: 'org', invoiceId: 'invoice', channel: 'staff', amountCents: 25000, currency: 'USD', stripeAccountId: 'acct', createdByUserId: null, status: 'reserved', createdAt: new Date(Date.now() - 25 * 3600000), stripePaymentIntentId: null });
   await expect(attemptService.reserveStripePaymentAttempt({ organizationId: 'org', invoiceId: 'invoice', channel: 'staff', amountCents: 25000, currency: 'USD', stripeAccountId: 'acct' }))
     .rejects.toMatchObject({ code: 'STRIPE_RESERVATION_REVIEW_REQUIRED' });
   expect(create).not.toHaveBeenCalled(); expect(writes).toEqual([]);

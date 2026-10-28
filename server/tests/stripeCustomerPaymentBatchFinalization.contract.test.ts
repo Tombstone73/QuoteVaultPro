@@ -29,7 +29,8 @@ describe("Stripe customer payment batch finalization contract", () => {
   });
 
   test("browser confirmation and signed webhook converge on the same finalizer", () => {
-    expect(portal).toContain("finalizeStripeCustomerPaymentBatch({");
+    expect(portal).toContain("confirmGroupedStripePayment(");
+    expect(source("server/services/billing/groupedStripePaymentOperations.ts")).toContain("finalizeStripeCustomerPaymentBatch({");
     expect(portal).toContain("confirmPortalGroupedStripePayment");
     expect(reconciliation).toContain("finalizeStripeCustomerPaymentBatch({");
     expect(reconciliation).not.toContain("STRIPE_BATCH_FINALIZATION_REQUIRED");

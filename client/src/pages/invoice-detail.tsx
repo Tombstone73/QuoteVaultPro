@@ -1,3 +1,4 @@
+import { staffPaymentMethodDefinitions, type StaffPaymentMethod } from "@shared/paymentMethodCatalog";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { formatInvoiceDocumentDate, invoiceDueDateInputValue } from "@/lib/invoiceDocumentDate";
 import { InvoiceCustomerReleaseAction } from "@/components/InvoiceCustomerReleaseAction";
@@ -131,7 +132,7 @@ const DESIGN_COST_STATE_LABELS: Record<NonNullable<OrderDesignBillingVisibilityI
 };
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
-type TakePaymentMethod = 'credit_card' | 'cash' | 'check' | 'bank_transfer' | 'other';
+type TakePaymentMethod = StaffPaymentMethod;
 
 function SaveIndicator({ state }: { state: SaveState }) {
   if (state === 'idle') return null;
@@ -1573,11 +1574,7 @@ export default function InvoiceDetailPage() {
                     <SelectValue placeholder="Select method" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="credit_card">Credit Card</SelectItem>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="check">Check</SelectItem>
-                    <SelectItem value="bank_transfer">ACH / Bank Transfer</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    {staffPaymentMethodDefinitions.filter((method) => method.singleInvoice).map((method) => <SelectItem key={method.id} value={method.id}>{method.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 {recordPaymentErrors.method ? (

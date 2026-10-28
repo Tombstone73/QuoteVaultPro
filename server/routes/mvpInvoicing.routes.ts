@@ -1,9 +1,10 @@
+import { registerGroupedStripePaymentRoutes } from "./groupedStripePayments.routes";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { registerInvoiceCustomerReleaseRoutes } from './invoiceCustomerRelease.routes';
 import { getInvoiceCustomerReleaseDisplay, isInvoiceCustomerVisible } from '../lib/invoiceCustomerRelease';
 import { getInvoiceCustomerPaymentEligibility } from '../lib/invoiceCustomerPaymentEligibility';
 import { requireInvoiceBulkAction, resolveInvoiceBulkActionPermissions } from '../lib/invoiceBulkActionAuthority';
-import { InvoicePaymentContextError, retireInvoicePaymentSessions, withInvoicePaymentContext } from '../services/invoicePaymentSession.service';
+import { InvoicePaymentContextError, retireInvoicePaymentSessions } from '../services/invoicePaymentSession.service';
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
@@ -64,7 +65,7 @@ import {
   shouldRecalculateInvoiceDueDateAfterSuccessfulSend,
 } from "../../shared/invoiceSendAutomation";
 import type { StripePaymentConfirmSuccessResponse } from "../../shared/stripePaymentConfirm";
-import { assertStripeAttemptIntent, findStripePaymentAttempt, retireCanceledStripeAttempt, markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt } from "../services/stripePaymentAttempt.service";
+import { assertStripeAttemptIntent, findStripePaymentAttempt, retireCanceledStripeAttempt, markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt, resumeStripePaymentAttemptIntent } from "../services/stripePaymentAttempt.service";
 import {
   buildBulkInvoiceEmailRequestKey,
   enqueueBulkInvoiceEmailCampaign,
@@ -235,6 +236,7 @@ export async function registerMvpInvoicingRoutes(
 ) {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = deps;
   registerInvoiceCustomerReleaseRoutes(app, deps);
+  registerGroupedStripePaymentRoutes(app, deps);
 
   async function resolveInvoiceEmailRecipientsForOperations(input: {
     organizationId: string;
@@ -895,7 +897,7 @@ export async function registerMvpInvoicingRoutes(
   app.post("/api/invoices/:id/payments/stripe/create-intent", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
     const paymentOrganizationId = getRequestOrganizationId(req);
     if (!paymentOrganizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-    return withInvoicePaymentContext(paymentOrganizationId, [req.params.id], async () => {
+
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
@@ -1096,6 +1098,8 @@ export async function registerMvpInvoicingRoutes(
         organizationId,
         invoiceId: inv.id,
         channel: 'staff',
+        expectedCustomerId: inv.customerId,
+        expectedInvoiceVersion: Number(inv.invoiceVersion || 1),
         amountCents: amountDueCents,
         currency,
         stripeAccountId,
@@ -1108,28 +1112,7 @@ export async function registerMvpInvoicingRoutes(
       }
 
       const stripe = getStripeClient();
-      const pi = attempt.stripePaymentIntentId
-        ? await stripe.paymentIntents.retrieve(attempt.stripePaymentIntentId, { stripeAccount: attempt.stripeAccountId })
-        : await stripe.paymentIntents.create(
-        {
-          amount: amountDueCents,
-          currency: currency.toLowerCase(),
-          description: `Invoice #${invoiceDisplayNumber}`,
-          automatic_payment_methods: { enabled: true },
-          metadata: {
-            organizationId,
-            invoiceId: inv.id,
-            stripeAccountId,
-            stripePaymentAttemptId: attempt.id,
-            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv) ? 'true' : 'false',
-            qbInvoiceId: inv.qbInvoiceId || null,
-          },
-        },
-        {
-          idempotencyKey: attempt.idempotencyKey,
-          stripeAccount: stripeAccountId,
-        } as any
-      );
+      const pi = await resumeStripePaymentAttemptIntent(attempt);
 
       assertStripeAttemptIntent(attempt, pi);
       if (pi.status === 'canceled') {
@@ -1186,9 +1169,9 @@ export async function registerMvpInvoicingRoutes(
         organizationId: getRequestOrganizationId(req) || null,
         message: String(error?.message || error),
       });
-      return res.status(500).json({ success: false, error: error.message || 'Failed to create payment intent' });
+      return res.status(error.statusCode || 500).json({ success: false, error: error.message || 'Failed to create payment intent', code: error.code });
     }
-    });
+
   });
 
   // ------------------------------------------------------------

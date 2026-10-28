@@ -1,3 +1,4 @@
+import { staffPaymentMethodDefinitions } from "@shared/paymentMethodCatalog";
 import { describe, expect, test } from "@jest/globals";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -187,11 +188,11 @@ describe("payment resolution UI helpers", () => {
     const orderDetailSource = readFileSync(path.resolve(process.cwd(), "client/src/pages/order-detail.tsx"), "utf8");
 
     expect(invoiceDetailSource).toContain("<DialogTitle>Take Payment</DialogTitle>");
-    expect(invoiceDetailSource).toContain('<SelectItem value="credit_card">Credit Card</SelectItem>');
-    expect(invoiceDetailSource).toContain('<SelectItem value="cash">Cash</SelectItem>');
-    expect(invoiceDetailSource).toContain('<SelectItem value="check">Check</SelectItem>');
-    expect(invoiceDetailSource).toContain('<SelectItem value="bank_transfer">ACH / Bank Transfer</SelectItem>');
-    expect(invoiceDetailSource).toContain('<SelectItem value="other">Other</SelectItem>');
+    expect(invoiceDetailSource).toContain("staffPaymentMethodDefinitions");
+    expect(staffPaymentMethodDefinitions.filter((method) => method.singleInvoice).map(({ id, label }) => [id, label])).toEqual([
+      ["credit_card", "Credit Card"], ["cash", "Cash"], ["check", "Check"],
+      ["bank_transfer", "ACH / Bank Transfer"], ["other", "Other"],
+    ]);
     expect(invoiceDetailSource).toContain("openTakePayment('credit_card');");
     expect(invoiceDetailSource).not.toContain("Take Card Payment");
     expect(invoiceDetailSource).not.toContain("Invoice & Take Payment");

@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { customerPaymentBatches, integrationConnections, payments } from "../../shared/schema";
 import { db } from "../db";
 import { recordCustomerPayment } from "./billing/customerPaymentOperations";
+import { stripeBatchExpectedBalances } from "../../shared/stripeBatchExpectedBalances";
 import { resolveStripePaymentLineage } from "./stripePaymentLineage.service";
 
 export class StripeCustomerPaymentBatchFinalizationError extends Error {
@@ -161,7 +162,7 @@ export async function finalizeStripeCustomerPaymentBatch(input: ProviderSuccessI
       amountCents: input.amountCents,
       allocationMode: "custom",
       customAllocations: prepared.allocations,
-      expectedRemainingCents: Object.fromEntries(prepared.allocations.map((allocation) => [allocation.invoiceId, allocation.amountCents])),
+      expectedRemainingCents: stripeBatchExpectedBalances(prepared.batch.providerEvidence, prepared.allocations),
       method: "credit_card",
       appliedAt: now,
       idempotencyKey: String(prepared.batch.idempotencyKey),

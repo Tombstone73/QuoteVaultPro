@@ -6,6 +6,14 @@ import { MultiInvoicePaymentDialog } from './MultiInvoicePaymentDialog';
 import { apiFetch } from '@/lib/queryClient';
 import { allocateCustomerPayment } from '@shared/customerPaymentAllocation';
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+let cardProps: any;
+jest.mock('@/components/payments/StripePayDialog', () => ({ __esModule: true, default: (props: any) => { cardProps = props; return <div data-testid="card-dialog">Hosted card dialog</div>; } }));
+jest.mock('@/components/ui/select', () => ({
+  Select: ({ children, value, onValueChange }: any) => <select value={value} onChange={e => onValueChange(e.target.value)}>{children}</select>,
+  SelectTrigger: () => null, SelectValue: () => null, SelectContent: ({children}: any) => <>{children}</>,
+  SelectItem: ({children, value}: any) => <option value={value}>{children}</option>,
+}));
+let configured = false; let finalized = false; const success = jest.fn();
 jest.mock('@/lib/queryClient', () => ({ apiFetch: jest.fn() }));
 const toast = jest.fn();
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
@@ -17,16 +25,19 @@ const flush = async () => { await act(async () => { await new Promise(resolve =>
 const render = async () => {
   const host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  await act(async () => root.render(<QueryClientProvider client={client}><MultiInvoicePaymentDialog open onOpenChange={jest.fn()} invoiceIds={ids} onSuccess={jest.fn()} /></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={client}><MultiInvoicePaymentDialog open onOpenChange={jest.fn()} invoiceIds={ids} onSuccess={success} /></QueryClientProvider>));
   await flush();
 };
 const enter = async (value: string) => { await act(async () => Simulate.change(document.querySelector('#customer-payment-amount')!, { target: { value } } as any)); await flush(); };
 beforeEach(() => {
+  cardProps = null; configured = false; finalized = false; success.mockReset();
   previewError = ''; noPayable = false; posts = []; failPost = false;
   Object.defineProperty(window.crypto, 'randomUUID', { configurable: true, value: jest.fn(() => 'request-key') });
   jest.spyOn(window, 'confirm').mockReturnValue(true);
   (apiFetch as jest.Mock).mockImplementation(async (_path, options) => {
     const body = JSON.parse(options.body);
+    if (_path.endsWith('/runtime-config')) return { ok: configured, json: async () => ({ data: { provider: 'stripe', readyForPayments: configured } }) };
+    if (_path.endsWith('/stripe/status')) return { ok: true, json: async () => ({ data: { finalized, allocations: eligible } }) };
     if (_path.endsWith('/preview')) {
       if (previewError) return { ok: false, json: async () => ({ error: previewError }) };
       return { ok: true, json: async () => ({ data: { customerId: 'customer', selectedCount: 5, eligibleCount: noPayable ? 0 : 3, excludedCount: noPayable ? 5 : 2,
@@ -74,4 +85,26 @@ test('uncertain network retry reuses the same idempotency key', async () => {
   expect(document.body.textContent).toContain('Connection interrupted');
   failPost = false; await act(async () => button('Record Payment').click()); await flush();
   expect(posts).toHaveLength(2); expect(posts[0].key).toBe(posts[1].key); expect(window.crypto.randomUUID).toHaveBeenCalledTimes(1);
+});
+
+test('unconfigured or unauthorized Stripe never offers executable Credit Card', async () => {
+  await render();
+  expect(Array.from(document.querySelectorAll('option')).some(o => o.value === 'credit_card')).toBe(false);
+});
+test('staff selects Credit Card, reviews full balances, and reuses hosted grouped dialog with saved readback', async () => {
+  configured = true; await render();
+  const select = document.querySelector('select')!;
+  await act(async () => Simulate.change(select, { target: { value: 'credit_card' } } as any)); await flush();
+  expect(document.querySelector('#customer-payment-amount')).toBeNull();
+  expect(document.body.textContent).toContain('Full invoice balances · $425.00 total');
+  await act(async () => button('Continue to Card Payment').click()); await flush();
+  expect(cardProps).toMatchObject({ groupedInitiation: true, groupedApiBasePath: '/api/invoices/customer-payment/stripe',
+    invoiceIds: ['b', 'd', 'e'], checkoutKey: 'request-key' });
+  expect(cardProps.invoiceSummaries.map((x: any) => x.amountDue)).toEqual([100,250,75]);
+  let outcome: any;
+  await act(async () => { outcome = await cardProps.onSettled({ serverConfirmed: true, paymentIntentId: 'pi' }); });
+  expect(outcome).toEqual({ reconciled: false }); expect(success).not.toHaveBeenCalled();
+  finalized = true;
+  await act(async () => { outcome = await cardProps.onSettled({ serverConfirmed: false, paymentIntentId: 'pi' }); });
+  expect(outcome).toEqual({ reconciled: true }); expect(success).toHaveBeenCalledTimes(1); expect(posts).toHaveLength(0);
 });

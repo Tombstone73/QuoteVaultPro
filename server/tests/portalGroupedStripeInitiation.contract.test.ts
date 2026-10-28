@@ -32,20 +32,21 @@ describe("grouped portal Stripe initiation contract", () => {
   });
 
   test("creates one pending parent batch and one idempotent Stripe PaymentIntent without child effects", () => {
-    const body = exportedBody("server/services/portal.service.ts", "createPortalGroupedStripePaymentIntent");
+    expect(exportedBody("server/services/portal.service.ts", "createPortalGroupedStripePaymentIntent")).toContain("initiateGroupedStripePayment({");
+    const body = source("server/services/groupedStripePaymentInitiation.service.ts");
     expect(body).toContain("customerPaymentBatches");
     expect(body).toContain('status: "pending"');
     expect(body).toContain("customerPaymentBatchId: batch.id");
     expect(body).toContain("idempotencyKey: `portal-stripe-batch:${batch.id}`");
-    expect(body).toContain("stripePaymentIntentId: String(paymentIntent.id)");
+    expect(body).toContain("stripePaymentIntentId: intent.id");
     expect(body).not.toContain("insert(payments)");
   });
 
   test("the dialog sends only invoice identifiers and displayed balance snapshots to the grouped endpoint", () => {
     const dialog = source("client/src/components/payments/StripePayDialog.tsx");
-    expect(dialog).toContain("'/api/portal/payments/stripe/create-intent'");
+    expect(dialog).toContain("'/api/portal/payments/stripe'");
     expect(dialog).toContain("expectedRemainingCents");
     expect(dialog).toContain("idempotencyKey: checkoutIdempotencyKeyRef.current");
-    expect(dialog).toContain("'/api/portal/payments/stripe/confirm'");
+    expect(dialog).toContain("}/confirm");
   });
 });

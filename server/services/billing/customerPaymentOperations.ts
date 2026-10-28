@@ -79,7 +79,7 @@ export async function previewCustomerPayment(input: Omit<Input, "actorUserId" | 
     // provider finalization retains its strict exact-allocation contract.
     const appliedAmountCents = Math.min(input.amountCents, totalOutstandingCents);
     const result = rows.length ? allocations(rows, { ...input, amountCents: appliedAmountCents } as Input) : [];
-    return { ...selection, customerId: selected[0].owner.customerId, message: rows.length ? null : "No selected invoices have an open balance.", totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, status: x.invoice.status })) };
+    return { ...selection, customerId: selected[0].owner.customerId, message: rows.length ? null : "No selected invoices have an open balance.", totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, currency: x.invoice.currency || "USD", status: x.invoice.status })) };
   });
 }
 export async function recordCustomerPayment(input: Input) {
