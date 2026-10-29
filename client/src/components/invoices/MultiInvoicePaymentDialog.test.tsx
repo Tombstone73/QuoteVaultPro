@@ -27,10 +27,10 @@ const ids = ['a','b','c','d','e'];
 const eligible = [{ invoiceId: 'b', invoiceNumber: 'B', remainingCents: 10000, dueDate: '2026-01-02' }, { invoiceId: 'd', invoiceNumber: 'D', remainingCents: 25000, dueDate: '2026-01-04' }, { invoiceId: 'e', invoiceNumber: 'E', remainingCents: 7500, dueDate: '2026-01-05' }];
 const button = (text: string) => Array.from(document.querySelectorAll('button')).find(node => node.textContent === text)!;
 const flush = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); };
-const render = async () => {
+const render = async (selectedIds = ids) => {
   const host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  await act(async () => root.render(<QueryClientProvider client={client}><MultiInvoicePaymentDialog open onOpenChange={jest.fn()} invoiceIds={ids} onSuccess={success} /></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={client}><MultiInvoicePaymentDialog open onOpenChange={jest.fn()} invoiceIds={selectedIds} onSuccess={success} /></QueryClientProvider>));
   await flush();
 };
 const enter = async (value: string) => { await act(async () => Simulate.change(document.querySelector('#customer-payment-amount')!, { target: { value } } as any)); await flush(); };
@@ -175,4 +175,14 @@ test('staff selects Credit Card, reviews full balances, and reuses hosted groupe
   finalized = true;
   await act(async () => { outcome = await cardProps.onSettled({ serverConfirmed: false, paymentIntentId: 'pi' }); });
   expect(outcome).toEqual({ reconciled: true }); expect(success).toHaveBeenCalledTimes(1); expect(posts).toHaveLength(0);
+});
+
+test('one-invoice entry uses the same customer payment preview and canonical submit once', async () => {
+ (apiFetch as jest.Mock).mockImplementation(async (path, options) => {
+   const body=JSON.parse(options.body);
+   if(path.endsWith('/runtime-config')) return {ok:false,status:409,json:async()=>({code:'STRIPE_SERVER_NOT_CONFIGURED'})};
+   if(path.endsWith('/preview')) return {ok:true,json:async()=>({data:{customerId:'customer',selectedCount:1,eligibleCount:1,excludedCount:0,totalOutstandingCents:10000,invoices:[eligible[0]],allocations:allocateCustomerPayment({invoices:[eligible[0]],amountCents:body.amountCents,mode:body.allocationMode})}})};
+   posts.push({body,key:options.headers['Idempotency-Key']});return {ok:true,json:async()=>({data:{appliedAmountCents:4000,changeDueCents:0}})};
+ });
+ await render(['b']);await enter('40');await act(async()=>{button('Record Payment').click();button('Record Payment').click();});await flush();expect(posts).toHaveLength(1);expect(posts[0].body).toMatchObject({invoiceIds:['b'],amountCents:4000,expectedCustomerId:'customer',expectedRemainingCents:{b:10000}});expect(success).toHaveBeenCalledTimes(1);
 });

@@ -105,7 +105,11 @@ import { buildListDetailPath } from "@/lib/listDetailNavigationContext";
 import { cn } from "@/lib/utils";
 import BackNavControls from "@/components/BackNavControls";
 import { ContactFlagPill } from "@/components/ContactFlagPill";
-import { apiRequest } from "@/lib/queryClient";
+import { apiFetch, apiRequest } from "@/lib/queryClient";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
+import type { InvoiceBulkActionPermissions } from "@shared/invoiceBulkActionPermissions";
+import { canTakePaymentFromInvoiceList } from "@/lib/invoiceListPayment";
+import { MultiInvoicePaymentDialog } from "@/components/invoices/MultiInvoicePaymentDialog";
 import { InvoiceSendQuickAction } from "@/components/invoices/InvoiceSendQuickAction";
 import { CloseJobOverrideAction, CloseJobOverrideDialog, getOrderJobStatus, type CloseJobOverrideTarget } from "@/components/orders/CloseJobOverrideDialog";
 import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
@@ -2698,7 +2702,7 @@ const CUSTOMER_INVOICE_COLUMNS: ColumnConfig[] = [
   { id: "actions", label: "Actions", visible: true, order: 12, locked: true },
 ];
 
-function InvoicesTable({
+export function InvoicesTable({
   customerId,
   searchQuery,
   statusFilter,
@@ -2710,10 +2714,27 @@ function InvoicesTable({
   customerName?: string;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const activeOrganization = useActiveOrganizationRole();
   const { user, isAdmin } = useAuth();
   const { toast } = useToast();
   const approveInvoices = useApproveInvoicesForAccounting();
   const organizationId = user?.lastActiveOrgId;
+  // Share the exact effective-permission query/cache used by the Invoices page.
+  const { data: bulkPermissions } = useQuery<InvoiceBulkActionPermissions>({
+    queryKey: ["invoice-bulk-action-permissions", user?.id, activeOrganization.activeOrgId ?? user?.lastActiveOrgId],
+    enabled: Boolean(user?.id),
+    queryFn: async () => {
+      const response = await apiFetch('/api/invoices/bulk-action-permissions');
+      if (!response.ok) throw new Error('Unable to load Invoice permissions.');
+      const body = await response.json();
+      return body.data;
+    },
+    staleTime: 0,
+  });
+  const canTakePayment = bulkPermissions?.payment === true;
+  const [paymentSelection, setPaymentSelection] = useState<{ scope: string; ids: string[] }>({ scope: "", ids: [] });
+  const [paymentDialog, setPaymentDialog] = useState<{ scope: string; ids: string[] } | null>(null);
   const columnConfig = useTableColumnConfig(`customer_detail_invoices:org_${organizationId || "unknown"}:user_${user?.id || "anonymous"}`, CUSTOMER_INVOICE_COLUMNS);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [overrideTarget, setOverrideTarget] = useState<CloseJobOverrideTarget | null>(null);
@@ -2762,6 +2783,32 @@ function InvoicesTable({
   });
   const invoices = invoicePage.data?.items ?? [];
   const pagination = invoicePage.data?.pagination;
+  // A selection belongs to this visible Customer view, never another customer,
+  // organization, page, or filter. The server preview remains authoritative.
+  const paymentScope = JSON.stringify([customerId, user?.id, activeOrganization.activeOrgId ?? organizationId, page, pageSize, searchQuery, statusFilter, sortPreference]);
+  useEffect(() => {
+    setPaymentSelection({ scope: paymentScope, ids: [] });
+    setPaymentDialog(null);
+  }, [paymentScope, canTakePayment]);
+  const payableInvoices = canTakePayment ? invoices.filter(canTakePaymentFromInvoiceList) : [];
+  const selectedPaymentIds = paymentSelection.scope === paymentScope
+    ? paymentSelection.ids.filter(id => payableInvoices.some(invoice => invoice.id === id)) : [];
+  const allPayableSelected = payableInvoices.length > 0 && selectedPaymentIds.length === payableInvoices.length;
+  const paymentOpen = canTakePayment && paymentDialog?.scope === paymentScope;
+  const openPayment = (ids: string[]) => {
+    if (!canTakePayment || !ids.length || ids.some(id => !payableInvoices.some(invoice => invoice.id === id))) return;
+    setPaymentDialog(current => current?.scope === paymentScope ? current : { scope: paymentScope, ids });
+  };
+  const paymentSucceeded = () => {
+    setPaymentSelection({ scope: paymentScope, ids: [] });
+    setPaymentDialog(null);
+    // The existing dialog owns payment success; this entry point only refreshes views.
+    for (const queryKey of [
+      ["invoices"], ["/api/customers"], [`/api/customers/${customerId}`],
+      ["/api/customers", customerId, "activity"], [`/api/customers/${customerId}/transactions`],
+      ["customer-current-statement", customerId], ["customerFinancialExposure"],
+    ]) void queryClient.invalidateQueries({ queryKey });
+  };
   const visibleColumns = columnConfig.columns.filter((column) => column.visible);
   const invoiceNavigationSource = useMemo(() => {
     const params = new URLSearchParams({ customerId, page: String(page), pageSize: String(pageSize), sortBy: customerInvoiceSortApiField(sortPreference.sortBy), sortDir: sortPreference.sortDir });
@@ -2799,7 +2846,7 @@ function InvoicesTable({
     }
   };
 
-  if (!invoicePage.isLoading && invoices.length === 0) {
+  if (!invoicePage.isLoading && invoices.length === 0 && !paymentOpen) {
     const isFiltered = searchQuery || statusFilter !== "all";
     return (
       <div className="py-12 text-center text-titan-text-secondary">
@@ -2820,10 +2867,16 @@ function InvoicesTable({
       <p className="text-sm text-titan-text-secondary">Invoice layout and sorting apply across all customers.</p>
       <Button variant="outline" size="sm" onClick={() => setColumnsOpen(true)}><Settings2 className="mr-1.5 h-4 w-4" aria-hidden="true" />Columns</Button>
     </div>
+    {canTakePayment && selectedPaymentIds.length > 0 ? <div role="toolbar" aria-label="Selected invoice payments" className="mb-3 flex flex-wrap items-center gap-3">
+      <span className="text-sm">{selectedPaymentIds.length} invoices selected</span>
+      <Button size="sm" disabled={paymentOpen} onClick={() => openPayment(selectedPaymentIds)}>Add Payment</Button>
+      <Button size="sm" variant="outline" disabled={paymentOpen} onClick={() => setPaymentSelection({ scope: paymentScope, ids: [] })}>Clear Selection</Button>
+    </div> : null}
     <div className="w-full overflow-x-auto rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card">
       <table className="min-w-[1480px] w-full table-auto">
         <thead>
           <tr className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
+            {canTakePayment ? <th className="w-12 px-3 py-3"><Checkbox aria-label="Select all payable invoices on this page" disabled={paymentOpen || !payableInvoices.length} checked={allPayableSelected ? true : selectedPaymentIds.length ? "indeterminate" : false} onCheckedChange={checked => setPaymentSelection({ scope: paymentScope, ids: checked === true ? payableInvoices.map(invoice => invoice.id) : [] })} /></th> : null}
             {visibleColumns.map((column) => {
               const sortable = (CUSTOMER_INVOICE_SORT_FIELDS as readonly string[]).includes(column.id);
               const active = sortPreference.sortBy === column.id;
@@ -2836,13 +2889,14 @@ function InvoicesTable({
           </tr>
         </thead>
         <tbody>
-          {invoicePage.isLoading ? <tr><td className="px-3 py-8 text-center text-titan-text-secondary" colSpan={visibleColumns.length}>Loading invoices…</td></tr> : null}
+          {invoicePage.isLoading ? <tr><td className="px-3 py-8 text-center text-titan-text-secondary" colSpan={visibleColumns.length + (canTakePayment ? 1 : 0)}>Loading invoices…</td></tr> : null}
           {invoices.map((inv: InvoiceListItem) => (
             <tr
               key={inv.id}
               className="border-b border-titan-border-subtle last:border-0 hover:bg-titan-bg-table-row transition-colors cursor-pointer"
               onClick={() => navigate(invoiceDetailPath(inv))}
             >
+              {canTakePayment ? <td className="px-3 py-3" onClick={event => event.stopPropagation()}><Checkbox aria-label={`Select invoice ${inv.invoiceNumber} for payment`} disabled={paymentOpen || !canTakePaymentFromInvoiceList(inv)} checked={selectedPaymentIds.includes(inv.id)} onCheckedChange={checked => setPaymentSelection({ scope: paymentScope, ids: checked === true ? [...selectedPaymentIds.filter(id => id !== inv.id), inv.id] : selectedPaymentIds.filter(id => id !== inv.id) })} /></td> : null}
               {visibleColumns.map((column) => {
                 switch (column.id) {
                   case "invoiceNumber": return <td key={column.id} className="min-w-[132px] whitespace-nowrap px-3 py-3"><button type="button" className="text-titan-sm font-medium text-titan-accent hover:underline" onClick={(event) => { event.stopPropagation(); navigate(invoiceDetailPath(inv)); }} title={`Open invoice ${resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber }) || inv.invoiceNumber}`}>{resolveDocumentDisplayNumber({ displayNumber: inv.displayNumber, numberCore: inv.numberCore, legacyNumber: inv.invoiceNumber }) || inv.invoiceNumber}</button></td>;
@@ -2857,7 +2911,7 @@ function InvoicesTable({
                   case "total": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-text-primary">{formatCurrency(inv.displayTotal || inv.total)}</td>;
                   case "balance": return <td key={column.id} className="whitespace-nowrap px-3 py-3 text-right text-titan-sm font-medium text-titan-warning">{formatCurrency(inv.displayRemaining ?? inv.balanceDue ?? inv.total)}</td>;
                   case "invoiceStatus": return <td key={column.id} className="whitespace-nowrap px-3 py-3"><span className={cn("inline-flex items-center px-2 py-0.5 rounded-full text-titan-xs font-medium border", getStatusStyle(inv.status))}>{inv.displayStatus || formatStatusLabel(inv.status)}</span></td>;
-                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(invoiceDetailPath(inv))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}<CloseJobOverrideAction target={inv.orderId ? { orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) } : null} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} /></div></td>;
+                  case "actions": return <td key={column.id} className="sticky right-0 z-10 bg-titan-bg-card px-3 py-3" onClick={(event) => event.stopPropagation()}><div className="flex min-w-max flex-wrap items-center gap-2"><Button variant="outline" size="sm" onClick={() => navigate(invoiceDetailPath(inv))} aria-label={`View invoice ${inv.invoiceNumber}`}><Eye className="mr-1.5 h-4 w-4" />View</Button>{canTakePayment && canTakePaymentFromInvoiceList(inv) ? <Button variant="outline" size="sm" disabled={paymentOpen} onClick={() => openPayment([inv.id])} aria-label={`Take payment for invoice ${inv.invoiceNumber}`}><DollarSign className="mr-1.5 h-4 w-4" aria-hidden="true" />Take Payment</Button> : null}{isAdminOrOwner && canApprove(inv) ? <Button variant="outline" size="sm" disabled={approveInvoices.isPending} onClick={() => void approve(inv)}><Check className="mr-1.5 h-4 w-4" />Approve</Button> : null}{isAdminOrOwner && String(inv.importSource || "").toLowerCase() !== "quickbooks" ? <InvoiceSendQuickAction invoiceId={inv.id} invoiceNumber={inv.invoiceNumber} alreadySent={Boolean(inv.lastSentAt)} /> : null}<CloseJobOverrideAction target={inv.orderId ? { orderId: inv.orderId, orderNumber: inv.orderNumber, jobName: inv.jobName || inv.orderName, purchaseOrderNumber: inv.purchaseOrderNumber, customerName: inv.companyName || customerName || null, invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, jobStatus: getOrderJobStatus(inv) } : null} isAdminOrOwner={isAdminOrOwner} onOpen={setOverrideTarget} /></div></td>;
                   default: return null;
                 }
               })}
@@ -2868,6 +2922,7 @@ function InvoicesTable({
     </div>
     {pagination ? <div className="flex flex-wrap items-center justify-between gap-3 px-1 pt-3 text-sm text-titan-text-secondary"><span>{pagination.totalCount === 0 ? "0 invoices" : `${(pagination.page - 1) * pagination.pageSize + 1}-${Math.min(pagination.page * pagination.pageSize, pagination.totalCount)} of ${pagination.totalCount} invoices`}</span><div className="flex items-center gap-2"><Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(1); }}><SelectTrigger className="h-8 w-[118px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="25">25 per page</SelectItem><SelectItem value="50">50 per page</SelectItem><SelectItem value="100">100 per page</SelectItem></SelectContent></Select><Button variant="outline" size="sm" disabled={pagination.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</Button><span>Page {pagination.page} of {pagination.totalPages}</span><Button variant="outline" size="sm" disabled={pagination.page >= pagination.totalPages} onClick={() => setPage((current) => Math.min(pagination.totalPages, current + 1))}>Next</Button></div></div> : null}
     <Dialog open={columnsOpen} onOpenChange={setColumnsOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg"><DialogHeader><DialogTitle>Configure Invoice Columns</DialogTitle><DialogDescription>Changes apply to Customer → Invoices for every customer you open.</DialogDescription></DialogHeader><div className="space-y-2 py-2">{columnConfig.columns.map((column) => <div key={column.id} className="flex items-center gap-3"><Checkbox id={`customer-invoice-column-${column.id}`} checked={column.visible} disabled={column.locked} onCheckedChange={(value) => columnConfig.setColumnVisibility(column.id, Boolean(value))} /><Label htmlFor={`customer-invoice-column-${column.id}`} className="text-sm">{column.label}{column.locked ? " (required)" : ""}{sortPreference.sortBy === column.id ? ` · sorted ${sortPreference.sortDir}` : ""}</Label><div className="ml-auto flex items-center gap-1"><Button variant="outline" size="icon" className="h-8 w-8" disabled={!columnConfig.canMoveColumn(column.id, "up")} onClick={() => columnConfig.moveColumn(column.id, "up")} aria-label={`Move ${column.label} up`}><ArrowUp className="h-4 w-4" /></Button><Button variant="outline" size="icon" className="h-8 w-8" disabled={!columnConfig.canMoveColumn(column.id, "down")} onClick={() => columnConfig.moveColumn(column.id, "down")} aria-label={`Move ${column.label} down`}><ArrowDown className="h-4 w-4" /></Button></div></div>)}</div><DialogFooter><Button variant="outline" onClick={resetTable}><RotateCcw className="mr-1.5 h-4 w-4" aria-hidden="true" />Reset to default</Button><Button onClick={() => setColumnsOpen(false)}>Close</Button></DialogFooter></DialogContent></Dialog>
+    {paymentOpen && paymentDialog ? <MultiInvoicePaymentDialog open onOpenChange={open => { if (!open) setPaymentDialog(null); }} invoiceIds={paymentDialog.ids} onSuccess={paymentSucceeded} /> : null}
     <CloseJobOverrideDialog target={overrideTarget} onOpenChange={(open) => !open && setOverrideTarget(null)} />
     </>
   );
