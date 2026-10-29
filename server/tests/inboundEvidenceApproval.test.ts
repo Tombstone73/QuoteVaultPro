@@ -2,95 +2,9 @@ import { describe, expect, jest, test } from "@jest/globals";
 import { getTableName } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { InboundOrdersRepository } from "../storage/inboundOrders.repo";
-import { fingerprintInboundEmailEvidence, InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
+import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 
-// Exercise the real repository transaction bodies with an in-memory Drizzle
-// executor. This checks decisions and SQL lock participation, not PostgreSQL's
-// scheduler or actual lock behavior (which requires an isolated database).
-function harness() {
-  const record: any = { id: "email-1", organizationId: "tenant-a", sourceType: "email", sourceMessageId: "m1",
-    status: "needs_review", rawPayloadJson: { subject: "Order", bodyText: "Ten signs" }, normalizedPayloadJson: {},
-    createdOrderId: null, createdQuoteId: null };
-  const tables: Record<string, any[]> = {
-    inbound_order_records: [record], inbound_order_files: [], inbound_order_review_snapshots: [],
-    inbound_order_events: [], inbound_order_parse_attempts: [],
-  };
-  const calls: string[] = [];
-  const dialect = new PgDialect();
-  function rows(table: any, condition?: any) {
-    const name = getTableName(table);
-    if (!condition) return tables[name] ?? [];
-    const query = dialect.sqlToQuery(condition);
-    const camel = (value: string) => value.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-    return (tables[name] ?? []).filter((row) => {
-      for (const match of query.sql.matchAll(/"([a-z_]+)" = \$(\d+)/g)) {
-        if (row[camel(match[1])] !== query.params[Number(match[2]) - 1]) return false;
-      }
-      for (const match of query.sql.matchAll(/"([a-z_]+)" in \(([^)]+)\)/g)) {
-        const values = [...match[2].matchAll(/\$(\d+)/g)].map((value) => query.params[Number(value[1]) - 1]);
-        if (!values.includes(row[camel(match[1])])) return false;
-      }
-      if (query.sql.includes("combinedParentRecordId")) return row.normalizedPayloadJson?.combinedParentRecordId === query.params[1];
-      if (query.sql.includes('"created_order_id" is null') && row.createdOrderId) return false;
-      if (query.sql.includes('"created_quote_id" is null') && row.createdQuoteId) return false;
-      return true;
-    });
-  }
-  let sequence = 0;
-  function query(table: any, mode: string) {
-    let condition: any;
-    let values: any;
-    let limit: number | undefined;
-    const execute = () => {
-      const name = getTableName(table);
-      if (mode === "insert") {
-        const inserted = { id: `row-${++sequence}`, createdAt: new Date(), ...values };
-        tables[name].unshift(inserted);
-        calls.push(`insert:${name}`);
-        return [structuredClone(inserted)];
-      }
-      const selected = rows(table, condition);
-      if (mode === "update") {
-        selected.forEach((row) => Object.assign(row, values));
-        calls.push(`update:${name}`);
-      }
-      return structuredClone(selected.slice(0, limit));
-    };
-    const chain: any = {
-      where: (value: any) => { condition = value; return chain; },
-      limit: (value: number) => { limit = value; return chain; },
-      orderBy: () => chain,
-      for: (value: string) => { calls.push(`for:${value}`); return chain; },
-      set: (value: any) => { values = value; return chain; },
-      values: (value: any) => { values = value; return chain; },
-      returning: () => chain,
-      then: (resolve: any, reject: any) => Promise.resolve().then(execute).then(resolve, reject),
-    };
-    return chain;
-  }
-  const executor: any = {
-    execute: async (statement: any) => { calls.push(dialect.sqlToQuery(statement).sql); return []; },
-    select: () => ({ from: (table: any) => query(table, "select") }),
-    update: (table: any) => query(table, "update"), insert: (table: any) => query(table, "insert"),
-    transaction: async (callback: any) => {
-      const before = structuredClone(tables);
-      calls.push("transaction");
-      try { return await callback(executor); }
-      catch (error) { for (const key of Object.keys(tables)) tables[key] = before[key]; throw error; }
-    },
-  };
-  const repo = new InboundOrdersRepository(executor);
-  const current = () => tables.inbound_order_records[0];
-  const fingerprint = () => fingerprintInboundEmailEvidence(current(), tables.inbound_order_files);
-  const addDraft = (covered: string | null = fingerprint()) => {
-    const snapshot = { id: `draft-${++sequence}`, organizationId: "tenant-a", inboundRecordId: "email-1", snapshotVersion: sequence,
-      payloadJson: { status: "draft", reviewNotes: "Keep my staff edits", reviewedLineItemsJson: [{ quantity: 7 }],
-        metadata: { snapshotKind: "editable_review_draft", evidenceFingerprint: covered } } };
-    tables.inbound_order_review_snapshots.unshift(snapshot);
-    return snapshot;
-  };
-  return { repo, tables, calls, current, fingerprint, addDraft };
-}
+import { inboundEvidenceHarness as harness } from "./helpers/inboundEvidenceHarness";
 
 const identity = { organizationId: "tenant-a", inboundRecordId: "email-1", actorUserId: "staff" };
 const event = { actorType: "user" as const, eventType: "review.status_updated" };

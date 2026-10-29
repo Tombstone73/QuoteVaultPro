@@ -1,4 +1,6 @@
 import { createHash } from "crypto";
+import type { InboundEmailProcessingClaim } from "@shared/inboundEmailProcessing";
+import { InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
 import type { InboundOrderFile, InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
 import {
   getManualInboundEvidence,
@@ -339,6 +341,7 @@ export class InboundOrderParsingService {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    automaticProcessing?: InboundEmailProcessingClaim;
   }): Promise<InboundOrderParseResult> {
     let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
@@ -352,8 +355,10 @@ export class InboundOrderParsingService {
       ? await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId) : null;
     if (evidenceState) record = evidenceState.record;
     const evidenceFingerprint = evidenceState?.fingerprint ?? null;
+    if (args.automaticProcessing && args.automaticProcessing.evidenceFingerprint !== evidenceFingerprint) throw new InboundEvidenceConflictError();
 
     await this.repository.updateRecordWithEvent({
+      automaticProcessing: args.automaticProcessing,
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       patch: {
@@ -387,6 +392,7 @@ export class InboundOrderParsingService {
 
       if (!provider) {
         const attempt = await this.storeAttemptAndUpdateRecord({
+          automaticProcessing: args.automaticProcessing,
           evidenceFingerprint,
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
@@ -448,6 +454,7 @@ export class InboundOrderParsingService {
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
+        automaticProcessing: args.automaticProcessing,
         evidenceFingerprint,
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
@@ -475,8 +482,10 @@ export class InboundOrderParsingService {
 
       return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
     } catch (error: any) {
+      if (error instanceof InboundEvidenceConflictError) throw error;
       const providerError = parseStageFailureMessage(stage, error);
       const attempt = await this.storeAttemptAndUpdateRecord({
+        automaticProcessing: args.automaticProcessing,
         evidenceFingerprint,
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
@@ -2058,6 +2067,7 @@ export class InboundOrderParsingService {
   }
 
   private async storeAttemptAndUpdateRecord(args: {
+    automaticProcessing?: InboundEmailProcessingClaim;
     evidenceFingerprint?: string | null;
     organizationId: string;
     inboundRecordId: string;
@@ -2079,6 +2089,7 @@ export class InboundOrderParsingService {
       ? currentRecord.normalizedPayloadJson as Record<string, unknown>
       : null;
     await this.repository.updateRecordWithEvent({
+      automaticProcessing: args.automaticProcessing,
       parsedEvidenceFingerprint: args.evidenceFingerprint,
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,

@@ -323,6 +323,8 @@ export type SaveInboundOrderReviewSnapshotInput = {
 };
 
 export type InboundOrderReviewDraftInput = {
+  automaticProcessing?: import("@shared/inboundEmailProcessing").InboundEmailProcessingClaim;
+  sourceParseAttemptId?: string;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -3187,6 +3189,9 @@ export class InboundOrderService {
     if (record.sourceType === "email") record = (await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId)).record;
 
     const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const sourceAttempt = args.sourceParseAttemptId
+      ? (await this.repository.listParseAttempts(args.organizationId, args.inboundRecordId)).find(attempt => attempt.id === args.sourceParseAttemptId) ?? null
+      : latestAttempt;
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     if (existingSnapshot) {
       const hydratedSnapshot = record.sourceType === "email" ? existingSnapshot : await this.backfillInterpretedCustomerContactSelection({
@@ -3201,8 +3206,8 @@ export class InboundOrderService {
     }
 
     this.assertReviewDraftEditable(record);
-    const parsedDraft = this.parsedDraftFromAttempt(latestAttempt);
-    if (!latestAttempt || !parsedDraft) {
+    const parsedDraft = this.parsedDraftFromAttempt(sourceAttempt);
+    if (!sourceAttempt || !parsedDraft) {
       throw new InboundOrderTransitionError("Parse the inbound order before starting editable draft review.", 409);
     }
 
@@ -3217,10 +3222,11 @@ export class InboundOrderService {
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
       record,
-      latestAttempt,
+      latestAttempt: sourceAttempt,
       payload,
       status: "draft",
       eventType: "review_draft.initialized",
+      automaticProcessing: args.automaticProcessing,
       expectedSnapshotId: null,
       message: "Editable review draft initialized from latest parse.",
       initializedFromParse: true,
@@ -5916,6 +5922,7 @@ export class InboundOrderService {
   }
 
   private async persistEditableReviewDraftSnapshot(args: {
+    automaticProcessing?: import("@shared/inboundEmailProcessing").InboundEmailProcessingClaim;
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
@@ -5934,6 +5941,7 @@ export class InboundOrderService {
     const sourceParseAttemptId = args.latestAttempt?.id ?? null;
     const sourceParseAttemptCreatedAt = formatInboundDate(args.latestAttempt?.createdAt);
     const { snapshot } = await this.repository.createReviewSnapshotWithEvent({
+      automaticProcessing: args.automaticProcessing,
       ...(args.record.sourceType === "email" ? {
         evidenceSourceParseAttemptId: args.initializedFromParse ? args.latestAttempt?.id ?? undefined : undefined,
         evidenceSourceSnapshotId: args.initializedFromParse ? args.expectedSnapshotId : args.latestAttempt?.sourceSnapshotId,

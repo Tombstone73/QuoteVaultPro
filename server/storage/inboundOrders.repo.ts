@@ -57,6 +57,9 @@ import {
 } from "@shared/schema";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import { fingerprintInboundEmailEvidence, evidenceFingerprintFromSnapshot, evidenceFingerprintFromAttempt, InboundEvidenceConflictError, INBOUND_EVIDENCE_REVIEW_REQUIRED } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
+import { assertInboundEmailProcessingClaim, synchronizeInboundEmailProcessing } from "./inboundEmailProcessing.repo";
+import { inboundEmailProcessingJobs } from "@shared/schema";
+import { eligibleForAutomaticInboundDraft, type InboundEmailProcessingClaim } from "@shared/inboundEmailProcessing";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { buildInboundQuoteCreatedAuditLogValues } from "../services/inboundOrders/inboundQuoteProvenance";
 import {
@@ -364,7 +367,34 @@ export class InboundOrdersRepository {
         reviewRequiredReason: INBOUND_EVIDENCE_REVIEW_REQUIRED,
       } : {}),
     }).where(and(eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId))).returning();
+    await synchronizeInboundEmailProcessing(tx, { record: updated ?? record, fingerprint, draft });
     return { record: updated ?? record, files, fingerprint };
+  }
+
+  async completeEmailImport(organizationId: string, inboundRecordId: string, actorUserId: string): Promise<void> {
+    await this.dbInstance.transaction(async tx => {
+      if (!await this.lockEvidence(organizationId, inboundRecordId, tx)) throw new InboundEvidenceConflictError("Imported record was not found for this organization.");
+      const state = await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+      const snapshots = await new InboundOrdersRepository(tx as unknown as typeof db).listReviewSnapshots(organizationId, inboundRecordId);
+      await synchronizeInboundEmailProcessing(tx, { ...state,
+        draft: snapshots.find(snapshot => (snapshot.payloadJson as any)?.metadata?.snapshotKind === "editable_review_draft") ?? null, importedByUserId: actorUserId });
+    });
+  }
+
+  async retryEmailProcessing(organizationId: string, inboundRecordId: string, actorUserId: string): Promise<void> {
+    await this.dbInstance.transaction(async tx => {
+      if (!await this.lockEvidence(organizationId, inboundRecordId, tx)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      const state = await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+      if (!eligibleForAutomaticInboundDraft(state.record)) throw new InboundEvidenceConflictError("Linked or dismissed records cannot be queued for an automatic draft.");
+      const snapshots = await new InboundOrdersRepository(tx as unknown as typeof db).listReviewSnapshots(organizationId, inboundRecordId);
+      if (snapshots.some(snapshot => (snapshot.payloadJson as any)?.metadata?.snapshotKind === "editable_review_draft")) throw new InboundEvidenceConflictError("An editable draft exists. Parse and deliberately refresh/reconcile it using the review controls.");
+      const changed = await tx.update(inboundEmailProcessingJobs).set({ status: "waiting", attempts: 0, actorUserId, nextAttemptAt: new Date(),
+        errorCode: null, message: null, updatedAt: new Date() }).where(and(eq(inboundEmailProcessingJobs.organizationId, organizationId),
+        eq(inboundEmailProcessingJobs.inboundRecordId, inboundRecordId), eq(inboundEmailProcessingJobs.evidenceFingerprint, state.fingerprint),
+        eq(inboundEmailProcessingJobs.status, "failed"))).returning({ id: inboundEmailProcessingJobs.id });
+      if (!changed.length) throw new InboundEvidenceConflictError("Only failed draft preparation can be retried; active work is already durable.");
+      await tx.insert(inboundOrderEvents).values({ organizationId, inboundRecordId, actorUserId, actorType: "user", eventType: "email.automatic_processing_retry", message: "Staff queued a bounded draft-preparation retry; no business disposition changed." });
+    });
   }
 
   async getEvidenceState(organizationId: string, inboundRecordId: string): Promise<{ record: InboundOrderRecord; files: InboundOrderFile[]; fingerprint: string }> {
@@ -2529,16 +2559,25 @@ export class InboundOrdersRepository {
     patch: UpdateInboundOrderRecordValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
     parsedEvidenceFingerprint?: string | null;
+    automaticProcessing?: InboundEmailProcessingClaim;
   }): Promise<{ record: InboundOrderRecord; event: InboundOrderEvent } | null> {
     return this.dbInstance.transaction(async (tx) => {
       const current = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
       if (!current) return null;
       const patch = { ...args.patch };
+      if (args.automaticProcessing) {
+        await assertInboundEmailProcessingClaim(tx, args.organizationId, args.inboundRecordId, args.automaticProcessing);
+        const state = await this.synchronizeEvidence(args.organizationId, args.inboundRecordId, tx);
+        if (!eligibleForAutomaticInboundDraft(state.record) || state.fingerprint !== args.automaticProcessing.evidenceFingerprint) throw new InboundEvidenceConflictError();
+        // Background work owns suggestions and audit events, never the business
+        // disposition, approval, waiting-on-customer state, or staff decisions.
+        for (const key of Object.keys(patch)) if (key !== "parsedAt") delete (patch as any)[key];
+      }
       if (current.sourceType === "email") {
         if (args.event.eventType === "parse.requested" && (current.createdOrderId || current.createdQuoteId || ["ignored", "terminal", "submitted", "approved"].includes(current.status))) {
           throw new InboundEvidenceConflictError("Inbound record was linked or dismissed before parsing could start.");
         }
-        if (args.event.eventType === "parse.completed") {
+        if (args.event.eventType === "parse.completed" && !args.automaticProcessing) {
           const state = await this.synchronizeEvidence(args.organizationId, args.inboundRecordId, tx);
           const currentParse = Boolean(args.parsedEvidenceFingerprint && args.parsedEvidenceFingerprint === state.fingerprint);
           // Parsing produces suggestions, never human approval. A late result
@@ -2577,6 +2616,7 @@ export class InboundOrdersRepository {
         .insert(inboundOrderEvents)
         .values({
           ...args.event,
+          ...(args.automaticProcessing ? { actorType: "system" as const, fromStatus: current.status } : {}),
           ...(current.sourceType === "email" ? { toStatus: persistedRecord.status } : {}),
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
@@ -2788,16 +2828,22 @@ export class InboundOrdersRepository {
     evidenceSourceParseAttemptId?: string;
     evidenceSourceSnapshotId?: string | null;
     recordPatch?: UpdateInboundOrderRecordValues;
+    automaticProcessing?: InboundEmailProcessingClaim;
   }): Promise<{ snapshot: InboundOrderReviewSnapshot; event: InboundOrderEvent }> {
     return this.dbInstance.transaction(async (tx) => {
       const { organizationId, inboundRecordId } = args.snapshot;
       const current = await this.lockEvidence(organizationId, inboundRecordId, tx);
       if (!current) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      if (args.automaticProcessing) {
+        await assertInboundEmailProcessingClaim(tx, organizationId, inboundRecordId, args.automaticProcessing);
+        if (!eligibleForAutomaticInboundDraft(current)) throw new InboundEvidenceConflictError("This record no longer permits automatic draft preparation.");
+      }
       let snapshotValues = args.snapshot;
       if (current.sourceType === "email") {
         if (current.createdOrderId || current.createdQuoteId) throw new InboundEvidenceConflictError("Converted inbound drafts cannot be changed.");
         const repository = new InboundOrdersRepository(tx as unknown as typeof db);
         const state = await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+        if (args.automaticProcessing && state.fingerprint !== args.automaticProcessing.evidenceFingerprint) throw new InboundEvidenceConflictError();
         const snapshots = await repository.listReviewSnapshots(organizationId, inboundRecordId);
         const latest = snapshots[0] ?? null;
         const sourceSnapshot = snapshots.find((item) => item.id === args.evidenceSourceSnapshotId) ?? null;
@@ -2836,6 +2882,7 @@ export class InboundOrdersRepository {
         .insert(inboundOrderEvents)
         .values({
           ...args.event,
+          ...(args.automaticProcessing ? { actorType: "system" as const, fromStatus: current.status, toStatus: current.status } : {}),
           organizationId: args.snapshot.organizationId,
           inboundRecordId: args.snapshot.inboundRecordId,
         })

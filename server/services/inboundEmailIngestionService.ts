@@ -1652,6 +1652,10 @@ export class InboundEmailIngestionService {
         for (const message of messages) {
           try {
             const outcome = await this.processMessage(args.organizationId, args.actorUserId, mailbox, source, message, adapter);
+            // Import is complete only after available attachments are stored.
+            // The completion transaction captures evidence and durable work
+            // together. Repeated imports converge on the same evidence job.
+            if (outcome.recordId && (outcome.status === "created" || outcome.status === "skippedDuplicates")) await this.inboundRepository.completeEmailImport(args.organizationId, outcome.recordId, args.actorUserId);
             result[outcome.status] += 1;
             summary[outcome.status] += 1;
             if (outcome.status === "created" && outcome.recordId) {
@@ -2287,6 +2291,7 @@ export class InboundEmailIngestionService {
         threadId,
       });
 
+      await this.inboundRepository.completeEmailImport(args.organizationId, record.id, args.actorUserId);
       await this.inboundRepository.createEvent({
         organizationId: args.organizationId,
         inboundRecordId: record.id,

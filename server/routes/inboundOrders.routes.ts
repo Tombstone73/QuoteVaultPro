@@ -7,6 +7,7 @@
  */
 
 import crypto from "crypto";
+import { inboundEmailProcessingRepository } from "../storage/inboundEmailProcessing.repo";
 import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import fsPromises from "fs/promises";
 import path from "path";
@@ -362,6 +363,7 @@ export function registerInboundOrderRoutes(
     assertInternalUser: (req: any, res: any) => boolean;
     inboundOrderService?: typeof inboundOrderService;
     inboundOrderParsingService?: typeof inboundOrderParsingService;
+    inboundEmailProcessingRepository?: typeof inboundEmailProcessingRepository;
     inboundOrdersRepository?: typeof inboundOrdersRepository;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
@@ -372,6 +374,7 @@ export function registerInboundOrderRoutes(
   const service = middleware.inboundOrderService ?? inboundOrderService;
   const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
   const eventRepository = middleware.inboundOrdersRepository ?? inboundOrdersRepository;
+  const processingRepository = middleware.inboundEmailProcessingRepository ?? inboundEmailProcessingRepository;
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
   const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
   const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
@@ -1417,6 +1420,35 @@ export function registerInboundOrderRoutes(
 
       console.error("Error updating inbound order status:", error);
       res.status(500).json({ message: "Failed to update inbound order status" });
+    }
+  });
+
+  app.get("/api/inbound-orders/:id/processing", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const state = await eventRepository.getEvidenceState(organizationId, String(req.params.id));
+      return res.json({ success: true, data: await processingRepository.view(organizationId, state.record.id, state.fingerprint) });
+    } catch (error) {
+      if (error instanceof InboundEvidenceConflictError) return res.status(404).json({ message: "Inbound email not found for this organization." });
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      return res.status(500).json({ message: "Could not load draft preparation status. Source evidence is retained." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/processing/retry", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ message: "Authenticated tenant context required." });
+      await eventRepository.retryEmailProcessing(organizationId, String(req.params.id), actorUserId);
+      return res.json({ success: true, message: "Draft preparation queued. Staff approval is still required." });
+    } catch (error) {
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ message: error.message });
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      return res.status(500).json({ message: "Could not retry draft preparation. Source evidence is retained." });
     }
   });
 

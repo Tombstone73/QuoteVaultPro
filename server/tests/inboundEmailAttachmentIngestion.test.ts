@@ -93,6 +93,7 @@ function serviceHarness() {
   const createdFiles: any[] = [];
   const events: any[] = [];
   const repo = {
+    completeEmailImport: jest.fn(async () => undefined),
     listFiles: jest.fn(async () => createdFiles),
     listEmailIgnoreRules: jest.fn(async () => []),
     listEnabledEmailIgnoreRules: jest.fn(async () => []),
@@ -591,6 +592,8 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
     expect(adapter.listRecentMessages).toHaveBeenCalledWith(mailbox, 1);
     expect(ingestSpy).toHaveBeenCalledTimes(1);
+    expect(repo.completeEmailImport).toHaveBeenCalledWith("org_1", "inbound_1", "user_1");
+    expect(repo.completeEmailImport.mock.invocationCallOrder[0]).toBeGreaterThan(storage.finalizeUpload.mock.invocationCallOrder[0]);
     expect(adapter.downloadAttachment).toHaveBeenCalledWith(
       mailbox,
       expect.objectContaining({
@@ -650,6 +653,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     const service = new InboundEmailIngestionService(pullLatestFreshRecordDbHarness(record) as any, { gmail: adapter }, repo as any, storage as any);
     const result = await service.pullLatestEmails({ organizationId: "org_1", actorUserId: "user_1", limit: 1 });
     expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(repo.completeEmailImport).toHaveBeenCalledWith("org_1", "inbound_1", "user_1");
   });
 
   test("pullLatestEmails skips internal outbound Titan senders before TEMP record creation", async () => {

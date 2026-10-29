@@ -408,6 +408,7 @@ function buildApp(
     inboundEmailIngestionService?: Record<string, any>;
     inboundEmailMailboxSettingsService?: Record<string, any>;
     inboundOrdersRepository?: Record<string, any>;
+    inboundEmailProcessingRepository?: Record<string, any>;
     userRole?: string;
   } = {},
 ) {
@@ -441,11 +442,33 @@ function buildApp(
     inboundEmailIngestionService: options.inboundEmailIngestionService as any,
     inboundEmailMailboxSettingsService: options.inboundEmailMailboxSettingsService as any,
     inboundOrdersRepository: (options.inboundOrdersRepository ?? defaultInboundOrdersRepository) as any,
+    inboundEmailProcessingRepository: options.inboundEmailProcessingRepository as any,
   });
   return app;
 }
 
 describe("inbound order routes", () => {
+  test("processing status is tenant scoped and internal-only", async () => {
+    const repository = { getEvidenceState: jest.fn(async () => ({ record: inboundRecord(), fingerprint: "fingerprint" })) };
+    const processing = { view: jest.fn(async () => ({ enabled: false, job: null })) };
+    const app = buildApp({}, { inboundOrdersRepository: repository, inboundEmailProcessingRepository: processing });
+    expect((await request(app).get("/api/inbound-orders/inbound_1/processing")).status).toBe(200);
+    expect(repository.getEvidenceState).toHaveBeenCalledWith("org_1", "inbound_1");
+    expect(processing.view).toHaveBeenCalledWith("org_1", "inbound_1", "fingerprint");
+    const denied = buildApp({}, { internal: false, inboundOrdersRepository: repository, inboundEmailProcessingRepository: processing });
+    expect((await request(denied).get("/api/inbound-orders/inbound_1/processing")).status).toBe(403);
+    expect(processing.view).toHaveBeenCalledTimes(1);
+  });
+  test("retry only enqueues through the guarded repository operation and never parses inline", async () => {
+    const repository = { retryEmailProcessing: jest.fn(async () => undefined) };
+    const parser = { parseInboundOrderRecord: jest.fn() };
+    const app = buildApp({}, { inboundOrdersRepository: repository, parsingService: parser });
+    expect((await request(app).post("/api/inbound-orders/inbound_1/processing/retry").send({})).status).toBe(200);
+    expect(repository.retryEmailProcessing).toHaveBeenCalledWith("org_1", "inbound_1", "user_1");
+    expect(parser.parseInboundOrderRecord).not.toHaveBeenCalled();
+    repository.retryEmailProcessing.mockImplementation(async () => { throw new InboundEvidenceConflictError("Active work cannot be reset"); });
+    expect((await request(app).post("/api/inbound-orders/inbound_1/processing/retry").send({})).status).toBe(409);
+  });
   const service = {
     listInboundOrders: jest.fn<(...args: any[]) => Promise<any>>(),
     getInboundOrder: jest.fn<(...args: any[]) => Promise<any>>(),

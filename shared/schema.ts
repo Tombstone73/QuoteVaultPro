@@ -10180,6 +10180,27 @@ export const inboundOrderParseAttempts = pgTable("inbound_order_parse_attempts",
   index("inbound_order_parse_attempts_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
 ]);
 
+export const inboundEmailProcessingJobs = pgTable("inbound_email_processing_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
+  evidenceFingerprint: varchar("evidence_fingerprint", { length: 64 }).notNull(),
+  status: varchar("status", { length: 32 }).$type<import("./inboundEmailProcessing").InboundEmailProcessingStatus>().notNull().default("waiting"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+  claimToken: varchar("claim_token"),
+  claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  errorCode: varchar("error_code", { length: 80 }),
+  message: text("message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [
+  uniqueIndex("inbound_email_processing_evidence_uidx").on(table.organizationId, table.inboundRecordId, table.evidenceFingerprint),
+  index("inbound_email_processing_claim_idx").on(table.status, table.nextAttemptAt, table.claimExpiresAt),
+  index("inbound_email_processing_record_idx").on(table.organizationId, table.inboundRecordId),
+]);
+
 export const inboundOrderSourcesRelations = relations(inboundOrderSources, ({ one, many }) => ({
   organization: one(organizations, {
     fields: [inboundOrderSources.organizationId],

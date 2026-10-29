@@ -2,6 +2,8 @@ import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
 import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRetention';
 import { cleanupAssistantPendingImages } from './services/assistantImageAttachments';
 import "dotenv/config";
+import { inboundEmailProcessingWorker } from "./services/inboundOrders/InboundEmailProcessingWorker";
+import { isInboundEmailProcessingEnabled } from "./services/inboundOrders/inboundEmailProcessingConfig";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { registerRoutes } from "./routes";
@@ -407,6 +409,16 @@ process.on('uncaughtException', (error) => {
         // interval after a deploy or restart. The worker itself prevents
         // overlapping ticks and only processes durably-claimed jobs.
         void runBulkInvoiceEmailTick();
+      }
+
+      const inboundDraftsEnabled = isInboundEmailProcessingEnabled();
+      const inboundDraftInterval = Math.max(5_000, getWorkerIntervalOverride('INBOUND_EMAIL_DRAFTS', 30_000, 30_000));
+      logWorkerStatus('Inbound Email Drafts', inboundDraftsEnabled, inboundDraftsEnabled ? inboundDraftInterval : undefined);
+      if (inboundDraftsEnabled) {
+        const tick = () => inboundEmailProcessingWorker.runOnce().catch(() => console.warn('[InboundEmailDraftWorker] Tick failed; durable work is retained.'));
+        const timer = setInterval(() => { void tick(); }, inboundDraftInterval);
+        timer.unref?.();
+        void tick();
       }
 
       // Bounded hourly receipt cleanup never touches canonical line records.

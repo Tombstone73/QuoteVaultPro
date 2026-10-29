@@ -61,6 +61,7 @@ import { useInboundEmailIntakeSettings, usePullLatestInboundEmails } from "@/hoo
 import { useToast } from "@/hooks/use-toast";
 import { formatFileSize } from "@/lib/fileUtils";
 import { apiFetch } from "@/lib/queryClient";
+import { InboundEmailProcessingStatus } from "@/components/inbound/InboundEmailProcessingStatus";
 import { cn } from "@/lib/utils";
 import {
   getManualInboundEvidence,
@@ -11483,6 +11484,7 @@ export default function InboundOrdersPage() {
                 if (selectedId) detailQuery.refetch();
                 if (selectedId) draftPreviewQuery.refetch();
                 if (selectedId) reviewDraftQuery.refetch();
+                if (selectedId) void queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", selectedId, "processing"], exact: true });
               }}
               disabled={inboundEmailFeatureDisabled || listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching}
             >
@@ -11495,6 +11497,7 @@ export default function InboundOrdersPage() {
             </Button>
           </div>
         </div>
+        {selectedRecord?.sourceType === "email" && !selectedRecord.createdOrderId && !selectedRecord.createdQuoteId && !inboundEmailFeatureDisabled && <InboundEmailProcessingStatus key={selectedRecord.id} recordId={selectedRecord.id} />}
         {pageError && (
           <Alert variant="destructive" className="mt-3">
             <AlertTriangle className="h-4 w-4" />

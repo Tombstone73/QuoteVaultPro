@@ -31,6 +31,7 @@ jest.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
 }));
 
 import InboundOrdersPage, { operatorSafeParseErrorMessage } from "./inbound-orders";
+jest.mock("@/components/inbound/InboundEmailProcessingStatus", () => ({ InboundEmailProcessingStatus: () => null }));
 import { apiFetch } from "@/lib/queryClient";
 
 jest.mock("@/lib/queryClient", () => ({
