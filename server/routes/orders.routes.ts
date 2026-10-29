@@ -178,7 +178,7 @@ import {
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
 import { assessOrderCancellationEligibility, cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
-import { createRedoOrderSchema } from "@shared/orderRedo";
+import { createRedoOrderSchema, redoOrderValidationMessages } from "@shared/orderRedo";
 import { duplicateOrder, OrderDuplicationError } from "../services/orderDuplicationService";
 import { reconcileOrderAutoClose, reconcileOrderAutoCloseFailSoft } from "../services/orderAutoCloseService";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
@@ -5165,7 +5165,7 @@ export async function registerOrderRoutes(
             const actorUserId = getUserId(req.user);
             if (!organizationId || !actorUserId) return res.status(401).json({ message: "Staff authorization required." });
             const parsed = createRedoOrderSchema.safeParse(req.body);
-            if (!parsed.success) return res.status(400).json({ message: fromZodError(parsed.error).message });
+            if (!parsed.success) return res.status(400).json({ message: redoOrderValidationMessages(parsed.error).join(" ") });
             const order = await duplicateOrder({ organizationId, sourceOrderId: req.params.id, actorUserId,
                 actorName: [req.user.firstName, req.user.lastName].filter(Boolean).join(" ") || req.user.email || null, redo: parsed.data });
             return res.status(201).json({ order });

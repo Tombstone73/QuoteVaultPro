@@ -87,6 +87,7 @@ import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolutio
 import { activeOrderDuePredicates } from "../services/orderDueDateService";
 import { canonicalOpenOrderBucketPredicate } from "../services/orderListBuckets";
 import { selectCurrentOrderPreviewAttachments } from "../services/orders/orderListArtworkProjection";
+import { requireOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { serializeOrderBusinessDate } from "@shared/orderBusinessDate";
 import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
@@ -1520,6 +1521,7 @@ export class OrdersRepository {
                 const activeOwner = activeOwnerByLineItem.get(String(li.id)) ?? null;
                 return {
                     ...enrichLineItemWithEffectivePricing(li as any),
+                    updatedAt: requireOrderConcurrencyTimestamp(li.updatedAt),
                     product,
                     productVariant,
                     pbv2ActiveTreeVersionId: (product as any)?.pbv2ActiveTreeVersionId ? String((product as any).pbv2ActiveTreeVersionId) : null,
@@ -1583,6 +1585,7 @@ export class OrdersRepository {
             redoSource: redoSource ?? null,
             relatedRedos,
             ...order,
+            updatedAt: requireOrderConcurrencyTimestamp(order.updatedAt),
             paymentSummary: paymentSummaries.get(id) ?? deriveOrderPaymentSummary([]),
             productionSummary: productionSummaries.get(id),
             lineItems: enrichedLineItemsWithProof,

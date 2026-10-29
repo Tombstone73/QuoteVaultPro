@@ -66,3 +66,25 @@ test('a persisted routing blocker remains prominent after a fresh render',()=>{
  render(<RedoOrderIdentification order={{...source,redoRootOrderId:'original',redoOriginal:{id:'original',orderNumber:'12345'},status:'new',state:'open',lineItems:[{id:'pending-line',description:'Signs',workflowState:'new',productionNotes:'Configure production station roll. Then use Save & Route Jobs.'}]} as any}/>);
  expect(document.body.textContent).toContain('Action needed for Signs');expect(document.body.textContent).toContain('Configure production station roll');expect(document.body.textContent).toContain('Save & Route Jobs');
 });
+
+test('no selected replacement line has an understandable error',async()=>{
+ render(<RedoOrderAction order={source} authorized/>);click(button('Create Redo Order'));set(document.querySelector('#redo-date')!,'2026-10-30');click(Array.from(document.querySelectorAll('fieldset input[type=checkbox]')).at(-1)! as HTMLElement);
+ await act(async()=>{button('Confirm Create Redo Order').click();});expect(apiFetch).not.toHaveBeenCalled();expect(document.querySelector('[role=alert]')?.textContent).toBe('Select at least one item to reproduce.');
+});
+test('selected empty quantity identifies the product',async()=>{
+ render(<RedoOrderAction order={source} authorized/>);fill();set(document.querySelector('[aria-label="Replacement quantity: Signs"]')!,'');await act(async()=>{button('Confirm Create Redo Order').click();});expect(document.querySelector('[role=alert]')?.textContent).toBe('Enter a replacement quantity for Signs.');expect(apiFetch).not.toHaveBeenCalled();
+});
+test('missing promised date is separate from source timestamps',async()=>{
+ render(<RedoOrderAction order={source} authorized/>);fill();set(document.querySelector('#redo-date')!,'');await act(async()=>{button('Confirm Create Redo Order').click();});expect(document.querySelector('[role=alert]')?.textContent).toBe('Select a promised date.');expect(apiFetch).not.toHaveBeenCalled();
+});
+test.each([undefined,'invalid','2026-10-01T17:37:13'])('invalid source token %s fails safely and requests refresh',async updatedAt=>{
+ render(<RedoOrderAction order={{...source,updatedAt} as any} authorized/>);fill();await act(async()=>{button('Confirm Create Redo Order').click();});expect(document.querySelector('[role=alert]')?.textContent).toContain('source Order timestamp is missing or invalid');expect(apiFetch).not.toHaveBeenCalled();
+});
+test('supported PostgreSQL Order token and a valid promised date proceed without losing microseconds',async()=>{
+ (apiFetch as jest.Mock).mockResolvedValueOnce({ok:false,status:409,json:async()=>({code:'STALE_SOURCE',message:'Order changed'})});
+ render(<RedoOrderAction order={{...source,updatedAt:'2026-10-01 17:37:13.418115'}} authorized/>);fill();set(document.querySelector('#redo-date')!,'2026-10-30');await act(async()=>{button('Confirm Create Redo Order').click();});
+ const payload=JSON.parse((apiFetch as jest.Mock).mock.calls[0][1].body);expect(payload.expectedUpdatedAt).toBe('2026-10-01T17:37:13.418115Z');expect(payload.promisedDate).toBe('2026-10-30');expect(document.querySelector('[role=alert]')?.textContent).toContain('Refresh the source Order');expect(navigate).not.toHaveBeenCalled();
+});
+test('a missing selected line token is explained without a generic datetime error',async()=>{
+ render(<RedoOrderAction order={{...source,lineItems:[{...source.lineItems[0],updatedAt:undefined}]} as any} authorized/>);fill();await act(async()=>{button('Confirm Create Redo Order').click();});expect(document.querySelector('[role=alert]')?.textContent).toContain('Source information for Signs is missing or invalid');expect(apiFetch).not.toHaveBeenCalled();
+});

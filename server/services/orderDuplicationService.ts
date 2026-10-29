@@ -1,3 +1,4 @@
+import { requireOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { createHash } from "node:crypto";
 import { createRedoOrderSchema, type CreateRedoOrderRequest } from "@shared/orderRedo";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./lineItemWorkflowService";
@@ -63,14 +64,14 @@ export async function duplicateOrder(input: {
       .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt).for("update");
     let sourceLines = allSourceLines;
     if (redo) {
-      if (new Date(sourceOrder.updatedAt).getTime() !== new Date(redo.expectedUpdatedAt).getTime()) throw new OrderDuplicationError("STALE_SOURCE", "The source order changed. Refresh before creating a replacement.");
+      if (requireOrderConcurrencyTimestamp(sourceOrder.updatedAt) !== requireOrderConcurrencyTimestamp(redo.expectedUpdatedAt)) throw new OrderDuplicationError("STALE_SOURCE", "The source order changed. Refresh before creating a replacement.");
       const requested = new Map(redo.lines.map(line => [line.sourceLineItemId, line]));
       if (requested.size !== redo.lines.length) throw new OrderDuplicationError("INVALID_REDO", "Each source line may be selected only once.");
       sourceLines = allSourceLines.filter(line => requested.has(line.id));
       if (sourceLines.length !== requested.size) throw new OrderDuplicationError("INVALID_REDO", "Selected lines must belong to this source order.");
       for (const line of sourceLines) {
         const selection = requested.get(line.id)!;
-        if (line.updatedAt.getTime() !== new Date(selection.expectedUpdatedAt).getTime()) throw new OrderDuplicationError("STALE_SOURCE", "A selected source line changed. Refresh before creating a replacement.");
+        if (requireOrderConcurrencyTimestamp(line.updatedAt) !== requireOrderConcurrencyTimestamp(selection.expectedUpdatedAt)) throw new OrderDuplicationError("STALE_SOURCE", "A selected source line changed. Refresh before creating a replacement.");
         if (selection.quantity > line.quantity) throw new OrderDuplicationError("INVALID_REDO", "Replacement quantities cannot exceed the selected source quantity.");
         const children = allSourceLines.filter(child => child.parentLineItemId === line.id);
         if (children.length && line.lineItemRole !== "parent") throw new OrderDuplicationError("INVALID_REDO", "Source product group has an invalid parent role.");

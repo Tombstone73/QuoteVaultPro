@@ -202,3 +202,13 @@ test('unknown saved sheet capacity requires fresh Prepress planning instead of c
  const jobs=await db.select().from(productionJobs).where(eq(productionJobs.lineItemId,line.id));expect(jobs).toHaveLength(1);expect(jobs[0].stationKey).toBe('prepress');
  expect(await db.select().from(orderMaterialUsage).where(eq(orderMaterialUsage.orderId,response.body.order.id))).toHaveLength(0);
 });
+
+test('detail API returns exact ISO Order concurrency token, accepts a valid date, and rejects a one-microsecond source change',async()=>{
+ const source=await fixture();
+ await db.execute(sql`update orders set updated_at='2026-10-29 12:34:56.123456'::timestamp where id=${source.id}`);
+ const read=await request(app).get('/api/orders/'+source.id);expect(read.status).toBe(200);expect(read.body.updatedAt).toBe('2026-10-29T12:34:56.123456Z');expect(read.body.lineItems[0].updatedAt).toMatch(/Z$/);
+ const payload={...command(read.body),expectedUpdatedAt:read.body.updatedAt,promisedDate:'2026-10-30'};
+ const response=await create(read.body,payload);expect(response.status).toBe(201);
+ await db.execute(sql`update orders set updated_at='2026-10-29 12:34:56.123457'::timestamp where id=${source.id}`);
+ const stale=await create(read.body,{...payload,requestKey:randomUUID()});expect(stale.status).toBe(409);expect(stale.body.code).toBe('STALE_SOURCE');
+});

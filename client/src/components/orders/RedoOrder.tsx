@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { REDO_REASONS, createRedoOrderSchema, type CreateRedoOrderRequest } from "@shared/orderRedo";
+import { canonicalOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
+import { REDO_REASONS, createRedoOrderSchema, redoOrderValidationMessages, type CreateRedoOrderRequest } from "@shared/orderRedo";
 import type { Order, OrderLineItem } from "@/hooks/useOrders";
 import { apiFetch } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -55,10 +56,19 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
     setError("");
     let payload = submitted.current;
     if (!payload) {
-      const parsed = createRedoOrderSchema.safeParse({ requestKey: crypto.randomUUID(), expectedUpdatedAt: order.updatedAt,
-        lines: order.lineItems.filter(line => line.id in quantities).map(line => ({ sourceLineItemId: line.id, quantity: Number(quantities[line.id]), expectedUpdatedAt: line.updatedAt })),
+      const selectedLines = order.lineItems.filter(line => line.id in quantities);
+      const messages: string[] = [];
+      if (!selectedLines.length) messages.push("Select at least one item to reproduce.");
+      for (const line of selectedLines) {
+        const quantity = Number(quantities[line.id]);
+        if (!Number.isInteger(quantity) || quantity <= 0) messages.push("Enter a replacement quantity for " + line.description + ".");
+      }
+      if (!date) messages.push("Select a promised date.");
+      if (messages.length) { setError(messages.join(" ")); return; }
+      const parsed = createRedoOrderSchema.safeParse({ requestKey: crypto.randomUUID(), expectedUpdatedAt: canonicalOrderConcurrencyTimestamp(order.updatedAt),
+        lines: selectedLines.map(line => ({ sourceLineItemId: line.id, quantity: Number(quantities[line.id]), expectedUpdatedAt: canonicalOrderConcurrencyTimestamp(line.updatedAt) })),
         reason, explanation, promisedDate: date, disposition: "no_customer_charge", confirmed });
-      if (!parsed.success) { setError(parsed.error.issues.map(issue => issue.message).join(". ")); return; }
+      if (!parsed.success) { setError(redoOrderValidationMessages(parsed.error, selectedLines.map(line => line.description)).join(" ")); return; }
       payload = parsed.data;
       const selected = new Map(payload.lines.map(line => [line.sourceLineItemId, line.quantity]));
       for (const line of order.lineItems.filter(line => selected.has(line.id))) {
@@ -75,7 +85,7 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
       const result = await response.json();
       if (!response.ok || !result.order?.id) {
         if (response.status >= 400 && response.status < 500) submitted.current = null;
-        throw new Error(result.message || "Unable to create replacement order.");
+        throw new Error(result.code === "STALE_SOURCE" ? "The source Order or a selected item changed. Refresh the source Order, then review the replacement details again." : result.message || "Unable to create replacement order.");
       }
       // Fresh read proves the relation, financial disposition and quantities persisted.
       const read = await apiFetch("/api/orders/" + result.order.id, { cache: "no-store" });
