@@ -692,6 +692,9 @@ export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
   latestParseAttemptId: string | null;
   latestParseAttemptCreatedAt: string | null;
   hasNewerParse: boolean;
+  evidenceFingerprint?: string | null;
+  currentEvidenceFingerprint?: string | null;
+  evidenceReviewRequired?: boolean;
   initializedFromParse: boolean;
   createdByUserId: string | null;
   updatedByUserId: string | null;

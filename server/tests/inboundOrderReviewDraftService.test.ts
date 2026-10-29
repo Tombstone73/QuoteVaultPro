@@ -1,21 +1,24 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 
-jest.mock("../services/pricing/PricingService", () => ({
+jest.unstable_mockModule("../services/pricing/PricingService", () => ({
   priceLineItem: jest.fn(),
 }));
 
-jest.mock("../services/orders/orderTaxCalculationService", () => ({
+jest.unstable_mockModule("../services/orders/orderTaxCalculationService", () => ({
   calculateAuthoritativeOrderTax: jest.fn(),
 }));
+jest.unstable_mockModule("../services/artwork/CanonicalArtworkWriteService", () => ({
+  canonicalArtworkWriteService: { attachSourceArtwork: jest.fn<(...args: any[]) => Promise<any>>(async () => ({})) },
+}));
 
-import {
+const {
   InboundOrderReviewDraftValidationError,
   InboundOrderService,
   InboundOrderTransitionError,
-} from "../services/inboundOrders/InboundOrderService";
+} = await import("../services/inboundOrders/InboundOrderService");
 import { extractPurchaseOrderFields } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { hydrateInboundPbv2Selections } from "@shared/inboundOrderPbv2Options";
-import { calculateAuthoritativeOrderTax } from "../services/orders/orderTaxCalculationService";
+const { calculateAuthoritativeOrderTax } = await import("../services/orders/orderTaxCalculationService");
 
 const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
 
@@ -308,6 +311,11 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
         ? { id: "contact_1", customerId: "customer_1", firstName: "Shawn", lastName: "Fears", email: "shawn@example.com", phone: null, mobile: null }
         : null
     )),
+    getContact: jest.fn(async (_organizationId: string, contactId: string) => (
+      contactId === "contact_independent"
+        ? { id: "contact_independent", organizationId: "org_1", customerId: null, firstName: "Casey", lastName: "Contact", email: "casey@example.com" }
+        : null
+    )),
     getProduct: jest.fn(async (_organizationId: string, productId: string) => (
       productId === "product_pvc"
         ? { id: "product_pvc", name: "PVC Signs", category: "Signs", productType: "wide_roll", isTaxable: true }
@@ -389,7 +397,16 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
     matchCustomerWithEvent: jest.fn(),
     matchLineItemProductWithEvent: jest.fn(),
   };
-  return { repo, snapshots, getRecord: () => currentRecord };
+  const transactionRepo = Object.assign(repo, {
+    transaction: jest.fn(async (callback: any) => {
+      const previousRecord = structuredClone(currentRecord);
+      const previousSnapshots = structuredClone(snapshots);
+      const tx: any = { transaction: async (nested: any) => nested(tx) };
+      try { return await callback(tx, repo); }
+      catch (error) { currentRecord = previousRecord; snapshots.splice(0, snapshots.length, ...previousSnapshots); throw error; }
+    }),
+  });
+  return { repo: transactionRepo, snapshots, getRecord: () => currentRecord };
 }
 
 function makeOrderRepository(overrides: Record<string, any> = {}) {
@@ -3064,7 +3081,7 @@ describe("InboundOrderService editable review draft", () => {
         workflowState: "new",
         requiresPrepress: false,
         requiresProofApproval: false,
-        taxAmount: 3.15,
+        taxAmount: "3.15",
         isTaxableSnapshot: true,
         specsJson: expect.objectContaining({
           inbound: expect.objectContaining({
@@ -3143,7 +3160,7 @@ describe("InboundOrderService editable review draft", () => {
       customer: {
         selectedCustomerId: null,
         selectedContactId: "contact_independent",
-        unresolvedCustomer: false,
+        unresolvedCustomer: true,
         sourceName: "Casey Contact",
         sourceEmail: "casey@example.com",
       },
@@ -3177,7 +3194,7 @@ describe("InboundOrderService editable review draft", () => {
       taxRate: 0,
       taxAmount: 0,
       taxableSubtotal: 0,
-      lineItems: [expect.objectContaining({ taxAmount: 0, isTaxableSnapshot: false })],
+      lineItems: [expect.objectContaining({ taxAmount: "0.00", isTaxableSnapshot: false })],
     }));
   });
 

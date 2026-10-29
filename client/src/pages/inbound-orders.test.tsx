@@ -546,24 +546,24 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
   };
 }
 
-async function flush() {
+async function flush(delayMs = 0) {
   await act(async () => {
     await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   });
 }
 
 async function waitForText(text: string) {
-  for (let index = 0; index < 20; index += 1) {
-    await flush();
+  for (let index = 0; index < 200; index += 1) {
+    await flush(10);
     if (container.textContent?.includes(text)) return;
   }
   throw new Error(`Timed out waiting for text: ${text}`);
 }
 
 async function waitForCondition(predicate: () => boolean, label: string) {
-  for (let index = 0; index < 20; index += 1) {
-    await flush();
+  for (let index = 0; index < 200; index += 1) {
+    await flush(10);
     if (predicate()) return;
   }
   throw new Error(`Timed out waiting for: ${label}`);
@@ -613,6 +613,7 @@ function setupParsedInboundReview({
   detailOverrides = {},
   productSearchResults = [],
   downloadFailures = {},
+  pricingResponse,
 }: {
   row?: any;
   parsed?: any;
@@ -620,6 +621,7 @@ function setupParsedInboundReview({
   detailOverrides?: Record<string, any>;
   productSearchResults?: any[];
   downloadFailures?: Record<string, { status?: number; message?: string }>;
+  pricingResponse?: any;
 } = {}) {
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
   let savedBody: any = null;
@@ -723,6 +725,7 @@ function setupParsedInboundReview({
     if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: productSearchResults });
     if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
     if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+    if (path === "/api/inbound-orders/review-line-pricing" && pricingResponse) return jsonResponse({ success: true, data: { pricingReviewJson: pricingResponse } });
     return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
   });
   return {
@@ -3871,6 +3874,7 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("PO Extraction Summary");
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-source-documents']")?.textContent?.includes("Foam Board")), "resolved product loaded in PO summary");
     const sourceDocumentsText = container.querySelector("[data-testid='clean-source-documents']")?.textContent ?? "";
     expect(sourceDocumentsText).toContain("Product");
     expect(sourceDocumentsText).toContain("Foam Board");
@@ -4139,7 +4143,7 @@ describe("InboundOrdersPage", () => {
     const review = reviewDraft(parsed, {
       validationErrors: ["Banner: PO price differs from system price. Acknowledge or resolve pricing before conversion."],
     });
-    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review, pricingResponse: (parsed.lineItems[0] as any).pricingReviewJson });
 
     renderPage();
     await waitForText("Order Workstation");
@@ -4150,8 +4154,9 @@ describe("InboundOrdersPage", () => {
     await waitForText("Effective");
     await waitForText("Rush fee $5.00");
     await waitForText("Source evidence: Total: $50.00; System line price: $45.00");
-    expect(container.textContent).toContain("Line 1: PO price differs from system price.");
+    expect(container.textContent).toContain("Banner: PO price differs from system price.");
 
+    await waitForCondition(() => Boolean(container.querySelector('select[aria-label="Resolve PO price mismatch"]')), "pricing recalculation completed with PO mismatch");
     const resolutionSelect = Array.from(container.querySelectorAll("select")).find((select) => (
       select.getAttribute("aria-label") === "Resolve PO price mismatch"
     )) as HTMLSelectElement;
@@ -6666,6 +6671,23 @@ describe("InboundOrdersPage", () => {
     } finally {
       confirmSpy.mockRestore();
     }
+  });
+
+  test("shows stale or legacy evidence in the review interface without automatically refreshing", async () => {
+    const parsed = parsedDraft();
+    setupParsedInboundReview({ parsed, review: reviewDraft(parsed, {
+      evidenceReviewRequired: true, hasNewerParse: false,
+      evidenceFingerprint: "older", currentEvidenceFingerprint: "current",
+      validationErrors: ["Source evidence changed or is untracked. Parse current evidence and deliberately refresh before approval."],
+    }) });
+    renderPage();
+    await waitForText("Source evidence requires review.");
+    expect(container.textContent).toContain("Staff edits are preserved.");
+    expect(container.textContent).toContain("Parse current evidence, then deliberately refresh");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("Refresh from Latest Parse"))).toBe(true);
+    expect(apiFetchMock.mock.calls.some(([url]) => String(url).includes("refresh-from-latest-parse"))).toBe(false);
+    const createOrder = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Create Order") as HTMLButtonElement;
+    expect(createOrder.disabled).toBe(true);
   });
 
   test("edits and saves review draft fields while keeping conversion visibly blocked", async () => {

@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import type { InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
+import type { InboundOrderFile, InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
 import {
   getManualInboundEvidence,
   inboundOrderParsedDraftSchema,
@@ -340,12 +340,18 @@ export class InboundOrderParsingService {
     inboundRecordId: string;
     actorUserId: string;
   }): Promise<InboundOrderParseResult> {
-    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
 
     this.assertParseAllowed(record);
+    // Capture a coherent source version before external evidence/AI reads.
+    // No database lock survives this call.
+    const evidenceState = record.sourceType === "email"
+      ? await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId) : null;
+    if (evidenceState) record = evidenceState.record;
+    const evidenceFingerprint = evidenceState?.fingerprint ?? null;
 
     await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
@@ -372,7 +378,7 @@ export class InboundOrderParsingService {
     let rawPromptHash: string | null = null;
     let stage: InboundParseStage = "evidence_collection";
     try {
-      const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record);
+      const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record, evidenceState?.files);
       stage = "prompt_construction";
       const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle);
       rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
@@ -381,6 +387,7 @@ export class InboundOrderParsingService {
 
       if (!provider) {
         const attempt = await this.storeAttemptAndUpdateRecord({
+          evidenceFingerprint,
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
           actorUserId: args.actorUserId,
@@ -441,6 +448,7 @@ export class InboundOrderParsingService {
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
+        evidenceFingerprint,
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
         actorUserId: args.actorUserId,
@@ -469,6 +477,7 @@ export class InboundOrderParsingService {
     } catch (error: any) {
       const providerError = parseStageFailureMessage(stage, error);
       const attempt = await this.storeAttemptAndUpdateRecord({
+        evidenceFingerprint,
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
         actorUserId: args.actorUserId,
@@ -527,8 +536,8 @@ export class InboundOrderParsingService {
     return this.repository.listParseAttempts(args.organizationId, args.inboundRecordId);
   }
 
-  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord): Promise<InboundOrderEvidenceBundle> {
-    const files = await this.repository.listFiles(organizationId, record.id);
+  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord, capturedFiles?: InboundOrderFile[]): Promise<InboundOrderEvidenceBundle> {
+    const files = capturedFiles ?? await this.repository.listFiles(organizationId, record.id);
     const manualClassifications = await this.getManualAttachmentClassifications(organizationId, record.id);
     return this.evidenceService.buildEvidenceBundle({
       organizationId,
@@ -2049,6 +2058,7 @@ export class InboundOrderParsingService {
   }
 
   private async storeAttemptAndUpdateRecord(args: {
+    evidenceFingerprint?: string | null;
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
@@ -2057,7 +2067,9 @@ export class InboundOrderParsingService {
     finalStatus: InboundOrderRecordStatus;
     reviewRequiredReason: string | null;
   }): Promise<InboundOrderParseAttempt> {
-    const attempt = await this.repository.createParseAttempt(args.attempt);
+    const attempt = await this.repository.createParseAttempt({ ...args.attempt,
+      rawResponse: { ...(args.attempt.rawResponse ?? {}), inboundEvidenceFingerprint: args.evidenceFingerprint ?? null },
+    });
     const currentRecord = args.attempt.parsedDraft
       ? await this.repository.getRecord(args.organizationId, args.inboundRecordId)
       : null;
@@ -2067,6 +2079,7 @@ export class InboundOrderParsingService {
       ? currentRecord.normalizedPayloadJson as Record<string, unknown>
       : null;
     await this.repository.updateRecordWithEvent({
+      parsedEvidenceFingerprint: args.evidenceFingerprint,
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       patch: {

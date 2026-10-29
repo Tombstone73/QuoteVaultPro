@@ -19,6 +19,7 @@ import {
   type InboundOrderEvidenceBundle,
 } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "../services/inboundOrders/inboundOrderDateInference";
+import { fingerprintInboundEmailEvidence } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import { resolveAiParsingDescription, scoreProductKnowledgeCandidates } from "../storage/inboundProductKnowledgeMatcher";
 
 function inboundRecord(overrides: Record<string, any> = {}) {
@@ -174,7 +175,10 @@ function makeRepository(record = inboundRecord()) {
     matchCustomerWithEvent: jest.fn(),
     matchLineItemProductWithEvent: jest.fn(),
   };
-  return { repo, attempts, getCurrentRecord: () => currentRecord };
+  const evidenceRepo = Object.assign(repo, {
+    getEvidenceState: jest.fn(async () => ({ record: currentRecord, files: await repo.listFiles(), fingerprint: fingerprintInboundEmailEvidence(currentRecord, await repo.listFiles()) })),
+  });
+  return { repo: evidenceRepo, attempts, getCurrentRecord: () => currentRecord };
 }
 
 function makeProvider(rawText: string): AiProviderAdapter {
@@ -228,6 +232,29 @@ describe("InboundOrderParsingService", () => {
     expect(repo.createQuoteDraftFromInboundReview).not.toHaveBeenCalled();
     expect(repo.matchCustomerWithEvent).not.toHaveBeenCalled();
     expect(repo.matchLineItemProductWithEvent).not.toHaveBeenCalled();
+  });
+
+  test("binds a late AI result to the captured evidence version, never the newer import", async () => {
+    const { repo, attempts } = makeRepository(inboundRecord({ sourceType: "email" }));
+    const captured = (await repo.getEvidenceState()).fingerprint;
+    let release!: (value: any) => void;
+    let started!: () => void;
+    const providerStarted = new Promise<void>((resolve) => { started = resolve; });
+    const providerResult = new Promise<any>((resolve) => { release = resolve; });
+    const provider = makeProvider("");
+    (provider.generateJson as jest.Mock).mockImplementation(async () => { started(); return providerResult; });
+    const service = new InboundOrderParsingService(repo as any, () => provider,
+      { buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })) } as any);
+    const parsing = service.parseInboundOrderRecord({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    await providerStarted;
+    await repo.updateRecordWithEvent({ patch: { rawPayloadJson: { subject: "New revision", bodyText: "Twenty signs" } } });
+    release({ rawText: JSON.stringify(parsedDraft()), provider: "test", model: "test-model", requestMetadata: {} });
+    await parsing;
+    expect(attempts[0].rawResponse.inboundEvidenceFingerprint).toBe(captured);
+    expect(attempts[0].rawResponse.inboundEvidenceFingerprint).not.toBe((await repo.getEvidenceState()).fingerprint);
+    expect(repo.updateRecordWithEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+      parsedEvidenceFingerprint: captured, event: expect.objectContaining({ eventType: "parse.completed" }),
+    }));
   });
 
   test("normalizes common quantity words from email body before missing decision detection", async () => {

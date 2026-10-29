@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { google } from "googleapis";
 
 import { db } from "../db";
+import { fingerprintInboundEmailEvidence } from "./inboundOrders/inboundEmailEvidenceFingerprint";
 import {
   inboundEmailMailboxes,
   inboundOrderEvents,
@@ -2872,6 +2873,7 @@ export class InboundEmailIngestionService {
           idempotencyKey,
           rawPayloadJson,
           normalizedPayloadJson: {
+            evidenceFingerprint: fingerprintInboundEmailEvidence({ sourceMessageId: message.messageId, rawPayloadJson, externalReference, receivedAt: message.receivedAt }, []),
             intakeMode: "TEMP_INBOUND",
             source: {
               type: "email",
@@ -3183,7 +3185,11 @@ export class InboundEmailIngestionService {
           externalReference: truncate(externalReferenceForMessage(latestMessage ?? seedMessage), 255),
           idempotencyKey,
           rawPayloadJson: evidence.patch.rawPayloadJson,
-          normalizedPayloadJson: evidence.patch.normalizedPayloadJson,
+          normalizedPayloadJson: { ...evidence.patch.normalizedPayloadJson,
+            evidenceFingerprint: fingerprintInboundEmailEvidence({ sourceMessageId: latestMessage.messageId, ...evidence.patch,
+              externalReference: truncate(externalReferenceForMessage(latestMessage ?? seedMessage), 255), receivedAt,
+            }, []),
+          },
           extractedCustomerJson: {
             senderName: latestMessage.senderName,
             senderEmail: latestMessage.senderEmail,

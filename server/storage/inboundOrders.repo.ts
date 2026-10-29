@@ -56,6 +56,7 @@ import {
   type QuoteLineItem,
 } from "@shared/schema";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
+import { fingerprintInboundEmailEvidence, evidenceFingerprintFromSnapshot, evidenceFingerprintFromAttempt, InboundEvidenceConflictError, INBOUND_EVIDENCE_REVIEW_REQUIRED } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { buildInboundQuoteCreatedAuditLogValues } from "../services/inboundOrders/inboundQuoteProvenance";
 import {
@@ -334,6 +335,61 @@ export type ResolveInboundDecisionFlagInput = {
 
 export class InboundOrdersRepository {
   constructor(private readonly dbInstance = db) {}
+
+  // Use the existing transaction-scoped advisory-lock convention. The tenant
+  // scope also serializes combined-record membership/file changes without a
+  // parent/child lock-order race. Never call external providers inside this lock.
+  private async lockEvidence(organizationId: string, inboundRecordId: string, tx: any): Promise<InboundOrderRecord | null> {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${organizationId}`}))`);
+    const [record] = await tx.select().from(inboundOrderRecords).where(and(
+      eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId),
+    )).for("update").limit(1);
+    return record ?? null;
+  }
+
+  private async synchronizeEvidence(organizationId: string, inboundRecordId: string, tx: any): Promise<{ record: InboundOrderRecord; files: InboundOrderFile[]; fingerprint: string }> {
+    const repository = new InboundOrdersRepository(tx);
+    const record = await repository.getRecord(organizationId, inboundRecordId);
+    if (!record) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+    const files = await repository.listFiles(organizationId, inboundRecordId);
+    const fingerprint = fingerprintInboundEmailEvidence(record, files);
+    if (record.sourceType !== "email") return { record, files, fingerprint };
+    const snapshots = await repository.listReviewSnapshots(organizationId, inboundRecordId);
+    const draft = snapshots.find((snapshot) => (snapshot.payloadJson as any)?.metadata?.snapshotKind === "editable_review_draft") ?? null;
+    const stale = Boolean(draft && evidenceFingerprintFromSnapshot(draft) !== fingerprint);
+    const [updated] = await tx.update(inboundOrderRecords).set({
+      normalizedPayloadJson: { ...(record.normalizedPayloadJson ?? {}), evidenceFingerprint: fingerprint },
+      ...(stale && !record.createdOrderId && !record.createdQuoteId && !["ignored", "terminal"].includes(record.status) ? {
+        status: "needs_review" as const, requiresHumanDecision: true, approvedAt: null,
+        reviewRequiredReason: INBOUND_EVIDENCE_REVIEW_REQUIRED,
+      } : {}),
+    }).where(and(eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId))).returning();
+    return { record: updated ?? record, files, fingerprint };
+  }
+
+  async getEvidenceState(organizationId: string, inboundRecordId: string): Promise<{ record: InboundOrderRecord; files: InboundOrderFile[]; fingerprint: string }> {
+    return this.dbInstance.transaction(async (tx) => {
+      if (!await this.lockEvidence(organizationId, inboundRecordId, tx)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      return this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+    });
+  }
+
+  private async assertCurrentEvidence(organizationId: string, inboundRecordId: string, tx: any, expectedSnapshotId?: string) {
+    const repository = new InboundOrdersRepository(tx);
+    const record = await repository.getRecord(organizationId, inboundRecordId);
+    if (!record || record.sourceType !== "email") return;
+    const fingerprint = fingerprintInboundEmailEvidence(record, await repository.listFiles(organizationId, inboundRecordId));
+    const snapshot = (await repository.listReviewSnapshots(organizationId, inboundRecordId))[0] ?? null;
+    if (!snapshot || (expectedSnapshotId && snapshot.id !== expectedSnapshotId)
+      || evidenceFingerprintFromSnapshot(snapshot) !== fingerprint) throw new InboundEvidenceConflictError();
+  }
+
+  private async synchronizeEvidenceAndParent(organizationId: string, inboundRecordId: string, tx: any) {
+    const state = await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+    const parentId = (state.record.normalizedPayloadJson as any)?.combinedParentRecordId;
+    if (typeof parentId === "string") await this.synchronizeEvidence(organizationId, parentId, tx);
+    return state;
+  }
 
   async transaction<T>(callback: (tx: any, repository: InboundOrdersRepository) => Promise<T>): Promise<T> {
     return this.dbInstance.transaction(async (tx: any) => callback(tx, new InboundOrdersRepository(tx as typeof db)));
@@ -1320,6 +1376,7 @@ export class InboundOrdersRepository {
   }): Promise<InboundOrderRecord | null> {
     return this.dbInstance.transaction(async (tx) => {
       const now = new Date();
+      await this.lockEvidence(args.organizationId, args.primaryRecordId, tx);
       const [primary] = await tx
         .select()
         .from(inboundOrderRecords)
@@ -1392,6 +1449,7 @@ export class InboundOrdersRepository {
           metadataJson: { parentRecordId: args.primaryRecordId },
         });
       }
+      await this.synchronizeEvidence(args.organizationId, args.primaryRecordId, tx);
       return updatedPrimary ?? null;
     });
   }
@@ -1425,27 +1483,36 @@ export class InboundOrdersRepository {
     fileId: string;
     patch: Partial<typeof inboundOrderFiles.$inferInsert>;
   }, executor: any = this.dbInstance): Promise<InboundOrderFile | null> {
-    const childRecords = await this.listCombinedChildRecords(args.organizationId, args.inboundRecordId);
-    const accessibleRecordIds = [args.inboundRecordId, ...childRecords.map((record) => record.id)];
-    const [updated] = await executor
-      .update(inboundOrderFiles)
-      .set({ ...args.patch, updatedAt: new Date() })
-      .where(and(
-        eq(inboundOrderFiles.organizationId, args.organizationId),
-        eq(inboundOrderFiles.id, args.fileId),
-        inArray(inboundOrderFiles.inboundRecordId, accessibleRecordIds),
-      ))
-      .returning();
-    return updated ?? null;
+    return executor.transaction(async (tx: any) => {
+      if (!await this.lockEvidence(args.organizationId, args.inboundRecordId, tx)) return null;
+      const repository = new InboundOrdersRepository(tx);
+      const childRecords = await repository.listCombinedChildRecords(args.organizationId, args.inboundRecordId);
+      const accessibleRecordIds = [args.inboundRecordId, ...childRecords.map((record) => record.id)];
+      const [updated] = await tx
+        .update(inboundOrderFiles)
+        .set({ ...args.patch, updatedAt: new Date() })
+        .where(and(
+          eq(inboundOrderFiles.organizationId, args.organizationId),
+          eq(inboundOrderFiles.id, args.fileId),
+          inArray(inboundOrderFiles.inboundRecordId, accessibleRecordIds),
+        ))
+        .returning();
+      if (updated) await this.synchronizeEvidenceAndParent(args.organizationId, args.inboundRecordId, tx);
+      return updated ?? null;
+    });
   }
 
   async createFile(values: CreateInboundOrderFileValues, executor: any = this.dbInstance): Promise<InboundOrderFile> {
-    const [created] = await executor
-      .insert(inboundOrderFiles)
-      .values(values)
-      .returning();
-    if (!created) throw new Error("Failed to create inbound order file");
-    return created;
+    return executor.transaction(async (tx: any) => {
+      if (!await this.lockEvidence(values.organizationId, values.inboundRecordId, tx)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      const [created] = await tx
+        .insert(inboundOrderFiles)
+        .values(values)
+        .returning();
+      if (!created) throw new Error("Failed to create inbound order file");
+      await this.synchronizeEvidenceAndParent(values.organizationId, values.inboundRecordId, tx);
+      return created;
+    });
   }
 
   async listWarnings(organizationId: string, inboundRecordId: string): Promise<InboundOrderWarning[]> {
@@ -2461,12 +2528,35 @@ export class InboundOrdersRepository {
     inboundRecordId: string;
     patch: UpdateInboundOrderRecordValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
+    parsedEvidenceFingerprint?: string | null;
   }): Promise<{ record: InboundOrderRecord; event: InboundOrderEvent } | null> {
     return this.dbInstance.transaction(async (tx) => {
+      const current = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
+      if (!current) return null;
+      const patch = { ...args.patch };
+      if (current.sourceType === "email") {
+        if (args.event.eventType === "parse.requested" && (current.createdOrderId || current.createdQuoteId || ["ignored", "terminal", "submitted", "approved"].includes(current.status))) {
+          throw new InboundEvidenceConflictError("Inbound record was linked or dismissed before parsing could start.");
+        }
+        if (args.event.eventType === "parse.completed") {
+          const state = await this.synchronizeEvidence(args.organizationId, args.inboundRecordId, tx);
+          const currentParse = Boolean(args.parsedEvidenceFingerprint && args.parsedEvidenceFingerprint === state.fingerprint);
+          // Parsing produces suggestions, never human approval. A late result
+          // cannot clear the pending review or the newer evidence's retry flag.
+          patch.status = "needs_review";
+          patch.requiresHumanDecision = true;
+          patch.approvedAt = null;
+          patch.reviewRequiredReason = currentParse ? args.patch.reviewRequiredReason ?? "AI suggestions require staff review." : INBOUND_EVIDENCE_REVIEW_REQUIRED;
+          patch.normalizedPayloadJson = { ...(state.record.normalizedPayloadJson ?? {}), reparseRecommended: !currentParse };
+          if (current.createdOrderId || current.createdQuoteId || ["ignored", "terminal", "submitted", "approved"].includes(current.status)) return null;
+        } else if (["ready", "approved", "submitted"].includes(patch.status ?? "")) {
+          await this.assertCurrentEvidence(args.organizationId, args.inboundRecordId, tx);
+        }
+      }
       const [record] = await tx
         .update(inboundOrderRecords)
         .set({
-          ...args.patch,
+          ...patch,
           updatedAt: new Date(),
         })
         .where(
@@ -2480,11 +2570,14 @@ export class InboundOrdersRepository {
       if (!record) {
         return null;
       }
+      const persistedRecord = current.sourceType === "email"
+        ? (await this.synchronizeEvidenceAndParent(args.organizationId, args.inboundRecordId, tx)).record : record;
 
       const [event] = await tx
         .insert(inboundOrderEvents)
         .values({
           ...args.event,
+          ...(current.sourceType === "email" ? { toStatus: persistedRecord.status } : {}),
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
         })
@@ -2494,7 +2587,7 @@ export class InboundOrdersRepository {
         throw new Error("Failed to create inbound order event");
       }
 
-      return { record, event };
+      return { record: persistedRecord, event };
     });
   }
 
@@ -2502,8 +2595,12 @@ export class InboundOrdersRepository {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    snapshotId?: string;
   }): Promise<InboundOrderRecord | null> {
     return this.dbInstance.transaction(async (tx) => {
+      const current = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
+      if (!current || current.createdOrderId || current.createdQuoteId) return null;
+      await this.assertCurrentEvidence(args.organizationId, args.inboundRecordId, tx, args.snapshotId);
       const now = new Date();
       const [record] = await tx
         .update(inboundOrderRecords)
@@ -2645,12 +2742,16 @@ export class InboundOrdersRepository {
     errors?: string[];
   }): Promise<InboundOrderRecord | null> {
     return this.dbInstance.transaction(async (tx) => {
+      const current = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
+      if (!current) return null;
+      if (current.createdOrderId || current.createdQuoteId) return current;
       const now = new Date();
       const [updated] = await tx
         .update(inboundOrderRecords)
         .set({
-          status: "ready",
+          status: current.sourceType === "email" ? "needs_review" : "ready",
           reviewOutcome: "order_conversion_failed",
+          ...(current.sourceType === "email" ? { requiresHumanDecision: true, approvedAt: null, reviewRequiredReason: args.message } : {}),
           updatedAt: now,
         })
         .where(
@@ -2684,11 +2785,47 @@ export class InboundOrdersRepository {
   async createReviewSnapshotWithEvent(args: {
     snapshot: CreateInboundOrderReviewSnapshotValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
+    evidenceSourceParseAttemptId?: string;
+    evidenceSourceSnapshotId?: string | null;
+    recordPatch?: UpdateInboundOrderRecordValues;
   }): Promise<{ snapshot: InboundOrderReviewSnapshot; event: InboundOrderEvent }> {
     return this.dbInstance.transaction(async (tx) => {
+      const { organizationId, inboundRecordId } = args.snapshot;
+      const current = await this.lockEvidence(organizationId, inboundRecordId, tx);
+      if (!current) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      let snapshotValues = args.snapshot;
+      if (current.sourceType === "email") {
+        if (current.createdOrderId || current.createdQuoteId) throw new InboundEvidenceConflictError("Converted inbound drafts cannot be changed.");
+        const repository = new InboundOrdersRepository(tx as unknown as typeof db);
+        const state = await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+        const snapshots = await repository.listReviewSnapshots(organizationId, inboundRecordId);
+        const latest = snapshots[0] ?? null;
+        const sourceSnapshot = snapshots.find((item) => item.id === args.evidenceSourceSnapshotId) ?? null;
+        let coveredFingerprint: string | null = null;
+        if (args.evidenceSourceParseAttemptId) {
+          if ((latest?.id ?? null) !== (args.evidenceSourceSnapshotId ?? null)) throw new InboundEvidenceConflictError("Review draft changed while preparing refresh. Reload before refreshing.");
+          const [attempt] = await tx.select().from(inboundOrderParseAttempts).where(and(
+            eq(inboundOrderParseAttempts.organizationId, organizationId),
+            eq(inboundOrderParseAttempts.inboundOrderRecordId, inboundRecordId),
+            eq(inboundOrderParseAttempts.id, args.evidenceSourceParseAttemptId),
+          )).limit(1);
+          coveredFingerprint = evidenceFingerprintFromAttempt(attempt ?? null);
+          if (!coveredFingerprint || coveredFingerprint !== state.fingerprint) throw new InboundEvidenceConflictError("Latest parse does not cover current evidence. Parse again before refreshing.");
+        } else if (args.evidenceSourceSnapshotId) {
+          if (!sourceSnapshot || latest?.id !== sourceSnapshot.id) throw new InboundEvidenceConflictError("Review draft changed. Reload before saving.");
+          coveredFingerprint = evidenceFingerprintFromSnapshot(sourceSnapshot);
+        }
+        const approval = args.recordPatch?.status === "ready" || (args.snapshot.payloadJson as any)?.status === "ready_to_convert";
+        if (approval && (!coveredFingerprint || coveredFingerprint !== state.fingerprint)) throw new InboundEvidenceConflictError();
+        snapshotValues = { ...args.snapshot, snapshotVersion: (latest?.snapshotVersion ?? 0) + 1,
+          payloadJson: { ...args.snapshot.payloadJson, metadata: {
+            ...((args.snapshot.payloadJson as any)?.metadata ?? {}), evidenceFingerprint: coveredFingerprint,
+          } },
+        };
+      }
       const [snapshot] = await tx
         .insert(inboundOrderReviewSnapshots)
-        .values(args.snapshot)
+        .values(snapshotValues)
         .returning();
 
       if (!snapshot) {
@@ -2708,6 +2845,10 @@ export class InboundOrdersRepository {
         throw new Error("Failed to create inbound order event");
       }
 
+      if (args.recordPatch) await tx.update(inboundOrderRecords).set({ ...args.recordPatch, updatedAt: new Date() })
+        .where(and(eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId)));
+      if (current.sourceType === "email") await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+
       return { snapshot, event };
     });
   }
@@ -2717,6 +2858,8 @@ export class InboundOrdersRepository {
     input: InboundQuoteDraftInput,
   ): Promise<InboundQuoteDraftResult | null> {
     return this.dbInstance.transaction(async (tx) => {
+      await this.lockEvidence(organizationId, input.inboundRecordId, tx);
+      await this.assertCurrentEvidence(organizationId, input.inboundRecordId, tx, input.snapshotId);
       const [record] = await tx
         .select()
         .from(inboundOrderRecords)

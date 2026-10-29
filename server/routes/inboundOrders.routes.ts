@@ -7,6 +7,7 @@
  */
 
 import crypto from "crypto";
+import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import fsPromises from "fs/promises";
 import path from "path";
 import type { Express } from "express";
@@ -528,7 +529,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error creating inbound email ignore rule:", error);
@@ -561,7 +562,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error updating inbound email ignore rule:", error);
@@ -584,7 +585,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error deleting inbound email ignore rule:", error);
@@ -634,7 +635,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error creating inbound email trust rule:", error);
@@ -667,7 +668,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error updating inbound email trust rule:", error);
@@ -690,7 +691,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error deleting inbound email trust rule:", error);
@@ -981,7 +982,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1030,7 +1031,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1056,7 +1057,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1244,7 +1245,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error updating inbound attachment classification:", error);
@@ -1406,7 +1407,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1447,11 +1448,17 @@ export function registerInboundOrderRoutes(
       }
 
       try {
-        const reviewDraft = await service.refreshReviewDraftFromLatestParse({
-          organizationId,
-          inboundRecordId: String(req.params.id),
-          actorUserId,
-        });
+        const reviewDraft = await (result.record.sourceType === "email"
+          ? service.getReviewDraft({
+            organizationId,
+            inboundRecordId: String(req.params.id),
+            actorUserId,
+          })
+          : service.refreshReviewDraftFromLatestParse({
+            organizationId,
+            inboundRecordId: String(req.params.id),
+            actorUserId,
+          }));
         await eventRepository.createEvent({
           organizationId,
           inboundRecordId: String(req.params.id),
@@ -1460,7 +1467,9 @@ export function registerInboundOrderRoutes(
           eventType: "parse.review_draft_persisted",
           fromStatus: result.record.status,
           toStatus: reviewDraft.status === "ready_to_convert" ? "ready" : result.record.status,
-          message: "Editable review draft persisted after parse.",
+          message: result.record.sourceType === "email" && !reviewDraft.initializedFromParse
+            ? "Existing staff review draft retained after parse; adopting new suggestions requires explicit refresh."
+            : "Editable review draft persisted after parse.",
           metadataJson: {
             parseAttemptId: result.latestAttempt.id,
             reviewDraftId: reviewDraft.id,
@@ -1475,6 +1484,9 @@ export function registerInboundOrderRoutes(
         });
         res.json({ success: true, data: { ...result, reviewDraft } });
       } catch (draftError) {
+        if (draftError instanceof InboundEvidenceConflictError) {
+          return res.status(409).json({ success: false, message: draftError.message, data: result });
+        }
         const message = draftError instanceof Error ? draftError.message : "Failed to persist review draft after parse.";
         await eventRepository.createEvent({
           organizationId,
@@ -1503,7 +1515,7 @@ export function registerInboundOrderRoutes(
         });
       }
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1530,7 +1542,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: attempts });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1557,7 +1569,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: preview });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1588,7 +1600,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: draft });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1625,7 +1637,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1676,7 +1688,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof InboundOrderReviewDraftValidationError || error instanceof InboundOrderConversionValidationError) {
         return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
@@ -1707,7 +1719,7 @@ export function registerInboundOrderRoutes(
         return res.status(error.statusCode).json({ message: error.message, errors: error.errors });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1738,7 +1750,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: draft });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1769,7 +1781,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: draft });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1809,7 +1821,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1865,7 +1877,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error ignoring inbound order record:", error);
@@ -1896,7 +1908,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error deleting inbound order queue record:", error);
@@ -1955,7 +1967,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error combining inbound order records:", error);
@@ -1983,7 +1995,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error attaching inbound record to existing order:", error);
@@ -2027,7 +2039,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2050,7 +2062,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: preview });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2085,7 +2097,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2119,7 +2131,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message, blockers: [message], warnings: [] });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message, blockers: [error.message], warnings: [] });
       }
 
@@ -2156,7 +2168,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2191,7 +2203,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2227,7 +2239,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2254,7 +2266,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: result });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({
           success: false,
           message: error.message,
@@ -2301,7 +2313,7 @@ export function registerInboundOrderRoutes(
         return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
 

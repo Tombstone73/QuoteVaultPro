@@ -8689,12 +8689,14 @@ function DraftBuilderPanel({
             </AlertDescription>
           </Alert>
         )}
-        {reviewDraft.hasNewerParse && (
+        {(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired) && (
           <Alert>
             <RefreshCw className="h-4 w-4" />
-            <AlertTitle>Current draft is older than the latest parse.</AlertTitle>
+            <AlertTitle>{reviewDraft.evidenceReviewRequired ? "Source evidence requires review." : "Current draft is older than the latest parse."}</AlertTitle>
             <AlertDescription>
-              Latest Parse Suggestions may differ from Current Draft Selections below. Existing staff edits are preserved until you refresh from the latest parse.
+              {reviewDraft.evidenceReviewRequired
+                ? "The source evidence changed or this draft predates evidence tracking. Staff edits are preserved. Parse current evidence, then deliberately refresh from the latest parse before approval. Previous edits remain in snapshot history."
+                : "Latest Parse Suggestions may differ from Current Draft Selections below. Existing staff edits are preserved until you refresh from the latest parse."}
             </AlertDescription>
             <div className="mt-3">
               <Button
@@ -10038,7 +10040,7 @@ function DraftBuilderPanel({
                 size="sm"
                 className="h-8 px-2 text-xs"
                 onClick={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
-                disabled={actionPending}
+                disabled={actionPending || reviewDraft.evidenceReviewRequired === true}
                 title={canCreateDraftOrder ? "Create an order from the current reviewed inbound draft." : draftOrderBlockers[0]}
               >
                 {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

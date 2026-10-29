@@ -10,6 +10,7 @@ import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
 import {
   InboundEmailIngestionError,
 } from "../services/inboundEmailIngestionService";
+import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import {
   InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
@@ -419,6 +420,7 @@ function buildApp(
   };
   const tenantContext = (req: any, _res: any, next: any) => {
     req.organizationId = options.orgId ?? "org_1";
+    req.actorOrgRole = options.userRole ?? "admin";
     next();
   };
   const assertInternalUser = (_req: any, res: any) => {
@@ -1810,6 +1812,30 @@ describe("inbound order routes", () => {
       }),
     }));
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("parsing an email retains staff draft selections instead of automatically refreshing", async () => {
+    const draft = parsedDraft();
+    const retained = reviewDraft({ sourceParseAttemptId: "older", evidenceReviewRequired: true });
+    parsingService.parseInboundOrderRecord.mockResolvedValueOnce({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }), record: inboundRecord({ sourceType: "email" }) });
+    service.getReviewDraft.mockResolvedValueOnce(retained);
+    const response = await request(buildApp(service, { parsingService })).post("/api/inbound-orders/inbound_1/parse").send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.reviewDraft).toEqual(retained);
+    expect(service.getReviewDraft).toHaveBeenCalledWith({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(service.refreshReviewDraftFromLatestParse).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["create-order", "createOrderFromReviewDraft"],
+    ["convert-to-order", "convertInboundReviewDraftToOrder"],
+    ["create-quote-draft", "createQuoteDraftFromInbound"],
+    ["review-draft/mark-ready", "markReviewDraftReady"],
+  ])("direct %s reports stale evidence as conflict", async (endpoint, operation) => {
+    (service as any)[operation].mockRejectedValueOnce(new InboundEvidenceConflictError());
+    const response = await request(buildApp(service)).post(`/api/inbound-orders/inbound_1/${endpoint}`).send(reviewDraft());
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain("Source evidence changed or is untracked");
   });
 
   test("returns a safe operator error when parse succeeds but review draft persistence fails", async () => {
