@@ -14,7 +14,10 @@ class Store implements CloneInactiveProductDraftStore {
     pbv2Tree: { id: "tree_1", productId: "source_1", status: "ACTIVE", schemaVersion: 2, updatedAt: "2026-07-31T12:00:00.000Z", treeJson: { status: "ACTIVE", pricingMatrix: { rows: [{ id: "r1" }] } } },
   };
   calls = 0;
-  async loadSource() { return structuredClone(this.source); }
+  async loadSource(input: { productId: string }) {
+    if (input.productId === "clone_1" && this.proposal?.status === "succeeded") return { ...structuredClone(this.source), product: { ...structuredClone(this.source.product), id: "clone_1", name: this.proposal.preview.result.product.name, isActive: false, pbv2ActiveTreeVersionId: null }, pbv2Tree: { ...structuredClone(this.source.pbv2Tree), id: "tree_clone_1", productId: "clone_1", status: "DRAFT" as const, treeJson: this.proposal.preview.result.pbv2Tree.treeJson } };
+    return structuredClone(this.source);
+  }
   async findProductsByNormalizedName() { return []; }
   async createProposal(input: Omit<CloneInactiveProductProposal, "id">) { this.proposal = { ...structuredClone(input), id: proposalId }; return structuredClone(this.proposal); }
   async getProposal() { return structuredClone(this.proposal); }
@@ -44,4 +47,18 @@ describe("clone inactive product draft execution command", () => {
     const command = createCloneInactiveProductDraftExecutionCommand(store);
     await expect(command.revalidate({ scope, plan: { sanitizedArguments: { proposalId, proposalFingerprint: proposal.fingerprint } } as any })).resolves.toMatchObject({ valid: false, code: "CLONE_SOURCE_STALE" });
   });
+  test("does not report success when persisted clone readback disagrees", async () => {
+    const store = new Store();
+    const service = new CloneInactiveProductDraftService(store);
+    const proposal = await service.prepareProposal({ organizationId: "org_1", actorUserId: "user_1", sourceProductId: "source_1", requestedChanges: { newName: "Economy Banner" } });
+    const read = store.loadSource.bind(store);
+    store.loadSource = async (input) => {
+      const snapshot = await read(input);
+      if (input.productId === "clone_1") snapshot.product.isActive = true;
+      return snapshot;
+    };
+    const command = createCloneInactiveProductDraftExecutionCommand(store);
+    await expect(command.execute({ scope, plan: { id: "plan_1", idempotencyKey: "key_1", correlationId: "corr_1", sanitizedArguments: { proposalId, proposalFingerprint: proposal.fingerprint } } as any })).rejects.toMatchObject({ code: "CLONE_READBACK_FAILED" });
+  });
+
 });

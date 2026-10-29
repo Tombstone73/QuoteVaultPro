@@ -264,6 +264,21 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).not.toContain('"minimumChargeCents"');
   });
 
+  it("renders real PBV2 clone options and explicit metadata changes without claiming they are unchanged", () => {
+    const preview = { requestedChanges: { newName: "PET", category: "Film", description: "New description" },
+      source: { product: { name: "Translucent", category: "Signs", description: "Original", configuration: { sheetWidth: "54.00", sheetHeight: "120.00", pricingProfileConfig: { allowRotation: true } } }, pbv2Tree: { treeJson: { nodes: { finish: { kind: "question", label: "Finish", status: "ENABLED" }, contour: { kind: "question", label: "Contour", status: "ENABLED" } }, meta: { productIntake: { production: { route: { label: "Roll printing" } } } } } } },
+      result: { product: { name: "PET", category: "Film", description: "New description" } }, basePricing: { before: { perSqftCents: null }, after: { perSqftCents: 400 } } };
+    const card = { kind: "action_plan", title: "Clone", plan: { id: "clone-plan", action: "products.clone_to_inactive_draft", status: "succeeded", planVersion: 3, preview: { cloneInactiveDraft: { preview } }, executionResult: { details: { cloneInactiveDraft: { editorLink: "/products/clone-id/edit?draftTreeVersionId=draft-id" } } } } };
+    const model = toAssistantPlanCardModel(card)!;
+    expect(model.cloneInactiveDraft).toMatchObject({ options: "Finish, Contour", productionRoute: "Roll printing", rotation: true, categoryChanged: true, fieldChanges: [{ label: "Category", before: "Signs", after: "Film" }, { label: "Description", before: "Original", after: "New description" }] });
+    act(() => root.render(<AssistantPlanCard card={card} context={buildSafeAssistantContext("/products", "Products")} />));
+    expect(container.textContent).toContain("Options: Finish, Contour");
+    expect(container.textContent).toContain("$4.00");
+    expect(container.textContent).toContain("Roll printing");
+    expect(container.textContent).not.toContain("Category: Signs");
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/products/clone-id/edit?draftTreeVersionId=draft-id"]')).not.toBeNull();
+  });
+
   it("renders an exact inactive-draft update preview and blocks GO for server validation errors", () => {
     const updatePlan = {
       kind: "action_plan",
