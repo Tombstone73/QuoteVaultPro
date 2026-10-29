@@ -1508,7 +1508,7 @@ export async function registerMvpInvoicingRoutes(
   });
   app.post('/api/invoices/customer-payment/preview', isAuthenticated, tenantContext, requireInvoiceBulkAction('payment'), async (req: any, res) => {
     try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); const body = customerPaymentSchema.omit({ method: true, appliedAt: true, notes: true, reference: true, expectedRemainingCents: true }).parse(req.body || {}); return res.json({ success: true, data: await canonicalPaymentOperations.previewCustomerPayment({ organizationId, ...body, staffSelection: true }) }); }
-    catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer payment.', code: error.code }); }
+    catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer payment.', code: error.code, blockedInvoice: error.blockedInvoice }); }
   });
   app.post('/api/invoices/customer-payment', isAuthenticated, tenantContext, requireInvoiceBulkAction('payment'), async (req: any, res) => {
     try {
@@ -1533,7 +1533,7 @@ export async function registerMvpInvoicingRoutes(
         idempotencyKey: `ui:${idempotencyKey}`,
       }) });
     }
-    catch (error: any) { const notFound = error?.code === 'INVOICE_NOT_FOUND' || error?.code === 'ORDER_NOT_FOUND'; return res.status(notFound ? 404 : error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to record customer payment.', code: error.code }); }
+    catch (error: any) { const notFound = error?.code === 'INVOICE_NOT_FOUND' || error?.code === 'ORDER_NOT_FOUND'; return res.status(notFound ? 404 : error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to record customer payment.', code: error.code, blockedInvoice: error.blockedInvoice }); }
   });
 
   // ------------------------------------------------------------

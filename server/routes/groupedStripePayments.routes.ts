@@ -25,7 +25,7 @@ export function registerGroupedStripePaymentRoutes(app: Express, deps: { isAuthe
         return res.json({ success: true, data });
       } catch (error: any) {
         return res.status(error?.statusCode || (error?.name === "ZodError" ? 400 : 500))
-          .json({ success: false, error: error.message || "Unable to process payment.", code: error.code });
+          .json({ success: false, error: error.message || "Unable to process payment.", code: error.code, blockedInvoice: error.blockedInvoice });
       }
     });
   };

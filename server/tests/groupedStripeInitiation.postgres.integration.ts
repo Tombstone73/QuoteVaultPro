@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, expect, jest, test } from '@jest/globals';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { customerPaymentBatches, customers, invoices, organizations, users, payments, stripePaymentAttempts, integrationConnections, paymentWebhookEvents } from '../../shared/schema';
+import { customerPaymentBatches, customers, invoices, orders, organizations, users, payments, stripePaymentAttempts, integrationConnections, paymentWebhookEvents } from '../../shared/schema';
 
 const intents = new Map<string, any>();
 const keys = new Map<string, any>();
@@ -77,6 +77,7 @@ afterAll(async () => {
     await db.delete(stripePaymentAttempts).where(eq(stripePaymentAttempts.organizationId, organizationId));
     await db.delete(customerPaymentBatches).where(eq(customerPaymentBatches.organizationId, organizationId));
     await db.delete(invoices).where(eq(invoices.organizationId, organizationId));
+    await db.delete(orders).where(eq(orders.organizationId, organizationId));
     await db.delete(customers).where(eq(customers.organizationId, organizationId));
     await db.delete(organizations).where(eq(organizations.id, organizationId));
   }
@@ -266,4 +267,13 @@ test('duplicate webhook observations and browser confirmation allocate the same 
   const saved = await readGroupedStripePayment({ organizationId, paymentIntentId: intent.id });
   expect(saved.finalized).toBe(true); expect(saved.allocations).toHaveLength(2);
   expect(saved.invoices.every(i => i.amountDueCents === 0)).toBe(true);
+});
+
+test('ordinary native Orders with null Redo provenance use existing grouped initiation and finalization exactly once',async()=>{
+ const a=await fixture(),before=keys.size;
+ for(const invoiceId of a.invoiceIds){const [order]=await db.insert(orders).values({organizationId,customerId,createdByUserId:userId,orderNumber:'SYNTHETIC-'+randomUUID()}).returning();expect(order.redoRootOrderId).toBeNull();await db.update(invoices).set({orderId:order.id}).where(eq(invoices.id,invoiceId));}
+ const result=await initiateFullBalanceStripePayment({...a,expectedRemainingCents:a.providerEvidence.expectedRemainingCents});const intent=Array.from(intents.values()).find(i=>i.metadata.customerPaymentBatchId===result.paymentBatchId);expect(intent.amount).toBe(20000);expect(keys.size-before).toBe(1);
+ intent.status='succeeded';intent.amount_received=intent.amount;
+ const access={organizationId,paymentIntentId:intent.id,actorUserId:userId};const saved=await confirmGroupedStripePayment(access);expect(saved.finalized).toBe(true);expect(saved.allocations).toHaveLength(2);expect(saved.invoices.every(i=>i.amountDueCents===0)).toBe(true);expect((await confirmGroupedStripePayment(access)).allocations).toEqual(saved.allocations);expect(keys.size-before).toBe(1);
+ const savedPayments=await db.select().from(payments).where(eq(payments.customerPaymentBatchId,result.paymentBatchId));expect(savedPayments).toHaveLength(2);expect(savedPayments.every(p=>p.status==='succeeded'&&p.amountCents===10000)).toBe(true);
 });

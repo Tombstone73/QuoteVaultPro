@@ -239,7 +239,7 @@ describe('customer settlement lifecycle on isolated PostgreSQL', () => {
     const f = await fixture(status);
     await advance(f, 10000);
     const before = await readback(f);
-    await expect(pay(f, 1000, 'blocked-' + f.invoice.id)).rejects.toMatchObject({ code: 'NO_PAYABLE_BALANCE' });
+    await expect(pay(f, 1000, 'blocked-' + f.invoice.id)).rejects.toMatchObject({ code: 'INVOICE_NOT_PAYABLE', blockedInvoice: {invoiceId: f.invoice.id} });
     await expect(apply(f, 1000, 'blocked-credit-' + f.invoice.id)).rejects.toMatchObject({ code: 'INVOICE_NOT_PAYABLE' });
     const after = await readback(f);
     expect(after.invoice.status).toBe(before.invoice.status);

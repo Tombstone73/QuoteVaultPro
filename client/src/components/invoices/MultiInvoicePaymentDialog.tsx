@@ -65,7 +65,12 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
     }).then(async response => {
       const body = await response.json().catch(() => ({}));
       if (cancelled) return;
-      if (!response.ok) throw new Error(body.error || 'Unable to preview customer payment.');
+      if (!response.ok) {
+        const reason = body.code === 'ORDER_NOT_FOUND'
+          ? `Invoice ${body.blockedInvoice?.invoiceNumber ?? '(selected)'} cannot be included because its linked Order could not be verified. Remove this invoice from the selection or resolve its billing relationship before taking payment.`
+          : body.error || 'Unable to preview customer payment. Refresh the preview or correct the invoice selection.';
+        throw new Error(reason);
+      }
       setPreviewState({ key: previewKey, data: body.data });
     }).catch((error: Error) => { if (!cancelled) setError(error.message); });
     return () => { cancelled = true; };
@@ -159,7 +164,7 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
             <p className="text-sm text-muted-foreground">Eligible balance</p>
             <p className="text-2xl font-semibold">{money(preview.totalOutstandingCents)}</p>
             {preview.message && <p role="status">{preview.message}</p>}
-          </> : <p>{error ? 'Preview unavailable.' : invoiceIds.length ? 'Loading…' : 'Select at least one invoice.'}</p>}
+          </> : <p>{error ? 'Review the selected invoices before taking payment.' : invoiceIds.length ? 'Loading…' : 'Select at least one invoice.'}</p>}
         </div>
         {!isCard && <div><Label htmlFor="customer-payment-amount">Amount tendered</Label><Input id="customer-payment-amount" disabled={mutation.isPending} inputMode="decimal" type="text" placeholder="0.00" value={amount} onChange={event => setAmount(event.target.value)} /></div>}
         {!isCard && preview && validTenderedAmount && <div className="grid gap-2 rounded-md border border-border px-3 py-2">
@@ -189,7 +194,7 @@ export function MultiInvoicePaymentDialog({ open, onOpenChange, invoiceIds, onSu
           {currentCardAvailability && ['error', 'ineligible', 'unavailable'].includes(currentCardAvailability.status) && <Button type="button" variant="link"
             onClick={() => setRefresh(value => value + 1)}>Retry availability check</Button>}
         </div>}
-        {error && <div role="alert" className="text-sm text-destructive">{error}<Button type="button" variant="link" disabled={mutation.isPending} onClick={() => { setCustom({}); setRefresh(value => value + 1); }}>Refresh preview</Button></div>}
+        {error && <div role="alert" className="text-sm text-destructive">{error}<Button type="button" variant="link" disabled={mutation.isPending} onClick={() => { setCustom({}); setRefresh(value => value + 1); }}>Refresh preview</Button><Button type="button" variant="link" disabled={mutation.isPending} onClick={() => onOpenChange(false)}>Change selection</Button></div>}
         <div className="flex justify-end gap-2"><Button disabled={mutation.isPending} variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={mutation.isPending || !preview || (isCard ? !cardAvailable || !preview.eligibleCount : !validTenderedAmount || amounts.appliedAmountCents <= 0)} onClick={submit}>{mutation.isPending ? 'Recording…' : isCard ? 'Continue to Card Payment' : 'Record Payment'}</Button></div>
       </div>
     </DialogContent>
