@@ -14,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import type { Customer } from "@shared/schema";
+import { isNormalizedWebsiteValid } from "@shared/vendorWebsite";
 import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
 import { taxRateDecimalFromPercent, taxRatePercentFromDecimal } from "@shared/salesTax";
 
@@ -27,7 +28,7 @@ const primaryContactSchema = z.object({
   isPrimary: z.boolean().optional(),
 });
 
-const customerSchema = z.object({
+export const customerSchema = z.object({
   companyName: z.string().min(1, "Company name is required"),
   customerType: z.enum(["business", "individual"]),
   status: z.enum(["active", "inactive", "suspended"]),
@@ -45,7 +46,7 @@ const customerSchema = z.object({
   taxExemptCertificateRef: z.string().max(512).optional(),
   email: z.string().email("Invalid email").optional().or(z.literal("")),
   phone: z.string().optional(),
-  website: z.string().optional(),
+  website: z.string().optional().refine(value => !value?.trim() || isNormalizedWebsiteValid(value), "Enter a valid website like example.com or https://example.com, without sign-in credentials"),
   taxId: z.string().optional(),
   // Legacy address fields (kept for backward compatibility)
   billingAddress: z.string().optional(),
