@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 235,
+  "entryCount": 236,
   "immutableThrough": {
-    "idx": 240,
-    "when": 1793404800000,
-    "tag": "0241_linked_redo_orders"
+    "idx": 241,
+    "when": 1793491200000,
+    "tag": "0242_redo_customer_charges"
   },
-  "canonicalSha256": "acb17118135f1bddf83a59e897850b1d6e416d67f3e4e79cb529e88a4ef7ab46"
+  "canonicalSha256": "0d2cdf4e03db734a087ab58662c8cdc13b6b7acc581f631a19f083398275ae82"
 }

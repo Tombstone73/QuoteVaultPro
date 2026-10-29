@@ -178,8 +178,8 @@ import {
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
 import { assessOrderCancellationEligibility, cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
-import { createRedoOrderSchema, redoOrderValidationMessages } from "@shared/orderRedo";
-import { duplicateOrder, OrderDuplicationError } from "../services/orderDuplicationService";
+import { createRedoOrderSchema, redoOrderValidationMessages, redoOrderPreviewSchema } from "@shared/orderRedo";
+import { duplicateOrder, previewRedoOrder, OrderDuplicationError } from "../services/orderDuplicationService";
 import { reconcileOrderAutoClose, reconcileOrderAutoCloseFailSoft } from "../services/orderAutoCloseService";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
@@ -5159,7 +5159,22 @@ export async function registerOrderRoutes(
 
     // A duplicate is a new commercial order, never a resurrection or mutation
     // of the historical source.  Owner/Admin is resolved by tenantContext.
-    app.post("/api/orders/:id/redo", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    app.post("/api/orders/:id/redo/preview", isAuthenticated, tenantContext, isAdminOrOwner, requireOrderLineItemAdminOrOwner, async (req: any,res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req), actorUserId = getUserId(req.user);
+            if (!organizationId || !actorUserId) return res.status(401).json({message:"Staff authorization required."});
+            const parsed = redoOrderPreviewSchema.safeParse(req.body);
+            if (!parsed.success) return res.status(400).json({message:redoOrderValidationMessages(parsed.error).join(" ")});
+            const preview = await previewRedoOrder({organizationId,sourceOrderId:req.params.id,actorUserId,actorOrgRole:String(req.actorOrgRole ?? req.orgRole ?? ""),details:parsed.data});
+            return res.json({preview});
+        } catch (error: any) {
+            if (error instanceof OrderDuplicationError) return res.status(error.code === "ORDER_NOT_FOUND" ? 404 : error.code === "STALE_SOURCE" ? 409 : 400).json({message:error.message,code:error.code});
+            console.error("[Preview Redo Order]",error);
+            return res.status(error.statusCode || 500).json({message:error.statusCode ? error.message : "Unable to review replacement pricing. Try again before confirming."});
+        }
+    });
+
+    app.post("/api/orders/:id/redo", isAuthenticated, tenantContext, isAdminOrOwner, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             const actorUserId = getUserId(req.user);
@@ -5167,10 +5182,10 @@ export async function registerOrderRoutes(
             const parsed = createRedoOrderSchema.safeParse(req.body);
             if (!parsed.success) return res.status(400).json({ message: redoOrderValidationMessages(parsed.error).join(" ") });
             const order = await duplicateOrder({ organizationId, sourceOrderId: req.params.id, actorUserId,
-                actorName: [req.user.firstName, req.user.lastName].filter(Boolean).join(" ") || req.user.email || null, redo: parsed.data });
+                actorName: [req.user.firstName, req.user.lastName].filter(Boolean).join(" ") || req.user.email || null, actorOrgRole:String(req.actorOrgRole ?? req.orgRole ?? ""), redo: parsed.data });
             return res.status(201).json({ order });
         } catch (error: any) {
-            if (error instanceof OrderDuplicationError) return res.status(error.code === "ORDER_NOT_FOUND" ? 404 : ["STALE_SOURCE", "REDO_KEY_CONFLICT"].includes(error.code) ? 409 : 400).json({ message: error.message, code: error.code });
+            if (error instanceof OrderDuplicationError) return res.status(error.code === "ORDER_NOT_FOUND" ? 404 : ["STALE_SOURCE", "REDO_KEY_CONFLICT", "REDO_REVIEW_STALE"].includes(error.code) ? 409 : 400).json({ message: error.message, code: error.code });
             console.error("[Create Redo Order]", error);
             return res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to create replacement order." });
         }

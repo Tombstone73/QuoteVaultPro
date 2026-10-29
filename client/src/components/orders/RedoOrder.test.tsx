@@ -23,10 +23,10 @@ function fill(){
  set(document.querySelector('#redo-reason')!,'Print quality');set(document.querySelector('#redo-date')!,'2026-11-04');
  click(Array.from(document.querySelectorAll('fieldset input[type=checkbox]')).at(-1)! as HTMLElement);
 }
-test('authorized staff can open creation from closed sources; quantities require explicit input and no charge is the sole disposition',()=>{
+test('authorized staff can open creation from closed sources; quantities require explicit input and no charge is the default disposition',()=>{
  render(<RedoOrderAction order={{...source,state:'closed'} as any} authorized />);fill();
  expect(document.querySelectorAll('fieldset input[type=number]')).toHaveLength(1);
- expect(document.querySelector('#redo-disposition')?.textContent).toBe('NO CUSTOMER CHARGE');expect(button('Confirm Create Redo Order').disabled).toBe(false);
+ expect((document.querySelector('#redo-disposition') as HTMLSelectElement).value).toBe('no_customer_charge');expect(button('Confirm Create Redo Order').disabled).toBe(false);
 });
 test('unauthorized action is absent and unsaved changes can disable the entry point',()=>{
  render(<RedoOrderAction order={source} authorized={false}/>);expect(document.body.textContent).not.toContain('Create Redo Order');
@@ -87,4 +87,38 @@ test('supported PostgreSQL Order token and a valid promised date proceed without
 });
 test('a missing selected line token is explained without a generic datetime error',async()=>{
  render(<RedoOrderAction order={{...source,lineItems:[{...source.lineItems[0],updatedAt:undefined}]} as any} authorized/>);fill();await act(async()=>{button('Confirm Create Redo Order').click();});expect(document.querySelector('[role=alert]')?.textContent).toContain('Source information for Signs is missing or invalid');expect(apiFetch).not.toHaveBeenCalled();
+});
+
+const paidSource={...source,lineItems:source.lineItems.map(line=>({...line,totalPrice:line.id==='line-a'?'209.00':'100.00'}))};
+const reviewed={reviewKey:'a'.repeat(64),subtotalCents:3500,taxCents:245,shippingCents:500,totalCents:4245,taxRate:0.07,lines:[{sourceLineItemId:'line-a',quantity:2,sellingTotalCents:3500,taxCents:245,includedInParent:false}]};
+function paidFill(){render(<RedoOrderAction order={paidSource} authorized/>);fill();set(document.querySelector('#redo-disposition')!,'charge_customer');}
+async function reviewPaid(){
+ set(document.querySelector('[aria-label="Replacement selling total: Signs"]')!,'35.00');
+ set(document.querySelector('#redo-shipping')!,'manual');set(document.querySelector('[aria-label="Replacement shipping charge"]')!,'5.00');
+ await act(async()=>{button('Review customer total').click();});
+}
+test('paid replacement requires explicit prices and shipping; original prices are references only',async()=>{
+ paidFill();expect((document.querySelector('[aria-label="Replacement selling total: Signs"]') as HTMLInputElement).value).toBe('');expect(document.body.textContent).toContain('Original selling total: $209.00 for 10 pieces');expect(button('Confirm Create Redo Order').disabled).toBe(true);
+ await act(async()=>{button('Review customer total').click();});expect(apiFetch).not.toHaveBeenCalled();expect(document.querySelector('[role=alert]')?.textContent).toContain('Enter a valid replacement selling price for Signs');
+ set(document.querySelector('[aria-label="Replacement selling total: Signs"]')!,'35');await act(async()=>{button('Review customer total').click();});expect(apiFetch).not.toHaveBeenCalled();expect(document.querySelector('[role=alert]')?.textContent).toContain('shipping');
+});
+test('paid review shows authoritative tax/shipping total and requires fresh explicit charge confirmation',async()=>{
+ (apiFetch as jest.Mock).mockResolvedValueOnce({ok:true,json:async()=>({preview:reviewed})});paidFill();await reviewPaid();
+ expect(document.querySelector('section[aria-label="Reviewed replacement total"]')?.textContent).toContain('Customer total: $42.45');expect(document.body.textContent).toContain('Applicable tax: $2.45');expect(button('Confirm Create Redo Order').disabled).toBe(true);
+ click(document.querySelector('#redo-confirm')!);expect(button('Confirm Create Redo Order').disabled).toBe(false);
+ set(document.querySelector('[aria-label="Replacement quantity: Signs"]')!,'1');expect(document.querySelector('section[aria-label="Reviewed replacement total"]')).toBeNull();expect(button('Confirm Create Redo Order').disabled).toBe(true);expect(document.body.textContent).toContain('Customer total requires review');
+});
+test('paid create uses reviewed explicit totals and persisted readback before navigation',async()=>{
+ const saved={id:'paid-redo',redoSourceOrderId:source.id,redoDisposition:'charge_customer',subtotal:'35',tax:'2.45',shippingCents:500,total:'42.45',promisedDate:'2026-11-04T12:00:00.000Z',lineItems:[{redoSourceLineItemId:'line-a',quantity:2,overridePriceCents:3500}]};
+ (apiFetch as jest.Mock).mockResolvedValueOnce({ok:true,json:async()=>({preview:reviewed})}).mockResolvedValueOnce({ok:true,status:201,json:async()=>({order:{id:'paid-redo'}})}).mockResolvedValueOnce({ok:true,json:async()=>saved});
+ paidFill();await reviewPaid();click(document.querySelector('#redo-confirm')!);await act(async()=>{button('Confirm Create Redo Order').click();});
+ const preview=JSON.parse((apiFetch as jest.Mock).mock.calls[0][1].body),created=JSON.parse((apiFetch as jest.Mock).mock.calls[1][1].body);
+ expect((apiFetch as jest.Mock).mock.calls[0][0]).toBe('/api/orders/original/redo/preview');expect(created).toEqual({...preview,confirmed:true,pricingReview:reviewed.reviewKey});expect(created.lines[0]).toMatchObject({quantity:2,priceOverrideTotalCents:3500});expect(created.shipping).toEqual({decision:'manual',amountCents:500});expect(navigate).toHaveBeenCalledWith('/orders/paid-redo');
+});
+test('uncertain paid create retries the identical reviewed request and rejects incorrect financial readback',async()=>{
+ (apiFetch as jest.Mock).mockResolvedValueOnce({ok:true,json:async()=>({preview:reviewed})}).mockRejectedValueOnce(new Error('Lost response')).mockResolvedValueOnce({ok:true,status:201,json:async()=>({order:{id:'paid-redo'}})}).mockResolvedValueOnce({ok:true,json:async()=>({id:'paid-redo',redoSourceOrderId:source.id,redoDisposition:'charge_customer',subtotal:'35',tax:'2.45',total:'42.45',shippingCents:0,promisedDate:'2026-11-04',lineItems:[{redoSourceLineItemId:'line-a',quantity:2,overridePriceCents:3500}]})});
+ paidFill();await reviewPaid();click(document.querySelector('#redo-confirm')!);await act(async()=>{button('Confirm Create Redo Order').click();});await act(async()=>{button('Retry and confirm replacement').click();});expect((apiFetch as jest.Mock).mock.calls[1][1].body).toBe((apiFetch as jest.Mock).mock.calls[2][1].body);expect(navigate).not.toHaveBeenCalled();expect(document.querySelector('[role=alert]')?.textContent).toContain('unconfirmed');
+});
+test('paid identification states the separate commercial treatment',()=>{
+ render(<RedoOrderIdentification order={{...source,redoRootOrderId:'original',redoDisposition:'charge_customer'} as any}/>);expect(document.body.textContent).toContain('CHARGE CUSTOMER — separate replacement pricing');expect(document.body.textContent).not.toContain('NO CUSTOMER CHARGE');
 });

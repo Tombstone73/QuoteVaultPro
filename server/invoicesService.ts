@@ -1149,6 +1149,7 @@ export async function createInvoiceFromOrderInTransaction(
 
     const financialSnapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
     // Replacement intake uses the same invoice engine but cannot issue a bill.
+    const isRedo = !!order.redoRootOrderId;
     const noChargeRedo = order.redoDisposition === "no_customer_charge";
     if (noChargeRedo && financialSnapshot.totalCents !== 0) throw new Error("No-charge replacement must have a zero customer total.");
 
@@ -1167,11 +1168,11 @@ export async function createInvoiceFromOrderInTransaction(
       // An Order-backed invoice is live as soon as the Order exists. The
       // Order remains its commercial source; payment eligibility is derived
       // from the current balance, not a manual document-finalization step.
-      status: noChargeRedo ? 'draft' : 'billed',
+      status: isRedo ? 'draft' : 'billed',
       terms: opts.terms as any,
       customTerms: undefined,
       issueDate,
-      issuedAt: noChargeRedo ? null : issueDate,
+      issuedAt: isRedo ? null : issueDate,
       dueDate: dueDate || undefined,
       subtotal: financialSnapshot.subtotal.toFixed(2) as any,
       tax: financialSnapshot.tax.toFixed(2) as any,
@@ -1202,7 +1203,7 @@ export async function createInvoiceFromOrderInTransaction(
     // fulfillment gate: terms and the immutable payment ledger still decide
     // what is due and whether any downstream work can proceed.
     await tx.update(orders).set({
-      billingStatus: noChargeRedo ? "not_ready" : "billed",
+      billingStatus: isRedo ? "not_ready" : "billed",
       updatedAt: new Date(),
     } as any).where(and(eq(orders.id, order.id), eq(orders.organizationId, organizationId)));
 
@@ -1403,13 +1404,13 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   ));
   const nextInvoice = {
     ...invoice,
-    status: String(invoice.status || "").toLowerCase() === "draft" && order.redoDisposition !== "no_customer_charge" ? "billed" : invoice.status,
+    status: String(invoice.status || "").toLowerCase() === "draft" && !order.redoRootOrderId ? "billed" : invoice.status,
     totalCents: snapshot.totalCents,
   };
   const financialState = {
     ...computeInvoiceFinancialState(nextInvoice, paymentRows as any),
     // Synchronizing replacement specs never authorizes issuance or settlement.
-    ...(order.redoDisposition === "no_customer_charge" && invoice.status === "draft" ? { status: "draft" } : {}),
+    ...(order.redoRootOrderId && invoice.status === "draft" ? { status: "draft" } : {}),
   };
   if (financialState.amountPaidCents > 0) {
     // Keep settled invoice/payment history immutable without rolling back the

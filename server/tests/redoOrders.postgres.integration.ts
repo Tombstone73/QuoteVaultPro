@@ -4,7 +4,7 @@ import request from 'supertest';
 import { beforeAll, afterAll, expect, jest, test } from '@jest/globals';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, invoices, invoiceLineItems, productionJobs, productionEvents, auditLogs, orderAuditLog, stations, productionStationSteps, shipments, shipmentItems, orderMaterialUsage, inventoryReservations, lineItemProofVersions, lineItemArtwork } from '../../shared/schema';
+import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, invoices, invoiceLineItems, productionJobs, productionEvents, auditLogs, orderAuditLog, stations, productionStationSteps, shipments, shipmentItems, orderMaterialUsage, inventoryReservations, lineItemProofVersions, lineItemArtwork, payments } from '../../shared/schema';
 import { OrdersRepository } from '../storage/orders.repo';
 import { duplicateOrder } from '../services/orderDuplicationService';
 import type { CreateRedoOrderRequest } from '../../shared/orderRedo';
@@ -151,8 +151,8 @@ test('new proof and Prepress requirements persist without copying completion or 
  const line=response.body.order.lineItems[0];expect(line).toMatchObject({requiresProofApproval:true,requiresPrepress:true,approvedProofVersionId:null,workflowState:'awaiting_proof_approval'});
  const [job]=await db.select().from(productionJobs).where(eq(productionJobs.lineItemId,line.id));expect(job.stationKey).toBe('prepress');expect(job.completedAt).toBeNull();
 });
-test('late audit failure rolls order, number, invoice, routing and lineage back atomically',async()=>{
- const source=await fixture(),body=command(source);
+test.each(['no_customer_charge','charge_customer'] as const)('%s late audit failure rolls order, number, invoice, routing and lineage back atomically',async disposition=>{
+ const source=await fixture(),body=disposition==='charge_customer'?(await paidCommand(source,[3500])).body:command(source);
  const before=await db.select().from(orders).where(eq(orders.organizationId,org));
  const beforeInvoices=await db.select().from(invoices).where(eq(invoices.organizationId,org));
  const beforeJobs=await db.select().from(productionJobs).where(eq(productionJobs.organizationId,org));
@@ -162,7 +162,7 @@ test('late audit failure rolls order, number, invoice, routing and lineage back 
  const ddl='CREATE FUNCTION '+triggerName+'() RETURNS trigger LANGUAGE plpgsql AS $body$ BEGIN IF NEW.action_type=\'redo_order_created\' AND NEW.metadata->>\'sourceOrderId\'=\''+source.id+'\' THEN RAISE EXCEPTION \'synthetic final audit failure\'; END IF; RETURN NEW; END $body$; CREATE TRIGGER '+triggerName+' BEFORE INSERT ON order_audit_log FOR EACH ROW EXECUTE FUNCTION '+triggerName+'();';
  await db.execute(sql.raw(ddl));
  try {
-   await expect(duplicateOrder({organizationId:org,sourceOrderId:source.id,actorUserId:actor,redo:body})).rejects.toThrow('synthetic final audit failure');
+   await expect(duplicateOrder({organizationId:org,sourceOrderId:source.id,actorUserId:actor,actorOrgRole:'admin',redo:body as CreateRedoOrderRequest})).rejects.toThrow('synthetic final audit failure');
  } finally { await db.execute(sql.raw('DROP TRIGGER '+triggerName+' ON order_audit_log; DROP FUNCTION '+triggerName+'();')); }
  expect(await db.select().from(productionJobs).where(eq(productionJobs.organizationId,org))).toEqual(beforeJobs);
  expect(await db.select().from(auditLogs).where(eq(auditLogs.organizationId,org))).toEqual(beforeAudits);
@@ -211,4 +211,85 @@ test('detail API returns exact ISO Order concurrency token, accepts a valid date
  const response=await create(read.body,payload);expect(response.status).toBe(201);
  await db.execute(sql`update orders set updated_at='2026-10-29 12:34:56.123457'::timestamp where id=${source.id}`);
  const stale=await create(read.body,{...payload,requestKey:randomUUID()});expect(stale.status).toBe(409);expect(stale.body.code).toBe('STALE_SOURCE');
+});
+
+async function paidCommand(source:any, amounts:Array<number|undefined>, shipping={decision:'free',amountCents:0}, group=false) {
+ const {confirmed,...base}=command(source,group);
+ const details={...base,disposition:'charge_customer',shipping,lines:base.lines.map((line,index)=>({...line,...(amounts[index]!==undefined?{priceOverrideTotalCents:amounts[index]}:{})}))};
+ const response=await request(app).post('/api/orders/'+source.id+'/redo/preview').send(details);
+ expect({status:response.status,message:response.body.message}).toEqual({status:200,message:undefined});
+ return {details,preview:response.body.preview,body:{...details,confirmed:true,pricingReview:response.body.preview.reviewKey}};
+}
+test.each<[string,number,number]>([['full',20900,10],['partial',3500,2]])('%s customer-charge Redo has explicit pricing, correct tax, its own unsent draft and immutable original invoice/payment',async(_label,amount,quantity)=>{
+ await db.update(organizations).set({defaultTaxRate:'0.07',taxEnabled:true}).where(eq(organizations.id,org));
+ await db.update(customers).set({isTaxExempt:false,taxRateOverride:null}).where(eq(customers.id,customer));
+ const source=await fixture();
+ const [originalInvoice]=await db.select().from(invoices).where(eq(invoices.orderId,source.id));
+ await db.insert(payments).values({organizationId:org,invoiceId:originalInvoice.id,provider:'manual',status:'succeeded',method:'check',amount:source.total,amountCents:Math.round(Number(source.total)*100),createdByUserId:actor,note:'Synthetic historical payment; no gateway'});
+ const originalPayments=await db.select().from(payments).where(eq(payments.invoiceId,originalInvoice.id));
+ const originalLines=await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId,originalInvoice.id));
+ try {
+   const {confirmed,...base}=command(source);
+   const details={...base,disposition:'charge_customer',shipping:{decision:'free',amountCents:0},lines:[{...base.lines[0],quantity,priceOverrideTotalCents:amount}]};
+   const before=await db.select().from(orders).where(eq(orders.organizationId,org));
+   const reviewed=await request(app).post('/api/orders/'+source.id+'/redo/preview').send(details);expect(reviewed.status).toBe(200);
+   expect(await db.select().from(orders).where(eq(orders.organizationId,org))).toEqual(before);
+   const expectedTax=Math.round(amount*0.07),preview=reviewed.body.preview;
+   expect(preview).toMatchObject({subtotalCents:amount,taxCents:expectedTax,shippingCents:0,totalCents:amount+expectedTax});
+   const body={...details,confirmed:true,pricingReview:preview.reviewKey};
+   const responses=await Promise.all([create(source,body),create(source,body)]);expect(responses.map(r=>r.status)).toEqual([201,201]);
+   const redo=responses[0].body.order;expect(responses[1].body.order.id).toBe(redo.id);expect(redo.redoDisposition).toBe('charge_customer');expect(redo.shippingCents).toBe(0);
+   expect(Math.round(Number(redo.total)*100)).toBe(amount+expectedTax);expect(redo.lineItems[0]).toMatchObject({quantity,overridePriceCents:amount,redoSourceLineItemId:source.lineItems[0].id});expect(redo.lineItems[0].specsJson.priceOverride).toMatchObject({mode:'override_total_after_margin',valueCents:amount});
+   const [invoice]=await db.select().from(invoices).where(eq(invoices.orderId,redo.id));expect(invoice).toMatchObject({status:'draft',issuedAt:null,lastSentAt:null,totalCents:amount+expectedTax,shippingCents:0});expect(Number(invoice.balanceDue)).toBe((amount+expectedTax)/100);expect(Number(invoice.amountPaid)).toBe(0);
+   expect(await db.select().from(payments).where(eq(payments.invoiceId,invoice.id))).toHaveLength(0);
+   const {recalculateEditableOrderFinancialsInTransaction}=await import('../services/orders/orderTaxCalculationService');
+   await db.transaction(tx=>recalculateEditableOrderFinancialsInTransaction(tx,{organizationId:org,orderId:redo.id,actorUserId:actor,requireInvoiceParity:true}));
+   const read=await request(app).get('/api/orders/'+redo.id);expect(read.status).toBe(200);expect(Math.round(Number(read.body.total)*100)).toBe(amount+expectedTax);expect(read.body.lineItems[0].overridePriceCents).toBe(amount);
+   expect(await db.select().from(invoices).where(eq(invoices.id,originalInvoice.id))).toEqual([originalInvoice]);expect(await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId,originalInvoice.id))).toEqual(originalLines);expect(await db.select().from(payments).where(eq(payments.invoiceId,originalInvoice.id))).toEqual(originalPayments);
+   const [savedInvoice]=await db.select().from(invoices).where(eq(invoices.id,invoice.id));expect(savedInvoice.status).toBe('draft');expect(savedInvoice.issuedAt).toBeNull();expect(savedInvoice.lastSentAt).toBeNull();
+ }finally{await db.update(organizations).set({defaultTaxRate:'0',taxEnabled:true}).where(eq(organizations.id,org));}
+});
+test('paid shipping is explicitly chosen and tax/configuration changes invalidate reviewed totals',async()=>{
+ const source=await fixture();
+ const paid=await paidCommand(source,[3500],{decision:'manual',amountCents:500});expect(paid.preview).toMatchObject({subtotalCents:3500,taxCents:0,shippingCents:500,totalCents:4000});
+ const result=await create(source,paid.body);expect(result.status).toBe(201);expect(result.body.order.shippingCents).toBe(500);expect(Number(result.body.order.total)).toBe(40);
+ const stale=await paidCommand(source,[3000]);
+ await db.update(organizations).set({defaultTaxRate:'0.07',taxEnabled:true}).where(eq(organizations.id,org));
+ try{const response=await create(source,stale.body);expect(response.status).toBe(409);expect(response.body.code).toBe('REDO_REVIEW_STALE');expect(await db.select().from(orders).where(eq(orders.redoRequestKey,stale.body.requestKey))).toHaveLength(0);}
+ finally{await db.update(organizations).set({defaultTaxRate:'0'}).where(eq(organizations.id,org));}
+});
+test.each(['sum_children','manual_override'] as const)('paid Product group %s has no parent/child double count',async mode=>{
+ const source=await fixture(true);
+ await db.update(orderLineItems).set({parentPriceMode:mode,updatedAt:new Date()}).where(eq(orderLineItems.id,source.lineItems[0].id));
+ const fresh=(await repo.getOrderById(org,source.id))!,price=mode==='sum_children'?4000:5500;
+ const paid=await paidCommand(fresh,[mode==='sum_children'?undefined:5500,4000],undefined,true);
+ expect(paid.preview.subtotalCents).toBe(price);expect(paid.preview.lines[1].includedInParent).toBe(true);
+ const response=await create(fresh,paid.body);expect(response.status).toBe(201);expect(Math.round(Number(response.body.order.total)*100)).toBe(price);
+ const parent=response.body.order.lineItems.find((line:any)=>line.lineItemRole==='parent');expect(parent.overridePriceCents).toBe(price);expect(parent.childCalculatedTotalCents).toBe(4000);
+ const [invoice]=await db.select().from(invoices).where(eq(invoices.orderId,response.body.order.id));expect(invoice.status).toBe('draft');expect(invoice.totalCents).toBe(price);
+ const rows=await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId,invoice.id));expect(rows.reduce((sum,line)=>sum+line.lineTotalCents,0)).toBe(price);
+});
+test('paid permissions, missing prices, unreviewed/changed prices, missing shipping and free positive charges fail closed',async()=>{
+ const source=await fixture(),paid=await paidCommand(source,[3500]);
+ expect((await request(app).post('/api/orders/'+source.id+'/redo/preview').set('x-test-role','employee').send(paid.details)).status).toBe(403);
+ expect((await request(app).post('/api/orders/'+source.id+'/redo').set('x-test-role','employee').send(paid.body)).status).toBe(403);
+ await expect(duplicateOrder({organizationId:org,sourceOrderId:source.id,actorUserId:actor,actorOrgRole:'employee',redo:paid.body as any})).rejects.toMatchObject({statusCode:403});
+ expect((await create(source,{...paid.body,pricingReview:undefined})).status).toBe(400);
+ expect((await create(source,{...paid.body,lines:[{...paid.body.lines[0],priceOverrideTotalCents:3600}]})).status).toBe(409);
+ expect((await request(app).post('/api/orders/'+source.id+'/redo/preview').send({...paid.details,lines:[{...paid.details.lines[0],priceOverrideTotalCents:undefined}]})).status).toBe(400);
+ expect((await request(app).post('/api/orders/'+source.id+'/redo/preview').send({...paid.details,shipping:undefined})).status).toBe(400);
+ expect((await create(source,{...command(source),lines:[{...command(source).lines[0],priceOverrideTotalCents:1}]})).status).toBe(400);
+ expect((await create(source,{...command(source),shipping:{decision:'manual',amountCents:1}})).status).toBe(400);
+ const crossed=await request(app).post('/api/orders/'+source.id+'/redo/preview').set('x-test-org',otherOrg).send(paid.details);expect(crossed.status).toBe(404);
+});
+
+test('paid review uses current customer tax exemption and rejects a newly stale selected line',async()=>{
+ await db.update(organizations).set({defaultTaxRate:'0.07',taxEnabled:true}).where(eq(organizations.id,org));
+ await db.update(customers).set({isTaxExempt:true}).where(eq(customers.id,customer));
+ try{
+  const source=await fixture(),paid=await paidCommand(source,[3500]);expect(paid.preview).toMatchObject({subtotalCents:3500,taxCents:0,totalCents:3500});
+  const created=await create(source,paid.body);expect(created.status).toBe(201);expect(Number(created.body.order.total)).toBe(35);
+  const stale=await paidCommand(source,[2500]);await db.update(orderLineItems).set({updatedAt:new Date(Date.now()+1000)}).where(eq(orderLineItems.id,source.lineItems[0].id));
+  const rejected=await create(source,stale.body);expect(rejected.status).toBe(409);expect(rejected.body.code).toBe('STALE_SOURCE');expect(await db.select().from(orders).where(eq(orders.redoRequestKey,stale.body.requestKey))).toHaveLength(0);
+ }finally{await db.update(organizations).set({defaultTaxRate:'0'}).where(eq(organizations.id,org));await db.update(customers).set({isTaxExempt:false}).where(eq(customers.id,customer));}
 });

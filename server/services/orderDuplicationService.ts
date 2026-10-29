@@ -1,8 +1,11 @@
 import { requireOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { createHash } from "node:crypto";
-import { createRedoOrderSchema, type CreateRedoOrderRequest } from "@shared/orderRedo";
+import { createRedoOrderSchema, type CreateRedoOrderRequest, type RedoOrderDetails, type RedoPricingPreview, redoOrderPreviewSchema } from "@shared/orderRedo";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./lineItemWorkflowService";
-import { synchronizeOrderBackedInvoiceFromOrderInTransaction } from "../invoicesService";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
+import { parentBundlePricingUpdate } from "./lineItemBundles";
+import { calculateAuthoritativeOrderTax, recalculateEditableOrderFinancialsInTransaction } from "./orders/orderTaxCalculationService";
+import { resolvePersistedLineItemPricing, getPersistedBaseCalculatedTotalCents, mergePricingIntoSpecsJson } from "../lib/lineItemPricingPersistence";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
@@ -17,7 +20,7 @@ import { db } from "../db";
 import { OrdersRepository, type CreateOrderLineItemInput } from "../storage/orders.repo";
 
 export class OrderDuplicationError extends Error {
-  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_HAS_NO_LINE_ITEMS" | "INVALID_REDO" | "STALE_SOURCE" | "REDO_KEY_CONFLICT", message: string) {
+  constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_HAS_NO_LINE_ITEMS" | "INVALID_REDO" | "STALE_SOURCE" | "REDO_KEY_CONFLICT" | "REDO_REVIEW_STALE", message: string) {
     super(message);
   }
 }
@@ -30,26 +33,9 @@ export class OrderDuplicationError extends Error {
  * records remain attached only to the source.  Customer-source artwork is
  * reused by creating new relationships to the same immutable file record.
  */
-export async function duplicateOrder(input: {
-  organizationId: string;
-  sourceOrderId: string;
-  actorUserId: string;
-  actorName?: string | null;
-  redo?: CreateRedoOrderRequest;
-}) {
-  const redo = input.redo ? createRedoOrderSchema.parse(input.redo) : undefined;
-  const fingerprint = redo ? createHash("sha256").update(JSON.stringify({ sourceOrderId: input.sourceOrderId, actorUserId: input.actorUserId, ...redo, lines: [...redo.lines].sort((a,b) => a.sourceLineItemId.localeCompare(b.sourceLineItemId)) })).digest("hex") : null;
-  return db.transaction(async (tx) => {
-    const repository = new OrdersRepository(tx, true);
-    if (redo) {
-      // Database-scoped lock plus durable key survives retries, workers and restarts.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${input.organizationId + ":redo:" + redo.requestKey}, 0))`);
-      const [previous] = await tx.select().from(orders).where(and(eq(orders.organizationId, input.organizationId), eq(orders.redoRequestKey, redo.requestKey))).limit(1);
-      if (previous) {
-        if (previous.redoRequestFingerprint !== fingerprint) throw new OrderDuplicationError("REDO_KEY_CONFLICT", "This request was already used with different replacement details.");
-        return repository.getOrderById(input.organizationId, previous.id);
-      }
-    }
+type OrderTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type RedoAdapterInput = { organizationId: string; sourceOrderId: string; actorUserId: string; actorOrgRole?: string };
+async function prepareDuplication(tx: OrderTransaction, input: RedoAdapterInput, redo?: RedoOrderDetails) {
     const [sourceOrder] = await tx
       .select()
       .from(orders)
@@ -117,7 +103,7 @@ export async function duplicateOrder(input: {
       sqft: line.sqft,
       unitPrice: line.unitPrice,
       totalPrice: line.totalPrice,
-      specsJson: redo ? { ...(line.specsJson as Record<string, unknown> ?? {}), priceOverride: { mode: "override_total_after_margin", valueCents: 0 } } : line.specsJson,
+      specsJson: redo ? { ...(line.specsJson as Record<string, unknown> ?? {}), priceOverride: { mode: "override_total_after_margin", valueCents: redo.disposition === "charge_customer" ? redo.lines.find(item => item.sourceLineItemId === line.id)?.priceOverrideTotalCents ?? 0 : 0 } } : line.specsJson,
       selectedOptions: line.selectedOptions,
       optionSelectionsJson: line.optionSelectionsJson,
       // Reuse saved layout capacity, never the historical run's sheet count.
@@ -144,8 +130,8 @@ export async function duplicateOrder(input: {
       pbv2SnapshotJson: line.pbv2SnapshotJson,
       pricedAt: line.pricedAt,
       sortOrder: line.sortOrder ?? index,
-      overridePriceCents: redo ? 0 : line.overridePriceCents,
-      overrideReason: redo ? `No customer charge replacement: ${redo.reason}` : line.overrideReason,
+      overridePriceCents: redo ? redo.disposition === "charge_customer" ? redo.lines.find(item => item.sourceLineItemId === line.id)?.priceOverrideTotalCents ?? 0 : 0 : line.overridePriceCents,
+      overrideReason: redo ? `${redo.disposition === "charge_customer" ? "Customer-charge" : "No customer charge"} replacement: ${redo.reason}` : line.overrideReason,
       lineItemRole: line.lineItemRole,
       childDisplayMode: line.childDisplayMode,
       parentPriceMode: line.parentPriceMode,
@@ -154,6 +140,80 @@ export async function duplicateOrder(input: {
       isTaxableSnapshot: line.isTaxableSnapshot,
       });
     });
+
+
+    return { sourceOrder, sourceLines, lineItems };
+}
+
+async function prepareRedoCommercials(tx: OrderTransaction, input: RedoAdapterInput, redo: RedoOrderDetails, prepared: Awaited<ReturnType<typeof prepareDuplication>>) {
+  if (redo.disposition === "charge_customer" && !hasAdminOrOwnerOperationalRole(input.actorOrgRole)) throw Object.assign(new Error("Organization Admin or Owner pricing permission is required."), { statusCode:403 });
+  const { sourceOrder, sourceLines, lineItems } = prepared;
+  const selected = new Map(redo.lines.map(line => [line.sourceLineItemId,line]));
+  const byId = new Map<string, any>(sourceLines.map((line: any,index: number) => [line.id, { ...lineItems[index], id:line.id, parentLineItemId:line.parentLineItemId }]));
+  const resolved = new Map<string, any>();
+  function price(id: string): any {
+    if (resolved.has(id)) return resolved.get(id);
+    const line = byId.get(id)!;
+    const children = sourceLines.filter((child: any) => child.parentLineItemId === id).map((child: any) => price(child.id));
+    const entered = selected.get(id)?.priceOverrideTotalCents;
+    if (redo.disposition === "charge_customer" && !(line.lineItemRole === "parent" && line.parentPriceMode === "sum_children") && entered === undefined) throw new OrderDuplicationError("INVALID_REDO", "Enter an explicit replacement selling price for " + line.description + ".");
+    const group = line.lineItemRole === "parent" ? parentBundlePricingUpdate({ ...line, totalPrice: (entered ?? 0) / 100 }, children) : null;
+    const amount = redo.disposition === "no_customer_charge" ? 0 : group ? group.effectiveTotalCents : entered!;
+    if (redo.disposition === "charge_customer" && line.lineItemRole === "parent" && line.parentPriceMode === "sum_children" && entered !== undefined && entered !== amount) throw new OrderDuplicationError("INVALID_REDO", "The product group total must match its component selling prices.");
+    const pricing = resolvePersistedLineItemPricing({ baseCalculatedTotalCents: getPersistedBaseCalculatedTotalCents(line), quantity:line.quantity, body:{ priceOverrideMode:"override_total_after_margin", priceOverrideValueCents:amount }, specsJson:line.specsJson });
+    const result = { ...line, totalPrice:(pricing.effectiveTotalCents/100).toFixed(2), unitPrice:(pricing.effectiveUnitPriceCents/100).toFixed(2), overridePriceCents:pricing.effectiveTotalCents, specsJson:mergePricingIntoSpecsJson({specsJson:line.specsJson,pricing}), childCalculatedTotalCents:group?.childCalculatedTotalCents ?? line.childCalculatedTotalCents };
+    resolved.set(id,result);return result;
+  }
+  const priced = sourceLines.map((line: any) => price(line.id));
+  const {billableLines,totals} = await calculateAuthoritativeOrderTax({ organizationId:input.organizationId, customerId:sourceOrder.customerId, lines:priced, executor:tx });
+  const taxes = new Map(billableLines.map((line,index) => [line.id,totals.lineItemsWithTax[index]!]));
+  const shippingCents = redo.disposition === "no_customer_charge" ? 0 : redo.shipping!.amountCents;
+  const totalCents = Math.round(totals.total*100) + shippingCents;
+  if (!Number.isSafeInteger(totalCents) || totalCents < 0 || totalCents > 2147483647) throw new OrderDuplicationError("INVALID_REDO", "Replacement total exceeds the supported range.");
+  const previewLines = priced.map((line: any) => ({sourceLineItemId:line.id,quantity:line.quantity,sellingTotalCents:line.overridePriceCents,taxCents:Math.round((taxes.get(line.id)?.taxAmount ?? 0)*100),includedInParent:!!line.parentLineItemId && byId.get(line.parentLineItemId)?.lineItemRole === "parent"}));
+  const preview = { subtotalCents:Math.round(totals.subtotal*100),taxCents:Math.round(totals.taxAmount*100),shippingCents,totalCents,taxRate:totals.taxRate,lines:previewLines };
+  const reviewKey = createHash("sha256").update(JSON.stringify({organizationId:input.organizationId,actorUserId:input.actorUserId,sourceOrderId:input.sourceOrderId,details:redo,preview})).digest("hex");
+  return { preview:{...preview,reviewKey} satisfies RedoPricingPreview, totals,
+    lineItems:priced.map((line: any) => ({...line,taxAmount:(taxes.get(line.id)?.taxAmount ?? 0).toFixed(2),isTaxableSnapshot:taxes.get(line.id)?.isTaxableSnapshot ?? false})) as CreateOrderLineItemInput[] };
+}
+
+export async function previewRedoOrder(input: RedoAdapterInput & { details: RedoOrderDetails }) {
+  if (!hasAdminOrOwnerOperationalRole(input.actorOrgRole)) throw Object.assign(new Error("Organization Admin or Owner pricing permission is required."), {statusCode:403});
+  const details = redoOrderPreviewSchema.parse(input.details);
+  return db.transaction(async tx => {
+    const prepared = await prepareDuplication(tx,input,details);
+    return (await prepareRedoCommercials(tx,input,details,prepared)).preview;
+  });
+}
+
+export async function duplicateOrder(input: {
+  organizationId: string;
+  sourceOrderId: string;
+  actorUserId: string;
+  actorName?: string | null;
+  actorOrgRole?: string;
+  redo?: CreateRedoOrderRequest;
+}) {
+  const redo = input.redo ? createRedoOrderSchema.parse(input.redo) : undefined;
+  if (redo?.disposition === "charge_customer" && !hasAdminOrOwnerOperationalRole(input.actorOrgRole)) throw Object.assign(new Error("Organization Admin or Owner pricing permission is required."), {statusCode:403});
+  const fingerprint = redo ? createHash("sha256").update(JSON.stringify({ sourceOrderId: input.sourceOrderId, actorUserId: input.actorUserId, ...redo, lines: [...redo.lines].sort((a,b) => a.sourceLineItemId.localeCompare(b.sourceLineItemId)) })).digest("hex") : null;
+  return db.transaction(async (tx) => {
+    const repository = new OrdersRepository(tx, true);
+    if (redo) {
+      // Database-scoped lock plus durable key survives retries, workers and restarts.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${input.organizationId + ":redo:" + redo.requestKey}, 0))`);
+      const [previous] = await tx.select().from(orders).where(and(eq(orders.organizationId, input.organizationId), eq(orders.redoRequestKey, redo.requestKey))).limit(1);
+      if (previous) {
+        if (previous.redoRequestFingerprint !== fingerprint) throw new OrderDuplicationError("REDO_KEY_CONFLICT", "This request was already used with different replacement details.");
+        return repository.getOrderById(input.organizationId, previous.id);
+      }
+    }
+    const prepared = await prepareDuplication(tx,input,redo);
+    const { sourceOrder, sourceLines } = prepared;
+    const details = redo ? (({confirmed,pricingReview,...details}) => details)(redo) : undefined;
+    const commercial = details ? await prepareRedoCommercials(tx,input,details,prepared) : undefined;
+    if (redo?.disposition === "charge_customer" && redo.pricingReview !== commercial!.preview.reviewKey) throw new OrderDuplicationError("REDO_REVIEW_STALE", "Replacement pricing or tax changed. Review the current customer total again.");
+    const lineItems = commercial?.lineItems ?? prepared.lineItems;
 
     // Use the same repository create path as normal orders: new document
     // number, new line IDs, standard draft invoice, and normal job intake.
@@ -174,9 +234,9 @@ export async function duplicateOrder(input: {
       notesInternal: null,
       createdByUserId: input.actorUserId,
       lineItems,
-      taxRate: sourceOrder.taxRate == null ? undefined : Number(sourceOrder.taxRate),
-      taxAmount: redo ? 0 : Number(sourceOrder.taxAmount ?? sourceOrder.tax ?? 0),
-      taxableSubtotal: redo ? 0 : sourceOrder.taxableSubtotal == null ? undefined : Number(sourceOrder.taxableSubtotal),
+      taxRate: commercial ? commercial.totals.taxRate : sourceOrder.taxRate == null ? undefined : Number(sourceOrder.taxRate),
+      taxAmount: commercial ? commercial.totals.taxAmount : Number(sourceOrder.taxAmount ?? sourceOrder.tax ?? 0),
+      taxableSubtotal: commercial ? commercial.totals.taxableSubtotal : sourceOrder.taxableSubtotal == null ? undefined : Number(sourceOrder.taxableSubtotal),
       billToName: sourceOrder.billToName,
       billToCompany: sourceOrder.billToCompany,
       billToAddress1: sourceOrder.billToAddress1,
@@ -202,8 +262,8 @@ export async function duplicateOrder(input: {
       carrier: sourceOrder.carrier,
       carrierAccountNumber: sourceOrder.carrierAccountNumber,
       shippingInstructions: sourceOrder.shippingInstructions,
-      shippingCents: redo ? 0 : sourceOrder.shippingCents,
-      shippingChargeDecision: redo ? 'free' : sourceOrder.shippingChargeDecision === 'ups_rate' ? 'manual'
+      shippingCents: commercial ? commercial.preview.shippingCents : sourceOrder.shippingCents,
+      shippingChargeDecision: redo ? redo.shipping?.decision ?? 'free' : sourceOrder.shippingChargeDecision === 'ups_rate' ? 'manual'
         : sourceOrder.shippingChargeDecision as 'unset' | 'manual' | 'free' | 'legacy',
       invoiceAuditSource: "order_created",
     });
@@ -294,7 +354,8 @@ export async function duplicateOrder(input: {
     const routingBlockers: Array<{ lineItemId: string; message: string }> = [];
     if (redo) {
       // Parent/child remapping changes invoice snapshots; synchronize through the canonical boundary.
-      await synchronizeOrderBackedInvoiceFromOrderInTransaction(tx, { organizationId: input.organizationId, orderId: duplicated.id, actorUserId: input.actorUserId });
+      const finalized = await recalculateEditableOrderFinancialsInTransaction(tx, { organizationId: input.organizationId, orderId: duplicated.id, actorUserId: input.actorUserId, requireInvoiceParity:true });
+      if (!finalized || Math.round(Number(finalized.total)*100) !== commercial!.preview.totalCents) throw new OrderDuplicationError("REDO_REVIEW_STALE", "Replacement totals changed. Review the customer total again.");
       for (const line of duplicated.lineItems) {
         if (line.lineItemRole === "parent") continue;
         // Same ownership transition used by Quote conversion; proof/design gates stay authoritative.
@@ -316,7 +377,7 @@ export async function duplicateOrder(input: {
     }
     const sourceNumber = sourceOrder.displayNumber || sourceOrder.orderNumber;
     const duplicateNumber = duplicated.displayNumber || duplicated.orderNumber;
-    const auditMetadata = { sourceOrderId: sourceOrder.id, sourceOrderNumber: sourceNumber, reusedArtworkCount: reusableArtwork.length, ...(redo ? { rootOrderId: sourceOrder.redoRootOrderId ?? sourceOrder.id, routingBlockers, redoOrderId: duplicated.id, redoOrderNumber: duplicateNumber, lines: redo.lines.map(line => ({ sourceLineItemId: line.sourceLineItemId, redoLineItemId: newLineBySourceId.get(line.sourceLineItemId), quantity: line.quantity })), reason: redo.reason, explanation: redo.explanation, promisedDate: redo.promisedDate, disposition: redo.disposition, actorUserId: input.actorUserId } : {}) };
+    const auditMetadata = { sourceOrderId: sourceOrder.id, sourceOrderNumber: sourceNumber, reusedArtworkCount: reusableArtwork.length, ...(redo ? { rootOrderId: sourceOrder.redoRootOrderId ?? sourceOrder.id, routingBlockers, redoOrderId: duplicated.id, redoOrderNumber: duplicateNumber, lines: redo.lines.map(line => ({ sourceLineItemId: line.sourceLineItemId, redoLineItemId: newLineBySourceId.get(line.sourceLineItemId), quantity: line.quantity })), reason: redo.reason, explanation: redo.explanation, promisedDate: redo.promisedDate, disposition: redo.disposition, pricing:commercial?.preview, actorUserId: input.actorUserId } : {}) };
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,
       userId: input.actorUserId,

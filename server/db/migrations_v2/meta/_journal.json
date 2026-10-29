@@ -1646,6 +1646,13 @@
       "when": 1793404800000,
       "tag": "0241_linked_redo_orders",
       "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1793491200000,
+      "tag": "0242_redo_customer_charges",
+      "breakpoints": true
     }
   ]
 }
