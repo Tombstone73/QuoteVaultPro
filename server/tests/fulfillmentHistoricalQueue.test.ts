@@ -71,7 +71,8 @@ describe('historical fulfillment search (Order 20306)', () => {
     const events: any[] = [];
     const projection = resolveFulfillmentLineQuantity({ orderedQuantity: 10, productionCompleteQuantity: 10, shippedQuantity: 6 });
     const db: any = {
-      select: () => ({ from: () => ({ where: () => ({ limit: async () => [order] }) }) }),
+      select: () => ({ from: () => ({ where: () => ({ for: () => ({ limit: async () => [order] }), limit: async () => [order] }) }) }),
+      execute: async () => [],
       update: () => ({ set: (value: any) => ({ where: async () => { updates.push(value); } }) }),
       insert: () => ({ values: async (value: any) => { events.push(value); } }),
       transaction: async (callback: any) => callback(db),
