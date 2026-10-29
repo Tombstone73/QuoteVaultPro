@@ -3619,7 +3619,7 @@ describe("InboundOrderService editable review draft", () => {
     expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_po", role: "customer_po" }));
     expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_ref", role: "reference" }));
     expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({ actionType: "inbound_record_attached", metadata: expect.objectContaining({ inboundRecordId: record.id }) }));
-    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ reviewOutcome: "attached_to_order", status: "ignored" }) }));
+    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ reviewOutcome: "attached_to_order", status: "submitted", matchedOrderId: "order_1" }) }));
     expect(getRecord().createdOrderId).toBeNull();
   });
 

@@ -72,6 +72,7 @@ export const manualInboundOrderCreateSchema = z.object({
 });
 
 export const inboundOrderStatusUpdateSchema = z.object({
+  expectedEvidenceFingerprint: z.string().trim().min(1).max(100).optional().nullable(),
   status: z.union([
     inboundOrderRecordStatusSchema,
     z.enum(["waiting", "converted", "rejected", "ignored"]),
@@ -127,6 +128,7 @@ export const inboundRecordTrustActionSchema = z.object({
 });
 
 export const inboundOrderIgnoreActionSchema = z.object({
+  expectedEvidenceFingerprint: z.string().trim().min(1).max(100).optional().nullable(),
   action: z.enum([
     "ignore_once",
     "ignore_sender",
@@ -139,6 +141,7 @@ export const inboundOrderIgnoreActionSchema = z.object({
 });
 
 export const inboundOrderBulkActionSchema = z.object({
+  expectedEvidenceFingerprints: z.record(z.string().trim().min(1).max(100).nullable()).optional(),
   recordIds: z.array(z.string().trim().min(1)).min(1).max(100),
   action: z.enum([
     "trust_sender",
@@ -519,6 +522,7 @@ export const inboundOrderCombineSchema = z.object({
 });
 
 export const inboundOrderAttachToOrderSchema = z.object({
+  expectedEvidenceFingerprint: z.string().trim().min(1).max(100).optional().nullable(),
   orderId: z.string().trim().min(1),
   includeMessageHistory: z.boolean().optional().default(true),
   includeAttachments: z.boolean().optional().default(true),
@@ -865,7 +869,10 @@ export type InboundSenderTrustSummary = {
   attachmentDownloadPolicy: InboundAttachmentDownloadPolicy;
 };
 
-export type InboundOrderRecordWithTrust = InboundOrderRecord & InboundSenderTrustSummary;
+export type InboundOrderRecordWithTrust = InboundOrderRecord & InboundSenderTrustSummary & {
+  accountabilityBucket?: import("./inboundAccountability").InboundQueueBucket;
+  linkedParentOrderId?: string | null;
+};
 
 export type InboundEmailIgnoreRuleDto = Omit<InboundEmailIgnoreRule, "createdAt" | "updatedAt" | "lastMatchedAt"> & {
   createdAt: string;

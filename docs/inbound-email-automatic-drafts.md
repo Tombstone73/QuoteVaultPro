@@ -93,6 +93,107 @@ and recovery in an isolated environment, confirm tenant/provider configuration,
 and perform DEV acceptance using synthetic imported evidence and a test AI
 provider. Do not connect a production mailbox or submit an Order to test the worker.
 
-Gmail acknowledgement/read/label handling, quote-linked pending behavior and
-broader Assistant integration remain unfinished and unchanged. This is automatic
+Gmail acknowledgement/read/label handling and broader Assistant integration remain
+unfinished. Interrupted-import recovery also remains separate: imports that stop
+before durable completion still require a deliberate reimport. This is automatic
 draft preparation after import, not a complete autonomous email-intake rollout.
+
+## Inbound queue accountability milestone
+
+Automatic processing remains disabled by default. This milestone does not change
+mailbox settings, rollout environment variables, Gmail state, or production jobs.
+It requires the same migration 0240 as the preceding milestone; there is no new
+migration or data backfill. Apply nothing to a shared environment as part of local
+validation.
+
+### Resolution and visibility
+
+The repository uses one business bucket projection for queue filters and counts.
+AI job completion and parsing do not resolve business work. A linked Quote with
+no Order remains pending as **Awaiting quote acceptance**, including legacy
+records whose stored status says submitted/approved or downstream_quote_completed.
+The raw status and audit history are retained; queue membership is the projection,
+not an in-place historical rewrite. Approval/status callbacks on Quotes cannot
+resolve an inbound item.
+
+Canonical Quote-to-Order conversion now records reciprocal inbound linkage in its
+existing transaction, including safe idempotent retries. It resolves only the
+fingerprint captured when that Quote was prepared, or the tracked snapshot named
+by its original quote-created event. A Quote converted after newer evidence arrives
+links the resulting Order but leaves the newer evidence pending. Converting again
+returns the existing Order without acknowledging a subsequent revision.
+
+Resolution requires an actual tenant-owned Order (checked by the queue SQL) or
+an explicit staff dismissal. Existing Order attachment remains the canonical
+manual action for associating reviewed evidence with a job. Its attachment/audit
+writes and evidence resolution now share the evidence transaction. Repeated or
+competing requests for the same evidence do not repeat attachments/audit effects.
+The existing Order's commercial lines/prices/progress are not changed by this action.
+An existing link cannot be reassigned to a different Order from this action.
+A merged source that receives subsequent evidence keeps the combined parent's
+verified Order visible through a tenant-scoped read projection. It can be reviewed
+against that Order and cannot claim a second Order or Quote.
+
+The current evidence identity and resolution identity are separate values in
+normalizedPayloadJson. Resolution stores kind, fingerprint, Order ID if applicable,
+actor and timestamp. Relevant evidence changes set unresolvedEvidenceFingerprint,
+reopen needs_review, clear queue archival, and append an evidence.reopened event.
+When staff deliberately marks a newly parsed, unlinked request ready, superseded
+resolution metadata is cleared from the current projection; the earlier versioned
+decision remains in its audit event. This permits a genuinely new request after
+dismissal to use the existing human-approved Order path.
+
+Previous disposition, links, source files, parse history and editable snapshots
+are preserved. Prior job linkage is visible beside the new evidence; automatic
+processing excludes both created and explicitly attached Orders. No new Order
+or job modification is triggered by reopening.
+
+Ignore-once, reject and soft queue deletion remain deliberate audited operations.
+Ignore-rule creation/conflict resolution and its inbound disposition share the
+evidence transaction, so a stale/failed dismissal does not leave a partial rule
+change. Reopening a dismissal is explicit and remains visible until handled again.
+Email dismissal and attachment requests must carry the evidence fingerprint shown
+to staff; missing/stale versions fail with a refresh-and-review instruction. Bulk
+dismissal supplies per-record versions. Evidence arriving after any of these
+staff decisions reopens review. Ignore sender/domain/subject rules still suppress
+future imports according to the existing blacklist policy; this milestone does
+not bypass those rules to fetch previously blocked mail. A late AI result cannot
+dismiss reopened evidence or replace a staff draft.
+
+### Legacy compatibility and reconciliation
+
+No historical dispositions or draft coverage are bulk rewritten. Legacy Order-linked
+and dismissed records retain their historical disposition until an evidence writer
+observes a change. For records without any prior fingerprint, the writer captures
+a comparison identity under the existing lock before changing evidence. This is a
+change-detection baseline, never a claim that a legacy review draft covered it.
+Legacy untracked drafts still require the earlier tracked-parse/deliberate-refresh
+protocol for approval. Legacy attached-to-order records remain resolved through
+their existing attachedOrderId when it identifies a tenant-owned Order.
+
+Legacy quote-only records become visible via the pending projection without a
+backfill. A missing/inaccessible Order, or a submitted/approved record without an
+actual Order or deliberate dismissal, is not evidence of completion and remains
+pending. Queue volume from these formerly hidden records must be assessed during
+DEV acceptance. Missing legacy Quote snapshot coverage is fail-closed: conversion
+can link the actual Order, but staff must reconcile/dismiss the untracked evidence.
+Existing quote-to-order conversions that predate this hook and lack inbound Order
+linkage require a deliberate replay of the canonical conversion (which reuses the
+Order), or another reviewed canonical attachment; no automatic historical sweep
+runs here. There is no silent stamping of old drafts with current evidence.
+
+### Locking and verification limits
+
+Evidence writers, dismissal, explicit attachment, and conversion use the existing
+tenant advisory lock and inbound row locks. Quote conversion obtains the evidence
+advisory lock before its Quote row lock to maintain a consistent ordering. No AI
+or Gmail call is added inside a transaction. Mocks model transaction serialization,
+rollback, SQL participation and version decisions. They do not execute PostgreSQL
+CASE/joins, prove its lock scheduler, or establish process-death recovery.
+
+Remaining rollout gates: migration 0240 readiness/application in the intended
+environment; isolated PostgreSQL transition, contention, lease recovery and rollback
+verification; interrupted-import recovery; Gmail acknowledgement/read/label policy;
+and DEV acceptance of queue counts, legacy volume, revision review and human
+approval using synthetic evidence. Nothing is pushed, deployed, enabled or
+live-validated by this milestone.

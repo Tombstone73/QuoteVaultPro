@@ -1,3 +1,4 @@
+import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { evidenceFingerprintFromSnapshot, INBOUND_EVIDENCE_REVIEW_REQUIRED, InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
 import {
   type InboundOrderDecisionFlag,
@@ -188,6 +189,7 @@ export type InboundOrderReviewAction =
   | "reopen";
 
 export type InboundOrderReviewActionInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -206,6 +208,7 @@ export type InboundOrderQueueCleanupAction = InboundOrderIgnoreAction | "delete"
 export type InboundOrderBulkTrustAction = "trust_sender" | "trust_domain";
 
 export type InboundOrderIgnoreActionInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -238,6 +241,7 @@ export type InboundAttachmentClassificationBulkInput = {
 };
 
 export type InboundOrderBulkActionInput = {
+  expectedEvidenceFingerprints?: Record<string, string | null>;
   organizationId: string;
   recordIds: string[];
   actorUserId: string;
@@ -278,6 +282,7 @@ export type InboundOrderCombineResult = {
 };
 
 export type InboundOrderAttachToOrderInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   orderId: string;
@@ -299,6 +304,7 @@ export type InboundOrderAttachToOrderResult = {
 };
 
 export type InboundOrderStatusUpdateInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -1387,6 +1393,9 @@ function getAttachmentDownloadPolicy(args: {
 }
 
 export class InboundOrderService {
+  private requireDispositionEvidence(record: InboundOrderRecord, expected?: string | null) {
+    if (record.sourceType === "email" && (!expected || expected !== (record.normalizedPayloadJson as any)?.evidenceFingerprint)) throw new InboundEvidenceConflictError("Refresh and review the current email evidence before resolving it.");
+  }
   constructor(
     private readonly repository = inboundOrdersRepository,
     private readonly orderRepository = new OrdersRepository(),
@@ -2293,7 +2302,11 @@ export class InboundOrderService {
     organizationId: string;
     inboundRecordId: string;
   }): Promise<InboundOrderDetail | null> {
-    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (record?.sourceType === "email" && typeof this.repository.getEvidenceState === "function") {
+      await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId);
+      record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    }
 
     if (!record) {
       return null;
@@ -2493,6 +2506,7 @@ export class InboundOrderService {
     }
 
     const status = args.status;
+    if (["terminal", "ignored"].includes(status)) this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
     const now = new Date();
     const patch: UpdateInboundOrderRecordValues = {
       status,
@@ -2519,6 +2533,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint,
       patch,
       event: {
         actorUserId: args.actorUserId,
@@ -2557,6 +2572,7 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
 
+    if (args.action === "reject") this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
     const note = args.note?.trim() || null;
     const patch = this.getReviewActionPatch(record, args.action, note, args.actorUserId);
     const toStatus = patch.status ?? record.status;
@@ -2564,6 +2580,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch,
       event: {
         actorUserId: args.actorUserId,
@@ -2642,10 +2659,18 @@ export class InboundOrderService {
     return (await this.applyIgnoreActionWithSummary(args)).detail;
   }
 
-  async applyIgnoreActionWithSummary(args: InboundOrderIgnoreActionInput): Promise<InboundOrderIgnoreActionResult> {
+  async applyIgnoreActionWithSummary(args: InboundOrderIgnoreActionInput, inTransaction = false): Promise<InboundOrderIgnoreActionResult> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
-    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
+    this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
+    if (!inTransaction && typeof this.repository.lockForEvidenceHandling === "function") {
+      return this.repository.transaction(async (_tx, repository) => {
+        await repository.lockForEvidenceHandling(args.organizationId, args.inboundRecordId, args.expectedEvidenceFingerprint);
+        const service = new InboundOrderService(repository, this.orderRepository, this.priceLineItemFn, this.customerIntelligence);
+        return service.applyIgnoreActionWithSummary(args, true);
+      });
+    }
+    if (!inboundIsPending(record) && (record.createdQuoteId || record.createdOrderId || record.status === "submitted")) {
       throw new InboundOrderTransitionError("Converted inbound records cannot be ignored from the queue.", 409);
     }
 
@@ -2670,6 +2695,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch: {
         status: "ignored",
         reviewOutcome: "ignored",
@@ -2710,11 +2736,13 @@ export class InboundOrderService {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    expectedEvidenceFingerprint?: string | null;
     note?: string | null;
   }): Promise<InboundOrderDetail> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
-    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
+    this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
+    if (!inboundIsPending(record) && (record.createdQuoteId || record.createdOrderId || record.status === "submitted")) {
       throw new InboundOrderTransitionError("Converted inbound records cannot be deleted from the queue.", 409);
     }
 
@@ -2722,6 +2750,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch: {
         status: "terminal",
         reviewOutcome: "deleted",
@@ -2791,11 +2820,12 @@ export class InboundOrderService {
             resolveConflict: args.resolveConflict,
           });
         } else if (args.action === "delete") {
-          await this.deleteQueueRecord({ ...args, inboundRecordId });
+          await this.deleteQueueRecord({ ...args, inboundRecordId, expectedEvidenceFingerprint: args.expectedEvidenceFingerprints?.[inboundRecordId] });
         } else if (args.action === "reject") {
           await this.applyReviewAction({
             organizationId: args.organizationId,
             inboundRecordId,
+            expectedEvidenceFingerprint: args.expectedEvidenceFingerprints?.[inboundRecordId],
             actorUserId: args.actorUserId,
             action: "reject",
             note: args.note,
@@ -2804,6 +2834,7 @@ export class InboundOrderService {
           const result = await this.applyIgnoreActionWithSummary({
             organizationId: args.organizationId,
             inboundRecordId,
+            expectedEvidenceFingerprint: args.expectedEvidenceFingerprints?.[inboundRecordId],
             actorUserId: args.actorUserId,
             action: args.action,
             note: args.note,
@@ -2928,25 +2959,36 @@ export class InboundOrderService {
     return { detail, combinedSourceCount: combinedSources.length, reparseRecommended: true };
   }
 
-  async attachInboundRecordToOrder(args: InboundOrderAttachToOrderInput): Promise<InboundOrderAttachToOrderResult> {
+  async attachInboundRecordToOrder(args: InboundOrderAttachToOrderInput, inTransaction = false): Promise<InboundOrderAttachToOrderResult> {
     const detail = await this.getDetail({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
     });
     if (!detail) throw new InboundOrderTransitionError("Inbound order record not found.", 404);
+    this.requireDispositionEvidence(detail.record, args.expectedEvidenceFingerprint);
+    if (!inTransaction && typeof this.repository.transaction === "function" && typeof this.orderRepository.withExecutor === "function") {
+      const expectedFingerprint = args.expectedEvidenceFingerprint ?? (detail.record.normalizedPayloadJson as any)?.evidenceFingerprint;
+      return this.repository.transaction(async (tx, repository) => {
+        await repository.lockForEvidenceHandling(args.organizationId, args.inboundRecordId, expectedFingerprint);
+        const service = new InboundOrderService(repository, this.orderRepository.withExecutor(tx), this.priceLineItemFn, this.customerIntelligence);
+        return service.attachInboundRecordToOrder({ ...args, expectedEvidenceFingerprint: expectedFingerprint }, true);
+      });
+    }
     const { record } = detail;
     const normalized = record.normalizedPayloadJson && typeof record.normalizedPayloadJson === "object"
       ? record.normalizedPayloadJson as Record<string, unknown>
       : {};
-    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
-      throw new InboundOrderTransitionError("Converted inbound records cannot be attached to another order.", 409);
+    const linkedOrderId = inboundLinkedOrderId(record);
+    if (linkedOrderId && linkedOrderId !== args.orderId) throw new InboundOrderTransitionError("Review subsequent evidence against the existing linked Order; it cannot be reassigned here.", 409);
+    if (linkedOrderId && !inboundIsPending(record)) {
+      return { orderId: linkedOrderId, orderNumber: (normalized.attachedOrderNumber as string) ?? null,
+        inboundRecordId: record.id, createdAttachmentIds: (normalized.attachedAttachmentIds as string[]) ?? [], skippedAttachments: [] };
     }
-    if (record.status === "terminal" || record.status === "ignored" || normalized.attachedOrderId) {
-      throw new InboundOrderTransitionError("Rejected, deleted, merged, or already attached inbound records cannot be attached to an order.", 409);
-    }
+    if (!inboundIsPending(record) || (normalized.combinedParentRecordId && !linkedOrderId)) throw new InboundOrderTransitionError("Reopen dismissed evidence or resolve its combined request before attaching it to an Order.", 409);
 
     const order = await this.orderRepository.getOrderById(args.organizationId, args.orderId);
     if (!order) throw new InboundOrderTransitionError("Selected order was not found for this organization.", 404);
+    if (record.createdQuoteId && order.quoteId !== record.createdQuoteId) throw new InboundOrderTransitionError("Convert the linked Quote through the existing Quote-to-Order operation first.", 409);
     if (record.matchedCustomerId && order.customerId && record.matchedCustomerId !== order.customerId && !args.confirmCustomerMismatch) {
       throw new InboundOrderTransitionError("The inbound record and selected order have different customers. Confirm the mismatch before attaching.", 409);
     }
@@ -3073,10 +3115,12 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: record.id,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch: {
-        status: "ignored",
+        status: "submitted",
         reviewOutcome: "attached_to_order",
-        archivedAt: now,
+        archivedAt: null,
+        matchedOrderId: args.orderId,
         requiresHumanDecision: false,
         reviewRequiredReason: null,
         normalizedPayloadJson: {
@@ -3093,7 +3137,7 @@ export class InboundOrderService {
         actorType: "user",
         eventType: "order.attached",
         fromStatus: record.status,
-        toStatus: "ignored",
+        toStatus: "submitted",
         message: `Attached to existing order ${(order as any).orderNumber ?? args.orderId}.`,
         metadataJson: { orderId: args.orderId, createdAttachmentIds, skippedAttachments },
       },
@@ -3292,7 +3336,7 @@ export class InboundOrderService {
 
     // Idempotently resolve a repeated submission before attempting to save the
     // now-immutable draft again.
-    if (current.record.createdOrderId) {
+    if (inboundLinkedOrderId(current.record)) {
       return this.convertInboundReviewDraftToOrder(args);
     }
 
@@ -3916,8 +3960,8 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
 
-    if (detail.record.createdOrderId) {
-      const existingOrder = await this.orderRepository.getOrderById(args.organizationId, detail.record.createdOrderId);
+    if (inboundLinkedOrderId(detail.record)) {
+      const existingOrder = await this.orderRepository.getOrderById(args.organizationId, inboundLinkedOrderId(detail.record)!);
       if (!existingOrder) {
         throw new InboundOrderTransitionError("Inbound record is linked to an order that could not be loaded.", 409);
       }
@@ -5551,6 +5595,7 @@ export class InboundOrderService {
 
     if (record.createdOrderId) return errors;
     if (record.createdQuoteId) errors.push("Inbound record has already been converted to a quote draft.");
+    if (inboundLinkedOrderId(record)) errors.push("Inbound evidence is already linked to an Order. Review against that link instead of creating another.");
     if (record.status !== reviewedStatus) errors.push("Inbound record must be ready before order conversion.");
     if (!normalizedPayload) {
       errors.push("Reviewed draft is missing.");
@@ -6570,15 +6615,16 @@ export class InboundOrderService {
     note: string | null,
     actorUserId: string,
   ): UpdateInboundOrderRecordValues {
+    if ((record.createdQuoteId || inboundLinkedOrderId(record)) && action === "mark-reviewed") throw new InboundOrderTransitionError("Review subsequent evidence against the existing link. Attach it deliberately or dismiss it; do not create another Order.");
     if (record.status === rejectedStatus && action !== "reopen") {
       throw new InboundOrderTransitionError("Rejected inbound records must be reopened before other review actions.");
     }
 
-    if (record.status === reviewedStatus && action !== "reopen") {
+    if (record.status === reviewedStatus && action !== "reopen" && action !== "reject") {
       throw new InboundOrderTransitionError("Reviewed inbound records can only be reopened until conversion is available.");
     }
 
-    if (record.status === "approved" || record.status === "submitted") {
+    if ((record.status === "approved" || record.status === "submitted") && !inboundIsPending(record)) {
       throw new InboundOrderTransitionError("This inbound record has moved beyond review and cannot be changed here.");
     }
 

@@ -1,3 +1,4 @@
+import { InboundOrdersRepository } from "./inboundOrders.repo";
 import { getOrderCreditHold } from "../services/orderCreditHoldService";
 import { db } from "../db";
 import {
@@ -2256,6 +2257,10 @@ export class OrdersRepository {
             });
         }
 
+        // Evidence writers and inbound resolution use tenant advisory -> Quote
+        // row ordering. Keep this inside the existing conversion transaction.
+        const inboundRepository = new InboundOrdersRepository(this.dbInstance as unknown as typeof db);
+        await inboundRepository.lockQuoteLinkage(organizationId);
         // Fetch the quote with line items
         const [storedQuote] = await this.dbInstance
             .select()
@@ -2272,6 +2277,7 @@ export class OrdersRepository {
             if (!existingOrder || existingOrder.quoteId !== quote.id) {
                 throw new Error('Quote conversion linkage is invalid');
             }
+            await inboundRepository.markLinkedQuoteOrderConverted({ organizationId, quoteId, orderId: existingOrder.id, actorUserId: createdByUserId });
             return existingOrder;
         }
 
@@ -2573,6 +2579,8 @@ export class OrdersRepository {
                 convertedToOrderId: createdOrder.id
             })
             .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+
+        await inboundRepository.markLinkedQuoteOrderConverted({ organizationId, quoteId, orderId: createdOrder.id, actorUserId: createdByUserId });
 
         if (shouldApplyQuoteConversionProductionIntake(options?.productionIntakePolicy) && (createdOrder.lineItems?.length ?? 0) > 0) {
             for (const lineItem of createdOrder.lineItems || []) {

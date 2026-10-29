@@ -1,3 +1,5 @@
+import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
+import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
@@ -3944,7 +3946,7 @@ function QueueTriageControls({
                     onChange={(event) => setFilter({ unconvertedOnly: event.target.checked })}
                     disabled={isLoading}
                   />
-                  Unconverted
+                  Unresolved
                 </label>
               </div>
             </div>
@@ -4165,7 +4167,7 @@ function InboundQueuePanel({
                         </Badge>
                       ) : null}
                       {intentLabel ? <span className="text-[11px] text-muted-foreground">/</span> : null}
-                      <span className="text-[11px] font-medium text-muted-foreground">{statusLabels[record.status]}</span>
+                      <span className="text-[11px] font-medium text-muted-foreground">{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                       {issueChip && (
                         <Badge variant="outline" className="h-5 border-amber-300 bg-amber-50 px-1.5 text-[10px] text-amber-800">
                           {issueChip}
@@ -5242,7 +5244,7 @@ function CleanInboundQueue({
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
-                <span>{statusLabels[record.status]}</span>
+                <span>{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                 {combinedSourceCount > 1 && (
                   <span className="rounded border border-blue-400/50 bg-blue-400/10 px-1.5 py-0.5 font-semibold text-blue-100">
                     Combined from {combinedSourceCount} emails
@@ -8374,7 +8376,7 @@ function DraftBuilderPanel({
   ));
   const conversionErrors = convertError?.errors ?? [];
   const unsupportedRequests = form.unsupportedRequestsJson ?? [];
-  const convertedOrderId = selectedRecord.createdOrderId ?? null;
+  const convertedOrderId = inboundLinkedOrderId(selectedRecord);
   const hasConvertedOrder = Boolean(convertedOrderId);
   const draftOrderBlockers = cleanUniqueItems([
     ...validationErrors,
@@ -10445,7 +10447,7 @@ export default function InboundOrdersPage() {
 
   const rejectInboundOrderMutation = useMutation({
     mutationFn: ({ recordId, reason }: { recordId: string; reason: string | null }) => (
-      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/reject`, { reason })
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/reject`, { reason, expectedEvidenceFingerprint: recordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null })
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
@@ -10460,7 +10462,7 @@ export default function InboundOrdersPage() {
 
   const ignoreInboundOrderMutation = useMutation({
     mutationFn: ({ recordId, action, note, resolveConflict }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "trust_sender" | "trust_domain" | "delete" | "reject">; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
-      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note, resolveConflict })
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note, resolveConflict, expectedEvidenceFingerprint: recordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null })
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
@@ -10491,7 +10493,7 @@ export default function InboundOrdersPage() {
       apiFetch(`/api/inbound-orders/${recordId}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note }),
+        body: JSON.stringify({ note, expectedEvidenceFingerprint: recordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null }),
       }).then(async (response) => {
         const json = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -10515,7 +10517,7 @@ export default function InboundOrdersPage() {
     mutationFn: ({ recordIds, action, note, resolveConflict }: { recordIds: string[]; action: InboundQueueCleanupAction; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
       postJson<InboundOrderBulkActionResponse>(
         "/api/inbound-orders/bulk-action",
-        { recordIds, action, note, resolveConflict },
+        { recordIds, action, note, resolveConflict, expectedEvidenceFingerprints: Object.fromEntries(recordIds.map(id => [id, records.find(record => record.id === id)?.normalizedPayloadJson?.evidenceFingerprint ?? null])) },
       )
     ),
     onSuccess: async (response, variables) => {
@@ -10595,6 +10597,7 @@ export default function InboundOrdersPage() {
       artworkAssignments: Array<{ fileId: string; orderLineItemId: string | null; side: "front" | "back" | "na" }>;
     }) => postJson<InboundOrderAttachToOrderResponse>(`/api/inbound-orders/${encodeURIComponent(input.inboundRecordId)}/attach-to-order`, {
       orderId: input.orderId,
+      expectedEvidenceFingerprint: input.inboundRecordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null,
       includeMessageHistory: input.includeMessageHistory,
       includeAttachments: input.includeAttachments,
       includeParsedNotes: input.includeParsedNotes,
@@ -10910,17 +10913,8 @@ export default function InboundOrdersPage() {
       && emailReprocessMutation.variables?.recordId === selectedId
       && emailReprocessMutation.variables?.action === "reprocess_email",
   );
-  const selectedRecordIsTerminal = Boolean(
-    selectedRecord
-      && (
-        selectedRecord.status === "terminal"
-        || selectedRecord.status === "ignored"
-        || selectedRecord.status === "submitted"
-        || selectedRecord.status === "approved"
-        || selectedRecord.createdQuoteId
-        || selectedRecord.createdOrderId
-      ),
-  );
+  const selectedRecordIsTerminal = Boolean(selectedRecord && !inboundIsPending(selectedRecord));
+  const selectedRecordHasBusinessLink = Boolean(selectedRecord && (selectedRecord.createdQuoteId || inboundLinkedOrderId(selectedRecord)));
   const selectedReviewDraftHasUnsavedEdits = Boolean(selectedId && reviewDraftDirtyByRecordId[selectedId]);
   const handleReviewDraftDirtyChange = useCallback((recordId: string | null, dirty: boolean) => {
     if (!recordId) return;
@@ -10941,7 +10935,7 @@ export default function InboundOrdersPage() {
     }, 80);
   }, []);
   const runParseForSelectedRecord = () => {
-    if (!selectedId || parseInFlightRef.current) return;
+    if (!selectedId || parseInFlightRef.current || selectedRecordHasBusinessLink) return;
     if (selectedReviewDraftHasUnsavedEdits) {
       const applyLatestParse = window.confirm("Applying the latest parse will overwrite your draft changes.");
       keepCurrentDraftAfterParseRef.current = !applyLatestParse;
@@ -10955,7 +10949,7 @@ export default function InboundOrdersPage() {
     parseMutation.mutate(selectedId);
   };
   const runSourceRescanForSelectedRecord = () => {
-    if (!selectedRecord || emailReprocessMutation.isPending || selectedRecordIsTerminal) return;
+    if (!selectedRecord || emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecordHasBusinessLink) return;
     if (selectedRecord.sourceType !== "email") {
       toast({ title: "Re-scan unavailable", description: "Only email-source inbound records can refresh source documents.", variant: "destructive" });
       return;
@@ -11498,6 +11492,7 @@ export default function InboundOrdersPage() {
           </div>
         </div>
         {selectedRecord?.sourceType === "email" && !selectedRecord.createdOrderId && !selectedRecord.createdQuoteId && !inboundEmailFeatureDisabled && <InboundEmailProcessingStatus key={selectedRecord.id} recordId={selectedRecord.id} />}
+        {selectedRecord && <InboundAccountabilityNotice record={selectedRecord} />}
         {pageError && (
           <Alert variant="destructive" className="mt-3">
             <AlertTriangle className="h-4 w-4" />
@@ -11607,8 +11602,8 @@ export default function InboundOrdersPage() {
               isLoading={detailQuery.isLoading}
               isParsing={isSelectedRecordParsing}
               isRescanning={isSelectedRecordRescanning}
-              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-              rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecord?.sourceType !== "email"}
+              parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
+              rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecordHasBusinessLink || selectedRecord?.sourceType !== "email"}
               parseError={parseMutation.error as Error | null}
               parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
               parseCompletedWithoutDraftMessage={selectedId === parseCompletedWithoutDraftRecordId ? parseCompletedWithoutDraftMessage : null}
@@ -12003,7 +11998,7 @@ export default function InboundOrdersPage() {
               <div className="flex shrink-0 items-center gap-1">
               {reviewMode === "operational" && selectedRecord && (
                 <div className="flex items-center gap-1">
-                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={() => runParseForSelectedRecord()} disabled={isParseInFlight || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={() => runParseForSelectedRecord()} disabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}>
                     {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     Parse<span className="sr-only"> with AI</span>
                   </Button>
@@ -12094,7 +12089,7 @@ export default function InboundOrdersPage() {
                 draftPreview={draftPreviewQuery.data?.data}
                 parseError={parseMutation.error as Error | null}
                 isParsing={isSelectedRecordParsing}
-                parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+                parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
                 isRejecting={rejectInboundOrderMutation.isPending}
                 isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
                 rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
@@ -12172,7 +12167,7 @@ export default function InboundOrdersPage() {
               saveError={(saveReviewDraftMutation.error ?? refreshReviewDraftFromLatestParseMutation.error) as Error | null}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
               convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
-              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+              parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
               isParsing={isSelectedRecordParsing}
               onSave={async (draft) => {
                 if (!selectedId) return;

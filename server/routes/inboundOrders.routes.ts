@@ -115,6 +115,7 @@ function sendInboundSchemaUnavailable(res: any) {
 }
 
 const reviewActionSchema = z.object({
+  expectedEvidenceFingerprint: z.string().trim().min(1).max(100).optional().nullable(),
   note: z.string().trim().min(1).max(2000).optional().nullable(),
   reason: z.string().trim().min(1).max(2000).optional().nullable(),
 });
@@ -1402,6 +1403,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         status: normalizeInboundOrderStatusForStorage(input.status),
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
       });
 
       res.json({ success: true, data: detail });
@@ -1845,6 +1847,7 @@ export function registerInboundOrderRoutes(
         actorUserId,
         action,
         note: input.note ?? input.reason ?? null,
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
       });
 
       res.json({ success: true, data: detail });
@@ -1899,6 +1902,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         action: input.action,
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
         note: input.note ?? null,
         resolveConflict: input.resolveConflict,
       });
@@ -1933,6 +1937,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         note: input.note ?? input.reason ?? null,
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
       });
 
       res.json({ success: true, data: detail });

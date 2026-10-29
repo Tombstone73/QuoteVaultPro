@@ -1,4 +1,6 @@
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
+import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
+import { inboundParentOrderIdSql, inboundQueueBucketSql } from "../services/inboundOrders/inboundQueuePolicy";
 
 import { db } from "../db";
 import {
@@ -360,13 +362,26 @@ export class InboundOrdersRepository {
     const snapshots = await repository.listReviewSnapshots(organizationId, inboundRecordId);
     const draft = snapshots.find((snapshot) => (snapshot.payloadJson as any)?.metadata?.snapshotKind === "editable_review_draft") ?? null;
     const stale = Boolean(draft && evidenceFingerprintFromSnapshot(draft) !== fingerprint);
+    const metadata = record.normalizedPayloadJson ?? {};
+    const previousFingerprint = metadata.evidenceFingerprint;
+    const resolution = metadata.evidenceResolution as { fingerprint?: string } | undefined;
+    const changed = Boolean(previousFingerprint && previousFingerprint !== fingerprint);
+    const unresolved = changed || Boolean(metadata.unresolvedEvidenceFingerprint)
+      || Boolean(resolution?.fingerprint && resolution.fingerprint !== fingerprint);
     const [updated] = await tx.update(inboundOrderRecords).set({
-      normalizedPayloadJson: { ...(record.normalizedPayloadJson ?? {}), evidenceFingerprint: fingerprint },
-      ...(stale && !record.createdOrderId && !record.createdQuoteId && !["ignored", "terminal"].includes(record.status) ? {
+      normalizedPayloadJson: { ...metadata, evidenceFingerprint: fingerprint,
+        ...(unresolved ? { unresolvedEvidenceFingerprint: fingerprint } : {}) },
+      ...(unresolved || (stale && !inboundLinkedOrderId(record) && !record.createdQuoteId && !["ignored", "terminal"].includes(record.status)) ? {
         status: "needs_review" as const, requiresHumanDecision: true, approvedAt: null,
         reviewRequiredReason: INBOUND_EVIDENCE_REVIEW_REQUIRED,
+        ...(unresolved ? { archivedAt: null, reviewOutcome: "new_evidence_requires_review" } : {}),
       } : {}),
     }).where(and(eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId))).returning();
+    if (changed) await tx.insert(inboundOrderEvents).values({ organizationId, inboundRecordId,
+      actorType: "system", eventType: "evidence.reopened", fromStatus: record.status, toStatus: "needs_review",
+      message: "New evidence requires staff review. Existing links, prior decisions and draft edits are preserved.",
+      metadataJson: { previousFingerprint: previousFingerprint ?? null, evidenceFingerprint: fingerprint,
+        previousStatus: record.status, previousReviewOutcome: record.reviewOutcome ?? null, previousResolution: metadata.evidenceResolution ?? null } });
     await synchronizeInboundEmailProcessing(tx, { record: updated ?? record, fingerprint, draft });
     return { record: updated ?? record, files, fingerprint };
   }
@@ -404,6 +419,19 @@ export class InboundOrdersRepository {
     });
   }
 
+  /** Caller owns the transaction; share the evidence protocol with linkage writers. */
+  async lockForEvidenceHandling(organizationId: string, inboundRecordId: string, expectedFingerprint?: string | null) {
+    if (!await this.lockEvidence(organizationId, inboundRecordId, this.dbInstance)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+    const state = await this.synchronizeEvidence(organizationId, inboundRecordId, this.dbInstance);
+    if (expectedFingerprint && expectedFingerprint !== state.fingerprint) throw new InboundEvidenceConflictError();
+    return state;
+  }
+
+  /** Acquire before locking a Quote, including canonical conversion retries. */
+  async lockQuoteLinkage(organizationId: string) {
+    await this.dbInstance.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${organizationId}`}))`);
+  }
+
   private async assertCurrentEvidence(organizationId: string, inboundRecordId: string, tx: any, expectedSnapshotId?: string) {
     const repository = new InboundOrdersRepository(tx);
     const record = await repository.getRecord(organizationId, inboundRecordId);
@@ -437,52 +465,12 @@ export class InboundOrdersRepository {
     filters: InboundOrderListFilters,
   ): Promise<InboundOrderRecord[]> {
     const predicates = [eq(inboundOrderRecords.organizationId, organizationId)];
-    let hasExplicitQueueScope = false;
-
-    if (filters.status) {
-      hasExplicitQueueScope = true;
-      predicates.push(eq(inboundOrderRecords.status, filters.status));
-    } else if (filters.statusGroup === "active") {
-      hasExplicitQueueScope = true;
-      predicates.push(sql`(
-        ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review', 'waiting_on_customer', 'ready')
-        and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'
-        and ${inboundOrderRecords.archivedAt} is null
-        and ${inboundOrderRecords.createdQuoteId} is null
-        and ${inboundOrderRecords.createdOrderId} is null
-      )`);
-    } else if (filters.statusGroup === "needs_review") {
-      hasExplicitQueueScope = true;
-      predicates.push(sql`${inboundOrderRecords.status} in ('received', 'processing', 'needs_review') and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'`);
-    } else if (filters.statusGroup === "waiting") {
-      hasExplicitQueueScope = true;
-      predicates.push(eq(inboundOrderRecords.status, "waiting_on_customer"));
-    } else if (filters.statusGroup === "ready") {
-      hasExplicitQueueScope = true;
-      predicates.push(eq(inboundOrderRecords.status, "ready"));
-    } else if (filters.statusGroup === "converted") {
-      hasExplicitQueueScope = true;
-      predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null or ${inboundOrderRecords.status} = 'submitted')`);
-    } else if (filters.statusGroup === "rejected") {
-      hasExplicitQueueScope = true;
-      predicates.push(sql`(
-        (${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected')
-        and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'
-      )`);
-    } else if (filters.statusGroup === "ignored") {
-      hasExplicitQueueScope = true;
-      predicates.push(sql`(${inboundOrderRecords.status} = 'ignored' or ${inboundOrderRecords.reviewOutcome} = 'ignored')`);
-    }
-
-    if (!hasExplicitQueueScope && filters.converted !== true && !filters.reviewOutcome) {
-      predicates.push(sql`(
-        ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review', 'waiting_on_customer', 'ready')
-        and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted'
-        and ${inboundOrderRecords.archivedAt} is null
-        and ${inboundOrderRecords.createdQuoteId} is null
-        and ${inboundOrderRecords.createdOrderId} is null
-      )`);
-    }
+    const bucket = inboundQueueBucketSql();
+    const pending = sql`${bucket} in ('needs_review', 'waiting', 'ready')`;
+    if (filters.status) predicates.push(eq(inboundOrderRecords.status, filters.status));
+    else if (filters.statusGroup === "active") predicates.push(pending);
+    else if (filters.statusGroup) predicates.push(sql`${bucket} = ${filters.statusGroup}`);
+    else if (filters.converted !== true && !filters.reviewOutcome) predicates.push(pending);
 
     if (filters.reviewOutcome) {
       predicates.push(eq(inboundOrderRecords.reviewOutcome, filters.reviewOutcome));
@@ -516,11 +504,8 @@ export class InboundOrdersRepository {
       )`);
     }
 
-    if (filters.converted === true) {
-      predicates.push(sql`(${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null)`);
-    } else if (filters.converted === false) {
-      predicates.push(sql`${inboundOrderRecords.createdQuoteId} is null and ${inboundOrderRecords.createdOrderId} is null`);
-    }
+    if (filters.converted === true) predicates.push(sql`${bucket} = 'converted'`);
+    else if (filters.converted === false) predicates.push(sql`${bucket} <> 'converted'`);
 
     if (filters.linkedQuoteStatus) {
       predicates.push(sql`exists (
@@ -638,7 +623,7 @@ export class InboundOrdersRepository {
                   : [desc(inboundOrderRecords.receivedAt), desc(inboundOrderRecords.createdAt)];
 
     return this.dbInstance
-      .select()
+      .select({ ...getTableColumns(inboundOrderRecords), accountabilityBucket: inboundQueueBucketSql(), linkedParentOrderId: inboundParentOrderIdSql() })
       .from(inboundOrderRecords)
       .where(and(...predicates))
       .orderBy(...orderBy)
@@ -651,15 +636,16 @@ export class InboundOrdersRepository {
   }
 
   async getQueueSummary(organizationId: string): Promise<InboundOrderQueueSummary> {
+    const bucket = inboundQueueBucketSql();
     const [summary] = await this.dbInstance
       .select({
-        needsReview: sql<number>`count(*) filter (where ${inboundOrderRecords.status} in ('received', 'processing', 'needs_review'))`,
-        waitingOnCustomer: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'waiting_on_customer')`,
-        readyReviewed: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'ready')`,
-        convertedSubmitted: sql<number>`count(*) filter (where ${inboundOrderRecords.createdQuoteId} is not null or ${inboundOrderRecords.createdOrderId} is not null or ${inboundOrderRecords.status} = 'submitted')`,
-        rejectedTerminal: sql<number>`count(*) filter (where (${inboundOrderRecords.status} = 'terminal' or ${inboundOrderRecords.reviewOutcome} = 'rejected') and coalesce(${inboundOrderRecords.reviewOutcome}, '') <> 'deleted')`,
-        ignored: sql<number>`count(*) filter (where ${inboundOrderRecords.status} = 'ignored' or ${inboundOrderRecords.reviewOutcome} = 'ignored')`,
-        withWarnings: sql<number>`count(*) filter (where exists (
+        needsReview: sql<number>`count(*) filter (where ${bucket} = 'needs_review')`,
+        waitingOnCustomer: sql<number>`count(*) filter (where ${bucket} = 'waiting')`,
+        readyReviewed: sql<number>`count(*) filter (where ${bucket} = 'ready')`,
+        convertedSubmitted: sql<number>`count(*) filter (where ${bucket} = 'converted')`,
+        rejectedTerminal: sql<number>`count(*) filter (where ${bucket} = 'rejected')`,
+        ignored: sql<number>`count(*) filter (where ${bucket} = 'ignored')`,
+        withWarnings: sql<number>`count(*) filter (where ${bucket} in ('needs_review', 'waiting', 'ready') and exists (
           select 1 from ${inboundOrderWarnings}
           where ${inboundOrderWarnings.organizationId} = ${organizationId}
             and ${inboundOrderWarnings.inboundRecordId} = ${inboundOrderRecords.id}
@@ -1330,7 +1316,7 @@ export class InboundOrdersRepository {
 
   async getRecord(organizationId: string, inboundRecordId: string): Promise<InboundOrderRecord | null> {
     const [record] = await this.dbInstance
-      .select()
+      .select({ ...getTableColumns(inboundOrderRecords), accountabilityBucket: inboundQueueBucketSql(), linkedParentOrderId: inboundParentOrderIdSql() })
       .from(inboundOrderRecords)
       .where(
         and(
@@ -1515,6 +1501,7 @@ export class InboundOrdersRepository {
   }, executor: any = this.dbInstance): Promise<InboundOrderFile | null> {
     return executor.transaction(async (tx: any) => {
       if (!await this.lockEvidence(args.organizationId, args.inboundRecordId, tx)) return null;
+      await this.synchronizeEvidenceAndParent(args.organizationId, args.inboundRecordId, tx);
       const repository = new InboundOrdersRepository(tx);
       const childRecords = await repository.listCombinedChildRecords(args.organizationId, args.inboundRecordId);
       const accessibleRecordIds = [args.inboundRecordId, ...childRecords.map((record) => record.id)];
@@ -1535,6 +1522,7 @@ export class InboundOrdersRepository {
   async createFile(values: CreateInboundOrderFileValues, executor: any = this.dbInstance): Promise<InboundOrderFile> {
     return executor.transaction(async (tx: any) => {
       if (!await this.lockEvidence(values.organizationId, values.inboundRecordId, tx)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      await this.synchronizeEvidenceAndParent(values.organizationId, values.inboundRecordId, tx);
       const [created] = await tx
         .insert(inboundOrderFiles)
         .values(values)
@@ -2559,12 +2547,25 @@ export class InboundOrdersRepository {
     patch: UpdateInboundOrderRecordValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
     parsedEvidenceFingerprint?: string | null;
+    expectedEvidenceFingerprint?: string | null;
     automaticProcessing?: InboundEmailProcessingClaim;
   }): Promise<{ record: InboundOrderRecord; event: InboundOrderEvent } | null> {
     return this.dbInstance.transaction(async (tx) => {
-      const current = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
+      let current = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
       if (!current) return null;
+      const evidence = await this.synchronizeEvidenceAndParent(args.organizationId, args.inboundRecordId, tx);
+      current = evidence.record;
+      if (current.sourceType === "email" && args.expectedEvidenceFingerprint && args.expectedEvidenceFingerprint !== evidence.fingerprint) throw new InboundEvidenceConflictError();
       const patch = { ...args.patch };
+      if (patch.normalizedPayloadJson) {
+        patch.normalizedPayloadJson = { ...patch.normalizedPayloadJson };
+        for (const key of ["evidenceFingerprint", "evidenceResolution", "unresolvedEvidenceFingerprint", "quoteEvidenceFingerprint"]) {
+          (patch.normalizedPayloadJson as any)[key] = (current.normalizedPayloadJson as any)?.[key] ?? null;
+        }
+      }
+      if (args.event.actorType === "user" && args.event.eventType === "review.reopen") patch.normalizedPayloadJson = {
+        ...(current.normalizedPayloadJson ?? {}), ...patch.normalizedPayloadJson, unresolvedEvidenceFingerprint: evidence.fingerprint,
+      };
       if (args.automaticProcessing) {
         await assertInboundEmailProcessingClaim(tx, args.organizationId, args.inboundRecordId, args.automaticProcessing);
         const state = await this.synchronizeEvidence(args.organizationId, args.inboundRecordId, tx);
@@ -2588,9 +2589,32 @@ export class InboundOrdersRepository {
           patch.reviewRequiredReason = currentParse ? args.patch.reviewRequiredReason ?? "AI suggestions require staff review." : INBOUND_EVIDENCE_REVIEW_REQUIRED;
           patch.normalizedPayloadJson = { ...(state.record.normalizedPayloadJson ?? {}), reparseRecommended: !currentParse };
           if (current.createdOrderId || current.createdQuoteId || ["ignored", "terminal", "submitted", "approved"].includes(current.status)) return null;
-        } else if (["ready", "approved", "submitted"].includes(patch.status ?? "")) {
+        } else if (["ready", "approved", "submitted"].includes(patch.status ?? "") && args.event.eventType !== "order.attached") {
           await this.assertCurrentEvidence(args.organizationId, args.inboundRecordId, tx);
+          if (patch.status === "submitted" && !inboundLinkedOrderId(current)) throw new InboundEvidenceConflictError("Only an actual Order linkage can resolve inbound evidence.");
+          if (!current.createdQuoteId && !inboundLinkedOrderId(current)) patch.normalizedPayloadJson = { ...(current.normalizedPayloadJson ?? {}), ...patch.normalizedPayloadJson, unresolvedEvidenceFingerprint: null, evidenceResolution: null };
         }
+      }
+      const staffDismissal = args.event.actorType === "user" && ["review.ignored", "review.reject", "review.queue_deleted", "review.status_updated"].includes(args.event.eventType)
+        && ["ignored", "terminal"].includes(patch.status ?? "");
+      const attachedOrder = args.event.eventType === "order.attached" && args.event.actorType === "user"
+        ? inboundLinkedOrderId({ ...current, ...patch }) : null;
+      if (current.sourceType === "email" && (staffDismissal || attachedOrder) && !args.expectedEvidenceFingerprint) throw new InboundEvidenceConflictError("Refresh and review the current email evidence before resolving it.");
+      if (attachedOrder) {
+        const [order] = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, attachedOrder))).limit(1);
+        if (!order) throw new InboundEvidenceConflictError("Linked Order was not found for this organization.");
+      }
+      if (current.sourceType === "email" && ["ignored", "terminal"].includes(patch.status ?? "") && !staffDismissal && !attachedOrder) throw new InboundEvidenceConflictError("Only deliberate staff dismissal or Order linkage can resolve imported evidence.");
+      if (staffDismissal || attachedOrder) {
+        const existing = (current.normalizedPayloadJson as any)?.evidenceResolution;
+        if (existing?.fingerprint === evidence.fingerprint && existing.kind === (attachedOrder ? "order" : "dismissed") && !(current.normalizedPayloadJson as any)?.unresolvedEvidenceFingerprint) {
+          const [event] = await tx.select().from(inboundOrderEvents).where(and(eq(inboundOrderEvents.organizationId, args.organizationId), eq(inboundOrderEvents.inboundRecordId, args.inboundRecordId)))
+            .orderBy(desc(inboundOrderEvents.createdAt)).limit(1);
+          if (event) return { record: current, event };
+        }
+        patch.normalizedPayloadJson = { ...(current.normalizedPayloadJson ?? {}), ...patch.normalizedPayloadJson,
+          unresolvedEvidenceFingerprint: null, evidenceResolution: { fingerprint: evidence.fingerprint,
+            kind: attachedOrder ? "order" : "dismissed", orderId: attachedOrder, actorUserId: args.event.actorUserId, at: new Date().toISOString() } };
       }
       const [record] = await tx
         .update(inboundOrderRecords)
@@ -2616,6 +2640,7 @@ export class InboundOrdersRepository {
         .insert(inboundOrderEvents)
         .values({
           ...args.event,
+          ...((staffDismissal || attachedOrder) ? { metadataJson: { ...(args.event.metadataJson ?? {}), evidenceFingerprint: evidence.fingerprint, resolutionKind: attachedOrder ? "order" : "dismissed", orderId: attachedOrder } } : {}),
           ...(args.automaticProcessing ? { actorType: "system" as const, fromStatus: current.status } : {}),
           ...(current.sourceType === "email" ? { toStatus: persistedRecord.status } : {}),
           organizationId: args.organizationId,
@@ -2656,6 +2681,8 @@ export class InboundOrdersRepository {
             eq(inboundOrderRecords.status, "ready"),
             sql`${inboundOrderRecords.createdOrderId} is null`,
             sql`${inboundOrderRecords.createdQuoteId} is null`,
+            sql`nullif(${inboundOrderRecords.normalizedPayloadJson}->>'attachedOrderId', '') is null`,
+            sql`nullif(${inboundOrderRecords.normalizedPayloadJson}->>'combinedParentRecordId', '') is null`,
           ),
         )
         .returning();
@@ -2695,24 +2722,23 @@ export class InboundOrdersRepository {
     lineItemLinks: Array<{ inboundLineItemId: string | null; orderLineItemId: string }>;
   }): Promise<InboundOrderRecord | null> {
     return this.dbInstance.transaction(async (tx) => {
-      const [record] = await tx
-        .select()
-        .from(inboundOrderRecords)
-        .where(
-          and(
-            eq(inboundOrderRecords.organizationId, args.organizationId),
-            eq(inboundOrderRecords.id, args.inboundRecordId),
-          ),
-        )
-        .limit(1);
-
+      const record = await this.lockEvidence(args.organizationId, args.inboundRecordId, tx);
       if (!record) return null;
-      if (record.createdOrderId && record.createdOrderId !== args.orderId) return record;
+      if (record.createdOrderId) {
+        if (record.createdOrderId !== args.orderId) throw new InboundEvidenceConflictError("This inbound record already has a different Order.");
+        return record; // A retry must not resolve later evidence.
+      }
+      await this.assertCurrentEvidence(args.organizationId, args.inboundRecordId, tx);
+      const [order] = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId))).limit(1);
+      if (!order) throw new InboundEvidenceConflictError("Order was not found for this organization.");
+      const state = await this.synchronizeEvidence(args.organizationId, args.inboundRecordId, tx);
 
       const now = new Date();
       const [updated] = await tx
         .update(inboundOrderRecords)
         .set({
+          normalizedPayloadJson: { ...(state.record.normalizedPayloadJson ?? {}), unresolvedEvidenceFingerprint: null,
+            evidenceResolution: { kind: "order", fingerprint: state.fingerprint, orderId: args.orderId, actorUserId: args.actorUserId, at: now.toISOString() } },
           status: "submitted",
           reviewOutcome: "order_created",
           createdOrderId: args.orderId,
@@ -2892,7 +2918,8 @@ export class InboundOrdersRepository {
         throw new Error("Failed to create inbound order event");
       }
 
-      if (args.recordPatch) await tx.update(inboundOrderRecords).set({ ...args.recordPatch, updatedAt: new Date() })
+      if (args.recordPatch) await tx.update(inboundOrderRecords).set({ ...args.recordPatch,
+        ...(args.recordPatch.status === "ready" && !current.createdQuoteId && !inboundLinkedOrderId(current) ? { normalizedPayloadJson: { ...(current.normalizedPayloadJson ?? {}), unresolvedEvidenceFingerprint: null, evidenceResolution: null } } : {}), updatedAt: new Date() })
         .where(and(eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId)));
       if (current.sourceType === "email") await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
 
@@ -2918,6 +2945,7 @@ export class InboundOrdersRepository {
         )
         .limit(1);
 
+      if (record && (inboundLinkedOrderId(record) || (record.normalizedPayloadJson as any)?.combinedParentRecordId)) throw new InboundEvidenceConflictError("Inbound evidence already has an Order linkage or belongs to a combined request; do not create another commercial draft.");
       if (!record || record.createdQuoteId) {
         return null;
       }
@@ -3153,7 +3181,9 @@ export class InboundOrdersRepository {
       await tx
         .update(inboundOrderRecords)
         .set({
-          status: "submitted",
+          status: "waiting_on_customer",
+          normalizedPayloadJson: { ...(record.normalizedPayloadJson ?? {}), unresolvedEvidenceFingerprint: null,
+            quoteEvidenceFingerprint: fingerprintInboundEmailEvidence(record, await new InboundOrdersRepository(tx as unknown as typeof db).listFiles(organizationId, input.inboundRecordId)) },
           reviewOutcome: "quote_draft_created",
           createdQuoteId: quote.id,
           matchedQuoteId: quote.id,
@@ -3179,7 +3209,7 @@ export class InboundOrdersRepository {
           actorType: "user",
           eventType: "review.quote_created",
           fromStatus: record.status,
-          toStatus: "submitted",
+          toStatus: "waiting_on_customer",
           message: `Quote draft #${quote.quoteNumber ?? quote.id.slice(0, 8)} created from reviewed inbound snapshot.`,
           metadataJson: {
             quoteId: quote.id,
@@ -3221,82 +3251,63 @@ export class InboundOrdersRepository {
   }
 
   async markLinkedQuoteCompleted(args: {
-    organizationId: string;
-    quoteId: string;
-    actorUserId?: string | null;
-    quoteStatus: string;
-    completionSource: "quote_status" | "quote_staff_approval";
+    organizationId: string; quoteId: string; actorUserId?: string | null;
+    quoteStatus: string; completionSource: "quote_status" | "quote_staff_approval";
   }): Promise<InboundOrderRecord | null> {
-    return this.dbInstance.transaction(async (tx) => {
-      const [record] = await tx
-        .select()
-        .from(inboundOrderRecords)
-        .where(
-          and(
-            eq(inboundOrderRecords.organizationId, args.organizationId),
-            eq(inboundOrderRecords.createdQuoteId, args.quoteId),
-          ),
-        )
-        .limit(1);
-
-      if (!record || record.status === "approved" || record.status === "terminal") {
-        return null;
+    return this.dbInstance.transaction(async tx => {
+      const repository = new InboundOrdersRepository(tx as unknown as typeof db);
+      await repository.lockQuoteLinkage(args.organizationId);
+      const records = await tx.select().from(inboundOrderRecords).where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.createdQuoteId, args.quoteId))).orderBy(asc(inboundOrderRecords.id));
+      for (const reference of records) {
+        const record = await repository.lockEvidence(args.organizationId, reference.id, tx);
+        if (!record || !inboundIsPending(record) || inboundLinkedOrderId(record) || (record.normalizedPayloadJson as any)?.unresolvedEvidenceFingerprint) continue;
+        // Quote approval/status is not evidence of an Order. Keep it waiting.
+        await tx.update(inboundOrderRecords).set({ status: "waiting_on_customer", reviewRequiredReason: "Awaiting quote acceptance and Order creation.", updatedAt: new Date() })
+          .where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.id, record.id)));
       }
-
-      const [existingEvent] = await tx
-        .select({ id: inboundOrderEvents.id })
-        .from(inboundOrderEvents)
-        .where(
-          and(
-            eq(inboundOrderEvents.organizationId, args.organizationId),
-            eq(inboundOrderEvents.inboundRecordId, record.id),
-            eq(inboundOrderEvents.eventType, "review.downstream_quote_completed"),
-          ),
-        )
-        .limit(1);
-
-      if (existingEvent) {
-        return record;
-      }
-
-      const now = new Date();
-      const [updated] = await tx
-        .update(inboundOrderRecords)
-        .set({
-          status: "approved",
-          reviewOutcome: "downstream_quote_completed",
-          requiresHumanDecision: false,
-          reviewRequiredReason: null,
-          approvedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(inboundOrderRecords.organizationId, args.organizationId),
-            eq(inboundOrderRecords.id, record.id),
-          ),
-        )
-        .returning();
-
-      await tx.insert(inboundOrderEvents).values({
-        organizationId: args.organizationId,
-        inboundRecordId: record.id,
-        actorUserId: args.actorUserId ?? null,
-        actorType: args.actorUserId ? "user" : "system",
-        eventType: "review.downstream_quote_completed",
-        fromStatus: record.status,
-        toStatus: "approved",
-        message: "Linked quote was completed downstream; inbound review cleared from active pending state.",
-        metadataJson: {
-          quoteId: args.quoteId,
-          quoteStatus: args.quoteStatus,
-          completionSource: args.completionSource,
-        },
-      });
-
-      return updated ?? record;
+      return records[0] ?? null;
     });
   }
+
+  /** Canonical Quote conversion calls this inside its existing transaction.
+   * Link the actual Order, resolving only evidence used to prepare that Quote. */
+  async markLinkedQuoteOrderConverted(args: { organizationId: string; quoteId: string; orderId: string; actorUserId: string }): Promise<void> {
+    await this.lockQuoteLinkage(args.organizationId);
+    const quote = await this.getQuote(args.organizationId, args.quoteId);
+    const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId))).limit(1);
+    if (!quote || quote.convertedToOrderId !== args.orderId || !order || order.quoteId !== args.quoteId) throw new InboundEvidenceConflictError("Quote-to-Order linkage could not be verified for this organization.");
+    const records = await this.dbInstance.select().from(inboundOrderRecords).where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.createdQuoteId, args.quoteId))).orderBy(asc(inboundOrderRecords.id));
+    for (const reference of records) {
+      const { record, fingerprint } = await this.lockForEvidenceHandling(args.organizationId, reference.id);
+      if (record.createdOrderId) {
+        if (record.createdOrderId !== args.orderId) throw new InboundEvidenceConflictError("Inbound record is already linked to another Order.");
+        continue; // Replay never acknowledges later evidence.
+      }
+      const events = await this.listEvents(args.organizationId, record.id);
+      const created = events.find(event => event.eventType === "review.quote_created" && (event.metadataJson as any)?.quoteId === args.quoteId);
+      const snapshots = await this.listReviewSnapshots(args.organizationId, record.id);
+      const covered = (record.normalizedPayloadJson as any)?.quoteEvidenceFingerprint
+        ?? evidenceFingerprintFromSnapshot(snapshots.find(snapshot => snapshot.id === (created?.metadataJson as any)?.snapshotId) ?? null);
+      const dismissed = ["ignored", "terminal"].includes(record.status) && !(record.normalizedPayloadJson as any)?.unresolvedEvidenceFingerprint;
+      const resolves = !dismissed && covered === fingerprint;
+      const now = new Date();
+      await this.dbInstance.update(inboundOrderRecords).set({ createdOrderId: order.id, matchedOrderId: order.id,
+        ...(dismissed ? {} : { status: resolves ? "submitted" as const : "needs_review" as const,
+          reviewOutcome: resolves ? "order_created" : "new_evidence_requires_review", requiresHumanDecision: !resolves,
+          archivedAt: null, submittedAt: now, submittedByUserId: args.actorUserId,
+          reviewRequiredReason: resolves ? null : "Linked Order covers earlier or untracked Quote evidence. Review current evidence; the Order was not modified." }),
+        normalizedPayloadJson: { ...(record.normalizedPayloadJson ?? {}),
+          ...(dismissed ? {} : { unresolvedEvidenceFingerprint: resolves ? null : fingerprint,
+            ...(resolves ? { evidenceResolution: { kind: "order", fingerprint: covered, orderId: order.id, actorUserId: args.actorUserId, at: now.toISOString() } } : {}) }) }, updatedAt: now,
+      }).where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.id, record.id)));
+      await this.dbInstance.insert(inboundOrderEvents).values({ organizationId: args.organizationId, inboundRecordId: record.id,
+        actorType: "user", actorUserId: args.actorUserId, eventType: "order.linked_from_quote", fromStatus: record.status,
+        toStatus: dismissed ? record.status : resolves ? "submitted" : "needs_review",
+        message: resolves ? "Canonical Quote conversion linked the resulting Order to the evidence used for the Quote." : "Resulting Order linked. Current evidence retains its independent review/disposition.",
+        metadataJson: { quoteId: args.quoteId, orderId: order.id, coveredFingerprint: covered ?? null, currentFingerprint: fingerprint, resolvesCurrentEvidence: resolves } });
+    }
+  }
+
 }
 
 export const inboundOrdersRepository = new InboundOrdersRepository();
