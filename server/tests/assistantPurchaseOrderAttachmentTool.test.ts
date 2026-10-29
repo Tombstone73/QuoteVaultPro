@@ -88,4 +88,18 @@ describe("PO attachment proposal adapter", () => {
     expect((await tool.execute({ arguments: po, context })).status).toBe("succeeded");
     expect(prepared).toBe(true);
   });
+  test.each(["Prints 4/0", ""])("verified source %s controls sides rather than a model-supplied default", async print => {
+    const text = `Acme PO 00042. 2 Banners. ${print}`;
+    const extracted = await extractAssistantAttachment(Buffer.from(text), "fixture.txt");
+    let received: any;
+    const tool = createPurchaseOrderAttachmentTool("Prepare the attached PO", {
+      readFile: async () => ({ attachment: { id: attachmentId, fileName: "fixture.txt", mimeType: "text/plain", sizeBytes: text.length }, extracted }),
+      prepare: async input => { received = input; return { handled: true, response: "Review", cards: [] }; },
+    });
+    expect((await tool.execute({ context, arguments: { ...po, lines: [{ ...po.lines[0], options: "Double Sided" }] } })).status).toBe("succeeded");
+    expect(received.lines[0].options).not.toContain("Double Sided");
+    if (print) expect(received.lines[0].options).toContain("4/0");
+    else expect(received.lines[0].options).toBe("");
+  });
+
 });

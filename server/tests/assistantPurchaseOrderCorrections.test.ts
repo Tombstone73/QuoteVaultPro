@@ -85,7 +85,7 @@ const service = new OrderIntakeService();
 const scope = { organizationId: "org", userId: "staff", conversationId: "conversation" };
 const tree = (id: string) => ({ schemaVersion: 2, rootNodeIds: [id], nodes: { [id]: { id, kind: "question", label: "Sides", input: { type: "select", selectionKey: id, defaultValue: "single" }, choices: [{ value: "single", label: "Single Sided" }, { value: "double", label: "Double Sided" }] } } });
 const request = () => ({ ...scope, customerName: "Brainstorm Print", dueDate: "2026-11-05", lines: [{ productName: "Coroplast", quantity: 28, width: 24, height: 18, options: "", versionCount: 28 }],
-  source: { attachmentId: "attachment", fileName: "po152918.pdf", poNumber: "152918", requestedDate: "2026-11-05", address: null, instructions: "28 versions, one each. Prints 4/4. MUST EOD 11/5", extractedFieldsVerified: true, warnings: [], linePricesCents: [null], linePrices: [{ basis: "line_total" as const, amountCents: 16500 }] } });
+  source: { attachmentId: "attachment", fileName: "po152918.pdf", poNumber: "152918", requestedDate: "2026-11-05", address: null, instructions: "28 versions, one each. MUST EOD 11/5", extractedFieldsVerified: true, warnings: [], linePricesCents: [null], linePrices: [{ basis: "line_total" as const, amountCents: 16500 }] } });
 const pending = () => rows(schema.assistantOrderIntakeSessions).filter(row => row.status !== "abandoned").at(-1)!;
 const plan = (result: any) => result.cards.find((card: any) => card.kind === "action_proposal")?.plan;
 
@@ -216,11 +216,12 @@ describe("persisted PO corrections (mock repositories, no actual orders)", () =>
   });
 
   it("retains the PO price decision through the existing option selection interface", async () => {
-    await service.prepareFromPurchaseOrder(request());
+    const missingSides = request(); missingSides.source.instructions = "28 versions, one each";
+    await service.prepareFromPurchaseOrder(missingSides);
     const response = await service.continuePurchaseOrder({ ...scope, message: "use the PO pricing" });
     expect(response.cards[0].kind).toBe("order_option_selection");
     const session = pending();
-    const selected = await service.submitOptionSelections({ ...scope, orderIntakeSessionId: session.id, productId: "coro", pbv2TreeVersionId: "coro_tree", selections: [{ nodeId: "coro_sides", valueId: "double" }], useRemainingDefaults: false });
+    const selected = await service.submitOptionSelections({ ...scope, orderIntakeSessionId: session.id, expectedIntakeVersion: (response.cards[0].details as any).orderOptionSelection.expectedIntakeVersion, productId: "coro", pbv2TreeVersionId: "coro_tree", selections: [{ nodeId: "coro_sides", valueId: "double" }], useRemainingDefaults: false });
     expect(plan(selected)).toBeDefined();
     expect(session.intakeJson.purchaseOrder.pricingChoice).toBe("po");
     const reviewed = selected.cards.find(card => card.kind === "order_intake_summary");
@@ -262,4 +263,73 @@ describe("persisted PO corrections (mock repositories, no actual orders)", () =>
     const ambiguous = await service.prepareFromPurchaseOrder(input);
     expect(plan(ambiguous)).toBeUndefined(); expect(ambiguous.response).toContain("order total");
   });
+  it.each(["click", "type"])("clarifies missing sides by %s on the same PO proposal and preserves all evidence and price decisions", async mode => {
+    const input = request(); input.source.instructions = "28 versions, one each. MUST EOD 11/5"; input.lines[0].productName = "Yard Signs"; (input.source as any).pricingChoice = "po";
+    const question = await service.prepareFromPurchaseOrder(input);
+    expect(question.response).toContain("Should these signs be single-sided or double-sided?");
+    const payload = (question.cards[0].details as any).orderOptionSelection;
+    expect(payload.groups[0].choices.map((v: any) => v.valueId)).toEqual(["single", "double"]);
+    expect(pending().intakeJson.lines[0].pbv2SelectionSources?.yard_sides).toBeUndefined();
+    expect(plan(question)).toBeUndefined();
+    const before = structuredClone(pending());
+    const answer = mode === "click" ? await service.submitOptionSelections({ ...scope, ...payload, selections: [{ nodeId: "yard_sides", valueId: "double" }], useRemainingDefaults: false })
+      : await service.continuePurchaseOrder({ ...scope, message: "Double-sided" });
+    expect(pending().id).toBe(before.id);
+    expect(pending().intakeJson).toMatchObject({ customerId: "customer", dueDate: input.dueDate, purchaseOrder: before.intakeJson.purchaseOrder, lines: [{ productId: "yard", quantity: 28, width: 24, height: 18, versionCount: 28, pbv2Selections: { selected: { yard_sides: { value: "double" } } } }] });
+    expect(plan(answer)).toBeDefined();
+    const reviewed = answer.cards.find(card => card.kind === "order_intake_summary")?.details as any;
+    expect(reviewed.lines[0]).toMatchObject({ productId: "yard", totalCents: 16500, versionCount: 28, selections: [{ groupId: "yard_sides", valueId: "double", source: "explicit" }] });
+    expect(create).not.toHaveBeenCalled();
+    await service.createConfirmedOrder({ organizationId: "org", actorUserId: "staff", ...plan(answer) });
+    const readback = await (await import("../storage")).storage.getOrderById("org", "mock_order");
+    expect(readback).toBe(saved); // Mock readback only: no claim of PostgreSQL persistence.
+    expect(saved.payload.lineItems[0]).toMatchObject({ productId: "yard", quantity: 28, width: 24, height: 18, totalPrice: 165, pbv2SnapshotJson: { selectedOptions: [{ optionId: "yard_sides", value: "double" }] } });
+    expect(saved.payload.lineItems[0].productionNotes).toContain("28 versions across 28 pieces");
+  });
+
+  it.each(["Prints 4/4", "Prints 4/0"])("explicit %s skips clarification and reaches the canonical saved payload", async options => {
+    const input = request(); input.lines[0].options = options; input.source.instructions = options;
+    const response = await service.prepareFromPurchaseOrder(input);
+    expect(response.cards.some(card => card.kind === "order_option_selection")).toBe(false);
+    await service.createConfirmedOrder({ organizationId: "org", actorUserId: "staff", ...plan(response) });
+    expect(saved.payload.lineItems[0].pbv2SnapshotJson.selectedOptions).toEqual([{ optionId: "coro_sides", value: options.endsWith("4/0") ? "single" : "double" }]);
+  });
+
+  it("rejects old clickable questions after proposal edits or a catalog revision, even with the same product ID", async () => {
+    const missingSides = request(); missingSides.source.instructions = "28 versions, one each";
+    const question = await service.prepareFromPurchaseOrder(missingSides);
+    const payload = (question.cards[0].details as any).orderOptionSelection;
+    const answer = { ...scope, ...payload, selections: [{ nodeId: "coro_sides", valueId: "double" }], useRemainingDefaults: false };
+    pending().intakeJson.lines[0].quantity = 29;
+    await expect(service.submitOptionSelections(answer)).rejects.toMatchObject({ code: "ORDER_OPTION_SELECTION_STALE" });
+    pending().intakeJson.lines[0].quantity = 28;
+    rows(schema.products)[0].updatedAt = new Date(1000);
+    await expect(service.submitOptionSelections(answer)).rejects.toMatchObject({ code: "ORDER_OPTION_SELECTION_STALE" });
+    delete rows(schema.products)[0].updatedAt;
+    rows(schema.pbv2TreeVersions)[0].updatedAt = new Date(1000);
+    await expect(service.submitOptionSelections(answer)).rejects.toMatchObject({ code: "ORDER_OPTION_SELECTION_STALE" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit resolution of an unsupported PO option and retains the original source instructions", async () => {
+    const input = request(); input.lines[0].options = "Prints 4/4";
+    rows(schema.pbv2TreeVersions)[0].treeJson.nodes.coro_sides.choices.pop();
+    const conflict = await service.prepareFromPurchaseOrder(input);
+    expect(conflict.cards[0].kind).toBe("order_option_selection");
+    expect(conflict.response).toContain("no unique compatible");
+    expect((conflict.cards[0].details as any).orderOptionSelection.allowDefaults).toBe(false);
+    expect(plan(await service.continuePurchaseOrder({ ...scope, message: "use defaults" }))).toBeUndefined();
+    const resolved = await service.continuePurchaseOrder({ ...scope, message: "Single-sided" });
+    expect(plan(resolved)).toBeDefined();
+    expect(pending().intakeJson.purchaseOrder.instructions).toBe(input.source.instructions);
+    expect(pending().intakeJson.purchaseOrder.warnings.join(" ")).toContain("Staff explicitly resolved");
+  });
+
+  it("uses explicit PO print instructions even when the extracted options field omitted them", async () => {
+    const input = request(); input.source.instructions += ". Prints 4/4";
+    const response = await service.prepareFromPurchaseOrder(input);
+    expect(plan(response)).toBeDefined();
+    expect(pending().intakeJson.lines[0].pbv2Selections.selected.coro_sides.value).toBe("double");
+  });
+
 });

@@ -95,4 +95,14 @@ describe("assistant direct-order PBV2 selections", () => {
     const resolved = resolveAssistantOrderSelections({ tree: configured, existingSelections: canonicalDefaultOrderSelections(configured), message: "3mm single sided with no contours" });
     expect(resolved).toMatchObject({ ok: true, resolvedSelectionKeys: expect.arrayContaining(["thickness", "sides", "contour"]), selections: { selected: { thickness: { value: "3mm" }, sides: { value: "single" }, contour: { value: "no" } } } });
   });
+  it("maps 4/0 to the actual single-sided and full-color values without accepting the default as evidence", () => {
+    const configured = structuredClone(tree);
+    configured.rootNodeIds.push("inks"); configured.nodes.inks = { id: "inks", kind: "question", label: "Ink", input: { type: "select" }, choices: [{ value: "cmyk_front", label: "Full Color" }, { value: "black", label: "Black" }] };
+    const result = resolveAssistantOrderSelections({ tree: configured, existingSelections: canonicalDefaultOrderSelections(configured), message: "Prints 4/0" });
+    expect(result).toMatchObject({ ok: true, selections: { selected: { sides: { value: "single" }, inks: { value: "cmyk_front" } } }, resolvedSelectionKeys: ["sides", "inks"] });
+    expect(resolveAssistantOrderSelections({ tree, existingSelections: canonicalDefaultOrderSelections(tree), message: "Due 4/4" })).toMatchObject({ ok: true, resolvedSelectionKeys: [] });
+    const doubleOnly = structuredClone(tree); doubleOnly.nodes.sides.choices = [{ value: "double", label: "Double Sided" }];
+    expect(resolveAssistantOrderSelections({ tree: doubleOnly, existingSelections: canonicalDefaultOrderSelections(doubleOnly), message: "Prints 4/0" })).toMatchObject({ ok: false, code: "ORDER_OPTION_INVALID" });
+  });
+
 });

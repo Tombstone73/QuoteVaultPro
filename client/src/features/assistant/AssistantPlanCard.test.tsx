@@ -164,6 +164,8 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("Line total: $165.00");
     expect(container.textContent).toContain("Approved PO selling-price override");
     expect(container.textContent).not.toContain("$164.92");
+    expect(container.textContent).not.toContain("PBV2 snapshot");
+    expect(container.textContent).not.toContain("tree-1");
   });
 
   it("renders the registered quote-note preview as internal-only text and confirms only through the dedicated control", () => {

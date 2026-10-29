@@ -1,3 +1,4 @@
+import { PRINTING_SPECIFICATION_GUIDANCE, printingNotation, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { z } from "zod";
 import type { AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import { purchaseOrderCorrection, type PurchaseOrderPrice } from "./purchaseOrderCorrections";
@@ -35,7 +36,7 @@ export function createPurchaseOrderAttachmentTool(currentUserMessage: string, de
   const prepare: PreparePurchaseOrder = dependencies.prepare ?? (async input => (await import("./orderIntakeService")).orderIntakeService.prepareFromPurchaseOrder(input));
   return {
     name: "orders.prepare_from_attachment",
-    description: "Prepare a review-only Order proposal from an attached customer purchase order. Extract customer, PO number, requested items, quantity, finished dimensions in inches, explicit options, dates, address, instructions, currency, artwork version counts, and PO prices with explicit unit/line/order-total basis. Approved price for a single requested item is its full line total, never a per-unit price. Use poLineTotal for it and null poUnitPrice. Do not allocate order totals or invent unit amounts. Honor explicit staff product and PO-pricing corrections. Supply a short exact sourceText excerpt for each line. Resolve only exact tenant customer/product matches, show missing options and PO versus canonical selling price. This does not create an Order; protected GO is required. PO files remain references, never production artwork. Ask a focused question for uncertain fields, supplier cost versus selling price, or missing dimensions before calling.",
+    description: PRINTING_SPECIFICATION_GUIDANCE + " Prepare a review-only Order proposal from an attached customer purchase order. Extract customer, PO number, requested items, quantity, finished dimensions in inches, explicit options, dates, address, instructions, currency, artwork version counts, and PO prices with explicit unit/line/order-total basis. Approved price for a single requested item is its full line total, never a per-unit price. Use poLineTotal for it and null poUnitPrice. Do not allocate order totals or invent unit amounts. Honor explicit staff product and PO-pricing corrections. Supply a short exact sourceText excerpt for each line. Resolve only exact tenant customer/product matches, show missing options and PO versus canonical selling price. This does not create an Order; protected GO is required. PO files remain references, never production artwork. Ask a focused question for uncertain fields, supplier cost versus selling price, or missing dimensions before calling.",
     inputSchema: { type: "object", additionalProperties: false, required: ["attachmentId", "customerName", "poNumber", "dueDate", "requestedDate", "address", "instructions", "currency", "lines"], properties: {
       attachmentId: { type: "string" }, customerName: { type: "string" }, poNumber: { type: "string" }, dueDate: { type: ["string", "null"] }, requestedDate: { type: ["string", "null"] }, address: { type: ["string", "null"] }, instructions: { type: ["string", "null"] }, currency: { type: ["string", "null"] }, lines: { type: "array", minItems: 1, maxItems: 10, items: { type: "object", additionalProperties: false, required: ["productName", "sourceText", "quantity", "widthIn", "heightIn", "options", "poUnitPrice", "priceKind"], properties: { productName: { type: "string" }, sourceText: { type: "string" }, quantity: { type: "integer" }, widthIn: { type: "number" }, heightIn: { type: "number" }, options: { type: "string" }, poUnitPrice: { type: ["number", "null"] }, poLineTotal: { type: ["number", "null"] }, poOrderTotal: { type: ["number", "null"] }, versionCount: { type: ["integer", "null"] }, priceKind: { enum: ["selling", "cost", "unknown"] } } } },
     } },
@@ -75,12 +76,21 @@ export function createPurchaseOrderAttachmentTool(currentUserMessage: string, de
           if (line.poOrderTotal != null || evidence?.totalPriceCents != null) return { basis: "order_total", amountCents: Math.round((line.poOrderTotal ?? evidence!.totalPriceCents! / 100) * 100) };
           return line.poUnitPrice == null ? null : { basis: "unit", amountCents: Math.round(line.poUnitPrice * 100) };
         });
-        const evidence44 = verified && input.lines.length === 1 && /(?<!\d)4\s*\/\s*4(?!\d)/.test(extracted.text);
+        const printOptions = (line: typeof input.lines[number]) => {
+          if (!verified) return line.options; // Image extraction retains the existing explicit verification warning.
+          const text = input.lines.length === 1 ? extracted.text : line.sourceText;
+          const notation = printingNotation(text);
+          const sides = printingSidesFromEvidence(text);
+          // A model/catalog default is not source evidence. Remove side claims
+          // then restore only the print-side instructions actually present.
+          const remaining = line.options.replace(/\b(?:single|one|1|double|two|2)[ -]sided\b/gi, "").replace(/(?<!\d)4\s*\/\s*[04](?!\d)/g, "");
+          return `${remaining} ${notation.map(value => `Prints ${value}`).join("; ")} ${sides.map(side => `${side}-sided`).join("; ")}`.trim();
+        };
         const versions = verified && input.lines.length === 1 ? extracted.text.match(/\b(\d+)\s+versions?\b/i) : null;
         const prepared = await prepare({
           organizationId: context.scope.organizationId, userId: context.scope.userId, conversationId: context.conversationId,
           customerName: input.customerName, dueDate: input.dueDate,
-          lines: input.lines.map(line => ({ productName: input.lines.length === 1 && correction.productName ? correction.productName : line.productName, quantity: line.quantity, width: line.widthIn, height: line.heightIn, options: evidence44 ? `${line.options.replace(/\b(?:single|one|double|two)[ -]sided\b/gi, "")} Prints 4/4` : line.options, versionCount: versions ? Number(versions[1]) : line.versionCount ?? null })),
+          lines: input.lines.map(line => ({ productName: input.lines.length === 1 && correction.productName ? correction.productName : line.productName, quantity: line.quantity, width: line.widthIn, height: line.heightIn, options: printOptions(line), versionCount: versions ? Number(versions[1]) : line.versionCount ?? null })),
           source: { attachmentId: input.attachmentId, fileName: attachment.fileName, poNumber: input.poNumber, requestedDate: input.requestedDate, address: input.address, instructions: input.instructions, extractedFieldsVerified: verified, warnings, linePrices, pricingChoice: correction.usePoPricing ? "po" : "canonical", linePricesCents: linePrices.map(price => price?.basis === "unit" ? price.amountCents : null) },
         });
         return { status: "succeeded" as const, result: { status: "succeeded", data: { response: prepared.response, sourceAttachmentId: input.attachmentId, requiresGo: prepared.cards.some(card => card.kind === "action_proposal") } } as any, presentation: { cards: prepared.cards as any } };

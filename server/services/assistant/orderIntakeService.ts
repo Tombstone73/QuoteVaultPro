@@ -1,3 +1,4 @@
+import { printingNotation, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { createHash } from "node:crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -21,7 +22,7 @@ import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
 import { directOrderRequestText, isDirectOrderRequest, parseOrderQuantity } from "./orderIntakeParsing";
 import { orderIntakePricingFailure } from "./orderIntakePricing";
-import { acceptAssistantOrderDefaults, acceptsAssistantOrderDefaults, canonicalDefaultOrderSelections, isAssistantOrderOptionQuestion, orderIntakeOptionGroups, resolveAssistantOrderSelections, unresolvedAssistantOrderOptionGroups, type AssistantOrderOptionGroup, type AssistantOrderSelectionSource } from "./orderIntakeSelections";
+import { acceptAssistantOrderDefaults, assistantOrderOptionQuestion, acceptsAssistantOrderDefaults, canonicalDefaultOrderSelections, isAssistantOrderOptionQuestion, orderIntakeOptionGroups, resolveAssistantOrderSelections, unresolvedAssistantOrderOptionGroups, type AssistantOrderOptionGroup, type AssistantOrderSelectionSource } from "./orderIntakeSelections";
 import { fingerprintDirectOrderProposal } from "./orderProposalFingerprint";
 import { purchaseOrderCorrection, purchaseOrderLineTotal, type PurchaseOrderPrice, type PurchaseOrderRequestedLine } from "./purchaseOrderCorrections";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
@@ -41,7 +42,7 @@ type DirectLine = {
   pbv2SelectionSources?: Record<string, AssistantOrderSelectionSource>;
   versionCount?: number | null;
 };
-type PurchaseOrderSource = { attachmentId: string; fileName: string; poNumber: string; requestedDate: string | null; address: string | null; instructions: string | null; extractedFieldsVerified: boolean; warnings: string[]; linePricesCents: Array<number | null>; linePrices?: Array<PurchaseOrderPrice | null>; requestedLines?: PurchaseOrderRequestedLine[]; pricingChoice?: "canonical" | "po"; optionConflict?: string | null };
+type PurchaseOrderSource = { attachmentId: string; fileName: string; poNumber: string; requestedDate: string | null; address: string | null; instructions: string | null; extractedFieldsVerified: boolean; warnings: string[]; linePricesCents: Array<number | null>; linePrices?: Array<PurchaseOrderPrice | null>; requestedLines?: PurchaseOrderRequestedLine[]; pricingChoice?: "canonical" | "po"; optionConflict?: string | null; optionConflictSelectionKeys?: string[] };
 type DirectIntake = { kind: "direct"; customerId: string | null; customerName: string; contactId: string | null; dueDate: string | null; lines: DirectLine[]; purchaseOrder?: PurchaseOrderSource };
 type ConversionIntake = { kind: "conversion"; quoteId: string; quoteNumber: string; dueDate: string | null };
 type UpdateIntake = { kind: "update"; orderId: string; orderNumber: string; dueDate: string };
@@ -101,7 +102,7 @@ export class OrderIntakeService {
     lines: PurchaseOrderRequestedLine[];
     dueDate: string | null;
   }): Promise<{ handled: true; response: string; cards: AssistantOrderCard[] }> {
-    const missing = (summary: string, details: Record<string, unknown> = {}) => ({ handled: true as const, response: summary, cards: [{ kind: "missing_information" as const, title: "Purchase order review needed", summary, sourceLinks: [], details }] });
+    const missing = (summary: string, details: Record<string, unknown> = {}) => ({ handled: true as const, response: summary, cards: [{ kind: "missing_information" as const, title: "Purchase order information needed", summary, sourceLinks: [], details }] });
     if (!input.source.poNumber.trim() || input.source.poNumber.length > 64) return missing("Confirm a PO number of at most 64 characters.");
     if (input.lines.length < 1 || input.lines.length > 10) return missing("A PO proposal needs 1 to 10 requested items. Identify the items to continue.");
     if (input.dueDate && Number.isNaN(Date.parse(input.dueDate))) return missing("Confirm the requested due date in YYYY-MM-DD format.");
@@ -132,18 +133,19 @@ export class OrderIntakeService {
       let line = await this.newDirectLine(input.organizationId, matches[0]!.id, matches[0]!.name ?? item.productName, item.quantity, item.width, item.height);
       line.versionCount = item.versionCount ?? null;
       const snapshot = await this.loadDirectSnapshot(input.organizationId, line);
-      const choice = resolveAssistantOrderSelections({ tree: snapshot.tree, existingSelections: line.pbv2Selections, message: item.options });
+      const choice = resolveAssistantOrderSelections({ tree: snapshot.tree, existingSelections: line.pbv2Selections, message: [item.options, ...(input.lines.length === 1 ? [...printingSidesFromEvidence(input.source.instructions ?? "").map(side => `${side}-sided`), ...printingNotation(input.source.instructions ?? "").map(notation => `Prints ${notation}`)] : [])].filter(Boolean).join("; ") });
       if (!choice.ok) {
         intake.purchaseOrder!.optionConflict = choice.summary;
+        intake.purchaseOrder!.optionConflictSelectionKeys = choice.groups.map(group => group.selectionKey);
         intake.lines.push(line);
         await save();
-        return missing(`Confirm product options for PO line ${index + 1}: ${choice.summary}`, { line: index + 1, groups: choice.groups });
+        return input.lines.length === 1 && choice.groups.length ? this.unresolvedOptionsBlocker(input.organizationId, session.id, line, choice.groups) : missing(`Confirm product options for PO line ${index + 1}: ${choice.summary}`, { line: index + 1, groups: choice.groups });
       }
       line = { ...line, pbv2Selections: choice.selections, pbv2SelectionSources: Object.fromEntries(choice.resolvedSelectionKeys.map(key => [key, "explicit" as const])) };
       intake.lines.push(line);
       await save();
       const unresolved = unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: line.pbv2Selections, selectionSources: line.pbv2SelectionSources });
-      if (unresolved.length) return input.lines.length === 1 ? this.unresolvedOptionsBlocker(session.id, line, unresolved) : missing(`Choose the missing product options for PO line ${index + 1}.`, { line: index + 1, groups: unresolved });
+      if (unresolved.length) return input.lines.length === 1 ? this.unresolvedOptionsBlocker(input.organizationId, session.id, line, unresolved) : missing(`Choose the missing product options for PO line ${index + 1}.`, { line: index + 1, groups: unresolved });
     }
     const validation = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
     if (!validation.valid) {
@@ -201,7 +203,7 @@ export class OrderIntakeService {
     }
     const session = await this.createSession(input, { kind: "direct", customerId: customer?.id ?? null, customerName: customer?.companyName ?? `${contact!.firstName} ${contact!.lastName}`.trim(), contactId: contact?.id ?? null, dueDate: parseDueDate(message), lines: [line] });
     if (optionResolutionFailure) return this.directPricingBlocker(input.organizationId, line, { valid: false, code: optionResolutionFailure.code, summary: optionResolutionFailure.summary }, optionResolutionFailure.groups);
-    if (unresolvedOptionGroups.length > 0) return this.unresolvedOptionsBlocker(session.id, line, unresolvedOptionGroups);
+    if (unresolvedOptionGroups.length > 0) return this.unresolvedOptionsBlocker(input.organizationId, session.id, line, unresolvedOptionGroups);
     const proposal = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
     if (!proposal.valid) {
       return this.directPricingBlocker(input.organizationId, line, proposal);
@@ -219,7 +221,7 @@ export class OrderIntakeService {
     const intake = session?.intakeJson as DirectIntake | undefined;
     if (!session || intake?.kind !== "direct" || !intake.purchaseOrder) return { handled: false, response: "", cards: [] };
     if (!correction.explicit) {
-      if (session.status === "collecting" && intake.lines.length === 1 && !intake.purchaseOrder.optionConflict) {
+      if (session.status === "collecting" && intake.lines.length === 1) {
         const line = intake.lines[0]!;
         const snapshot = await this.loadDirectSnapshot(input.organizationId, line);
         const resolved = resolveAssistantOrderSelections({ tree: snapshot.tree, existingSelections: line.pbv2Selections, message: input.message });
@@ -242,9 +244,9 @@ export class OrderIntakeService {
     if (!validation.valid && validation.code === "ORDER_OPTIONS_UNRESOLVED" && intake.lines.length === 1) {
       const line = intake.lines[0]!;
       const snapshot = await this.loadDirectSnapshot(input.organizationId, line);
-      return this.unresolvedOptionsBlocker(next.id, line, unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: line.pbv2Selections, selectionSources: line.pbv2SelectionSources }));
+      return this.unresolvedOptionsBlocker(input.organizationId, next.id, line, unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: line.pbv2Selections, selectionSources: line.pbv2SelectionSources }));
     }
-    if (!validation.valid) return { handled: true, response: validation.summary, cards: [{ kind: "missing_information", title: "Purchase order review needed", summary: validation.summary, sourceLinks: [], details: { code: validation.code } }] };
+    if (!validation.valid) return { handled: true, response: validation.summary, cards: [{ kind: "missing_information", title: "Purchase order information needed", summary: validation.summary, sourceLinks: [], details: { code: validation.code } }] };
     return this.directPreview(next.id, validation.proposal);
   }
 
@@ -313,44 +315,51 @@ export class OrderIntakeService {
       const ready = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
       return ready.valid ? this.directPreview(session.id, ready.proposal) : this.directPricingBlocker(input.organizationId, line, ready);
     }
-    if (isAssistantOrderOptionQuestion(input.message)) return this.unresolvedOptionsBlocker(session.id, line, unresolved);
+    if (isAssistantOrderOptionQuestion(input.message)) return this.unresolvedOptionsBlocker(input.organizationId, session.id, line, unresolved);
     const resolution = resolveAssistantOrderSelections({ tree: snapshot.tree, existingSelections: line.pbv2Selections, message: input.message, requiredSelectionKeys: unresolved.map((group) => group.selectionKey) });
-    if (!resolution.ok) return this.directPricingBlocker(input.organizationId, line, { valid: false, code: resolution.code, summary: resolution.summary }, unresolved);
+    if (!resolution.ok) return this.unresolvedOptionsBlocker(input.organizationId, session.id, line, unresolved, resolution.summary);
     let nextLine: DirectLine = {
       ...line,
       pbv2Selections: resolution.selections,
       pbv2SelectionSources: { ...(line.pbv2SelectionSources ?? {}), ...Object.fromEntries(resolution.resolvedSelectionKeys.map((key) => [key, "explicit" as const])) },
     };
-    if (acceptsAssistantOrderDefaults(input.message)) {
+    if (acceptsAssistantOrderDefaults(input.message) && !intake.purchaseOrder?.optionConflict) {
       const accepted = acceptAssistantOrderDefaults({ tree: snapshot.tree, selections: nextLine.pbv2Selections, selectionSources: nextLine.pbv2SelectionSources });
       nextLine = { ...nextLine, pbv2Selections: accepted.selections, pbv2SelectionSources: accepted.selectionSources };
     }
     const remaining = unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: nextLine.pbv2Selections, selectionSources: nextLine.pbv2SelectionSources });
-    const nextIntake: DirectIntake = { ...intake, lines: [nextLine] };
-    await db.update(assistantOrderIntakeSessions).set({ intakeJson: nextIntake, updatedAt: new Date() }).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId), eq(assistantOrderIntakeSessions.userId, input.userId), eq(assistantOrderIntakeSessions.conversationId, input.conversationId), eq(assistantOrderIntakeSessions.status, "collecting")));
-    if (remaining.length > 0) return this.unresolvedOptionsBlocker(session.id, nextLine, remaining);
+    const nextIntake: DirectIntake = { ...intake, lines: [nextLine], ...(intake.purchaseOrder ? { purchaseOrder: this.reconcileOptionConflict(intake.purchaseOrder, nextLine) } : {}) };
+    await this.saveClarifiedIntake(input, session, nextIntake);
+    if (remaining.length > 0) return this.unresolvedOptionsBlocker(input.organizationId, session.id, nextLine, remaining);
     const after = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
     if (!after.valid) return this.directPricingBlocker(input.organizationId, nextLine, after);
     return this.directPreview(session.id, after.proposal);
   }
 
-  private unresolvedOptionsBlocker(sessionId: string, line: DirectLine, groups: AssistantOrderOptionGroup[]) {
-    const summary = "Choose the remaining product options, or explicitly use configured defaults where available.";
+  private async unresolvedOptionsBlocker(organizationId: string, sessionId: string, line: DirectLine, groups: AssistantOrderOptionGroup[], explanation?: string) {
+    const session = await this.load(organizationId, sessionId);
+    const intake = session.intakeJson as DirectIntake;
+    if (intake.kind !== "direct" || !intake.lines.some(current => hash(current) === hash(line)) || session.status !== "collecting") throw new AssistantOrderIntakeError("ORDER_OPTION_SELECTION_STALE", "The pending order changed. Continue from its latest question.");
+    const snapshot = await this.loadDirectSnapshot(organizationId, line);
+    const conflict = intake.purchaseOrder?.optionConflict;
+    const summary = [explanation ?? conflict, ...groups.map(group => assistantOrderOptionQuestion(group, line.productName))].filter(Boolean).join(" ");
     return { handled: true as const, response: summary, cards: [{ kind: "order_option_selection" as const, title: "Order options needed", summary, sourceLinks: [], details: {
       orderOptionSelection: {
         orderIntakeSessionId: sessionId,
+        expectedIntakeVersion: this.clarificationVersion(intake, snapshot),
+        allowDefaults: !conflict,
         productId: line.productId,
         productName: line.productName,
         pbv2TreeVersionId: line.pbv2TreeVersionId,
         quantity: line.quantity,
         dimensions: { widthIn: line.width, heightIn: line.height, unit: "in" },
-        helperText: "Selections are validated against this product’s active PBV2 snapshot before pricing.",
-        groups: groups.map((group) => ({ nodeId: group.nodeId, selectionKey: group.selectionKey, label: group.label, required: true, currentExplicitSelection: line.pbv2SelectionSources?.[group.selectionKey] === "explicit" ? line.pbv2Selections.selected[group.selectionKey]?.value ?? null : null, choices: group.choices.map((choice) => ({ valueId: choice.value, label: choice.label, isDefault: choice.isDefault })) })),
+        helperText: conflict ? "Choosing an available option explicitly changes the conflicting request. You can also type a correction or choose another product. Review the final preview before GO." : "Choose an option below, or type your answer in this conversation. Configured defaults are used only if you explicitly accept them.",
+        groups: groups.map((group) => ({ nodeId: group.nodeId, selectionKey: group.selectionKey, label: group.label, question: assistantOrderOptionQuestion(group, line.productName), required: true, currentExplicitSelection: line.pbv2SelectionSources?.[group.selectionKey] === "explicit" ? line.pbv2Selections.selected[group.selectionKey]?.value ?? null : null, choices: group.choices.map((choice) => ({ valueId: choice.value, label: choice.label, isDefault: choice.isDefault })) })),
       },
     } }] };
   }
 
-  async submitOptionSelections(input: { organizationId: string; userId: string; conversationId: string; orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean }) {
+  async submitOptionSelections(input: { organizationId: string; userId: string; conversationId: string; orderIntakeSessionId: string; expectedIntakeVersion: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean }) {
     const session = await this.load(input.organizationId, input.orderIntakeSessionId);
     if (session.userId !== input.userId || session.conversationId !== input.conversationId || session.status !== "collecting") throw new AssistantOrderIntakeError("ORDER_OPTION_SELECTION_STALE", "This option selection is no longer available. Refresh the order request.");
     const intake = session.intakeJson as Intake;
@@ -358,6 +367,7 @@ export class OrderIntakeService {
     const line = intake.lines[0];
     if (line.productId !== input.productId || line.pbv2TreeVersionId !== input.pbv2TreeVersionId) throw new AssistantOrderIntakeError("ORDER_OPTION_SELECTION_STALE", "This option selection no longer matches the pending product snapshot.");
     const snapshot = await this.loadDirectSnapshot(input.organizationId, line);
+    if (input.expectedIntakeVersion !== this.clarificationVersion(intake, snapshot)) throw new AssistantOrderIntakeError("ORDER_OPTION_SELECTION_STALE", "The proposal or product choices changed. Continue from the latest question.");
     const unresolved = unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: line.pbv2Selections, selectionSources: line.pbv2SelectionSources });
     const unresolvedByNodeId = new Map(unresolved.map((group) => [group.nodeId, group]));
     const seen = new Set<string>();
@@ -373,16 +383,34 @@ export class OrderIntakeService {
       nextSources[group.selectionKey] = "explicit";
     }
     let nextLine: DirectLine = { ...line, pbv2Selections: { schemaVersion: 2, selected: nextSelections }, pbv2SelectionSources: nextSources };
-    if (input.useRemainingDefaults) {
+    if (input.useRemainingDefaults && !intake.purchaseOrder?.optionConflict) {
       const accepted = acceptAssistantOrderDefaults({ tree: snapshot.tree, selections: nextLine.pbv2Selections, selectionSources: nextLine.pbv2SelectionSources });
       nextLine = { ...nextLine, pbv2Selections: accepted.selections, pbv2SelectionSources: accepted.selectionSources };
     }
-    const nextIntake: DirectIntake = { ...intake, lines: [nextLine] };
-    await db.update(assistantOrderIntakeSessions).set({ intakeJson: nextIntake, updatedAt: new Date() }).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId), eq(assistantOrderIntakeSessions.userId, input.userId), eq(assistantOrderIntakeSessions.conversationId, input.conversationId), eq(assistantOrderIntakeSessions.status, "collecting")));
+    const nextIntake: DirectIntake = { ...intake, lines: [nextLine], ...(intake.purchaseOrder ? { purchaseOrder: this.reconcileOptionConflict(intake.purchaseOrder, nextLine) } : {}) };
+    await this.saveClarifiedIntake(input, session, nextIntake);
     const remaining = unresolvedAssistantOrderOptionGroups({ tree: snapshot.tree, selections: nextLine.pbv2Selections, selectionSources: nextLine.pbv2SelectionSources });
-    if (remaining.length > 0) return this.unresolvedOptionsBlocker(session.id, nextLine, remaining);
+    if (remaining.length > 0) return this.unresolvedOptionsBlocker(input.organizationId, session.id, nextLine, remaining);
     const proposal = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
     return proposal.valid ? this.directPreview(session.id, proposal.proposal) : this.directPricingBlocker(input.organizationId, nextLine, proposal);
+  }
+
+  private clarificationVersion(intake: Intake, snapshot: Awaited<ReturnType<OrderIntakeService["loadDirectSnapshot"]>>) {
+    return hash({ intake, product: snapshot.product, tree: snapshot.tree, updatedAt: snapshot.treeVersionUpdatedAt });
+  }
+
+  private reconcileOptionConflict(source: PurchaseOrderSource, line: DirectLine): PurchaseOrderSource {
+    if (!source.optionConflict || !source.optionConflictSelectionKeys?.length || !source.optionConflictSelectionKeys.every(key => line.pbv2SelectionSources?.[key] === "explicit")) return source;
+    return { ...source, optionConflict: null, optionConflictSelectionKeys: [], warnings: [...source.warnings, "Staff explicitly resolved conflicting PO options using the selected product's available choices. Review these selections against the original PO before GO."] };
+  }
+
+  private async saveClarifiedIntake(input: { organizationId: string; userId: string; conversationId: string }, session: AssistantOrderIntakeSessionRow, next: DirectIntake) {
+    await db.transaction(async tx => {
+      await tx.execute(sql`select id from ${assistantOrderIntakeSessions} where ${assistantOrderIntakeSessions.id} = ${session.id} and ${assistantOrderIntakeSessions.organizationId} = ${input.organizationId} for update`);
+      const [current] = await tx.select().from(assistantOrderIntakeSessions).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId), eq(assistantOrderIntakeSessions.userId, input.userId), eq(assistantOrderIntakeSessions.conversationId, input.conversationId))).limit(1);
+      if (!current || current.status !== "collecting" || hash(current.intakeJson) !== hash(session.intakeJson)) throw new AssistantOrderIntakeError("ORDER_OPTION_SELECTION_STALE", "The pending order changed while answering. Continue from the latest question.");
+      await tx.update(assistantOrderIntakeSessions).set({ intakeJson: next, proposalFingerprint: null, updatedAt: new Date() }).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId)));
+    });
   }
 
   private async directPricingBlocker(organizationId: string, line: DirectLine, proposal: { valid: false; code: string; summary: string; requiredSelectionKeys?: string[] }, suppliedGroups?: AssistantOrderOptionGroup[]) {

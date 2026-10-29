@@ -698,7 +698,7 @@ export class AssistantService {
     scope: AssistantScope,
     conversationId: string,
     actor: AssistantActor,
-    input: { orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: AssistantContextEnvelope },
+    input: { orderIntakeSessionId: string; expectedIntakeVersion: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: AssistantContextEnvelope },
   ) {
     const conversation = await this.repo.getConversation({ ...scope, conversationId });
     if (!conversation) throw this.notFound();
@@ -707,6 +707,7 @@ export class AssistantService {
       userId: actor.userId,
       conversationId: conversation.id,
       orderIntakeSessionId: input.orderIntakeSessionId,
+      expectedIntakeVersion: input.expectedIntakeVersion,
       productId: input.productId,
       pbv2TreeVersionId: input.pbv2TreeVersionId,
       selections: input.selections,
