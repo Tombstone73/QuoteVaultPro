@@ -1,3 +1,4 @@
+import { resolveProductionItemLocation } from "../services/productionItemLocation";
 import { assertPhysicalProductionProofGate } from "../services/proofGateService";
 import { lockWorkflowLines } from "../services/workflowMutationLock";
 import { assertProductionCredit } from "../services/orderCreditHoldService";
@@ -2398,6 +2399,17 @@ export function registerProductionJobsRoutes(
   });
 
   // Extra (needed for detail UI): GET /api/production/jobs/:jobId
+  app.get("/api/production/jobs/:jobId/location", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const data = await resolveProductionItemLocation(db, organizationId, String(req.params.jobId));
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      return res.status(error?.statusCode ?? 500).json({ message: error?.statusCode === 404 ? "Production item not found for this organization." : "Unable to locate the current production item. Refresh and try again." });
+    }
+  });
+
   app.get("/api/production/jobs/:jobId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -3459,6 +3471,9 @@ export function registerProductionJobsRoutes(
     tx: any,
     args: { organizationId: string; jobIds: string[]; station: "flatbed" | "roll"; allowedStatuses: string[]; action: string },
   ) => {
+    const references = await tx.select({ lineItemId: productionJobs.lineItemId }).from(productionJobs)
+      .where(and(eq(productionJobs.organizationId, args.organizationId), inArray(productionJobs.id, args.jobIds)));
+    await lockWorkflowLines(tx, args.organizationId, references.map((row: any) => row.lineItemId).filter(Boolean));
     const jobs = await tx
       .select()
       .from(productionJobs)

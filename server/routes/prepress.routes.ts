@@ -968,6 +968,11 @@ export function registerPrepressQueueRoutes(
           : sql`false`,
       ];
 
+      if (req.query.lineItemId !== undefined) {
+        if (typeof req.query.lineItemId !== "string" || !req.query.lineItemId.trim() || req.query.lineItemId.length > 128) return res.status(400).json({ error: "Invalid line item navigation target" });
+        conditions.push(eq(orderLineItems.id, req.query.lineItemId));
+      }
+
       // Get line items with order/customer/material data (session is resolved separately)
       const items = await db
         .select({

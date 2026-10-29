@@ -81,7 +81,7 @@ function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: s
     predicate: (query) => {
       const key = query.queryKey;
       if (!Array.isArray(key)) return false;
-      return key[0] === "/api/production/jobs" || key[0] === "production";
+      return key[0] === "/api/production/jobs" || key[0] === "/api/production/runs" || key[0] === "production";
     },
   });
 }
@@ -998,7 +998,7 @@ export function useUpdateOrderLineItem(
       const persisted = Array.isArray(order?.lineItems) ? order.lineItems.find((line: any) => String(line.id) === id) : undefined;
       const mismatched = failed(persisted);
       if (!persisted || mismatched.length) throw new OrderLineItemApiError('Saved line did not confirm: ' + (mismatched.length ? mismatched : requested).map(field => labels[field]).join(', ') + '. Refresh and review the line.', 'ROUTING_SAVE_UNCONFIRMED');
-      const workflow = updatedLineItem.withdrawalWorkflow;
+      const workflow = updatedLineItem.prepressReturnWorkflow ?? updatedLineItem.withdrawalWorkflow;
       if (workflow && (persisted.workflowState !== workflow.toState
         || persisted.activeOwnerJobId !== workflow.activeOwnerJobId
         || persisted.activeOwnerStationKey !== workflow.activeOwnerStationKey

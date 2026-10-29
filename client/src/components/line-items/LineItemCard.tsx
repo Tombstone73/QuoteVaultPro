@@ -138,6 +138,7 @@ export type LineItemCardProps = {
   onRequiresPrepressChange?: (value: boolean) => void;
   onRequiresProofApprovalChange?: (value: boolean) => void;
   routingError?: string | null;
+  routingActionsSlot?: React.ReactNode;
   topAnchorRef?: (node: HTMLDivElement | null) => void;
   widthInputRef?: (node: HTMLInputElement | null) => void;
 
@@ -312,6 +313,7 @@ export function LineItemCard({
   onRequiresPrepressChange,
   onRequiresProofApprovalChange,
   routingError,
+  routingActionsSlot,
   topAnchorRef,
   widthInputRef,
   optionsSlot,
@@ -468,6 +470,7 @@ export function LineItemCard({
       </div>
       <p className="text-[11px] text-muted-foreground">Required stages for this line. To move active work backward, use the appropriate Return action.</p>
       {routingError ? <p role="alert" className="text-xs text-destructive">{routingError}</p> : null}
+      {routingActionsSlot}
     </div>
   ) : null;
 

@@ -455,7 +455,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         </div>
         <div className="divide-y divide-titan-border-subtle rounded-md border border-titan-border-subtle">
         {run.members.map((member) => (
-          <div key={member.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[auto_1fr_auto_auto_auto_auto]">
+          <div key={member.id} data-production-job-id={member.productionJobId} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[auto_1fr_auto_auto_auto_auto]">
             {isAdminOrOwner ? <input type="checkbox" aria-label={`Return ${member.description} to Prepress`} checked={selectedReturnMemberIds.includes(member.id)} onChange={() => toggleReturnMember(member.id)} /> : null}
             <div className="min-w-0 truncate">
               <div>{member.lineNumber ? `Line ${member.lineNumber}: ` : ""}{member.description}</div>

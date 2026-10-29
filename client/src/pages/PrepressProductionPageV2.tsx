@@ -1,3 +1,4 @@
+import { useLocation, Link } from "react-router-dom";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2, Trash2 } from "lucide-react";
@@ -582,6 +583,8 @@ function filterPrepressCombinedRuns(
 }
 
 export default function PrepressProductionPageV2() {
+  const location = useLocation();
+  const focusedLineItemId = new URLSearchParams(location.search).get("lineItemId");
   const { toast } = useToast();
   const { user } = useAuth();
   const { isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
@@ -595,7 +598,8 @@ export default function PrepressProductionPageV2() {
   const canRepairArtworkRelationships = ["owner", "admin"].includes(normalizedUserRole) || (user as any)?.isAdmin === true;
   
   // UI State
-  const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
+  const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(focusedLineItemId);
+  useEffect(() => { if (focusedLineItemId) setSelectedLineItemId(focusedLineItemId); }, [focusedLineItemId]);
   const [returnUpstreamSelection, setReturnUpstreamSelection] = useState<{ target: ReturnUpstreamTarget; destination: ReturnUpstreamDestination } | null>(null);
   const [selectedQueueLineItemIds, setSelectedQueueLineItemIds] = useState<Set<string>>(() => new Set());
   const [workspaceTab, setWorkspaceTab] = useState<PrepressWorkspaceTab>("queue");
@@ -847,15 +851,18 @@ export default function PrepressProductionPageV2() {
 
   // Queue Query
   const { data: queueData, isLoading: queueLoading, isFetching: queueFetching, refetch: refetchQueue } = useQuery({
-    queryKey: [...PREPRESS_QUEUE_QUERY_KEY, queueFilters],
+    queryKey: [...PREPRESS_QUEUE_QUERY_KEY, focusedLineItemId ? { lineItemId: focusedLineItemId } : queueFilters],
     queryFn: async () => {
       const params = new URLSearchParams();
+      if (focusedLineItemId) params.set("lineItemId", focusedLineItemId);
+      if (!focusedLineItemId) {
       if (queueFilters.destination !== "all") params.set("destination", queueFilters.destination);
       if (queueFilters.status !== "all") params.set("status", queueFilters.status);
       if (queueFilters.rush) params.set("rush", "true");
       if (queueFilters.search) params.set("search", queueFilters.search);
       params.set("sortBy", queueFilters.sortBy);
       params.set("sortOrder", queueFilters.sortAsc ? "asc" : "desc");
+      }
       
       const res = await fetch(`/api/prepress/queue?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch queue");
@@ -2013,10 +2020,10 @@ export default function PrepressProductionPageV2() {
 
   // Clear selection if selected item is not in queue
   React.useEffect(() => {
-    if (selectedLineItemId && !selectedItem) {
+    if (selectedLineItemId && !selectedItem && !queueIsLoading && !focusedLineItemId) {
       setSelectedLineItemId(null);
     }
-  }, [selectedLineItemId, selectedItem]);
+  }, [selectedLineItemId, selectedItem, queueIsLoading, focusedLineItemId]);
 
   React.useEffect(() => {
     const queueIds = new Set(queue.map((item) => item.lineItemId));
@@ -2669,6 +2676,7 @@ export default function PrepressProductionPageV2() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#111921] text-slate-100 font-sans overflow-hidden">
+      {focusedLineItemId ? <div role="status" className="shrink-0 border-b border-primary bg-primary/10 px-4 py-2 text-sm">{!queueIsLoading && !selectedItem ? "The linked item is no longer available in the Prepress queue. Refresh its Order to locate the current owner." : "Showing the linked Prepress item. Saved queue filters are temporarily bypassed."} <Link className="underline" to="/production/prepress">Show full Prepress queue</Link></div> : null}
       <div
         ref={workspaceFrameRef}
         className="grid min-h-0 flex-1 overflow-hidden"
