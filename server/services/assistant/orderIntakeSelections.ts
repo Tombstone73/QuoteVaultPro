@@ -156,7 +156,19 @@ export function resolveAssistantOrderSelections(input: {
   requiredSelectionKeys?: readonly string[];
 }): AssistantOrderSelectionResult {
   const groups = visibleGroups(input.tree, input.existingSelections, input.requiredSelectionKeys);
-  const message = normalize(input.message);
+  let specification = input.message;
+  if (/(?<!\d)4\s*\/\s*4(?!\d)/.test(specification)) {
+    const explicitSides = groups.flatMap(group => group.choices.filter(choice => /\b(?:double|two|2)[ -]side(?:d)?\b/i.test(`${choice.label} ${choice.value}`)).map(choice => ({ group, choice })));
+    const sides = explicitSides.length ? explicitSides : groups.flatMap(group => group.choices.filter(choice => /\b4\s*\/\s*4\b/i.test(`${choice.label} ${choice.value}`)).map(choice => ({ group, choice })));
+    if (sides.length !== 1) return { ok: false, code: "ORDER_OPTION_INVALID", summary: "The PO requires 4/4 (double-sided full-color). This product has no unique configured double-sided choice. Confirm a compatible product/configuration before GO.", groups };
+    specification += ` ${sides[0].group.label}: ${sides[0].choice.label}`;
+    for (const group of groups.filter(group => /\b(?:colou?r|ink)\b/i.test(group.label) || group.choices.some(choice => /full[ -]colou?r|\bcmyk\b/i.test(`${choice.label} ${choice.value}`)))) {
+      const colors = group.choices.filter(choice => /full[ -]colou?r|4[ -]colou?r|cmyk|4\s*\/\s*4/i.test(`${choice.label} ${choice.value}`));
+      if (colors.length !== 1) return { ok: false, code: "ORDER_OPTION_INVALID", summary: "The PO requires full-color printing on both sides, but this product's color configuration cannot represent it unambiguously. Review before GO.", groups };
+      specification += ` ${group.label}: ${colors[0].label}`;
+    }
+  }
+  const message = normalize(specification);
   const selected = { ...input.existingSelections.selected };
   const matchesByGroup = new Map<AssistantOrderOptionGroup, AssistantOrderOptionChoice[]>();
   const namedGroups = new Set(groups.filter((group) => hasPhrase(message, group.label) || hasPhrase(message, group.selectionKey)));

@@ -13,6 +13,17 @@ const tree: OptionTreeV2 = {
 };
 
 describe("assistant direct-order PBV2 selections", () => {
+  it("binds 4/4 to actual double-sided/full-color choices and rejects unsupported specifications", () => {
+    const result = resolveAssistantOrderSelections({ tree, existingSelections: canonicalDefaultOrderSelections(tree), message: "Prints 4/4" });
+    expect(result).toMatchObject({ ok: true, selections: { selected: { sides: { value: "double" } } }, resolvedSelectionKeys: ["sides"] });
+    const singleOnly = structuredClone(tree); singleOnly.nodes.sides.choices = [{ value: "single", label: "Single Sided" }];
+    expect(resolveAssistantOrderSelections({ tree: singleOnly, existingSelections: canonicalDefaultOrderSelections(singleOnly), message: "Prints 4/4" })).toMatchObject({ ok: false, code: "ORDER_OPTION_INVALID" });
+    const monochrome = structuredClone(tree);
+    monochrome.rootNodeIds.push("color"); monochrome.nodes.color = { id: "color", kind: "question", label: "Color", input: { type: "select" }, choices: [{ value: "black", label: "Black only" }] };
+    expect(resolveAssistantOrderSelections({ tree: monochrome, existingSelections: canonicalDefaultOrderSelections(monochrome), message: "Prints 4/4" })).toMatchObject({ ok: false, code: "ORDER_OPTION_INVALID" });
+    monochrome.nodes.color.choices!.push({ value: "cmyk", label: "Full Color" });
+    expect(resolveAssistantOrderSelections({ tree: monochrome, existingSelections: canonicalDefaultOrderSelections(monochrome), message: "Prints 4/4" })).toMatchObject({ ok: true, selections: { selected: { sides: { value: "double" }, color: { value: "cmyk" } } } });
+  });
   it("enumerates only active snapshot choices and identifies canonical defaults", () => {
     const groups = orderIntakeOptionGroups(tree, canonicalDefaultOrderSelections(tree), ["sides", "thickness"]);
     expect(groups).toEqual([

@@ -941,6 +941,13 @@ export class AssistantService {
       if (request.attachmentIds.length) conversationMessages.length = 0;
       task = { ...task, domain: null, goal: request.message, workingSummary: null, entityReferences: [], missingInformation: [], semanticChanges: {}, canonicalProductIntentProposalId: null, lastObservationSummary: null };
     }
+    if (!sourceReplaced && task.domain === "purchase_orders" && hasPermission(actor, "assistant.orders.create") && hasPermission(actor, "assistant.internal_staff")) {
+      const continued = await orderIntakeService.continuePurchaseOrder({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, message: request.message });
+      if (continued.handled) {
+        await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: { domain: "purchase_orders", status: "active", workingSummary: continued.response } });
+        return this.persistOperatorResponse(input, { response: continued.response, status: "responded", errorCode: null, cards: continued.cards as AssistantStructuredCard[], audits: [] });
+      }
+    }
     const explicitCreationEntity = resolveExplicitCreationEntity(request.message);
     const resumesProductDraft = Boolean(task.canonicalProductIntentProposalId)
       && /^(?:please\s+)?(?:continue|resume|update|edit)\s+(?:(?:the|this|my|our|current|existing)\s+){0,2}(?:product\s+draft|draft\s+product)\b/i.test(request.message.trim());
@@ -1353,7 +1360,7 @@ export class AssistantService {
     const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
     const poReview = run.observations.some((observation) => observation.status === "succeeded"
       && (observation.toolName === "orders.prepare_from_attachment" || observation.toolName === "application.prepare_change" && Boolean((observation.result?.data as { sourceAttachmentId?: unknown } | undefined)?.sourceAttachmentId))
-      && observation.presentation?.cards.some((card) => card.kind === "missing_information" || card.kind === "action_proposal"));
+      && observation.presentation?.cards.some((card) => card.kind === "missing_information" || card.kind === "order_option_selection" || card.kind === "action_proposal"));
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
