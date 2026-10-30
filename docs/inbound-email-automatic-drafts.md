@@ -19,7 +19,8 @@ pulls, not preparation of already imported evidence. The polling interval uses
 `WORKER_INBOUND_EMAIL_DRAFTS_INTERVAL_MS` (30 seconds by default, minimum 5 seconds).
 Configuration changes require the normal application restart/deployment.
 
-Apply migration `0240_inbound_email_processing_jobs` before running this code.
+Apply migrations `0240_inbound_email_processing_jobs` and
+`0241_inbound_versioned_fingerprint_width` before running this code.
 The additive migration creates only local work metadata. It contains no data
 backfill, mailbox activation, or production integration calls.
 
@@ -82,14 +83,21 @@ authorized review interface.
 
 ## Validation and rollout prerequisites
 
-Mocked tests exercise actual queue/repository transaction bodies, claim SQL,
+The isolated PostgreSQL verification milestone is documented in
+[inbound-email-postgres-validation.md](inbound-email-postgres-validation.md).
+It supersedes the earlier database-verification limitation below: real PostgreSQL
+now exercises transitions, contention, fencing, rollback and killed-worker recovery.
+External AI responses and attachment reads remain deterministic stubs.
+
+Earlier mocked tests exercise actual queue/repository transaction bodies, claim SQL,
 recovery, parser/draft composition, tenant boundaries and stale-worker fencing.
 They are not proof of PostgreSQL lock scheduling, process-death recovery, or
-deployment wiring. No identified isolated database was available for this run;
-no services were provisioned and no production data was used.
+deployment wiring. At the original implementation milestone no identified isolated
+database was available; the later verification uses only a repository-owned local
+cluster with synthetic records and never copies production data.
 
-Before enabling a tenant, apply the migration, verify real PostgreSQL contention
-and recovery in an isolated environment, confirm tenant/provider configuration,
+Before enabling a tenant, apply both migrations, retain the isolated PostgreSQL
+verification gate, confirm tenant/provider configuration,
 and perform DEV acceptance using synthetic imported evidence and a test AI
 provider. Do not connect a production mailbox or submit an Order to test the worker.
 
@@ -187,13 +195,15 @@ runs here. There is no silent stamping of old drafts with current evidence.
 Evidence writers, dismissal, explicit attachment, and conversion use the existing
 tenant advisory lock and inbound row locks. Quote conversion obtains the evidence
 advisory lock before its Quote row lock to maintain a consistent ordering. No AI
-or Gmail call is added inside a transaction. Mocks model transaction serialization,
-rollback, SQL participation and version decisions. They do not execute PostgreSQL
-CASE/joins, prove its lock scheduler, or establish process-death recovery.
+or Gmail call is added inside a transaction. The original mocks model transaction
+serialization, rollback, SQL participation and version decisions. The subsequent
+isolated PostgreSQL milestone executes the actual CASE/joins, separate-connection
+contention, rollback, fencing and killed-process recovery. Its provider calls are
+stubbed; it does not establish shared-environment or mailbox readiness.
 
-Remaining rollout gates: migration 0240 readiness/application in the intended
-environment; isolated PostgreSQL transition, contention, lease recovery and rollback
-verification; interrupted-import recovery; Gmail acknowledgement/read/label policy;
+Remaining rollout gates: migrations 0240 and 0241 readiness/application in the intended
+environment; interrupted-import recovery; Gmail acknowledgement/read/label policy;
+legacy reconciliation and queue-volume assessment;
 and DEV acceptance of queue counts, legacy volume, revision review and human
 approval using synthetic evidence. Nothing is pushed, deployed, enabled or
 live-validated by this milestone.

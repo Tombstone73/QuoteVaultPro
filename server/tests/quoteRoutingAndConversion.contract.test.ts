@@ -6,6 +6,8 @@ import {
   globalVariables,
   jobs,
   orderLineItems,
+  orderAttachments,
+  lineItemProofVersions,
   orderListNotes,
   orders,
   productDesignConfigs,
@@ -765,7 +767,7 @@ describe("quote routing persistence and conversion contract", () => {
     const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
     const activeJobs = await getActiveJobs(String(createdOrder.lineItems[0]!.id));
     expect(activeJobs).toHaveLength(1);
-    await db.update(orders).set({ status: "canceled" as any, canceledAt: new Date() }).where(and(eq(orders.id, createdOrder.id), eq(orders.organizationId, organizationId)));
+    await db.update(orders).set({ status: "canceled" as any, canceledAt: new Date().toISOString() }).where(and(eq(orders.id, createdOrder.id), eq(orders.organizationId, organizationId)));
 
     await expect(
       assertParentOrderInProductionForJob(db, {
@@ -1273,8 +1275,15 @@ describe("proof gate enforcement", () => {
     const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
     const oli = createdOrder.lineItems[0] as any;
 
-    // Directly stamp a synthetic approvedProofVersionId to simulate proof approval
+    // Persist the synthetic proof graph: the canonical schema enforces this FK.
     const syntheticProofId = `proof_synthetic_${suffix}`;
+    const [proofFile] = await db.insert(orderAttachments).values({
+      orderId: createdOrder.id, orderLineItemId: String(oli.id), fileName: 'synthetic-proof.pdf',
+    }).returning();
+    await db.insert(lineItemProofVersions).values({
+      id: syntheticProofId, organizationId, orderId: createdOrder.id, lineItemId: String(oli.id),
+      proofFileId: proofFile.id, versionNumber: 1, status: 'approved', createdByUserId: userId,
+    });
     await db
       .update(orderLineItems)
       .set({ approvedProofVersionId: syntheticProofId })

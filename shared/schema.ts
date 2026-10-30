@@ -10184,7 +10184,7 @@ export const inboundEmailProcessingJobs = pgTable("inbound_email_processing_jobs
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   inboundRecordId: varchar("inbound_record_id").notNull().references(() => inboundOrderRecords.id, { onDelete: "cascade" }),
-  evidenceFingerprint: varchar("evidence_fingerprint", { length: 64 }).notNull(),
+  evidenceFingerprint: varchar("evidence_fingerprint", { length: 128 }).notNull(),
   status: varchar("status", { length: 32 }).$type<import("./inboundEmailProcessing").InboundEmailProcessingStatus>().notNull().default("waiting"),
   attempts: integer("attempts").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),

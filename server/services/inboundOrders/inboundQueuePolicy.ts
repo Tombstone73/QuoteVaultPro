@@ -1,18 +1,19 @@
 import { sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
-import { inboundOrderRecords as record, orders } from "@shared/schema";
+import { inboundOrderRecords as record } from "@shared/schema";
 import type { InboundQueueBucket } from "@shared/inboundAccountability";
 
 /** A merged source's later evidence must retain the parent's actual job context.
  * This is a read projection, never another Order or a resolution of that source. */
 export function inboundParentOrderIdSql() {
-  const parent = alias(record, "inbound_parent");
-  const order = alias(orders, "inbound_parent_order");
-  return sql<string | null>`(select ${order.id} from ${record} as "inbound_parent" inner join ${orders} as "inbound_parent_order"
-    on ${order.id} = coalesce(${parent.createdOrderId}, nullif(${parent.normalizedPayloadJson}->>'attachedOrderId', ''))
-    and ${order.organizationId} = ${record.organizationId}
-    where ${parent.organizationId} = ${record.organizationId}
-      and ${parent.id} = ${record.normalizedPayloadJson}->>'combinedParentRecordId' limit 1)`;
+  // Drizzle strips Column qualifiers from a single-table SELECT projection,
+  // including nested SQL fragments. Explicit identifiers keep correlated
+  // subqueries bound to the outer record and retain their tenant predicates.
+  return sql<string | null>`(select "inbound_parent_order"."id"
+    from "inbound_order_records" as "inbound_parent" inner join "orders" as "inbound_parent_order"
+    on "inbound_parent_order"."id" = coalesce("inbound_parent"."created_order_id", nullif("inbound_parent"."normalized_payload_json"->>'attachedOrderId', ''))
+    and "inbound_parent_order"."organization_id" = "inbound_order_records"."organization_id"
+    where "inbound_parent"."organization_id" = "inbound_order_records"."organization_id"
+      and "inbound_parent"."id" = "inbound_order_records"."normalized_payload_json"->>'combinedParentRecordId' limit 1)`;
 }
 
 /** One projection shared by list filters and summary counts. Keep in agreement
@@ -26,8 +27,9 @@ export function inboundQueueBucketSql() {
     when ${record.reviewOutcome} = 'deleted' then 'deleted'
     when (${record.status} = 'ignored' and coalesce(${record.reviewOutcome}, '') <> 'attached_to_order') or ${record.reviewOutcome} = 'ignored' then 'ignored'
     when ${record.status} = 'terminal' or ${record.reviewOutcome} = 'rejected' then 'rejected'
-    when exists (select 1 from ${orders} where ${orders.organizationId} = ${record.organizationId}
-      and ${orders.id} = coalesce(${record.createdOrderId}, nullif(${record.normalizedPayloadJson}->>'attachedOrderId', ''))) then 'converted'
+    when exists (select 1 from "orders" as "inbound_linked_order"
+      where "inbound_linked_order"."organization_id" = "inbound_order_records"."organization_id"
+      and "inbound_linked_order"."id" = coalesce("inbound_order_records"."created_order_id", nullif("inbound_order_records"."normalized_payload_json"->>'attachedOrderId', ''))) then 'converted'
     when ${record.createdQuoteId} is not null or ${record.status} = 'waiting_on_customer' then 'waiting'
     when ${record.status} = 'ready' then 'ready'
     else 'needs_review' end`;
