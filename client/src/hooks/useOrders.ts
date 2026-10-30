@@ -103,6 +103,14 @@ async function parseOrderLineItemApiError(response: Response, fallback: string) 
 // ============================================================
 
 export type Order = {
+  redoRootOrderId?: string | null;
+  redoSourceOrderId?: string | null;
+  redoReason?: string | null;
+  redoExplanation?: string | null;
+  redoDisposition?: string | null;
+  redoOriginal?: import("@shared/orderRedo").RedoOrderReference | null;
+  redoSource?: import("@shared/orderRedo").RedoOrderReference | null;
+  relatedRedos?: import("@shared/orderRedo").RedoOrderReference[];
   id: string;
   orderNumber: string;
   quoteId: string | null;
@@ -217,7 +225,7 @@ export type LineItemWorkflowTransitionResult = {
 
 export type DesignQueueWorkflowState = Extract<LineItemWorkflowState, "needs_design" | "in_design">;
 
-export type PrepressQueueWorkflowState = Extract<LineItemWorkflowState, "ready_for_prepress" | "in_prepress">;
+export type PrepressQueueWorkflowState = Extract<LineItemWorkflowState, "ready_for_prepress" | "in_prepress" | "awaiting_proof_approval">;
 
 export type DesignQueueItem = {
   lineItemId: string;
@@ -268,6 +276,7 @@ export type PrepressQueueItem = {
   dueDate: string | null;
   status: string;
   workflowState: PrepressQueueWorkflowState;
+  requiresPrepress?: boolean;
   requiresProofApproval?: boolean | null;
   approvedProofVersionId?: string | null;
   proofApprovalPolicyOverride?: "inherit_default" | "force_required" | "bypass";
@@ -970,7 +979,33 @@ export function useUpdateOrderLineItem(
       if (!response.ok) {
         throw await parseOrderLineItemApiError(response, "Failed to update line item");
       }
-      return response.json();
+      const updatedLineItem = await response.json();
+      const fields = ['requiresDesign', 'requiresPrepress', 'requiresProofApproval'] as const;
+      const requested = fields.filter(field => typeof data[field] === 'boolean');
+      if (!requested.length) return updatedLineItem;
+      const labels = { requiresDesign: 'Design', requiresPrepress: 'Prepress', requiresProofApproval: 'Proof approval' };
+      const failed = (line: any) => requested.filter(field => line?.[field] !== data[field]);
+      const responseMismatch = failed(updatedLineItem);
+      if (responseMismatch.length) throw new OrderLineItemApiError('Saved line did not confirm: ' + responseMismatch.map(field => labels[field]).join(', ') + '. Refresh and review the line.', 'ROUTING_SAVE_UNCONFIRMED');
+      let order: any;
+      try {
+        const readback = await apiFetch('/api/orders/' + orderId, { credentials: 'include', cache: 'no-store' });
+        if (!readback.ok) throw new Error('Readback failed');
+        order = await readback.json();
+      } catch {
+        throw new OrderLineItemApiError('The line was saved but its workflow requirements could not be confirmed. Refresh before retrying.', 'ROUTING_SAVE_UNCONFIRMED');
+      }
+      const persisted = Array.isArray(order?.lineItems) ? order.lineItems.find((line: any) => String(line.id) === id) : undefined;
+      const mismatched = failed(persisted);
+      if (!persisted || mismatched.length) throw new OrderLineItemApiError('Saved line did not confirm: ' + (mismatched.length ? mismatched : requested).map(field => labels[field]).join(', ') + '. Refresh and review the line.', 'ROUTING_SAVE_UNCONFIRMED');
+      const workflow = updatedLineItem.withdrawalWorkflow;
+      if (workflow && (persisted.workflowState !== workflow.toState
+        || persisted.activeOwnerJobId !== workflow.activeOwnerJobId
+        || persisted.activeOwnerStationKey !== workflow.activeOwnerStationKey
+        || persisted.activeOwnerStepKey !== workflow.activeOwnerStepKey)) {
+        throw new OrderLineItemApiError('The requirement was saved but its workflow ownership could not be confirmed. Refresh and review the line.', 'ROUTING_SAVE_UNCONFIRMED');
+      }
+      return persisted;
     },
     onSuccess: (updatedLineItem) => {
       invalidateOrderOperationalQueries(queryClient, orderId);

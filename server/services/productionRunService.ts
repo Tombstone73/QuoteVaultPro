@@ -1,3 +1,4 @@
+import { assertPhysicalProductionProofGate } from "./proofGateService";
 import { lockWorkflowLines } from "./workflowMutationLock";
 import { assertProductionCredit } from "./orderCreditHoldService";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -1388,7 +1389,11 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
   if (idempotencyKey && memberRows.every(({ member }: any) => member.lastOutcomeIdempotencyKey === idempotencyKey)) return run;
 
   if (!run.startedAt) {
-    for (const { line } of memberRows) await assertProductionCredit(tx, { organizationId: input.organizationId, orderId: line.orderId, stationKey: run.stationKey });
+    await lockWorkflowLines(tx, input.organizationId, memberRows.map(({ line }: any) => line.id));
+    for (const { line } of memberRows) {
+      await assertPhysicalProductionProofGate(tx, { organizationId: input.organizationId, lineItemId: line.id, stationKey: run.stationKey });
+      await assertProductionCredit(tx, { organizationId: input.organizationId, orderId: line.orderId, stationKey: run.stationKey });
+    }
   }
   const now = new Date();
   for (const { member, line } of memberRows) {
@@ -2339,19 +2344,21 @@ export async function transitionProductionRun(input: { organizationId: string; r
       return { ...run, restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [], reconciliationRequired: false, memberResults: [] };
     }
     if (input.action === "complete" && (run.status === "completed" || run.status === "completed_with_exceptions")) return run;
-    if (input.action === "start" && run.status === "in_production" && run.startedAt) return run;
     if (run.status === "completed" || run.status === "completed_with_exceptions" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);
     if (input.action === "cancel" && (run.status === "in_production" || run.status === "partially_completed" || run.startedAt)) {
       throw new ProductionRunError("PRODUCTION_RUN_CANCEL_RECOVERY_REQUIRED", "Started production runs must use the partial-recovery workflow; cancellation cannot reset completed or remaining quantities.", 409);
     }
     if (input.action === "release" || input.action === "start") {
-      const members = await tx.select({ orderId: productionJobs.orderId }).from(productionRunMembers)
+      const members = await tx.select({ orderId: productionJobs.orderId, lineItemId: productionRunMembers.orderLineItemId }).from(productionRunMembers)
         .innerJoin(productionJobs, and(eq(productionJobs.id, productionRunMembers.productionJobId), eq(productionJobs.organizationId, input.organizationId)))
         .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id)));
+      await lockWorkflowLines(tx, input.organizationId, members.map(member => member.lineItemId));
+      for (const member of members) await assertPhysicalProductionProofGate(tx, { organizationId: input.organizationId, lineItemId: member.lineItemId, stationKey: run.stationKey });
       for (const orderId of Array.from(new Set(members.map(member => member.orderId)))) {
         if (orderId) await assertProductionCredit(tx, { organizationId: input.organizationId, orderId, stationKey: run.stationKey });
       }
     }
+    if (input.action === "start" && run.status === "in_production" && run.startedAt) return run;
     const now = new Date();
     const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release"
       ? { status: "ready_for_production", releasedAt: now }

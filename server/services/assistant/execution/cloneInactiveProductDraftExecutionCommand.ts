@@ -9,7 +9,7 @@ export function createCloneInactiveProductDraftExecutionCommand(store: CloneInac
   const load = async (organizationId: string, actorUserId: string, input: { proposalId: string; proposalFingerprint: string }) => service.revalidateProposal({ organizationId, actorUserId, ...input });
   const failure = (error: unknown) => ({ code: error instanceof CloneInactiveProductDraftError ? error.code : "CLONE_PROPOSAL_CHANGED", summary: error instanceof Error ? error.message : "The clone proposal changed." });
   return {
-    name: command.name, version: command.version, testOnly: false, riskLevel: command.risk, confirmationTtlMs: command.confirmationExpiresInMs, maxAffectedRecords: command.maxAffectedRecords, requiredPermissions: [command.requiredCapability],
+    name: command.name, version: command.version, testOnly: false, riskLevel: command.risk, confirmationTtlMs: command.confirmationExpiresInMs, maxAffectedRecords: command.maxAffectedRecords, requiredPermissions: [command.requiredCapability], allowedRoles: command.allowedRoles,
     async buildPreview({ scope, arguments: raw }) {
       const input = cloneInactiveProductDraftInputSchema.parse(raw); let proposal;
       try { proposal = await load(scope.organizationId, scope.userId, input); } catch (error) { const result = failure(error); throw new ExecutionPlanError(result.code, result.summary); }
@@ -21,8 +21,12 @@ export function createCloneInactiveProductDraftExecutionCommand(store: CloneInac
       const input = cloneInactiveProductDraftInputSchema.parse(plan.sanitizedArguments);
       try {
         const result = await command.adapter.execute(input, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
+        const persisted = await store.loadSource({ organizationId: scope.organizationId, productId: result.productId });
+        if (!persisted || persisted.product.id !== result.productId || persisted.product.isActive || persisted.product.name !== result.productName || persisted.pbv2Tree.id !== result.pbv2TreeVersionId || persisted.pbv2Tree.status !== "DRAFT") {
+          throw new CloneInactiveProductDraftError("CLONE_READBACK_FAILED", "The clone result could not be verified. Inspect the existing Product in the editor before submitting another clone request.");
+        }
         const editorLink = `/products/${encodeURIComponent(result.productId)}/edit?draftTreeVersionId=${encodeURIComponent(result.pbv2TreeVersionId)}`;
-        return { status: "succeeded", summary: result.reused ? "The inactive clone was already created; returning the original draft." : "The product was cloned as an inactive PBV2 DRAFT.", details: { cloneInactiveDraft: { action: cloneInactiveProductDraftCommandName, productId: result.productId, productName: result.productName, pbv2TreeVersionId: result.pbv2TreeVersionId, editorLink, inactive: true, pbv2Status: "DRAFT", reused: result.reused } } as any, steps: [{ commandName: `${cloneInactiveProductDraftCommandName}@${command.version}`, status: "succeeded", summary: `Product ${result.productId}; PBV2 DRAFT ${result.pbv2TreeVersionId}.` }] };
+        return { status: "succeeded", summary: result.reused ? "The inactive clone was already created; returning the original draft." : `Created ${persisted.product.name} (Product ${persisted.product.id}) as an inactive PBV2 DRAFT. The source Product was unchanged.`, details: { cloneInactiveDraft: { action: cloneInactiveProductDraftCommandName, productId: result.productId, productName: result.productName, pbv2TreeVersionId: result.pbv2TreeVersionId, editorLink, inactive: true, pbv2Status: "DRAFT", reused: result.reused, readbackVerified: true, sourceUnchanged: true } } as any, steps: [{ commandName: `${cloneInactiveProductDraftCommandName}@${command.version}`, status: "succeeded", summary: `Product ${result.productId}; PBV2 DRAFT ${result.pbv2TreeVersionId}.` }] };
       } catch (error) { const result = failure(error); throw new ExecutionPlanError(result.code, result.summary); }
     },
   };

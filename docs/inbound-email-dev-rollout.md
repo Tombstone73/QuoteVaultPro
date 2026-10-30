@@ -1,5 +1,11 @@
 # AI email intake: DEV rollout preflight, 2026-10-30
 
+**Later release preparation:** The subsequent user instruction to push all pending
+changes authorizes the documented integration and reconciliation in
+[the combined DEV release record](dev-combined-release-2026-10-30.md). The initial
+findings below are retained as historical evidence. Intake migrations are now
+0243–0246; DEV's existing 0240–0242 identities remain unchanged. Acceptance is paused.
+
 ## Verdict: blocked before integration or deployment
 
 The live read-only DEV preflight found conflicting protected migration identities.

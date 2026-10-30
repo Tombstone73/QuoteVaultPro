@@ -15,8 +15,8 @@ describe("safe order duplication contract", () => {
     expect(service).toContain("new OrdersRepository(tx, true)");
     expect(service).toContain('status: "new"');
     expect(service).toContain("poNumber: null");
-    expect(service).toContain("dueDate: null");
-    expect(service).toContain("promisedDate: null");
+    expect(service).toContain("dueDate: redo?.promisedDate ?? null");
+    expect(service).toContain("promisedDate: redo?.promisedDate ?? null");
     expect(repository).toContain("ensureOrderBackedInvoiceForOrderInTransaction");
   });
 

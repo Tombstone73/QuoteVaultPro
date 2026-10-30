@@ -13,6 +13,7 @@ const toast = jest.fn();
 const stripe = { confirmPayment };
 const elements = { submit, getElement: () => ({}) };
 const stablePromise = Promise.resolve(stripe);
+let stripeMode: 'test' | 'live' | 'unknown' = 'test';
 let root: Root;
 let container: HTMLDivElement;
 const screen = {
@@ -27,6 +28,8 @@ const screen = {
 const fireEvent = { click: (el: HTMLElement) => act(() => Simulate.click(el)) };
 const render = (element: React.ReactElement) => { act(() => root.render(element)); return { rerender: (next: React.ReactElement) => act(() => root.render(next)) }; };
 const waitFor = async (check: () => void) => { await act(async () => {}); check(); };
+let apiConfigValid = true;
+jest.mock('@/lib/apiConfig', () => ({ checkApiConfig: () => ({ isValid: apiConfigValid }) }));
 jest.mock('@/lib/queryClient', () => ({ apiFetch: jest.fn() }));
 jest.mock('@/lib/stripeClient', () => ({ getStripePromise: () => stablePromise }));
 jest.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
@@ -42,7 +45,7 @@ jest.mock('@stripe/react-stripe-js', () => ({
 }));
 
 const props = { open: true, onOpenChange: jest.fn(), invoiceId: 'invoice-fixture', apiBasePath: '/api/guest/invoices', onSettled: jest.fn().mockResolvedValue({ reconciled: true }) };
-const events = () => (apiFetch as jest.Mock).mock.calls.flatMap(([, request]) => JSON.parse(request.body).events || []);
+const events = () => (apiFetch as jest.Mock).mock.calls.flatMap(([, request]) => JSON.parse(request.body || '{}').events || []);
 async function openDialog() {
   const result = render(<StripePayDialog {...props} />);
   await screen.findByTestId('hosted-payment-element');
@@ -54,12 +57,16 @@ async function flush() { await act(async () => { await new Promise(resolve => se
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
-  jest.clearAllMocks(); mounts = 0; unmounts = 0;
+  jest.clearAllMocks(); mounts = 0; unmounts = 0; stripeMode = 'test'; apiConfigValid = true;
   Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'd27ead56-687b-4e7e-9886-7e06962f6943' });
-  (apiFetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ data: { eligible: true } }) });
+
   global.fetch = jest.fn().mockImplementation(async (url) => ({ ok: true, json: async () => ({ data: String(url).endsWith('runtime-config')
-    ? { provider: 'stripe', mode: 'test', publishableKey: 'pk_test_fixture', connectedAccountId: 'acct_fixture', readyForPayments: true }
+    ? { provider: 'stripe', mode: stripeMode, publishableKey: stripeMode === 'live' ? 'pk_live_fixture' : 'pk_test_fixture', connectedAccountId: 'acct_fixture', readyForPayments: true }
     : { clientSecret: 'secret_do_not_log', stripeAccountId: 'acct_fixture' } }) }));
+  (apiFetch as jest.Mock).mockImplementation(async (url, options) => {
+    if (String(url).endsWith('/runtime-config') || String(url).endsWith('/create-intent')) return global.fetch(url, options);
+    return { ok: true, json: async () => ({ data: { eligible: true } }) };
+  });
   submit.mockResolvedValue({});
   confirmPayment.mockResolvedValue({ error: { type: 'card_error', code: 'card_declined', message: 'Your card was declined.' } });
 });
@@ -82,7 +89,7 @@ test('ready, completeness transitions, resize and rerender preserve the mounted 
   expect((screen.getByRole('button', { name: 'Pay', exact: true }) as HTMLButtonElement).disabled).toBe(false);
   const payload = JSON.stringify((apiFetch as jest.Mock).mock.calls);
   for (const forbidden of ['4242424242424242', 'RAW_CVC', '12/39', 'secret_do_not_log', 'client_secret', '"value"']) expect(payload).not.toContain(forbidden);
-  const batches = (apiFetch as jest.Mock).mock.calls.map(([, request]) => JSON.parse(request.body));
+  const batches = (apiFetch as jest.Mock).mock.calls.map(([, request]) => JSON.parse(request.body || '{}')).filter(b => b.events);
   expect(new Set(batches.map(b => b.sessionId)).size).toBe(1);
   expect(batches[0].surface).toBe('guest_invoice');
   view.rerender(<StripePayDialog {...props} open={false} />);
@@ -101,7 +108,7 @@ test('submit validation feedback stays visible and confirmation is never attempt
 });
 
 test('confirm errors are captured and failed telemetry does not block Stripe confirmation', async () => {
-  (apiFetch as jest.Mock).mockImplementation(async (url) => { if (String(url).endsWith('/validate')) return { ok: true, json: async () => ({ data: { eligible: true } }) }; throw new Error('offline'); });
+  (apiFetch as jest.Mock).mockImplementation(async (url) => { if (String(url).endsWith('/runtime-config') || String(url).endsWith('/create-intent')) return global.fetch(url); if (String(url).endsWith('/validate')) return { ok: true, json: async () => ({ data: { eligible: true } }) }; throw new Error('offline'); });
   await openDialog();
   fireEvent.click(screen.getByRole('button', { name: 'Pay', exact: true }));
   await screen.findByRole('alert');
@@ -137,7 +144,7 @@ test('successful confirmation still uses the existing settlement callback and em
   expect(events().some(e => e.event === 'submit_result' && e.success)).toBe(true);
   expect(events().some(e => e.event === 'confirm_result' && e.success)).toBe(true);
   expect(events().some(e => e.event === 'dialog_success')).toBe(true);
-  expect(JSON.stringify((apiFetch as jest.Mock).mock.calls)).not.toContain('pi_fixture');
+  expect(JSON.stringify(events())).not.toContain('pi_fixture');
 });
 
 test('approval revoked while the dialog is open blocks Stripe confirmation and preserves the mounted Element', async () => {
@@ -160,4 +167,90 @@ test.each(['/api/invoices', '/api/portal/invoices', '/api/guest/invoices'])('ope
   view.rerender(<StripePayDialog {...props} apiBasePath={apiBasePath} open={false} />);
   expect(confirmPayment).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
   expect((apiFetch as jest.Mock).mock.calls.some(([url]) => String(url).endsWith('/stripe/confirm'))).toBe(false);
+});
+
+test('staff grouped card waits for accounting and retries status without confirming the card again', async () => {
+  let finalized = false;
+  (apiFetch as jest.Mock).mockImplementation(async (url) => ({ ok: true, json: async () => ({ data:
+    String(url).endsWith('/runtime-config') ? { provider: 'stripe', mode: 'test', publishableKey: 'pk_test_fixture', connectedAccountId: 'acct_fixture', readyForPayments: true } :
+    String(url).endsWith('/create-intent') ? { clientSecret: 'pi_fixture_secret_test', stripeAccountId: 'acct_fixture' } :
+    String(url).endsWith('/validate') ? { eligible: true } : { finalized }
+  }) }));
+  confirmPayment.mockResolvedValue({ paymentIntent: { id: 'pi_fixture', status: 'succeeded' } });
+  const settled = jest.fn().mockImplementation(async () => ({ reconciled: finalized }));
+  render(<StripePayDialog {...props} apiBasePath="/api/invoices" invoiceIds={['a','b']} groupedInitiation groupedApiBasePath="/api/invoices/customer-payment/stripe" checkoutKey="stable-key" onSettled={settled} />);
+  await screen.findByTestId('hosted-payment-element'); act(() => handlers.onReady());
+  fireEvent.click(screen.getByRole('button', { name: 'Pay', exact: true })); await flush();
+  expect(confirmPayment).toHaveBeenCalledTimes(1);
+  expect((screen.getByRole('button', {name:'Pay',exact:true}) as HTMLButtonElement).disabled).toBe(true);
+  expect(document.body.textContent).toContain('Waiting for processor reconciliation');
+  finalized = true;
+  fireEvent.click(screen.getByRole('button', {name:'Check payment status',exact:true})); await flush();
+  expect(confirmPayment).toHaveBeenCalledTimes(1);
+  expect(props.onOpenChange).toHaveBeenCalledWith(false);
+  expect((apiFetch as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith('/create-intent'))).toHaveLength(1);
+});
+
+describe('test card helper', () => {
+  let originalLocation: Location;
+  const setHost = (hostname: string) => {
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...originalLocation, hostname, href: 'https://' + hostname + '/' } });
+  };
+  beforeEach(() => { originalLocation = window.location; });
+  afterEach(() => { Object.defineProperty(window, 'location', { configurable: true, value: originalLocation }); });
+  test.each([
+    ['dev.printershero.com', 'test', true],
+    ['dev.printershero.com', 'live', false],
+    ['printershero.com', 'test', false],
+    ['printershero.com', 'live', false],
+    ['www.printershero.com', 'test', false],
+    ['unknown.example', 'test', false],
+  ] as const)('%s with Stripe %s: helper visible is %s', async (host, mode, visible) => {
+    setHost(host); stripeMode = mode;
+    await openDialog();
+    expect(document.body.textContent?.includes('Stripe Test Card')).toBe(visible);
+    expect(document.body.textContent?.includes('Test payments only. No real charge.')).toBe(visible);
+    expect(confirmPayment).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+  });
+  test('unknown Stripe mode or invalid deployment API configuration hides helper', async () => {
+    setHost('dev.printershero.com'); apiConfigValid = false; await openDialog();
+    expect(document.body.textContent).not.toContain('Stripe Test Card');
+  });
+  test('invalid Stripe mode never shows the helper', async () => {
+    setHost('dev.printershero.com'); stripeMode = 'unknown';
+    render(<StripePayDialog {...props} />);
+    await act(async () => {});
+    expect(document.body.textContent).not.toContain('Stripe Test Card');
+    expect(document.querySelector('[data-testid="hosted-payment-element"]')).toBeNull();
+  });
+  test('copy writes the test number without submitting or touching Stripe Elements', async () => {
+    setHost('dev.printershero.com');
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await openDialog(); fireEvent.click(screen.getByRole('button', { name: 'Copy', exact: true }));
+    await act(async () => {});
+    expect(writeText).toHaveBeenCalledWith('4242424242424242');
+    expect(document.body.textContent).toContain('Expiration: Any future date');
+    expect(document.body.textContent).toContain('CVC: Any 3 digits');
+    expect(submit).not.toHaveBeenCalled(); expect(confirmPayment).not.toHaveBeenCalled();
+    expect(mounts).toBe(1); expect(unmounts).toBe(0);
+  });
+  test('the same helper appears in grouped DEV checkout', async () => {
+    setHost('dev.printershero.com');
+    render(<StripePayDialog {...props} apiBasePath="/api/invoices" invoiceIds={['a','b']}
+      invoiceSummaries={[{ invoiceNumber: 'A', amountDue: 10 }, { invoiceNumber: 'B', amountDue: 20 }]}
+      groupedInitiation groupedApiBasePath="/api/invoices/customer-payment/stripe" />);
+    await screen.findByTestId('hosted-payment-element');
+    expect(document.body.textContent).toContain('Stripe Test Card');
+    expect(document.body.textContent).toContain('2 invoices selected');
+    expect(confirmPayment).not.toHaveBeenCalled();
+  });
+  test('clipboard failure leaves the number visible and reports the failure', async () => {
+    setHost('dev.printershero.com');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: jest.fn().mockRejectedValue(new Error('denied')) } });
+    await openDialog(); fireEvent.click(screen.getByRole('button', { name: 'Copy', exact: true }));
+    await act(async () => {});
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Unable to copy test card number' }));
+    expect(document.body.textContent).toContain('4242 4242 4242 4242');
+  });
 });

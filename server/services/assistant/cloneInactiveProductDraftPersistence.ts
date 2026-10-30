@@ -39,20 +39,13 @@ function parseProposal(row: typeof aiConfigurableProductProposals.$inferSelect):
 }
 
 function productConfiguration(product: typeof products.$inferSelect): Record<string, unknown> {
-  return {
-    priceBreaks: product.priceBreaks, optionsJson: product.optionsJson, optionTreeJson: product.optionTreeJson,
-    artworkPolicy: product.artworkPolicy, pricingProfileKey: product.pricingProfileKey,
-    pricingProfileConfig: product.pricingProfileConfig, pricingEngine: product.pricingEngine,
-    pricingFormula: product.pricingFormula, pricingFormulaId: product.pricingFormulaId,
-    useNestingCalculator: product.useNestingCalculator, sheetWidth: product.sheetWidth,
-    sheetHeight: product.sheetHeight, materialType: product.materialType,
-    minPricePerItem: product.minPricePerItem, nestingVolumePricing: product.nestingVolumePricing,
-    allowZeroPrice: product.allowZeroPrice,
-  };
+  // Fingerprint every copied Product setting, including routing/proof flags.
+  const { id: _id, organizationId: _org, name: _name, description: _description, category: _category, isActive: _active, pbv2ActiveTreeVersionId: _tree, createdAt: _created, updatedAt, ...configuration } = product;
+  return { ...configuration, productUpdatedAt: updatedAt.toISOString() };
 }
 
 function snapshot(product: typeof products.$inferSelect, tree: typeof pbv2TreeVersions.$inferSelect): CloneInactiveProductSourceSnapshot {
-  return cloneInactiveProductSourceSnapshotSchema.parse({
+  const parsed = cloneInactiveProductSourceSnapshotSchema.safeParse({
     organizationId: product.organizationId,
     product: {
       id: product.id, name: product.name, description: product.description, category: product.category,
@@ -65,6 +58,19 @@ function snapshot(product: typeof products.$inferSelect, tree: typeof pbv2TreeVe
       updatedAt: tree.updatedAt.toISOString(), treeJson: tree.treeJson,
     },
   });
+  if (!parsed.success) throw new CloneInactiveProductDraftError("CLONE_CONFIGURATION_UNSUPPORTED", `Unsupported source fields: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}. No partial clone was created.`);
+  return parsed.data;
+}
+
+/** Fail closed for configuration held outside the Product/PBV2 snapshot. */
+async function requireSupportedConfiguration(db: Pick<Awaited<ReturnType<typeof loadDatabase>>, "execute">, organizationId: string, productId: string) {
+  const result = await db.execute(sql`select
+    exists(select 1 from product_options where product_id = ${productId}) as options,
+    exists(select 1 from product_variants where product_id = ${productId}) as variants,
+    exists(select 1 from product_design_configs where product_id = ${productId} and organization_id = ${organizationId}) as design,
+    exists(select 1 from material_product_links where product_id = ${productId} and organization_id = ${organizationId} and removed_at is null) as materials`);
+  const fields = Object.entries(result.rows[0] ?? {}).filter(([, present]) => present === true).map(([field]) => field);
+  if (fields.length) throw new CloneInactiveProductDraftError("CLONE_CONFIGURATION_UNSUPPORTED", `The canonical clone cannot preserve separate Product configuration: ${fields.join(", ")}. No partial clone was created. Review the source in the Product editor.`);
 }
 
 /**
@@ -78,12 +84,13 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
     const db = await loadDatabase();
     const [product] = await db.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
     if (!product) return null;
+    await requireSupportedConfiguration(db, input.organizationId, product.id);
     const trees = product.pbv2ActiveTreeVersionId
       ? await db.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId), eq(pbv2TreeVersions.productId, product.id))).limit(1)
       : await db.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.productId, product.id), eq(pbv2TreeVersions.status, "DRAFT"))).limit(2);
     // An inactive source is cloneable only when it has exactly one explicit
     // DRAFT snapshot. Multiple drafts require a future explicit tree selector.
-    if (!product.pbv2ActiveTreeVersionId && trees.length !== 1) return null;
+    if (!product.pbv2ActiveTreeVersionId && trees.length !== 1) throw new CloneInactiveProductDraftError("CLONE_SOURCE_TREE_UNRESOLVED", "The source needs exactly one PBV2 DRAFT or a bound active tree. No clone was prepared; review its PBV2 configuration.");
     const tree = trees[0];
     return tree ? snapshot(product, tree) : null;
   }
@@ -124,7 +131,7 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
     return db.transaction(async (tx) => {
       const [row] = await tx.select().from(aiConfigurableProductProposals).where(and(
         eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.id, input.proposalId),
-      )).limit(1);
+      )).limit(1).for("update");
       if (!row) throw new CloneInactiveProductDraftError("CLONE_PROPOSAL_NOT_FOUND", "The clone proposal was not found in this organization.");
       const proposal = parseProposal(row);
       if (!proposal || proposal.actorUserId !== input.actorUserId || proposal.fingerprint !== input.proposalFingerprint || proposal.sourceFingerprint !== input.expectedSourceFingerprint) {
@@ -141,6 +148,7 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
       if (!sourceTree || (sourceProduct.pbv2ActiveTreeVersionId ? sourceProduct.pbv2ActiveTreeVersionId !== proposal.sourcePbv2TreeVersionId : sourceTree.status !== "DRAFT")) {
         throw new CloneInactiveProductDraftError("CLONE_SOURCE_STALE", "The source product or its PBV2 tree changed; review a new clone preview.");
       }
+      await requireSupportedConfiguration(tx, input.organizationId, sourceProduct.id);
       // This check repeats the service's fingerprint validation within the
       // write transaction, closing the race between GO revalidation and insert.
       const current = snapshot(sourceProduct, sourceTree);

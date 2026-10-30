@@ -1,7 +1,9 @@
+import { classifyPrepressWithdrawalActivity } from "./workflowWithdrawalActivity";
+import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { lockWorkflowLines } from "./workflowMutationLock";
 import { assertProductionCredit, getOrderCreditHold } from "./orderCreditHoldService";
 import { and, desc, eq } from "drizzle-orm";
-import { orderLineItems, orders, products, productionEvents, productionJobs, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
+import { orderLineItems, orders, products, productionEvents, productionJobs, prepressSessions, lineItemFiles, productionRunMembers, auditLogs, lineItemArtwork, orderMaterialUsage, inventoryReservations, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 import { completeActiveJob, findActiveJobForLineItem, findAllActiveJobsForLineItem, transitionToStation } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
@@ -48,7 +50,7 @@ const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> 
   new: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
   needs_design: ["in_design", "on_hold", "canceled"],
   in_design: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "on_hold", "canceled"],
-  awaiting_proof_approval: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
+  awaiting_proof_approval: ["in_prepress", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
   ready_for_prepress: ["needs_design", "awaiting_proof_approval", "in_prepress", "ready_for_production", "on_hold", "canceled"],
   in_prepress: ["awaiting_proof_approval", "ready_for_production", "in_design", "needs_design", "on_hold", "canceled"],
   ready_for_production: ["awaiting_proof_approval", "in_production", "in_prepress", "on_hold", "canceled"],
@@ -322,6 +324,7 @@ async function applyOwnershipForState(tx: any, args: {
   lineItem: LoadedLineItem;
   toState: LineItemWorkflowState;
   actorUserId?: string | null;
+  retireUnstartedPrepress?: boolean;
 }) {
   const activeJob = await findActiveJobForLineItem(tx, {
     organizationId: args.lineItem.organizationId,
@@ -409,7 +412,8 @@ async function applyOwnershipForState(tx: any, args: {
     lineItemId: args.lineItem.id,
     targetStationKey: targetRoute.stationKey,
     targetStepKey: targetRoute.stepKey,
-    reason: `workflow_transition:${args.toState}`,
+    reason: args.retireUnstartedPrepress ? "unstarted_prepress_requirement_removed" : `workflow_transition:${args.toState}`,
+    previousJobOutcome: args.retireUnstartedPrepress ? "canceled" : "done",
     actorUserId: args.actorUserId ?? null,
   });
 
@@ -479,12 +483,76 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
   note?: string | null;
   metadata?: Record<string, unknown>;
   allowTerminalRecovery?: boolean;
+  /** Only for requirement removal; validates saved activity under the shared line lock. */
+  retireUnstartedPrepress?: boolean;
 }): Promise<WorkflowTransitionResult> {
   await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const lineItem = await loadLineItemForWorkflow(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
   });
+
+  if (args.retireUnstartedPrepress) {
+    const reject = (message: string) => Object.assign(new Error(message), { statusCode: 409, code: "PREPRESS_WITHDRAWAL_BLOCKED" });
+    if (!lineItem.requiresPrepress || !["ready_for_prepress", "awaiting_proof_approval"].includes(lineItem.workflowState)
+      || !["ready_for_production", "awaiting_proof_approval"].includes(args.toState)) {
+      throw reject("Only an unstarted Prepress requirement can be removed here. Resolve existing work through its workflow.");
+    }
+    const jobs = await tx.select().from(productionJobs).where(and(
+      eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.lineItemId, args.lineItemId),
+    )).for("update");
+    // A prior station or return cycle is ambiguous, even if its current job looks queued.
+    if (jobs.length !== 1 || jobs[0].stationKey !== "prepress" || jobs[0].stepKey !== "prepress") {
+      throw reject("This line has production history or incompatible ownership. Resolve that work before removing Prepress.");
+    }
+    const sessions = await tx.select().from(prepressSessions).where(and(
+      eq(prepressSessions.organizationId, args.organizationId), eq(prepressSessions.lineItemId, args.lineItemId),
+    )).for("update");
+    const files = await tx.select().from(lineItemFiles).where(and(
+      eq(lineItemFiles.organizationId, args.organizationId), eq(lineItemFiles.lineItemId, args.lineItemId),
+    ));
+    const events = await tx.select().from(productionEvents).where(and(
+      eq(productionEvents.organizationId, args.organizationId), eq(productionEvents.productionJobId, jobs[0].id),
+    ));
+    const runs = await tx.select({ id: productionRunMembers.id }).from(productionRunMembers).where(and(
+      eq(productionRunMembers.organizationId, args.organizationId), eq(productionRunMembers.orderLineItemId, args.lineItemId),
+    ));
+    if (runs.length) throw reject("Resolve the production run before removing Prepress.");
+    const [savedLine] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, args.lineItemId));
+    const artwork = await tx.select().from(lineItemArtwork).where(and(
+      eq(lineItemArtwork.organizationId, args.organizationId), eq(lineItemArtwork.lineItemId, args.lineItemId),
+    ));
+    const materialUsage = await tx.select({ id: orderMaterialUsage.id }).from(orderMaterialUsage).where(and(
+      eq(orderMaterialUsage.orderId, lineItem.orderId), eq(orderMaterialUsage.orderLineItemId, args.lineItemId),
+    ));
+    const reservations = await tx.select({ id: inventoryReservations.id }).from(inventoryReservations).where(and(
+      eq(inventoryReservations.organizationId, args.organizationId), eq(inventoryReservations.orderLineItemId, args.lineItemId),
+      eq(inventoryReservations.sourceType, "MANUAL"),
+    ));
+    const specs = (savedLine.specsJson ?? {}) as any;
+    const reasons = classifyPrepressWithdrawalActivity({ job: jobs[0], sessions, events,
+      hasStageFiles: files.some((file: any) => file.role === "final" || file.prepressSessionId)
+        || artwork.some((file: any) => file.role !== "customer_source"),
+      hasMaterialActivity: Boolean(savedLine.materialUsages?.length || savedLine.materialUsageJson?.length || materialUsage.length || reservations.length
+        || (specs.materialOverrides != null && (!Array.isArray(specs.materialOverrides) || specs.materialOverrides.length))),
+    });
+    // Employee-created sessions are outside this milestone, even before their first note.
+    if (sessions.length || reasons.length || jobs[0].completedAt) {
+      throw reject("Prepress has started or has activity requiring review. Resolve its work before removing the requirement.");
+    }
+    const [eligibility] = await new FulfillmentDashboardRepo(tx).listLineEligibility(args.organizationId, { lineItemIds: [args.lineItemId] }, tx);
+    if (!eligibility || eligibility.projection.fulfilledQuantity > 0 || eligibility.projection.administrativelyReconciledQuantity > 0) {
+      throw reject("Fulfilled or administratively resolved work requires the existing reversal or replacement workflow.");
+    }
+    lineItem.requiresPrepress = false;
+    await tx.insert(auditLogs).values({ organizationId: args.organizationId, userId: args.actorUserId ?? null,
+      entityType: "order_line_item", entityId: args.lineItemId, actionType: "UPDATE",
+      description: "Unstarted Prepress requirement removed through the Order editor.",
+      oldValues: { job: jobs[0], workflowState: lineItem.workflowState, requiresPrepress: true },
+      newValues: { eventType: "prepress_requirement_withdrawn", requiresPrepress: false, workflowState: args.toState,
+        ownerOutcome: args.toState === "awaiting_proof_approval" ? "retained_for_proofing" : "canceled" },
+    });
+  }
 
   const effectiveDesignStatus = deriveEffectiveDesignStatus({
     designStatus: lineItem.designStatus,
@@ -569,6 +637,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
       lineItem,
       toState: args.toState,
       actorUserId: args.actorUserId,
+      retireUnstartedPrepress: args.retireUnstartedPrepress,
     });
 
     const invariant = await assertOwnershipInvariant(tx, {
@@ -666,6 +735,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     lineItem,
     toState: args.toState,
     actorUserId: args.actorUserId,
+      retireUnstartedPrepress: args.retireUnstartedPrepress,
   });
 
   const invariant = await assertOwnershipInvariant(tx, {

@@ -88,6 +88,7 @@ import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolutio
 import { activeOrderDuePredicates } from "../services/orderDueDateService";
 import { canonicalOpenOrderBucketPredicate } from "../services/orderListBuckets";
 import { selectCurrentOrderPreviewAttachments } from "../services/orders/orderListArtworkProjection";
+import { requireOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { serializeOrderBusinessDate } from "@shared/orderBusinessDate";
 import { ensureOrderBackedInvoiceForOrderInTransaction } from "../invoicesService";
 import { digitsOnlySearchTerm, normalizeOrderSearchTerm, orderSearchTokens, parseOrderSearchDate } from "../lib/orderListSearch";
@@ -412,6 +413,8 @@ export type CreateOrderLineItemInput = Omit<InsertOrderLineItem, 'orderId' | 'op
     linePrice?: number | string | null;
     line_price?: number | string | null;
     priceOverride?: any;
+    /** Internal conversion/intake adapters supply canonical workflow states. */
+    workflowState?: InsertOrderLineItem["workflowState"];
 };
 
 type OrdersTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -1519,6 +1522,7 @@ export class OrdersRepository {
                 const activeOwner = activeOwnerByLineItem.get(String(li.id)) ?? null;
                 return {
                     ...enrichLineItemWithEffectivePricing(li as any),
+                    updatedAt: requireOrderConcurrencyTimestamp(li.updatedAt),
                     product,
                     productVariant,
                     pbv2ActiveTreeVersionId: (product as any)?.pbv2ActiveTreeVersionId ? String((product as any).pbv2ActiveTreeVersionId) : null,
@@ -1573,8 +1577,16 @@ export class OrdersRepository {
         ));
         const paymentSummaries = await loadOrderPaymentSummaries(this.dbInstance, organizationId, invoiceRows);
         const productionSummaries = await this.buildProductionSummaries(organizationId, [id]);
+        const referenceColumns = { id: orders.id, orderNumber: orders.orderNumber, displayNumber: orders.displayNumber, redoReason: orders.redoReason, promisedDate: orders.promisedDate, status: orders.status, state: orders.state };
+        const [redoOriginal] = order.redoRootOrderId ? await this.dbInstance.select(referenceColumns).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.id, order.redoRootOrderId))) : [];
+        const [redoSource] = order.redoSourceOrderId ? await this.dbInstance.select(referenceColumns).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.id, order.redoSourceOrderId))) : [];
+        const relatedRedos = await this.dbInstance.select(referenceColumns).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.redoRootOrderId, order.redoRootOrderId ?? id))).orderBy(asc(orders.createdAt), asc(orders.id));
         return {
+            redoOriginal: redoOriginal ?? null,
+            redoSource: redoSource ?? null,
+            relatedRedos,
             ...order,
+            updatedAt: requireOrderConcurrencyTimestamp(order.updatedAt),
             paymentSummary: paymentSummaries.get(id) ?? deriveOrderPaymentSummary([]),
             productionSummary: productionSummaries.get(id),
             lineItems: enrichedLineItemsWithProof,
@@ -1645,6 +1657,8 @@ export class OrdersRepository {
         trackingNumber?: string | null;
         shippingCents?: number | null;
         shippingChargeDecision?: 'unset' | 'manual' | 'free' | 'ups_rate' | 'legacy';
+        /** Internal duplication adapter only; never spread untrusted route bodies here. */
+        redo?: Pick<typeof orders.$inferInsert, "redoRootOrderId" | "redoSourceOrderId" | "redoReason" | "redoExplanation" | "redoDisposition" | "redoRequestKey" | "redoRequestFingerprint">;
         /** Durable provenance for the required linked draft invoice. */
         invoiceAuditSource?: "order_created" | "quote_converted" | "inbound_order";
         /** Opt-in policy for workflows that must defer all production intake. */
@@ -1716,6 +1730,7 @@ export class OrdersRepository {
             });
             const orderInsert: typeof orders.$inferInsert = {
                 organizationId,
+                ...data.redo,
                 orderNumber: orderNumberParts.orderNumber,
                 jobNumber: orderNumberParts.jobNumber,
                 displayNumber: orderNumberParts.displayNumber,
@@ -1939,6 +1954,7 @@ export class OrdersRepository {
                 });
                 return {
                     orderId: order.id,
+                    redoSourceLineItemId: li.redoSourceLineItemId ?? null,
                     quoteLineItemId: (li as any).quoteLineItemId || null,
                     productId: li.productId,
                     productVariantId: (li as any).productVariantId || (li as any).variantId || null,

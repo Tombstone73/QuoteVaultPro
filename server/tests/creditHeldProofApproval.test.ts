@@ -10,10 +10,10 @@ const q: any = { from: () => q, innerJoin: () => q, where: () => q, limit: async
 const tx = { select: () => q };
 beforeAll(async () => { reconcile = (await import('../services/proofingService')).reconcileLineItemProofGateRelease; });
 beforeEach(() => { jest.clearAllMocks(); transition.mockImplementation(async (_tx: any, args: any) => args); });
-test('accepted proof remains approved and moves to preparatory ownership during a hold', async () => {
+test('accepted proof preserves existing ownership and requirements during a credit hold', async () => {
   credit.mockResolvedValue({ creditHold: { held: true } });
-  await expect(reconcile(tx, { organizationId: 'org', lineItemId: 'line', source: 'proof_approval' })).resolves.toMatchObject({ toState: 'ready_for_prepress' });
-  expect(transition).toHaveBeenCalledWith(tx, expect.objectContaining({ metadata: { source: 'proof_approval', proofGateAllowed: true } }));
+  await expect(reconcile(tx, { organizationId: 'org', lineItemId: 'line', source: 'proof_approval' })).resolves.toMatchObject({ toState: 'awaiting_proof_approval' });
+  expect(transition).not.toHaveBeenCalled();
 });
 test('approved proof can release normally when financially eligible', async () => {
   credit.mockResolvedValue({ creditHold: { held: false } });

@@ -1,3 +1,4 @@
+import { lockWorkflowLines } from "../workflowMutationLock";
 import type { InsertLineItemArtwork, LineItemArtwork } from "@shared/schema";
 import { LineItemArtworkRepository, lineItemArtworkRepository, type TenantLineItem } from "../../storage/lineItemArtwork.repo";
 
@@ -108,6 +109,7 @@ export class LineItemArtworkService {
   }
 
   private async attachArtworkWithRepository(repository: ArtworkStore, tx: any, input: AttachLineItemArtworkInput): Promise<LineItemArtwork> {
+    await lockWorkflowLines(tx, input.organizationId, [input.lineItemId]);
     if (!["customer_source", "production", "modified_production"].includes(input.role)) {
       throw new LineItemArtworkError(422, "Generated workflow artifacts are not line-item artwork.");
     }
@@ -170,6 +172,9 @@ export class LineItemArtworkService {
     replacementArtworkId: string;
     actorUserId?: string | null;
   }): Promise<LineItemArtwork> {
+    const ref = await repository.getByIdForOrganization(args.organizationId, args.artworkId, tx);
+    if (!ref) throw new LineItemArtworkError(404, "Artwork is not available.");
+    await lockWorkflowLines(tx, args.organizationId, [ref.lineItemId]);
     const existing = await repository.getByIdForOrganization(args.organizationId, args.artworkId, tx);
     const replacement = await repository.getByIdForOrganization(args.organizationId, args.replacementArtworkId, tx);
     if (!existing || !replacement || existing.lineItemId !== replacement.lineItemId || existing.orderId !== replacement.orderId) {

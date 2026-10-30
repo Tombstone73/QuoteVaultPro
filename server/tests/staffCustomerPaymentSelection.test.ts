@@ -11,11 +11,11 @@ function matches(row: any, condition: any, table: string) {
   if (!condition) return true;
   const { sql, params } = dialect.sqlToQuery(condition);
   const name = (column: string) => column.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-  for (const match of sql.matchAll(/"([^"]+)"\."([^"]+)" = \$(\d+)/g)) {
+  for (const match of Array.from(sql.matchAll(/"([^"]+)"\."([^"]+)" = \$(\d+)/g))) {
     if (match[1] === table && row[name(match[2])] !== params[Number(match[3]) - 1]) return false;
   }
-  for (const match of sql.matchAll(/"([^"]+)"\."([^"]+)" in \(([^)]+)\)/g)) {
-    const values = [...match[3].matchAll(/\$(\d+)/g)].map(x => params[Number(x[1]) - 1]);
+  for (const match of Array.from(sql.matchAll(/"([^"]+)"\."([^"]+)" in \(([^)]+)\)/g))) {
+    const values = Array.from(match[3].matchAll(/\$(\d+)/g)).map(x => params[Number(x[1]) - 1]);
     if (match[1] === table && !values.includes(row[name(match[2])])) return false;
   }
   return true;
@@ -116,13 +116,19 @@ describe('staff selected versus payable customer payment (mocked transaction)', 
     await expect(record(input({ invoiceIds: ['a','c'] }))).rejects.toMatchObject({ code: 'NO_PAYABLE_BALANCE' });
     expect(rows.customer_payment_batches).toHaveLength(0);
   });
-  test.each(['void','voided','canceled','cancelled'])('%s is excluded even with remaining ledger balance', async status => {
+  test.each(['void','voided','canceled','cancelled'])('%s blocks a selected batch with remaining ledger balance before writes', async status => {
     rows.invoices[1].status = status;
-    expect(await preview(input())).toMatchObject({ eligibleCount: 2, excludedCount: 3, totalOutstandingCents: 32500 });
+    const before = structuredClone(rows);
+    await expect(preview(input())).rejects.toMatchObject({ code: 'INVOICE_NOT_PAYABLE', blockedInvoice: {invoiceId:'b'} });
+    await expect(record(input())).rejects.toMatchObject({ code: 'INVOICE_NOT_PAYABLE' });
+    expect(rows).toEqual(before);
   });
-  test('staff selection excludes a cancelled Order while retaining ordinary payable Invoices', async () => {
+  test('staff selection rejects a cancelled Order before allocating ordinary payable Invoices', async () => {
     rows.invoices[1].orderId = 'cancelled-order'; rows.orders.push({ id: 'cancelled-order', organizationId: 'org', customerId: 'customer', status: 'canceled' });
-    expect(await preview(input())).toMatchObject({ eligibleCount: 2, excludedCount: 3, totalOutstandingCents: 32500 });
+    const before = structuredClone(rows);
+    await expect(preview(input())).rejects.toMatchObject({ code: 'ORDER_CANCELLED', blockedInvoice: {invoiceId:'b'} });
+    await expect(record(input())).rejects.toMatchObject({ code: 'ORDER_CANCELLED' });
+    expect(rows).toEqual(before);
   });
   test('imported QB invoice blocks staff preview and posting before any writes', async () => {
     rows.invoices[3].importSource = 'quickbooks';

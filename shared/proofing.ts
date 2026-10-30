@@ -176,6 +176,12 @@ export const proofingReadModelSchema = z.object({
   proofDecisionHistory: z.array(proofDecisionHistoryEntrySchema),
   manualApprovalOverrideHistory: z.array(manualApprovalOverrideHistoryEntrySchema),
   blockedPendingProofApproval: z.boolean(),
+  proofGate: z.object({ allowed: z.boolean(), approved: z.boolean(), requiresProofApproval: z.boolean(),
+    earlyRelease: z.object({ id: z.string(), proofVersionId: z.string(), reason: z.string(), actorUserId: z.string(), authorizedAt: z.string(), artworkFingerprint: z.string() }).nullable().optional(),
+  }).optional(),
+  canAuthorizeEarlyRelease: z.boolean().optional(),
+  earlyReleaseReview: z.object({ expectedUpdatedAt: z.string(), expectedOwnerJobId: z.string().nullable(), revision: z.object({ proofVersionId: z.string(), proofFileId: z.string(), status: z.string(), createdAt: z.string(), artworkFingerprint: z.string() }).nullable().optional() }).optional(),
+  earlyReleaseHistory: z.array(z.object({ id: z.string(), proofVersionId: z.string(), proofFileId: z.string(), reason: z.string(), actorUserId: z.string(), authorizedAt: z.string(), artworkFingerprint: z.string() })).optional(),
 });
 
 export const proofingQueueRowSchema = z.object({

@@ -1,4 +1,4 @@
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 
 import { orderLineItems, orders } from "@shared/schema";
 import {
@@ -37,7 +37,9 @@ export async function resolvePrepressQueueEligibility(
     .where(
       and(
         eq(orders.organizationId, args.organizationId),
-        inArray(orderLineItems.workflowState, [...PREPRESS_QUEUE_WORKFLOW_STATES] as any),
+        or(inArray(orderLineItems.workflowState, [...PREPRESS_QUEUE_WORKFLOW_STATES] as any),
+          and(eq(orderLineItems.workflowState, "awaiting_proof_approval"), eq(orderLineItems.requiresPrepress, true),
+            sql`not exists (select 1 from prepress_sessions s where s.organization_id = ${args.organizationId} and s.line_item_id = ${orderLineItems.id} and s.status = 'complete' and s.completed_at >= coalesce((select max(v.created_at) from line_item_proof_versions v where v.organization_id = ${args.organizationId} and (v.line_item_id = ${orderLineItems.id} or exists(select 1 from proof_version_line_items m where m.proof_version_id=v.id and m.line_item_id=${orderLineItems.id}))), 'epoch'::timestamptz))`)),
         notInArray(orders.status, [...PREPRESS_QUEUE_TERMINAL_ORDER_STATUSES] as any),
         notInArray(orders.state, [...PREPRESS_QUEUE_TERMINAL_ORDER_STATES] as any),
       ),

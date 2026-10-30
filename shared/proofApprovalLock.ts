@@ -56,6 +56,7 @@ export function resolveLineItemProofApprovalRequirement(input: {
   proofApprovalLockEnabled?: boolean;
   proofingPolicy?: ProofingPolicy;
   customerRequiresProofApproval?: boolean;
+  explicitStaffProofRequest?: boolean;
 }): ProofApprovalRequirementResult {
   const productRequiresProofApproval = input.productRequiresProofApproval === true;
   const proofApprovalLockEnabled = input.proofApprovalLockEnabled === true;
@@ -63,8 +64,9 @@ export function resolveLineItemProofApprovalRequirement(input: {
 
   // A true value beyond a product that does not require proofs is an explicit
   // staff request. Product-default true values are commonly sent by older
-  // clients, so they remain product-derived unless the customer requires proof.
-  const explicitManualRequirement = input.requestedRequiresProofApproval === true && !productRequiresProofApproval;
+  // clients, so they remain product-derived unless the caller identifies an
+  // explicit staff request or the customer requires proof.
+  const explicitManualRequirement = input.requestedRequiresProofApproval === true && (!productRequiresProofApproval || input.explicitStaffProofRequest === true);
   if (explicitManualRequirement || input.customerRequiresProofApproval === true) {
     return {
       requiresProofApproval: true,

@@ -1,4 +1,6 @@
 import { apiFetch } from '@/lib/queryClient';
+import { checkApiConfig } from '@/lib/apiConfig';
+import { DEVELOPMENT_API_ORIGIN, expectedApiOriginForWebHost } from '@/lib/apiRouting';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 
@@ -8,7 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getStripePromise } from '@/lib/stripeClient';
 import { createStripePaymentDiagnostics, type StripePaymentDiagnostics } from '@/lib/stripePaymentDiagnostics';
 import { safeStripeDiagnosticError } from '@shared/stripePaymentDiagnostics';
-import { isStripePaymentConfirmSucceeded, type StripePaymentConfirmResponse } from '@shared/stripePaymentConfirm';
+import { isStripePaymentConfirmSucceeded } from '@shared/stripePaymentConfirm';
 
 /**
  * Fallback suffix for checkout idempotency in browsers without randomUUID.
@@ -37,7 +39,11 @@ function StripePayInner(props: {
   invoiceIds?: string[];
   invoiceSummaries?: Array<{ invoiceNumber: string; amountDue: number; currency?: string }>;
   groupedInitiation?: boolean;
+  groupedApiBasePath?: string;
+  checkoutKey?: string;
+  onRecovery?: () => void;
   developerPreviewPayment?: boolean;
+  showTestCard?: boolean;
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
@@ -72,6 +78,16 @@ function StripePayInner(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.clientSecret]);
 
+  const confirmOnServer = async (paymentIntentId: string): Promise<boolean> => {
+    try {
+      const url = props.groupedInitiation ? `${props.groupedApiBasePath || '/api/portal/payments/stripe'}/confirm`
+        : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/confirm`;
+      const response = await apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify({ paymentIntentId }) });
+      const data = await response.json();
+      return response.ok && (props.groupedInitiation ? data?.data?.finalized === true : isStripePaymentConfirmSucceeded(data));
+    } catch { return false; }
+  };
   const handleConfirm = async () => {
     // Guard: confirmPayment requires a mounted PaymentElement.
     if (!stripe || !elements || !props.clientSecret) {
@@ -106,14 +122,14 @@ function StripePayInner(props: {
       }
 
       if (props.groupedInitiation || props.apiBasePath === '/api/portal/invoices' || props.apiBasePath === '/api/guest/invoices') {
-        const validationUrl = props.groupedInitiation ? '/api/portal/payments/stripe/validate' : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/validate`;
+        const validationUrl = props.groupedInitiation ? `${props.groupedApiBasePath || '/api/portal/payments/stripe'}/validate` : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/validate`;
         const validation = await apiFetch(validationUrl, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
           body: JSON.stringify({ paymentIntentId: props.clientSecret.split('_secret_')[0] }),
         });
         const eligibility = await validation.json().catch(() => null);
         if (!validation.ok || eligibility?.data?.eligible !== true) {
-          const message = eligibility?.message || 'Payment eligibility changed. Close and reopen the payment form.';
+          const message = eligibility?.message || eligibility?.error || 'Payment eligibility changed. Close and reopen the payment form.';
           setPaymentError(message);
           toast({ title: 'Payment is not available', description: message, variant: 'destructive' });
           return;
@@ -144,34 +160,7 @@ function StripePayInner(props: {
 
       // Frontend success is only a UX signal. The server confirms the PaymentIntent
       // with Stripe and refreshes invoice state before the UI refetches.
-      if (result.paymentIntent) {
-        try {
-          const confirmUrl = props.groupedInitiation
-            ? '/api/portal/payments/stripe/confirm'
-            : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/confirm`;
-          const confirmRes = await fetch(confirmUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paymentIntentId: result.paymentIntent.id }),
-            credentials: 'include',
-          });
-
-          if (!confirmRes.ok) {
-            console.warn('[StripePayDialog] Confirm endpoint failed, relying on webhook', {
-              status: confirmRes.status,
-              sessionId: props.diagnostics?.sessionId,
-            });
-          } else {
-            const confirmData = await confirmRes.json() as StripePaymentConfirmResponse & { data?: { finalized?: boolean } };
-            if (props.groupedInitiation ? confirmData?.data?.finalized === true : isStripePaymentConfirmSucceeded(confirmData)) {
-              serverConfirmed = true;
-            }
-          }
-        } catch (confirmErr) {
-          // Processor reconciliation remains authoritative; never log raw exceptions.
-        }
-      }
-
+      if (result.paymentIntent) serverConfirmed = await confirmOnServer(result.paymentIntent.id);
       toast({
         title: serverConfirmed ? 'Payment confirmed' : 'Payment submitted',
         description: serverConfirmed
@@ -202,7 +191,7 @@ function StripePayInner(props: {
       } else if (mountedRef.current) {
         setAwaitingReconciliation(true);
         toast({
-          title: 'Payment received',
+          title: 'Payment submitted',
           description: 'Waiting for processor reconciliation. This invoice will remain open until its payment state is confirmed.',
         });
       }
@@ -221,6 +210,23 @@ function StripePayInner(props: {
       <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden overscroll-contain pr-1" data-testid="stripe-payment-scroll-body">
         {isMultiInvoice ? <div className="flex min-h-0 shrink flex-col rounded-md border text-sm"><p className="shrink-0 px-3 pb-2 pt-3 font-medium">{props.invoiceIds?.length} invoices selected</p><div className="min-h-0 max-h-[min(15rem,32dvh)] space-y-2 overflow-y-auto overscroll-contain px-3 pb-3" data-testid="stripe-invoice-scroll-region">{props.invoiceSummaries?.map((invoice) => <div key={invoice.invoiceNumber} className="flex min-w-0 justify-between gap-4"><span className="min-w-0 truncate">Invoice {invoice.invoiceNumber}</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency || 'USD' }).format(invoice.amountDue)}</span></div>)}</div><div className="flex shrink-0 justify-between gap-4 border-t px-3 py-3 font-semibold"><span>Total Due</span><span className="shrink-0">{new Intl.NumberFormat('en-US', { style: 'currency', currency: props.invoiceSummaries?.[0]?.currency || 'USD' }).format((props.invoiceSummaries || []).reduce((total, invoice) => total + invoice.amountDue, 0))}</span></div></div> : null}
         {/* Guard rendering with clientSecret in parent; onReady confirms the PaymentElement is mounted. */}
+        {props.showTestCard && <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm" aria-label="Stripe Test Card">
+          <div className="font-medium">Stripe Test Card</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span>4242 4242 4242 4242</span>
+            <Button type="button" variant="outline" size="sm" onClick={async () => {
+              try {
+                await navigator.clipboard.writeText('4242424242424242');
+                toast({ title: 'Test card number copied' });
+              } catch {
+                toast({ title: 'Unable to copy test card number', description: 'Select and copy the number shown.', variant: 'destructive' });
+              }
+            }}>Copy</Button>
+          </div>
+          <p>Expiration: Any future date</p>
+          <p>CVC: Any 3 digits</p>
+          <p>Test payments only. No real charge.</p>
+        </div>}
         <PaymentElement
           onReady={() => {
             setPaymentElementReady(true);
@@ -239,7 +245,7 @@ function StripePayInner(props: {
         ) : null}
         {awaitingReconciliation ? (
           <div className="text-sm text-muted-foreground" role="status">
-            Payment received. Waiting for processor reconciliation…
+            Payment submitted. Waiting for processor reconciliation…
           </div>
         ) : null}
         {props.developerPreviewPayment ? (
@@ -253,6 +259,15 @@ function StripePayInner(props: {
         <Button variant="outline" onClick={props.onClose} disabled={submitting}>
           Close
         </Button>
+        {awaitingReconciliation && <Button variant="outline" disabled={submitting} onClick={async () => {
+          setSubmitting(true);
+          try {
+            const paymentIntentId = props.clientSecret.split('_secret_')[0];
+            const serverConfirmed = await confirmOnServer(paymentIntentId);
+            const result = await props.onSettled({ serverConfirmed, paymentIntentId });
+            if (result.reconciled) props.onClose();
+          } catch { setPaymentError("Unable to refresh payment status. Retry the status check."); } finally { if (mountedRef.current) setSubmitting(false); }
+        }}>Check payment status</Button>}
         <Button
           onClick={handleConfirm}
           disabled={!stripe || !elements || !props.clientSecret || !paymentElementReady || submitting || awaitingReconciliation}
@@ -290,6 +305,9 @@ export default function StripePayDialog(props: {
   apiBasePath: string;
   /** Uses the pending customer-payment-batch endpoint; allocation waits for reconciliation. */
   groupedInitiation?: boolean;
+  groupedApiBasePath?: string;
+  checkoutKey?: string;
+  onRecovery?: () => void;
   disabled?: boolean;
   /** Staff preview stays read-only unless the server grants its explicit payment capability. */
   previewMode?: boolean;
@@ -316,6 +334,8 @@ export default function StripePayDialog(props: {
   // State machine for dialog lifecycle
   const [state, setState] = useState<'idle' | 'loading_runtime_config' | 'creating_intent' | 'ready' | 'preview' | 'error'>('idle');
   const [intentError, setIntentError] = useState<string | null>(null);
+  const [initializationRetry, setInitializationRetry] = useState(0);
+  const [recovering, setRecovering] = useState(false);
 
   // Freeze clientSecret and Elements options for the lifetime of an open dialog.
   // This prevents <Elements> from being unmounted/remounted due to state changes.
@@ -391,17 +411,17 @@ export default function StripePayDialog(props: {
       diagnosticsRef.current = createStripePaymentDiagnostics(apiBasePath, props.invoiceId, props.groupedInitiation);
       diagnosticsRef.current.emit('dialog_open');
     } catch { diagnosticsRef.current = null; } // Unsupported telemetry must not stop checkout.
-    checkoutIdempotencyKeyRef.current = typeof crypto?.randomUUID === 'function'
+    checkoutIdempotencyKeyRef.current = props.checkoutKey || checkoutIdempotencyKeyRef.current || (typeof crypto?.randomUUID === 'function'
       ? crypto.randomUUID()
-      : `${sessionId}-${Date.now()}`;
+      : `${sessionId}-${Date.now()}`);
 
     const run = async () => {
       setState('loading_runtime_config');
       setIntentError(null);
       try {
-        const configRes = await fetch(`${apiBasePath}/${props.invoiceId}/payments/stripe/runtime-config`, {
-          method: 'GET',
-          credentials: 'include',
+        const configRes = await apiFetch(props.groupedApiBasePath ? `${props.groupedApiBasePath}/runtime-config` : `${apiBasePath}/${props.invoiceId}/payments/stripe/runtime-config`, {
+          method: props.groupedApiBasePath ? 'POST' : 'GET', credentials: 'include',
+          ...(props.groupedApiBasePath ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceIds: props.invoiceIds || [props.invoiceId] }) } : {}),
         });
         const configJson = await configRes.json().catch(() => ({}));
         if (!configRes.ok) throw new Error((configJson as any)?.message || (configJson as any)?.error || 'Stripe is unavailable for this invoice');
@@ -426,13 +446,13 @@ export default function StripePayDialog(props: {
         setState('creating_intent');
 
         const createIntentUrl = props.groupedInitiation
-          ? '/api/portal/payments/stripe/create-intent'
+          ? `${props.groupedApiBasePath || '/api/portal/payments/stripe'}/create-intent`
           : `${apiBasePath}/${props.invoiceId}/payments/stripe/create-intent`;
         const expectedRemainingCents = Object.fromEntries((props.invoiceIds || [props.invoiceId]).map((invoiceId, index) => [
           invoiceId,
           Math.round(Number(props.invoiceSummaries?.[index]?.amountDue || 0) * 100),
         ]));
-        const res = await fetch(createIntentUrl, {
+        const res = await apiFetch(createIntentUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
@@ -473,7 +493,7 @@ export default function StripePayDialog(props: {
 
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.invoiceId, apiBasePath, props.previewMode, props.previewPaymentAuthorized, props.groupedInitiation, props.invoiceIds, props.invoiceSummaries]);
+  }, [props.open, props.invoiceId, apiBasePath, props.previewMode, props.previewPaymentAuthorized, props.groupedInitiation, props.invoiceIds, props.invoiceSummaries, props.groupedApiBasePath, props.checkoutKey, initializationRetry]);
 
   const close = () => props.onOpenChange(false);
 
@@ -493,7 +513,26 @@ export default function StripePayDialog(props: {
         )}
 
         {state === 'error' && intentError && (
-          <div className="text-sm text-destructive">{intentError}</div>
+          <div className="space-y-3">
+            <p role="alert" className="text-sm text-destructive">{intentError}</p>
+            <Button disabled={recovering} onClick={() => { intentRequestedRef.current = false; setInitializationRetry(value => value + 1); }}>Retry same checkout</Button>
+            {props.groupedInitiation && <Button variant="outline" disabled={recovering} onClick={async () => {
+              if (!window.confirm('Release unpaid Stripe attempts for these invoices? Processing or received payments will be reconciled instead of charged again.')) return;
+              setRecovering(true);
+              try {
+                const response = await apiFetch(`${props.groupedApiBasePath || '/api/portal/payments/stripe'}/recover`, {
+                  method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ invoiceIds: props.invoiceIds || [props.invoiceId] }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || data.message || 'Unable to recover the pending payment.');
+                props.onRecovery?.();
+                props.onOpenChange(false);
+                toast({ title: 'Payment attempts checked', description: 'Refresh the invoice balances before starting a new checkout.' });
+              } catch (error: any) { setIntentError(error.message); }
+              finally { setRecovering(false); }
+            }}>Release unpaid attempts</Button>}
+          </div>
         )}
 
         {state === 'preview' && (
@@ -515,7 +554,10 @@ export default function StripePayDialog(props: {
               invoiceIds={props.invoiceIds}
               invoiceSummaries={props.invoiceSummaries}
               groupedInitiation={props.groupedInitiation}
+              groupedApiBasePath={props.groupedApiBasePath}
               developerPreviewPayment={Boolean(props.previewMode && props.previewPaymentAuthorized)}
+              showTestCard={typeof window !== 'undefined' && expectedApiOriginForWebHost(window.location.hostname) === DEVELOPMENT_API_ORIGIN
+                && checkApiConfig().isValid && runtimeConfig?.mode === 'test'}
               clientSecret={frozenClientSecret!}
               apiBasePath={apiBasePath}
               onClose={close}

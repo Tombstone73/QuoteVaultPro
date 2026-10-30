@@ -78,6 +78,17 @@ const orderCreatePlanCard = {
   },
 };
 
+const cloneConfirmationCard = {
+  kind: "action_plan", title: "Clone inactive Product",
+  plan: {
+    id: "clone-confirmation-1", action: "products.clone_to_inactive_draft", status: "awaiting_confirmation", planVersion: 2,
+    confirmationAvailable: true, confirmationToken: "server-issued-clone-token", expiresAt: "2030-01-01T00:10:00.000Z", missingInformation: [],
+    preview: { summary: "Review the Product clone.", cloneInactiveDraft: { preview: {
+      source: { product: { name: "Translucent", configuration: {} } }, result: { product: { name: "Transparent PET Film" } },
+    } } },
+  },
+};
+
 describe("AssistantPlanCard", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -240,6 +251,61 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).not.toContain("fixed_quantity");
   });
 
+  it("describes a clone awaiting GO accurately and preserves the authorized confirmation request", () => {
+    const confirmed = jest.fn(() => undefined);
+    const context = buildSafeAssistantContext("/products", "Products");
+    act(() => root.render(<AssistantPlanCard card={cloneConfirmationCard} context={context} onConfirm={confirmed} />));
+    expect(container.textContent).toContain("Awaiting GO confirmation.");
+    expect(container.textContent).toContain("This action creates one inactive Product with a PBV2 DRAFT configuration after GO confirmation.");
+    expect(container.textContent).toContain("The source Product remains unchanged. Activation and publication are separate operations.");
+    expect(container.textContent).not.toContain("Preview only. Production business write commands are not enabled");
+    expect(container.textContent).not.toContain("does not provide a GO or execute control");
+    const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: clone to inactive product draft']");
+    expect(go?.textContent).toBe("GO clone inactive draft");
+    expect(go?.disabled).toBe(false);
+    act(() => go?.click());
+    expect(confirmed).toHaveBeenCalledTimes(1);
+    expect(confirmed).toHaveBeenCalledWith({ planId: "clone-confirmation-1", expectedPlanVersion: 2, confirmationToken: "server-issued-clone-token", context });
+  });
+
+  it.each([
+    ["executing", "Clone execution is in progress."],
+    ["confirmed", "GO confirmation received. Waiting for the clone execution result."],
+    ["revalidating", "The clone plan is being revalidated before execution."],
+    ["succeeded", "Clone completed: one inactive Product with a PBV2 DRAFT configuration was created."],
+    ["failed", "Clone execution did not complete successfully."],
+    ["expired", "This clone confirmation has expired."],
+    ["invalidated", "This clone plan is no longer valid for confirmation."],
+  ])("describes a %s clone without offering another GO", (status, message) => {
+    // Keep the token and server flag present to verify the existing status gate.
+    const card = { ...cloneConfirmationCard, plan: { ...cloneConfirmationCard.plan, status } };
+    act(() => root.render(<AssistantPlanCard card={card} context={buildSafeAssistantContext("/products", "Products")} onConfirm={jest.fn(() => undefined)} />));
+    expect(container.textContent).toContain(message);
+    expect(container.textContent).not.toContain("does not provide a GO or execute control");
+    expect(container.textContent).not.toContain("Awaiting GO confirmation.");
+    expect(container.querySelector("button[aria-label='GO: clone to inactive product draft']")).toBeNull();
+    if (status !== "succeeded") expect(container.textContent).not.toContain("Clone completed:");
+  });
+
+  it("preserves permission and stale-preview restrictions for clone cards", () => {
+    const context = buildSafeAssistantContext("/products", "Products");
+    const permissionDenied = { ...cloneConfirmationCard, plan: { ...cloneConfirmationCard.plan, confirmationAvailable: false } };
+    act(() => root.render(<AssistantPlanCard card={permissionDenied} context={context} onConfirm={jest.fn(() => undefined)} />));
+    expect(container.querySelector("button[aria-label='GO: clone to inactive product draft']")).toBeNull();
+    expect(container.textContent).not.toContain("does not provide a GO or execute control");
+    const stale = { ...cloneConfirmationCard, plan: { ...cloneConfirmationCard.plan, staleReason: "Source changed" } };
+    act(() => root.render(<AssistantPlanCard card={stale} context={context} onConfirm={jest.fn(() => undefined)} />));
+    expect(container.textContent).toContain("This clone preview is stale.");
+    expect(container.querySelector("button[aria-label='GO: clone to inactive product draft']")).toBeNull();
+  });
+
+  it("keeps the preview-only warning for an unsupported execution entry point", () => {
+    act(() => root.render(<AssistantPlanCard card={planCard} context={buildSafeAssistantContext("/customers/customer-1", "Customer")} onConfirm={jest.fn(() => undefined)} />));
+    expect(container.textContent).toContain("Preview only. Production business write commands are not enabled");
+    expect(container.textContent).toContain("does not provide a GO or execute control");
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("renders a clone's typed pricing before-and-after table without raw JSON", () => {
     const clonePlan = {
       kind: "action_plan", title: "Clone inactive product draft",
@@ -262,6 +328,21 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("$30.00");
     expect(container.textContent).toContain("Lifecycle: Inactive PBV2 DRAFT");
     expect(container.textContent).not.toContain('"minimumChargeCents"');
+  });
+
+  it("renders real PBV2 clone options and explicit metadata changes without claiming they are unchanged", () => {
+    const preview = { requestedChanges: { newName: "PET", category: "Film", description: "New description" },
+      source: { product: { name: "Translucent", category: "Signs", description: "Original", configuration: { sheetWidth: "54.00", sheetHeight: "120.00", pricingProfileConfig: { allowRotation: true } } }, pbv2Tree: { treeJson: { nodes: { finish: { kind: "question", label: "Finish", status: "ENABLED" }, contour: { kind: "question", label: "Contour", status: "ENABLED" } }, meta: { productIntake: { production: { route: { label: "Roll printing" } } } } } } },
+      result: { product: { name: "PET", category: "Film", description: "New description" } }, basePricing: { before: { perSqftCents: null }, after: { perSqftCents: 400 } } };
+    const card = { kind: "action_plan", title: "Clone", plan: { id: "clone-plan", action: "products.clone_to_inactive_draft", status: "succeeded", planVersion: 3, preview: { cloneInactiveDraft: { preview } }, executionResult: { details: { cloneInactiveDraft: { editorLink: "/products/clone-id/edit?draftTreeVersionId=draft-id" } } } } };
+    const model = toAssistantPlanCardModel(card)!;
+    expect(model.cloneInactiveDraft).toMatchObject({ options: "Finish, Contour", productionRoute: "Roll printing", rotation: true, categoryChanged: true, fieldChanges: [{ label: "Category", before: "Signs", after: "Film" }, { label: "Description", before: "Original", after: "New description" }] });
+    act(() => root.render(<AssistantPlanCard card={card} context={buildSafeAssistantContext("/products", "Products")} />));
+    expect(container.textContent).toContain("Options: Finish, Contour");
+    expect(container.textContent).toContain("$4.00");
+    expect(container.textContent).toContain("Roll printing");
+    expect(container.textContent).not.toContain("Category: Signs");
+    expect(container.querySelector<HTMLAnchorElement>('a[href="/products/clone-id/edit?draftTreeVersionId=draft-id"]')).not.toBeNull();
   });
 
   it("renders an exact inactive-draft update preview and blocks GO for server validation errors", () => {

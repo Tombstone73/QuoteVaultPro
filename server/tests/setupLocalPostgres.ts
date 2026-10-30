@@ -29,6 +29,9 @@ beforeAll(async () => {
     // db:push omits this migration-only constraint, which canonical numbering
     // seeds require for their ON CONFLICT target (migration 0029).
     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS global_variables_org_name_unique_idx ON public.global_variables (organization_id, name)');
+    // Migration 0001 supplies this default; db:push models station IDs as caller-provided varchar.
+    // Canonical fulfillment station upsert needs the real migration behavior.
+    await pool.query("ALTER TABLE public.stations ALTER COLUMN id SET DEFAULT gen_random_uuid()::text");
     // Production ownership reads and upserts use these migration-only station
     // fields (migrations 0001 and 0002). The local schema projection models
     // station IDs as varchar, so keep the test column's type aligned with it.

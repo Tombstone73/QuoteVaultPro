@@ -19,8 +19,8 @@ pulls, not preparation of already imported evidence. The polling interval uses
 `WORKER_INBOUND_EMAIL_DRAFTS_INTERVAL_MS` (30 seconds by default, minimum 5 seconds).
 Configuration changes require the normal application restart/deployment.
 
-Apply migrations `0240_inbound_email_processing_jobs` and
-`0241_inbound_versioned_fingerprint_width`, plus `0242_inbound_email_import_recovery`
+Apply migrations `0243_inbound_email_processing_jobs` and
+`0244_inbound_versioned_fingerprint_width`, plus `0245_inbound_email_import_recovery`
 for durable discovery/import recovery, before running this code.
 The additive migration creates only local work metadata. It contains no data
 backfill, mailbox activation, or production integration calls.

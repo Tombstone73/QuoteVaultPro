@@ -1,8 +1,10 @@
+import { getStripeClient } from "../lib/stripe";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import { stripePaymentAttempts } from "../../shared/schema";
+import { assertStripeClaimAvailable, lockAndValidateStripeInvoices, recoverStripeInvoiceClaims, StripeInvoiceClaimError } from "./stripeInvoicePaymentClaims.service";
 
 const ACTIVE_STATUSES = ["reserved", "pending"] as const;
 
@@ -25,8 +27,8 @@ export type ReservedStripePaymentAttempt = {
   createdAt: Date;
 };
 
-async function findActiveStripePaymentAttempt(organizationId: string, invoiceId: string) {
-  const attempts = await db.select().from(stripePaymentAttempts).where(and(
+async function findActiveStripePaymentAttempt(organizationId: string, invoiceId: string, executor: Pick<typeof db, "select"> = db) {
+  const attempts = await executor.select().from(stripePaymentAttempts).where(and(
     eq(stripePaymentAttempts.organizationId, organizationId),
     eq(stripePaymentAttempts.invoiceId, invoiceId),
     // A declined PaymentIntent is retryable at Stripe. Keep its identity in
@@ -41,9 +43,9 @@ async function findActiveStripePaymentAttempt(organizationId: string, invoiceId:
 }
 
 /**
- * Reserve an attempt before calling Stripe. The partial unique index is the
- * concurrency authority: callers racing for the same invoice receive the
- * durable active row and therefore share its Stripe idempotency identity.
+ * Reserve an attempt before calling Stripe. Sorted invoice locks make the check and
+ * durable claim atomic across single and grouped entry points. The existing
+ * partial unique index also protects active single reservations.
  */
 export async function reserveStripePaymentAttempt(input: {
   organizationId: string;
@@ -54,41 +56,53 @@ export async function reserveStripePaymentAttempt(input: {
   stripeAccountId: string;
   createdByUserId?: string | null;
   metadata?: Record<string, unknown>;
+  expectedCustomerId?: string | null;
+  expectedInvoiceVersion?: number;
 }): Promise<{ attempt: ReservedStripePaymentAttempt; reused: boolean }> {
-  const current = await findActiveStripePaymentAttempt(input.organizationId, input.invoiceId);
-  if (current) {
-    // Stripe may prune idempotency keys after 24h. An old reservation whose
-    // response was lost cannot safely issue another create request.
-    if (!current.stripePaymentIntentId && Date.now() - new Date(current.createdAt).getTime() >= 23 * 60 * 60 * 1000) {
-      throw Object.assign(new Error("Unresolved Stripe reservation requires processor review before retrying."), { code: "STRIPE_RESERVATION_REVIEW_REQUIRED" });
+  await recoverStripeInvoiceClaims({ organizationId: input.organizationId, invoiceIds: [input.invoiceId] });
+  return db.transaction(async tx => {
+    await lockAndValidateStripeInvoices(tx, input.organizationId, [{ invoiceId: input.invoiceId, remainingCents: input.amountCents,
+      currency: input.currency, customerId: input.expectedCustomerId, invoiceVersion: input.expectedInvoiceVersion, allowApprovedImportedQuickBooks: input.channel === "staff" }]);
+    const current = await findActiveStripePaymentAttempt(input.organizationId, input.invoiceId, tx);
+    await assertStripeClaimAvailable(tx, input.organizationId, [input.invoiceId], current ? { attemptId: current.id, intentId: current.stripePaymentIntentId } : undefined);
+    if (current) {
+      if (current.channel !== input.channel || current.createdByUserId !== (input.createdByUserId || null) ||
+          current.amountCents !== input.amountCents || current.currency !== input.currency.toUpperCase() || current.stripeAccountId !== input.stripeAccountId) {
+        throw new StripeInvoiceClaimError("A different Stripe checkout is already pending for this invoice.");
+      }
+      // Stripe may prune idempotency keys after 24h. An old reservation whose
+      // response was lost cannot safely issue another create request.
+      if (!current.stripePaymentIntentId && Date.now() - new Date(current.createdAt).getTime() >= 23 * 60 * 60 * 1000) {
+        throw Object.assign(new Error("Unresolved Stripe reservation requires processor review before retrying."), { code: "STRIPE_RESERVATION_REVIEW_REQUIRED" });
+      }
+      return { attempt: current, reused: true };
     }
-    return { attempt: current, reused: true };
-  }
 
-  const attemptId = randomUUID();
-  const idempotencyKey = `stripe-payment-attempt:${attemptId}`;
-  const now = new Date();
-  const [created] = await db.insert(stripePaymentAttempts).values({
-    id: attemptId,
-    organizationId: input.organizationId,
-    invoiceId: input.invoiceId,
-    channel: input.channel,
-    amountCents: input.amountCents,
-    currency: input.currency.toUpperCase(),
-    stripeAccountId: input.stripeAccountId,
-    idempotencyKey,
-    status: "reserved",
-    createdByUserId: input.createdByUserId || null,
-    metadata: input.metadata || {},
-    createdAt: now,
-    updatedAt: now,
-  } as any).onConflictDoNothing().returning();
+    const attemptId = randomUUID();
+    const idempotencyKey = `stripe-payment-attempt:${attemptId}`;
+    const now = new Date();
+    const [created] = await tx.insert(stripePaymentAttempts).values({
+      id: attemptId,
+      organizationId: input.organizationId,
+      invoiceId: input.invoiceId,
+      channel: input.channel,
+      amountCents: input.amountCents,
+      currency: input.currency.toUpperCase(),
+      stripeAccountId: input.stripeAccountId,
+      idempotencyKey,
+      status: "reserved",
+      createdByUserId: input.createdByUserId || null,
+      metadata: input.metadata || {},
+      createdAt: now,
+      updatedAt: now,
+    } as any).onConflictDoNothing().returning();
 
-  if (created) return { attempt: created as ReservedStripePaymentAttempt, reused: false };
+    if (created) return { attempt: created as ReservedStripePaymentAttempt, reused: false };
 
-  const raced = await findActiveStripePaymentAttempt(input.organizationId, input.invoiceId);
-  if (!raced) throw new Error("Unable to reserve Stripe payment attempt");
-  return { attempt: raced, reused: true };
+    const raced = await findActiveStripePaymentAttempt(input.organizationId, input.invoiceId, tx);
+    if (!raced) throw new Error("Unable to reserve Stripe payment attempt");
+    return { attempt: raced, reused: true };
+  });
 }
 
 export async function findStripePaymentAttempt(organizationId: string, invoiceId: string, paymentIntentId: string) {
@@ -152,4 +166,25 @@ export async function markStripePaymentAttemptTerminalForPayment(input: {
     eq(stripePaymentAttempts.paymentId, input.paymentId),
     inArray(stripePaymentAttempts.status, [...ACTIVE_STATUSES]),
   ));
+}
+
+/** Same request parameters and key for original checkout and interrupted-response recovery. */
+export async function resumeStripePaymentAttemptIntent(attempt: ReservedStripePaymentAttempt) {
+  const stripe = getStripeClient();
+  if (attempt.stripePaymentIntentId) return stripe.paymentIntents.retrieve(attempt.stripePaymentIntentId, { stripeAccount: attempt.stripeAccountId });
+  if (!attempt.metadata.invoiceNumber || Date.now() - new Date(attempt.createdAt).getTime() >= 23 * 60 * 60 * 1000) {
+    throw new StripeInvoiceClaimError("Unresolved Stripe reservation requires processor review before retrying.", "STRIPE_RESERVATION_REVIEW_REQUIRED");
+  }
+  const intent = await stripe.paymentIntents.create({
+    amount: attempt.amountCents, currency: attempt.currency.toLowerCase(), description: `Invoice #${attempt.metadata.invoiceNumber}`,
+    automatic_payment_methods: { enabled: true },
+    metadata: { organizationId: attempt.organizationId, invoiceId: attempt.invoiceId, stripeAccountId: attempt.stripeAccountId, stripePaymentAttemptId: attempt.id,
+      ...(attempt.channel === "staff"
+        ? { importedQuickBooksInvoice: attempt.metadata.importedQuickBooksInvoice ? "true" : "false", qbInvoiceId: attempt.metadata.qbInvoiceId || null }
+        : { customerId: attempt.metadata.customerId }),
+    },
+  }, { idempotencyKey: attempt.idempotencyKey, stripeAccount: attempt.stripeAccountId });
+  assertStripeAttemptIntent(attempt, intent);
+  await recordStripePaymentAttemptIntent({ organizationId: attempt.organizationId, attemptId: attempt.id, stripePaymentIntentId: intent.id });
+  return intent;
 }

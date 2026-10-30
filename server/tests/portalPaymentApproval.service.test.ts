@@ -5,7 +5,11 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 let invoiceRows: Record<string, unknown>[] = [];
 let paymentRows: Record<string, unknown>[] = [];
 let attemptRows: Record<string, any>[] = [];
-let batch: Record<string, unknown> | null = null;
+let batch: Record<string, any> | null = null;
+let seenInvoices: Record<string, any>[] = [];
+let inTransaction = false;
+// This mock checks lock use; contention and rollback are tested against PostgreSQL.
+const rowLocks: string[] = [];
 const stripeRetrieve = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const stripeCreate = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 const runtime = jest.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -13,39 +17,43 @@ const applyObservation = jest.fn<(...args: any[]) => Promise<unknown>>();
 const writes: string[] = [];
 const predicates: Array<{ sql: string; params: unknown[] }> = [];
 const query = (fields?: Record<string, unknown>) => {
-  let result: unknown[] = [];
+  let result: any[] = [];
+  let tableName = "";
   const q: any = {
     from: (table: any) => {
-      const name = getTableName(table);
+      const name = getTableName(table); tableName = name;
       result = name === 'invoices' ? invoiceRows.splice(0, 1) : name === 'payments' ? paymentRows : name === 'stripe_payment_attempts' ? attemptRows : name === 'customer_payment_batches' && batch ? [batch] : [];
+      if (name === 'invoices') seenInvoices.push(...result);
       return q;
     },
-    leftJoin: () => q, where: (condition: any) => { const compiled = new PgDialect().sqlToQuery(condition); predicates.push(compiled); if (compiled.sql.includes('"payments"."amount_cents" <>')) result = []; return q; }, orderBy: () => q,
+    leftJoin: () => q, where: (condition: any) => { const compiled = new PgDialect().sqlToQuery(condition); predicates.push(compiled); if (tableName === 'invoices' && /\"invoices\"\.\"id\" in/i.test(compiled.sql)) { const all = [...seenInvoices, ...invoiceRows]; result = all.filter((row, index) => compiled.params.includes(row.id) && all.findIndex(item => item.id === row.id) === index); } if (compiled.sql.includes('"payments"."amount_cents" <>')) result = []; return q; }, orderBy: () => q,
+    for: async (mode: string) => { if (!inTransaction || mode !== "update") throw new Error("Expected FOR UPDATE in a transaction"); rowLocks.push(mode); return result; },
     limit: async () => result,
     then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject),
   };
   return q;
 };
-const database: any = { select: query, execute: async () => ({}), transaction: async (work: any) => work(database),
+const database: any = { select: query, execute: async () => ({}), transaction: async (work: any) => { inTransaction = true; try { return await work(database); } finally { inTransaction = false; } },
   insert: (table: any) => ({ values: (value: any) => {
     writes.push(getTableName(table));
     if (getTableName(table) === 'stripe_payment_attempts') attemptRows.push(value);
+    if (getTableName(table) === 'customer_payment_batches') batch = { id: 'batch', ...value };
     const result = { returning: async () => [{ id: 'batch', ...value }], onConflictDoNothing: () => result };
     return result;
   } }),
-  update: (table: any) => ({ set: (value: any) => ({ where: async () => { writes.push(getTableName(table)); if (getTableName(table) === 'stripe_payment_attempts') attemptRows.forEach(a => Object.assign(a, value)); } }) }),
+  update: (table: any) => ({ set: (value: any) => ({ where: () => { writes.push(getTableName(table)); if (getTableName(table) === 'stripe_payment_attempts') attemptRows.forEach(a => Object.assign(a, value)); if (getTableName(table) === 'customer_payment_batches' && batch) Object.assign(batch, value); const result = batch ? [batch] : []; return { returning: async () => result, then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject) }; } }) }),
 };
 jest.unstable_mockModule('../db', () => ({ db: database, pool: {}, hasQuoteAttachmentPagesTable: () => true, hasPageCountStatusColumn: () => true }));
 jest.unstable_mockModule('../lib/stripe', () => ({ assertStripeServerConfig: () => ({}), getStripeWebhookSecret: () => "fixture", getStripeClient: () => ({ paymentIntents: { retrieve: stripeRetrieve, create: stripeCreate } }) }));
 jest.unstable_mockModule('../services/stripeRuntimeConfig.service', () => ({ resolveStripeRuntimeConfig: runtime }));
 jest.unstable_mockModule('../services/stripePaymentReconciliationService', () => ({ captureAndApply: applyObservation }));
 const service = await import('../services/portal.service');
-const invoice = (approved = false, id = 'invoice') => ({ id, storedCustomerId: 'customer', billingCustomerId: 'customer', status: 'billed', totalCents: 25000, currency: 'USD', invoiceVersion: 2, accountingApprovedAt: approved ? new Date() : null, accountingApprovedVersion: approved ? 2 : null });
+const invoice = (approved = false, id = 'invoice') => ({ id, organizationId: 'org', customerId: 'customer', invoiceNumber: 20001, storedCustomerId: 'customer', billingCustomerId: 'customer', status: 'billed', totalCents: 25000, currency: 'USD', invoiceVersion: 2, accountingApprovedAt: approved ? new Date() : null, accountingApprovedVersion: approved ? 2 : null });
 const request = (body: Record<string, unknown> = {}) => ({ organizationId: 'org', user: { id: 'user' }, portalCustomerId: 'customer', portalCustomer: { id: 'customer', organizationId: 'org' }, body } as any);
 beforeEach(() => {
-  invoiceRows = []; paymentRows = []; attemptRows = []; batch = null; writes.length = 0; predicates.length = 0;
+  invoiceRows = []; seenInvoices = []; paymentRows = []; attemptRows = []; batch = null; inTransaction = false; rowLocks.length = 0; writes.length = 0; predicates.length = 0;
   stripeRetrieve.mockReset().mockResolvedValue({ status: 'requires_payment_method', amount: 25000, client_secret: 'pi_fixture_secret_fixture', metadata: { organizationId: 'org', customerId: 'customer', invoiceId: 'invoice' } });
-  stripeCreate.mockReset().mockResolvedValue({ id: 'pi_fixture', status: 'requires_payment_method', client_secret: 'pi_fixture_secret_fixture' });
+  stripeCreate.mockReset().mockImplementation(async (input: any) => ({ ...input, id: 'pi_fixture', status: 'requires_payment_method', client_secret: 'pi_fixture_secret_fixture' }));
   runtime.mockReset().mockResolvedValue({ ok: true, data: { connectedAccountId: 'acct_fixture' } });
   applyObservation.mockReset().mockImplementation(async () => {
     paymentRows = paymentRows.map(row => ({ ...row, status: 'succeeded' }));
@@ -89,6 +97,7 @@ test('mixed released-unapproved and approved invoices use one canonical grouped 
   invoiceRows.push({ ...invoice(false, 'a'), customerReleasedAt: new Date() }, invoice(true, 'b'));
   const result = await service.createPortalGroupedStripePaymentIntent(request({ invoiceIds: ['a', 'b'], idempotencyKey: 'release-fixture' }));
   expect(result).toMatchObject({ amount: 500, allocations: [{ invoiceId: 'a', amountCents: 25000 }, { invoiceId: 'b', amountCents: 25000 }] });
+  expect(rowLocks).toEqual(['update']);
   expect(stripeCreate).toHaveBeenCalledTimes(1);
   expect(writes).not.toContain('invoices');
 });
@@ -163,7 +172,7 @@ test('an approved invoice can reuse an incomplete intent; new approval is observ
 });
 test.each(['validate', 'confirm'])('open grouped checkout checks persisted members again at %s', async action => {
   invoiceRows.push(invoice(true, 'a'), invoice(false, 'b'));
-  batch = { id: 'batch', status: 'pending', stripeAccountId: 'acct_fixture', providerEvidence: { allocations: [{ invoiceId: 'a', amountCents: 25000 }, { invoiceId: 'b', amountCents: 25000 }] } };
+  batch = { id: 'batch', status: 'pending', customerId: 'customer', amountCents: 50000, currency: 'USD', stripeAccountId: 'acct_fixture', providerEvidence: { allocations: [{ invoiceId: 'a', amountCents: 25000 }, { invoiceId: 'b', amountCents: 25000 }] } };
   const call = action === 'validate' ? service.validatePortalGroupedStripePayment : service.confirmPortalGroupedStripePayment;
   await expect(call(request({ paymentIntentId: 'pi_fixture' }))).rejects.toThrow('Not released to customer');
   expect(stripeRetrieve).not.toHaveBeenCalled();
@@ -184,6 +193,8 @@ test.each(['portal', 'guest'])('%s opening and reopening keeps checkout only in 
   await expect(service.validatePortalStripePayment({ ...req, body: { paymentIntentId: 'pi_fixture' } }, 'invoice')).resolves.toEqual({ eligible: true });
   invoiceRows.push(released);
   await service.createPortalStripePaymentIntent(req, 'invoice');
-  expect(stripeCreate).toHaveBeenCalledTimes(1); expect(stripeRetrieve).toHaveBeenCalledTimes(1);
+  expect(stripeCreate).toHaveBeenCalledTimes(1); expect(stripeRetrieve).toHaveBeenCalledTimes(2);
+  expect(stripeRetrieve).toHaveBeenNthCalledWith(1, 'pi_fixture', { stripeAccount: 'acct_fixture' });
+  expect(stripeRetrieve).toHaveBeenNthCalledWith(2, 'pi_fixture', { stripeAccount: 'acct_fixture' });
   expect(attemptRows).toHaveLength(1); expect(writes).not.toContain('payments');
 });

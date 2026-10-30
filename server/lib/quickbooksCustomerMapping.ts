@@ -1,4 +1,5 @@
 import type { Customer } from "../../shared/schema";
+import { normalizeOptionalWebsite } from "../../shared/vendorWebsite";
 
 function parseLocalAddress(address: string): any {
   const parts = address.split(",").map((part) => part.trim());
@@ -35,8 +36,17 @@ export function mapLocalCustomerToQB(customer: Customer): any {
     qbCustomer.PrimaryPhone = { FreeFormNumber: customer.phone };
   }
 
-  if (customer.website) {
-    qbCustomer.WebAddr = { URI: customer.website };
+  const website = normalizeOptionalWebsite(customer.website);
+  if (website) {
+    qbCustomer.WebAddr = { URI: website };
+  } else if (customer.website?.trim()) {
+    // Never log the supplied URL: it may contain credentials or personal data.
+    console.warn('[QuickBooks] Optional customer website omitted', {
+      code: 'QB_CUSTOMER_WEBSITE_OMITTED',
+      organizationId: customer.organizationId,
+      customerId: customer.id,
+      reason: 'invalid_or_unsafe_website',
+    });
   }
 
   if (customer.billingAddress) {

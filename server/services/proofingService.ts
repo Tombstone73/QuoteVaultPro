@@ -1,3 +1,6 @@
+import { assertParentOrderInProduction } from "./orderProductionGate";
+import { FulfillmentDashboardRepo } from "./fulfillment/repository";
+import { findActiveJobForLineItem } from "./productionOwnership";
 import { lockWorkflowLines, lockProofWorkflowLines } from "./workflowMutationLock";
 import { getOrderCreditHold } from "./orderCreditHoldService";
 import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
@@ -38,6 +41,7 @@ import {
   productionJobs,
   proofAccessTokens,
   quoteAttachmentPages,
+  lineItemProofEarlyReleases, prepressSessions, userOrganizations, productionRunMembers,
 } from "@shared/schema";
 import { generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
 import { assetRepository } from "./assets/AssetRepository";
@@ -59,6 +63,7 @@ import {
 import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { buildPrepressOptionRows } from "../routes/flatStockNesting.shared";
 import {
+  resolveProductionArtworkSideReadiness,
   resolveArtworkSideIntent,
   resolveProductionSides,
   type ProductionSides,
@@ -649,7 +654,7 @@ export async function reconcileLineItemProofGateRelease(tx: any, args: {
   const financiallyHeld = physicalTarget && (await getOrderCreditHold(tx, { organizationId: args.organizationId, orderId: lineItem.orderId })).creditHold.held;
   // Approving/reconciling an already queued item must not undo the proof or
   // restart production. Start/handoff still rechecks the financial gate.
-  if (financiallyHeld && ["ready_for_production", "in_production"].includes(recovery.fromState)) return recovery;
+  if (financiallyHeld) return { ...recovery, toState: recovery.fromState };
   return transitionLineItemWorkflowState(tx, {
     organizationId: args.organizationId,
     lineItemId: lineItem.lineItemId,
@@ -3160,6 +3165,7 @@ async function loadProofVersion(tx: any, args: { organizationId: string; proofVe
       sentToEmail: lineItemProofVersions.sentToEmail,
       sentAt: lineItemProofVersions.sentAt,
       internalNotes: lineItemProofVersions.internalNotes,
+      createdAt: lineItemProofVersions.createdAt,
     })
     .from(lineItemProofVersions)
     .where(and(eq(lineItemProofVersions.organizationId, args.organizationId), eq(lineItemProofVersions.id, args.proofVersionId)))
@@ -3482,29 +3488,7 @@ export async function listProofingQueue(tx: any, args: {
         // A production bypass clears proof approval, but prior proof history can
         // still satisfy the predicates below. It is not active proofing work.
         ne(orderLineItems.workflowState, "no_production_required" as any),
-        or(
-          eq(orderLineItems.requiresProofApproval, true),
-          isNotNull(orderLineItems.approvedProofVersionId),
-          eq(orderLineItems.workflowState, "awaiting_proof_approval"),
-          sql`exists (
-            select 1
-            from line_item_proof_versions proof_versions
-            where proof_versions.organization_id = ${args.organizationId}
-              and proof_versions.line_item_id = ${orderLineItems.id}
-          )`,
-          sql`exists (
-            select 1
-            from line_item_proof_approvals proof_approvals
-            where proof_approvals.organization_id = ${args.organizationId}
-              and proof_approvals.line_item_id = ${orderLineItems.id}
-          )`,
-          sql`exists (
-            select 1
-            from line_item_proof_manual_approval_overrides proof_overrides
-            where proof_overrides.organization_id = ${args.organizationId}
-              and proof_overrides.line_item_id = ${orderLineItems.id}
-          )`,
-        ),
+        eq(orderLineItems.requiresProofApproval, true),
       ),
     )
     .orderBy(desc(orderLineItems.updatedAt), desc(orders.updatedAt));
@@ -3541,7 +3525,7 @@ export async function listProofingQueue(tx: any, args: {
   const allRows = queueBaseRows
     .map((base) => {
       const truth = truthMap.get(base.lineItemId);
-      if (!truth || !isProofRelevantTruth(truth)) {
+      if (!truth || !truth.requiresProofApproval) {
         return null;
       }
 
@@ -3822,7 +3806,9 @@ export async function markProofVersionSent(tx: any, args: {
         member.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
           ? (currentWorkflowState as any)
           : "awaiting_proof_approval";
-      const transition = await transitionLineItemWorkflowState(tx, {
+      const preservePhysical = ["ready_for_production", "in_production", "completed", "on_hold"].includes(currentWorkflowState);
+      const transition = preservePhysical ? { lineItemId: member.lineItemId, fromState: currentWorkflowState, toState: currentWorkflowState, ownershipAction: "none" }
+        : await transitionLineItemWorkflowState(tx, {
         organizationId: args.organizationId,
         lineItemId: member.lineItemId,
         toState: proofAwaitingTarget,
@@ -3941,15 +3927,22 @@ export async function recordProofResponse(tx: any, args: {
 
     const workflowTransitions = [];
     for (const member of packageLineItems) {
-      const nextWorkflowState = deriveProofResponseWorkflowState({
-        decision: args.decision,
-        requiresPrepress: member.requiresPrepress,
-      });
-      const transition = await transitionLineItemWorkflowState(tx, {
+      const physicalOrHistorical = ["ready_for_production", "in_production", "completed", "canceled", "on_hold"].includes(member.workflowState);
+      const prepared = await tx.select({ id: prepressSessions.id }).from(prepressSessions).where(and(
+        eq(prepressSessions.organizationId, args.organizationId), eq(prepressSessions.lineItemId, member.lineItemId),
+        eq(prepressSessions.status, "complete"), sql`${prepressSessions.completedAt} >= ${proofVersion.createdAt}`,
+      )).limit(1);
+      const nextWorkflowState = physicalOrHistorical || (args.decision === "approved" && ["needs_design", "in_design", "in_prepress", "ready_for_prepress"].includes(member.workflowState))
+        ? normalizeProofingWorkflowState(member.workflowState)
+        : deriveProofResponseWorkflowState({ decision: args.decision, requiresPrepress: member.requiresPrepress && !prepared.length });
+      const owner = physicalOrHistorical ? await findActiveJobForLineItem(tx, { organizationId: args.organizationId, lineItemId: member.lineItemId }) : null;
+      const transition = physicalOrHistorical ? { lineItemId: member.lineItemId, fromState: member.workflowState, toState: member.workflowState,
+        activeOwnerJobId: owner?.id ?? null, activeOwnerStationKey: owner?.stationKey ?? null, ownershipAction: "none" }
+        : await transitionLineItemWorkflowState(tx, {
         organizationId: args.organizationId,
         lineItemId: member.lineItemId,
         toState: nextWorkflowState === "ready_for_production" && (await getOrderCreditHold(tx, { organizationId: args.organizationId, orderId: member.orderId })).creditHold.held
-          ? "ready_for_prepress" : nextWorkflowState,
+          ? normalizeProofingWorkflowState(member.workflowState) : nextWorkflowState,
         actorUserId: args.actorUserId ?? null,
         metadata: {
           source: "proofing_record_response",
@@ -3979,6 +3972,8 @@ export async function recordProofResponse(tx: any, args: {
           customerAction: !args.actorUserId || args.responderSource === "customer",
           responseNotes: args.responseNotes ?? null,
           packageLineItemCount: packageLineItems.length,
+          correctionRequired: physicalOrHistorical && args.decision !== "approved",
+          physicalWorkPreserved: physicalOrHistorical,
         },
       });
     }
@@ -4337,9 +4332,82 @@ export async function resolveLineItemProofingTruth(tx: any, args: {
       })
     : null;
 
+  const proofGate = await resolveLineItemProofReleaseGate(tx, args);
+  const earlyReleaseHistory = await tx.select().from(lineItemProofEarlyReleases).where(and(
+    eq(lineItemProofEarlyReleases.organizationId, args.organizationId), eq(lineItemProofEarlyReleases.lineItemId, args.lineItemId),
+  )).orderBy(desc(lineItemProofEarlyReleases.authorizedAt));
+  const owner = await findActiveJobForLineItem(tx, args);
   return {
     ...truth,
+    proofGate,
+    earlyReleaseHistory: earlyReleaseHistory.map((row: any) => ({ ...row, authorizedAt: new Date(row.authorizedAt).toISOString() })),
+    earlyReleaseReview: { expectedUpdatedAt: new Date(lineItem.updatedAt!).toISOString(), expectedOwnerJobId: owner?.id ?? null, revision: proofGate.currentRevision },
     currentProofInputSnapshot,
     currentDisplayedProofArtifact,
   };
+}
+
+/** Explicit exception to the canonical gate; caller owns the transaction. */
+export async function releaseProofToProductionEarly(tx: any, input: {
+  organizationId: string; lineItemId: string; actorUserId: string; reason: string; confirmed: boolean;
+  operationId: string; proofVersionId: string; artworkFingerprint: string;
+  expectedUpdatedAt: string; expectedOwnerJobId: string;
+}) {
+  const fail = (message: string, code = "EARLY_RELEASE_BLOCKED", statusCode = 409) => Object.assign(new Error(message), { statusCode, code });
+  const reason = input.reason.trim();
+  if (!input.confirmed || !reason || reason.length > 2000) throw fail("Confirm early release and provide a reason (up to 2000 characters).", "EARLY_RELEASE_CONFIRMATION_REQUIRED", 400);
+  const [membership] = await tx.select({ role: userOrganizations.role }).from(userOrganizations)
+    .where(and(eq(userOrganizations.organizationId, input.organizationId), eq(userOrganizations.userId, input.actorUserId)));
+  if (!membership || !["admin", "owner"].includes(membership.role)) throw fail("Organization Admin or Owner required.", "EARLY_RELEASE_FORBIDDEN", 403);
+  await lockWorkflowLines(tx, input.organizationId, [input.lineItemId]);
+  const line = await loadProofLineItem(tx, input);
+  assertProofOrderNotCancelled(line);
+  await assertParentOrderInProduction(tx, { organizationId: input.organizationId, orderId: line.orderId, lineItemId: input.lineItemId, action: "authorize early production release" });
+  const gate = await resolveLineItemProofReleaseGate(tx, input);
+  const revision = gate.currentRevision;
+  if (!line.requiresProofApproval || !revision || revision.status !== "awaiting_response" || gate.approved || gate.bypassed) {
+    throw fail("The current proof must still require customer approval and be awaiting response.");
+  }
+  if (revision.proofVersionId !== input.proofVersionId || revision.artworkFingerprint !== input.artworkFingerprint) throw fail("Proof or artwork changed. Review the current revision before releasing.", "EARLY_RELEASE_STALE_REVISION");
+  const [replay] = await tx.select().from(lineItemProofEarlyReleases).where(and(
+    eq(lineItemProofEarlyReleases.organizationId, input.organizationId), eq(lineItemProofEarlyReleases.operationId, input.operationId),
+  )).limit(1);
+  if (replay && (replay.lineItemId !== input.lineItemId || replay.proofVersionId !== input.proofVersionId || replay.artworkFingerprint !== input.artworkFingerprint)) throw fail("Operation identity is already used for a different release.");
+  if (gate.earlyRelease) return { authorization: gate.earlyRelease, alreadyReleased: true };
+  const owner = await findActiveJobForLineItem(tx, input);
+  if (!owner || owner.id !== input.expectedOwnerJobId || new Date(line.updatedAt!).getTime() !== new Date(input.expectedUpdatedAt).getTime()) throw fail("Work or ownership changed. Refresh before authorizing release.", "EARLY_RELEASE_STALE_STATE");
+  if (!["awaiting_proof_approval", "ready_for_prepress", "ready_for_production", "in_production"].includes(line.workflowState)
+    || ["closed", "canceled", "production_complete"].includes(String(line.orderState))) throw fail("Resolve the current stage or hold before release.");
+  const [saved] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, input.lineItemId));
+  if (saved.productionBypassed || ["needs_design", "in_design"].includes(String(saved.designStatus)) || (saved.requiresDesign && !["design_complete", "bypassed"].includes(String(saved.designStatus)))) throw fail("Required Design work must be completed before release.");
+  const sessions = await tx.select().from(prepressSessions).where(and(eq(prepressSessions.organizationId, input.organizationId), eq(prepressSessions.lineItemId, input.lineItemId)));
+  if (sessions.some((session: any) => session.status === "active") || (line.requiresPrepress && !sessions.some((session: any) => session.status === "complete" && session.completedAt && new Date(session.completedAt).getTime() >= new Date(revision.createdAt).getTime()))) throw fail("Required Prepress preparation is unfinished for this proof revision.", "EARLY_RELEASE_PREPRESS_REQUIRED");
+  const runMembers = await tx.select({ id: productionRunMembers.id }).from(productionRunMembers).where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.orderLineItemId, input.lineItemId)));
+  if (runMembers.length) throw fail("Resolve the combined production run before changing this line's release.", "EARLY_RELEASE_COMBINED_RUN");
+  const [eligibility] = await new FulfillmentDashboardRepo(tx).listLineEligibility(input.organizationId, { lineItemIds: [input.lineItemId] }, tx);
+  if (!eligibility || eligibility.projection.fulfilledQuantity > 0 || eligibility.projection.administrativelyReconciledQuantity > 0) throw fail("Fulfilled work requires Return for Correction or replacement/rework.");
+  const artwork = await lineItemArtworkReadResolver.resolveForLineItem({ ...input, purpose: "production" }, tx);
+  const productionArt = artwork.artwork.filter(file => file.role !== "customer_source");
+  if (artwork.unavailable || !productionArt.length) throw fail("Assign eligible production artwork before release.", "EARLY_RELEASE_ARTWORK_REQUIRED");
+  const intent = resolveArtworkSideIntent(saved);
+  const sides = resolveProductionArtworkSideReadiness({ sides: resolveProductionSides(saved), artwork: productionArt, useSameArtworkBothSides: intent.useSameArtworkBothSides, sameArtworkFileId: intent.sameArtworkFileId });
+  const allocation = buildArtworkAllocationStatus({ lineQuantity: Number(saved.quantity), members: productionArt.map(file => ({ id: file.id, role: "final", side: file.side, productionQuantity: file.allocationQuantity, productionGroupId: file.allocationGroupId })) });
+  if (!sides.complete || !allocation.valid) throw fail(sides.warning || allocation.issue || "Resolve production artwork allocation before release.", "EARLY_RELEASE_ARTWORK_REQUIRED");
+  const [authorization] = await tx.insert(lineItemProofEarlyReleases).values({ organizationId: input.organizationId, orderId: line.orderId,
+    lineItemId: input.lineItemId, proofVersionId: revision.proofVersionId, proofFileId: revision.proofFileId,
+    artworkFingerprint: revision.artworkFingerprint, operationId: input.operationId, reason, actorUserId: input.actorUserId,
+    context: { approvalStatus: revision.status, previousWorkflowState: line.workflowState, previousOwner: owner, policyOverride: gate.policyOverride, artwork: productionArt.map(file => ({ id: file.id, fileRecordId: file.fileRecordId })) },
+  }).returning();
+  const transition = await transitionLineItemWorkflowState(tx, { organizationId: input.organizationId, lineItemId: input.lineItemId,
+    toState: line.workflowState === "in_production" ? "in_production" : "ready_for_production", actorUserId: input.actorUserId,
+    metadata: { source: "proof_early_release", authorizationId: authorization.id, proofVersionId: revision.proofVersionId },
+  });
+  await appendProofingEvent(tx, { organizationId: input.organizationId, orderId: line.orderId, lineItemId: input.lineItemId,
+    eventType: "proof_released_without_approval", actorUserId: input.actorUserId,
+    payload: { authorizationId: authorization.id, proofVersionId: revision.proofVersionId, proofFileId: revision.proofFileId, artworkFingerprint: revision.artworkFingerprint,
+      previousProofStatus: revision.status, newProofStatus: revision.status, previousWorkflowState: line.workflowState,
+      previousOwner: owner, resultingOwner: transition, policyOverride: gate.policyOverride, reason,
+      note: "Production released before customer approval. " + reason },
+  });
+  return { authorization, transition, alreadyReleased: false };
 }

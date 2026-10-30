@@ -23,6 +23,7 @@ import { createAssistantAttachmentAnalysisTools } from "./attachmentAnalysisTool
 import { activeDocumentContext } from "./activeDocumentContext";
 import { createPurchaseOrderAttachmentTool } from "./purchaseOrderAttachmentTool";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
+import { createProductCloneApplicationTool } from "./productCloneApplicationTool";
 import { createApplicationOperationTools } from "./applicationOperationTools";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore, type MaterialTaskTransition } from "./operatorTaskContext";
@@ -539,6 +540,7 @@ function operatorBusinessContext(input: {
   canApplyProductOperations: boolean;
   existingProduct: TrustedExistingProductEditContext | null;
   canEditExistingProduct: boolean;
+  canCloneProduct: boolean;
 }): AssistantOperatorBusinessContext {
   const product = input.activeSemanticProductDraft;
   const unresolvedDecisions = product
@@ -559,7 +561,7 @@ function operatorBusinessContext(input: {
     trustedSelections: product?.trustedSelections ?? [],
     readiness: product ? (product.readyForReview ? "ready" : product.outstandingDecisions.length ? "needs_input" : "in_progress") : unresolvedDecisions.length ? "needs_input" : "unknown",
     constraints: input.existingProduct
-      ? ["This is an existing persisted product, not a new Product Builder draft.", "Discover its supported change operation with application.operations, then use application.prepare_change for a concrete review that requires GO.", "Use products.begin_draft only when the user intends to create a new product, including a new product based on this one."]
+      ? ["This is an existing persisted product, not a new Product Builder draft.", "Discover its supported change operation with application.operations, then use application.prepare_change for a concrete review that requires GO.", "Use products.begin_draft only when the user intends to create a new product, excluding a clone/copy or a Product based on this one: discover products.clone_to_inactive_draft for those requests."]
       : product
       ? ["Use only products.apply_operations for a draft edit.", "Do not regenerate the product or expose canonical persistence data.", "Product creation remains review/GO-gated."]
       : ["Use registered, permission-aware tools only.", "Trusted observations are not authorization or freshness authority."],
@@ -567,7 +569,7 @@ function operatorBusinessContext(input: {
       ...(input.canBeginProductDraft ? ["products.begin_draft"] : []),
       ...(input.canApplyProductOperations ? ["products.apply_operations"] : []),
       ...(input.canApplyProductOperations ? ["products.preview_draft_pricing"] : []),
-      ...(input.canEditExistingProduct && input.existingProduct ? ["application.operations", "application.prepare_change"] : []),
+      ...((input.canEditExistingProduct && input.existingProduct) || input.canCloneProduct ? ["application.operations", "application.prepare_change"] : []),
     ],
     existingProduct: input.existingProduct,
   };
@@ -1005,7 +1007,7 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; discover and prepare its supported Product change operation instead. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include every understood supported business change as initialOperations so the new draft is populated in this call. Preserve enumerated unsupported details with record_unsupported_detail instead of dropping supported work. Do not use if an unfinished new-product draft is already active.",
+      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; discover and prepare its supported Product change operation instead. For duplicate/clone/copy or a new Product based on an existing one, discover products.clone_to_inactive_draft instead. target new_product applies only to a fresh configuration. When the user already supplied product details, include every understood supported business change as initialOperations so the new draft is populated in this call. Preserve enumerated unsupported details with record_unsupported_detail instead of dropping supported work. Do not use if an unfinished new-product draft is already active.",
       inputSchema: beginProductDraftToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const resolvedExistingProductId = existingProductIdForMutation(context);
@@ -1154,6 +1156,7 @@ export class AssistantService {
         }
       },
     }] : [];
+    const productCloneTools = !staffRoleDiscussion && hasPermission(actor, "assistant.products.clone_to_inactive_draft") ? [createProductCloneApplicationTool()] : [];
     const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools, ...existingProductEditTools];
     const prepareFulfillmentPickupTools: AssistantOperatorSemanticTool[] = hasPermission(actor, "assistant.fulfillment.record_pickup") ? [{
       name: "fulfillment.prepare_pickup",
@@ -1244,7 +1247,7 @@ export class AssistantService {
     const quoteEditorTools = !staffRoleDiscussion && mayEditQuote && hasPermission(actor, "assistant.internal_staff")
       ? createQuoteEditorApplicationTools() : [];
     const applicationOperations = createApplicationOperationTools([
-      ...existingProductEditTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools,
+      ...existingProductEditTools, ...productCloneTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools,
       ...quoteApplicationTools.filter((tool) => tool.name === "quotes.prepare_create"),
       ...quoteEditorTools.filter((tool) => tool.name === "quotes.editor_save"),
       ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
@@ -1318,7 +1321,7 @@ export class AssistantService {
         id: task.id, domain: staffRoleDiscussion ? "staff_roles" : materialCreationRequest ? "materials" : task.domain,
         canonicalProductIntentProposalId: staffRoleDiscussion ? null : task.canonicalProductIntentProposalId,
         activeSemanticProductDraft: staffRoleDiscussion ? null : activeSemanticProductDraft,
-        businessContext: operatorBusinessContext({ domain: staffRoleDiscussion ? "staff_roles" : materialCreationRequest ? "materials" : task.domain, workingSummary: staffRoleDiscussion ? null : task.workingSummary, missingInformation: staffRoleDiscussion ? [] : task.missingInformation, semanticChanges: staffRoleDiscussion ? {} : task.semanticChanges, activeSemanticProductDraft: staffRoleDiscussion ? null : activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }),
+        businessContext: operatorBusinessContext({ domain: staffRoleDiscussion ? "staff_roles" : materialCreationRequest ? "materials" : task.domain, workingSummary: staffRoleDiscussion ? null : task.workingSummary, missingInformation: staffRoleDiscussion ? [] : task.missingInformation, semanticChanges: staffRoleDiscussion ? {} : task.semanticChanges, activeSemanticProductDraft: staffRoleDiscussion ? null : activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct, canCloneProduct: productCloneTools.length > 0 }),
         entityReferences: staffRoleDiscussion ? [] : task.entityReferences,
         activeResourceContext: staffRoleDiscussion ? null : activeResourceContext,
         pendingAction, trustedObservations: staffRoleDiscussion ? [] : persistedTrustedObservations(task.semanticChanges),
@@ -1354,7 +1357,7 @@ export class AssistantService {
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
-    const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.presentation?.cards.some((card) => card.kind === "action_proposal" && (card as { plan?: { action?: string } }).plan?.action === "products.update_existing_product"));
+    const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.presentation?.cards.some((card) => card.kind === "action_proposal" && (card as { plan?: { action?: string } }).plan?.action && ["products.update_existing_product", "products.clone_to_inactive_draft"].includes((card as { plan?: { action?: string } }).plan?.action ?? "")));
     const preparedTaskDomain = [...run.observations].reverse().map((observation) => (observation.result?.data as { taskDomain?: unknown } | undefined)?.taskDomain)
       .find((domain): domain is string => domain === "products" || domain === "materials" || domain === "fulfillment" || domain === "purchase_orders") ?? null;
     const recentCompletedTurn = run.status === "completed" && !hasPendingProtectedProductProposal ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;

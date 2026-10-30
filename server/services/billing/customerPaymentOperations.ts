@@ -9,7 +9,14 @@ import { lockInvoicePaymentContext } from "../invoicePaymentSession.service";
 import { isCanceledOrder } from "../../../shared/operationalState";
 import { resolveHistoricalArState } from "../../../shared/historicalArAuthority";
 
-export class CustomerPaymentOperationError extends Error { constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); } }
+type BlockedInvoice = { invoiceId: string; invoiceNumber: string | number | null };
+export class CustomerPaymentOperationError extends Error {
+  constructor(readonly code: string, message: string, readonly statusCode = 409, readonly blockedInvoice?: BlockedInvoice) { super(message); }
+}
+function invoiceBlocked(invoice: typeof invoices.$inferSelect, code: string, reason: string) {
+  const label = invoice.displayNumber || invoice.invoiceNumber;
+  return new CustomerPaymentOperationError(code, `Invoice ${label} cannot be included because ${reason} Remove this invoice from the selection or resolve its billing relationship before taking payment.`, 409, { invoiceId: invoice.id, invoiceNumber: label });
+}
 const heldQuickBooksReason = "Grouped customer payment is held for accounting review; grouped QuickBooks payment sync is not yet enabled.";
 const cents = (value: number) => (value / 100).toFixed(2);
 type Input = { staffSelection?: boolean; expectedCustomerId?: string; organizationId: string; actorUserId: string | null; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[]; method: string; appliedAt: Date; notes?: string; reference?: string; idempotencyKey: string; expectedRemainingCents?: Record<string, number>; provider?: "manual" | "stripe"; stripePaymentIntentId?: string; stripeAccountId?: string; existingBatchId?: string };
@@ -22,21 +29,28 @@ function assertInput(input: Input) {
   if (!input.idempotencyKey.trim()) throw new CustomerPaymentOperationError("IDEMPOTENCY_KEY_REQUIRED", "An idempotency key is required.", 400);
 }
 async function load(tx: any, organizationId: string, ids: string[], staffSelection = false) {
-  const rows = await tx.select({ invoice: invoices, order: orders }).from(invoices).leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId))).where(and(eq(invoices.organizationId, organizationId), inArray(invoices.id, ids)));
-  if (rows.length !== ids.length) throw new CustomerPaymentOperationError("INVOICE_NOT_FOUND", "One or more invoices are unavailable.", 404);
+  // Drizzle detects a null joined object from its first selected column. The
+  // full Order table now starts with nullable Redo provenance, not its identity.
+  // Select only the canonical eligibility fields, with the non-null PK first.
+  const rows = await tx.select({ invoice: invoices, order: { id: orders.id, organizationId: orders.organizationId, customerId: orders.customerId, contactId: orders.contactId, state: orders.state, status: orders.status, canceledAt: orders.canceledAt } }).from(invoices).leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId))).where(and(eq(invoices.organizationId, organizationId), inArray(invoices.id, ids)));
+  if (rows.length !== ids.length) throw new CustomerPaymentOperationError("INVOICE_NOT_FOUND", "A selected Invoice is unavailable in this organization. Refresh the invoice list and remove unavailable invoices from the selection.", 404, { invoiceId: ids.find(id => !rows.some((row: any) => row.invoice.id === id))!, invoiceNumber: null });
   const paymentRows = await tx.select().from(payments).where(and(eq(payments.organizationId, organizationId), inArray(payments.invoiceId, ids)));
   const byInvoice = new Map<string, any[]>(); for (const row of paymentRows) byInvoice.set(row.invoiceId, [...(byInvoice.get(row.invoiceId) || []), row]);
   return rows.map((row: any) => {
     const invoice = row.invoice; const order = row.order;
-    if (resolveHistoricalArState(invoice) !== null) throw new CustomerPaymentOperationError("IMPORTED_AR_PAYMENT_REVIEW_REQUIRED", "Imported invoice payments require a separately approved reconciliation workflow.");
-    if (!staffSelection && String(invoice.importSource || "").toLowerCase() === "quickbooks") throw new CustomerPaymentOperationError("IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "Imported QuickBooks invoices must be reconciled from QuickBooks.");
-    if (invoice.orderId && (!order || (!staffSelection && isCanceledOrder(order)))) throw new CustomerPaymentOperationError(order ? "ORDER_CANCELLED" : "ORDER_NOT_FOUND", order ? "Cancelled orders cannot receive payments." : "The invoice order is unavailable.");
+    if (resolveHistoricalArState(invoice) !== null) throw invoiceBlocked(invoice, "IMPORTED_AR_PAYMENT_REVIEW_REQUIRED", "its imported accounting balance requires a separately approved reconciliation workflow.");
+    if (!staffSelection && String(invoice.importSource || "").toLowerCase() === "quickbooks") throw invoiceBlocked(invoice, "IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "its imported QuickBooks balance must be reconciled from QuickBooks.");
+    if (invoice.orderId && (!order || (!staffSelection && isCanceledOrder(order)))) throw invoiceBlocked(invoice, order ? "ORDER_CANCELLED" : "ORDER_NOT_FOUND", order ? "its linked Order is cancelled." : "its linked Order could not be verified.");
     const owner = resolveCanonicalInvoiceCustomerOwnership({ invoiceCustomerId: invoice.customerId, invoiceContactId: invoice.contactId, invoiceImportSource: invoice.importSource, linkedOrderId: invoice.orderId, linkedOrderCustomerId: order?.customerId, linkedOrderContactId: order?.contactId });
-    if (!owner.customerId) throw new CustomerPaymentOperationError("CONTACT_INVOICE_CUSTOMER_PAYMENT_UNSUPPORTED", "Contact-owned Invoices cannot enter a Customer payment batch. Record an invoice-scoped payment instead.");
-    if (owner.customerId !== invoice.customerId) throw new CustomerPaymentOperationError("BILLING_OWNERSHIP_REVIEW_REQUIRED", "Invoice billing ownership differs from its Order. Review billing ownership before accepting payment.");
+    if (!owner.customerId) throw invoiceBlocked(invoice, "CONTACT_INVOICE_CUSTOMER_PAYMENT_UNSUPPORTED", "it is Contact-owned and cannot enter a Customer payment batch. Use the existing invoice-scoped payment interface.");
+    if (owner.customerId !== invoice.customerId || (invoice.orderId && !order?.customerId)) throw invoiceBlocked(invoice, "BILLING_OWNERSHIP_REVIEW_REQUIRED", "its Customer billing ownership could not be verified against its linked Order.");
     const rollup = computeInvoicePaymentRollup({ invoiceTotalCents: Number(invoice.totalCents || 0), payments: (byInvoice.get(invoice.id) || []).map((p: any) => ({ id: p.id, status: p.status, amountCents: Number(p.amountCents || 0) })) });
     const eligibility = getInvoiceFinancialPaymentEligibility({ invoiceStatus: invoice.status, remainingCents: rollup.amountDueCents });
     if (!staffSelection && !eligibility.payable) throw new CustomerPaymentOperationError("INVOICE_NOT_PAYABLE", eligibility.blockedReason || "Invoice cannot accept payment.");
+    // A blocked relationship or lifecycle may never become an implicit partial
+    // batch. Zero balances remain the existing, explicitly reported exclusions.
+    if (staffSelection && order && isCanceledOrder(order)) throw invoiceBlocked(invoice, "ORDER_CANCELLED", "its linked Order is cancelled.");
+    if (staffSelection && !eligibility.payable && rollup.amountDueCents > 0) throw invoiceBlocked(invoice, "INVOICE_NOT_PAYABLE", "its current status does not permit payment. " + (eligibility.blockedReason || ""));
     const excludedReason = String(invoice.importSource || "").toLowerCase() === "quickbooks"
       ? "Imported QuickBooks invoices must be reconciled from QuickBooks."
       : order && isCanceledOrder(order) ? "Cancelled orders cannot receive payments." : eligibility.blockedReason;
@@ -52,7 +66,7 @@ function selectPayable(rows: any[], input: { staffSelection?: boolean; expectedC
   const eligible = input.staffSelection ? rows.filter(row => !row.excludedReason) : rows;
   return { rows: eligible, selectedCount: rows.length, eligibleCount: eligible.length,
     excludedCount: rows.length - eligible.length,
-    excludedInvoices: input.staffSelection ? rows.filter(row => row.excludedReason).map(row => ({ invoiceId: row.invoice.id, reason: row.excludedReason })) : [] };
+    excludedInvoices: input.staffSelection ? rows.filter(row => row.excludedReason).map(row => ({ invoiceId: row.invoice.id, invoiceNumber: row.invoice.displayNumber || row.invoice.invoiceNumber, reason: row.excludedReason })) : [] };
 }
 function allocations(rows: any[], input: Input) {
   const customers = new Set(rows.map((x) => x.owner.customerId));
@@ -79,7 +93,7 @@ export async function previewCustomerPayment(input: Omit<Input, "actorUserId" | 
     // provider finalization retains its strict exact-allocation contract.
     const appliedAmountCents = Math.min(input.amountCents, totalOutstandingCents);
     const result = rows.length ? allocations(rows, { ...input, amountCents: appliedAmountCents } as Input) : [];
-    return { ...selection, customerId: selected[0].owner.customerId, message: rows.length ? null : "No selected invoices have an open balance.", totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, status: x.invoice.status })) };
+    return { ...selection, customerId: selected[0].owner.customerId, message: rows.length ? null : "No selected invoices have an open balance.", totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, currency: x.invoice.currency || "USD", status: x.invoice.status })) };
   });
 }
 export async function recordCustomerPayment(input: Input) {

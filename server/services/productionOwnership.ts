@@ -295,6 +295,7 @@ export async function transitionToStation(
     targetStepKey: string;
     reason: string;
     actorUserId?: string | null;
+    previousJobOutcome?: "done" | "canceled";
   },
 ): Promise<StationTransitionResult> {
   const now = new Date();
@@ -321,8 +322,8 @@ export async function transitionToStation(
   await tx
     .update(productionJobs)
     .set({
-      status: "done",
-      completedAt: now,
+      status: args.previousJobOutcome ?? "done",
+      completedAt: args.previousJobOutcome === "canceled" ? null : now,
       updatedAt: now,
     })
     .where(
@@ -340,6 +341,7 @@ export async function transitionToStation(
     type: "routing_override",
     payload: {
       action: "station_transition_close",
+      outcome: args.previousJobOutcome ?? "done",
       from: {
         stationKey: activeJob.stationKey,
         stepKey: activeJob.stepKey,
