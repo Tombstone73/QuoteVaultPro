@@ -62,7 +62,7 @@ import {
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation, reconcileStagedArtworkAllocations } from "@shared/artworkAllocation";
 import { synchronizeFinalArtworkForLineQuantityChange } from "../services/canonicalArtworkAllocationService";
-import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
+import { resolveProductMeasurement } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { OrderDeletionProtectedError, OrderIdentityError, OrdersRepository } from "../storage/orders.repo";
@@ -8052,22 +8052,20 @@ export async function registerOrderRoutes(
             }
 
             // Server-authoritative pricing using PricingService
-            const { priceLineItem } = await import("../services/pricing/PricingService");
+            const { priceLineItem, loadPricingTreeForProduct } = await import("../services/pricing/PricingService");
             const userId = getUserId(req.user);
             const productForMeasurement = await storage.getProductById(organizationId, String(lineItemData.productId));
             if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
-            const nonDimensionalProduct = productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee";
-            const pricingDimensions = nonDimensionalProduct
-                ? { widthIn: 1, heightIn: 1 }
-                : dimensionsForProductPricing(productForMeasurement, lineItemData.width, lineItemData.height);
+            const productTree = await loadPricingTreeForProduct(organizationId, productForMeasurement);
+            const { pricingDimensions, physicalDimensions } = resolveProductMeasurement(
+                productForMeasurement, productTree.treeJson, lineItemData.width, lineItemData.height,
+            );
             if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
                 return res.status(400).json({ message: "width and height must be positive for this product" });
             }
 
-            // Quantity-only pricing uses neutral geometry internally, but a line item
-            // must not persist that implementation detail as a fictional 1 x 1 size.
-            lineItemData.width = nonDimensionalProduct ? 0 : pricingDimensions.widthIn;
-            lineItemData.height = nonDimensionalProduct ? 0 : pricingDimensions.heightIn;
+            lineItemData.width = physicalDimensions.widthIn;
+            lineItemData.height = physicalDimensions.heightIn;
             
             const pricingResult = await priceLineItem({
                 organizationId,
@@ -8076,7 +8074,7 @@ export async function registerOrderRoutes(
                 widthIn: pricingDimensions.widthIn,
                 heightIn: pricingDimensions.heightIn,
                 pbv2ExplicitSelections: pbv2ExplicitSelections || lineItemData.optionSelectionsJson?.selected || {},
-                pbv2TreeVersionIdOverride: undefined, // Always use active tree
+                pbv2TreeVersionIdOverride: productTree.id,
             });
 
             // Structured logging for PBV2 pricing persistence
@@ -8781,22 +8779,22 @@ export async function registerOrderRoutes(
                     throw Object.assign(new Error("A record correction must change a commercial or physical pricing driver."), { statusCode: 400, code: "RECORD_CORRECTION_NO_CHANGE" });
                 }
 
-                const { priceLineItem } = await import("../services/pricing/PricingService");
+                const { priceLineItem, loadPricingTreeForProduct } = await import("../services/pricing/PricingService");
                 const productChanged = updateData.productId !== undefined && String(updateData.productId) !== String(line.productId);
                 const pricingProductId = String(updateData.productId ?? line.productId);
                 const product = await storage.getProductById(organizationId, pricingProductId);
                 if (!product) throw Object.assign(new Error("Product not found"), { statusCode: 404 });
-                const nonDimensionalProduct = product.measurementMode === "quantity_only" || product.pricingProfileKey === "fee";
-                const dimensions = nonDimensionalProduct
-                    ? { widthIn: 1, heightIn: 1 }
-                    : dimensionsForProductPricing(product, updateData.width ?? line.width, updateData.height ?? line.height);
+                const productTree = await loadPricingTreeForProduct(organizationId, product);
+                const { pricingDimensions: dimensions, physicalDimensions } = resolveProductMeasurement(
+                    product, productTree.treeJson,
+                    updateData.width !== undefined ? updateData.width : productChanged ? undefined : line.width,
+                    updateData.height !== undefined ? updateData.height : productChanged ? undefined : line.height,
+                );
                 if (!Number.isFinite(dimensions.widthIn) || dimensions.widthIn <= 0 || !Number.isFinite(dimensions.heightIn) || dimensions.heightIn <= 0) {
                     throw Object.assign(new Error("width and height must be positive for this product"), { statusCode: 400 });
                 }
-                if (nonDimensionalProduct) {
-                    updateData.width = 0;
-                    updateData.height = 0;
-                }
+                updateData.width = physicalDimensions.widthIn;
+                updateData.height = physicalDimensions.heightIn;
                 const effectiveSelections = pbv2ExplicitSelections
                     || updateData.optionSelectionsJson?.selected
                     || (productChanged ? {} : (line.optionSelectionsJson?.selected || {}));
@@ -8807,7 +8805,7 @@ export async function registerOrderRoutes(
                     widthIn: dimensions.widthIn,
                     heightIn: dimensions.heightIn,
                     pbv2ExplicitSelections: effectiveSelections,
-                    pbv2TreeVersionIdOverride: undefined,
+                    pbv2TreeVersionIdOverride: productTree.id,
                 });
                 updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
                 updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson as any;
@@ -9119,7 +9117,7 @@ export async function registerOrderRoutes(
             let latestBaseCalculatedTotalCents: number | null = null;
             if (pricingFieldsChanged) {
                 // Reprice using PricingService
-                const { priceLineItem } = await import("../services/pricing/PricingService");
+                const { priceLineItem, loadPricingTreeForProduct } = await import("../services/pricing/PricingService");
                 const productChangedForPricing =
                     updateData.productId !== undefined &&
                     String(updateData.productId) !== String(oldLineItem.productId);
@@ -9130,21 +9128,17 @@ export async function registerOrderRoutes(
                 const pricingProductId = String(updateData.productId ?? oldLineItem.productId);
                 const productForMeasurement = await storage.getProductById(organizationId, pricingProductId);
                 if (!productForMeasurement) return res.status(404).json({ message: "Product not found" });
-                const nonDimensionalProduct = productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee";
-                const pricingDimensions = nonDimensionalProduct
-                    ? { widthIn: 1, heightIn: 1 }
-                    : dimensionsForProductPricing(
-                        productForMeasurement,
-                        updateData.width !== undefined ? updateData.width : oldLineItem.width,
-                        updateData.height !== undefined ? updateData.height : oldLineItem.height,
-                    );
+                const productTree = await loadPricingTreeForProduct(organizationId, productForMeasurement);
+                const { pricingDimensions, physicalDimensions } = resolveProductMeasurement(
+                    productForMeasurement, productTree.treeJson,
+                    updateData.width !== undefined ? updateData.width : productChangedForPricing ? undefined : oldLineItem.width,
+                    updateData.height !== undefined ? updateData.height : productChangedForPricing ? undefined : oldLineItem.height,
+                );
                 if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
                     return res.status(400).json({ message: "width and height must be positive for this product" });
                 }
-                if (nonDimensionalProduct) {
-                    updateData.width = 0;
-                    updateData.height = 0;
-                }
+                updateData.width = physicalDimensions.widthIn;
+                updateData.height = physicalDimensions.heightIn;
                 
                 const pricingResult = await priceLineItem({
                     organizationId,
@@ -9153,7 +9147,7 @@ export async function registerOrderRoutes(
                     widthIn: pricingDimensions.widthIn,
                     heightIn: pricingDimensions.heightIn,
                     pbv2ExplicitSelections: effectivePbv2Selections,
-                    pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
+                    pbv2TreeVersionIdOverride: productTree.id,
                 });
 
                 // Structured logging for PBV2 repricing

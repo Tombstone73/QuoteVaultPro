@@ -484,6 +484,27 @@ describe("order line item edit state", () => {
     ).toBe(false);
   });
 
+  it("uses saved physical size, quantity, options, and exact total for a replaced line summary", () => {
+    const adopted = buildSavedSnapshotAfterLineItemSave({
+      savedLineItem: {
+        productId: "yard-product", pbv2TreeVersionId: "yard-tree",
+        width: "24.00", height: "18.00", quantity: 28,
+        optionSelectionsJson: { schemaVersion: 2, selected: { finish: { value: "standard" } } },
+        unitPrice: "5.89", totalPrice: "165.00",
+      },
+      fallback: { ...savedSnapshot, productId: "yard-product", width: 1, height: 1, quantity: 28 },
+    });
+    expect(adopted).toMatchObject({
+      productId: "yard-product", pbv2TreeVersionId: "yard-tree",
+      width: 24, height: 18, quantity: 28, totalPrice: 165,
+      optionSelectionsV2: { finish: { value: "standard" } },
+    });
+    expect(resolveLineItemDisplayPriceCents({
+      quantity: 28, unitPrice: "5.89", totalPrice: "165.00",
+      overridePriceCents: 16500, hasPriceOverride: true,
+    })).toBe(16500);
+  });
+
   it("preserves pricing/display fields when an attachment-only patch has no pricing fields", () => {
     const existing = {
       id: "li-1",

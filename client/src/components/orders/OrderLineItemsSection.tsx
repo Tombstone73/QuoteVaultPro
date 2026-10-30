@@ -1734,8 +1734,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const expandedItemHydrationFingerprint = useMemo(() => {
     if (!expandedItem) return null;
-    const activeTreeNodes = effectivePbv2Tree
-      ? Object.values(effectivePbv2Tree.nodes ?? {}).map((node: any) => ({
+    // Hydration tracks the persisted line. A draft product switch must not
+    // rehydrate the old product merely because the selected tree changed.
+    const persistedProduct = products.find((product) => product.id === expandedItem.productId);
+    const persistedTree = normalizePbv2Tree(
+      getPbv2SnapshotFromLineItem(expandedItem)?.treeJson ?? getPbv2Tree(persistedProduct),
+    );
+    const activeTreeNodes = persistedTree
+      ? Object.values(persistedTree.nodes ?? {}).map((node: any) => ({
           id: node?.id,
           key: node?.key,
           label: node?.label,
@@ -1757,7 +1763,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       snapshotEffectiveSelections: (expandedItem as any).pbv2SnapshotJson?.pbv2PricingSnapshot?.effectiveSelections ?? null,
       tree: activeTreeNodes,
     });
-  }, [effectivePbv2Tree, expandedItem]);
+  }, [expandedItem, products]);
 
   const expandedItemOptionHydration = useMemo(
     () => expandedItem

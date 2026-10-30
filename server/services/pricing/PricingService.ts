@@ -58,7 +58,7 @@ import {
 } from '../../../shared/pbv2/rollMediaLayout';
 import { getProductAllowRotation, parseProductPricingBoolean } from '../../../shared/pbv2/productPricingRotation';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
-import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
+import { resolveProductMeasurement } from '../../../shared/productMeasurementMode';
 import { blankCoroplastOptionEvaluationTree, blankCoroplastRate, isUnprintedCoroplast, readBlankCoroplastPricing } from '../../../shared/blankCoroplast';
 import { skipsRequiredPrintOptionValidation } from '../../../shared/productPricingValidation';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
@@ -705,18 +705,9 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     }
 
     const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
-    if (product.pricingProfileKey === "fee") {
-      widthIn = 1;
-      heightIn = 1;
-    } else if (product.measurementMode === "quantity_only") {
-      ({ widthIn, heightIn } = dimensionsForProductPricing(product, widthIn, heightIn));
-    } else {
-      ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
-        treeJson: treeVersion.treeJson,
-        widthIn,
-        heightIn,
-      }));
-    }
+    ({ widthIn, heightIn } = resolveProductMeasurement(
+      product, treeVersion.treeJson as OptionTreeV2, widthIn, heightIn,
+    ).pricingDimensions);
     const pricingMethod = String(product.pricingProfileKey || "default");
     const selectionResolution = resolveSelectionsForProductPricing(
       product,
@@ -827,18 +818,9 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 3: Load tree version
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
-  if (product.pricingProfileKey === "fee") {
-    widthIn = 1;
-    heightIn = 1;
-  } else if (product.measurementMode === "quantity_only") {
-    ({ widthIn, heightIn } = dimensionsForProductPricing(product, widthIn, heightIn));
-  } else {
-    ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
-      treeJson: treeVersion.treeJson,
-      widthIn,
-      heightIn,
-    }));
-  }
+  ({ widthIn, heightIn } = resolveProductMeasurement(
+    product, treeVersion.treeJson as OptionTreeV2, widthIn, heightIn,
+  ).pricingDimensions);
   const selectionResolution = resolveSelectionsForProductPricing(
     product,
     treeVersion.treeJson as any,
@@ -1917,6 +1899,18 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
   assertRuleAndMatrixDefinitionsValidForPricing(treeVersion.treeJson as any);
 
   return treeVersion;
+}
+
+/** The same selected, organization-scoped tree used by priceLineItem. */
+export async function loadPricingTreeForProduct(
+  organizationId: string,
+  product: { id: string; pbv2ActiveTreeVersionId?: string | null; pricingProfileConfig?: unknown },
+): Promise<{ id: string; treeJson: OptionTreeV2 }> {
+  const treeVersionId = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
+  if (!treeVersionId) throw new Error(`Product ${product.id} does not have an active PBV2 tree`);
+  const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
+  if (treeVersion.productId !== product.id) throw new Error(`PBV2 tree does not belong to product ${product.id}`);
+  return { id: treeVersion.id, treeJson: treeVersion.treeJson as OptionTreeV2 };
 }
 
 /**

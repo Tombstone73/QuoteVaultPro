@@ -60,3 +60,45 @@ test('withdrawal success requires the confirmed successor on fresh readback', as
   await act(async () => { await expect(mutate.mutateAsync(request)).resolves.toEqual(routed); });
   expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
 });
+
+const replacementRequest = {
+  id: 'line',
+  data: {
+    productId: 'selected-product', quantity: 28,
+    priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500,
+    overridePriceCents: 16500,
+  },
+};
+const replacementLine = {
+  id: 'line', productId: 'selected-product', quantity: 28,
+  unitPrice: '5.89', totalPrice: '165.00', overridePriceCents: 16500,
+  width: 24, height: 18, pbv2TreeVersionId: 'selected-tree',
+  optionSelectionsJson: { schemaVersion: 2, selected: { print: { value: 'single' } } },
+  pbv2SnapshotJson: { treeVersionId: 'selected-tree' },
+  attachments: [{ id: 'existing-artwork', role: 'artwork' }],
+};
+
+test('product replacement confirms product, options, quantity, exact total, and artwork in mocked readback', async () => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => replacementLine })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ lineItems: [replacementLine] }) });
+  let result: any;
+  await act(async () => { result = await mutate.mutateAsync(replacementRequest); });
+  expect(result).toMatchObject({
+    productId: 'selected-product', quantity: 28, totalPrice: '165.00',
+    optionSelectionsJson: replacementLine.optionSelectionsJson,
+    attachments: replacementLine.attachments,
+  });
+  expect((apiFetch as jest.Mock).mock.calls[1][0]).toBe('/api/orders/order');
+});
+
+test.each([
+  ['product', { productId: 'old-product' }],
+  ['quantity', { quantity: 1 }],
+  ['exact total', { totalPrice: '164.92' }],
+  ['selected options', { optionSelectionsJson: { schemaVersion: 2, selected: { old: { value: 'stale' } } } }],
+])('product replacement rejects a mismatched %s in mocked readback', async (_field, patch) => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => replacementLine })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ lineItems: [{ ...replacementLine, ...patch }] }) });
+  await act(async () => { await expect(mutate.mutateAsync(replacementRequest)).rejects.toMatchObject({ code: 'LINE_SAVE_UNCONFIRMED' }); });
+  expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+});
