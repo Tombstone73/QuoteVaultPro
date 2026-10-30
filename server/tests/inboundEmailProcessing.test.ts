@@ -244,7 +244,7 @@ describe("durable inbound automatic preparation (mocked transactions, no Postgre
 
   test("available attachment evidence is captured by the existing parser outside transactions", async () => {
     const h = await setup();
-    await h.repo.createFile({ organizationId: org, inboundRecordId: recordId, sourceFilename: "PO.txt", mimeType: "text/plain", checksum: "fixture-checksum", status: "available", role: "po", metadataJson: {}, sizeBytes: 40 });
+    await h.repo.createFile({ organizationId: org, inboundRecordId: recordId, sourceFilename: "PO.txt", fileRecordId: "fixture-file-record", mimeType: "text/plain", checksum: "fixture-checksum", status: "available", role: "po", metadataJson: {}, sizeBytes: 40 });
     const evidence = { buildEvidenceBundle: jest.fn(async () => { expect(h.activeTransactions()).toBe(0); return { items: [], conflicts: [] }; }) };
     const provider = { generateJson: async () => ({ provider: "mock", model: "fixture", rawText: JSON.stringify(uncertain()) }) };
     const parser = new InboundOrderParsingService(h.repo, () => provider as any, evidence as any);

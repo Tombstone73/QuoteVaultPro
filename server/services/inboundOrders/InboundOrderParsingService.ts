@@ -349,6 +349,7 @@ export class InboundOrderParsingService {
     }
 
     this.assertParseAllowed(record);
+    if (record.sourceType === 'email') await this.repository.assertImportComplete(args.organizationId, args.inboundRecordId);
     // Capture a coherent source version before external evidence/AI reads.
     // No database lock survives this call.
     const evidenceState = record.sourceType === "email"

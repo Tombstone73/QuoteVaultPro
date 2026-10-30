@@ -129,6 +129,7 @@ function makeRepository(record = inboundRecord()) {
   let eventCounter = 0;
   const repo = {
     getRecord: jest.fn(async () => currentRecord),
+    assertImportComplete: jest.fn(async () => undefined),
     listFiles: jest.fn(async () => []),
     updateRecordWithEvent: jest.fn(async (args: any) => {
       currentRecord = {
@@ -989,7 +990,7 @@ describe("InboundOrderParsingService", () => {
     const provider = makeProvider(JSON.stringify(parsedDraft()));
     const evidenceService = {
       buildEvidenceBundle: jest
-        .fn()
+        .fn<() => Promise<InboundOrderEvidenceBundle>>()
         .mockRejectedValueOnce(new Error("temporary evidence-store failure"))
         .mockResolvedValue({ items: [], conflicts: [] }),
     };

@@ -122,7 +122,17 @@ migration, data repair, mailbox activation, push or deployment is part of the ru
 
 Automatic draft preparation remains implemented and **disabled by default**.
 Remaining rollout work: apply/review migrations 0240 **and 0241** in the intended
-environment, interrupted-import recovery, Gmail acknowledgement/read/label policy,
+environment (plus 0242 for the subsequent recovery milestone), Gmail acknowledgement/read/label policy,
 legacy evidence/linkage reconciliation and queue-volume assessment, and DEV
 acceptance with synthetic evidence and human approval. The complete email-intake
 workflow is not ready for mailbox rollout on the strength of database tests alone.
+
+## Subsequent interrupted-import recovery milestone
+
+[Interrupted import recovery](inbound-email-import-recovery.md) adds migration 0242
+and a third suite to the same runner. The original 56 cases remain intact, alongside
+22 real PostgreSQL recovery cases (78 total). The runner now verifies all 236
+canonical migration hashes/timestamps and retains all 80 release checks. Physical
+object I/O is stubbed; file records, attachment links, transaction rollback, cursor
+commits, leases and actual process interruption/recovery execute against PostgreSQL.
+No shared migrations, deployment or mailbox activation is performed.

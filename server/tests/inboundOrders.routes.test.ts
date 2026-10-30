@@ -409,6 +409,7 @@ function buildApp(
     inboundEmailMailboxSettingsService?: Record<string, any>;
     inboundOrdersRepository?: Record<string, any>;
     inboundEmailProcessingRepository?: Record<string, any>;
+    inboundEmailImportRepository?: Record<string, any>;
     userRole?: string;
   } = {},
 ) {
@@ -443,11 +444,29 @@ function buildApp(
     inboundEmailMailboxSettingsService: options.inboundEmailMailboxSettingsService as any,
     inboundOrdersRepository: (options.inboundOrdersRepository ?? defaultInboundOrdersRepository) as any,
     inboundEmailProcessingRepository: options.inboundEmailProcessingRepository as any,
+    inboundEmailImportRepository: options.inboundEmailImportRepository as any,
   });
   return app;
 }
 
 describe("inbound order routes", () => {
+  test('import progress and safe retry retain tenant and internal-staff permissions', async()=>{
+    const imports={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
+    const app=buildApp({}, {inboundEmailImportRepository:imports});
+    expect((await request(app).get('/api/inbound-orders/email-imports')).status).toBe(200);
+    expect(imports.list).toHaveBeenCalledWith('org_1');
+    expect((await request(app).post('/api/inbound-orders/email-imports/import-job/retry').send({organizationId:'foreign'})).status).toBe(200);
+    expect(imports.retry).toHaveBeenCalledWith('org_1','import-job','user_1');
+    const denied=buildApp({}, {internal:false,inboundEmailImportRepository:imports});
+    expect((await request(denied).get('/api/inbound-orders/email-imports')).status).toBe(403);
+    expect((await request(denied).post('/api/inbound-orders/email-imports/import-job/retry')).status).toBe(403);
+    expect(imports.retry).toHaveBeenCalledTimes(1);
+  });
+  test('active or stale import retry conflict is explained without leaking provider errors',async()=>{
+    const imports={retry:jest.fn(async()=>{throw new InboundEvidenceConflictError('Private detail');})};
+    const response=await request(buildApp({}, {inboundEmailImportRepository:imports})).post('/api/inbound-orders/email-imports/import-job/retry');
+    expect(response.status).toBe(409);expect(JSON.stringify(response.body)).not.toContain('Private detail');
+  });
   test("processing status is tenant scoped and internal-only", async () => {
     const repository = { getEvidenceState: jest.fn(async () => ({ record: inboundRecord(), fingerprint: "fingerprint" })) };
     const processing = { view: jest.fn(async () => ({ enabled: false, job: null })) };

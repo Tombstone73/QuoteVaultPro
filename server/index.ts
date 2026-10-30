@@ -3,6 +3,8 @@ import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRete
 import { cleanupAssistantPendingImages } from './services/assistantImageAttachments';
 import "dotenv/config";
 import { inboundEmailProcessingWorker } from "./services/inboundOrders/InboundEmailProcessingWorker";
+import { inboundEmailIngestionService } from "./services/inboundEmailIngestionService";
+import { isInboundImportRecoveryEnabled } from "./storage/inboundEmailImport.repo";
 import { isInboundEmailProcessingEnabled } from "./services/inboundOrders/inboundEmailProcessingConfig";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -412,6 +414,14 @@ process.on('uncaughtException', (error) => {
       }
 
       const inboundDraftsEnabled = isInboundEmailProcessingEnabled();
+      const inboundImportsEnabled = isInboundImportRecoveryEnabled();
+      logWorkerStatus('Inbound Email Imports', inboundImportsEnabled, inboundImportsEnabled ? 30_000 : undefined);
+      if (inboundImportsEnabled) {
+        const tick = () => inboundEmailIngestionService.recoverInterruptedImports().catch(() => console.warn('[InboundEmailImport] Tick failed; durable work is retained.'));
+        const timer = setInterval(() => { void tick(); }, 30_000);
+        timer.unref?.();
+        void tick();
+      }
       const inboundDraftInterval = Math.max(5_000, getWorkerIntervalOverride('INBOUND_EMAIL_DRAFTS', 30_000, 30_000));
       logWorkerStatus('Inbound Email Drafts', inboundDraftsEnabled, inboundDraftsEnabled ? inboundDraftInterval : undefined);
       if (inboundDraftsEnabled) {

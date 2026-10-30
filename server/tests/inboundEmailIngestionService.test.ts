@@ -6,6 +6,7 @@ import {
   classifyInboundEmailForReview,
   extractGmailBodyAndAttachments,
   GmailInboundEmailAdapter,
+  inboundGmailDiscoveryOptions,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
 
@@ -52,6 +53,20 @@ function mailbox(overrides: Record<string, unknown> = {}) {
 }
 
 describe("inbound email ingestion classifier", () => {
+  test('Gmail requests have a bounded timeout without invoking the provider', () => {
+    const adapter = new GmailInboundEmailAdapter();
+    const client = (adapter as any).buildGmailClient(mailbox({
+      authJson: { refreshToken: 'synthetic-refresh', clientId: 'synthetic-client', clientSecret: 'synthetic-secret' },
+    }));
+    expect(client.context._options.timeout).toBe(60_000);
+  });
+  test('durable discovery freezes relative dates without narrowing explicit mailbox filters',()=>{
+    const at=new Date('2026-01-15T12:00:00Z');
+    const relative=inboundGmailDiscoveryOptions(mailbox({settingsJson:{gmailQuery:'from:buyer@example.com newer_than:14d'}}),50,at);
+    expect(relative.query).toContain('from:buyer@example.com');expect(relative.query).not.toContain('newer_than:');expect(relative.query).toContain('before:');
+    const filtered=inboundGmailDiscoveryOptions(mailbox({settingsJson:{gmailQuery:'label:Orders'}}),500,at);
+    expect(filtered.query).toContain('label:Orders');expect(filtered.query).not.toContain('after:');expect(filtered.limit).toBe(100);
+  });
   test("classifies quote request wording", () => {
     const result = classifyInboundEmailForReview(message({
       subject: "Can you quote this?",

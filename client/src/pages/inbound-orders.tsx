@@ -64,6 +64,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatFileSize } from "@/lib/fileUtils";
 import { apiFetch } from "@/lib/queryClient";
 import { InboundEmailProcessingStatus } from "@/components/inbound/InboundEmailProcessingStatus";
+import { InboundEmailImportStatus } from "@/components/inbound/InboundEmailImportStatus";
 import { cn } from "@/lib/utils";
 import {
   getManualInboundEvidence,
@@ -11491,6 +11492,7 @@ export default function InboundOrdersPage() {
             </Button>
           </div>
         </div>
+        {!inboundEmailFeatureDisabled && <InboundEmailImportStatus onOpenRecord={setSelectedId} />}
         {selectedRecord?.sourceType === "email" && !selectedRecord.createdOrderId && !selectedRecord.createdQuoteId && !inboundEmailFeatureDisabled && <InboundEmailProcessingStatus key={selectedRecord.id} recordId={selectedRecord.id} />}
         {selectedRecord && <InboundAccountabilityNotice record={selectedRecord} />}
         {pageError && (

@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundParentOrderIdSql, inboundQueueBucketSql } from "../services/inboundOrders/inboundQueuePolicy";
+import { assertInboundImportClaim, assertInboundImportComplete, bindInboundImportRecord } from "../services/inboundOrders/inboundEmailImportContext";
 
 import { db } from "../db";
 import {
@@ -346,10 +347,11 @@ export class InboundOrdersRepository {
   // parent/child lock-order race. Never call external providers inside this lock.
   private async lockEvidence(organizationId: string, inboundRecordId: string, tx: any): Promise<InboundOrderRecord | null> {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${organizationId}`}))`);
+    await assertInboundImportClaim(tx, organizationId);
     const [record] = await tx.select().from(inboundOrderRecords).where(and(
       eq(inboundOrderRecords.organizationId, organizationId), eq(inboundOrderRecords.id, inboundRecordId),
     )).for("update").limit(1);
-    return record ?? null;
+    return record ? bindInboundImportRecord(tx, record) : null;
   }
 
   private async synchronizeEvidence(organizationId: string, inboundRecordId: string, tx: any): Promise<{ record: InboundOrderRecord; files: InboundOrderFile[]; fingerprint: string }> {
@@ -419,6 +421,14 @@ export class InboundOrdersRepository {
     });
   }
 
+  async assertImportComplete(organizationId: string, inboundRecordId: string): Promise<void> {
+    await this.dbInstance.transaction(async tx => {
+      const record = await this.lockEvidence(organizationId, inboundRecordId, tx);
+      if (!record) throw new InboundEvidenceConflictError('Inbound record not found for this organization.');
+      await assertInboundImportComplete(tx, record, await new InboundOrdersRepository(tx as any).listFiles(organizationId,inboundRecordId));
+    });
+  }
+
   /** Caller owns the transaction; share the evidence protocol with linkage writers. */
   async lockForEvidenceHandling(organizationId: string, inboundRecordId: string, expectedFingerprint?: string | null) {
     if (!await this.lockEvidence(organizationId, inboundRecordId, this.dbInstance)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
@@ -436,7 +446,9 @@ export class InboundOrdersRepository {
     const repository = new InboundOrdersRepository(tx);
     const record = await repository.getRecord(organizationId, inboundRecordId);
     if (!record || record.sourceType !== "email") return;
-    const fingerprint = fingerprintInboundEmailEvidence(record, await repository.listFiles(organizationId, inboundRecordId));
+    const files = await repository.listFiles(organizationId,inboundRecordId);
+    await assertInboundImportComplete(tx, record, files);
+    const fingerprint = fingerprintInboundEmailEvidence(record, files);
     const snapshot = (await repository.listReviewSnapshots(organizationId, inboundRecordId))[0] ?? null;
     if (!snapshot || (expectedSnapshotId && snapshot.id !== expectedSnapshotId)
       || evidenceFingerprintFromSnapshot(snapshot) !== fingerprint) throw new InboundEvidenceConflictError();
@@ -1523,6 +1535,13 @@ export class InboundOrdersRepository {
     return executor.transaction(async (tx: any) => {
       if (!await this.lockEvidence(values.organizationId, values.inboundRecordId, tx)) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
       await this.synchronizeEvidenceAndParent(values.organizationId, values.inboundRecordId, tx);
+      if (values.providerMessageId && values.providerAttachmentId) {
+        const [existing] = await tx.select().from(inboundOrderFiles).where(and(
+          eq(inboundOrderFiles.organizationId, values.organizationId), eq(inboundOrderFiles.inboundRecordId, values.inboundRecordId),
+          eq(inboundOrderFiles.providerMessageId, values.providerMessageId), eq(inboundOrderFiles.providerAttachmentId, values.providerAttachmentId),
+        )).limit(1);
+        if (existing) return existing;
+      }
       const [created] = await tx
         .insert(inboundOrderFiles)
         .values(values)
@@ -2888,6 +2907,7 @@ export class InboundOrdersRepository {
           coveredFingerprint = evidenceFingerprintFromSnapshot(sourceSnapshot);
         }
         const approval = args.recordPatch?.status === "ready" || (args.snapshot.payloadJson as any)?.status === "ready_to_convert";
+        if (approval) await assertInboundImportComplete(tx, state.record, state.files);
         if (approval && (!coveredFingerprint || coveredFingerprint !== state.fingerprint)) throw new InboundEvidenceConflictError();
         snapshotValues = { ...args.snapshot, snapshotVersion: (latest?.snapshotVersion ?? 0) + 1,
           payloadJson: { ...args.snapshot.payloadJson, metadata: {
@@ -3278,7 +3298,7 @@ export class InboundOrdersRepository {
     if (!quote || quote.convertedToOrderId !== args.orderId || !order || order.quoteId !== args.quoteId) throw new InboundEvidenceConflictError("Quote-to-Order linkage could not be verified for this organization.");
     const records = await this.dbInstance.select().from(inboundOrderRecords).where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.createdQuoteId, args.quoteId))).orderBy(asc(inboundOrderRecords.id));
     for (const reference of records) {
-      const { record, fingerprint } = await this.lockForEvidenceHandling(args.organizationId, reference.id);
+      const { record, fingerprint, files } = await this.lockForEvidenceHandling(args.organizationId, reference.id);
       if (record.createdOrderId) {
         if (record.createdOrderId !== args.orderId) throw new InboundEvidenceConflictError("Inbound record is already linked to another Order.");
         continue; // Replay never acknowledges later evidence.
@@ -3289,7 +3309,10 @@ export class InboundOrdersRepository {
       const covered = (record.normalizedPayloadJson as any)?.quoteEvidenceFingerprint
         ?? evidenceFingerprintFromSnapshot(snapshots.find(snapshot => snapshot.id === (created?.metadataJson as any)?.snapshotId) ?? null);
       const dismissed = ["ignored", "terminal"].includes(record.status) && !(record.normalizedPayloadJson as any)?.unresolvedEvidenceFingerprint;
-      const resolves = !dismissed && covered === fingerprint;
+      let importComplete = true;
+      try { await assertInboundImportComplete(this.dbInstance, record, files); }
+      catch (error) { if (error instanceof InboundEvidenceConflictError) importComplete = false; else throw error; }
+      const resolves = !dismissed && importComplete && covered === fingerprint;
       const now = new Date();
       await this.dbInstance.update(inboundOrderRecords).set({ createdOrderId: order.id, matchedOrderId: order.id,
         ...(dismissed ? {} : { status: resolves ? "submitted" as const : "needs_review" as const,

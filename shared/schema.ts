@@ -10180,6 +10180,35 @@ export const inboundOrderParseAttempts = pgTable("inbound_order_parse_attempts",
   index("inbound_order_parse_attempts_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
 ]);
 
+export const inboundEmailImportJobs = pgTable("inbound_email_import_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  mailboxId: varchar("mailbox_id").notNull().references(() => inboundEmailMailboxes.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 40 }).notNull(),
+  providerAccount: varchar("provider_account", { length: 320 }).notNull(),
+  workKind: varchar("work_kind", { length: 16 }).$type<'message' | 'discovery'>().notNull().default('message'),
+  discoveryJson: jsonb("discovery_json").$type<{ query: string; labelIds?: string[]; pageToken?: string; processed: number; limit: number }>(),
+  providerMessageId: text("provider_message_id").notNull(),
+  providerThreadId: text("provider_thread_id"),
+  inboundRecordId: varchar("inbound_record_id").references(() => inboundOrderRecords.id, { onDelete: "set null" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 32 }).$type<import("./inboundEmailImport").InboundEmailImportStatus>().notNull().default("waiting"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+  claimToken: varchar("claim_token"),
+  claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  errorCode: varchar("error_code", { length: 80 }),
+  message: text("message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [
+  uniqueIndex("inbound_import_message_uidx").on(table.organizationId, table.mailboxId, table.provider, table.providerMessageId),
+  index("inbound_import_claim_idx").on(table.status, table.nextAttemptAt, table.claimExpiresAt),
+  index("inbound_import_record_idx").on(table.organizationId, table.inboundRecordId),
+  index("inbound_import_thread_idx").on(table.organizationId, table.mailboxId, table.providerThreadId),
+  uniqueIndex("inbound_import_open_discovery_uidx").on(table.organizationId, table.mailboxId).where(sql`work_kind = 'discovery' AND status NOT IN ('complete','skipped')`),
+]);
+
 export const inboundEmailProcessingJobs = pgTable("inbound_email_processing_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),

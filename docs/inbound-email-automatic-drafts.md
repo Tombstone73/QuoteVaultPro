@@ -20,7 +20,8 @@ pulls, not preparation of already imported evidence. The polling interval uses
 Configuration changes require the normal application restart/deployment.
 
 Apply migrations `0240_inbound_email_processing_jobs` and
-`0241_inbound_versioned_fingerprint_width` before running this code.
+`0241_inbound_versioned_fingerprint_width`, plus `0242_inbound_email_import_recovery`
+for durable discovery/import recovery, before running this code.
 The additive migration creates only local work metadata. It contains no data
 backfill, mailbox activation, or production integration calls.
 
@@ -36,8 +37,11 @@ metadata have been persisted. It takes the same tenant evidence advisory lock
 and inbound row lock as evidence writers and approval. Evidence identity and a
 unique `(organization_id, inbound_record_id, evidence_fingerprint)` job are
 committed together. Repeated imports cannot reset an active or failed run.
-An import interrupted before completion must be imported again; it is not
-reported as a completed import and this milestone does not recover Gmail downloads.
+Interrupted imports are now covered by the subsequent
+[durable import recovery milestone](inbound-email-import-recovery.md). It saves
+provider identities and page checkpoints and resumes attachments through this
+canonical ingestion path. Import recovery has its own disabled-by-default rollout
+gate; incomplete evidence cannot pass parsing/approval or AI scheduling.
 
 Workers claim with `FOR UPDATE SKIP LOCKED`. Claims last five minutes, with
 heartbeats every 100 seconds and a new random fencing token on recovery. At most
@@ -102,8 +106,8 @@ and perform DEV acceptance using synthetic imported evidence and a test AI
 provider. Do not connect a production mailbox or submit an Order to test the worker.
 
 Gmail acknowledgement/read/label handling and broader Assistant integration remain
-unfinished. Interrupted-import recovery also remains separate: imports that stop
-before durable completion still require a deliberate reimport. This is automatic
+unfinished. Durable interrupted-import recovery is now implemented separately and
+disabled by default; pre-tracking legacy imports still require reconciliation. This is automatic
 draft preparation after import, not a complete autonomous email-intake rollout.
 
 ## Inbound queue accountability milestone
@@ -201,8 +205,8 @@ isolated PostgreSQL milestone executes the actual CASE/joins, separate-connectio
 contention, rollback, fencing and killed-process recovery. Its provider calls are
 stubbed; it does not establish shared-environment or mailbox readiness.
 
-Remaining rollout gates: migrations 0240 and 0241 readiness/application in the intended
-environment; interrupted-import recovery; Gmail acknowledgement/read/label policy;
+Remaining rollout gates: migrations 0240, 0241 and 0242 readiness/application in the intended
+environment; import recovery activation and deployed provider acceptance; Gmail acknowledgement/read/label policy;
 legacy reconciliation and queue-volume assessment;
 and DEV acceptance of queue counts, legacy volume, revision review and human
 approval using synthetic evidence. Nothing is pushed, deployed, enabled or

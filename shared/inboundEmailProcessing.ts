@@ -16,7 +16,8 @@ export function eligibleForAutomaticInboundDraft(record: {
   return record.sourceType === "email" && !record.createdOrderId && !record.createdQuoteId && !record.archivedAt
     && !["ignored", "terminal", "submitted", "approved"].includes(record.status)
     && !["ignored", "rejected", "deleted"].includes(record.reviewOutcome ?? "")
-    && !record.normalizedPayloadJson?.combinedParentRecordId && !record.normalizedPayloadJson?.attachedOrderId;
+    && !record.normalizedPayloadJson?.combinedParentRecordId && !record.normalizedPayloadJson?.attachedOrderId
+    && !record.normalizedPayloadJson?.importIncomplete;
 }
 
 export const inboundEmailProcessingLabels: Record<InboundEmailProcessingStatus, string> = {

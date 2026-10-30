@@ -3,8 +3,15 @@ import { google } from "googleapis";
 
 import { db } from "../db";
 import { fingerprintInboundEmailEvidence } from "./inboundOrders/inboundEmailEvidenceFingerprint";
+import { InboundEmailImportRepository, isInboundImportRecoveryEnabled, type InboundImportJob } from "../storage/inboundEmailImport.repo";
+import { inboundImportContext, assertInboundImportClaim, bindInboundImportRecord, unavailableInboundImportFiles } from "./inboundOrders/inboundEmailImportContext";
+import { INBOUND_IMPORT_LEASE_MS } from "@shared/inboundEmailImport";
+import { InboundEvidenceConflictError } from "./inboundOrders/inboundEmailEvidenceFingerprint";
+import { resolveInboundEmailIntakeSettingsFromPreferences } from "@shared/inboundEmailIntakeSettings";
 import {
   inboundEmailMailboxes,
+  inboundEmailImportJobs,
+  organizations,
   inboundOrderEvents,
   inboundOrderRecords,
   inboundOrderSources,
@@ -550,7 +557,9 @@ const ALLOWED_INBOUND_ATTACHMENT_EXTENSIONS = new Set([
 ]);
 
 export interface InboundEmailProviderAdapter {
-  listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]>;
+  listRecentMessages(mailbox: InboundEmailMailbox, limit: number,
+    onDiscovered?: (identities: Array<{ messageId: string; threadId: string | null }>, nextPageToken?: string) => Promise<void>,
+    discovery?: NonNullable<InboundImportJob['discoveryJson']>): Promise<InboundEmailProviderMessage[]>;
   getLastListDiagnostics?(): InboundEmailListDiagnostics | null;
   getMessage?(mailbox: InboundEmailMailbox, messageId: string): Promise<InboundEmailProviderMessage>;
   getThreadMessages?(mailbox: InboundEmailMailbox, threadId: string): Promise<InboundEmailProviderMessage[]>;
@@ -563,6 +572,25 @@ export interface InboundEmailProviderAdapter {
     message: InboundEmailProviderMessage,
     attachment: InboundEmailAttachmentMetadata,
   ): Promise<InboundEmailAttachmentContent>;
+}
+
+export function inboundGmailDiscoveryOptions(mailbox: InboundEmailMailbox, limit: number, freezeAt?: Date): NonNullable<InboundImportJob['discoveryJson']> {
+  const settings = (mailbox.settingsJson ?? {}) as any;
+  const days = Math.max(1, Math.min(365, Math.round(numberFromUnknown(settings.lookbackDays, 14))));
+  const original = (Object.prototype.hasOwnProperty.call(settings, 'gmailQuery') ? stringFromUnknown(settings.gmailQuery) : stringFromUnknown(settings.query)) ?? `newer_than:${days}d`;
+  let query = original.replace(/(^|[\s({])is:unread(?=$|[\s)}])/gi, '$1{is:read is:unread}');
+  const labels = Array.isArray(settings.labelIds) ? settings.labelIds.map(String).filter((value:string) => value && value.toUpperCase() !== 'UNREAD') : undefined;
+  const widened = query !== original || Array.isArray(settings.labelIds) && settings.labelIds.some((value:unknown) => String(value).toUpperCase() === 'UNREAD');
+  if (widened && !/(?:^|[\s({])(?:after|newer|newer_than):[^\s)}]+/i.test(original)) query = `(${query}) newer_than:${days}d`;
+  if (freezeAt) {
+    const seconds = Math.floor(freezeAt.getTime() / 1000);
+    query = query.replace(/\b(newer_than|older_than):(\d+)([dmy])\b/gi, (_all, direction:string, amount:string, unit:string) => {
+      const duration = Number(amount) * ({d:1,m:30,y:365}[unit.toLowerCase()] ?? 1) * 86400;
+      return `${direction.toLowerCase() === 'newer_than' ? 'after' : 'before'}:${seconds-duration}`;
+    });
+    query = `(${query}) before:${seconds+1}`;
+  }
+  return {query,labelIds:labels,processed:0,limit:Math.max(1,Math.min(100,Math.round(limit)))};
 }
 
 export class InboundEmailIngestionError extends Error {
@@ -1429,62 +1457,52 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
 
     const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
     oauth2Client.setCredentials({ refresh_token: refreshToken });
-    return google.gmail({ version: "v1", auth: oauth2Client });
+    return google.gmail({ version: "v1", auth: oauth2Client, timeout: 60_000 });
   }
 
   getLastListDiagnostics(): InboundEmailListDiagnostics | null {
     return this.lastListDiagnostics;
   }
 
-  async listRecentMessages(mailbox: InboundEmailMailbox, limit: number): Promise<InboundEmailProviderMessage[]> {
-    const settingsJson = (mailbox.settingsJson ?? {}) as Record<string, unknown>;
+  async listRecentMessages(mailbox: InboundEmailMailbox, limit: number,
+    onDiscovered?: (identities: Array<{ messageId: string; threadId: string | null }>, nextPageToken?: string) => Promise<void>,
+    discovery?: NonNullable<InboundImportJob['discoveryJson']>): Promise<InboundEmailProviderMessage[]> {
     const gmail = this.buildGmailClient(mailbox);
-    const lookbackDays = Math.max(1, Math.min(365, Math.round(numberFromUnknown(settingsJson.lookbackDays, 14))));
-    const configuredQuery = Object.prototype.hasOwnProperty.call(settingsJson, "gmailQuery")
-      ? stringFromUnknown(settingsJson.gmailQuery)
-      : stringFromUnknown(settingsJson.query);
-    // Intake eligibility must not change when somebody opens a message in Gmail.
-    // Preserve the rest of the mailbox query, including its grouping and other
-    // filters, while allowing either read state wherever unread was required.
-    const originalQuery = configuredQuery ?? `newer_than:${lookbackDays}d`;
-    const widenedQuery = originalQuery
-      .replace(/(^|[\s({])is:unread(?=$|[\s)}])/gi, "$1{is:read is:unread}");
-    const labelIds = Array.isArray(settingsJson.labelIds)
-      ? settingsJson.labelIds.map((value) => String(value)).filter((value) => Boolean(value) && value.toUpperCase() !== "UNREAD")
-      : undefined;
-    const widenedReadState = widenedQuery !== originalQuery
-      || (Array.isArray(settingsJson.labelIds) && settingsJson.labelIds.some((value) => String(value).toUpperCase() === "UNREAD"));
-    // Widening an unread-only mailbox must not turn it into an unbounded
-    // historical scan. Respect explicit lower date boundaries when present.
-    const query = widenedReadState && !/(?:^|[\s({])(?:after|newer|newer_than):[^\s)}]+/i.test(originalQuery)
-      ? `(${widenedQuery}) newer_than:${lookbackDays}d`
-      : widenedQuery;
-    const safeLimit = Math.max(1, Math.min(100, Math.round(limit)));
+    const options = discovery ?? inboundGmailDiscoveryOptions(mailbox, limit);
+    const { query, labelIds } = options;
+    const safeLimit = options.limit - options.processed;
     const pageSize = Math.max(1, Math.min(25, safeLimit));
     const messageIds: string[] = [];
-    let pageToken: string | undefined;
+    let pageToken = options.pageToken;
     let pageCount = 0;
+    let slotsUsed = 0;
 
     do {
       const listed = await gmail.users.messages.list({
         userId: "me",
-        maxResults: Math.min(pageSize, safeLimit - messageIds.length),
+        maxResults: Math.min(pageSize, safeLimit - slotsUsed),
         q: query,
         labelIds,
         pageToken,
       });
       pageCount += 1;
+      slotsUsed += (listed.data.messages ?? []).length;
+      // Commit every page's IDs before fetching details or requesting the next
+      // page. Later recovery never depends on this query's moving date window.
+      await onDiscovered?.((listed.data.messages ?? []).filter(summary => summary.id)
+        .map(summary => ({ messageId: String(summary.id), threadId: summary.threadId ?? null })), listed.data.nextPageToken || undefined);
       for (const summary of listed.data.messages ?? []) {
         if (!summary.id || messageIds.includes(summary.id)) continue;
         messageIds.push(summary.id);
         if (messageIds.length >= safeLimit) break;
       }
       pageToken = listed.data.nextPageToken || undefined;
-    } while (pageToken && messageIds.length < safeLimit);
+    } while (pageToken && slotsUsed < safeLimit && pageCount < 10);
+    if (discovery && pageToken && slotsUsed < safeLimit && pageCount >= 10) throw new Error('Discovery page budget reached; saved cursor will resume.');
 
     const results: InboundEmailProviderMessage[] = [];
 
-    for (const messageId of messageIds) {
+    for (const messageId of discovery ? [] : messageIds) {
       const detail = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
       results.push(this.toProviderMessage(detail.data));
     }
@@ -1599,12 +1617,110 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
 }
 
 export class InboundEmailIngestionService {
+  private recoveryRunning = false;
+  private readonly imports: InboundEmailImportRepository;
   constructor(
     private readonly dbInstance = db,
     private readonly adapterByProvider: Record<string, InboundEmailProviderAdapter> = { gmail: new GmailInboundEmailAdapter() },
     private readonly inboundRepository: InboundOrdersRepository = inboundOrdersRepository,
     private readonly storageService: StorageApplicationService = storageApplicationService,
-  ) {}
+    imports?: InboundEmailImportRepository,
+  ) { this.imports = imports ?? new InboundEmailImportRepository(dbInstance); }
+
+  async recoverInterruptedImports(limit = 3): Promise<{ processed: number }> {
+    if (this.recoveryRunning || !isInboundImportRecoveryEnabled()) return { processed: 0 };
+    this.recoveryRunning = true;
+    let processed = 0;
+    try {
+      for (; processed < Math.min(10, Math.max(1, limit)); processed++) {
+        const job = await this.imports.claim({ automatic: true });
+        if (!job) break;
+        await this.resumeImport(job);
+      }
+      return { processed };
+    } finally { this.recoveryRunning = false; }
+  }
+
+  private async resumeImport(job: InboundImportJob, listedMessage?: InboundEmailProviderMessage): Promise<InboundEmailProcessMessageResult | null> {
+    const heartbeat = setInterval(() => { void this.imports.heartbeat(job).catch(() => false); }, Math.floor(INBOUND_IMPORT_LEASE_MS / 3));
+    heartbeat.unref?.();
+    try {
+      return await inboundImportContext.run(job, async () => {
+        const [mailbox] = await this.dbInstance.select().from(inboundEmailMailboxes).where(and(eq(inboundEmailMailboxes.id, job.mailboxId),
+          eq(inboundEmailMailboxes.organizationId, job.organizationId), eq(inboundEmailMailboxes.provider, job.provider), eq(inboundEmailMailboxes.enabled, true))).limit(1);
+        if (!mailbox || !job.actorUserId) throw Object.assign(new Error('Import source/account unavailable'), { status: 403 });
+        if (mailbox.emailAddress.trim().toLowerCase() !== job.providerAccount) throw Object.assign(new Error('Import account changed'), { status: 403 });
+        const [organization] = await this.dbInstance.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, job.organizationId)).limit(1);
+        const preferences = (organization?.settings as any)?.preferences;
+        const settings = resolveInboundEmailIntakeSettingsFromPreferences(preferences);
+        if (!settings.inboundEmailIntakeEnabled || settings.inboundEmailPullPaused) throw Object.assign(new Error('Intake paused'), { status: 403 });
+        const adapter = this.adapterByProvider[job.provider];
+        if (!adapter || (job.workKind === 'message' && !listedMessage && !adapter.getMessage)) throw Object.assign(new Error('Import provider unavailable'), { status: 403 });
+        if (job.workKind === 'discovery') {
+          if (!job.discoveryJson) throw Object.assign(new Error('Discovery checkpoint missing'), {status:400});
+          let receivedPage = false;
+          const messages = await adapter.listRecentMessages(mailbox, job.discoveryJson.limit, async (identities, nextPage) => {
+            receivedPage = true;
+            await this.imports.discoveryPage(job, mailbox, identities, nextPage);
+          }, job.discoveryJson);
+          if (!receivedPage) await this.imports.discoveryPage(job, mailbox, messages.map(message => ({messageId:message.messageId,threadId:message.threadId})));
+          return {status:'skippedDuplicates',processingOutcome:'other',reason:'Discovery identities and cursor committed.'};
+        }
+        const message = listedMessage ?? await adapter.getMessage!(mailbox, job.providerMessageId);
+        if (message.provider !== job.provider || message.messageId !== job.providerMessageId) throw Object.assign(new Error('Provider identity mismatch'), { status: 403 });
+        await this.dbInstance.transaction(async tx => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${job.organizationId}`}))`);
+          await assertInboundImportClaim(tx, job.organizationId);
+          await tx.update(inboundEmailImportJobs).set({ providerThreadId: message.threadId }).where(eq(inboundEmailImportJobs.id, job.id));
+        });
+        job.providerThreadId = message.threadId;
+        const source = await this.ensureSourceForMailbox(mailbox);
+        const outcome = await this.processMessage(job.organizationId, job.actorUserId!, mailbox, source, message, adapter);
+        await this.finishImport(job, outcome);
+        return outcome;
+      });
+    } catch (error: any) {
+      if (!(error instanceof InboundEvidenceConflictError)) {
+        const status = Number(error?.response?.status ?? error?.status ?? error?.code);
+        const resetDiscovery = job.workKind === 'discovery' && status === 400 && Boolean(job.discoveryJson?.pageToken);
+        const permanent = !resetDiscovery && [400, 401, 403, 404, 410].includes(status);
+        await this.imports.fail(job, permanent ? 'IMPORT_PROVIDER_UNAVAILABLE' : 'IMPORT_TRANSIENT_FAILURE', permanent, resetDiscovery);
+      }
+      // Provider exception text may contain tokens, message content or URLs.
+      console.warn('[InboundEmailImport] Import retained for recovery', { organizationId: job.organizationId, jobId: job.id, code: 'IMPORT_NOT_COMPLETED' });
+      return null;
+    } finally { clearInterval(heartbeat); }
+  }
+
+  private async finishImport(job: InboundImportJob, outcome: InboundEmailProcessMessageResult) {
+    await this.inboundRepository.transaction(async (tx, repository) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${job.organizationId}`}))`);
+      await assertInboundImportClaim(tx, job.organizationId);
+      let status: 'complete' | 'skipped' | 'needs_attention' = outcome.recordId ? 'complete' : 'skipped';
+      if (outcome.recordId) {
+        const state = await repository.lockForEvidenceHandling(job.organizationId, outcome.recordId);
+        const unavailable = unavailableInboundImportFiles(state.files);
+        if (unavailable.some(file => (file.metadataJson as any)?.attachmentState === 'download_failed')) {
+          throw new Error('Retryable attachment import failure');
+        }
+        if (unavailable.length) status = 'needs_attention';
+        const [pending] = await tx.select({ id: inboundEmailImportJobs.id }).from(inboundEmailImportJobs).where(and(
+          eq(inboundEmailImportJobs.organizationId, job.organizationId), eq(inboundEmailImportJobs.mailboxId, job.mailboxId),
+          sql`${inboundEmailImportJobs.id} <> ${job.id}`, sql`${inboundEmailImportJobs.status} not in ('complete','skipped')`,
+          sql`(${inboundEmailImportJobs.inboundRecordId} = ${state.record.id} or (${job.providerThreadId ?? ''} <> '' and ${inboundEmailImportJobs.providerThreadId} = ${job.providerThreadId ?? ''}))`,
+        )).limit(1);
+        await tx.update(inboundOrderRecords).set({ normalizedPayloadJson: { ...(state.record.normalizedPayloadJson ?? {}),
+          importIncomplete: status !== 'complete' || Boolean(pending) } }).where(and(eq(inboundOrderRecords.id, state.record.id), eq(inboundOrderRecords.organizationId, job.organizationId)));
+        // Claim and evidence locks remain held by this outer transaction. Only
+        // suppress automatic "in progress" rebinding while publishing completion.
+        if (status === 'complete' && !pending) await inboundImportContext.run(undefined, () => repository.completeEmailImport(job.organizationId, state.record.id, job.actorUserId!));
+      }
+      await tx.update(inboundEmailImportJobs).set({ status, claimToken: null, claimExpiresAt: null, updatedAt: new Date(),
+        errorCode: status === 'needs_attention' ? 'IMPORT_EVIDENCE_UNAVAILABLE' : null,
+        message: status === 'needs_attention' ? 'Some attachments are unavailable, untrusted or quarantined. Resolve them using the existing attachment controls, then retry import.' : null,
+      }).where(and(eq(inboundEmailImportJobs.id, job.id), eq(inboundEmailImportJobs.organizationId, job.organizationId)));
+    });
+  }
 
   async pullLatestEmails(args: {
     organizationId: string;
@@ -1646,39 +1762,38 @@ export class InboundEmailIngestionService {
       try {
         const adapter = this.adapterByProvider[mailbox.provider];
         if (!adapter) throw new Error(`Unsupported inbound email provider: ${mailbox.provider}`);
-        const source = await this.ensureSourceForMailbox(mailbox);
-        const messages = await adapter.listRecentMessages(mailbox, mailboxLimit);
-        const listDiagnostics = adapter.getLastListDiagnostics?.() ?? null;
-        for (const message of messages) {
+        await this.imports.beginDiscovery(mailbox, args.actorUserId, inboundGmailDiscoveryOptions(mailbox, mailboxLimit, new Date()));
+        const discovery = await this.imports.claim({organizationId:args.organizationId,mailboxId:mailbox.id,workKind:'discovery'});
+        if (discovery && !await this.resumeImport(discovery)) { result.failed++;summary.failed++; }
+        // Keep diagnostics request/mailbox scoped across concurrent tenants.
+        const listDiagnostics = discovery?.discoveryJson ? { provider: mailbox.provider, query: discovery.discoveryJson.query,
+          maxResults: discovery.discoveryJson.limit, discoveryJobId: discovery.id, durable: true } : null;
+        for (let index = 0; index < mailboxLimit; index++) {
           try {
-            const outcome = await this.processMessage(args.organizationId, args.actorUserId, mailbox, source, message, adapter);
+            const claim = await this.imports.claim({ organizationId: args.organizationId, mailboxId: mailbox.id, workKind:'message' });
+            if (!claim) break;
+            const outcome = await this.resumeImport(claim);
+            if (!outcome) { result.failed++; summary.failed++; continue; }
             // Import is complete only after available attachments are stored.
             // The completion transaction captures evidence and durable work
             // together. Repeated imports converge on the same evidence job.
-            if (outcome.recordId && (outcome.status === "created" || outcome.status === "skippedDuplicates")) await this.inboundRepository.completeEmailImport(args.organizationId, outcome.recordId, args.actorUserId);
             result[outcome.status] += 1;
             summary[outcome.status] += 1;
             if (outcome.status === "created" && outcome.recordId) {
               createdRecordIds.push(outcome.recordId);
             }
-            processedMessages.push(processingDiagnosticForMessage(message, outcome));
           } catch (error) {
             result.failed += 1;
             summary.failed += 1;
-            processedMessages.push(processingDiagnosticForMessage(message, {
-              processingOutcome: "failed",
-              reason: error instanceof Error ? error.message : "Failed to process Gmail message.",
-              recordId: null,
-            }));
             console.error("[Inbound Email Pull] Failed to process message", {
               organizationId: args.organizationId,
               mailboxId: mailbox.id,
-              messageId: message.messageId,
-              error,
+              code: 'IMPORT_NOT_COMPLETED',
             });
           }
         }
-        await this.markMailboxPull(mailbox, "success", null, {
+        result.error = result.failed ? 'Some import work remains incomplete. Review Email import progress; durable identities are retained.' : null;
+        await this.markMailboxPull(mailbox, result.failed ? "failed" : "success", result.error, {
           provider: mailbox.provider,
           mailboxId: mailbox.id,
           mailboxEmail: mailbox.emailAddress,
@@ -1697,7 +1812,7 @@ export class InboundEmailIngestionService {
           result,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to pull inbound mailbox.";
+        const message = "Mailbox discovery could not complete. Discovered work is retained; check mailbox access and retry.";
         result.failed += 1;
         summary.failed += 1;
         result.error = message;
@@ -1738,7 +1853,7 @@ export class InboundEmailIngestionService {
         console.error("[Inbound Email Pull] Mailbox pull failed", {
           organizationId: args.organizationId,
           mailboxId: mailbox.id,
-          error,
+          code: 'IMPORT_DISCOVERY_FAILED',
         });
       }
 
@@ -2861,6 +2976,8 @@ export class InboundEmailIngestionService {
     };
 
     const [record] = await this.dbInstance.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${organizationId}`}))`);
+      await assertInboundImportClaim(tx, organizationId);
       const [created] = await tx
         .insert(inboundOrderRecords)
         .values({
@@ -2930,6 +3047,8 @@ export class InboundEmailIngestionService {
         .returning();
 
       if (!created) return [null];
+
+      await bindInboundImportRecord(tx, created);
 
       await tx.insert(inboundOrderEvents).values({
         organizationId,
@@ -3174,6 +3293,8 @@ export class InboundEmailIngestionService {
     });
 
     const [createdRecord] = await this.dbInstance.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${organizationId}`}))`);
+      await assertInboundImportClaim(tx, organizationId);
       const [created] = await tx
         .insert(inboundOrderRecords)
         .values({
@@ -3213,6 +3334,8 @@ export class InboundEmailIngestionService {
         .returning();
 
       if (!created) return [null];
+
+      await bindInboundImportRecord(tx, created);
 
       await tx.insert(inboundOrderEvents).values({
         organizationId,
@@ -3318,7 +3441,14 @@ export class InboundEmailIngestionService {
     if (seedMessage.threadId && adapter.getThreadMessages) {
       try {
         messages = await adapter.getThreadMessages(mailbox, seedMessage.threadId);
+        const claim = inboundImportContext.getStore();
+        if (claim) {
+          const [job] = await this.dbInstance.select({ actorUserId: inboundEmailImportJobs.actorUserId }).from(inboundEmailImportJobs).where(eq(inboundEmailImportJobs.id, claim.id)).limit(1);
+          if (job?.actorUserId) await this.imports.discover(mailbox, job.actorUserId,
+            messages.map(message => ({ messageId: message.messageId, threadId: message.threadId })));
+        }
       } catch (error) {
+        if (inboundImportContext.getStore()) throw error;
         console.warn("[Inbound Email Pull] Failed to fetch Gmail thread; falling back to listed message", {
           mailboxId: mailbox.id,
           threadId: seedMessage.threadId,
@@ -3534,6 +3664,9 @@ export class InboundEmailIngestionService {
     record: InboundOrderRecord;
     adapter: InboundEmailProviderAdapter;
   }): Promise<void> {
+    if (inboundImportContext.getStore()) await this.inboundRepository.transaction(async (_tx, repository) => {
+      await repository.lockForEvidenceHandling(args.organizationId, args.record.id);
+    });
     const existingFiles = await this.inboundRepository.listFiles(args.organizationId, args.record.id);
     const existingProviderAttachmentIds = new Set(existingFiles.map((file) => file.providerAttachmentId).filter((value): value is string => Boolean(value)));
     const attachmentCandidates = this.attachmentCandidatesForIngestion(args.message, args.record);
@@ -3543,6 +3676,7 @@ export class InboundEmailIngestionService {
     const shouldBackfill = attachmentCandidates.length > 0 && (
       existingFiles.length === 0
       || hasMissingProviderAttachment
+      || existingFiles.some(file => (file.metadataJson as any)?.attachmentState === "download_failed")
       || (hasAttachmentsWithoutProviderIds && existingFiles.length === 0)
     );
 
@@ -3753,6 +3887,7 @@ export class InboundEmailIngestionService {
         attachments: dedupeAttachmentCandidates(payloadDiagnostics.extractedAttachments),
       };
     } catch (error) {
+      if (inboundImportContext.getStore()) throw error;
       console.warn("[Inbound Email Pull] Failed to recover Gmail attachment candidates from full payload", {
         mailboxId: mailbox.id,
         messageId: message.messageId,
@@ -3913,12 +4048,30 @@ export class InboundEmailIngestionService {
     };
   }
 
+  private excludedByStaff(file: InboundOrderFile): boolean {
+    const classification = (file.metadataJson as any)?.attachmentClassification;
+    return classification?.source === 'manual_override' && ['IGNORE_INLINE','OTHER'].includes(classification.classification);
+  }
+
+  private retainAttachmentReview(file: InboundOrderFile | null,
+    values: Omit<Parameters<InboundOrdersRepository['createFile']>[0], 'organizationId' | 'inboundRecordId'>) {
+    const metadata = file?.metadataJson as any;
+    if (!file || metadata?.attachmentClassification?.source !== 'manual_override') return values;
+    return { ...values, role: file.role, metadataJson: { ...values.metadataJson,
+      attachmentClassification: metadata.attachmentClassification, manualAttachmentClassification: true,
+      attachmentClassificationUpdatedAt: metadata.attachmentClassificationUpdatedAt,
+      attachmentClassificationUpdatedByUserId: metadata.attachmentClassificationUpdatedByUserId,
+      attachmentClassificationRuleId: metadata.attachmentClassificationRuleId,
+    } };
+  }
+
   private async persistMetadataOnlyAttachment(args: {
     organizationId: string;
     record: InboundOrderRecord;
     existingFile: InboundOrderFile | null;
     values: Omit<Parameters<InboundOrdersRepository["createFile"]>[0], "organizationId" | "inboundRecordId">;
   }): Promise<InboundOrderFile> {
+    args.values = this.retainAttachmentReview(args.existingFile, args.values);
     if (!args.existingFile) {
       return this.inboundRepository.createFile({
         organizationId: args.organizationId,
@@ -3987,6 +4140,7 @@ export class InboundEmailIngestionService {
     existingFile: InboundOrderFile | null;
     values: Omit<Parameters<InboundOrdersRepository["createFile"]>[0], "organizationId" | "inboundRecordId">;
   }): Promise<InboundOrderFile> {
+    args.values = this.retainAttachmentReview(args.existingFile, args.values);
     if (!args.existingFile) {
       return this.inboundRepository.createFile({
         organizationId: args.organizationId,
@@ -4124,7 +4278,7 @@ export class InboundEmailIngestionService {
           });
           if (existing) {
             const existingState = stringFromUnknown((existing.metadataJson as Record<string, unknown> | null)?.attachmentState);
-            if (existing.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
+            if (this.excludedByStaff(existing) || existing.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
               await this.updateExistingAttachmentDedupeMetadata({
                 organizationId: args.organizationId,
                 record: args.record,
@@ -4142,7 +4296,7 @@ export class InboundEmailIngestionService {
         }
         if (existingFile) {
           const existingState = stringFromUnknown((existingFile.metadataJson as Record<string, unknown> | null)?.attachmentState);
-          if (existingFile.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
+          if (this.excludedByStaff(existingFile) || existingFile.fileRecordId || existingState === "blocked_file_type" || existingState === "scan_pending" || existingState === "quarantined") {
             await this.updateExistingAttachmentDedupeMetadata({
               organizationId: args.organizationId,
               record: args.record,
@@ -4283,7 +4437,8 @@ export class InboundEmailIngestionService {
         diagnostics.attachmentRowsCreated += 1;
         diagnostics.storedRowsCreated += 1;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Attachment download failed.";
+        if (error instanceof InboundEvidenceConflictError) throw error;
+        const message = "Attachment download or persistence failed. Source identity is retained for retry.";
         const failureStage = diagnostics.downloadSuccesses >= diagnostics.downloadAttempts ? "storage" : "gmail_api";
         const gmailApiError = failureStage === "gmail_api" ? message : null;
         const storageError = failureStage === "storage" ? message : null;
@@ -4292,7 +4447,6 @@ export class InboundEmailIngestionService {
           inboundRecordId: args.record.id,
           messageId: providerMessageId,
           attachmentId: providerAttachmentId,
-          filename,
           error: message,
         });
         const persisted = await this.persistMetadataOnlyAttachment({

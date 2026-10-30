@@ -34,6 +34,7 @@ import {
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
+import { InboundEmailImportRepository, isInboundImportRecoveryEnabled } from "../storage/inboundEmailImport.repo";
 import { inboundAttachmentClassificationRuleMatchTypeSchema } from "@shared/schema";
 import { inboundAttachmentClassificationValues } from "@shared/inboundAttachmentClassification";
 import {
@@ -365,6 +366,7 @@ export function registerInboundOrderRoutes(
     inboundOrderService?: typeof inboundOrderService;
     inboundOrderParsingService?: typeof inboundOrderParsingService;
     inboundEmailProcessingRepository?: typeof inboundEmailProcessingRepository;
+    inboundEmailImportRepository?: InboundEmailImportRepository;
     inboundOrdersRepository?: typeof inboundOrdersRepository;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
@@ -379,6 +381,26 @@ export function registerInboundOrderRoutes(
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
   const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
   const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
+
+  const importRepository = middleware.inboundEmailImportRepository ?? new InboundEmailImportRepository();
+  app.get('/api/inbound-orders/email-imports', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(400).json({ message: 'Missing organization context' });
+    try { res.json({ success: true, data: { enabled: isInboundImportRecoveryEnabled(organizationId), jobs: await importRepository.list(organizationId) } }); }
+    catch { res.status(503).json({ message: 'Import recovery status is unavailable. Source identities are retained.' }); }
+  });
+  app.post('/api/inbound-orders/email-imports/:jobId/retry', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req), actorUserId = getUserId(req.user);
+    if (!organizationId || !actorUserId) return res.status(401).json({ message: 'Missing tenant or staff identity' });
+    try {
+      await importRepository.retry(organizationId, String(req.params.jobId), actorUserId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(error instanceof InboundEvidenceConflictError ? 409 : 503).json({ message: 'Import retry could not be queued. Refresh its state before trying again.' });
+    }
+  });
 
   app.get("/api/inbound-orders/email-settings", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
