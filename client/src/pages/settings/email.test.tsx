@@ -965,7 +965,7 @@ describe("EmailSettings inbound mailbox settings", () => {
     await waitForText("quotes@example.com");
 
     const reconnectButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Reconnect") as HTMLButtonElement;
+      .find((button) => button.textContent?.trim() === "Reconnect for import / Entered updates") as HTMLButtonElement;
     await act(async () => {
       reconnectButton.click();
     });

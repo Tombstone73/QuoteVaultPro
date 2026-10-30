@@ -10180,6 +10180,28 @@ export const inboundOrderParseAttempts = pgTable("inbound_order_parse_attempts",
   index("inbound_order_parse_attempts_org_status_created_idx").on(table.organizationId, table.status, table.createdAt),
 ]);
 
+export const inboundGmailAcknowledgements = pgTable("inbound_gmail_acknowledgements", {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  inboundRecordId: varchar('inbound_record_id').notNull().references(() => inboundOrderRecords.id, { onDelete: 'cascade' }),
+  orderId: varchar('order_id').notNull().references(() => orders.id),
+  mailboxId: varchar('mailbox_id').notNull().references(() => inboundEmailMailboxes.id),
+  providerAccount: varchar('provider_account', {length:320}).notNull(),
+  evidenceFingerprint: varchar('evidence_fingerprint', {length:128}).notNull(),
+  messageIds: jsonb('message_ids').$type<string[]>().notNull(),
+  status: varchar('status', {length:32}).$type<import('./inboundGmailAcknowledgement').GmailAcknowledgementStatus>().notNull().default('waiting'),
+  attempts: integer('attempts').notNull().default(0),
+  nextAttemptAt: timestamp('next_attempt_at', {withTimezone:true}).notNull().defaultNow(),
+  claimToken: varchar('claim_token'), claimExpiresAt: timestamp('claim_expires_at', {withTimezone:true}),
+  errorCode: varchar('error_code', {length:80}), message: text('message'),
+  createdAt: timestamp('created_at', {withTimezone:true}).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', {withTimezone:true}).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('inbound_gmail_ack_evidence_uidx').on(table.organizationId,table.inboundRecordId,table.mailboxId,table.evidenceFingerprint),
+  index('inbound_gmail_ack_claim_idx').on(table.status,table.nextAttemptAt,table.claimExpiresAt),
+  index('inbound_gmail_ack_mailbox_idx').on(table.organizationId,table.mailboxId,table.status),
+]);
+
 export const inboundEmailImportJobs = pgTable("inbound_email_import_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),

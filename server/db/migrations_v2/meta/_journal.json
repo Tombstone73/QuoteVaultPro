@@ -1653,6 +1653,13 @@
       "when": 1793491200000,
       "tag": "0242_inbound_email_import_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1793577600000,
+      "tag": "0243_inbound_gmail_acknowledgements",
+      "breakpoints": true
     }
   ]
 }

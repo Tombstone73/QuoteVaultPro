@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const inboundEmailMailboxSettingsSchema = z.object({
+  gmailAcknowledgementEnabled: z.boolean().default(false),
   lookbackDays: z.coerce.number().int().min(1).max(365).default(14),
   maxMessages: z.coerce.number().int().min(1).max(100).default(50),
   gmailQuery: z.string().trim().max(500).optional().nullable().default(null),
@@ -17,6 +18,7 @@ export const inboundEmailMailboxViewSchema = z.object({
   lastPulledAt: z.string().nullable(),
   lastPullStatus: z.string().nullable(),
   lastPullError: z.string().nullable(),
+  acknowledgementPermission: z.enum(['available', 'reconnect_required']).default('reconnect_required'),
   settings: inboundEmailMailboxSettingsSchema.default(inboundEmailMailboxSettingsSchema.parse({})),
   createdAt: z.string().nullable(),
   updatedAt: z.string().nullable(),

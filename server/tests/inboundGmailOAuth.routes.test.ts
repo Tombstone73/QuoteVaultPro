@@ -52,8 +52,8 @@ describe("inbound Gmail backend callback", () => {
     process.env.APP_URL = web;
     const url = await start();
     expect(url.searchParams.get("redirect_uri")).toBe(api + callback);
-    expect(url.searchParams.get("scope")).toContain("gmail.readonly");
-    expect(url.searchParams.get("scope")).not.toContain("gmail.modify");
+    expect(url.searchParams.get("scope")).toContain("gmail.modify");
+    expect(url.searchParams.get("scope")).not.toContain("https://mail.google.com/");
     expect(url.searchParams.get("access_type")).toBe("offline");
   });
 
@@ -161,13 +161,16 @@ describe("inbound Gmail backend callback", () => {
   test("missing refresh token and unverified profile never replace an existing connection", async () => {
     const state = (await start()).searchParams.get("state")!;
     const exchange = jest.spyOn(google.auth.OAuth2.prototype, "getToken").mockImplementation((async () => ({ tokens: {} })) as any);
+    jest.spyOn(google, "oauth2").mockReturnValue({ userinfo: { get: async () => ({ data: { email: "synthetic@example.com", verified_email: true } }) } } as any);
+    connectGmailMailbox.mockRejectedValueOnce(Object.assign(new Error('No reusable token'), {code:'no_refresh_token'}));
     const missing = await request(app()).get(callback).query({ state, code: "synthetic-code" });
     expect(returnUrl(missing).searchParams.get("inboundGmailError")).toBe("no_refresh_token");
     exchange.mockImplementation((async () => ({ tokens: { refresh_token: "new-token" } })) as any);
     jest.spyOn(google, "oauth2").mockReturnValue({ userinfo: { get: async () => ({ data: { email: "synthetic@example.com", verified_email: false } }) } } as any);
     const unverified = await request(app()).get(callback).query({ state, code: "synthetic-code" });
     expect(returnUrl(unverified).searchParams.get("inboundGmailError")).toBe("profile_lookup_failed");
-    expect(connectGmailMailbox).not.toHaveBeenCalled();
+    expect(connectGmailMailbox).toHaveBeenCalledTimes(1);
+    expect(connectGmailMailbox).toHaveBeenCalledWith(expect.objectContaining({emailAddress:'synthetic@example.com',refreshToken:undefined}));
     expect(connected.authJson.refreshToken).toBe("existing-valid-token");
   });
 });

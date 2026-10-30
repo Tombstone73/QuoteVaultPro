@@ -105,8 +105,10 @@ verification gate, confirm tenant/provider configuration,
 and perform DEV acceptance using synthetic imported evidence and a test AI
 provider. Do not connect a production mailbox or submit an Order to test the worker.
 
-Gmail acknowledgement/read/label handling and broader Assistant integration remain
-unfinished. Durable interrupted-import recovery is now implemented separately and
+Gmail acknowledgement/read/Entered handling is now implemented in the separate
+[acknowledgement milestone](inbound-gmail-acknowledgement.md), disabled by default.
+Broader Assistant integration remains outside these milestones.
+Durable interrupted-import recovery is implemented separately and
 disabled by default; pre-tracking legacy imports still require reconciliation. This is automatic
 draft preparation after import, not a complete autonomous email-intake rollout.
 
@@ -211,7 +213,8 @@ URL construction and documents the required DEV Google redirect allowlist/config
 review; successful reconnect still needs deployed acceptance.
 
 Remaining rollout gates: migrations 0240, 0241 and 0242 readiness/application in the intended
-environment; import recovery activation and deployed provider acceptance; Gmail acknowledgement/read/label policy;
+environment (including additive 0243 for acknowledgement); import recovery and
+acknowledgement activation, scoped Gmail reconnect and deployed provider acceptance;
 legacy reconciliation and queue-volume assessment;
 and DEV acceptance of queue counts, legacy volume, revision review and human
 approval using synthetic evidence. Nothing is pushed, deployed, enabled or

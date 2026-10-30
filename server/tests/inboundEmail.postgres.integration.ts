@@ -357,7 +357,8 @@ test('canonical concurrent Quote conversion links one Order and resolves only it
 test('stale explicit Order attachment rejects; current attachment resolves the revision without changing the job',async()=>{
   const quote=await linkedQuote();const order=await convert(quote.id);const old=(await state()).fingerprint;
   const before=await db.select().from(schema.orderLineItems).where(eq(schema.orderLineItems.orderId,order.id));
-  await repo.createFile({organizationId:org,inboundRecordId:id,sourceFilename:'new-evidence.txt',checksum:'new-evidence'});
+  await repo.createFile({organizationId:org,inboundRecordId:id,sourceFilename:'new-evidence.txt',checksum:'new-evidence',
+    metadataJson:{attachmentClassification:{source:'manual_override',classification:'OTHER'}}});
   const attach=(fingerprint:string)=>repo.updateRecordWithEvent({...identity(),expectedEvidenceFingerprint:fingerprint,
     patch:{status:'ignored',reviewOutcome:'attached_to_order',normalizedPayloadJson:{attachedOrderId:order.id}},
     event:{actorType:'user',actorUserId:user,eventType:'order.attached'}});

@@ -152,7 +152,10 @@ migration integrity checks pass. No full build/typecheck is needed.
 - Review/apply migrations **0240, 0241 and 0242** in the intended shared environment.
 - Deployed Neon transport, process lifecycle, real Gmail query/cursor/timeout and
   storage-provider behavior remain unverified by local fixtures.
-- Gmail acknowledgement/read/label policy remains unfinished. No permission changes.
+- The subsequent [Gmail acknowledgement milestone](inbound-gmail-acknowledgement.md)
+  implements read/Entered updates with gmail.modify reconnect and additive 0243.
+  It remains disabled and requires separate provider/DEV acceptance; the recovery
+  milestone itself did not change Gmail permissions.
 - Legacy imports interrupted before durable discovery tracking are not automatically
   enrolled. Reconciliation of their manifests/linkages and queue volume remains an
   explicit rollout task; no historical mailbox scan or bulk disposition backfill runs.

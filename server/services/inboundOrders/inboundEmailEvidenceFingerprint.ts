@@ -86,7 +86,7 @@ export function fingerprintInboundEmailEvidence(record: {
     combinedSources: (Array.isArray(object(record.normalizedPayloadJson).combinedSources)
       ? object(record.normalizedPayloadJson).combinedSources as unknown[] : []).map((value) => {
         const source = object(object(value).evidence);
-        return { subject: source.subject ?? null, senderName: source.senderName ?? null, senderEmail: source.senderEmail ?? null,
+        return { messageManifest: object(value).messageManifest ?? undefined, subject: source.subject ?? null, senderName: source.senderName ?? null, senderEmail: source.senderEmail ?? null,
           bodyText: source.bodyText ?? null, bodyHtml: source.bodyHtml ?? null, notes: source.notes ?? null, reference: source.reference ?? null };
       }).sort(compare),
     messages,

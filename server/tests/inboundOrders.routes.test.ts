@@ -410,6 +410,7 @@ function buildApp(
     inboundOrdersRepository?: Record<string, any>;
     inboundEmailProcessingRepository?: Record<string, any>;
     inboundEmailImportRepository?: Record<string, any>;
+    inboundGmailAcknowledgementRepository?: Record<string, any>;
     userRole?: string;
   } = {},
 ) {
@@ -445,11 +446,23 @@ function buildApp(
     inboundOrdersRepository: (options.inboundOrdersRepository ?? defaultInboundOrdersRepository) as any,
     inboundEmailProcessingRepository: options.inboundEmailProcessingRepository as any,
     inboundEmailImportRepository: options.inboundEmailImportRepository as any,
+    inboundGmailAcknowledgementRepository: options.inboundGmailAcknowledgementRepository as any,
   });
   return app;
 }
 
 describe("inbound order routes", () => {
+  test('Gmail acknowledgement visibility/retry is tenant scoped, internal only and never performs conversion',async()=>{
+    const ack={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
+    const app=buildApp({}, {inboundGmailAcknowledgementRepository:ack});
+    expect((await request(app).get('/api/inbound-orders/gmail-acknowledgements')).status).toBe(200);
+    expect(ack.list).toHaveBeenCalledWith('org_1');
+    expect((await request(app).post('/api/inbound-orders/gmail-acknowledgements/ack/retry').send({organizationId:'foreign'})).status).toBe(200);
+    expect(ack.retry).toHaveBeenCalledWith('org_1','ack','user_1');
+    const denied=buildApp({}, {internal:false,inboundGmailAcknowledgementRepository:ack});
+    expect((await request(denied).get('/api/inbound-orders/gmail-acknowledgements')).status).toBe(403);
+    expect((await request(denied).post('/api/inbound-orders/gmail-acknowledgements/ack/retry')).status).toBe(403);
+  });
   test('import progress and safe retry retain tenant and internal-staff permissions', async()=>{
     const imports={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
     const app=buildApp({}, {inboundEmailImportRepository:imports});
@@ -915,7 +928,7 @@ describe("inbound order routes", () => {
       expect(response.body.success).toBe(true);
       const url = String(response.body.data.url);
       expect(url).toContain("accounts.google.com");
-      expect(decodeURIComponent(url)).toContain("https://www.googleapis.com/auth/gmail.readonly");
+      expect(decodeURIComponent(url)).toContain("https://www.googleapis.com/auth/gmail.modify");
       expect(decodeURIComponent(url)).toContain("/api/inbound-orders/email/mailboxes/gmail/callback");
       expect(decodeURIComponent(url)).toContain("inbound_gmail");
       expect(url).not.toContain("/api/email/google/callback");

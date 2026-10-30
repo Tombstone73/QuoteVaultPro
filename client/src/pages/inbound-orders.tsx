@@ -65,6 +65,7 @@ import { formatFileSize } from "@/lib/fileUtils";
 import { apiFetch } from "@/lib/queryClient";
 import { InboundEmailProcessingStatus } from "@/components/inbound/InboundEmailProcessingStatus";
 import { InboundEmailImportStatus } from "@/components/inbound/InboundEmailImportStatus";
+import { InboundGmailAcknowledgementStatus } from '@/components/inbound/InboundGmailAcknowledgementStatus';
 import { cn } from "@/lib/utils";
 import {
   getManualInboundEvidence,
@@ -11493,6 +11494,7 @@ export default function InboundOrdersPage() {
           </div>
         </div>
         {!inboundEmailFeatureDisabled && <InboundEmailImportStatus onOpenRecord={setSelectedId} />}
+        <InboundGmailAcknowledgementStatus onOpenRecord={setSelectedId} />
         {selectedRecord?.sourceType === "email" && !selectedRecord.createdOrderId && !selectedRecord.createdQuoteId && !inboundEmailFeatureDisabled && <InboundEmailProcessingStatus key={selectedRecord.id} recordId={selectedRecord.id} />}
         {selectedRecord && <InboundAccountabilityNotice record={selectedRecord} />}
         {pageError && (

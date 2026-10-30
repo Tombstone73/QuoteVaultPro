@@ -1,4 +1,5 @@
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
+import { inboundEmailMessageManifest } from '@shared/inboundEmailMessageManifest';
 import { evidenceFingerprintFromSnapshot, INBOUND_EVIDENCE_REVIEW_REQUIRED, InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
 import {
   type InboundOrderDecisionFlag,
@@ -2917,6 +2918,7 @@ export class InboundOrderService {
         sourceLabel: record.sourceLabel,
         sourceRecordId: record.sourceRecordId,
         sourceMessageId: record.sourceMessageId,
+        messageManifest: inboundEmailMessageManifest(record),
         externalReference: record.externalReference,
         receivedAt: record.receivedAt.toISOString(),
         matchedCustomerId: record.matchedCustomerId,

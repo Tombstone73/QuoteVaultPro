@@ -5,6 +5,8 @@ import "dotenv/config";
 import { inboundEmailProcessingWorker } from "./services/inboundOrders/InboundEmailProcessingWorker";
 import { inboundEmailIngestionService } from "./services/inboundEmailIngestionService";
 import { isInboundImportRecoveryEnabled } from "./storage/inboundEmailImport.repo";
+import { inboundGmailAcknowledgementWorker } from './services/inboundOrders/InboundGmailAcknowledgementWorker';
+import { isGmailAcknowledgementEnabled } from './storage/inboundGmailAcknowledgement.repo';
 import { isInboundEmailProcessingEnabled } from "./services/inboundOrders/inboundEmailProcessingConfig";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -414,6 +416,12 @@ process.on('uncaughtException', (error) => {
       }
 
       const inboundDraftsEnabled = isInboundEmailProcessingEnabled();
+      const gmailAckEnabled=isGmailAcknowledgementEnabled();
+      logWorkerStatus('Inbound Gmail Acknowledgement',gmailAckEnabled,gmailAckEnabled?30_000:undefined);
+      if(gmailAckEnabled){
+        const tick=()=>inboundGmailAcknowledgementWorker.runOnce().catch(()=>console.warn('[InboundGmailAcknowledgement] Tick failed; work retained.'));
+        const timer=setInterval(()=>{void tick();},30_000);timer.unref?.();void tick();
+      }
       const inboundImportsEnabled = isInboundImportRecoveryEnabled();
       logWorkerStatus('Inbound Email Imports', inboundImportsEnabled, inboundImportsEnabled ? 30_000 : undefined);
       if (inboundImportsEnabled) {

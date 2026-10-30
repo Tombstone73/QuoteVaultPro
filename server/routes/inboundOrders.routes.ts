@@ -36,6 +36,8 @@ import {
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
 import { InboundEmailImportRepository, isInboundImportRecoveryEnabled } from "../storage/inboundEmailImport.repo";
 import { getInboundGmailRedirectUri, getEmailSettingsRedirectUrl } from "../lib/inboundGmailOAuthUrls";
+import { GMAIL_MODIFY_SCOPE } from '@shared/inboundGmailAcknowledgement';
+import { inboundGmailAcknowledgementRepository, isGmailAcknowledgementEnabled } from '../storage/inboundGmailAcknowledgement.repo';
 import { inboundAttachmentClassificationRuleMatchTypeSchema } from "@shared/schema";
 import { inboundAttachmentClassificationValues } from "@shared/inboundAttachmentClassification";
 import {
@@ -357,6 +359,7 @@ export function registerInboundOrderRoutes(
     inboundOrderParsingService?: typeof inboundOrderParsingService;
     inboundEmailProcessingRepository?: typeof inboundEmailProcessingRepository;
     inboundEmailImportRepository?: InboundEmailImportRepository;
+    inboundGmailAcknowledgementRepository?: typeof inboundGmailAcknowledgementRepository;
     inboundOrdersRepository?: typeof inboundOrdersRepository;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
@@ -373,6 +376,21 @@ export function registerInboundOrderRoutes(
   const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
 
   const importRepository = middleware.inboundEmailImportRepository ?? new InboundEmailImportRepository();
+  const acknowledgements = middleware.inboundGmailAcknowledgementRepository ?? inboundGmailAcknowledgementRepository;
+  app.get('/api/inbound-orders/gmail-acknowledgements', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req,res)) return;
+    const organizationId=getRequestOrganizationId(req);
+    if (!organizationId) return res.status(400).json({message:'Missing organization context'});
+    try {res.json({enabled:isGmailAcknowledgementEnabled(organizationId),jobs:await acknowledgements.list(organizationId)});}
+    catch {res.status(503).json({message:'Gmail update status is unavailable. Committed Orders are unchanged.'});}
+  });
+  app.post('/api/inbound-orders/gmail-acknowledgements/:jobId/retry', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req,res)) return;
+    const organizationId=getRequestOrganizationId(req),actorUserId=getUserId(req.user);
+    if (!organizationId||!actorUserId) return res.status(401).json({message:'Missing staff or organization context'});
+    try {await acknowledgements.retry(organizationId,String(req.params.jobId),actorUserId);res.json({success:true});}
+    catch(error){res.status(error instanceof InboundEvidenceConflictError?409:503).json({message:'Gmail retry could not be queued. Refresh its state; the Order is unchanged.'});}
+  });
   app.get('/api/inbound-orders/email-imports', isAuthenticated, tenantContext, async (req: any, res) => {
     if (!assertInternalUser(req, res)) return;
     const organizationId = getRequestOrganizationId(req);
@@ -746,7 +764,7 @@ export function registerInboundOrderRoutes(
         access_type: "offline",
         prompt: "consent",
         scope: [
-          "https://www.googleapis.com/auth/gmail.readonly",
+          GMAIL_MODIFY_SCOPE,
           "https://www.googleapis.com/auth/userinfo.email",
           "https://www.googleapis.com/auth/userinfo.profile",
         ],
@@ -806,9 +824,6 @@ export function registerInboundOrderRoutes(
     try {
       const tokenResponse = await oauth2Client.getToken(code);
       tokens = tokenResponse.tokens;
-      if (!tokens.refresh_token) {
-        return failed("no_refresh_token");
-      }
       oauth2Client.setCredentials(tokens);
     } catch (error) {
       console.warn("[Inbound Gmail OAuth] token_exchange_failed");
@@ -841,7 +856,7 @@ export function registerInboundOrderRoutes(
       });
     } catch (error: any) {
       console.warn("[Inbound Gmail OAuth] storage_failed");
-      const reason = error?.statusCode === 409 ? "duplicate_email" : error?.statusCode === 404 ? "mailbox_not_found" : "storage_failed";
+      const reason = error?.code === 'no_refresh_token' ? 'no_refresh_token' : error?.statusCode === 409 ? "duplicate_email" : error?.statusCode === 404 ? "mailbox_not_found" : "storage_failed";
       return failed(reason);
     }
 
@@ -924,6 +939,9 @@ export function registerInboundOrderRoutes(
         return res.status(404).json({ success: false, message: "Inbound mailbox not found" });
       }
 
+      if (error?.code === '23503' || error?.cause?.code === '23503') {
+        return res.status(409).json({success:false,message:'This mailbox has retained workflow history. Disable it to pause access; deleting retained Gmail update history requires deliberate reconciliation.'});
+      }
       console.error("Error deleting inbound email mailbox:", error);
       res.status(500).json({ success: false, message: "Failed to delete inbound email mailbox" });
     }

@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { google } from "googleapis";
+import { inboundGmailClient } from './inboundOrders/inboundGmailClient';
 
 import { db } from "../db";
 import { fingerprintInboundEmailEvidence } from "./inboundOrders/inboundEmailEvidenceFingerprint";
@@ -1446,18 +1446,7 @@ export class GmailInboundEmailAdapter implements InboundEmailProviderAdapter {
   private lastListDiagnostics: InboundEmailListDiagnostics | null = null;
 
   private buildGmailClient(mailbox: InboundEmailMailbox) {
-    const authJson = (mailbox.authJson ?? {}) as Record<string, unknown>;
-    const refreshToken = stringFromUnknown(authJson.refreshToken);
-    const clientId = stringFromUnknown(authJson.clientId) ?? process.env.GOOGLE_CLIENT_ID ?? null;
-    const clientSecret = stringFromUnknown(authJson.clientSecret) ?? process.env.GOOGLE_CLIENT_SECRET ?? null;
-    const redirectUri = stringFromUnknown(authJson.redirectUri) ?? process.env.GOOGLE_REDIRECT_URI ?? "urn:ietf:wg:oauth:2.0:oob";
-    if (!refreshToken || !clientId || !clientSecret) {
-      throw new Error("Inbound Gmail mailbox is missing OAuth credentials.");
-    }
-
-    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-    oauth2Client.setCredentials({ refresh_token: refreshToken });
-    return google.gmail({ version: "v1", auth: oauth2Client, timeout: 60_000 });
+    return inboundGmailClient(mailbox).gmail;
   }
 
   getLastListDiagnostics(): InboundEmailListDiagnostics | null {

@@ -1,4 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
+import { hasGmailModifyScope } from '@shared/inboundGmailAcknowledgement';
 
 import { db } from "../db";
 import {
@@ -11,7 +12,7 @@ import {
   type InboundEmailMailboxView,
 } from "@shared/inboundEmailMailboxes";
 
-type ConnectPlanMailbox = Pick<InboundEmailMailbox, "id" | "emailAddress" | "enabled" | "isDefault" | "name">;
+type ConnectPlanMailbox = Pick<InboundEmailMailbox, "id" | "emailAddress" | "enabled" | "isDefault" | "name"> & { authJson?: unknown };
 
 type ConnectGmailMailboxPlan =
   | {
@@ -57,6 +58,7 @@ function redactMailbox(mailbox: InboundEmailMailbox): InboundEmailMailboxView {
     lastPulledAt: toIso(mailbox.lastPulledAt),
     lastPullStatus: mailbox.lastPullStatus ?? null,
     lastPullError: mailbox.lastPullError ?? null,
+    acknowledgementPermission: hasGmailModifyScope((mailbox.authJson as any)?.scope) ? 'available' : 'reconnect_required',
     settings: parsedSettings.success ? parsedSettings.data : inboundEmailMailboxSettingsSchema.parse({}),
     createdAt: toIso(mailbox.createdAt),
     updatedAt: toIso(mailbox.updatedAt),
@@ -74,6 +76,17 @@ export function planInboundGmailMailboxConnection(args: {
   const emailAddress = args.emailAddress.trim().toLowerCase();
   const now = args.now ?? new Date();
   const hasDefault = args.currentMailboxes.some((mailbox) => mailbox.isDefault);
+  const credentialsFor = (existing?: ConnectPlanMailbox) => {
+    const previous = existing?.authJson as Record<string, unknown> | undefined;
+    const sameAccount = existing?.emailAddress.toLowerCase() === emailAddress
+      && (!previous?.connectedEmail || String(previous.connectedEmail).toLowerCase() === emailAddress);
+    const refreshToken = args.authJson.refreshToken || (sameAccount ? previous?.refreshToken : null);
+    if (!refreshToken || typeof refreshToken !== 'string') throw Object.assign(new Error('No reusable Gmail refresh credentials for this account'), { statusCode: 400, code: 'no_refresh_token' });
+    const retainingCredentials = sameAccount && !args.authJson.refreshToken;
+    const merged: Record<string, unknown> = { ...(retainingCredentials ? previous : {}), ...args.authJson, refreshToken };
+    if (args.authJson.scope == null && retainingCredentials && previous?.scope) merged.scope = previous.scope;
+    return merged;
+  };
 
   if (args.reconnectMailboxId) {
     const existing = args.currentMailboxes.find((mailbox) => mailbox.id === args.reconnectMailboxId);
@@ -95,7 +108,7 @@ export function planInboundGmailMailboxConnection(args: {
         provider: "gmail",
         name: existing.name || `Gmail Inbound: ${emailAddress}`,
         emailAddress,
-        authJson: args.authJson,
+        authJson: credentialsFor(existing),
         updatedAt: now,
       },
     };
@@ -108,7 +121,7 @@ export function planInboundGmailMailboxConnection(args: {
       mailboxId: existingByEmail.id,
       values: {
         provider: "gmail",
-        authJson: args.authJson,
+        authJson: credentialsFor(existingByEmail),
         updatedAt: now,
       },
     };
@@ -122,7 +135,7 @@ export function planInboundGmailMailboxConnection(args: {
       emailAddress,
       enabled: true,
       isDefault: !hasDefault,
-      authJson: args.authJson,
+      authJson: credentialsFor(),
       settingsJson: inboundEmailMailboxSettingsSchema.parse({}),
       createdByUserId: args.actorUserId ?? null,
     },
@@ -270,7 +283,7 @@ export class InboundEmailMailboxSettingsService {
   async connectGmailMailbox(args: {
     organizationId: string;
     emailAddress: string;
-    refreshToken: string;
+    refreshToken?: string | null;
     actorUserId?: string | null;
     reconnectMailboxId?: string | null;
     scopes?: string[] | string | null;
@@ -295,7 +308,7 @@ export class InboundEmailMailboxSettingsService {
       const currentMailboxes = await tx
         .select()
         .from(inboundEmailMailboxes)
-        .where(eq(inboundEmailMailboxes.organizationId, args.organizationId));
+        .where(eq(inboundEmailMailboxes.organizationId, args.organizationId)).for('update');
       const plan = planInboundGmailMailboxConnection({
         currentMailboxes,
         emailAddress,

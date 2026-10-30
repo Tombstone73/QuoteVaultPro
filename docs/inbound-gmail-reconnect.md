@@ -48,8 +48,10 @@ The existing connection service is called only after token exchange, refresh-tok
 presence and verified profile lookup succeed. Earlier failures leave the existing
 connection unchanged; storage continues through the canonical transaction.
 
-Scopes remain `gmail.readonly`, `userinfo.email` and `userinfo.profile`.
-No `gmail.modify` request or acknowledgement work is included.
+The callback-only commit retained `gmail.readonly`, `userinfo.email` and
+`userinfo.profile`. The subsequent [acknowledgement milestone](inbound-gmail-acknowledgement.md)
+now requests `gmail.modify` for optional read/Entered updates; mailbox-write
+activation remains separately disabled and readonly imports remain supported.
 
 ## Required configuration and access
 
@@ -63,7 +65,8 @@ Before an authorized DEV deployment/reconnect:
 2. On the Google OAuth **Web application client used by DEV's GOOGLE_CLIENT_ID**,
    register that exact backend URL under **Authorized redirect URIs**. Scheme,
    host, path, case and trailing slash must match; this path has no trailing slash.
-   This setting is not an Authorized JavaScript origin. Do not change consent scopes.
+   This setting is not an Authorized JavaScript origin. Review the subsequent
+   acknowledgement milestone's gmail.modify consent requirements separately.
 3. Start a new reconnect from DEV mailbox settings after the code/configuration is
    ready. Old outstanding authorizations issued to the frontend callback are not
    repaired by changing a later token exchange URL.

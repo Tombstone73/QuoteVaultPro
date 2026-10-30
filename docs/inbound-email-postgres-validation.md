@@ -60,8 +60,8 @@ This foundation is a test fixture, **not a production schema snapshot, deploymen
 bootstrap or historical migration replacement**. It does not write a ledger or
 declare migrations applied. Migration journal monotonicity and protected integrity
 checks run first. The unchanged `runMigrations()` executes the complete journal
-through 0241, including its advisory lock and all 80 release checks. Test setup
-then verifies every one of the 235 journal entries by actual ledger hash and
+through 0243 in the current runner, including its advisory lock and all 80 release checks. Test setup
+then verifies every one of the 237 journal entries by actual ledger hash and
 timestamp. No historical migration is edited, skipped or manually stamped.
 
 The test-only Jest mapping uses pg/node-postgres in place of Neon's WebSocket
@@ -122,7 +122,7 @@ migration, data repair, mailbox activation, push or deployment is part of the ru
 
 Automatic draft preparation remains implemented and **disabled by default**.
 Remaining rollout work: apply/review migrations 0240 **and 0241** in the intended
-environment (plus 0242 for the subsequent recovery milestone), Gmail acknowledgement/read/label policy,
+environment (plus 0242 for recovery and 0243 for acknowledgement), provider acceptance of Gmail read/Entered updates,
 legacy evidence/linkage reconciliation and queue-volume assessment, and DEV
 acceptance with synthetic evidence and human approval. The complete email-intake
 workflow is not ready for mailbox rollout on the strength of database tests alone.
@@ -136,3 +136,14 @@ canonical migration hashes/timestamps and retains all 80 release checks. Physica
 object I/O is stubbed; file records, attachment links, transaction rollback, cursor
 commits, leases and actual process interruption/recovery execute against PostgreSQL.
 No shared migrations, deployment or mailbox activation is performed.
+
+## Subsequent Gmail acknowledgement milestone
+
+[Gmail acknowledgement](inbound-gmail-acknowledgement.md) adds an evidence-frozen
+Order-resolution outbox and a fourth suite to the same disposable runner.
+Migration 0243 is additive; historical SQL is unchanged. Provider operations are
+stubbed, while scheduling with canonical Order/Quote linkage, transaction rollback,
+separate-connection claims, fencing, bounded retries, credential persistence and
+killed-process recovery execute against real PostgreSQL. The existing 78 cases
+remain included. See the milestone's validation results for the final count.
+Nothing is run against shared DEV/MAIN or actual Gmail messages.

@@ -2,6 +2,7 @@ import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-o
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundParentOrderIdSql, inboundQueueBucketSql } from "../services/inboundOrders/inboundQueuePolicy";
 import { assertInboundImportClaim, assertInboundImportComplete, bindInboundImportRecord } from "../services/inboundOrders/inboundEmailImportContext";
+import { scheduleGmailAcknowledgement, acknowledgementSourceSnapshot } from './inboundGmailAcknowledgement.repo';
 
 import { db } from "../db";
 import {
@@ -2578,7 +2579,7 @@ export class InboundOrdersRepository {
       const patch = { ...args.patch };
       if (patch.normalizedPayloadJson) {
         patch.normalizedPayloadJson = { ...patch.normalizedPayloadJson };
-        for (const key of ["evidenceFingerprint", "evidenceResolution", "unresolvedEvidenceFingerprint", "quoteEvidenceFingerprint"]) {
+        for (const key of ["evidenceFingerprint", "evidenceResolution", "unresolvedEvidenceFingerprint", "quoteEvidenceFingerprint", "quoteGmailAcknowledgementSources"]) {
           (patch.normalizedPayloadJson as any)[key] = (current.normalizedPayloadJson as any)?.[key] ?? null;
         }
       }
@@ -2620,6 +2621,7 @@ export class InboundOrdersRepository {
         ? inboundLinkedOrderId({ ...current, ...patch }) : null;
       if (current.sourceType === "email" && (staffDismissal || attachedOrder) && !args.expectedEvidenceFingerprint) throw new InboundEvidenceConflictError("Refresh and review the current email evidence before resolving it.");
       if (attachedOrder) {
+        await assertInboundImportComplete(tx, evidence.record, evidence.files);
         const [order] = await tx.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, attachedOrder))).limit(1);
         if (!order) throw new InboundEvidenceConflictError("Linked Order was not found for this organization.");
       }
@@ -2654,6 +2656,8 @@ export class InboundOrdersRepository {
       }
       const persistedRecord = current.sourceType === "email"
         ? (await this.synchronizeEvidenceAndParent(args.organizationId, args.inboundRecordId, tx)).record : record;
+
+      if (attachedOrder) await scheduleGmailAcknowledgement(tx, evidence.record, attachedOrder, evidence.fingerprint);
 
       const [event] = await tx
         .insert(inboundOrderEvents)
@@ -2793,6 +2797,7 @@ export class InboundOrdersRepository {
           );
       }
 
+      await scheduleGmailAcknowledgement(tx, state.record, args.orderId, state.fingerprint);
       await tx.insert(inboundOrderEvents).values({
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
@@ -3203,6 +3208,7 @@ export class InboundOrdersRepository {
         .set({
           status: "waiting_on_customer",
           normalizedPayloadJson: { ...(record.normalizedPayloadJson ?? {}), unresolvedEvidenceFingerprint: null,
+            quoteGmailAcknowledgementSources: acknowledgementSourceSnapshot(record),
             quoteEvidenceFingerprint: fingerprintInboundEmailEvidence(record, await new InboundOrdersRepository(tx as unknown as typeof db).listFiles(organizationId, input.inboundRecordId)) },
           reviewOutcome: "quote_draft_created",
           createdQuoteId: quote.id,
@@ -3323,6 +3329,14 @@ export class InboundOrdersRepository {
           ...(dismissed ? {} : { unresolvedEvidenceFingerprint: resolves ? null : fingerprint,
             ...(resolves ? { evidenceResolution: { kind: "order", fingerprint: covered, orderId: order.id, actorUserId: args.actorUserId, at: now.toISOString() } } : {}) }) }, updatedAt: now,
       }).where(and(eq(inboundOrderRecords.organizationId, args.organizationId), eq(inboundOrderRecords.id, record.id)));
+      if (resolves) await scheduleGmailAcknowledgement(this.dbInstance, record, order.id, fingerprint);
+      else if (!dismissed && covered && !((record.normalizedPayloadJson as any)?.evidenceResolution?.kind === 'dismissed'
+        && (record.normalizedPayloadJson as any)?.evidenceResolution?.fingerprint === covered)
+        && (record.normalizedPayloadJson as any)?.quoteGmailAcknowledgementSources) {
+        // The new reply remains pending. A frozen, reviewed Quote manifest may
+        // acknowledge only its earlier evidence after the actual Order exists.
+        await scheduleGmailAcknowledgement(this.dbInstance,record,order.id,covered,(record.normalizedPayloadJson as any).quoteGmailAcknowledgementSources);
+      }
       await this.dbInstance.insert(inboundOrderEvents).values({ organizationId: args.organizationId, inboundRecordId: record.id,
         actorType: "user", actorUserId: args.actorUserId, eventType: "order.linked_from_quote", fromStatus: record.status,
         toStatus: dismissed ? record.status : resolves ? "submitted" : "needs_review",
