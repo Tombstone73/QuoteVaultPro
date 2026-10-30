@@ -74,7 +74,7 @@ jest.mock("@/components/ui/form", () => ({
 }));
 
 jest.mock("@/hooks/use-toast", () => ({
-  useToast: () => ({ toast: jest.fn() }),
+  useToast: () => ({ toast: toastMock }),
 }));
 
 jest.mock("@/lib/queryClient", () => ({
@@ -85,6 +85,7 @@ jest.mock("@/lib/queryClient", () => ({
 
 const apiFetchMock = jest.mocked(apiFetch);
 const apiRequestMock = jest.mocked(apiRequest);
+const toastMock = jest.fn();
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -616,6 +617,7 @@ function getIgnoreRulePatchBody(ruleId = "rule_1") {
 }
 
 beforeEach(() => {
+  window.history.replaceState({}, "", "/settings/email");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -630,6 +632,19 @@ afterEach(() => {
 });
 
 describe("EmailSettings inbound mailbox settings", () => {
+  test("successful reconnect reports connection status and clears callback parameters", async () => {
+    window.history.replaceState({}, "", "/settings/email?inboundGmailConnected=true");
+    await renderEmailSettings([]);
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Inbound Gmail mailbox connected" }));
+    expect(window.location.search).toBe("");
+  });
+
+  test("callback configuration errors show actionable connection status without provider details", async () => {
+    window.history.replaceState({}, "", "/settings/email?inboundGmailError=callback_not_configured");
+    await renderEmailSettings([]);
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Inbound Gmail connection failed", description: expect.stringContaining("callback URL"), variant: "destructive" }));
+    expect(window.location.search).toBe("");
+  });
   test("shows a no-mailbox state and active inbound Gmail connect button", async () => {
     await renderEmailSettings([]);
 

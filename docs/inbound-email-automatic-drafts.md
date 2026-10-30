@@ -205,6 +205,11 @@ isolated PostgreSQL milestone executes the actual CASE/joins, separate-connectio
 contention, rollback, fencing and killed-process recovery. Its provider calls are
 stubbed; it does not establish shared-environment or mailbox readiness.
 
+Gmail reconnect is also blocked in deployed DEV by a frontend callback URI reaching
+the SPA. The separate [reconnect milestone](inbound-gmail-reconnect.md) fixes backend
+URL construction and documents the required DEV Google redirect allowlist/config
+review; successful reconnect still needs deployed acceptance.
+
 Remaining rollout gates: migrations 0240, 0241 and 0242 readiness/application in the intended
 environment; import recovery activation and deployed provider acceptance; Gmail acknowledgement/read/label policy;
 legacy reconciliation and queue-volume assessment;

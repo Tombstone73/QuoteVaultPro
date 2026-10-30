@@ -35,6 +35,7 @@ import {
 } from "@shared/inboundOrdersApi";
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
 import { InboundEmailImportRepository, isInboundImportRecoveryEnabled } from "../storage/inboundEmailImport.repo";
+import { getInboundGmailRedirectUri, getEmailSettingsRedirectUrl } from "../lib/inboundGmailOAuthUrls";
 import { inboundAttachmentClassificationRuleMatchTypeSchema } from "@shared/schema";
 import { inboundAttachmentClassificationValues } from "@shared/inboundAttachmentClassification";
 import {
@@ -294,7 +295,7 @@ function parseInboundGmailOAuthState(state: string | undefined | null): InboundG
     .update(`${encodedPayload}:${ts}`)
     .digest("hex")
     .slice(0, 32);
-  if (expected !== signature) {
+  if (!/^[a-f0-9]{32}$/.test(signature) || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
     console.warn("[Inbound Gmail OAuth] State token signature mismatch");
     return null;
   }
@@ -310,17 +311,6 @@ function parseInboundGmailOAuthState(state: string | undefined | null): InboundG
   } catch {
     return null;
   }
-}
-
-function getInboundGmailRedirectUri(req: any): string {
-  if (process.env.GOOGLE_INBOUND_OAUTH_REDIRECT_URI) return process.env.GOOGLE_INBOUND_OAUTH_REDIRECT_URI;
-  const base = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  return `${base}/api/inbound-orders/email/mailboxes/gmail/callback`;
-}
-
-function getEmailSettingsRedirectUrl(req: any, query?: string): string {
-  const base = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  return `${base}/settings/email${query ? `?${query}` : ""}`;
 }
 
 function assertOwnerOrAdmin(req: any, res: any): boolean {
@@ -726,6 +716,7 @@ export function registerInboundOrderRoutes(
   });
 
   app.get("/api/inbound-orders/email/mailboxes/gmail/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    res.set("Cache-Control", "no-store");
     try {
       if (!assertInternalUser(req, res)) return;
       if (!assertOwnerOrAdmin(req, res)) return;
@@ -768,35 +759,47 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
 
-      console.error("Error starting inbound Gmail OAuth:", error);
-      res.status(500).json({ success: false, message: "Failed to start inbound Gmail OAuth" });
+      console.warn("[Inbound Gmail OAuth] start_failed");
+      res.status(503).json({ success: false, message: "Inbound Gmail connection could not start. Check this environment's callback URL and OAuth configuration." });
     }
   });
 
   app.get("/api/inbound-orders/email/mailboxes/gmail/callback", async (req: any, res) => {
-    const { code, state, error: oauthError } = req.query as Record<string, string>;
-
-    if (oauthError) {
-      console.warn("[Inbound Gmail OAuth] Google returned error:", oauthError);
-      return res.redirect(getEmailSettingsRedirectUrl(req, `inboundGmailError=${encodeURIComponent(oauthError === "access_denied" ? "cancelled" : oauthError)}`));
+    res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+    let settingsUrl: string;
+    try { settingsUrl = getEmailSettingsRedirectUrl(req); }
+    catch {
+      return res.status(503).json({ success: false, message: "Inbound Gmail return URL is not configured correctly. Existing connections are unchanged." });
     }
+    const failed = (reason: string) => res.redirect(`${settingsUrl}?inboundGmailError=${reason}`);
+    const query = z.object({
+      state: z.string().min(1).max(8192).optional(),
+      code: z.string().min(1).max(8192).optional(),
+      error: z.string().min(1).max(256).optional(),
+    }).safeParse(req.query);
+    if (!query.success) return failed("invalid_callback");
+    const { code, state, error: oauthError } = query.data;
 
     const parsed = parseInboundGmailOAuthState(state);
     if (!parsed) {
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=invalid_state"));
+      return failed("invalid_state");
     }
 
+    if (oauthError) return failed(oauthError === "access_denied" ? "cancelled" : "authorization_failed");
+
     if (!code) {
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=missing_code"));
+      return failed("missing_code");
     }
 
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=platform_not_configured"));
+      return failed("platform_not_configured");
     }
 
-    const redirectUri = getInboundGmailRedirectUri(req);
+    let redirectUri: string;
+    try { redirectUri = getInboundGmailRedirectUri(req); }
+    catch { return failed("callback_not_configured"); }
     const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 
     let tokens: any;
@@ -804,12 +807,12 @@ export function registerInboundOrderRoutes(
       const tokenResponse = await oauth2Client.getToken(code);
       tokens = tokenResponse.tokens;
       if (!tokens.refresh_token) {
-        return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=no_refresh_token"));
+        return failed("no_refresh_token");
       }
       oauth2Client.setCredentials(tokens);
     } catch (error) {
-      console.error("[Inbound Gmail OAuth] token exchange failed:", error);
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=token_exchange_failed"));
+      console.warn("[Inbound Gmail OAuth] token_exchange_failed");
+      return failed("token_exchange_failed");
     }
 
     let connectedEmail: string;
@@ -821,8 +824,8 @@ export function registerInboundOrderRoutes(
       }
       connectedEmail = data.email;
     } catch (error) {
-      console.error("[Inbound Gmail OAuth] profile lookup failed:", error);
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=profile_lookup_failed"));
+      console.warn("[Inbound Gmail OAuth] profile_lookup_failed");
+      return failed("profile_lookup_failed");
     }
 
     try {
@@ -837,12 +840,12 @@ export function registerInboundOrderRoutes(
         redirectUri,
       });
     } catch (error: any) {
-      console.error("[Inbound Gmail OAuth] failed to store mailbox connection:", error);
+      console.warn("[Inbound Gmail OAuth] storage_failed");
       const reason = error?.statusCode === 409 ? "duplicate_email" : error?.statusCode === 404 ? "mailbox_not_found" : "storage_failed";
-      return res.redirect(getEmailSettingsRedirectUrl(req, `inboundGmailError=${reason}`));
+      return failed(reason);
     }
 
-    return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailConnected=true"));
+    return res.redirect(`${settingsUrl}?inboundGmailConnected=true`);
   });
 
   app.patch("/api/inbound-orders/email/mailboxes/:id", isAuthenticated, tenantContext, async (req: any, res) => {

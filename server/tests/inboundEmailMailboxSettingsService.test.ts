@@ -40,7 +40,7 @@ describe("inbound Gmail mailbox connection planning", () => {
         enabled: true,
         isDefault: true,
         authJson,
-        settingsJson: {},
+        settingsJson: { gmailQuery: null, labelIds: [], lookbackDays: 14, maxMessages: 50 },
         createdByUserId: "user_1",
       },
     });

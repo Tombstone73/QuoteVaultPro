@@ -275,13 +275,16 @@ function InboundEmailMailboxSettingsCard() {
       queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/mailboxes"] });
       toast({
         title: "Inbound Gmail mailbox connected",
-        description: "The mailbox is ready for manual inbound email pulls.",
+        description: "Your Gmail connection was saved. Review the mailbox settings before pulling email.",
       });
     } else if (error) {
       const messages: Record<string, string> = {
+        authorization_failed: "Google could not authorize this connection. Try reconnecting from mailbox settings.",
+        callback_not_configured: "The Gmail callback URL is not configured for this environment. Contact your administrator.",
         cancelled: "Authorization was cancelled.",
         duplicate_email: "Another inbound mailbox is already connected for that Gmail address.",
         invalid_state: "Security check failed. Please try again.",
+        invalid_callback: "Google returned an invalid connection response. Try reconnecting from mailbox settings.",
         mailbox_not_found: "The mailbox selected for reconnect was not found.",
         missing_code: "Authorization code missing. Please try again.",
         no_refresh_token: "Google did not return a refresh token. Please try connecting again.",
@@ -293,7 +296,7 @@ function InboundEmailMailboxSettingsCard() {
       window.history.replaceState({}, "", window.location.pathname);
       toast({
         title: "Inbound Gmail connection failed",
-        description: messages[error] || `Unexpected error: ${error}`,
+        description: messages[error] || "The Gmail connection could not be completed. Try reconnecting from mailbox settings.",
         variant: "destructive",
       });
     }
