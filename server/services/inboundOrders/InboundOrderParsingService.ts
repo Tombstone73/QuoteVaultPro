@@ -1,3 +1,4 @@
+import { PRINTING_SPECIFICATION_GUIDANCE, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { createHash } from "crypto";
 import type { InboundEmailProcessingClaim } from "@shared/inboundEmailProcessing";
 import { InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
@@ -700,6 +701,7 @@ export class InboundOrderParsingService {
         "Use null for unknown scalar fields, [] for empty arrays, and confidence values from 0 to 100.",
         "Return candidate IDs only when present in provided context; otherwise leave candidate arrays empty.",
         "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
+        PRINTING_SPECIFICATION_GUIDANCE,
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
         "Manual attachment classification is authoritative. If an evidence item says Manual attachment classification used, honor that finalClassification with confidence 100.",
@@ -1072,10 +1074,7 @@ export class InboundOrderParsingService {
   }
 
   private extractPrintSideSpecs(text: string): string[] {
-    const specs: string[] = [];
-    if (/\b(?:double[-\s]?sided|two[-\s]?sided|2[-\s]?sided|front\s+(?:and|&)\s+back)\b/i.test(text)) specs.push("double-sided");
-    if (/\b(?:single[-\s]?sided|one[-\s]?sided|1[-\s]?sided|front\s+only)\b/i.test(text)) specs.push("single-sided");
-    return specs;
+    return printingSidesFromEvidence(text).map(side => `${side}-sided`);
   }
 
   private extractStructuredOptions(text: string): { optionTexts: string[]; finishingTexts: string[] } {

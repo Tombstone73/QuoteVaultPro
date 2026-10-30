@@ -193,10 +193,11 @@ export interface AssistantReportResolutionSelectionService {
 }
 
 export interface AssistantOrderOptionSelectionService {
-  submitOrderOptionSelections(scope: AssistantScope, conversationId: string, actor: AssistantActor, input: { orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: unknown }): Promise<any>;
+  submitOrderOptionSelections(scope: AssistantScope, conversationId: string, actor: AssistantActor, input: { orderIntakeSessionId: string; expectedIntakeVersion: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: unknown }): Promise<any>;
 }
 
 const assistantOrderOptionSelectionRequestSchema = z.object({
+  expectedIntakeVersion: z.string().regex(/^[a-f0-9]{64}$/),
   productId: z.string().trim().min(1).max(128),
   pbv2TreeVersionId: z.string().trim().min(1).max(128),
   selections: z.array(z.object({ nodeId: z.string().trim().min(1).max(128), valueId: z.string().trim().min(1).max(256) }).strict()).max(30),
@@ -206,7 +207,7 @@ const assistantOrderOptionSelectionRequestSchema = z.object({
 
 function sendOrderOptionSelectionError(res: Response, error: unknown) {
   const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
-  if (code === "ORDER_OPTION_SELECTION_STALE") return res.status(409).json({ error: { code: "order_option_selection_stale", message: "This option selection is no longer available. Refresh the order request.", retryable: false } });
+  if (["ORDER_OPTION_SELECTION_STALE", "ORDER_PROPOSAL_STALE", "ORDER_PRICING_UNAVAILABLE"].includes(code)) return res.status(409).json({ error: { code: "order_option_selection_stale", message: "This option selection is no longer available. Refresh the order request.", retryable: false } });
   if (code === "ORDER_OPTION_SELECTION_INVALID") return res.status(400).json({ error: { code: "order_option_selection_invalid", message: "One or more selected options are not available for this order.", retryable: false } });
   return sendError(res, error);
 }

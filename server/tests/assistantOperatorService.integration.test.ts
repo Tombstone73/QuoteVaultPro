@@ -71,6 +71,24 @@ function digitechCandidate(details: string) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
+  test("PO corrections resume the durable Order intake before Product topic routing", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { orderIntakeService } = await import("../services/assistant/orderIntakeService");
+    const tasks = continuingTaskStore(); tasks.task.domain = "purchase_orders";
+    tasks.getActive = jest.fn(async () => tasks.task);
+    const resume = jest.spyOn(orderIntakeService, "continuePurchaseOrder").mockResolvedValue({ handled: true, response: "Review the corrected Yard Signs PO proposal.", cards: [{ kind: "missing_information", title: "PO review", summary: "Review", sourceLinks: [] }] });
+    const provider = { decide: jest.fn(async () => { throw new Error("must resume the pending PO first"); }) };
+    try {
+      for (const message of ["product should be yard signs", "1. use the product ‘yard signs’ 2. use the PO pricing"]) {
+        const service = new AssistantService(repository() as any, { getCapabilities: async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true }) }, undefined, undefined, undefined, undefined, undefined, () => provider as any, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+        const result = await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff", "assistant.orders.create"] }, { message, context });
+        expect(result.assistantMessage.content).toContain("corrected Yard Signs PO proposal");
+        expect(resume).toHaveBeenLastCalledWith({ ...scope, conversationId: "conversation_1", message });
+        expect(tasks.task.domain).toBe("purchase_orders");
+      }
+      expect(provider.decide).not.toHaveBeenCalled();
+    } finally { resume.mockRestore(); }
+  });
   test.each(["chat", "responses"])("service sends persisted topic switches and read follow-ups through the actual %s provider request", async (surface) => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");

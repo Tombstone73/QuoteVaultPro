@@ -1,3 +1,4 @@
+import { printingNotation, printingSidesFromEvidence, printingSideForOption } from "@shared/printingSpecifications";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "@shared/optionTreeV2";
 import { buildPbv2DefaultSelections, filterPbv2ChoicesForRuntime, sortPbv2NodeIdsByBuilderOrder } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2SelectionKey, isPbv2QuestionNode } from "@shared/inboundOrderPbv2Options";
@@ -60,6 +61,21 @@ function matchesCanonicalChoice(message: string, group: AssistantOrderOptionGrou
   return groupPhrases(group).some((groupPhrase) => boolean === "no"
     ? hasPhrase(message, `no ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} no`) || hasPhrase(message, `without ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} off`)
     : hasPhrase(message, `yes ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} yes`) || hasPhrase(message, `with ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} on`));
+}
+
+function optionPrintingSide(group: AssistantOrderOptionGroup, choice: AssistantOrderOptionChoice) {
+  const explicit = printingSideForOption(choice.label) ?? printingSideForOption(choice.value);
+  if (explicit) return explicit;
+  const boolean = booleanChoice(choice);
+  const groupSide = printingSideForOption(group.label);
+  return boolean && groupSide ? boolean === "yes" ? groupSide : groupSide === "single" ? "double" : "single" : null;
+}
+
+export function assistantOrderOptionQuestion(group: AssistantOrderOptionGroup, productName = "") {
+  const sides = new Set(group.choices.map(choice => optionPrintingSide(group, choice)).filter(Boolean));
+  return sides.has("single") && sides.has("double") ? /sign/i.test(productName) ? "Should these signs be single-sided or double-sided?" : "Should this item be single-sided or double-sided?"
+    : sides.size ? "Which available print-side option should this order use?"
+    : `Which ${group.label.toLowerCase()} should this order use?`;
 }
 
 const selectedValues = (selections: LineItemOptionSelectionsV2 | null | undefined) => Object.fromEntries(
@@ -156,7 +172,30 @@ export function resolveAssistantOrderSelections(input: {
   requiredSelectionKeys?: readonly string[];
 }): AssistantOrderSelectionResult {
   const groups = visibleGroups(input.tree, input.existingSelections, input.requiredSelectionKeys);
-  const message = normalize(input.message);
+  let specification = input.message;
+  const sides = printingSidesFromEvidence(specification);
+  if (sides.length > 1) return { ok: false, code: "ORDER_OPTION_CONTRADICTORY", summary: "The printing instructions conflict: single-sided and double-sided were both requested. Which should this order use?", groups };
+  const notation = printingNotation(specification);
+  if (sides.length === 1) {
+    const requested = sides[0];
+    const labeledSideGroups = groups.filter(group => /side/i.test(`${group.label} ${group.selectionKey}`));
+    const sideGroups = labeledSideGroups.length ? labeledSideGroups : groups.filter(group => group.choices.every(choice => optionPrintingSide(group, choice) !== null));
+    const candidates = sideGroups.flatMap(group => group.choices.filter(choice => optionPrintingSide(group, choice) === requested).map(choice => ({ group, choice })));
+    if (candidates.length !== 1) return { ok: false, code: "ORDER_OPTION_INVALID", summary: `The request requires ${notation[0] ?? requested + "-sided printing"}${notation.length ? requested === "double" ? " (full-color front and back, double-sided)" : " (full-color front, blank back, single-sided)" : ""}. This product has no unique compatible print-side choice. Choose a compatible product or explicitly change the requested specification.`, groups };
+    specification += ` ${candidates[0].group.label}: ${candidates[0].choice.label}`;
+  }
+  if (notation.length) {
+    for (const group of groups.filter(group => /\b(?:colou?r|ink)\b/i.test(group.label) || group.choices.some(choice => /full[ -]colou?r|\bcmyk\b/i.test(choice.label)))) {
+      const colors = group.choices.filter(choice => {
+        const text = `${choice.label} ${choice.value}`;
+        const side = optionPrintingSide(group, choice);
+        return /full[ -]colou?r|4[ -]colou?r|cmyk|4\s*\/\s*[04]/i.test(text) && (!side || side === sides[0]);
+      });
+      if (colors.length !== 1) return { ok: false, code: "ORDER_OPTION_INVALID", summary: "The request requires full-color printing, but this product's color choices cannot represent it unambiguously. Choose a compatible product or explicitly clarify the specification.", groups };
+      specification += ` ${group.label}: ${colors[0].label}`;
+    }
+  }
+  const message = normalize(specification);
   const selected = { ...input.existingSelections.selected };
   const matchesByGroup = new Map<AssistantOrderOptionGroup, AssistantOrderOptionChoice[]>();
   const namedGroups = new Set(groups.filter((group) => hasPhrase(message, group.label) || hasPhrase(message, group.selectionKey)));

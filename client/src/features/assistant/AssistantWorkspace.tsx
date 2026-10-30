@@ -259,6 +259,7 @@ function OrderOptionSelectionCard({ card, conversationId, context }: { card: Ass
   const details = isRecord(raw.details) ? raw.details : null;
   const payload = details && isRecord(details.orderOptionSelection) ? details.orderOptionSelection : null;
   const sessionId = text(payload?.orderIntakeSessionId); const productId = text(payload?.productId); const productName = text(payload?.productName); const treeId = text(payload?.pbv2TreeVersionId);
+  const expectedIntakeVersion = text(payload?.expectedIntakeVersion);
   const quantity = numericValue(payload?.quantity); const dimensions = isRecord(payload?.dimensions) ? payload.dimensions : null;
   const width = numericValue(dimensions?.widthIn); const height = numericValue(dimensions?.heightIn); const unit = text(dimensions?.unit) ?? "in";
   const groups = Array.isArray(payload?.groups) ? payload.groups.filter(isRecord) : [];
@@ -266,19 +267,30 @@ function OrderOptionSelectionCard({ card, conversationId, context }: { card: Ass
   const [useDefaults, setUseDefaults] = React.useState(false);
   if (!conversationId || !sessionId || !productId || !productName || !treeId || !groups.length) return null;
   const complete = groups.every((group) => Boolean(values[text(group.nodeId) ?? ""]));
-  const submit = () => submitSelection.mutate({ conversationId, orderIntakeSessionId: sessionId, productId, pbv2TreeVersionId: treeId, selections: Object.entries(values).map(([nodeId, valueId]) => ({ nodeId, valueId })), useRemainingDefaults: useDefaults, context });
+  const locked = submitSelection.isPending || submitSelection.isSuccess || !expectedIntakeVersion;
+  const submit = (selected = values) => {
+    if (locked || !expectedIntakeVersion) return;
+    submitSelection.mutate({ conversationId, orderIntakeSessionId: sessionId, expectedIntakeVersion, productId, pbv2TreeVersionId: treeId, selections: Object.entries(selected).map(([nodeId, valueId]) => ({ nodeId, valueId })), useRemainingDefaults: useDefaults, context });
+  };
+  const choose = (nodeId: string, valueId: string) => {
+    if (locked) return;
+    const next = { ...values, [nodeId]: valueId }; setValues(next);
+    if (groups.every(group => Boolean(next[text(group.nodeId) ?? ""]))) submit(next);
+  };
   return <section className="mt-3 rounded-xl border border-primary/30 bg-primary/5 px-3 py-3 text-sm shadow-sm" data-testid="assistant-order-option-selection-card">
     <p className="font-medium text-foreground">{text(raw.title) ?? "Order options needed"}</p>
     <p className="mt-1 text-muted-foreground">{productName}{quantity !== null ? ` · Quantity: ${quantity}` : ""}{width !== null && height !== null ? ` · ${width} × ${height} ${unit}` : ""}</p>
-    <p className="mt-1 text-xs text-muted-foreground">{text(payload?.helperText) ?? text(raw.summary)}</p>
+    <p className="mt-2 text-foreground">{text(raw.summary)}</p>
+    <p className="mt-1 text-xs text-muted-foreground">{text(payload?.helperText)}</p>
     <div className="mt-3 space-y-3">{groups.map((group) => {
       const nodeId = text(group.nodeId); const label = text(group.label) ?? "Option"; const choices = Array.isArray(group.choices) ? group.choices.filter(isRecord) : [];
       if (!nodeId || !choices.length) return null;
       const value = values[nodeId] ?? "";
-      return <fieldset key={nodeId} className="rounded-lg border border-border/60 bg-background/70 p-3"><legend className="px-1 font-medium">{label}</legend>{choices.length <= 4 ? <RadioGroup value={value} onValueChange={(next) => setValues((current) => ({ ...current, [nodeId]: next }))} className="mt-2 gap-2">{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); if (!valueId || !choiceLabel) return null; return <label key={valueId} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted/60"><RadioGroupItem value={valueId} /><span>{choiceLabel}</span>{choice.isDefault === true ? <span className="text-xs text-muted-foreground">Default</span> : null}</label>; })}</RadioGroup> : <Select value={value} onValueChange={(next) => setValues((current) => ({ ...current, [nodeId]: next }))}><SelectTrigger className="mt-2"><SelectValue placeholder={`Choose ${label}`} /></SelectTrigger><SelectContent>{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); return valueId && choiceLabel ? <SelectItem key={valueId} value={valueId}>{choiceLabel}{choice.isDefault === true ? " (Default)" : ""}</SelectItem> : null; })}</SelectContent></Select>}</fieldset>;
+      return <fieldset key={nodeId} disabled={locked} className="rounded-lg border border-border/60 bg-background/70 p-3"><legend className="px-1 font-medium">{text(group.question) ?? label}</legend>{choices.length <= 4 ? <RadioGroup disabled={locked} value={value} onValueChange={(next) => choose(nodeId, next)} className="mt-2 gap-2">{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); if (!valueId || !choiceLabel) return null; return <label key={valueId} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted/60"><RadioGroupItem value={valueId} /><span>{choiceLabel}</span>{choice.isDefault === true ? <span className="text-xs text-muted-foreground">Default</span> : null}</label>; })}</RadioGroup> : <Select disabled={locked} value={value} onValueChange={(next) => choose(nodeId, next)}><SelectTrigger className="mt-2"><SelectValue placeholder={`Choose ${label}`} /></SelectTrigger><SelectContent>{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); return valueId && choiceLabel ? <SelectItem key={valueId} value={valueId}>{choiceLabel}{choice.isDefault === true ? " (Default)" : ""}</SelectItem> : null; })}</SelectContent></Select>}</fieldset>;
     })}</div>
-    <div className="mt-3 flex flex-wrap gap-2"><Button type="button" size="sm" variant={useDefaults ? "secondary" : "outline"} disabled={submitSelection.isPending} onClick={() => setUseDefaults((value) => !value)}>{useDefaults ? "Remaining defaults will be used" : "Use remaining defaults"}</Button><Button type="button" size="sm" disabled={submitSelection.isPending || (!complete && !useDefaults)} onClick={submit}>{submitSelection.isPending ? "Continuing…" : "Continue"}</Button></div>
-    {submitSelection.isError ? <p role="status" className="mt-2 text-xs text-destructive">Unable to continue with these options. Refresh the request and try again.</p> : null}
+    <div className="mt-3 flex flex-wrap gap-2">{payload?.allowDefaults !== false ? <Button type="button" size="sm" variant={useDefaults ? "secondary" : "outline"} disabled={locked} onClick={() => setUseDefaults((value) => !value)}>{useDefaults ? "Remaining defaults will be used" : "Use remaining defaults"}</Button> : null}<Button type="button" size="sm" disabled={locked || (!complete && !useDefaults)} onClick={() => submit()}>{submitSelection.isPending ? "Continuing…" : submitSelection.isSuccess ? "Continued" : "Continue"}</Button></div>
+    {!expectedIntakeVersion ? <p className="mt-2 text-muted-foreground">This older question has no current proposal version. Ask the Assistant to show the current options before choosing.</p> : null}
+    {submitSelection.isError ? <p role="status" className="mt-2 text-xs text-destructive">These choices changed or could not be saved. Continue from the latest question; your existing PO proposal is retained.</p> : null}
   </section>;
 }
 
