@@ -24,7 +24,7 @@ import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHel
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloadsWithDiagnostics, resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
 import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, buildQuickBooksInvoiceProjection } from './lib/quickBooksInvoiceProjection';
-import { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
+import { mapLocalCustomerToQB, mapQBCustomerToLocal, mapQBCustomerPullUpdate } from './lib/quickbooksCustomerMapping';
 import {
   resolveBillingCustomerForOrder,
   writeContactAccountingPromotionAudit,
@@ -759,27 +759,6 @@ export async function queueSyncJobsForOrganization(
   }));
 
   await db.insert(accountingSyncJobs).values(jobs);
-}
-
-// ==================== Data Mapping Functions ====================
-
-/**
- * Map QuickBooks Customer to local Customer format
- */
-function mapQBCustomerToLocal(qbCustomer: any): Partial<Customer> {
-  return {
-    companyName: qbCustomer.DisplayName || qbCustomer.CompanyName || 'Unknown',
-    email: qbCustomer.PrimaryEmailAddr?.Address || null,
-    phone: qbCustomer.PrimaryPhone?.FreeFormNumber || null,
-    website: qbCustomer.WebAddr?.URI || null,
-    billingAddress: qbCustomer.BillAddr ? formatQBAddress(qbCustomer.BillAddr) : null,
-    shippingAddress: qbCustomer.ShipAddr ? formatQBAddress(qbCustomer.ShipAddr) : null,
-    currentBalance: qbCustomer.Balance?.toString() || '0',
-    externalAccountingId: qbCustomer.Id,
-    syncStatus: 'synced',
-    syncedAt: new Date(),
-    notes: qbCustomer.Notes || null,
-  };
 }
 
 // ==================== QB Contact Mapping Helpers ====================
@@ -2095,54 +2074,46 @@ export async function processPullCustomers(jobId: string, organizationId: string
       try {
         const localData = mapQBCustomerToLocal(qbCustomer);
 
-        // Check if customer exists by external ID or email (org-scoped)
-        const [existing] = await db
-          .select()
-          .from(customers)
-          .where(
-            or(
-              and(eq(customers.organizationId, organizationId), eq(customers.externalAccountingId, qbCustomer.Id)),
-              localData.email ? and(eq(customers.organizationId, organizationId), eq(customers.email, localData.email)) : sql`false`
+        // Serialize repeat imports of the same linked source. No provider calls occur
+        // under this lock; lock the customer row so local corrections cannot be lost.
+        const customerId = await db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${organizationId}:qb-customer:${qbCustomer.Id}`}))`);
+          const [existing] = await tx
+            .select()
+            .from(customers)
+            .where(
+              or(
+                and(eq(customers.organizationId, organizationId), eq(customers.externalAccountingId, qbCustomer.Id)),
+                localData.email ? and(eq(customers.organizationId, organizationId), eq(customers.email, localData.email)) : sql`false`
+              )
             )
-          )
-          .limit(1);
+            .limit(1).for('update');
 
-        let customerId: string;
+          if (existing) {
+            const filteredLocalData = mapQBCustomerPullUpdate(qbCustomer, existing);
+            await tx
+              .update(customers)
+              .set({ ...filteredLocalData, updatedAt: new Date() })
+              .where(and(eq(customers.id, existing.id), eq(customers.organizationId, organizationId)));
+            customersUpdated++;
+            console.log(`[QB Pull Customers] Updated customer: ${localData.companyName}`);
+            return existing.id;
+          } else {
+            const [created] = await tx
+              .insert(customers)
+              .values({
+                ...localData,
+                customerType: 'business',
+                status: 'active',
+                organizationId,
+              } as any)
+              .returning({ id: customers.id });
 
-        if (existing) {
-          const overrides: Record<string, boolean> = (existing as any).qbFieldOverrides || {};
-          const filteredLocalData: any = { ...localData };
-          // QB wins by default, unless the field is Titan-overridden.
-          if (overrides.email) delete filteredLocalData.email;
-          if (overrides.phone) delete filteredLocalData.phone;
-          if (overrides.website) delete filteredLocalData.website;
-          if (overrides.billingAddress) delete filteredLocalData.billingAddress;
-          if (overrides.shippingAddress) delete filteredLocalData.shippingAddress;
-          if (overrides.notes) delete filteredLocalData.notes;
-
-          await db
-            .update(customers)
-            .set({ ...filteredLocalData, updatedAt: new Date() })
-            .where(eq(customers.id, existing.id));
-
-          customerId = existing.id;
-          customersUpdated++;
-          console.log(`[QB Pull Customers] Updated customer: ${localData.companyName}`);
-        } else {
-          const [created] = await db
-            .insert(customers)
-            .values({
-              ...localData,
-              customerType: 'business',
-              status: 'active',
-              organizationId,
-            } as any)
-            .returning({ id: customers.id });
-
-          customerId = created.id;
-          customersCreated++;
-          console.log(`[QB Pull Customers] Created customer: ${localData.companyName}`);
-        }
+            customersCreated++;
+            console.log(`[QB Pull Customers] Created customer: ${localData.companyName}`);
+            return created.id;
+          }
+        });
 
         // --- Contact upsert ---
         const contactPayload = mapQBCustomerToContact(qbCustomer, customerId);
