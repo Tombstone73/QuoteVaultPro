@@ -84,8 +84,9 @@ export const existingProductEditProviderInputSchema: Record<string, unknown> = {
         { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "publish_product_configuration" } } },
         { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_pricing_engine_configuration" }, changes: { type: "object", additionalProperties: false, required: ["allowRotation"], properties: { allowRotation: { type: "boolean" } } } } },
         { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
-          kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },
+          kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "add_priced_choice", "update_choice", "reorder_groups", "reorder_choices"] },
           group: { anyOf: [{ type: "string" }, { type: "object" }] }, input: { anyOf: [{ type: "string" }, { type: "object" }] }, choice: { anyOf: [{ type: "string" }, { type: "object" }] }, changes: { type: "object" }, orderedGroups: { type: "array", items: { type: "string" } }, orderedValues: { type: "array", items: { type: "string" } },
+          label: { type: "string" }, priceCents: { type: "integer", minimum: 1 }, basis: { const: "per_square_foot" },
         } } } } },
       ] },
     },

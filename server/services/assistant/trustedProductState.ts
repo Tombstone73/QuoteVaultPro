@@ -15,18 +15,26 @@ function addId(ids: Set<string>, value: unknown): void {
  * references. Any ambiguous or unsuccessful Product resolution fails closed
  * instead of reviving a different retained Product. */
 export function currentTurnProductResolution(observations: readonly AssistantOperatorObservation[] | undefined): CurrentTurnProductResolution {
-  const ids = new Set<string>();
+  const directIds = new Set<string>();
+  const searchIds = new Set<string>();
   let attempted = false;
-  let ambiguous = false;
+  let directAttempted = false;
+  let directAmbiguous = false;
+  let searchAmbiguous = false;
+  let directIndex = -1;
+  let searchIndex = -1;
+  let observationIndex = 0;
   for (const observation of observations ?? []) {
+    const currentIndex = observationIndex++;
     if (observation.toolName === "products.get_summary" || observation.toolName === "products.get_pricing") {
-      attempted = true;
-      if (observation.status !== "succeeded") { ambiguous = true; continue; }
+      attempted = true; directAttempted = true;
+      directIndex = currentIndex;
+      if (observation.status !== "succeeded") { directAmbiguous = true; continue; }
       const data = observation.result?.data;
       const product = data && typeof data === "object" && !Array.isArray(data) ? (data as { product?: unknown }).product : null;
-      if (!product || typeof product !== "object" || Array.isArray(product)) { ambiguous = true; continue; }
-      addId(ids, (product as { id?: unknown }).id);
-      addId(ids, (product as { recordId?: unknown }).recordId);
+      if (!product || typeof product !== "object" || Array.isArray(product)) { directAmbiguous = true; continue; }
+      addId(directIds, (product as { id?: unknown }).id);
+      addId(directIds, (product as { recordId?: unknown }).recordId);
       continue;
     }
     if (observation.toolName !== "search.global") continue;
@@ -36,12 +44,15 @@ export function currentTurnProductResolution(observations: readonly AssistantOpe
     const productMatches = matches.filter((match) => match && typeof match === "object" && (match as { entityType?: unknown }).entityType === "product");
     if (!productMatches.length) continue;
     attempted = true;
-    if (observation.status !== "succeeded" || productMatches.length !== 1 || matches.length !== 1) { ambiguous = true; continue; }
-    addId(ids, (productMatches[0] as { recordId?: unknown }).recordId);
+    searchIndex = currentIndex;
+    if (observation.status !== "succeeded" || productMatches.length !== 1 || matches.length !== 1) { searchAmbiguous = true; continue; }
+    addId(searchIds, (productMatches[0] as { recordId?: unknown }).recordId);
   }
-  if (ids.size !== 1) ambiguous = attempted;
-  const productId = Array.from(ids)[0] ?? null;
-  return { attempted, productId: !ambiguous && ids.size === 1 ? productId : null, ambiguous };
+  // A successful tenant-scoped detail/pricing read resolves a prior broad
+  // search. Multiple direct reads or a failed direct read still fail closed.
+  const ids = directAttempted ? directIds : searchIds;
+  const ambiguous = (directAttempted ? directAmbiguous || searchIndex > directIndex : searchAmbiguous) || (attempted && ids.size !== 1);
+  return { attempted, productId: !ambiguous && ids.size === 1 ? Array.from(ids)[0]! : null, ambiguous };
 }
 
 export function currentTurnProductFact(observations: readonly AssistantOperatorObservation[] | undefined): CurrentTurnProductFact | null {
@@ -108,8 +119,12 @@ export function taskForCurrentProductEvidence(
   return {
     ...task,
     entityReferences,
+    // The prior clarification belongs to the pre-read task. Once a fresh
+    // Product resolution identifies this turn's subject, only the current
+    // goal and observations may establish which business fields remain open.
+    missingInformation: current.productId ? [] : task.missingInformation,
     trustedObservations: (task.trustedObservations ?? []).filter((item) => item.toolName !== "products.get_summary" && item.toolName !== "products.get_pricing" && item.toolName !== "search.global"),
-    businessContext: task.businessContext ? { ...task.businessContext, businessStateSummary: fact?.lifecycle ? `Current trusted Product${fact.name ? ` \"${fact.name}\"` : ""} is ${fact.lifecycle}.` : null, existingProduct: null, recentCompletedTurn: null } : task.businessContext,
+    businessContext: task.businessContext ? { ...task.businessContext, businessStateSummary: fact?.lifecycle ? `Current trusted Product${fact.name ? ` \"${fact.name}\"` : ""} is ${fact.lifecycle}.` : null, existingProduct: null, unresolvedDecisions: current.productId ? [] : task.businessContext.unresolvedDecisions, readiness: current.productId ? "unknown" : task.businessContext.readiness, recentCompletedTurn: null } : task.businessContext,
   };
 }
 
