@@ -56,6 +56,26 @@ append must be checked against actual DEV prerequisites and the canonical runner
 must execute it during deployment. Local synthetic-foundation tests alone are
 not deployed-schema compatibility evidence.
 
+## DEV rollback rehearsal
+
+The approved rollback-only rehearsal ran on Railway project `2f6457af-de54-485d-b06f-0a1c1e0f2e64`,
+Development environment `fd7aa163-90bc-49f2-ba9b-5b62bbe0283f`, service
+`31b4da75-c583-4f1b-bcb9-39c130cd716e`. The uploaded
+`scripts/qa/rehearse-inbound-dev-migrations.mjs` matched local SHA-256
+`b3274d6d177158888c127b097c05194fae7ad15a8046349364ada18ab2a31b2c`.
+All four SQL files matched local byte hashes on the service; the script also
+verified their Git-canonical LF hashes shown above.
+
+The script required the Development environment ID, approved database
+fingerprint and direct endpoint, DEV web origin, and `WORKERS_ENABLED=false`.
+It used a 3-second lock timeout and 15-second statement timeout, executed only
+0243–0246 inside one transaction, and explicitly rolled that transaction back.
+All four migration checks passed. After rollback, the new tables remained absent
+and the ledger was unchanged at 235 records with frontier `1793491200000`.
+The two temporary service directories were removed. No Railway control or
+mailbox setting was changed. This is schema compatibility evidence, not live
+acceptance or proof of a completed deployment.
+
 ## Controls and rollback
 
 Retain `WORKERS_ENABLED=false`, unset email worker gates and all enrollment
