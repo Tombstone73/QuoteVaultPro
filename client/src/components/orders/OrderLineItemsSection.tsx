@@ -1,3 +1,4 @@
+import { productionItemLink, prepressItemLink } from "@shared/productionItemLocation";
 import { LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -2768,8 +2769,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       // retry, but an unsaved local preview must not look persisted.
       onDraftLineItemPricingChange?.(itemId, null);
       const isRoutingRejection = error instanceof OrderLineItemApiError &&
-        Boolean(error.code?.startsWith("ROUTING_") || error.code?.startsWith("PRODUCTION_BYPASS_ROUTING_"));
+        Boolean(error.code?.startsWith("ROUTING_") || error.code?.startsWith("PRODUCTION_BYPASS_ROUTING_") || error.code?.startsWith("RETURN_TO_PREPRESS_"));
       if (isRoutingRejection) {
+        if (requiresPrepressInput && !savedForCommercialSave?.requiresPrepress) setRequiresPrepressInput(false);
         setRoutingSaveError({ lineItemId: itemId, message: error.message });
       } else {
         try {
@@ -3511,7 +3513,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                               ) : null}
                               {showProofReturnWarning && (
                                 <div role="alert" className="mx-2 mb-2 rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-950">
-                                  <span className="font-semibold">Line {lineNumber}: Proofing is now required.</span>{" "}
+                                  <span className="font-semibold">Line {lineNumber}: Proofing is now required.</span>{(item as any).activeOwnerJobId ? <Link className="ml-2 underline" to={productionItemLink(String((item as any).activeOwnerJobId))}>Open in Production</Link> : null}{" "}
                                   {workflowState === "ready_for_prepress" || workflowState === "in_prepress"
                                     ? "The work is already downstream. Return this line to Proofing before continuing production."
                                     : "The work is already in Production. An Owner or Admin can use Return for Correction → Proofing after resolving any active machine run or lock."}
@@ -4411,6 +4413,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 onRequiresPrepressChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresPrepressInput : undefined}
                                 onRequiresProofApprovalChange={!readOnly && isExpanded && expandedItem?.id === item.id ? setRequiresProofApprovalInput : undefined}
                                 routingError={isExpanded && expandedItem?.id === item.id && routingSaveError?.lineItemId === item.id ? routingSaveError.message : null}
+                                routingActionsSlot={(item as any).activeOwnerJobId ? (
+                                  ["prepress"].includes(String((item as any).activeOwnerStationKey)) || String((item as any).activeOwnerStepKey) === "prepress"
+                                    ? <Link className="text-xs underline" to={prepressItemLink(String(item.id))}>Open in Prepress</Link>
+                                    : ["flatbed", "roll", "wide_roll"].includes(String((item as any).activeOwnerStationKey)) ? <div className="space-y-1 text-xs"><Link className="underline" to={productionItemLink(String((item as any).activeOwnerJobId))}>Open in Production</Link>{isExpanded ? <p className="text-muted-foreground">Request Prepress and save to return unstarted work for separate production-ready artwork. Existing uploads are retained. Started work requires the Production hold/return or recovery controls.</p> : null}</div> : null
+                                ) : null}
                                 topAnchorRef={setLineItemTopAnchorRef(String(item.id))}
                                 widthInputRef={setLineItemWidthInputRef(String(item.id))}
                                 detailsSide="right"

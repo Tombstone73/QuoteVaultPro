@@ -60,3 +60,25 @@ test('withdrawal success requires the confirmed successor on fresh readback', as
   await act(async () => { await expect(mutate.mutateAsync(request)).resolves.toEqual(routed); });
   expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
 });
+
+const prepressWorkflow = { toState: 'in_prepress', activeOwnerJobId: 'prepress-job', activeOwnerStationKey: 'prepress', activeOwnerStepKey: 'prepress' };
+const returned = { ...line, requiresPrepress: true, workflowState: 'in_prepress', activeOwnerJobId: 'prepress-job', activeOwnerStationKey: 'prepress', activeOwnerStepKey: 'prepress' };
+const returnRequest = { ...request, data: { ...request.data, requiresPrepress: true } };
+test('Prepress return succeeds only after fresh checkbox, workflow and owner readback', async () => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ ...returned, prepressReturnWorkflow: prepressWorkflow }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ lineItems: [returned] }) });
+  await act(async () => { await expect(mutate.mutateAsync(returnRequest)).resolves.toEqual(returned); });
+  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+});
+test.each(['workflowState', 'activeOwnerJobId', 'activeOwnerStationKey', 'activeOwnerStepKey'])('Prepress return rejects unconfirmed %s', async field => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ ...returned, prepressReturnWorkflow: prepressWorkflow }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ lineItems: [{ ...returned, [field]: 'stale' }] }) });
+  await act(async () => { await expect(mutate.mutateAsync(returnRequest)).rejects.toMatchObject({ code: 'ROUTING_SAVE_UNCONFIRMED' }); });
+  expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+});
+test('started-work rejection is shown without success or an extra save', async () => {
+  (apiFetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ message: 'Production has a recorded start. Open in Production.', code: 'RETURN_TO_PREPRESS_STARTED' }) });
+  await act(async () => { await expect(mutate.mutateAsync(returnRequest)).rejects.toThrow('recorded start'); });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+});

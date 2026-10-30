@@ -1,3 +1,4 @@
+import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
 import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../services/orderCreditHoldService";
 import { materialFamilyAssignmentService, MaterialFamilyAssignmentError } from "../services/materialFamilyAssignment.service";
 import { materialFamilyLifecycleService, MaterialFamilyLifecycleError } from "../services/materialFamilyLifecycle.service";
@@ -8978,6 +8979,7 @@ export async function registerOrderRoutes(
                     proof: requestedRequiresProofApproval,
                 },
             });
+            let requestUnstartedPrepress = false;
             let retireUnstartedPrepress = false;
             let proofApprovalManualOverride = false;
             let routingTargetState: ReturnType<typeof getInitialWorkflowState> | null = null;
@@ -9045,7 +9047,12 @@ export async function registerOrderRoutes(
                     },
                     activeStation: activeJob?.stationKey ?? null,
                 });
-                if (conflict && !retireUnstartedPrepress) throw Object.assign(new Error(conflict), { statusCode: 409, code: "ROUTING_RETURN_REQUIRED" });
+                requestUnstartedPrepress = Boolean(activeJob && ["roll", "wide_roll", "flatbed"].includes(activeJob.stationKey)
+                    && !["prepress", "design", "proof", "proofing"].includes(activeJob.stepKey)
+                    && requestedRequiresPrepress === true && !oldLineItem.requiresPrepress && !productIdChanged
+                    && routing.requiresDesign === Boolean(oldLineItem.requiresDesign)
+                    && routing.requiresProofApproval === Boolean(oldLineItem.requiresProofApproval));
+                if (conflict && !retireUnstartedPrepress && !requestUnstartedPrepress) throw Object.assign(new Error(conflict), { statusCode: 409, code: "ROUTING_RETURN_REQUIRED" });
             }
 
             if (isActiveOperationalEdit && submittedFields.length > 0) {
@@ -9212,6 +9219,7 @@ export async function registerOrderRoutes(
             // boundary.  Do not let the browser, a refresh, or a later PDF/QB
             // action repair an Invoice after an Order edit has committed.
             const lineItem = await db.transaction(async (tx) => {
+                let prepressReturnWorkflow: Awaited<ReturnType<typeof canonicalPrepressOperations.requestUnstartedLineInTransaction>> | undefined;
                 let withdrawalWorkflow: Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | undefined;
                 if (hasRoutingChange || expectedUpdatedAt) {
                     await lockWorkflowLines(tx, organizationId, [lineItemId]);
@@ -9235,7 +9243,7 @@ export async function registerOrderRoutes(
                     }
                     const [current] = await tx.select().from(orderLineItems).where(eq(orderLineItems.id, lineItemId)).limit(1);
                     if (!current) throw new Error("Order line item not found after save");
-                    return { ...current, ...(withdrawalWorkflow ? { withdrawalWorkflow } : {}) };
+                    return { ...current, ...(withdrawalWorkflow ? { withdrawalWorkflow } : {}), ...(prepressReturnWorkflow ? { prepressReturnWorkflow } : {}) };
                 };
                 if (shouldReconcileProofGateRemoval) {
                     await tx
@@ -9271,6 +9279,12 @@ export async function registerOrderRoutes(
                     });
                 }
                 await new OrdersRepository(tx).updateOrderLineItem(lineItemId, updateData);
+                if (requestUnstartedPrepress) {
+                    if (!userId || !activeJob) throw Object.assign(new Error("An authorized employee and current production owner are required."), { statusCode: 403 });
+                    prepressReturnWorkflow = await canonicalPrepressOperations.requestUnstartedLineInTransaction(tx, {
+                        organizationId, actorUserId: userId, lineItemId, expectedOwnerJobId: activeJob.id,
+                    });
+                }
                 if (hasRoutingChange && !activeJob && routingTargetState) {
                     const executor = tx as unknown as typeof db;
                     const [eligibility] = await new FulfillmentDashboardRepo(executor).listLineEligibility(organizationId, { lineItemIds: [lineItemId] }, executor);
