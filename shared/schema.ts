@@ -10209,7 +10209,7 @@ export const inboundEmailImportJobs = pgTable("inbound_email_import_jobs", {
   provider: varchar("provider", { length: 40 }).notNull(),
   providerAccount: varchar("provider_account", { length: 320 }).notNull(),
   workKind: varchar("work_kind", { length: 16 }).$type<'message' | 'discovery'>().notNull().default('message'),
-  discoveryJson: jsonb("discovery_json").$type<{ query: string; labelIds?: string[]; pageToken?: string; processed: number; limit: number }>(),
+  discoveryJson: jsonb("discovery_json").$type<{ query: string; labelIds?: string[]; pageToken?: string; processed: number; limit: number; drainWindow?: boolean; scheduledThrough?: number }>(),
   providerMessageId: text("provider_message_id").notNull(),
   providerThreadId: text("provider_thread_id"),
   inboundRecordId: varchar("inbound_record_id").references(() => inboundOrderRecords.id, { onDelete: "set null" }),

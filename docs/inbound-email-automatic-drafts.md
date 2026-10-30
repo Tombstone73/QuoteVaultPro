@@ -219,3 +219,12 @@ legacy reconciliation and queue-volume assessment;
 and DEV acceptance of queue counts, legacy volume, revision review and human
 approval using synthetic evidence. Nothing is pushed, deployed, enabled or
 live-validated by this milestone.
+
+## DEV release preparation update (2026-10-30)
+
+Unattended discovery is now implemented through a separately gated Railway
+backend timer and the existing durable import queue. It remains off. Actual DEV
+preflight found protected migration identity collisions with already-applied
+proofing/Redo migrations, so integration and deployment are blocked pending
+reviewed reconciliation. See [DEV rollout evidence and controls](inbound-email-dev-rollout.md)
+for exact findings, scheduling semantics, disable procedure and remaining acceptance.

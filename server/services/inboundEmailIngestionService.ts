@@ -1616,6 +1616,17 @@ export class InboundEmailIngestionService {
     imports?: InboundEmailImportRepository,
   ) { this.imports = imports ?? new InboundEmailImportRepository(dbInstance); }
 
+  async scheduleAutomaticDiscovery(): Promise<number> {
+    return this.imports.scheduleDiscoveries((mailbox, now) => {
+      const options = inboundGmailDiscoveryOptions(mailbox, 100, now);
+      // Even a custom query must have a bounded initial window. Read status is
+      // not a processing checkpoint; reuse the canonical read/unread widening.
+      const days = Math.max(1, Math.min(365, Math.round(numberFromUnknown((mailbox.settingsJson as any)?.lookbackDays, 14))));
+      options.query += ` after:${Math.floor(now.getTime() / 1000) - days * 86400}`;
+      return options;
+    });
+  }
+
   async recoverInterruptedImports(limit = 3): Promise<{ processed: number }> {
     if (this.recoveryRunning || !isInboundImportRecoveryEnabled()) return { processed: 0 };
     this.recoveryRunning = true;

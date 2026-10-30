@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { inboundEmailImportJobs as jobs, inboundEmailMailboxes as mailboxes, inboundOrderEvents, organizations, type InboundEmailMailbox } from '@shared/schema';
+import { inboundEmailImportJobs as jobs, inboundEmailMailboxes as mailboxes, inboundOrderEvents, organizations, userOrganizations, users, type InboundEmailMailbox } from '@shared/schema';
 import { INBOUND_IMPORT_LEASE_MS, INBOUND_IMPORT_MAX_ATTEMPTS, type InboundEmailImportView } from '@shared/inboundEmailImport';
 import { resolveInboundEmailIntakeSettingsFromPreferences } from '@shared/inboundEmailIntakeSettings';
 import { inboundEmailRetryDelayMs } from '@shared/inboundEmailProcessing';
@@ -12,8 +12,52 @@ export type InboundImportJob = typeof jobs.$inferSelect;
 export const importOrganizations = () => [...new Set((process.env.INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS ?? '').split(',').map(value => value.trim()).filter(value => value && value !== '*'))];
 export const isInboundImportRecoveryEnabled = (organizationId?: string) => isWorkerEnabled('INBOUND_EMAIL_IMPORTS', false) && importOrganizations().length > 0
   && (!organizationId || importOrganizations().includes(organizationId));
+export const discoveryMailboxes = () => [...new Set((process.env.INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS ?? '').split(',').map(value => value.trim()).filter(value => value && value !== '*'))];
+export const isInboundDiscoveryEnabled = () => isWorkerEnabled('INBOUND_EMAIL_DISCOVERY', false)
+  && isInboundImportRecoveryEnabled() && discoveryMailboxes().length > 0;
 export class InboundEmailImportRepository {
   constructor(private readonly database = db) {}
+  /** Railway's timer only schedules durable work. Mailbox row locks and the
+   * existing unfinished-discovery index serialize replicas/restarts. No provider
+   * call is made here. Failed windows require the existing staff retry action. */
+  async scheduleDiscoveries(optionsFor: (mailbox: InboundEmailMailbox, now: Date) => NonNullable<InboundImportJob['discoveryJson']>) {
+    if (!isInboundDiscoveryEnabled()) return 0;
+    return this.database.transaction(async tx => {
+      const candidates = await tx.select({ mailbox: mailboxes, settings: organizations.settings }).from(mailboxes)
+        .innerJoin(organizations, eq(organizations.id, mailboxes.organizationId))
+        .innerJoin(userOrganizations, and(eq(userOrganizations.organizationId, mailboxes.organizationId),
+          eq(userOrganizations.userId, mailboxes.createdByUserId), inArray(userOrganizations.role, ['owner', 'admin'])))
+        .innerJoin(users, and(eq(users.id, userOrganizations.userId), eq(users.accountType, 'INTERNAL_USER')))
+        .where(and(inArray(mailboxes.id, discoveryMailboxes()), inArray(mailboxes.organizationId, importOrganizations()),
+          eq(mailboxes.provider, 'gmail'), eq(mailboxes.enabled, true), eq(organizations.status, 'active'),
+          eq(organizations.isArchived, false), eq(organizations.deleteState, 'active')))
+        .orderBy(asc(mailboxes.id)).for('update', { of: mailboxes, skipLocked: true }).limit(20);
+      let scheduled = 0;
+      for (const { mailbox, settings: preferences } of candidates) {
+        if (!isInboundDiscoveryEnabled()) break;
+        const settings = resolveInboundEmailIntakeSettingsFromPreferences((preferences as any)?.preferences);
+        if (!settings.inboundEmailIntakeEnabled || settings.inboundEmailPullPaused) continue;
+        const [open] = await tx.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.organizationId, mailbox.organizationId),
+          eq(jobs.mailboxId, mailbox.id), eq(jobs.workKind, 'discovery'), sql`${jobs.status} not in ('complete','skipped')`)).limit(1);
+        if (open) continue;
+        const [latest] = await tx.select().from(jobs).where(and(eq(jobs.organizationId, mailbox.organizationId),
+          eq(jobs.mailboxId, mailbox.id), eq(jobs.workKind, 'discovery'),
+          sql`${jobs.discoveryJson}->>'scheduledThrough' is not null`)).orderBy(desc(jobs.createdAt)).limit(1);
+        const now = new Date();
+        if (latest && now.getTime() - latest.createdAt.getTime() < 300_000) continue;
+        const options = optionsFor(mailbox, now);
+        // Repeat the bounded lookback, including read mail. Provider indexing
+        // delays must not turn the prior scan's end into an exclusion cutoff.
+        // Message identity uniqueness makes this overlap safe.
+        const [inserted] = await tx.insert(jobs).values({ organizationId: mailbox.organizationId, mailboxId: mailbox.id, provider: 'gmail',
+          providerAccount: mailbox.emailAddress.trim().toLowerCase(), workKind: 'discovery', providerMessageId: `discovery:${randomUUID()}`,
+          actorUserId: mailbox.createdByUserId, discoveryJson: { ...options, drainWindow: true, scheduledThrough: Math.floor(now.getTime() / 1000) } })
+          .onConflictDoNothing().returning({ id: jobs.id });
+        if (inserted) scheduled++;
+      }
+      return scheduled;
+    });
+  }
   async beginDiscovery(mailbox: InboundEmailMailbox, actorUserId: string, options: NonNullable<InboundImportJob['discoveryJson']>) {
     await this.database.transaction(async tx => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`inbound-evidence:${mailbox.organizationId}`}))`);
@@ -38,8 +82,10 @@ export class InboundEmailImportRepository {
       // crash before commit repeats this page using the saved absolute query.
       await new InboundEmailImportRepository(tx as any).discover(mailbox, job.actorUserId!, identities);
       const processed = current.discoveryJson.processed + identities.length;
-      const complete = !nextPageToken || processed >= current.discoveryJson.limit;
-      await tx.update(jobs).set({ discoveryJson: {...current.discoveryJson, processed, pageToken: nextPageToken},
+      const continueWindow = Boolean(nextPageToken && current.discoveryJson.drainWindow && processed >= current.discoveryJson.limit);
+      const complete = !nextPageToken || (!current.discoveryJson.drainWindow && processed >= current.discoveryJson.limit);
+      await tx.update(jobs).set({ discoveryJson: {...current.discoveryJson, processed: continueWindow ? 0 : processed, pageToken: nextPageToken},
+        ...(continueWindow ? {status:'waiting' as const, attempts:0, claimToken:null,claimExpiresAt:null} : {}),
         ...(complete ? {status:'complete' as const, claimToken:null,claimExpiresAt:null} : {}), updatedAt:new Date() }).where(eq(jobs.id,job.id));
     });
   }

@@ -16,12 +16,14 @@ const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL })
 const second = drizzle(secondPool, { schema });
 let org: string, user: string, mailbox: schema.InboundEmailMailbox, message: InboundEmailProviderMessage;
 let imports: InboundEmailImportRepository, records: InboundOrdersRepository;
-const envKeys = ['WORKER_INBOUND_EMAIL_IMPORTS_ENABLED','INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS','WORKERS_ENABLED','WORKER_INBOUND_EMAIL_DRAFTS_ENABLED'];
+const envKeys = ['WORKER_INBOUND_EMAIL_IMPORTS_ENABLED','INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS','WORKERS_ENABLED','WORKER_INBOUND_EMAIL_DRAFTS_ENABLED',
+  'WORKER_INBOUND_EMAIL_DISCOVERY_ENABLED','INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS'];
 const original = Object.fromEntries(envKeys.map(key=>[key,process.env[key]]));
 beforeEach(async()=>{
   org=`import-test-${randomUUID()}`;user=randomUUID();
   process.env.WORKER_INBOUND_EMAIL_IMPORTS_ENABLED='true';process.env.INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS=org;
   delete process.env.WORKERS_ENABLED;delete process.env.WORKER_INBOUND_EMAIL_DRAFTS_ENABLED;
+  delete process.env.WORKER_INBOUND_EMAIL_DISCOVERY_ENABLED; delete process.env.INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS;
   await db.insert(schema.organizations).values({id:org,name:'Isolated import customer',slug:org});
   await db.insert(schema.users).values({id:user,email:`${user}@example.invalid`,role:'owner'});
   [mailbox]=await db.insert(schema.inboundEmailMailboxes).values({organizationId:org,name:'Synthetic Gmail',emailAddress:'orders@shop.invalid',provider:'gmail',createdByUserId:user}).returning();
@@ -55,6 +57,115 @@ function service(adapter=provider(),database:any=db){
   return new InboundEmailIngestionService(database,{gmail:adapter},new InboundOrdersRepository(database),storage as any,new InboundEmailImportRepository(database));
 }
 const pull=(s:InboundEmailIngestionService)=>s.pullLatestEmails({organizationId:org,actorUserId:user});
+
+async function enrollDiscovery() {
+  process.env.WORKER_INBOUND_EMAIL_DISCOVERY_ENABLED = 'true';
+  process.env.INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS = mailbox.id;
+  await db.insert(schema.userOrganizations).values({organizationId:org,userId:user,role:'admin'});
+}
+const discoveryJobs = () => db.select().from(schema.inboundEmailImportJobs).where(and(
+  eq(schema.inboundEmailImportJobs.organizationId, org), eq(schema.inboundEmailImportJobs.workKind, 'discovery')));
+
+test('scheduled discovery is disabled by default and requires both recovery and explicit mailbox enrollment', async () => {
+  const s = service();
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  await enrollDiscovery();
+  delete process.env.WORKER_INBOUND_EMAIL_IMPORTS_ENABLED;
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  process.env.WORKER_INBOUND_EMAIL_IMPORTS_ENABLED = 'true';
+  process.env.INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS = '*';
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  process.env.INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS = mailbox.id;
+  process.env.WORKERS_ENABLED = 'false';
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  expect(await discoveryJobs()).toHaveLength(0);
+});
+
+test('competing scheduled ticks persist one discovery window, then recovery imports without a manual pull', async () => {
+  await enrollDiscovery();
+  expect((await Promise.all([service().scheduleAutomaticDiscovery(),service(provider(),second).scheduleAutomaticDiscovery()]))
+    .reduce((sum,n)=>sum+n,0)).toBe(1);
+  expect(await discoveryJobs()).toHaveLength(1);
+  await service().recoverInterruptedImports(3);
+  expect(await inbound()).toHaveLength(1);
+  expect(await aiJobs()).toHaveLength(1);
+  expect(await service().scheduleAutomaticDiscovery()).toBe(0);
+  expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(0);
+});
+
+test('scheduling enforces tenant, mailbox eligibility, active organization and current administrator membership', async () => {
+  await enrollDiscovery(); const s=service();
+  process.env.INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS='another-tenant';
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  process.env.INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS=org;
+  await db.update(schema.inboundEmailMailboxes).set({enabled:false}).where(eq(schema.inboundEmailMailboxes.id,mailbox.id));
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  await db.update(schema.inboundEmailMailboxes).set({enabled:true}).where(eq(schema.inboundEmailMailboxes.id,mailbox.id));
+  await db.update(schema.organizations).set({isArchived:true}).where(eq(schema.organizations.id,org));
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  await db.update(schema.organizations).set({isArchived:false}).where(eq(schema.organizations.id,org));
+  await db.update(schema.userOrganizations).set({role:'member'}).where(eq(schema.userOrganizations.userId,user));
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  expect(await discoveryJobs()).toHaveLength(0);
+});
+
+test('paused intake prevents scheduling and scheduled imports retain the canonical blacklist', async () => {
+  await enrollDiscovery(); const s=service();
+  await db.update(schema.organizations).set({settings:{preferences:{inboundEmail:{inboundEmailPullPaused:true}}} as any}).where(eq(schema.organizations.id,org));
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  await db.update(schema.organizations).set({settings:{preferences:{inboundEmail:{inboundEmailPullPaused:false}}} as any}).where(eq(schema.organizations.id,org));
+  await records.createEmailIgnoreRule({organizationId:org,ruleType:'sender_email_exact',ruleValue:message.senderEmail!,createdByUserId:user,enabled:true});
+  expect(await s.scheduleAutomaticDiscovery()).toBe(1);
+  await s.recoverInterruptedImports(3);
+  expect(await inbound()).toHaveLength(0); expect(await aiJobs()).toHaveLength(0);
+  expect((await jobs())[0].status).toBe('skipped');
+});
+
+test('scheduled pagination checkpoints the entire bounded window without dropping messages beyond one claim budget', async () => {
+  const options={...inboundGmailDiscoveryOptions(mailbox,2,new Date()),drainWindow:true,scheduledThrough:Math.floor(Date.now()/1000)};
+  await imports.beginDiscovery(mailbox,user,options);
+  const first=(await imports.claim({organizationId:org,mailboxId:mailbox.id,workKind:'discovery'}))!;
+  await imports.discoveryPage(first,mailbox,[{messageId:'one',threadId:null},{messageId:'two',threadId:null}],'next-page');
+  expect((await discoveryJobs())[0]).toMatchObject({status:'waiting',attempts:0,discoveryJson:{processed:0,pageToken:'next-page',query:options.query}});
+  const replacement=(await new InboundEmailImportRepository(second as any).claim({organizationId:org,mailboxId:mailbox.id,workKind:'discovery'}))!;
+  await expect(imports.discoveryPage(first,mailbox,[{messageId:'stale',threadId:null}])).rejects.toThrow();
+  await imports.discoveryPage(replacement,mailbox,[{messageId:'three',threadId:null}]);
+  expect((await discoveryJobs())[0].status).toBe('complete');
+  expect((await jobs()).map(j=>j.providerMessageId).sort()).toEqual(['one','three','two']);
+});
+
+test('completed scheduled windows retain the configured lookback; failures remain visible and block automatic replacement', async () => {
+  await enrollDiscovery(); const s=service(); await s.scheduleAutomaticDiscovery();
+  let [first]=await discoveryJobs();
+  const claimed=(await imports.claim({organizationId:org,mailboxId:mailbox.id,workKind:'discovery'}))!;
+  await imports.fail(claimed,'IMPORT_PROVIDER_UNAVAILABLE',true);
+  expect(await s.scheduleAutomaticDiscovery()).toBe(0);
+  await imports.retry(org,first.id,user);
+  await s.recoverInterruptedImports(3);
+  await db.update(schema.inboundEmailImportJobs).set({createdAt:new Date(Date.now()-600_000)}).where(eq(schema.inboundEmailImportJobs.id,first.id));
+  expect(await s.scheduleAutomaticDiscovery()).toBe(1);
+  const next=(await discoveryJobs()).find(job=>job.id!==first.id)!;
+  expect(next.discoveryJson!.query).not.toContain(`after:${first.discoveryJson!.scheduledThrough!-120}`);
+  const afterValues = [...next.discoveryJson!.query.matchAll(/after:(\d+)/g)].map(match=>Number(match[1]));
+  expect(afterValues.length).toBeGreaterThan(0);
+  expect(afterValues.every(value=>value<=Math.floor(Date.now()/1000)-13*86400)).toBe(true);
+  expect(next.discoveryJson!.query).toMatch(/before:\d+/);
+  await s.recoverInterruptedImports(3);
+  expect(await inbound()).toHaveLength(1); expect(await aiJobs()).toHaveLength(1);
+  expect(await jobs()).toHaveLength(1);
+});
+
+test('scheduled queries retain read mail and bound custom queries even without a date restriction', async () => {
+  await enrollDiscovery();
+  await db.update(schema.inboundEmailMailboxes).set({settingsJson:{gmailQuery:'is:unread subject:synthetic',labelIds:['UNREAD','QA'],lookbackDays:1}})
+    .where(eq(schema.inboundEmailMailboxes.id,mailbox.id));
+  expect(await service().scheduleAutomaticDiscovery()).toBe(1);
+  const [job]=await discoveryJobs();
+  expect(job.discoveryJson!.labelIds).toEqual(['QA']);
+  expect(job.discoveryJson!.query).toContain('{is:read is:unread}');
+  expect(job.discoveryJson!.query).toMatch(/after:\d+/);
+  expect(job.discoveryJson!.query).toMatch(/before:\d+/);
+});
 
 test('discovered IDs survive detail failure and a later empty discovery window',async()=>{
   const s=service(provider({getMessage:async()=>{throw new Error('private provider error');},listRecentMessages:async(_m,_l,onPage)=>{await onPage!([{messageId:message.messageId,threadId:null}]);throw new Error('private provider error');}}));

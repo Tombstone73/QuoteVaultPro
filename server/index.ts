@@ -4,7 +4,7 @@ import { cleanupAssistantPendingImages } from './services/assistantImageAttachme
 import "dotenv/config";
 import { inboundEmailProcessingWorker } from "./services/inboundOrders/InboundEmailProcessingWorker";
 import { inboundEmailIngestionService } from "./services/inboundEmailIngestionService";
-import { isInboundImportRecoveryEnabled } from "./storage/inboundEmailImport.repo";
+import { isInboundImportRecoveryEnabled, isInboundDiscoveryEnabled } from "./storage/inboundEmailImport.repo";
 import { inboundGmailAcknowledgementWorker } from './services/inboundOrders/InboundGmailAcknowledgementWorker';
 import { isGmailAcknowledgementEnabled } from './storage/inboundGmailAcknowledgement.repo';
 import { isInboundEmailProcessingEnabled } from "./services/inboundOrders/inboundEmailProcessingConfig";
@@ -423,6 +423,15 @@ process.on('uncaughtException', (error) => {
         const timer=setInterval(()=>{void tick();},30_000);timer.unref?.();void tick();
       }
       const inboundImportsEnabled = isInboundImportRecoveryEnabled();
+      const inboundDiscoveryEnabled = isInboundDiscoveryEnabled();
+      logWorkerStatus('Inbound Email Discovery', inboundDiscoveryEnabled, inboundDiscoveryEnabled ? 60_000 : undefined);
+      if (inboundDiscoveryEnabled) {
+        const tick = () => inboundEmailIngestionService.scheduleAutomaticDiscovery()
+          .catch(() => console.warn('[InboundEmailDiscovery] Scheduling failed; existing work is retained.'));
+        const timer = setInterval(() => { void tick(); }, 60_000);
+        timer.unref?.();
+        void tick();
+      }
       logWorkerStatus('Inbound Email Imports', inboundImportsEnabled, inboundImportsEnabled ? 30_000 : undefined);
       if (inboundImportsEnabled) {
         const tick = () => inboundEmailIngestionService.recoverInterruptedImports().catch(() => console.warn('[InboundEmailImport] Tick failed; durable work is retained.'));
