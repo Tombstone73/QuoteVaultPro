@@ -2721,6 +2721,55 @@ describe("InboundOrdersPage", () => {
     expect(cleanQueue.textContent).not.toContain("Issue clean queue item");
   });
 
+  test("bulk removal keeps failed rows selected and reports distinct errors once", async () => {
+    const rows = ["first", "second", "third"].map((name) => record({
+      id: `bulk_${name}`, sourceType: "email", externalReference: `Bulk ${name}`,
+      rawPayloadJson: { subject: `Bulk ${name}`, bodyText: `${name} synthetic request`, sender: { email: `${name}@example.invalid` } },
+      normalizedPayloadJson: { evidenceFingerprint: `v1:${name}` },
+    }));
+    let visible = rows;
+    let sent: any = null;
+    const staleMessage = "Refresh and review the current email evidence before resolving it.";
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("");
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+        const path = String(url);
+        if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse(visible));
+        if (path === "/api/inbound-orders/bulk-action" && options?.method === "POST") {
+          sent = JSON.parse(options.body);
+          visible = rows.slice(1);
+          const errors = visible.map(({ id }) => ({ id, message: staleMessage }));
+          return jsonResponse({ success: true, data: { updatedIds: [rows[0].id], errors, actualErrors: errors, emailsProcessed: 1, emailsSkipped: 2 } });
+        }
+        const detailRow = rows.find((row) => path === `/api/inbound-orders/${row.id}`);
+        if (detailRow) return jsonResponse({ success: true, data: detail(detailRow) });
+        if (path.endsWith("/draft-preview")) return jsonResponse(draftPreview());
+        if (path.endsWith("/review-draft")) return jsonResponse({ success: true, data: reviewDraft(parsedDraft()) });
+        if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+        if (path.startsWith("/api/inbound-orders/product-search?") || path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+        return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+      });
+      renderPage();
+      await waitForText("Bulk third");
+      const selectAll = container.querySelector('input[aria-label="Select all filtered inbound records"]') as HTMLInputElement;
+      act(() => { selectAll.checked = true; Simulate.change(selectAll); });
+      await waitForText("3 selected");
+      const deleteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Delete") as HTMLButtonElement;
+      await act(async () => { Simulate.click(deleteButton); });
+      await waitForCondition(() => Boolean(sent), "bulk removal request");
+      expect(sent.expectedEvidenceFingerprints).toEqual({ bulk_first: "v1:first", bulk_second: "v1:second", bulk_third: "v1:third" });
+      await waitForText("2 selected");
+      expect(container.textContent).not.toContain("Bulk first");
+      const notification = mockToast.mock.calls.find(([value]) => (value as { title?: string })?.title === "Some records were not updated")?.[0] as any;
+      expect(notification.description).toContain("1 updated, 2 failed.");
+      expect(notification.description.split(staleMessage)).toHaveLength(2);
+    } finally {
+      promptSpy.mockRestore();
+      confirmSpy.mockRestore();
+    }
+  });
+
   test("keeps Clean View Parse and Re-scan loading states independent while hydrating parse results", async () => {
     const row = record({
       id: "clean_parse_1",

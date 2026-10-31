@@ -1843,10 +1843,17 @@ export class InboundOrderService {
       this.repository.getQueueSummary(args.organizationId),
     ]);
 
-    const enrichedRecords = await Promise.all(records.map((record) => this.enrichRecordTrust({
-      organizationId: args.organizationId,
-      record,
-    })));
+    const enrichedRecords = await Promise.all(records.map(async (record) => {
+      // Older email imports can predate fingerprint initialization. The same
+      // tenant-scoped evidence protocol used by detail review gives the queue a
+      // current token without requiring an AI parse.
+      const current = record.sourceType === "email"
+        && !stringFromUnknown(getPathValue(record.normalizedPayloadJson, "evidenceFingerprint"))
+        && typeof this.repository.getEvidenceState === "function"
+        ? (await this.repository.getEvidenceState(args.organizationId, record.id)).record
+        : record;
+      return this.enrichRecordTrust({ organizationId: args.organizationId, record: current });
+    }));
 
     return {
       records: enrichedRecords.filter((record) => this.matchesTrustFilter(record, args.filters.trustFilter)),

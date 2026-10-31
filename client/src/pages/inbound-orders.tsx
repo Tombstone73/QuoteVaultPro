@@ -10527,6 +10527,23 @@ export default function InboundOrdersPage() {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
       const actualErrors = response.data.actualErrors ?? response.data.errors;
+      setSelectedQueueRecordIds((current) => {
+        const next = new Set(current);
+        for (const id of variables.recordIds) next.delete(id);
+        for (const { id } of actualErrors) next.add(id);
+        return next;
+      });
+      if (variables.action === "delete" && selectedId && response.data.updatedIds.includes(selectedId)) {
+        setSelectedId(null);
+      }
+      if (actualErrors.length > 0) {
+        const messages = Array.from(new Set(actualErrors.map(({ message }) => message.trim()).filter(Boolean)));
+        toast({
+          title: "Some records were not updated",
+          description: `${response.data.updatedIds.length} updated, ${actualErrors.length} failed. ${messages.slice(0, 2).join(" ")}`,
+          variant: "destructive",
+        });
+      }
       const conflictErrors = actualErrors.filter((error) => (
         error.message.includes("currently ignored") || error.message.includes("currently trusted")
       ));
@@ -10536,19 +10553,11 @@ export default function InboundOrdersPage() {
           ? `${conflictErrors.length} selected sender/domain value(s) are currently ignored. Trusting them will disable matching ignore rule(s).`
           : `${conflictErrors.length} selected sender/domain value(s) are currently trusted. Ignoring them will disable matching trust rule(s).`);
         if (confirmed) {
-          bulkQueueActionMutation.mutate({ ...variables, resolveConflict: "disable_conflicting_rule" });
+          bulkQueueActionMutation.mutate({ ...variables, recordIds: conflictErrors.map(({ id }) => id), resolveConflict: "disable_conflicting_rule" });
           return;
         }
       }
-      setSelectedQueueRecordIds(new Set());
-      if (actualErrors.length > 0) {
-        toast({
-          title: "Some records were not updated",
-          description: actualErrors.map((error) => error.message).slice(0, 2).join(" "),
-          variant: "destructive",
-        });
-        return;
-      }
+      if (actualErrors.length > 0) return;
       const isIgnoreAction = variables.action === "ignore_once"
         || variables.action === "ignore_sender"
         || variables.action === "ignore_domain"

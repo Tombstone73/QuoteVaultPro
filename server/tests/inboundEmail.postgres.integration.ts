@@ -16,6 +16,9 @@ import { inboundOrderParsedDraftSchema } from '@shared/inboundOrdersApi';
 import { InboundEvidenceConflictError } from '../services/inboundOrders/inboundEmailEvidenceFingerprint';
 import { OrdersRepository } from '../storage/orders.repo';
 import { QuotesRepository } from '../storage/quotes.repo';
+import express from 'express';
+import request from 'supertest';
+import { registerInboundOrderRoutes } from '../routes/inboundOrders.routes';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, application_name: 'inbound-test-competitor' });
 const secondDb = drizzle(secondPool, { schema });
@@ -64,6 +67,22 @@ const approve = (snapshot: any, repository = repo) => repository.createReviewSna
   evidenceSourceSnapshotId: snapshot.id, recordPatch: { status: 'ready' }, event });
 const dismiss = (fingerprint: string, repository = repo) => repository.updateRecordWithEvent({ ...identity(), expectedEvidenceFingerprint: fingerprint,
   patch: { status: 'ignored', reviewOutcome: 'ignored' }, event: { actorType: 'user', actorUserId: user, eventType: 'review.ignored' } });
+
+function bulkApp(organizationId = org, repository = repo) {
+  const app = express();
+  app.use(express.json());
+  registerInboundOrderRoutes(app, {
+    isAuthenticated: (req: any, _res: any, next: any) => { req.user = { id: user, role: 'admin' }; next(); },
+    tenantContext: (req: any, _res: any, next: any) => { req.organizationId = organizationId; req.actorOrgRole = 'admin'; next(); },
+    assertInternalUser: () => true,
+    inboundOrderService: new InboundOrderService(repository),
+  });
+  return app;
+}
+
+async function bulkDelete(app: ReturnType<typeof bulkApp>, recordIds: string[], expectedEvidenceFingerprints: Record<string, string>) {
+  return request(app).post('/api/inbound-orders/bulk-action').send({ recordIds, action: 'delete', expectedEvidenceFingerprints });
+}
 
 // Wait for a PostgreSQL-observed lock waiter, never for a guessed sleep. The
 // deadline fails diagnostically if the participant does not use the protocol.
@@ -225,6 +244,81 @@ test('dismissal is audited once, attachment revisions reopen it, and stale resol
   await repo.createFile({organizationId:org,inboundRecordId:id,sourceFilename:'PO.txt',checksum:'revision'});
   await expect(dismiss(fp)).rejects.toThrow();
   expect(await repo.listRecords(org,{statusGroup:'active',limit:100,offset:0})).toHaveLength(1);
+});
+
+test('bulk route removes distinct current and legacy email evidence without deleting source, files or audit', async () => {
+  const secondId = randomUUID();
+  await db.insert(schema.inboundOrderRecords).values({ id: secondId, organizationId: org, sourceType: 'email', status: 'needs_review',
+    sourceMessageId: `gmail-${secondId}`, rawPayloadJson: { subject: 'Second synthetic request', bodyText: 'Second email' } });
+  await repo.createFile({ organizationId: org, inboundRecordId: secondId, sourceFilename: 'source.pdf', checksum: 'unchanged-source' });
+  const service = new InboundOrderService(repo);
+  const listed = await service.listRecords({ organizationId: org, filters: { statusGroup: 'active', limit: 100, offset: 0 } });
+  const tokens = Object.fromEntries(listed.records.map(record => [record.id, (record.normalizedPayloadJson as any)?.evidenceFingerprint]));
+  expect(tokens[id]).toMatch(/^v1:/);
+  expect(tokens[secondId]).toMatch(/^v1:/);
+  expect(tokens[id]).not.toBe(tokens[secondId]);
+  expect((await repo.getRecord(org, id))?.normalizedPayloadJson?.evidenceFingerprint).toBe(tokens[id]);
+
+  const app = bulkApp();
+  const response = await bulkDelete(app, [id, secondId], tokens);
+  expect(response.status).toBe(200);
+  expect(response.body.data).toMatchObject({ updatedIds: [id, secondId], emailsProcessed: 2, emailsSkipped: 0, actualErrors: [] });
+  expect(await repo.listRecords(org, { statusGroup: 'active', limit: 100, offset: 0 })).toHaveLength(0);
+  expect(await repo.getRecord(org, secondId)).toMatchObject({ sourceMessageId: `gmail-${secondId}`, rawPayloadJson: { subject: 'Second synthetic request', bodyText: 'Second email' }, status: 'terminal', reviewOutcome: 'deleted' });
+  expect(await repo.listFiles(org, secondId)).toHaveLength(1);
+  expect((await repo.listEvents(org, secondId)).filter(event => event.eventType === 'review.queue_deleted')).toHaveLength(1);
+  await repo.completeEmailImport(org, secondId, user); // Unchanged rediscovery must not reopen the dismissed evidence.
+  expect(await repo.listRecords(org, { statusGroup: 'active', limit: 100, offset: 0 })).toHaveLength(0);
+  const repeated = await bulkDelete(app, [secondId], { [secondId]: tokens[secondId] });
+  expect(repeated.body.data).toMatchObject({ emailsProcessed: 1, emailsSkipped: 0 });
+  expect((await repo.listEvents(org, secondId)).filter(event => event.eventType === 'review.queue_deleted')).toHaveLength(1);
+  await repo.createFile({ organizationId: org, inboundRecordId: secondId, sourceFilename: 'revision.pdf', checksum: 'new-evidence' });
+  await repo.getEvidenceState(org, secondId);
+  expect((await repo.getRecord(org, secondId))?.reviewOutcome).toBe('new_evidence_requires_review');
+  expect(await repo.listRecords(org, { statusGroup: 'active', limit: 100, offset: 0 })).toHaveLength(1);
+});
+
+test('bulk route keeps stale and foreign-tenant rows while removing only current evidence', async () => {
+  const secondId = randomUUID();
+  await db.insert(schema.inboundOrderRecords).values({ id: secondId, organizationId: org, sourceType: 'email', status: 'needs_review',
+    rawPayloadJson: { subject: 'Synthetic stale request', bodyText: 'Original' } });
+  const first = (await repo.getEvidenceState(org, id)).fingerprint;
+  const stale = (await repo.getEvidenceState(org, secondId)).fingerprint;
+  await repo.updateRecordWithEvent({ organizationId: org, inboundRecordId: secondId,
+    patch: { rawPayloadJson: { subject: 'Synthetic stale request', bodyText: 'Changed' } },
+    event: { actorType: 'system', eventType: 'email.updated' } });
+  const response = await bulkDelete(bulkApp(), [id, secondId], { [id]: first, [secondId]: stale });
+  expect(response.status).toBe(200);
+  expect(response.body.data).toMatchObject({ updatedIds: [id], emailsProcessed: 1, emailsSkipped: 1 });
+  expect(response.body.data.actualErrors[0]).toMatchObject({ id: secondId });
+  expect((await repo.getRecord(org, secondId))?.status).toBe('needs_review');
+  const foreign = await bulkDelete(bulkApp(`foreign-${randomUUID()}`), [secondId], { [secondId]: stale });
+  expect(foreign.body.data).toMatchObject({ updatedIds: [], emailsProcessed: 0, emailsSkipped: 1 });
+  expect((await repo.listEvents(org, secondId)).filter(event => event.eventType === 'review.queue_deleted')).toHaveLength(0);
+});
+
+test('bulk route rejects evidence changed while disposition waits on the PostgreSQL evidence lock', async () => {
+  const fingerprint = (await repo.getEvidenceState(org, id)).fingerprint;
+  const response = await blockedByEvidence(async repository => bulkDelete(bulkApp(org, repository), [id], { [id]: fingerprint }), async () => {
+    await pool.query('update inbound_order_records set raw_payload_json = $1 where id = $2 and organization_id = $3',
+      [JSON.stringify({ subject: 'Concurrent revision', bodyText: 'New source evidence' }), id, org]);
+  });
+  expect(response.body.data).toMatchObject({ updatedIds: [], emailsProcessed: 0, emailsSkipped: 1 });
+  expect((await repo.getRecord(org, id))?.status).toBe('needs_review');
+  expect((await repo.listEvents(org, id)).filter(event => event.eventType === 'review.queue_deleted')).toHaveLength(0);
+});
+
+test('bulk route cannot remove a converted record or its Order', async () => {
+  const [order] = await db.insert(schema.orders).values({ organizationId: org, orderNumber: 'BULK-TEST-ORDER', createdByUserId: user }).returning();
+  await db.update(schema.inboundOrderRecords).set({ createdOrderId: order.id, status: 'submitted' }).where(and(
+    eq(schema.inboundOrderRecords.organizationId, org), eq(schema.inboundOrderRecords.id, id),
+  ));
+  const fingerprint = (await repo.getEvidenceState(org, id)).fingerprint;
+  const response = await bulkDelete(bulkApp(), [id], { [id]: fingerprint });
+  expect(response.body.data).toMatchObject({ updatedIds: [], emailsProcessed: 0, emailsSkipped: 1 });
+  expect((await repo.getRecord(org, id))?.createdOrderId).toBe(order.id);
+  expect(await db.select().from(schema.orders).where(eq(schema.orders.id, order.id))).toHaveLength(1);
+  expect((await repo.listEvents(org, id)).filter(event => event.eventType === 'review.queue_deleted')).toHaveLength(0);
 });
 test('failed event persistence rolls back draft insertion, approval and evidence metadata', async () => {
   const saved=await draft(); const before=await record();

@@ -2,7 +2,9 @@ param(
   [ValidateSet('Run', 'Cleanup')][string]$Action = 'Run',
   [string]$PgBin,
   [ValidateRange(1024, 65535)][int]$Port = 55481,
-  [switch]$DownloadRuntime
+  [switch]$DownloadRuntime,
+  [string[]]$TestPaths = @('server/tests/quoteRoutingAndConversion.contract.test.ts', 'server/tests/inboundEmail.postgres.integration.ts', 'server/tests/inboundEmailImport.postgres.integration.ts', 'server/tests/inboundGmailAcknowledgement.postgres.integration.ts'),
+  [string]$TestNamePattern
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -84,7 +86,9 @@ try {
   $env:TEST_DATABASE_URL = "postgresql://inbound_test_admin@127.0.0.1:$Port/printershero_inbound_test"
   $env:NODE_OPTIONS = '--max-old-space-size=8192 --experimental-vm-modules'
   # setupInboundPostgres verifies server identity again before canonical runner.
-  node node_modules/jest/bin/jest.js --config jest.inbound-postgres.config.js --runInBand --cacheDirectory node_modules/.cache/jest-inbound-pg --runTestsByPath server/tests/quoteRoutingAndConversion.contract.test.ts server/tests/inboundEmail.postgres.integration.ts server/tests/inboundEmailImport.postgres.integration.ts server/tests/inboundGmailAcknowledgement.postgres.integration.ts > (Join-Path $cache 'results.log') 2>&1
+  $jestArgs = @('node_modules/jest/bin/jest.js', '--config', 'jest.inbound-postgres.config.js', '--runInBand', '--cacheDirectory', 'node_modules/.cache/jest-inbound-pg', '--runTestsByPath') + $TestPaths
+  if ($TestNamePattern) { $jestArgs += @('-t', $TestNamePattern) }
+  node @jestArgs > (Join-Path $cache 'results.log') 2>&1
   $testExit = $LASTEXITCODE
   Get-Content -LiteralPath (Join-Path $cache 'results.log') -Tail 50
   if ($testExit -ne 0) { throw 'Real PostgreSQL tests failed; see results.log and server.log' }

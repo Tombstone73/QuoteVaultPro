@@ -10,6 +10,7 @@ import { InboundOrdersRepository } from '../storage/inboundOrders.repo';
 import { InboundEmailImportRepository } from '../storage/inboundEmailImport.repo';
 import { InboundEmailIngestionService, inboundGmailDiscoveryOptions, type InboundEmailProviderAdapter, type InboundEmailProviderMessage } from '../services/inboundEmailIngestionService';
 import { InboundEmailProcessingWorker } from '../services/inboundOrders/InboundEmailProcessingWorker';
+import { InboundOrderService } from '../services/inboundOrders/InboundOrderService';
 import { inboundImportContext } from '../services/inboundOrders/inboundEmailImportContext';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -358,6 +359,23 @@ test('thread recovery preserves staff edits and prior dismissal history while ne
   expect(await inbound()).toHaveLength(1);expect(await records.getRecord(org,record.id)).toMatchObject({status:'needs_review'});
   expect((await records.listReviewSnapshots(org,record.id))[0].payloadJson).toEqual(saved.snapshot.payloadJson);
   expect((await records.listEvents(org,record.id)).some(event=>event.eventType==='review.ignored')).toBe(true);
+});
+
+test('unchanged discovery after bulk removal keeps the email dismissed and its source intact', async () => {
+  const ingestion = service();
+  await pull(ingestion);
+  const [record] = await inbound();
+  const fingerprint = (await records.getEvidenceState(org, record.id)).fingerprint;
+  const outcome = await new InboundOrderService(records).applyBulkQueueAction({
+    organizationId: org, actorUserId: user, recordIds: [record.id], action: 'delete',
+    expectedEvidenceFingerprints: { [record.id]: fingerprint },
+  });
+  expect(outcome).toMatchObject({ updatedIds: [record.id], emailsProcessed: 1, emailsSkipped: 0 });
+  await discover();
+  await ingestion.recoverInterruptedImports(1);
+  expect(await inbound()).toHaveLength(1);
+  expect(await records.getRecord(org, record.id)).toMatchObject({ status: 'terminal', reviewOutcome: 'deleted', sourceMessageId: message.messageId });
+  expect((await records.listEvents(org, record.id)).filter(event => event.eventType === 'review.queue_deleted')).toHaveLength(1);
 });
 test('new evidence on an Order-linked thread reopens review without modifying or duplicating the Order',async()=>{
   message.threadId='order-linked-thread';await pull(service(provider({getThreadMessages:async()=>[message]})));

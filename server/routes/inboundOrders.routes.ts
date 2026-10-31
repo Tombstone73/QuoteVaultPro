@@ -2014,6 +2014,7 @@ export function registerInboundOrderRoutes(
         action: input.action,
         note: input.note ?? null,
         resolveConflict: input.resolveConflict,
+        ...(input.expectedEvidenceFingerprints !== undefined ? { expectedEvidenceFingerprints: input.expectedEvidenceFingerprints } : {}),
       });
       res.json({ success: true, data: result });
     } catch (error) {

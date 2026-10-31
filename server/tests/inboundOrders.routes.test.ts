@@ -1582,6 +1582,20 @@ describe("inbound order routes", () => {
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
+  test("bulk disposition forwards each parsed evidence fingerprint to the service", async () => {
+    service.applyBulkQueueAction.mockResolvedValue({ updatedIds: ["inbound_1", "inbound_2"], errors: [] });
+    const expectedEvidenceFingerprints = { inbound_1: "v1:first", inbound_2: "v1:second" };
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/bulk-action")
+      .send({ recordIds: ["inbound_1", "inbound_2"], action: "delete", expectedEvidenceFingerprints });
+
+    expect(response.status).toBe(200);
+    expect(service.applyBulkQueueAction).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1", actorUserId: "user_1", recordIds: ["inbound_1", "inbound_2"],
+      action: "delete", expectedEvidenceFingerprints,
+    }));
+  });
+
   test("combines selected inbound emails through the staff-controlled route", async () => {
     service.combineInboundRecords.mockResolvedValue({
       detail: inboundDetail(inboundRecord({ id: "inbound_parent" })),
