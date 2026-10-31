@@ -8,16 +8,24 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { NavigationGuardProvider } from '@/contexts/NavigationGuardContext';
 import { defaultInboundEmailIntakeSettings } from '@shared/inboundEmailIntakeSettings';
 import InboundOrdersPage from '@/pages/inbound-orders';
+import OrderNewRoute from '@/pages/order-new';
 import '../../client/src/index.css';
 
 const recordId = '00000000-0000-4000-8000-000000000001';
 const archiveId = '00000000-0000-4000-8000-000000000002';
 const productId = '00000000-0000-4000-8000-000000000003';
+const dimensionProductId = '00000000-0000-4000-8000-000000000007';
 const customerId = '00000000-0000-4000-8000-000000000004';
+const contactId = '00000000-0000-4000-8000-000000000008';
 const now = '2026-10-31T12:00:00.000Z';
 let revision = 1;
 let parsed = false;
 let converted = false;
+let savedReviewDraft: any = null;
+let directOrderPayload: any = null;
+let inboundConversionPayload: any = null;
+let draftSaveAttempts = 0;
+let directOrderAttempts = 0;
 let files: any[] = [{ id: archiveId, organizationId: 'fixture', inboundRecordId: recordId,
   fileRecordId: 'fixture-zip-record', sourceFilename: 'Archive.zip', role: 'email_attachment', mimeType: 'application/zip',
   sizeBytes: 2048, status: 'quarantined', checksum: 'synthetic-archive', metadataJson: { attachmentState: 'scan_pending' },
@@ -42,7 +50,7 @@ const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmai
     quantity: 20, width: null, height: null, dimensionsUnit: null, materialText: null, optionTexts: ['double-sided'], finishingTexts: [],
     artworkRefs: [], confidence: 98, warnings: [] }], artwork: [], globalWarnings: [], missingDecisions: [],
   evidence: { items: [], conflicts: [], reconciliation: null } };
-const reviewDraft = () => ({ snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
+const reviewDraft = (): any => savedReviewDraft ?? ({ snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
   evidenceReviewRequired: false, hasNewerParse: false, validationErrors: [],
   reviewedCustomerJson: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     selectedCustomerId: customerId, selectedCustomerSource: 'crm_match', selectedContactId: null, unresolvedCustomer: false, unresolvedContact: false },
@@ -55,9 +63,9 @@ const reviewDraft = () => ({ snapshotId: 'fixture-review-1', snapshotVersion: 1,
     optionTextsSource: 'source_evidence', finishingTexts: [], finishingTextsSource: null,
     optionSelectionsJson: { schemaVersion: 2, selected: { sides: { value: 'double', origin: 'SOURCE_EVIDENCE', evidence: 'double-sided' } } },
     pbv2TreeVersionId: 'fixture-tree-1', pbv2OptionSuggestions: [],
-    pricingReviewJson: { status: 'matched', sourceEvidence: [], alternatePricingNotes: [], calculatedLineTotalCents: 16500, systemLineTotalCents: 16500,
+    pricingReviewJson: { status: 'matched', sourceEvidence: [], alternatePricingNotes: [], systemPriceCents: 16500, systemUnitPriceCents: 825,
       priceOverrideMode: null, priceOverrideValueCents: null, priceOverrideSource: null, acknowledged: true,
-      resolution: 'system_price', effectiveLineTotalCents: 16500 },
+      resolution: 'system_price', effectiveTotalCents: 16500, effectiveUnitPriceCents: 825 },
     artworkLinks: [], artworkQuantityMode: 'same_quantity_each', notes: null }],
   reviewedArtworkJson: { status: 'missing', refs: [], unassignedAttachments: [], notes: null },
   missingDecisionsJson: [], warningsJson: [], unsupportedRequestsJson: [], customerIntelligenceJson: null, reviewNotes: null });
@@ -72,15 +80,30 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   const method = init?.method?.toUpperCase() ?? 'GET';
   const payload = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
   if (!path.startsWith('/api/')) return originalFetch(input, init);
+  if (path === '/api/auth/session') return new Response(JSON.stringify({ authenticated: true, user: { id: 'synthetic-staff', role: 'employee', email: 'staff@example.invalid', organizationId: 'fixture' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/products' && method === 'GET') return new Response(JSON.stringify([
+    { id: productId, name: 'Yard Signs 24x18', isActive: true, measurementMode: 'quantity_only', pricingMode: 'quantity', price: 8.25, pbv2ActiveTreeVersionId: 'fixture-tree-1', optionTreeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } },
+    { id: dimensionProductId, name: 'Coroplast Custom', isActive: true, measurementMode: 'area', pricingMode: 'area', price: 4, pbv2ActiveTreeVersionId: 'fixture-tree-2' },
+  ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/organization/current') return new Response(JSON.stringify({ id: 'fixture' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/quotes/calculate' && method === 'POST') return new Response(JSON.stringify({ linePrice: payload.productId === productId ? 164.92 : 120, priceBreakdown: { basePrice: 164.92, total: 164.92 }, pbv2TreeVersionId: payload.productId === productId ? 'fixture-tree-1' : 'fixture-tree-2', pbv2SnapshotJson: { treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: payload.productId === productId ? { fixedDimensions: { widthIn: 24, heightIn: 18 } } : { requiresDimensions: true } } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/orders' && method === 'POST') { directOrderAttempts += 1; if (directOrderAttempts === 1) return failure('Synthetic first save failure'); directOrderPayload = payload; return success({ order: { id: 'qa-direct-order', orderNumber: 'QA-DIRECT-1' } }); }
+  if (path === `/api/products/${productId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-1', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } } });
+  if (path === `/api/products/${dimensionProductId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-2', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { requiresDimensions: true } } } });
   if (path === '/api/inbound-orders/gmail-acknowledgements') return new Response(JSON.stringify({ enabled: false, jobs: [] }),
     { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/inbound-orders/email-imports') return success({ enabled: false, jobs: [] });
   if (path === '/api/inbound-orders/email-settings') return success({ ...defaultInboundEmailIntakeSettings, inboundEmailIntakeEnabled: true, inboundEmailPullPaused: true });
+  if (path === '/api/customers' && method === 'GET') return success({ customers: [{ id: customerId, companyName: 'Synthetic buyer', contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', isPrimary: true }] }], pagination: { page: 1, total: 1 } });
+  if (path === `/api/customers/${customerId}` && method === 'GET') return new Response(JSON.stringify({ id: customerId, companyName: 'Synthetic buyer', contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', isPrimary: true }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/contacts' && method === 'GET') return new Response(JSON.stringify({ contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', email: 'qa-buyer@example.invalid', isPrimary: true }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === `/api/contacts/${contactId}` && method === 'GET') return new Response(JSON.stringify({ contact: { id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', email: 'qa-buyer@example.invalid' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/inbound-orders' && method === 'GET') return new Response(JSON.stringify({ success: true, data: converted ? [] : [record()],
     summary: { needsReview: converted ? 0 : 1, active: converted ? 0 : 1, convertedSubmitted: converted ? 1 : 0 }, total: converted ? 0 : 1 }),
     { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === `/api/inbound-orders/${recordId}` && method === 'GET') return success(detail());
   if (path === `/api/inbound-orders/${recordId}/draft-preview`) return success({ draft: parsed ? parsedDraft : null, latestAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null });
+  if (path === `/api/inbound-orders/${recordId}/review-draft` && method === 'PUT') { draftSaveAttempts += 1; if (draftSaveAttempts === 1) return failure('Synthetic first draft save failure'); savedReviewDraft = { ...reviewDraft(), ...payload, snapshotVersion: reviewDraft().snapshotVersion + 1 }; return success(savedReviewDraft); }
   if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed ? success(reviewDraft()) : failure('No draft', 404);
   if (path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') { parsed = true; return success({ record: record(), draft: parsedDraft,
     latestAttempt: { id: 'fixture-parse-1', status: 'success', createdAt: now }, reviewDraft: reviewDraft() }); }
@@ -110,13 +133,16 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     revision += 1;
     return success({ evidenceFingerprint: `fixture-evidence-${revision}`, remainingUnresolvedFileIds: [] });
   }
-  if (path === '/api/inbound-orders/product-search') return success([{ id: productId, name: 'Yard Signs 24x18', category: 'Signs', pricingMode: 'quantity', pbv2ActiveTreeVersionId: 'fixture-tree-1' }]);
+  if (path === '/api/inbound-orders/product-search') return success([{ id: productId, name: 'Yard Signs 24x18', category: 'Signs', pricingMode: 'quantity', pbv2ActiveTreeVersionId: 'fixture-tree-1' }, { id: dimensionProductId, name: 'Coroplast Custom', category: 'Signs', pricingMode: 'area', pbv2ActiveTreeVersionId: 'fixture-tree-2' }]);
+  if (path === `/api/inbound-orders/product-options/${dimensionProductId}`) return success({ productId: dimensionProductId, productName: 'Coroplast Custom', activeTreeVersionId: 'fixture-tree-2', requiresEnteredDimensions: true, fixedDimensions: null, treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {} }, requiredOptions: [], suggestedSelections: { schemaVersion: 2, selected: {} }, suggestions: [] });
   if (path === `/api/inbound-orders/product-options/${productId}`) return success({ productId, productName: 'Yard Signs 24x18',
     activeTreeVersionId: 'fixture-tree-1', requiresEnteredDimensions: false, fixedDimensions: { widthIn: 24, heightIn: 18 },
     treeJson: { schemaVersion: 2, rootNodeIds: ['sides'], nodes: { sides: { id: 'sides', kind: 'question', label: 'Sides', input: { type: 'select', required: true, selectionKey: 'sides' },
-      choices: [{ id: 'single', value: 'single', label: 'Single sided' }, { id: 'double', value: 'double', label: 'Double sided' }] } } }, requiredOptions: [] });
+      choices: [{ id: 'single', value: 'single', label: 'Single sided' }, { id: 'double', value: 'double', label: 'Double sided' }] } } }, requiredOptions: [], suggestedSelections: { schemaVersion: 2, selected: {} }, suggestions: [] });
+  if (path === '/api/inbound-orders/review-line-pricing' && method === 'POST') return success({ pricingReviewJson: { ...payload.lineItem.pricingReviewJson, status: 'matched', message: null, systemPriceCents: 16500, systemUnitPriceCents: 825, effectiveTotalCents: 16500, effectiveUnitPriceCents: 825 } });
   if (path === `/api/inbound-orders/${recordId}/create-order` && method === 'POST') {
     if (!files[0].metadataJson.inboundArchiveResolution || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
+    inboundConversionPayload = payload;
     converted = true;
     (window as any).__fixtureCreatedOrders = ((window as any).__fixtureCreatedOrders ?? 0) + 1;
     return success({ orderId: 'qa-order-1', orderNumber: 'QA-1', order: { id: 'qa-order-1', orderNumber: 'QA-1', lineItems: [{ productId, quantity: 20,
@@ -124,7 +150,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   }
   return success([]);
 };
-(window as any).__fixtureState = () => ({ imported, converted, files: files.length });
+(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts });
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({
   key: query.queryKey, status: query.state.status, data: query.state.data, error: String(query.state.error ?? ''),
 }));
@@ -139,6 +165,6 @@ function ThemeControls() {
 
 createRoot(document.getElementById('root')!).render(
   <ThemeProvider><QueryClientProvider client={queryClient}><BrowserRouter><NavigationGuardProvider><TooltipProvider>
-    <ThemeControls /><div className="h-[calc(100vh-32px)]"><InboundOrdersPage /></div>
+    <ThemeControls /><div className="h-[calc(100vh-32px)]">{location.pathname === '/orders/new' ? <OrderNewRoute /> : <InboundOrdersPage />}</div>
   </TooltipProvider></NavigationGuardProvider></BrowserRouter></QueryClientProvider></ThemeProvider>,
 );

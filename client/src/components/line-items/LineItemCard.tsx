@@ -1,4 +1,4 @@
-import { type FocusEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { type FocusEvent, type InputHTMLAttributes, ReactNode, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -93,6 +93,9 @@ export type LineItemCardProps = {
   onQuantityIncrement?: () => void;
   onQuantityDecrement?: () => void;
   dimsRequired?: boolean;
+  widthInputProps?: InputHTMLAttributes<HTMLInputElement>;
+  heightInputProps?: InputHTMLAttributes<HTMLInputElement>;
+  quantityInputProps?: InputHTMLAttributes<HTMLInputElement>;
 
   // Expanded view - Price
   price: number; // Total price
@@ -116,6 +119,8 @@ export type LineItemCardProps = {
   /** Existing taxability control, placed adjacent to the commercial override controls. */
   taxControlSlot?: ReactNode;
   pricingDetailsSlot?: ReactNode;
+  keepPricingDetailsMounted?: boolean;
+  widePricingDetails?: boolean;
   primaryControlSlot?: ReactNode;
 
   // Calculating state
@@ -278,6 +283,9 @@ export function LineItemCard({
   onQuantityIncrement,
   onQuantityDecrement,
   dimsRequired = true,
+  widthInputProps,
+  heightInputProps,
+  quantityInputProps,
   price,
   priceOverride,
   priceOverrideLabel = "Override",
@@ -297,6 +305,8 @@ export function LineItemCard({
   priceControlSlot,
   taxControlSlot,
   pricingDetailsSlot,
+  keepPricingDetailsMounted = false,
+  widePricingDetails = false,
   primaryControlSlot,
   isCalculating = false,
   calcError = null,
@@ -579,11 +589,11 @@ export function LineItemCard({
           <>
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
               Width
-              <Input id={`line-item-width-input-${id}`} ref={widthInputRef} value={width} onChange={(event) => onWidthChange?.(event.target.value)} onFocus={selectInputTextOnFocus} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
+              <Input {...widthInputProps} id={`line-item-width-input-${id}`} ref={widthInputRef} value={width} onChange={(event) => onWidthChange?.(event.target.value)} onFocus={(event) => { selectInputTextOnFocus(event); widthInputProps?.onFocus?.(event); }} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
             </label>
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
               Height
-              <Input value={height} onChange={(event) => onHeightChange?.(event.target.value)} onFocus={selectInputTextOnFocus} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
+              <Input {...heightInputProps} value={height} onChange={(event) => onHeightChange?.(event.target.value)} onFocus={(event) => { selectInputTextOnFocus(event); heightInputProps?.onFocus?.(event); }} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
             </label>
           </>
         ) : null}
@@ -591,7 +601,7 @@ export function LineItemCard({
           Qty
           <div className="flex h-8 min-w-0 items-center rounded-md border border-border/60 bg-background/40">
             <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Decrease quantity" onClick={() => { if (onQuantityChange) applyQuantity(quantity - 1); else onQuantityDecrement?.(); }} disabled={readOnly}><Minus className="h-3.5 w-3.5" /></Button>
-            <Input value={quantityDraft} onChange={(event) => updateQuantityDraft(event.currentTarget.value)} onBlur={commitQuantityDraft} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitQuantityDraft(); event.currentTarget.blur(); } }} className="h-7 min-w-0 border-0 px-1 text-center font-mono focus-visible:ring-0" inputMode="numeric" type="text" pattern="[0-9]*" aria-label="Quantity" aria-invalid={Boolean(quantityError)} aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined} disabled={readOnly} readOnly={readOnly} />
+            <Input {...quantityInputProps} value={quantityDraft} onChange={(event) => updateQuantityDraft(event.currentTarget.value)} onBlur={commitQuantityDraft} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitQuantityDraft(); event.currentTarget.blur(); } }} className="h-7 min-w-0 border-0 px-1 text-center font-mono focus-visible:ring-0" inputMode="numeric" type="text" pattern="[0-9]*" aria-label="Quantity" aria-invalid={Boolean(quantityError)} aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined} disabled={readOnly} readOnly={readOnly} />
             <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Increase quantity" onClick={() => { if (onQuantityChange) applyQuantity(quantity + 1); else onQuantityIncrement?.(); }} disabled={readOnly}><Plus className="h-3.5 w-3.5" /></Button>
           </div>
           {quantityError ? <div id={`line-item-quantity-error-${id}`} className="text-xs text-destructive" role="alert">{quantityError}</div> : null}
@@ -617,7 +627,7 @@ export function LineItemCard({
                     <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
                 </CollapsibleTrigger>
-                <CollapsibleContent className="absolute left-1/2 top-full z-30 mt-2 w-64 -translate-x-1/2 rounded-md border border-border bg-background p-2.5 text-left text-[11px] leading-4 text-muted-foreground shadow-lg">
+                <CollapsibleContent forceMount={keepPricingDetailsMounted ? true : undefined} className={cn("absolute left-1/2 top-full z-30 mt-2 -translate-x-1/2 rounded-md border border-border bg-background p-2.5 text-left text-[11px] leading-4 text-muted-foreground shadow-lg data-[state=closed]:hidden", widePricingDetails ? "w-[min(90vw,44rem)]" : "w-64")}>
                   {pricingDetailsSlot}
                 </CollapsibleContent>
               </Collapsible>

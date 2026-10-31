@@ -13,6 +13,8 @@ import { DetailTopCard, DetailTopGrid } from "@/components/orders/DetailSurface"
 import { CustomerSelect, type CustomerWithContacts, type CustomerSelectRef } from "@/components/CustomerSelect";
 import { ContactSelect } from "@/components/ContactSelect";
 import { getContactDisplayName, type ContactPickerContact } from "@/lib/contactPicker";
+import { OrderCustomerContactEditor } from "./OrderCustomerContactEditor";
+import { OrderDueDateField, OrderPoField, OrderPriorityField } from "./OrderDetailsFields";
 
 export type CustomerCardRef = {
     commitPendingFlags: () => void;
@@ -98,8 +100,6 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     const customerSelectRef = useRef<CustomerSelectRef | null>(null);
     const [showCustomerAddress, setShowCustomerAddress] = useState(false);
     const [isEditingIdentity, setIsEditingIdentity] = useState(false);
-    const [isEditingOrderCustomer, setIsEditingOrderCustomer] = useState(false);
-    const [isEditingOrderContact, setIsEditingOrderContact] = useState(false);
 
     const selectedContact = selectedContactId
         ? (selectedContactFromPicker?.id === selectedContactId ? selectedContactFromPicker : null)
@@ -234,59 +234,32 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     }
 
     if (showOrderFields) {
-        const orderContactPhone: string | null = (selectedContact as any)?.phone || (selectedContact as any)?.phoneNumber || (selectedContact as any)?.mobile || null;
-
         return (
             <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,0.8fr)]">
-                    <DetailTopCard label="Customer and contact" customer>
-                        <div className="min-w-0 space-y-2">
-                            <div className="flex min-w-0 items-start justify-between gap-2">
-                                <div className="min-w-0 flex-1">
-                                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Customer</div>
-                                    {!readOnly && (!selectedCustomerId || isEditingOrderCustomer) ? (
-                                        <CustomerSelect ref={customerSelectRef} value={selectedCustomerId} onChange={(customerId, customer, contactId) => { onCustomerChange(customerId, customer, contactId); if (customerId) setIsEditingOrderCustomer(false); }} autoFocus={false} label="" placeholder="Search customers..." />
-                                    ) : (
-                                        <div className="block truncate text-lg font-semibold leading-6 text-foreground" title={customerDisplayLabel}>{customerDisplayLabel}</div>
-                                    )}
-                                </div>
-                                {!readOnly && selectedCustomerId && <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0" aria-label="Change customer" title="Change customer" onClick={() => setIsEditingOrderCustomer(value => !value)}><Edit className="h-3 w-3" /></Button>}
-                            </div>
-                            {hasCustomerAddress && <div className="space-y-0.5 text-sm leading-5 text-foreground/80">{customerAddress.line1 && <div>{customerAddress.line1}</div>}{customerAddress.line2 && <div>{customerAddress.line2}</div>}</div>}
-                            {customerEmail && <a className="block truncate text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" href={`mailto:${customerEmail}`}>{customerEmail}</a>}
-                            {customerPhone && <a className="block text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" href={phoneToTelHref(customerPhone)}>{formatPhoneForDisplay(customerPhone)}</a>}
-                            {isEditingOrderCustomer && !readOnly && selectedCustomerId && <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive" aria-label="Clear customer" onClick={() => { onCustomerChange(null, undefined); setIsEditingOrderCustomer(false); }}>Clear customer</Button>}
-                        </div>
-                        <div className="min-w-0 space-y-2">
-                            <div className="flex min-w-0 items-start justify-between gap-2">
-                                <div className="min-w-0 flex-1">
-                                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Contact</div>
-                                    {!readOnly && (!selectedContactId || isEditingOrderContact) ? (
-                                        <ContactSelect value={selectedContactId} customerId={selectedCustomerId} onChange={(contactId, contact) => { onContactChange(contactId, contact); if (contactId) setIsEditingOrderContact(false); }} onResolvedContact={onContactResolved} label="" placeholder="Search contacts..." />
-                                    ) : selectedContactId ? (
-                                        <div className="truncate text-base font-semibold leading-5 text-foreground" title={displayContactLabel}>{displayContactLabel}</div>
-                                    ) : <p className="text-sm text-muted-foreground">No contact selected</p>}
-                                </div>
-                                {!readOnly && selectedContactId && <Button type="button" variant="ghost" size="icon" className="h-6 w-6 shrink-0" aria-label="Change contact" title="Change contact" onClick={() => setIsEditingOrderContact(value => !value)}><Edit className="h-3 w-3" /></Button>}
-                            </div>
-                            {contactEmail && <a className="block truncate text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" href={`mailto:${contactEmail}`}>{contactEmail}</a>}
-                            {orderContactPhone && <a className="block text-sm leading-5 text-foreground/80 hover:text-foreground hover:underline" href={phoneToTelHref(orderContactPhone)}>{formatPhoneForDisplay(orderContactPhone)}</a>}
-                            {isEditingOrderContact && !readOnly && selectedContactId && <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive" aria-label="Clear contact" onClick={() => { onContactChange(null, null); setIsEditingOrderContact(false); }}>Clear contact</Button>}
-                        </div>
-                    </DetailTopCard>
+                    <OrderCustomerContactEditor
+                        customerId={selectedCustomerId}
+                        contactId={selectedContactId}
+                        customerLabel={customerDisplayLabel}
+                        contactLabel={displayContactLabel}
+                        customerEmail={customerEmail}
+                        customerPhone={customerPhone}
+                        contactEmail={contactEmail}
+                        contactPhone={(selectedContact as any)?.phone || (selectedContact as any)?.phoneNumber || (selectedContact as any)?.mobile || null}
+                        address={customerAddress}
+                        readOnly={readOnly}
+                        customerSelectRef={customerSelectRef}
+                        onCustomerChange={onCustomerChange}
+                        onContactChange={onContactChange}
+                        onContactResolved={onContactResolved}
+                    />
                     <section aria-label="Order details" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
                         <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
-                            <div className="space-y-1.5">
-                                <label htmlFor="order-po-number" className="text-sm font-medium">PO #</label>
-                                <Input id="order-po-number" value={poNumber} onChange={e => onPoNumberChange?.(e.target.value)} placeholder="Customer PO" readOnly={readOnly} className="h-9" />
-                            </div>
+                            <OrderPoField id="order-po-number" value={poNumber} onChange={value => onPoNumberChange?.(value)} readOnly={readOnly} />
                             <div className="min-w-0 space-y-1.5">
                                 <label htmlFor="order-job-label" className="text-sm font-medium">Job Label</label>
                                 <Input id="order-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="Job name or reference" readOnly={readOnly} className="h-9" />
                             </div>
-                            <div className="min-w-0 space-y-1.5">
-                                <label htmlFor="order-due-date" className="text-sm font-medium">Due date</label>
-                                <Input id="order-due-date" type="date" value={requestedDueDate} onChange={e => onRequestedDueDateChange(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
-                            </div>
+                            <OrderDueDateField id="order-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} />
                             <div className="min-w-0 space-y-1.5">
                                 <label htmlFor="order-promised-date" className="text-sm font-medium">Promised date</label>
                                 <Input id="order-promised-date" type="date" value={promisedDate} onChange={e => onPromisedDateChange?.(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
@@ -305,13 +278,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                     </section>
                     <section aria-label="Commercial and fulfillment" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
                         <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Commercial &amp; Fulfillment</div>
-                        <div className="grid min-w-0 gap-1.5">
-                            <label htmlFor="order-priority" className="text-sm font-medium text-muted-foreground">Priority</label>
-                            <Select value={priority || "normal"} onValueChange={value => onPriorityChange?.(value)} disabled={readOnly}>
-                                <SelectTrigger id="order-priority" className="h-9 min-w-0"><SelectValue /></SelectTrigger>
-                                <SelectContent><SelectItem value="rush">Rush</SelectItem><SelectItem value="normal">Normal</SelectItem><SelectItem value="low">Low</SelectItem></SelectContent>
-                            </Select>
-                        </div>
+                        <OrderPriorityField id="order-priority" value={priority} onChange={value => onPriorityChange?.(value)} readOnly={readOnly} />
                         {orderFulfillment}
                     </section>
             </div>
